@@ -1,6 +1,6 @@
 {
   "name": "synapse-orch-ai",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Synapse - A Multi Agent Orchestrator",
   "keywords": ["ai", "agent", "mcp", "llm", "orchestrator", "local", "ollama"],
   "homepage": "https://github.com/naveenraj-17/synapse-ai",
