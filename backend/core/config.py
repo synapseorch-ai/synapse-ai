@@ -1,5 +1,6 @@
 import os
 import json
+import secrets as _secrets
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -19,7 +20,7 @@ TOKEN_FILE = os.path.join(DATA_DIR, "token.json")
 
 def load_settings():
     default_settings = {
-        "agent_name": "System Agent", 
+        "agent_name": "Synapse",
         "model": "ollama.mistral",
         "mode": "local",
         "openai_key": "",
@@ -52,11 +53,14 @@ def load_settings():
         "auto_compact_enabled": False,
         "auto_compact_threshold": 100000,
         "allow_db_write": False,
-        "coding_agent_enabled": False,
+        "coding_agent_enabled": True,
         "report_agent_enabled": True,
         "messaging_enabled": True,
         "embed_code": False,
         "bash_allowed_dirs": [],
+        "login_enabled": False,
+        "login_username": "",
+        "login_password_hash": "",
     }
     
     if not os.path.exists(SETTINGS_FILE):
@@ -70,6 +74,41 @@ def load_settings():
     except Exception as e:
         print(f"DEBUG: Error loading settings: {e}")
         return default_settings
+
+
+def get_or_create_jwt_secret() -> str:
+    """Return SYNAPSE_JWT_SECRET from the environment or .env file.
+
+    Persistence is handled by the CLI (synapse/cli.py) before the server starts.
+    If the secret is missing here (e.g. server run directly without the CLI),
+    an ephemeral in-memory value is used for this session only.
+    """
+    env_file = _PROJECT_ROOT / ".env"
+    var = "SYNAPSE_JWT_SECRET"
+
+    existing = os.environ.get(var, "")
+    if existing:
+        return existing
+
+    if env_file.exists():
+        try:
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line.startswith(f"{var}=") and len(line) > len(f"{var}="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        os.environ[var] = val
+                        return val
+        except Exception:
+            pass
+
+    secret = _secrets.token_hex(32)
+    os.environ[var] = secret
+    print(
+        f"Warning: {var} was not found; generated an ephemeral in-memory secret. "
+        f"Set {var} in the environment (or run 'synapse start') to persist across restarts."
+    )
+    return secret
 
 
 def sanitize_db_url(raw: str) -> str:

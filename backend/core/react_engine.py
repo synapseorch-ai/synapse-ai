@@ -441,7 +441,7 @@ async def run_agent_step(
             # _has_compacted (anti-thrash: skip if we already compacted this run so we
             # don't loop calling the LLM when a single output fills the window).
             if turn > 0 and not _has_compacted:
-                _compact_ctx, _compact_hist, _compact_path = await maybe_compact(
+                _compact_ctx, _compact_hist, _compact_path, _compact_stats = await maybe_compact(
                     current_context_text,
                     recent_history_messages,
                     current_settings,
@@ -450,6 +450,7 @@ async def run_agent_step(
                     current_settings,
                     session_id,
                     agent_id_for_session,
+                    run_id=run_id,
                 )
                 if _compact_ctx is not current_context_text:
                     current_context_text = _compact_ctx
@@ -457,10 +458,14 @@ async def run_agent_step(
                     active_prompt = current_context_text
                     active_history = []
                     _has_compacted = True
-                    if _compact_path is not None:
-                        yield {"type": "system", "message": f"Context compacted — original archived at: {_compact_path}"}
-                    else:
-                        yield {"type": "system", "message": "Context trimmed — oldest tool outputs dropped to stay within threshold."}
+                    yield {
+                        "type": "context_compact",
+                        "stage": (_compact_stats or {}).get("stage", "unknown"),
+                        "chars_before": (_compact_stats or {}).get("chars_before", 0),
+                        "chars_after": (_compact_stats or {}).get("chars_after", 0),
+                        "reduction_pct": (_compact_stats or {}).get("reduction_pct", 0),
+                        "archive_path": _compact_path,
+                    }
 
             # Safety guard: truncate if too long
             total_prompt_chars = len(active_prompt) + len(active_sys_prompt) + len(memory_context)
@@ -469,6 +474,20 @@ async def run_agent_step(
                 overflow = total_prompt_chars - MAX_PROMPT_CHARS
                 active_prompt = active_prompt[: len(active_prompt) - overflow]
                 print(f"DEBUG: ⚠️ Truncated prompt by {overflow} chars")
+
+            # Emit per-turn LLM call context to loggers before invoking the model
+            yield {
+                "type": "_log_llm_call",
+                "turn": turn + 1,
+                "model": current_model,
+                "system_chars": len(active_sys_prompt),
+                "prompt_chars": len(active_prompt),
+                "memory_chars": len(memory_context),
+                "history_turns": len(active_history),
+                "total_chars": total_prompt_chars,
+                "prompt": active_prompt,
+                "system_prompt": active_sys_prompt,
+            }
 
             # Ask LLM
             print(f"DEBUG: 🔄 Calling LLM...", flush=True)

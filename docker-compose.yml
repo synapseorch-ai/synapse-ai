@@ -9,13 +9,14 @@ services:
     environment:
       - SYNAPSE_DATA_DIR=/data
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host-gateway:11434}
-      - CORS_ORIGINS=http://localhost:3000
+      - CORS_ORIGINS=http://localhost:${SYNAPSE_FRONTEND_PORT:-3000}
+      - SYNAPSE_INTERNAL_TOKEN=${SYNAPSE_INTERNAL_TOKEN}
     volumes:
       - synapse-data:/data
       - ./backend/data:/data
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "8765:8765"
+      - "${SYNAPSE_BACKEND_PORT:-8765}:8765"
     extra_hosts:
       - "host-gateway:host-gateway"
     healthcheck:
@@ -36,8 +37,9 @@ services:
       - .env
     environment:
       - BACKEND_URL=http://synapse-backend:8765
+      - SYNAPSE_INTERNAL_TOKEN=${SYNAPSE_INTERNAL_TOKEN}
     ports:
-      - "3000:3000"
+      - "${SYNAPSE_FRONTEND_PORT:-3000}:3000"
     depends_on:
       backend:
         condition: service_healthy

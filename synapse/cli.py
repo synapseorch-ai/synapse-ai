@@ -271,6 +271,72 @@ def ensure_data_dir():
             target.write_text(default)
 
 
+def _ensure_playwright_browsers():
+    import json
+    if IS_WIN:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+        browsers_path = Path(base) / "ms-playwright"
+    elif sys.platform == "darwin":
+        browsers_path = Path.home() / "Library" / "Caches" / "ms-playwright"
+    else:
+        browsers_path = Path.home() / ".cache" / "ms-playwright"
+
+    # Check independently: chromium-* is for Python playwright; mcp-chrome*/mcp-chromium
+    # is what `@playwright/mcp install-browser` creates and what the MCP server uses.
+    # A fresh install via setup.py only creates chromium-*, so the MCP browser can be
+    # missing even when the Python playwright browser is present.
+    has_chromium = False
+    has_mcp_browser = False
+    if browsers_path.exists():
+        try:
+            for d in browsers_path.iterdir():
+                if not d.is_dir():
+                    continue
+                if d.name.startswith("chromium-"):
+                    has_chromium = True
+                if d.name.startswith("mcp-chrome") or d.name.startswith("mcp-chromium"):
+                    has_mcp_browser = True
+        except Exception:
+            pass
+
+    if has_chromium and has_mcp_browser:
+        return
+
+    npx_cmd = shutil.which("npx.cmd") if IS_WIN else "npx"
+    if not npx_cmd:
+        npx_cmd = "npx"
+    env = os.environ.copy()
+    env["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
+
+    if not has_chromium:
+        print("Installing Playwright browsers...", end="", flush=True)
+        try:
+            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True, capture_output=True)
+            print(" done.")
+        except Exception as e:
+            print(f"\n  Warning: Failed to install Playwright browsers: {e}")
+
+    if not has_mcp_browser:
+        print("Installing browser for Browser Automation MCP server...", end="", flush=True)
+        try:
+            subprocess.run([npx_cmd, "-y", "@playwright/mcp", "install-browser", "chrome-for-testing"], env=env, check=True, capture_output=True)
+            print(" done.")
+        except Exception as e:
+            print(f"\n  Warning: Failed to install MCP browser: {e}")
+            return
+
+    try:
+        settings_file = DATA_DIR / "settings.json"
+        if settings_file.exists():
+            with open(settings_file, "r") as f:
+                settings = json.load(f)
+            settings["playwright_browsers_path"] = str(browsers_path)
+            with open(settings_file, "w") as f:
+                json.dump(settings, f, indent=4)
+    except Exception as e:
+        print(f"\n  Warning: Failed to save playwright_browsers_path to settings: {e}")
+
+
 def start_backend(detach: bool = False, port: int | None = None, profile: bool = False):
     env = os.environ.copy()
     env["SYNAPSE_DATA_DIR"] = str(DATA_DIR)
@@ -293,6 +359,31 @@ def start_backend(detach: bool = False, port: int | None = None, profile: bool =
     )
 
 
+def _sync_bundled_frontend(verbose: bool = True) -> bool:
+    """Copy the latest standalone build from frontend/.next/standalone into synapse/_frontend/.
+
+    Returns True if a sync was performed, False if skipped (no source or no mismatch).
+    """
+    standalone_src = FRONTEND_DIR / ".next" / "standalone"
+    if not standalone_src.exists():
+        if verbose:
+            print(f"  Warning: standalone build not found at {standalone_src}")
+            print("  synapse/_frontend/ was NOT updated. Try running scripts/build_frontend.sh manually.")
+        return False
+    _rmtree(_BUNDLED_FRONTEND)
+    _BUNDLED_FRONTEND.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(str(standalone_src), str(_BUNDLED_FRONTEND), dirs_exist_ok=True)
+    static_src = FRONTEND_DIR / ".next" / "static"
+    static_dst = _BUNDLED_FRONTEND / ".next" / "static"
+    if static_src.exists():
+        static_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(str(static_src), str(static_dst), dirs_exist_ok=True)
+    public_src = FRONTEND_DIR / "public"
+    if public_src.exists():
+        shutil.copytree(str(public_src), str(_BUNDLED_FRONTEND / "public"), dirs_exist_ok=True)
+    return True
+
+
 def start_frontend(detach: bool = False, port: int | None = None, backend_port: int | None = None):
     _backend_port = backend_port if backend_port is not None else DEFAULT_BACKEND_PORT
     _frontend_port = port if port is not None else DEFAULT_FRONTEND_PORT
@@ -310,6 +401,18 @@ def start_frontend(detach: bool = False, port: int | None = None, backend_port: 
 
     # Pip-installed package: frontend is pre-built standalone at synapse/_frontend/
     if _BUNDLED_FRONTEND.exists():
+        # Auto-sync if the source has a newer build (e.g. after synapse upgrade pulled new code).
+        standalone_src = FRONTEND_DIR / ".next" / "standalone"
+        if standalone_src.exists():
+            src_id_file = standalone_src / ".next" / "BUILD_ID"
+            bundled_id_file = _BUNDLED_FRONTEND / ".next" / "BUILD_ID"
+            src_id = src_id_file.read_text().strip() if src_id_file.exists() else None
+            bundled_id = bundled_id_file.read_text().strip() if bundled_id_file.exists() else None
+            if src_id and src_id != bundled_id:
+                print("  Syncing updated frontend build into synapse/_frontend/...")
+                _sync_bundled_frontend(verbose=False)
+                print("  Frontend sync complete.")
+
         server_js = _BUNDLED_FRONTEND / "server.js"
         if not server_js.exists():
             print(f"Error: bundled frontend server not found at {server_js}")
@@ -466,6 +569,239 @@ def _terminate_pid(pid: int, name: str, timeout: int = 5) -> bool:
         return not _is_running(pid)
 
 
+def _ensure_coding_deps() -> None:
+    """
+    Ensure cocoindex and psycopg are installed and up-to-date in the backend venv.
+
+    Called at every `synapse start` so the deps are self-healing:
+    - Fresh installs that skipped the coding-agent step get them auto-installed.
+    - Old installs with an outdated cocoindex (missing .typing) get upgraded.
+    - Installs where the user toggled Code Indexing ON after initial setup work
+      without needing a manual 'synapse upgrade'.
+    """
+    venv_python = BACKEND_DIR / "venv" / ("Scripts/python.exe" if IS_WIN else "bin/python")
+    if not venv_python.exists():
+        return  # No venv at all — not our problem here; backend will report it.
+
+    coding_req = BACKEND_DIR / "requirements-coding.txt"
+    if not coding_req.exists():
+        return  # File not shipped (shouldn't happen after package.json fix).
+
+    # Quick check: can the venv import cocoindex.typing?
+    # This catches both "not installed" and "old version" cases.
+    check = subprocess.run(
+        [str(venv_python), "-c", "from cocoindex.typing import VectorInfo"],
+        capture_output=True,
+    )
+    if check.returncode == 0:
+        return  # All good — nothing to do.
+
+    print("  Coding-agent dependencies missing or outdated — installing now...")
+    result = subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "-q", "--upgrade", "-r", str(coding_req)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("  Coding-agent dependencies installed.")
+    else:
+        print(f"  Warning: could not install coding-agent dependencies:")
+        print(f"  {result.stderr.strip()[:300]}")
+        print(f"  Run manually: {venv_python} -m pip install -r {coding_req}")
+
+
+def _ensure_internal_token():
+    """Ensure SYNAPSE_INTERNAL_TOKEN exists in .env. Generate if missing.
+
+    This token secures the backend's internal /api/* routes so only the
+    frontend can access them. External API access uses separate API keys.
+    """
+    env_file = ROOT_DIR / ".env"
+    token_var = "SYNAPSE_INTERNAL_TOKEN"
+
+    # Check if already in environment (e.g. from .env loaded earlier)
+    if os.environ.get(token_var):
+        return
+
+    # Check if present in .env file
+    if env_file.exists():
+        try:
+            content = env_file.read_text()
+            for line in content.splitlines():
+                line = line.strip()
+                if line.startswith(f"{token_var}=") and len(line) > len(f"{token_var}="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        os.environ[token_var] = val
+                        return
+        except Exception:
+            pass
+
+    # Generate a new token
+    import secrets as _secrets
+    token = _secrets.token_hex(32)
+    os.environ[token_var] = token
+
+    # Append to .env file
+    try:
+        with open(env_file, "a") as f:
+            f.write(f"\n# Internal token for frontend↔backend security (auto-generated)\n")
+            f.write(f"{token_var}={token}\n")
+    except Exception as e:
+        print(f"  Warning: could not write {token_var} to .env: {e}")
+        print(f"  The token is set in memory for this session.")
+
+
+def _ensure_jwt_secret():
+    """Ensure SYNAPSE_JWT_SECRET exists in .env. Generate if missing."""
+    env_file = ROOT_DIR / ".env"
+    var = "SYNAPSE_JWT_SECRET"
+
+    if os.environ.get(var):
+        return
+
+    if env_file.exists():
+        try:
+            content = env_file.read_text()
+            for line in content.splitlines():
+                line = line.strip()
+                if line.startswith(f"{var}=") and len(line) > len(f"{var}="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        os.environ[var] = val
+                        return
+        except Exception:
+            pass
+
+    import secrets as _secrets
+    secret = _secrets.token_hex(32)
+    os.environ[var] = secret
+    try:
+        with open(env_file, "a") as f:
+            f.write(f"\n# JWT secret for session tokens (auto-generated)\n")
+            f.write(f"{var}={secret}\n")
+    except Exception as e:
+        print(f"  Warning: could not write {var} to .env: {e}")
+
+
+def _reset_password_command():
+    """Reset the Synapse UI login password via the CLI."""
+    import getpass
+    import json as _json
+
+    backend_dir = str(BACKEND_DIR)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
+    settings_file = DATA_DIR / "settings.json"
+    if not settings_file.exists():
+        print("  Error: settings.json not found. Start Synapse first to initialise it.")
+        sys.exit(1)
+
+    try:
+        settings = _json.loads(settings_file.read_text())
+    except Exception as e:
+        print(f"  Error reading settings: {e}")
+        sys.exit(1)
+
+    if not settings.get("login_enabled"):
+        print("  Login is not currently enabled.")
+        print("  Enable it first in Settings → General → Require Login.")
+        sys.exit(1)
+
+    current_username = settings.get("login_username", "")
+    try:
+        prompt = f"  Username [{current_username}]: " if current_username else "  Username: "
+        username = input(prompt).strip()
+        if not username:
+            username = current_username
+        if not username:
+            print("  Error: Username cannot be empty.")
+            sys.exit(1)
+
+        password = getpass.getpass("  New password: ")
+        confirm = getpass.getpass("  Confirm password: ")
+    except (KeyboardInterrupt, EOFError):
+        print("\n  Aborted.")
+        sys.exit(0)
+
+    if password != confirm:
+        print("  Error: Passwords do not match.")
+        sys.exit(1)
+    if len(password) < 8:
+        print("  Error: Password must be at least 8 characters.")
+        sys.exit(1)
+
+    from core.user_auth import hash_password
+    settings["login_username"] = username
+    settings["login_password_hash"] = hash_password(password)
+
+    try:
+        settings_file.write_text(_json.dumps(settings, indent=4))
+        print("\n  Password reset successfully.")
+        print("  Re-login will be required if a session was active.")
+    except Exception as e:
+        print(f"  Error writing settings: {e}")
+        sys.exit(1)
+
+
+def _api_keys_command(action: str, name: str = "", key_id: str = ""):
+    """Manage API keys for external /api/v1/* access."""
+    # Ensure backend modules are importable
+    backend_dir = str(BACKEND_DIR)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
+    if action == "generate":
+        from core.api_keys import generate_api_key
+        key_name = name or "CLI-generated key"
+        raw_key, record = generate_api_key(key_name)
+        masked_key = f"{raw_key[:6]}...{raw_key[-4:]}" if len(raw_key) >= 10 else "****"
+        print(f"\n  API Key generated successfully!")
+        print(f"  Name:    {record['name']}")
+        print(f"  Key:     {masked_key}  (copy full key below)")
+        print(f"  ID:      {record['id']}")
+        print(f"\n  ⚠  Save this key now — it cannot be retrieved again.")
+        print(f"\n  {raw_key}\n")
+        print(f"  Usage:")
+        print(f"    curl -X POST http://localhost:8765/api/v1/chat \\")
+        print(f"      -H 'Authorization: Bearer <YOUR_API_KEY>' \\")
+        print(f"      -H 'Content-Type: application/json' \\")
+        print(f"      -d '{{\"message\": \"hello\"}}'")
+        print()
+
+    elif action == "list":
+        from core.api_keys import list_api_keys
+        keys = list_api_keys()
+        if not keys:
+            print("  No API keys found. Generate one with: synapse api-keys generate \"My App\"")
+            return
+        print(f"\n  {'PREFIX':<18} {'NAME':<25} {'CREATED':<22} {'LAST USED':<22} {'ACTIVE'}")
+        print(f"  {'─' * 18} {'─' * 25} {'─' * 22} {'─' * 22} {'─' * 6}")
+        for k in keys:
+            active = "✓" if k.get("is_active", True) else "✗"
+            last_used = k.get("last_used_at") or "never"
+            print(f"  {k['key_prefix']:<18} {k['name']:<25} {k['created_at']:<22} {last_used:<22} {active}")
+        print(f"\n  Total: {len(keys)} key(s)")
+        print()
+
+    elif action == "revoke":
+        if not key_id:
+            print("  Error: key ID required. Get IDs with: synapse api-keys list")
+            sys.exit(1)
+        from core.api_keys import delete_api_key
+        if delete_api_key(key_id):
+            print(f"  API key {key_id} deleted.")
+        else:
+            print(f"  API key {key_id} not found.")
+            sys.exit(1)
+
+    else:
+        print(f"  Unknown action: {action}")
+        print(f"  Usage: synapse api-keys [generate|list|revoke]")
+        sys.exit(1)
+
+
 def _start_command(
     detach: bool = False,
     no_browser: bool = False,
@@ -473,12 +809,38 @@ def _start_command(
     frontend_port: int | None = None,
     profile: bool = False,
 ):
-    # Resolve effective ports: CLI arg > env var > default
-    effective_backend_port = backend_port if backend_port is not None else DEFAULT_BACKEND_PORT
-    effective_frontend_port = frontend_port if frontend_port is not None else DEFAULT_FRONTEND_PORT
-
     check_prerequisites()
+    _ensure_internal_token()
+    _ensure_jwt_secret()
+
+    # First-run: no settings.json yet — run setup wizard before starting
+    _settings_file = DATA_DIR / "settings.json"
+    if not _settings_file.exists():
+        try:
+            from synapse import setup_wizard
+            setup_wizard.run()
+        except Exception as e:
+            print(f"Note: setup wizard error ({e}). Run 'synapse setup' to configure.")
+
+    # Resolve effective ports: CLI arg > settings.json > env var > default
+    _saved_backend_port: int | None = None
+    _saved_frontend_port: int | None = None
+    try:
+        import json as _json
+        _s = _json.loads(_settings_file.read_text())
+        if "backend_port" in _s:
+            _saved_backend_port = int(_s["backend_port"])
+        if "frontend_port" in _s:
+            _saved_frontend_port = int(_s["frontend_port"])
+    except Exception:
+        pass
+
+    effective_backend_port = backend_port if backend_port is not None else (_saved_backend_port or DEFAULT_BACKEND_PORT)
+    effective_frontend_port = frontend_port if frontend_port is not None else (_saved_frontend_port or DEFAULT_FRONTEND_PORT)
+
     ensure_data_dir()
+    _ensure_playwright_browsers()
+    _ensure_coding_deps()
 
     # Prevent accidental foreground start if processes already running
     if not detach:
@@ -607,35 +969,224 @@ def _status_command():
         print(f"{name}: {'running' if running else 'stale pid ' + str(pid)}")
 
 
+def _get_current_version() -> str:
+    """Read the version string from pyproject.toml."""
+    try:
+        content = (ROOT_DIR / "pyproject.toml").read_text()
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith("version") and "=" in line:
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+def _parse_version(v: str) -> tuple:
+    v = v.lstrip("v")
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except ValueError:
+        return (0,)
+
+
+def _register_synapse_pth(venv_dir: str, root_dir: str) -> None:
+    """Add root_dir to the venv's site-packages via a .pth file.
+
+    Equivalent to pip install -e but skips the build hook entirely —
+    no bash, no npm, no hatchling required.
+    """
+    import glob as _glob
+    if IS_WIN:
+        site_pkgs = os.path.join(venv_dir, "Lib", "site-packages")
+    else:
+        candidates = sorted(
+            _glob.glob(os.path.join(venv_dir, "lib", "python*", "site-packages"))
+        )
+        if not candidates:
+            print(f"  Warning: could not locate site-packages inside {venv_dir}")
+            return
+        site_pkgs = candidates[-1]
+    os.makedirs(site_pkgs, exist_ok=True)
+    pth = os.path.join(site_pkgs, "synapse-source.pth")
+    with open(pth, "w") as f:
+        f.write(str(root_dir) + "\n")
+
+
+def _get_latest_github_release() -> "tuple[str, str] | tuple[None, None]":
+    """Return (tag_name, tarball_url) for the latest GitHub release, or (None, None) on failure."""
+    import urllib.request as _req
+    import json as _json
+    url = "https://api.github.com/repos/naveenraj-17/synapse-ai/releases/latest"
+    try:
+        req = _req.Request(url, headers={"User-Agent": "synapse-upgrade/1.0"})
+        with _req.urlopen(req, timeout=15) as resp:
+            data = _json.loads(resp.read())
+        return data.get("tag_name", ""), data.get("tarball_url", "")
+    except Exception as e:
+        print(f"  Warning: could not fetch release info: {e}")
+        return None, None
+
+
+def _download_and_apply_release(tarball_url: str) -> bool:
+    """Download the release tarball and overwrite source files, preserving user data."""
+    import tempfile, tarfile
+    import urllib.request as _req
+
+    SKIP = {
+        # User data — must never be overwritten
+        "backend/data",
+        # Runtime / generated — large and not part of releases
+        "backend/venv",
+        "backend/logs",
+        "backend/chroma_db",
+        "backend/.playwright-mcp",
+        "backend/node_modules",
+        "frontend/node_modules",
+        # Note: frontend/.next and synapse/_frontend are intentionally NOT skipped —
+        # they get rebuilt by npm build + _sync_bundled_frontend() during upgrade.
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tar_path = os.path.join(tmp, "release.tar.gz")
+        print("  Downloading...", end="", flush=True)
+        req = _req.Request(tarball_url, headers={"User-Agent": "synapse-upgrade/1.0"})
+        try:
+            with _req.urlopen(req, timeout=120) as resp, open(tar_path, "wb") as f:
+                shutil.copyfileobj(resp, f)
+        except Exception as e:
+            print(f"\n  Error downloading release: {e}")
+            return False
+        print(" done.")
+
+        print("  Extracting...", end="", flush=True)
+        extract_dir = os.path.join(tmp, "src")
+        os.makedirs(extract_dir)
+        try:
+            with tarfile.open(tar_path, "r:gz") as tf:
+                tf.extractall(extract_dir)
+        except Exception as e:
+            print(f"\n  Error extracting archive: {e}")
+            return False
+        print(" done.")
+
+        entries = os.listdir(extract_dir)
+        if not entries:
+            print("  Warning: tarball was empty — skipping file copy.")
+            return False
+        src_root = os.path.join(extract_dir, entries[0])
+
+        print("  Applying update...")
+        for item in os.listdir(src_root):
+            if item.startswith(".env"):
+                continue
+            src = os.path.join(src_root, item)
+            dst = os.path.join(str(ROOT_DIR), item)
+
+            if os.path.isdir(src):
+                os.makedirs(dst, exist_ok=True)
+                for sub in os.listdir(src):
+                    sub_rel = os.path.join(item, sub)
+                    if any(sub_rel == s or sub_rel.startswith(s + os.sep) for s in SKIP):
+                        continue
+                    # Never overwrite log files
+                    if sub.endswith(".log"):
+                        continue
+                    sub_src = os.path.join(src, sub)
+                    sub_dst = os.path.join(dst, sub)
+                    if os.path.isdir(sub_src):
+                        if os.path.exists(sub_dst):
+                            _rmtree(sub_dst)
+                        shutil.copytree(sub_src, sub_dst)
+                    else:
+                        shutil.copy2(sub_src, sub_dst)
+            else:
+                shutil.copy2(src, dst)
+
+    return True
+
+
 def _upgrade_command():
-    """Pull latest code, rebuild venv + pip deps, rebuild frontend."""
+    """Upgrade Synapse AI to the latest version.
+
+    - pip-installed  → pip install --upgrade synapse-orch-ai
+    - source / editable install → download latest GitHub release + rebuild venv + rebuild frontend
+    """
     print("\n=== Synapse AI -- Upgrade ===")
 
-    # 1. Stop running services first
-    print("\nStopping running services...")
-    _stop_command()
+    # Detect whether we're running from a pip-installed wheel or a source tree.
+    # When installed from PyPI, ROOT_DIR is inside site-packages/.
+    _is_pip_install = any(p in ("site-packages", "dist-packages") for p in ROOT_DIR.parts)
 
-    # 2. Pull latest code
-    print("\n==> Pulling latest code...")
-    try:
+    if _is_pip_install:
+        # ── pip-installed path ────────────────────────────────────────────────
+        print("\nUpgrading via pip...")
         result = subprocess.run(
-            ["git", "-C", str(ROOT_DIR), "pull", "--ff-only"],
-            capture_output=True, text=True,
+            [sys.executable, "-m", "pip", "install", "--upgrade", "synapse-orch-ai"],
+            # Show live output so the user can see progress
+            stdout=None, stderr=None,
         )
-        if result.returncode == 0:
-            output_text = result.stdout.strip()
-            if "Already up to date" in output_text:
-                print("  Already up to date.")
+        if result.returncode != 0:
+            print("\n  Upgrade failed.")
+            print("  Try manually: pip install --upgrade synapse-orch-ai")
+            sys.exit(result.returncode)
+
+        print("\n=== Upgrade complete! ===")
+        print("Run 'synapse start' to launch the updated Synapse.")
+        return
+
+    # ── source / editable install path ───────────────────────────────────────
+
+    # Ensure the internal token exists before ANYTHING else so that any npm
+    # build in this upgrade (or the next) picks it up from the environment.
+    # This must run before the release download so the token is set even when
+    # the downloaded cli.py replaces us on disk mid-upgrade.
+    _ensure_internal_token()
+    _ensure_jwt_secret()
+
+    # When we successfully apply a new release we re-exec this script using the
+    # freshly-downloaded cli.py so that any changes to the upgrade logic itself
+    # take effect immediately — no "run synapse upgrade twice" required.
+    # The re-exec'd process receives this flag and skips straight to the rebuild.
+    _skip_download = os.environ.get("SYNAPSE_UPGRADE_SKIP_DOWNLOAD") == "1"
+
+    if not _skip_download:
+        # 1. Stop running services first
+        print("\nStopping running services...")
+        _stop_command()
+
+        # 2. Download latest release from GitHub
+        print("\n==> Checking for latest release...")
+        current_ver = _get_current_version()
+        latest_tag, tarball_url = _get_latest_github_release()
+
+        if latest_tag and tarball_url:
+            if _parse_version(latest_tag) > _parse_version(current_ver):
+                print(f"  New version available: {latest_tag} (current: {current_ver})")
+                if _download_and_apply_release(tarball_url):
+                    print(f"  Source updated to {latest_tag}.")
+                    # Re-exec with the newly-downloaded cli.py so the rest of
+                    # the upgrade (venv rebuild, npm build, etc.) runs with the
+                    # new code.  The environment — including SYNAPSE_INTERNAL_TOKEN
+                    # set above — is inherited by the child process.
+                    new_cli = ROOT_DIR / "synapse" / "cli.py"
+                    if new_cli.exists():
+                        print("  Restarting upgrade with updated CLI...")
+                        env = os.environ.copy()
+                        env["SYNAPSE_UPGRADE_SKIP_DOWNLOAD"] = "1"
+                        result = subprocess.run(
+                            [sys.executable, str(new_cli), "upgrade"],
+                            env=env,
+                        )
+                        sys.exit(result.returncode)
+                else:
+                    print("  Warning: file apply failed — continuing with existing code.")
             else:
-                print(f"  Updated:\n{output_text}")
+                print(f"  Already at latest version ({current_ver}).")
         else:
-            print(f"  Warning: git pull failed (exit {result.returncode}).")
-            if result.stderr.strip():
-                print(f"  {result.stderr.strip()}")
-    except FileNotFoundError:
-        print("  Warning: git not found -- skipping update.")
-    except Exception as e:
-        print(f"  Warning: git pull error: {e}")
+            print("  Warning: could not reach GitHub releases — continuing with existing code.")
+    else:
+        print("\n(Continuing upgrade with updated CLI...)")
 
     # 3. Rebuild Python venv
     print("\n==> Rebuilding backend virtual environment...")
@@ -680,7 +1231,19 @@ def _upgrade_command():
     else:
         print(f"  Warning: {req_txt} not found -- skipping requirements.")
 
-    # Read settings to determine which optional requirements to install
+    # Always install coding-agent deps (cocoindex, psycopg, numpy).
+    # These are small and needed as soon as the user enables "Code Indexing"
+    # in the UI — we don't want them to have to run upgrade again just because
+    # they toggled a setting after the initial install.
+    coding_req = BACKEND_DIR / "requirements-coding.txt"
+    if coding_req.exists():
+        print("  Installing coding-agent requirements (cocoindex, psycopg)...")
+        subprocess.check_call([str(python_exe), "-m", "pip", "install",
+                               *pip_extra, "-r", str(coding_req)])
+    else:
+        print(f"  Warning: {coding_req} not found -- skipping.")
+
+    # Messaging deps are heavier — only install when the user has opted in.
     import json as _json
     settings_file = DATA_DIR / "settings.json"
     _settings: dict = {}
@@ -689,15 +1252,6 @@ def _upgrade_command():
             _settings = _json.loads(settings_file.read_text())
         except Exception:
             pass
-
-    if _settings.get("coding_agent_enabled", False):
-        coding_req = BACKEND_DIR / "requirements-coding.txt"
-        if coding_req.exists():
-            print("  Installing coding-agent requirements...")
-            subprocess.check_call([str(python_exe), "-m", "pip", "install",
-                                   *pip_extra, "-r", str(coding_req)])
-        else:
-            print(f"  Warning: {coding_req} not found -- skipping.")
 
     if _settings.get("messaging_enabled", False):
         messaging_req = BACKEND_DIR / "requirements-messaging.txt"
@@ -708,13 +1262,17 @@ def _upgrade_command():
         else:
             print(f"  Warning: {messaging_req} not found -- skipping.")
 
-    # Re-install synapse package in editable mode
-    print("  Reinstalling Synapse package...")
-    subprocess.check_call([str(python_exe), "-m", "pip", "install",
-                           "--upgrade", "-e", str(ROOT_DIR)])
+    # Register synapse package via .pth file — no build hook, no bash required
+    print("  Registering Synapse package...")
+    _register_synapse_pth(str(venv_dir), str(ROOT_DIR))
     print("  Backend rebuild complete.")
 
     # 4. Rebuild frontend
+    # Ensure the internal token is in os.environ so the build subprocess
+    # inherits it — Next.js bundles process.env.SYNAPSE_INTERNAL_TOKEN into
+    # the Edge Middleware at build time.
+    _ensure_internal_token()
+
     print("\n==> Rebuilding frontend (npm install + npm run build)...")
     npm = _npm_command()
 
@@ -729,6 +1287,13 @@ def _upgrade_command():
 
     print("  Building frontend...")
     subprocess.check_call([npm, "run", "build"], cwd=str(FRONTEND_DIR))
+
+    # Sync new standalone build into _BUNDLED_FRONTEND if this is a traditionally-installed instance.
+    if _BUNDLED_FRONTEND.exists():
+        print("  Updating bundled frontend (synapse/_frontend/)...")
+        if _sync_bundled_frontend(verbose=True):
+            print("  Bundled frontend updated.")
+
     print("  Frontend rebuild complete.")
 
     # 5. Re-apply execute permissions on the synapse bin script
@@ -846,7 +1411,12 @@ def _uninstall_command(keep_data: bool = False):
     # 4. Remove the installation directory/directories
     # Collect unique dirs: the running ROOT_DIR plus the platform standard install location
     # (e.g. ~/.local/share/SynapseAI on Linux, %LOCALAPPDATA%\Programs\SynapseAI on Windows).
-    _dirs_to_remove: list[Path] = [ROOT_DIR]
+    # Skip ROOT_DIR when pip-installed: it resolves to site-packages/, which must not be deleted.
+    _is_pip_install = any(p in ("site-packages", "dist-packages") for p in ROOT_DIR.parts)
+    if _is_pip_install:
+        _dirs_to_remove: list[Path] = []
+    else:
+        _dirs_to_remove = [ROOT_DIR]
     if platform_install and platform_install.resolve() != ROOT_DIR.resolve():
         _dirs_to_remove.append(platform_install)
 
@@ -870,23 +1440,20 @@ def _uninstall_command(keep_data: bool = False):
 
     # 5. Remove the pip-installed `synapse` console script
     print("\nUninstalling Python package...")
+    _pip_names = ["synapse-orch-ai", "synapse-ai", "synapse"]
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "uninstall", "-y", "synapse-ai"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            print("  Removed pip package synapse-ai.")
-        else:
-            # Try alternate package name
-            result2 = subprocess.run(
-                [sys.executable, "-m", "pip", "uninstall", "-y", "synapse"],
+        _removed = False
+        for _pkg in _pip_names:
+            _r = subprocess.run(
+                [sys.executable, "-m", "pip", "uninstall", "-y", _pkg],
                 capture_output=True, text=True,
             )
-            if result2.returncode == 0:
-                print("  Removed pip package synapse.")
-            else:
-                print("  Package not found in pip (may already be removed).")
+            if _r.returncode == 0:
+                print(f"  Removed pip package {_pkg}.")
+                _removed = True
+                break
+        if not _removed:
+            print("  Package not found in pip (may already be removed).")
     except Exception as e:
         print(f"  Warning: pip uninstall failed: {e}")
 
@@ -1086,6 +1653,16 @@ MIN_PYTHON = (3, 11)
 MIN_NODE   = (20, 9, 0)
 
 
+def _warn_if_not_on_path():
+    if sys.platform == "win32" and not shutil.which("synapse"):  # type: ignore[unreachable]
+        print(  # type: ignore[unreachable]
+            "\nNote: 'synapse' is not on your PATH.\n"
+            "You can run Synapse with:  python -m synapse\n"
+            "To fix permanently, add your Python Scripts folder to PATH.\n",
+            file=sys.stderr,
+        )
+
+
 def _warn_versions():
     """Warn (non-fatally) if Python or Node.js versions are below the minimum required."""
     # ── Python ───────────────────────────────────────────────────────────────
@@ -1131,6 +1708,7 @@ def _warn_versions():
 
 
 def main():
+    _warn_if_not_on_path()
     _warn_versions()
     parser = argparse.ArgumentParser(prog="synapse", description="Manage Synapse server (backend + frontend)")
     sub = parser.add_subparsers(dest="cmd")
@@ -1186,6 +1764,18 @@ def main():
     p_profile.add_argument("--limit", type=int, default=20, metavar="N", help="Number of top allocations to show (memory-snapshot, default: 20)")
     p_profile.add_argument("--duration", type=int, default=30, metavar="SECS", help="Recording duration in seconds (spy, default: 30)")
 
+    # reset-password: reset the UI login password
+    sub.add_parser("reset-password", help="Reset the Synapse UI login password")
+
+    # api-keys: manage external API keys
+    p_apikeys = sub.add_parser("api-keys", help="Manage API keys for external /api/v1/ access")
+    p_apikeys.add_argument(
+        "action",
+        choices=["generate", "list", "revoke"],
+        help="generate: create a new key | list: show all keys | revoke: delete a key",
+    )
+    p_apikeys.add_argument("name_or_id", nargs="?", default="", help="Key name (generate) or key ID (revoke)")
+
     args = parser.parse_args()
 
     if args.cmd == "start" or args.cmd is None:
@@ -1224,6 +1814,14 @@ def main():
             output=args.output,
             limit=args.limit,
             duration=args.duration,
+        )
+    elif args.cmd == "reset-password":
+        _reset_password_command()
+    elif args.cmd == "api-keys":
+        _api_keys_command(
+            action=args.action,
+            name=args.name_or_id if args.action == "generate" else "",
+            key_id=args.name_or_id if args.action == "revoke" else "",
         )
     else:
         parser.print_help()

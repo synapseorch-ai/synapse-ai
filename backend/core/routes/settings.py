@@ -28,6 +28,12 @@ class EmbedSetupRequest(BaseModel):
     password: str = ""
     db_name: str = "synapse"
 
+
+class LoginConfigRequest(BaseModel):
+    login_enabled: bool
+    login_username: str = ""
+    login_password: str = ""
+
 # Path to the examples directory (sibling of this file's package root)
 _EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "examples")
 
@@ -87,19 +93,40 @@ async def get_status():
 @router.get("/api/settings")
 async def get_settings():
     settings = load_settings()
+    settings.pop("login_password_hash", None)
     return settings
+
+
+@router.post("/api/settings/login")
+async def update_login_settings(body: LoginConfigRequest):
+    from core.user_auth import hash_password
+    existing = load_settings()
+    existing["login_enabled"] = body.login_enabled
+    if body.login_enabled:
+        if not body.login_username.strip():
+            raise HTTPException(status_code=400, detail="Username is required when login is enabled")
+        existing["login_username"] = body.login_username.strip()
+        if body.login_password:
+            existing["login_password_hash"] = hash_password(body.login_password)
+        elif not existing.get("login_password_hash"):
+            raise HTTPException(status_code=400, detail="Password is required for first-time login setup")
+    save_settings(existing)
+    return {"status": "ok", "login_enabled": body.login_enabled}
 
 
 @router.post("/api/settings")
 async def update_settings(settings: Settings):
-    print(f"DEBUG: update_settings called with: {settings.dict()}")
+    _safe = {k: (v[:4] + '…' + v[-4:] if isinstance(v, str) and len(v) > 12 and any(kw in k for kw in ('key', 'token', 'secret', 'password')) else v) for k, v in settings.dict(exclude_unset=True).items()}
+    print(f"DEBUG: update_settings called with keys: {list(_safe.keys())}")
     # Get the latest payload and strip unset values to avoid overwriting existing properties with defaults
     try:
         data = settings.dict(exclude_unset=True)
     except Exception:
         data = settings.dict()
-        
+
     existing = load_settings()
+    # Never overwrite the bcrypt hash via the general settings endpoint
+    data.pop("login_password_hash", None)
     existing.update(data)
     data = existing
 

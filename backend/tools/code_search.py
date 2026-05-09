@@ -50,10 +50,6 @@ def _is_path_allowed(path: str) -> bool:
     return False
 
 
-# Must match the indexing config in services/code_indexer.py
-CODE_EMBEDDING_MODEL = "gemini-embedding-001"
-CODE_EMBEDDING_DIM = 768
-
 _pool: ConnectionPool | None = None
 _pool_url: str | None = None
 _VALID_REPO_ID = re.compile(r'^repo_\d+$')
@@ -75,32 +71,44 @@ def _get_pool() -> ConnectionPool:
     return _pool
 
 
-def _get_query_embedding(query: str) -> list[float]:
-    """Generate an embedding vector for the search query using Gemini."""
-    from google import genai
-    from google.genai import types as gtypes
-
-    # load_settings returns a dict
+def _resolve_query_embedding_config() -> tuple[str, int, dict]:
+    """Resolve the embedding model and dimension used for code search."""
     from core.config import load_settings
-    settings = load_settings()
-    api_key = settings.get("gemini_key", "")
-    if not api_key:
-        raise ValueError("Gemini API key not found in settings")
+    from services.code_indexer import get_configured_embedding_model, probe_embedding_dim
 
-    client = genai.Client(api_key=api_key)
-    result = client.models.embed_content(
-        model=CODE_EMBEDDING_MODEL,
-        contents=[query],
-        config=gtypes.EmbedContentConfig(output_dimensionality=CODE_EMBEDDING_DIM)
-    )
-    return result.embeddings[0].values
+    settings = load_settings()
+    model = get_configured_embedding_model()
+    dim = probe_embedding_dim(model, settings)
+    return model, dim, settings
+
+
+async def _get_query_embedding(query: str) -> tuple[list[float], str, int]:
+    """Generate a query embedding using the same model and dimension as indexing."""
+    from core.llm_providers import embed_batch
+
+    model, dim, settings = await asyncio.to_thread(_resolve_query_embedding_config)
+    embed_settings = dict(settings)
+    embed_settings["__embed_output_dim"] = dim
+
+    embeddings = await embed_batch([query], model, embed_settings)
+    if not embeddings:
+        raise RuntimeError("Embedding provider returned no query embedding.")
+
+    query_vector = list(embeddings[0][:dim])
+    if len(query_vector) != dim:
+        raise RuntimeError(
+            f"Embedding dimension mismatch for model '{model}': expected {dim}, got {len(query_vector)}"
+        )
+
+    return query_vector, model, dim
+
 
 
 def _get_table_name(repo_id: str) -> str:
     return f"ci_{repo_id}__emb"
 
 
-def _search(query: str, repo_ids: list[str], top_k: int = 10) -> list[dict]:
+async def _search(query: str, repo_ids: list[str], top_k: int = 10) -> list[dict]:
     """Search indexed repos using cosine similarity."""
     try:
         pool = _get_pool()
@@ -108,9 +116,14 @@ def _search(query: str, repo_ids: list[str], top_k: int = 10) -> list[dict]:
         return [{"error": f"Database connection failed: {e}"}]
 
     repo_path_map = _load_repo_paths()
-    query_vector = _get_query_embedding(query)
+    try:
+        query_vector, model, dim = await _get_query_embedding(query)
+    except Exception as e:
+        return [{"error": f"Query embedding failed: {e}"}]
+
     vector_str = "[" + ",".join(str(v) for v in query_vector) + "]"
     all_results = []
+    errors: list[str] = []
 
     for repo_id in repo_ids:
         if not _VALID_REPO_ID.match(repo_id):
@@ -147,9 +160,18 @@ def _search(query: str, repo_ids: list[str], top_k: int = 10) -> list[dict]:
                             "score": round(1.0 - row[3], 5)
                         })
                 except Exception as e:
-                    sys.stderr.write(f"Error querying {table_name}: {e}\n")
+                    err_text = str(e)
+                    if "different vector dimensions" in err_text:
+                        err_text = (
+                            f"{err_text}. search_codebase generated a {dim}-dim query vector using "
+                            f"'{model}'. Reindex '{repo_id}' if it was indexed with a different embedding model."
+                        )
+                    sys.stderr.write(f"Error querying {table_name}: {err_text}\n")
+                    errors.append(f"{repo_id}: {err_text}")
 
     all_results.sort(key=lambda x: x["score"], reverse=True)
+    if not all_results and errors:
+        return [{"error": "; ".join(errors)}]
     return all_results[:top_k]
 
 
@@ -301,9 +323,20 @@ def _read_file_by_lines(file_path: str, start_line: int = 1, end_line: int = 100
         if os.path.exists(file_path):
             resolved = file_path
             
+    # Fallback: absolute path from a different user/container context — try local vault by filename
+    if not resolved and os.path.isabs(file_path) and "vault" in file_path:
+        try:
+            from core.config import DATA_DIR
+            filename = os.path.basename(file_path)
+            local_candidate = os.path.join(DATA_DIR, "vault", "tool_outputs", filename)
+            if os.path.exists(local_candidate):
+                resolved = local_candidate
+        except Exception:
+            pass
+
     if not resolved:
         cwd = os.getcwd()
-        
+
         # Check vault directory relative to cwd
         if file_path.startswith("data/vault/"):
             candidate = os.path.join(cwd, file_path)
@@ -467,7 +500,7 @@ async def call_tool(
             if not query or not repo_ids:
                 return [types.TextContent(type="text", text=json.dumps({"error": "Both 'query' and 'repo_ids' are required."}))]
 
-            results = _search(query, repo_ids, top_k)
+            results = await _search(query, repo_ids, top_k)
             return [types.TextContent(type="text", text=json.dumps({"results": results}, ensure_ascii=False))]
 
         if name == "grep":

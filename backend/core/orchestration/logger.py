@@ -108,6 +108,40 @@ class OrchestrationLogger:
 {self._indent(system_prompt_extra)}
 """)
 
+        elif etype == "_log_llm_call":
+            turn = event.get("turn", "?")
+            model = event.get("model", "")
+            sys_chars = event.get("system_chars", 0)
+            prompt_chars = event.get("prompt_chars", 0)
+            mem_chars = event.get("memory_chars", 0)
+            hist_turns = event.get("history_turns", 0)
+            total_chars = event.get("total_chars", 0)
+            prompt_text = event.get("prompt", "")
+            sys_text = event.get("system_prompt", "")
+
+            MAX_SYS_LOG = 3000
+            sys_display = sys_text if len(sys_text) <= MAX_SYS_LOG else (
+                sys_text[:MAX_SYS_LOG] + f"\n    [...truncated {len(sys_text) - MAX_SYS_LOG:,} chars]"
+            )
+
+            self._write(f"""
+{'═'*80}
+  🔄 LLM CALL — TURN {turn}  │  model: {model}
+{'─'*80}
+  System Prompt   : {sys_chars:>10,} chars  (~{sys_chars // 4:,} tokens est.)
+  Context/Prompt  : {prompt_chars:>10,} chars  (~{prompt_chars // 4:,} tokens est.)
+  Memory Context  : {mem_chars:>10,} chars
+  History Turns   : {hist_turns:>10} turns
+  ── TOTAL ───────: {total_chars:>10,} chars  (~{total_chars // 4:,} tokens est.)
+{'─'*80}
+  SYSTEM PROMPT ({sys_chars:,} chars):
+{self._indent(sys_display)}
+
+  CONTEXT / PROMPT SENT ({prompt_chars:,} chars):
+{self._indent(prompt_text)}
+{'═'*80}
+""")
+
         elif etype == "_log_evaluator":
             prompt = event.get("prompt", "")
             response = event.get("llm_response", "")
@@ -223,6 +257,23 @@ class OrchestrationLogger:
 
         elif etype == "error":
             self._write(f"  ❌ ERROR: {event.get('message', '')}\n")
+
+        elif etype == "context_compact":
+            stage = event.get("stage", "unknown").upper()
+            cb = event.get("chars_before", 0)
+            ca = event.get("chars_after", 0)
+            pct = event.get("reduction_pct", 0)
+            archive = event.get("archive_path")
+            archive_line = f"\n  Archive  : {archive}" if archive else ""
+            sep = "=" * 60
+            self._write(f"""
+{sep}
+  CONTEXT COMPACTED [{stage}]
+  Before   : {cb:>12,} chars  (~{cb // 4:,} tokens est.)
+  After    : {ca:>12,} chars  (~{ca // 4:,} tokens est.)
+  Saved    : {cb - ca:>12,} chars  (-{pct}%){archive_line}
+{sep}
+""")
 
     # ── Helpers ────────────────────────────────────────────────────
 

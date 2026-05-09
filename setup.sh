@@ -274,7 +274,6 @@ main() {
     echo ""
     
     detect_os
-    check_git
     check_python
     check_node
     check_uvx
@@ -297,51 +296,15 @@ main() {
         echo -e "   \033[96mLocation: $INSTALL_DIR\033[0m"
         echo ""
 
-        # 1. Stop running services
-        echo -e "\033[96m==> Stopping running services...\033[0m"
-        SYNAPSE_BIN="$INSTALL_DIR/bin/synapse"
-        if [ -x "$SYNAPSE_BIN" ]; then
-            "$SYNAPSE_BIN" stop >/dev/null 2>&1 && echo -e "\033[92m[OK] Services stopped.\033[0m" || echo -e "\033[93m[WARN] Could not run synapse stop cleanly.\033[0m"
-        fi
-
-        # Fallback: kill via PID files
-        RUN_DIR="$INSTALL_DIR/run"
-        for pidFile in "backend.pid" "frontend.pid"; do
-            if [ -f "$RUN_DIR/$pidFile" ]; then
-                pid=$(cat "$RUN_DIR/$pidFile" 2>/dev/null)
-                if [ -n "$pid" ]; then
-                    kill -9 "$pid" 2>/dev/null && echo -e "\033[92m[OK] Stopped PID $pid ($pidFile).\033[0m"
-                    rm -f "$RUN_DIR/$pidFile"
-                fi
-            fi
-        done
-        sleep 2
-
-        # 2. Pull latest changes
-        echo ""
-        echo -e "\033[96m==> Pulling latest changes...\033[0m"
-        if git -C "$INSTALL_DIR" pull --ff-only >/dev/null 2>&1; then
-            echo -e "\033[92m[OK] Updated to the latest version.\033[0m"
-        else
-            echo -e "\033[93m[WARN] Could not pull latest changes cleanly.\033[0m"
-        fi
-
-        # 3. Rebuild via setup.py
-        echo ""
-        echo -e "\033[96m==> Rebuilding Synapse AI...\033[0m"
-        cd "$INSTALL_DIR"
-        if [ -t 1 ]; then
-            $PYTHON_CMD setup.py --upgrade < /dev/tty
-        else
-            $PYTHON_CMD setup.py --upgrade
-        fi
-
-        # Activate the updated PATH in the current shell session
+        # Delegate to 'synapse upgrade' — it handles stop, download, rebuild
         export PATH="$INSTALL_DIR/bin:$PATH"
+        echo ""
+        echo -e "\033[96m==> Running synapse upgrade...\033[0m"
+        "$INSTALL_DIR/bin/synapse" upgrade
 
         echo ""
         echo "======================================================"
-        echo -e "\033[92m   Synapse AI has been updated and rebuilt!\033[0m"
+        echo -e "\033[92m   Synapse AI has been updated!\033[0m"
         echo "======================================================"
         echo ""
         echo "To start Synapse:"
@@ -361,18 +324,34 @@ main() {
         exit 0
     fi
 
-    # Clone or update repo
-    REPO_URL="https://github.com/naveenraj-17/synapse-ai.git"
-
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        echo ""
-        echo -e "\033[96mRepository found at $INSTALL_DIR -- pulling latest changes...\033[0m"
-        git -C "$INSTALL_DIR" pull --ff-only
+    # Download latest release from GitHub (no git required)
+    GITHUB_API="https://api.github.com/repos/naveenraj-17/synapse-ai/releases/latest"
+    echo ""
+    echo -e "\033[96mFetching latest Synapse AI release...\033[0m"
+    if command -v curl &> /dev/null; then
+        TARBALL_URL=$(curl -s "$GITHUB_API" | grep '"tarball_url"' | head -1 | cut -d'"' -f4)
+    elif command -v wget &> /dev/null; then
+        TARBALL_URL=$(wget -qO- "$GITHUB_API" | grep '"tarball_url"' | head -1 | cut -d'"' -f4)
     else
-        echo ""
-        echo -e "\033[96mInstalling Synapse AI to: $INSTALL_DIR\033[0m"
-        mkdir -p "$(dirname "$INSTALL_DIR")"
-        git clone "$REPO_URL" "$INSTALL_DIR"
+        TARBALL_URL=""
+    fi
+
+    mkdir -p "$INSTALL_DIR"
+    if [ -n "$TARBALL_URL" ]; then
+        echo -e "\033[96mDownloading release...\033[0m"
+        if command -v curl &> /dev/null; then
+            curl -L "$TARBALL_URL" | tar -xz -C "$INSTALL_DIR" --strip-components=1
+        else
+            wget -qO- "$TARBALL_URL" | tar -xz -C "$INSTALL_DIR" --strip-components=1
+        fi
+        echo -e "\033[92m[OK] Release downloaded and extracted.\033[0m"
+    else
+        echo -e "\033[93m[WARN] Could not fetch release from GitHub. Falling back to git clone...\033[0m"
+        if ! command -v git &> /dev/null; then
+            echo "git not found and GitHub download failed. Please install git or check your internet connection."
+            exit 1
+        fi
+        git clone https://github.com/naveenraj-17/synapse-ai.git "$INSTALL_DIR"
     fi
     
     cd "$INSTALL_DIR"
@@ -407,6 +386,9 @@ main() {
     echo ""
     echo -e "   To start Synapse:"
     echo -e "     \033[96msynapse start\033[0m"
+    echo ""
+    echo -e "   To upgrade in the future:"
+    echo -e "     \033[96msynapse upgrade\033[0m"
     echo "========================================================"
 
     # Auto-activate PATH in this terminal without requiring the user to source ~/.bashrc

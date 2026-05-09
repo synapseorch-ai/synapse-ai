@@ -1,3 +1,4 @@
 psycopg[binary]
 psycopg_pool
-cocoindex
+cocoindex>=0.3.30,<1.0
+numpy

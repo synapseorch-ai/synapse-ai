@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as http from 'http';
 import { URL } from 'url';
+import { internalTokenHeader } from '@/lib/backend';
 
 const _backendUrl = new URL(process.env.BACKEND_URL || 'http://127.0.0.1:8765');
 const BACKEND_HOST = _backendUrl.hostname;
@@ -31,6 +32,7 @@ export async function POST(
                 'Content-Type': 'application/json',
                 'Content-Length': Buffer.byteLength(postData),
                 'Accept-Encoding': 'identity',
+                ...internalTokenHeader(),
             },
         };
 

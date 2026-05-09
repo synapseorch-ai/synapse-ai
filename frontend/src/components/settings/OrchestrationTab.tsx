@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Save, Play, Trash, Square, Loader2, Copy, Radio, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Zap, Wrench, ExternalLink, X, Sparkles } from 'lucide-react';
+import { Plus, Save, Play, Trash, Square, Loader2, Copy, Radio, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Zap, Wrench, ExternalLink, X, Sparkles, Braces, GitFork, ArrowLeftRight, FileText } from 'lucide-react';
 import { BuilderPanel } from '../orchestration/BuilderPanel';
 import { STEP_TYPE_META } from '@/types/orchestration';
 import { ReactFlowProvider } from '@xyflow/react';
@@ -17,12 +17,13 @@ import { ToastNotification } from './ToastNotification';
 
 type ToolCallLogEntry = { kind: 'tool_call'; tool_name: string; args: Record<string, any>; step_name?: string };
 type ToolResultLogEntry = { kind: 'tool_result'; tool_name: string; preview: string };
-type StepResultLogEntry = { kind: 'step_result'; step_name: string; step_type: 'agent' | 'llm'; content: string };
+type StepResultLogEntry = { kind: 'step_result'; step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string };
 type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry;
 
 const STEP_ICONS: Record<StepType, React.FC<{ size?: number }>> = {
     llm: Zap, agent: Bot, tool: Wrench, evaluator: Scale, parallel: GitBranch,
-    merge: GitMerge, loop: RefreshCw, human: User, transform: Code, end: Square,
+    merge: GitMerge, loop: RefreshCw, human: User, transform: Code,
+    extract_json: Braces, if_else: GitFork, switch: ArrowLeftRight, print: FileText, end: Square,
 };
 
 const EMPTY_ORCHESTRATION: Orchestration = {
@@ -83,8 +84,8 @@ export function OrchestrationTab() {
     const [humanResponse, setHumanResponse] = useState('');
     const abortRef = useRef<AbortController | null>(null);
     // Map of orch_step_id -> pending step result (supports parallel branches)
-    const pendingStepResultRef = useRef<Map<string, { step_name: string; step_type: 'agent' | 'llm'; content: string }>>(new Map());
-    const [responseModal, setResponseModal] = useState<{ step_name: string; content: string } | null>(null);
+    const pendingStepResultRef = useRef<Map<string, { step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string }>>(new Map());
+    const [responseModal, setResponseModal] = useState<{ step_name: string; step_type?: string; content: string } | null>(null);
     const [confirmDeleteOrchId, setConfirmDeleteOrchId] = useState<string | null>(null);
     const [builderOpen, setBuilderOpen] = useState(false);
     const [builderSessionKey, setBuilderSessionKey] = useState(0);
@@ -224,6 +225,19 @@ export function OrchestrationTab() {
                 branch.map(sid => idMap[sid] ?? sid)
             ),
             loop_step_ids: step.loop_step_ids?.map(sid => idMap[sid] ?? sid),
+            // IF_ELSE remapping
+            if_true_step_id: remap(step.if_true_step_id) as string | undefined,
+            if_false_step_id: remap(step.if_false_step_id) as string | undefined,
+            // SWITCH remapping
+            switch_cases: step.switch_cases
+                ? Object.fromEntries(
+                    Object.entries(step.switch_cases).map(([val, target]) => [
+                        val,
+                        target != null ? (idMap[target as string] ?? target) : null,
+                    ])
+                  )
+                : undefined,
+            switch_default_step_id: remap(step.switch_default_step_id) as string | undefined,
         }));
 
         const newId = 'orch_' + Math.random().toString(36).substring(2, 9);
@@ -337,6 +351,11 @@ export function OrchestrationTab() {
                 next_step_id: s.next_step_id === stepId ? undefined : s.next_step_id,
                 loop_step_ids: s.loop_step_ids?.filter(id => id !== stepId),
                 parallel_branches: s.parallel_branches?.map(branch => branch.filter(id => id !== stepId)),
+                // Clean if_else references
+                if_true_step_id: s.if_true_step_id === stepId ? undefined : s.if_true_step_id,
+                if_false_step_id: s.if_false_step_id === stepId ? undefined : s.if_false_step_id,
+                // Clean switch default
+                switch_default_step_id: s.switch_default_step_id === stepId ? undefined : s.switch_default_step_id,
             };
             // Clean route_map entries pointing to deleted step
             if (s.route_map) {
@@ -345,6 +364,14 @@ export function OrchestrationTab() {
                     newRouteMap[label] = target === stepId ? null : target;
                 }
                 patched.route_map = newRouteMap;
+            }
+            // Clean switch_cases entries pointing to deleted step
+            if (s.switch_cases) {
+                const newCases: Record<string, string | null> = {};
+                for (const [val, target] of Object.entries(s.switch_cases)) {
+                    newCases[val] = target === stepId ? null : target;
+                }
+                patched.switch_cases = newCases;
             }
             return patched;
         });
@@ -440,11 +467,11 @@ export function OrchestrationTab() {
             case 'step_start': {
                 setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'running' }));
                 setRunLog(prev => [...prev, `▶ ${data.step_name} (${data.step_type})`]);
-                // Begin tracking response for agent/llm steps, keyed by step id
-                if (data.step_type === 'agent' || data.step_type === 'llm') {
+                // Begin tracking response for agent/llm/print/extract_json steps, keyed by step id
+                if (data.step_type === 'agent' || data.step_type === 'llm' || data.step_type === 'print' || data.step_type === 'extract_json') {
                     pendingStepResultRef.current.set(data.orch_step_id, {
                         step_name: data.step_name,
-                        step_type: data.step_type as 'agent' | 'llm',
+                        step_type: data.step_type as 'agent' | 'llm' | 'print' | 'extract_json',
                         content: '',
                     });
                 } else {
@@ -490,6 +517,14 @@ export function OrchestrationTab() {
 
             case 'routing_decision':
                 setRunLog(prev => [...prev, `🔀 Evaluator routed → ${data.decision} (${data.reasoning || ''})`]);
+                break;
+
+            case 'if_decision':
+                setRunLog(prev => [...prev, `🔀 If/Else: ${data.condition || ''} → ${data.result}`]);
+                break;
+
+            case 'switch_decision':
+                setRunLog(prev => [...prev, `🔀 Switch: ${data.expression || ''} = "${data.value}" → ${data.matched_case ?? 'default'}`]);
                 break;
 
             case 'parallel_start':
@@ -782,7 +817,7 @@ export function OrchestrationTab() {
                     {/* Step type toolbar */}
                     <div className="flex items-center gap-1 px-4 py-2 border-b border-zinc-800 shrink-0">
                         <span className="text-xs text-zinc-500 mr-2">Add step:</span>
-                        {(['llm', 'agent', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'end'] as StepType[]).map(type => {
+                        {(['llm', 'agent', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end'] as StepType[]).map(type => {
                             const meta = STEP_TYPE_META[type];
                             const Icon = STEP_ICONS[type];
                             return (
@@ -856,6 +891,7 @@ export function OrchestrationTab() {
                     {responseModal && (
                         <ResponseModal
                             stepName={responseModal.step_name}
+                            stepType={responseModal.step_type}
                             content={responseModal.content}
                             onClose={() => setResponseModal(null)}
                         />
@@ -928,7 +964,21 @@ export function OrchestrationTab() {
 }
 
 // --- Response detail modal ---
-function ResponseModal({ stepName, content, onClose }: { stepName: string; content: string; onClose: () => void }) {
+function ResponseModal({ stepName, stepType, content, onClose }: { stepName: string; stepType?: string; content: string; onClose: () => void }) {
+    // Try to pretty-print JSON for extract_json steps
+    const isJson = stepType === 'extract_json';
+    let formattedJson = content;
+    let jsonParseOk = false;
+    if (isJson) {
+        try {
+            const parsed = JSON.parse(content);
+            formattedJson = JSON.stringify(parsed, null, 2);
+            jsonParseOk = true;
+        } catch {
+            // content may already be pretty or non-JSON — just display as-is
+            formattedJson = content;
+        }
+    }
     useEffect(() => {
         const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
         document.addEventListener('keydown', handler);
@@ -957,6 +1007,24 @@ function ResponseModal({ stepName, content, onClose }: { stepName: string; conte
                 </div>
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-5">
+                    {isJson ? (
+                        /* Pretty-printed JSON with basic syntax colouring */
+                        <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-all rounded-lg bg-zinc-800/70 border border-zinc-700/50 p-4 overflow-x-auto">
+                            {(jsonParseOk ? formattedJson : content)
+                                .split('\n')
+                                .map((line, i) => {
+                                    /* Colour keys orange, strings lime, numbers/booleans/null cyan */
+                                    const coloured = line
+                                        .replace(/("(?:[^"\\]|\\.)*")(\s*:)/g, '<span class="text-orange-300">$1</span><span class="text-zinc-400">$2</span>')
+                                        .replace(/:\s*("(?:[^"\\]|\\.)*")/g, ': <span class="text-lime-300">$1</span>')
+                                        .replace(/:\s*(\d+\.?\d*)/g, ': <span class="text-cyan-300">$1</span>')
+                                        .replace(/:\s*(true|false|null)\b/g, ': <span class="text-cyan-400">$1</span>');
+                                    return (
+                                        <span key={i} dangerouslySetInnerHTML={{ __html: coloured + '\n' }} />
+                                    );
+                                })}
+                        </pre>
+                    ) : (
                     <div className="prose prose-sm prose-invert max-w-none text-zinc-300 text-sm leading-relaxed">
                         <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
@@ -988,6 +1056,7 @@ function ResponseModal({ stepName, content, onClose }: { stepName: string; conte
                             {content}
                         </ReactMarkdown>
                     </div>
+                    )}
                 </div>
             </div>
         </div>,
@@ -1012,7 +1081,7 @@ function BottomPanel({
     humanResponse: string;
     setHumanResponse: (v: string) => void;
     onSubmitHuman: () => void;
-    onOpenResponseModal: (entry: { step_name: string; content: string }) => void;
+    onOpenResponseModal: (entry: { step_name: string; step_type?: string; content: string }) => void;
     runId: string | null;
     onResumeRun: () => void;
     pastRuns: { run_id: string; orchestration_id: string; status: string; started_at?: string; ended_at?: string }[];
@@ -1307,16 +1376,21 @@ function BottomPanel({
                                             const preview = entry.content.slice(0, 200).replace(/\n+/g, ' ').trim();
                                             const isTruncated = entry.content.length > 200;
                                             const isAgent = entry.step_type === 'agent';
+                                            const isPrint = entry.step_type === 'print';
+                                            const isExtractJson = entry.step_type === 'extract_json';
+                                            const dotColor = isAgent ? 'bg-emerald-400' : isPrint ? 'bg-lime-400' : isExtractJson ? 'bg-orange-400' : 'bg-teal-400';
+                                            const labelColor = isAgent ? 'text-emerald-400' : isPrint ? 'text-lime-400' : isExtractJson ? 'text-orange-400' : 'text-teal-400';
+                                            const typeLabel = isAgent ? 'agent response' : isPrint ? 'print output' : isExtractJson ? 'json output' : 'llm output';
                                             return (
                                                 <div key={i} className="my-1.5">
                                                     {/* Header label */}
                                                     <div className="flex items-center gap-1.5 mb-1 pl-1">
-                                                        <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isAgent ? 'bg-emerald-400' : 'bg-teal-400'}`} />
-                                                        <span className={`text-[10px] font-semibold uppercase tracking-wider ${isAgent ? 'text-emerald-400' : 'text-teal-400'}`}>
+                                                        <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotColor}`} />
+                                                        <span className={`text-[10px] font-semibold uppercase tracking-wider ${labelColor}`}>
                                                             {entry.step_name}
                                                         </span>
                                                         <span className="text-[9px] text-zinc-600 uppercase tracking-wide">
-                                                            {isAgent ? 'agent response' : 'llm output'}
+                                                            {typeLabel}
                                                         </span>
                                                     </div>
                                                     {/* Content bubble */}
@@ -1325,7 +1399,7 @@ function BottomPanel({
                                                             {preview}{isTruncated ? '\u2026' : ''}
                                                         </div>
                                                         <button
-                                                            onClick={() => onOpenResponseModal({ step_name: entry.step_name, content: entry.content })}
+                                                            onClick={() => onOpenResponseModal({ step_name: entry.step_name, step_type: entry.step_type, content: entry.content })}
                                                             className="shrink-0 flex items-center gap-1 text-[10px] text-zinc-500 hover:text-emerald-400 transition-colors opacity-0 group-hover:opacity-100 ml-1 whitespace-nowrap self-center"
                                                             title="View full response"
                                                         >

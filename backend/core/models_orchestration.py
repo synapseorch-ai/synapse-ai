@@ -17,6 +17,10 @@ class StepType(str, Enum):
     LOOP = "loop"
     HUMAN = "human"
     TRANSFORM = "transform"
+    EXTRACT_JSON = "extract_json"
+    IF_ELSE = "if_else"
+    SWITCH = "switch"
+    PRINT = "print"
     END = "end"
 
 
@@ -52,6 +56,19 @@ class StepConfig(BaseModel):
 
     # TRANSFORM -- Python code to run on shared state
     transform_code: str | None = None
+
+    # PRINT -- user-defined text/markdown stored to output_key
+    print_content: str | None = None  # Supports {state.key} interpolation
+
+    # IF_ELSE -- Python condition evaluated against shared state
+    if_condition: str | None = None       # e.g. "state.result.flag == True"
+    if_true_step_id: str | None = None    # step to go to when condition is True
+    if_false_step_id: str | None = None   # step to go to when condition is False
+
+    # SWITCH -- match a state expression against multiple case values
+    switch_expression: str | None = None           # e.g. "state.result.status"
+    switch_cases: dict[str, str | None] = {}       # {value: target_step_id} (None = end)
+    switch_default_step_id: str | None = None      # fallback if no case matches
 
     # HUMAN -- pause for human input
     human_prompt: str | None = None

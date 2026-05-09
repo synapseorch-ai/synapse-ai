@@ -19,10 +19,16 @@ try:
     import numpy as np
     from numpy.typing import NDArray
     from cocoindex.typing import VectorInfo
-except ImportError:
+except ImportError as _coco_import_err:
     COCOINDEX_AVAILABLE = False
     NDArray = None
     VectorInfo = None
+    print(
+        f"[code-indexer] WARNING: cocoindex/psycopg not found in this Python environment ({_coco_import_err}).\n"
+        "  Code indexing is disabled. To enable it, install into the backend venv:\n"
+        "    <synapse-install-dir>/backend/venv/bin/pip install cocoindex psycopg\n"
+        "  Then restart Synapse."
+    )
 
 # Lock for repos.json read/write
 _repos_lock = threading.Lock()
@@ -395,7 +401,16 @@ def _update_repo_status(repo_id: str, **fields):
 
 def run_index_task(repo_id: str, repo_path: str, included_patterns: list[str], excluded_patterns: list[str]):
     if not COCOINDEX_AVAILABLE:
-        print("CocoIndex not available — skipping index task.")
+        msg = (
+            "CocoIndex not installed in the backend venv — indexing skipped.\n"
+            "Fix: run   <synapse-install-dir>/backend/venv/bin/pip install cocoindex psycopg\n"
+            "then restart Synapse.  (Running bare 'pip install cocoindex' installs into\n"
+            "your system Python, not the venv the backend uses.)"
+        )
+        print(msg)
+        _update_repo_status(repo_id, status="error", error_message=
+            "cocoindex not installed in backend venv. "
+            "Run: <install-dir>/backend/venv/bin/pip install cocoindex psycopg, then restart.")
         return
 
     stop = _stop_events.setdefault(repo_id, threading.Event())

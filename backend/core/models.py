@@ -112,6 +112,9 @@ class Settings(BaseModel):
     report_agent_enabled: bool = True
     coding_agent_enabled: bool = True
     messaging_enabled: bool = True
+    login_enabled: bool = False
+    login_username: str = ""
+    login_password_hash: str = ""
 
 
 class PersonalAddress(BaseModel):

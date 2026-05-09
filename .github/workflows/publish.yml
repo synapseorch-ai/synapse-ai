@@ -22,6 +22,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: frontend-builds
+          include-hidden-files: true
           path: |
             synapse/_frontend
             frontend-build
@@ -49,7 +50,7 @@ jobs:
       - name: Publish to PyPI
         run: |
           pip install twine
-          twine upload dist/*
+          twine upload --skip-existing dist/*
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
@@ -83,29 +84,24 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract version tag
-        id: tag
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build and push backend image
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push combined image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: Dockerfile.backend
+          file: Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/synapse-backend:latest
-            ${{ secrets.DOCKER_USERNAME }}/synapse-backend:${{ steps.tag.outputs.VERSION }}
-
-      - name: Build and push frontend image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile.frontend
-          push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/synapse-frontend:latest
-            ${{ secrets.DOCKER_USERNAME }}/synapse-frontend:${{ steps.tag.outputs.VERSION }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/synapse-ai:${{ steps.version.outputs.VERSION }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/synapse-ai:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

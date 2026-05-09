@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
+import { BACKEND_URL, backendHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
-
-const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
 
 export const maxDuration = 300; // 5 minutes timeout (Vercel/Next.js specific)
 
@@ -14,9 +13,7 @@ export async function POST(req: Request) {
         // Since this runs on the server, localhost:8000 refers to the container's localhost
         const backendResponse = await fetch(`${BACKEND_URL}/chat`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: backendHeaders(),
             body: JSON.stringify(body),
             // No manual abort signal -> Node.js default timeout (long)
         });

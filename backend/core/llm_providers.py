@@ -880,7 +880,17 @@ def _convert_tools_for_gemini(ollama_tools: list[dict] | None):
 
 def _clean_schema_for_gemini(schema: dict) -> dict:
     """Remove fields from JSON schema that Gemini doesn't support."""
-    UNSUPPORTED_KEYS = {"default", "$schema", "additionalProperties"}
+    UNSUPPORTED_KEYS = {
+        "default", "$schema", "additionalProperties",
+        "propertyNames", "patternProperties",
+        "minProperties", "maxProperties",
+        "dependentRequired", "dependentSchemas",
+        "examples", "$id", "$comment",
+        "if", "then", "else",
+        "unevaluatedProperties", "unevaluatedItems",
+        "readOnly", "writeOnly",
+        "deprecated",
+    }
     if not isinstance(schema, dict):
         return schema
     cleaned = {}

@@ -59,6 +59,9 @@ def _build_context_block(current_context_text: str, recent_history_messages: lis
     return "\n\n".join(parts)
 
 
+MIN_STAGE1_SAVINGS_PCT = 20  # Stage-1 trim must save at least this % or we fall through to Stage-2
+
+
 async def maybe_compact(
     current_context_text: str,
     recent_history_messages: list,
@@ -68,16 +71,17 @@ async def maybe_compact(
     current_settings: dict,
     session_id: str,
     agent_id: str,
-) -> tuple[str, list, str | None]:
+    run_id: str | None = None,
+) -> tuple[str, list, str | None, dict | None]:
     """
-    Returns (context_text, history_messages, archive_path | None).
+    Returns (context_text, history_messages, archive_path | None, compact_stats | None).
 
     archive_path is only set when Stage-2 LLM summarisation fires (and saves an archive).
-    Stage-1 trim returns None for archive_path since nothing is lost — just the oldest
-    portion of tool output text is dropped.
+    compact_stats is {"stage", "chars_before", "chars_after", "reduction_pct"} when
+    compaction fired, or None when it didn't.
     """
     if not settings.get("auto_compact_enabled", False):
-        return current_context_text, recent_history_messages, None
+        return current_context_text, recent_history_messages, None, None
 
     threshold = settings.get("auto_compact_threshold", 100000)
     history_chars = sum(
@@ -86,7 +90,7 @@ async def maybe_compact(
     total_chars = len(current_context_text) + history_chars
 
     if total_chars <= threshold:
-        return current_context_text, recent_history_messages, None
+        return current_context_text, recent_history_messages, None, None
 
     print(
         f"\nDEBUG: 📏 Compaction check — "
@@ -99,11 +103,14 @@ async def maybe_compact(
 
     # ── Stage 1: drop oldest tool outputs (cheap — no LLM call, no archive) ──────
     # Keep the most recent portion of current_context_text that fits in the budget.
+    # Only accept the Stage-1 result when it saves at least MIN_STAGE1_SAVINGS_PCT;
+    # otherwise fall through to Stage-2 LLM summarisation for proper ~30% reduction.
     budget = max(0, threshold - history_chars - 60)  # 60 chars for the trim prefix
     if budget > 0 and len(current_context_text) > budget:
         stage1_ctx = "[...older tool outputs trimmed...]\n" + current_context_text[-budget:]
         stage1_total = len(stage1_ctx) + history_chars
-        if stage1_total <= threshold:
+        stage1_savings_pct = round((total_chars - stage1_total) / total_chars * 100) if total_chars > 0 else 0
+        if stage1_total <= threshold and stage1_savings_pct >= MIN_STAGE1_SAVINGS_PCT:
             _log_compaction("Stage-1 trim", total_chars, stage1_total)
             log_compaction_event(
                 stage="trim",
@@ -111,8 +118,20 @@ async def maybe_compact(
                 chars_after=stage1_total,
                 session_id=session_id,
                 agent_id=agent_id,
+                run_id=run_id,
             )
-            return stage1_ctx, recent_history_messages, None
+            return stage1_ctx, recent_history_messages, None, {
+                "stage": "trim",
+                "chars_before": total_chars,
+                "chars_after": stage1_total,
+                "reduction_pct": stage1_savings_pct,
+            }
+        elif stage1_total <= threshold:
+            print(
+                f"DEBUG: ⏭  Stage-1 would save only {stage1_savings_pct}% "
+                f"(< {MIN_STAGE1_SAVINGS_PCT}% min) — falling through to Stage-2 LLM summarisation.",
+                flush=True,
+            )
 
     # ── Stage 2: LLM summarisation (Stage 1 was not enough) ──────────────────────
     print(
@@ -155,6 +174,13 @@ async def maybe_compact(
             f"=== END SUMMARY — CONTINUING FROM HERE ===\n"
         )
         after_chars = len(compacted)
+        reduction_pct = round((total_chars - after_chars) / total_chars * 100) if total_chars > 0 else 0
+        compact_stats = {
+            "stage": "llm_summary",
+            "chars_before": total_chars,
+            "chars_after": after_chars,
+            "reduction_pct": reduction_pct,
+        }
         _log_compaction("Stage-2 LLM summary", total_chars, after_chars, str(archive_path) if archive_path else None)
         log_compaction_event(
             stage="llm_summary",
@@ -162,14 +188,15 @@ async def maybe_compact(
             chars_after=after_chars,
             session_id=session_id,
             agent_id=agent_id,
+            run_id=run_id,
             archive_path=str(archive_path) if archive_path else None,
             model=current_model,
         )
-        return compacted, [], str(archive_path) if archive_path else None
+        return compacted, [], str(archive_path) if archive_path else None, compact_stats
 
     except Exception as exc:
         print(f"DEBUG: ⚠️  Compaction LLM call failed ({exc}), continuing without compaction")
-        return current_context_text, recent_history_messages, None
+        return current_context_text, recent_history_messages, None, None
 
 
 def _log_compaction(stage: str, before: int, after: int, archive: str | None = None) -> None:

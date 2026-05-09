@@ -25,7 +25,7 @@ interface StepConfigPanelProps {
     availableModels?: string[];
 }
 
-const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'end'];
+const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end'];
 
 export function StepConfigPanel({ step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry, availableModels }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => onUpdate({ ...step, ...patch });
@@ -327,6 +327,48 @@ export function StepConfigPanel({ step, agents, allStepIds, onUpdate, onDelete, 
                     <div className="text-xs text-zinc-500">This node terminates the orchestration. No configuration needed.</div>
                 )}
 
+                {/* ===== EXTRACT JSON config ===== */}
+                {step.type === 'extract_json' && (
+                    <div className="space-y-2">
+                        <div className="rounded bg-orange-950/40 border border-orange-800/40 px-3 py-2 text-[10px] text-orange-400 leading-relaxed">
+                            <strong>Extract JSON</strong> — parses JSON from input text. Handles markdown fences (<code>```json</code>), raw JSON, and multiple objects. Single object is stored directly; multiple objects are stored as an array.
+                        </div>
+                        <p className="text-[10px] text-zinc-500">Configure <em>Input Keys</em> below to specify which shared state values to scan. The extracted JSON will be stored in the <em>Output Key</em>.</p>
+                    </div>
+                )}
+
+                {/* ===== PRINT config ===== */}
+                {step.type === 'print' && (
+                    <div className="space-y-2">
+                        <div className="rounded bg-lime-950/40 border border-lime-800/40 px-3 py-2 text-[10px] text-lime-400 leading-relaxed">
+                            <strong>Print</strong> — stores your text or markdown into shared state. Use <code>{'{state.key}'}</code> to embed values from previous steps.
+                        </div>
+                        <div>
+                            <label className="text-xs text-zinc-400 block mb-1">Content</label>
+                            <VaultTextarea
+                                className={textareaCls}
+                                rows={6}
+                                value={step.print_content || ''}
+                                onChange={(e) => update({ print_content: e.target.value })}
+                                placeholder={`# Summary\n\nThe analysis result is: {state.analysis_result}\n\nStatus: {state.status}\n\nType @ to reference a vault file`}
+                            />
+                            <p className="text-[10px] text-zinc-600 mt-0.5">
+                                Use <code className="text-lime-400">{'{state.key}'}</code> or <code className="text-lime-400">{'{state.key.nested}'}</code> to embed shared state values. Supports markdown. Type <span className="text-emerald-400 font-mono">@</span> to reference a vault file.
+                            </p>
+                        </div>
+                    </div>
+                )}
+
+                {/* ===== IF/ELSE config ===== */}
+                {step.type === 'if_else' && (
+                    <IfElseStepConfig step={step} update={update} otherSteps={otherSteps} inputCls={inputCls} selectCls={selectCls} />
+                )}
+
+                {/* ===== SWITCH config ===== */}
+                {step.type === 'switch' && (
+                    <SwitchStepConfig step={step} update={update} otherSteps={otherSteps} inputCls={inputCls} selectCls={selectCls} />
+                )}
+
                 <hr className="border-zinc-700" />
 
                 {/* I/O mapping — not for end nodes */}
@@ -354,7 +396,7 @@ export function StepConfigPanel({ step, agents, allStepIds, onUpdate, onDelete, 
                 )}
 
                 {/* Next step — only for types that use linear routing (not evaluator with routes, not end, not loop via done handle) */}
-                {step.type !== 'end' && step.type !== 'evaluator' && step.type !== 'loop' && (
+                {step.type !== 'end' && step.type !== 'evaluator' && step.type !== 'loop' && step.type !== 'if_else' && step.type !== 'switch' && (
                     <div>
                         <label className="text-xs text-zinc-400 block mb-1">Next Step</label>
                         <select className={selectCls} value={step.next_step_id || ''} onChange={(e) => update({ next_step_id: e.target.value || undefined })}>
@@ -654,6 +696,169 @@ function PythonCodeEditor({ value, onChange }: { value: string; onChange: (code:
     }, [value]);
 
     return <div ref={containerRef} className="h-full" />;
+}
+
+/** IF/Else Step config — condition + true/false path pickers. */
+function IfElseStepConfig({ step, update, otherSteps, inputCls, selectCls }: {
+    step: StepConfig;
+    update: (patch: Partial<StepConfig>) => void;
+    otherSteps: { id: string; name: string }[];
+    inputCls: string;
+    selectCls: string;
+}) {
+    return (
+        <div className="space-y-3">
+            <div className="rounded bg-yellow-950/40 border border-yellow-800/40 px-3 py-2 text-[10px] text-yellow-400 leading-relaxed">
+                <strong>If / Else</strong> — evaluates a Python condition against shared state. Routes to the True or False path based on the result.
+            </div>
+            <div>
+                <label className="text-xs text-zinc-400 block mb-1">Condition <span className="text-zinc-600 normal-case">(Python expression)</span></label>
+                <input
+                    className={`${inputCls} !font-mono`}
+                    value={step.if_condition || ''}
+                    onChange={(e) => update({ if_condition: e.target.value })}
+                    placeholder="state.result.flag == True"
+                />
+                <p className="text-[10px] text-zinc-600 mt-0.5">
+                    Use <code className="text-yellow-400">state.key</code> or <code className="text-yellow-400">state.key.nested</code> to access shared state. Missing keys resolve to <code>None</code>.
+                </p>
+            </div>
+            <div>
+                <label className="text-xs text-zinc-400 block mb-1">True Path <span className="text-green-500">(condition is True)</span></label>
+                <select className={selectCls} value={step.if_true_step_id || ''} onChange={(e) => update({ if_true_step_id: e.target.value || undefined })}>
+                    <option value="">None (end)</option>
+                    {otherSteps.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+            </div>
+            <div>
+                <label className="text-xs text-zinc-400 block mb-1">False Path <span className="text-red-500">(condition is False)</span></label>
+                <select className={selectCls} value={step.if_false_step_id || ''} onChange={(e) => update({ if_false_step_id: e.target.value || undefined })}>
+                    <option value="">None (end)</option>
+                    {otherSteps.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+            </div>
+        </div>
+    );
+}
+
+/** Switch Step config — expression + case entries + default path. UI mirrors evaluator routes. */
+function SwitchStepConfig({ step, update, otherSteps, inputCls, selectCls }: {
+    step: StepConfig;
+    update: (patch: Partial<StepConfig>) => void;
+    otherSteps: { id: string; name: string }[];
+    inputCls: string;
+    selectCls: string;
+}) {
+    return (
+        <div className="space-y-3">
+            <div className="rounded bg-cyan-950/40 border border-cyan-800/40 px-3 py-2 text-[10px] text-cyan-400 leading-relaxed">
+                <strong>Switch</strong> — evaluates an expression against shared state and matches the result to case values. Routes to the matching case or the default path.
+            </div>
+            <div>
+                <label className="text-xs text-zinc-400 block mb-1">Expression <span className="text-zinc-600 normal-case">(Python expression)</span></label>
+                <input
+                    className={`${inputCls} !font-mono`}
+                    value={step.switch_expression || ''}
+                    onChange={(e) => update({ switch_expression: e.target.value })}
+                    placeholder="state.result.status"
+                />
+                <p className="text-[10px] text-zinc-600 mt-0.5">
+                    Use <code className="text-cyan-400">state.key</code> to access shared state. Result is converted to string for matching.
+                </p>
+            </div>
+            <div>
+                <label className="text-xs text-zinc-400 block mb-1">Cases <span className="text-zinc-600 normal-case">(value → target step)</span></label>
+                <div className="space-y-2">
+                    {Object.entries(step.switch_cases || {}).map(([caseVal, targetId]) => (
+                        <SwitchCaseEntry
+                            key={caseVal}
+                            caseValue={caseVal}
+                            targetId={targetId}
+                            otherSteps={otherSteps}
+                            onRenameCase={(newVal) => {
+                                if (newVal === caseVal || !newVal.trim()) return;
+                                const entries = Object.entries(step.switch_cases || {});
+                                const newCases: Record<string, string | null> = {};
+                                for (const [k, v] of entries) {
+                                    newCases[k === caseVal ? newVal : k] = v;
+                                }
+                                update({ switch_cases: newCases });
+                            }}
+                            onChangeTarget={(val) => {
+                                update({ switch_cases: { ...(step.switch_cases || {}), [caseVal]: val } });
+                            }}
+                            onDelete={() => {
+                                const newCases = { ...(step.switch_cases || {}) };
+                                delete newCases[caseVal];
+                                update({ switch_cases: newCases });
+                            }}
+                        />
+                    ))}
+                    <button
+                        onClick={() => {
+                            const existing = Object.keys(step.switch_cases || {});
+                            const newVal = `case_${existing.length + 1}`;
+                            update({ switch_cases: { ...(step.switch_cases || {}), [newVal]: null } });
+                        }}
+                        className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300"
+                    >
+                        <Plus size={12} /> Add Case
+                    </button>
+                </div>
+            </div>
+            <div>
+                <label className="text-xs text-zinc-400 block mb-1">Default Path <span className="text-zinc-600 normal-case">(no case matched)</span></label>
+                <select className={selectCls} value={step.switch_default_step_id || ''} onChange={(e) => update({ switch_default_step_id: e.target.value || undefined })}>
+                    <option value="">None (end)</option>
+                    {otherSteps.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+            </div>
+        </div>
+    );
+}
+
+/** Switch case entry — editable value + target picker. */
+function SwitchCaseEntry({
+    caseValue, targetId, otherSteps, onRenameCase, onChangeTarget, onDelete,
+}: {
+    caseValue: string;
+    targetId: string | null;
+    otherSteps: { id: string; name: string }[];
+    onRenameCase: (newVal: string) => void;
+    onChangeTarget: (val: string | null) => void;
+    onDelete: () => void;
+}) {
+    const [localVal, setLocalVal] = useState(caseValue);
+
+    return (
+        <div className="bg-zinc-900 rounded p-2 space-y-2">
+            <input
+                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 font-mono outline-none"
+                value={localVal}
+                onChange={(e) => setLocalVal(e.target.value)}
+                onBlur={() => onRenameCase(localVal)}
+                onKeyDown={(e) => { if (e.key === 'Enter') onRenameCase(localVal); }}
+                placeholder="Match value"
+            />
+            <select
+                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 outline-none"
+                value={targetId ?? '__end__'}
+                onChange={(e) => onChangeTarget(e.target.value === '__end__' ? null : e.target.value)}
+            >
+                <option value="__end__">End Orchestration</option>
+                {otherSteps.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <div className="text-right">
+                <button
+                    onClick={onDelete}
+                    className="w-full py-1 text-xs font-semibold text-red-400 bg-red-900/5 border border-red-700 rounded hover:bg-red-900/20 hover:text-red-300 transition-colors"
+                    title="Delete this case"
+                >
+                    <Trash2 size={12} className="inline-block mr-1" /> Delete Case
+                </button>
+            </div>
+        </div>
+    );
 }
 
 /** Route label editor — uses local state so typing doesn't cause focus loss. */

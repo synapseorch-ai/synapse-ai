@@ -60,6 +60,11 @@ const nextConfig: NextConfig = {
     // Route handlers can read process.env.BACKEND_URL without their own fallback.
     BACKEND_URL,
     BACKEND_PORT,
+    // Inject secrets so they are available in the Edge Runtime middleware bundle.
+    // (Edge Runtime only sees vars in this block or NEXT_PUBLIC_* — raw process.env
+    //  assignments from earlier in this file are NOT guaranteed to reach the Edge.)
+    SYNAPSE_JWT_SECRET: process.env.SYNAPSE_JWT_SECRET || '',
+    SYNAPSE_INTERNAL_TOKEN: process.env.SYNAPSE_INTERNAL_TOKEN || '',
     // Expose backend port to client-side code (e.g., for UI instructions)
     NEXT_PUBLIC_BACKEND_PORT: BACKEND_PORT,
     NEXT_PUBLIC_FRONTEND_PORT: _frontendPort,

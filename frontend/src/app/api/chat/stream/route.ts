@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
+import { BACKEND_URL, backendHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
-
-const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
 
 export const maxDuration = 300; // 5 minutes timeout for streaming
 
@@ -13,9 +12,7 @@ export async function POST(req: Request) {
         // Forward request to Python Backend SSE endpoint
         const backendResponse = await fetch(`${BACKEND_URL}/chat/stream`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: backendHeaders(),
             body: JSON.stringify(body),
         });
 

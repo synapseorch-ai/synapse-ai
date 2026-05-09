@@ -991,6 +991,323 @@ class LLMStepExecutor:
             "response": response,
         }
 
+class ExtractJsonStepExecutor:
+    """Extract JSON from text input (handles markdown fences, raw JSON, multiple objects).
+    No LLM call — pure Python extraction."""
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        # Gather input text from input_keys
+        parts = []
+        for key in (step.input_keys or []):
+            val = run.shared_state.get(key)
+            if val is not None:
+                parts.append(str(val))
+
+        text = "\n\n".join(parts) if parts else ""
+        if not text.strip():
+            yield {"type": "step_warning", "orch_step_id": step.id,
+                   "message": "No input text to extract JSON from"}
+            if step.output_key:
+                run.shared_state[step.output_key] = None
+            return
+
+        yield {"type": "_log_prompt", "orch_step_id": step.id,
+               "prompt": f"[Extract JSON] input text ({len(text)} chars)"}
+
+        extracted = self._extract_all_json(text)
+
+        if not extracted:
+            result = None
+            yield {"type": "step_warning", "orch_step_id": step.id,
+                   "message": "No valid JSON found in input"}
+        elif len(extracted) == 1:
+            result = extracted[0]
+        else:
+            result = extracted
+
+        if step.output_key:
+            run.shared_state[step.output_key] = result
+
+        yield {
+            "type": "final",
+            "orch_step_id": step.id,
+            "step_name": step.name,
+            "response": json.dumps(result, default=str) if result is not None else "null",
+        }
+
+    def _extract_all_json(self, text: str) -> list:
+        """Try multiple strategies to extract JSON from text."""
+        # Strategy 1: Try parsing the entire text as JSON
+        try:
+            parsed = json.loads(text.strip())
+            return [parsed]
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        results = []
+
+        # Strategy 2: Extract from markdown fenced code blocks (```json ... ``` or ``` ... ```)
+        fence_pattern = re.compile(r'```(?:json)?\s*\n(.*?)\n\s*```', re.DOTALL)
+        for match in fence_pattern.finditer(text):
+            content = match.group(1).strip()
+            try:
+                parsed = json.loads(content)
+                results.append(parsed)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        if results:
+            return results
+
+        # Strategy 3: Brace/bracket counting to find top-level JSON objects/arrays
+        results = self._extract_by_brace_matching(text)
+        return results
+
+    def _extract_by_brace_matching(self, text: str) -> list:
+        """Find top-level {...} and [...] blocks by counting braces."""
+        results = []
+        i = 0
+        n = len(text)
+        while i < n:
+            if text[i] in ('{', '['):
+                open_char = text[i]
+                close_char = '}' if open_char == '{' else ']'
+                depth = 0
+                start = i
+                in_string = False
+                escape_next = False
+                while i < n:
+                    ch = text[i]
+                    if escape_next:
+                        escape_next = False
+                        i += 1
+                        continue
+                    if ch == '\\':
+                        escape_next = True
+                        i += 1
+                        continue
+                    if ch == '"':
+                        in_string = not in_string
+                    elif not in_string:
+                        if ch == open_char:
+                            depth += 1
+                        elif ch == close_char:
+                            depth -= 1
+                            if depth == 0:
+                                candidate = text[start:i + 1]
+                                try:
+                                    parsed = json.loads(candidate)
+                                    results.append(parsed)
+                                except (json.JSONDecodeError, ValueError):
+                                    pass
+                                i += 1
+                                break
+                    i += 1
+                else:
+                    # Unmatched brace, move on
+                    i = start + 1
+            else:
+                i += 1
+        return results
+
+
+class _DotNavigableState:
+    """Wrapper for shared state that supports dot-notation access.
+    Missing keys return None instead of raising errors."""
+
+    def __init__(self, data: dict):
+        object.__setattr__(self, '_data', data)
+
+    def __getattr__(self, name: str):
+        data = object.__getattribute__(self, '_data')
+        if name.startswith('_'):
+            raise AttributeError(name)
+        val = data.get(name)
+        if isinstance(val, dict):
+            return _DotNavigableState(val)
+        return val
+
+    def __getitem__(self, key):
+        data = object.__getattribute__(self, '_data')
+        val = data.get(key)
+        if isinstance(val, dict):
+            return _DotNavigableState(val)
+        return val
+
+    def __repr__(self):
+        data = object.__getattribute__(self, '_data')
+        return repr(data)
+
+    def __str__(self):
+        data = object.__getattribute__(self, '_data')
+        return str(data)
+
+    def __eq__(self, other):
+        if isinstance(other, _DotNavigableState):
+            return object.__getattribute__(self, '_data') == object.__getattribute__(other, '_data')
+        return object.__getattribute__(self, '_data') == other
+
+    def __bool__(self):
+        data = object.__getattribute__(self, '_data')
+        return bool(data)
+
+    def __contains__(self, item):
+        data = object.__getattribute__(self, '_data')
+        return item in data
+
+    def __len__(self):
+        data = object.__getattribute__(self, '_data')
+        return len(data)
+
+
+# Restricted namespace for safe eval in IF/Else and Switch steps
+_SAFE_EVAL_BUILTINS = {
+    '__builtins__': {},
+    'None': None, 'True': True, 'False': False,
+    'len': len, 'int': int, 'float': float, 'str': str,
+    'bool': bool, 'list': list, 'dict': dict, 'abs': abs,
+    'min': min, 'max': max, 'round': round,
+}
+
+
+class IfElseStepExecutor:
+    """Evaluate a Python condition against shared state and route to true/false path.
+    No LLM call — pure deterministic branching."""
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        condition = step.if_condition
+        if not condition:
+            yield {"type": "step_warning", "orch_step_id": step.id,
+                   "message": "No condition configured for IF/Else step"}
+            run.shared_state[f"_if_decision_{step.id}"] = "false"
+            return
+
+        yield {"type": "_log_prompt", "orch_step_id": step.id,
+               "prompt": f"[IF/Else Condition] {condition}"}
+
+        state_wrapper = _DotNavigableState(run.shared_state)
+        eval_ns = {**_SAFE_EVAL_BUILTINS, 'state': state_wrapper}
+
+        try:
+            result = bool(eval(condition, eval_ns))
+        except Exception as e:
+            print(f"DEBUG IF_ELSE: ⚠ Condition eval failed: {e}", flush=True)
+            result = False
+            yield {"type": "step_warning", "orch_step_id": step.id,
+                   "message": f"Condition eval error (treating as False): {e}"}
+
+        decision = "true" if result else "false"
+        run.shared_state[f"_if_decision_{step.id}"] = decision
+        print(f"DEBUG IF_ELSE: condition='{condition}' → {decision}", flush=True)
+
+        if step.output_key:
+            run.shared_state[step.output_key] = result
+
+        yield {
+            "type": "if_decision",
+            "orch_step_id": step.id,
+            "step_name": step.name,
+            "condition": condition,
+            "result": decision,
+        }
+
+
+class SwitchStepExecutor:
+    """Evaluate a state expression and match against case values to route.
+    No LLM call — pure deterministic routing."""
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        expression = step.switch_expression
+        if not expression:
+            yield {"type": "step_warning", "orch_step_id": step.id,
+                   "message": "No expression configured for Switch step"}
+            run.shared_state[f"_switch_decision_{step.id}"] = None
+            return
+
+        yield {"type": "_log_prompt", "orch_step_id": step.id,
+               "prompt": f"[Switch Expression] {expression}"}
+
+        state_wrapper = _DotNavigableState(run.shared_state)
+        eval_ns = {**_SAFE_EVAL_BUILTINS, 'state': state_wrapper}
+
+        try:
+            value = eval(expression, eval_ns)
+        except Exception as e:
+            print(f"DEBUG SWITCH: ⚠ Expression eval failed: {e}", flush=True)
+            value = None
+            yield {"type": "step_warning", "orch_step_id": step.id,
+                   "message": f"Expression eval error: {e}"}
+
+        # Convert to string for case matching
+        value_str = str(value) if value is not None else "None"
+        matched_case = value_str if value_str in (step.switch_cases or {}) else None
+        run.shared_state[f"_switch_decision_{step.id}"] = matched_case
+        print(f"DEBUG SWITCH: expression='{expression}' → '{value_str}', matched_case={matched_case}", flush=True)
+
+        if step.output_key:
+            run.shared_state[step.output_key] = value
+
+        yield {
+            "type": "switch_decision",
+            "orch_step_id": step.id,
+            "step_name": step.name,
+            "expression": expression,
+            "value": value_str,
+            "matched_case": matched_case,
+        }
+
+
+
+class PrintStepExecutor:
+    """Store user-defined text/markdown into shared state.
+    Supports {state.key} and {state.key.nested} interpolation.
+    No LLM call — pure template rendering."""
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        content = step.print_content or ""
+        if not content.strip():
+            yield {"type": "step_warning", "orch_step_id": step.id,
+                   "message": "No content configured for Print step"}
+            if step.output_key:
+                run.shared_state[step.output_key] = ""
+            return
+
+        # Interpolate {state.key} and {state.key.nested.path}
+        def _resolve_ref(match: re.Match) -> str:
+            path = match.group(1)  # e.g. "result.flag"
+            parts = path.split('.')
+            val = run.shared_state
+            for part in parts:
+                if isinstance(val, dict):
+                    val = val.get(part)
+                else:
+                    val = None
+                    break
+            return str(val) if val is not None else match.group(0)  # keep original if not found
+
+        rendered = re.sub(r'\{state\.([\w.]+)\}', _resolve_ref, content)
+
+        yield {"type": "_log_prompt", "orch_step_id": step.id,
+               "prompt": f"[Print] {rendered[:500]}"}
+
+        if step.output_key:
+            run.shared_state[step.output_key] = rendered
+
+        yield {
+            "type": "final",
+            "orch_step_id": step.id,
+            "step_name": step.name,
+            "response": rendered,
+        }
+
 
 class EndStepExecutor:
     """Terminate the orchestration."""
@@ -1013,5 +1330,9 @@ STEP_EXECUTORS = {
     StepType.LOOP: LoopStepExecutor(),
     StepType.HUMAN: HumanStepExecutor(),
     StepType.TRANSFORM: TransformStepExecutor(),
+    StepType.EXTRACT_JSON: ExtractJsonStepExecutor(),
+    StepType.IF_ELSE: IfElseStepExecutor(),
+    StepType.SWITCH: SwitchStepExecutor(),
+    StepType.PRINT: PrintStepExecutor(),
     StepType.END: EndStepExecutor(),
 }

@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
+import { BACKEND_URL, backendHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
-const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
-
 export async function GET() {
     try {
-        const res = await fetch(`${BACKEND_URL}/api/models`);
+        const res = await fetch(`${BACKEND_URL}/api/models`, {
+            headers: backendHeaders(),
+        });
         if (!res.ok) {
             return NextResponse.json({ providers: {} }, { status: res.status });
         }

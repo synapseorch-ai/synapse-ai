@@ -52,6 +52,13 @@ interface UsageLog {
     tool_name?: string | null;
     input_tokens: number; output_tokens: number; total_tokens: number;
     context_chars: number; estimated_cost: number; latency_seconds: number;
+    // Compaction-specific fields (present when event_type === "compaction")
+    event_type?: string;
+    stage?: string;
+    chars_before?: number;
+    chars_after?: number;
+    reduction_pct?: number;
+    archive_path?: string | null;
 }
 interface PricingEntry {
     provider: string; input_per_1m: number; output_per_1m: number;
@@ -340,6 +347,9 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                         const agentCounts: Record<string, number> = {};
                         sorted.forEach(l => { const a = l.agent_id || ''; agentCounts[a] = (agentCounts[a] || 0) + 1; });
                         return sorted.map((log, i) => {
+                            if (log.event_type === 'compaction') {
+                                return <CompactionRow key={`compact-${log.globalIdx}`} log={log} idx={i} />;
+                            }
                             const prevCtx = i > 0 ? sorted[i - 1].context_chars : 0;
                             const delta = log.context_chars - prevCtx;
                             const metaDot = PROVIDER_META[detectProvider(log.model)]?.dot ?? '#71717a';
@@ -396,6 +406,34 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                 </tbody>
             </table>
         </div>
+    );
+}
+
+function CompactionRow({ log, idx }: { log: IndexedLog; idx: number }) {
+    const stage = log.stage === 'trim' ? 'TRIM' : log.stage === 'llm_summary' ? 'LLM SUMMARY' : (log.stage ?? '').toUpperCase();
+    const reductionPct = log.reduction_pct ?? 0;
+    const charsBefore = log.chars_before ?? 0;
+    const charsAfter = log.chars_after ?? 0;
+    return (
+        <tr className="border-b border-cyan-900/30 bg-cyan-950/20 hover:bg-cyan-950/30 transition-colors">
+            <td className="py-2.5 pr-3 pl-3 text-zinc-600 tabular-nums">{idx + 1}</td>
+            <td className="py-2.5 pr-3 text-zinc-500 whitespace-nowrap tabular-nums">{fmtTime(log.timestamp)}</td>
+            <td colSpan={2} className="py-2.5 pr-4">
+                <span className="inline-flex items-center gap-1.5 text-cyan-400 font-semibold text-xs">
+                    <span>🗜</span>
+                    context compact
+                    <span className="text-[10px] text-cyan-600 font-normal border border-cyan-800/50 px-1.5 py-0.5 bg-cyan-950/60">{stage}</span>
+                </span>
+            </td>
+            <td className="py-2.5 pr-3 text-right text-zinc-500 tabular-nums text-xs">{fmtKB(charsAfter)}</td>
+            <td className="py-2.5 pr-3 text-right tabular-nums">
+                <span className="text-emerald-400 font-medium text-xs">-{fmtKB(charsBefore - charsAfter)}</span>
+            </td>
+            <td colSpan={3} className="py-2.5 pr-3 text-right text-cyan-400 font-semibold tabular-nums text-xs">
+                -{reductionPct}%
+            </td>
+            <td className="py-2.5 pr-3 text-right text-zinc-700 text-xs">--</td>
+        </tr>
     );
 }
 

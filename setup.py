@@ -1595,6 +1595,29 @@ def create_default_agent():
 # ---------------------------------------------------------------------------
 # Install helpers
 # ---------------------------------------------------------------------------
+def _register_synapse_pth(venv_dir, root_dir):
+    """Add root_dir to the venv's site-packages via a .pth file.
+
+    This makes 'import synapse' work from the venv without running
+    pip install -e (which triggers hatchling's build hook and requires bash).
+    """
+    import glob as _glob
+    if IS_WIN:
+        site_pkgs = os.path.join(venv_dir, "Lib", "site-packages")
+    else:
+        candidates = sorted(
+            _glob.glob(os.path.join(venv_dir, "lib", "python*", "site-packages"))
+        )
+        if not candidates:
+            warn(f"Could not locate site-packages inside {venv_dir}")
+            return
+        site_pkgs = candidates[-1]
+    os.makedirs(site_pkgs, exist_ok=True)
+    pth = os.path.join(site_pkgs, "synapse-source.pth")
+    with open(pth, "w") as f:
+        f.write(str(root_dir) + "\n")
+
+
 def _run_with_retry(cmd, retries=4, delay=5, **kwargs):
     """Run a subprocess command with retries. Output flows to terminal so the user can see progress."""
     last_exc = None
@@ -1627,15 +1650,17 @@ def install_backend(coding_enabled, messaging_enabled=False):
     _run_with_retry([PYTHON_EXE, "-m", "pip", "install", "-r", os.path.join(BACKEND_DIR, "requirements.txt")])
     ok("Base dependencies installed.")
 
-    if coding_enabled:
-        coding_req = os.path.join(BACKEND_DIR, "requirements-coding.txt")
-        if os.path.exists(coding_req):
-            info("Installing coding-agent dependencies (cocoindex, psycopg)...")
-            _run_with_retry([PYTHON_EXE, "-m", "pip", "install", "-r", coding_req])
-            ok("Coding-agent dependencies installed.")
-        else:
-            warn(f"requirements-coding.txt not found at {coding_req}")
-    
+    # Always install coding deps (cocoindex, psycopg, numpy) — they are needed
+    # as soon as the user enables Code Indexing in the UI.  Installing them up
+    # front avoids a second install step (and confusing "not found" errors).
+    coding_req = os.path.join(BACKEND_DIR, "requirements-coding.txt")
+    if os.path.exists(coding_req):
+        info("Installing coding-agent dependencies (cocoindex, psycopg, numpy)...")
+        _run_with_retry([PYTHON_EXE, "-m", "pip", "install", "-r", coding_req])
+        ok("Coding-agent dependencies installed.")
+    else:
+        warn(f"requirements-coding.txt not found at {coding_req}")
+
     if messaging_enabled:
         messaging_req = os.path.join(BACKEND_DIR, "requirements-messaging.txt")
         if os.path.exists(messaging_req):
@@ -1645,9 +1670,9 @@ def install_backend(coding_enabled, messaging_enabled=False):
         else:
             warn(f"requirements-messaging.txt not found at {messaging_req}")
 
-    info("Installing Synapse package (editable mode)...")
-    _run_with_retry([PYTHON_EXE, "-m", "pip", "install", "-e", ROOT_DIR])
-    ok("Synapse package installed.")
+    info("Registering Synapse package...")
+    _register_synapse_pth(VENV_DIR, ROOT_DIR)
+    ok("Synapse package registered.")
 
 def install_frontend():
     step("Installing Frontend Dependencies")
@@ -1904,6 +1929,11 @@ def show_restart_instructions():
         info("  synapse stop      # Stop running services")
         info("  synapse status    # Check service status")
         info("  synapse restart   # Restart services")
+        info("  synapse upgrade   # Upgrade to the latest version")
+        info("")
+        info("Installed via pip or npm instead?")
+        info("  pip upgrade:  pip install --upgrade synapse-orch-ai")
+        info("  npm upgrade:  npm update -g synapse-orch-ai")
     else:
         info("Simply run:")
         info(f"  synapse start")
@@ -1917,6 +1947,11 @@ def show_restart_instructions():
         info(f"  synapse stop      # Stop running services")
         info(f"  synapse status    # Check service status")
         info(f"  synapse restart   # Restart services")
+        info(f"  synapse upgrade   # Upgrade to the latest version")
+        info("")
+        info("Installed via pip or npm instead?")
+        info(f"  pip upgrade:  pip install --upgrade synapse-orch-ai")
+        info(f"  npm upgrade:  npm update -g synapse-orch-ai")
 
 
 # ---------------------------------------------------------------------------
@@ -2048,7 +2083,15 @@ def _rebuild_backend(install_dir):
     info("Installing / upgrading backend requirements...")
     subprocess.check_call(pip_cmd + ["-r", req_txt])
 
-    # Read settings to determine which optional requirements to install
+    # Always install coding deps (cocoindex, psycopg, numpy).
+    coding_req = os.path.join(backend_dir, "requirements-coding.txt")
+    if os.path.exists(coding_req):
+        info("Installing coding-agent requirements (cocoindex, psycopg, numpy)...")
+        subprocess.check_call(pip_cmd + ["-r", coding_req])
+    else:
+        warn(f"requirements-coding.txt not found at {coding_req}")
+
+    # Messaging deps are heavier — only install when opted in.
     _settings: dict = {}
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -2058,14 +2101,6 @@ def _rebuild_backend(install_dir):
         except Exception:
             pass
 
-    if _settings.get("coding_agent_enabled", False):
-        coding_req = os.path.join(backend_dir, "requirements-coding.txt")
-        if os.path.exists(coding_req):
-            info("Installing coding-agent requirements...")
-            subprocess.check_call(pip_cmd + ["-r", coding_req])
-        else:
-            warn(f"requirements-coding.txt not found at {coding_req}")
-
     if _settings.get("messaging_enabled", False):
         messaging_req = os.path.join(backend_dir, "requirements-messaging.txt")
         if os.path.exists(messaging_req):
@@ -2074,8 +2109,8 @@ def _rebuild_backend(install_dir):
         else:
             warn(f"requirements-messaging.txt not found at {messaging_req}")
 
-    info("Reinstalling Synapse package (editable mode)...")
-    subprocess.check_call([python_exe, "-m", "pip", "install", "-e", install_dir])
+    info("Registering Synapse package...")
+    _register_synapse_pth(venv_dir, install_dir)
     ok("Backend dependencies updated.")
 
 

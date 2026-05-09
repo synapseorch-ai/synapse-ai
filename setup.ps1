@@ -395,122 +395,76 @@ function Start-SynapseSetup {
         Write-Host "   Location: $InstallDir" -ForegroundColor Cyan
         Write-Host ""
 
-        # ---------------------------------------------------------------
-        # 1. Stop any running services
-        # ---------------------------------------------------------------
-        Write-Host "==> Stopping running services..." -ForegroundColor Cyan
+        # Delegate to 'synapse upgrade' — it handles stop, download, rebuild
+        Write-Host "==> Running synapse upgrade..." -ForegroundColor Cyan
         $SynapseBat = Join-Path $InstallDir "bin\synapse.bat"
         if (Test-Path $SynapseBat) {
-            try {
-                & $SynapseBat stop 2>&1 | Out-Null
-                Write-Host "[OK] Services stopped." -ForegroundColor Green
-            } catch {
-                Write-Host "[WARN] Could not run synapse stop cleanly." -ForegroundColor Yellow
-            }
-        }
-        # Fallback: kill via PID files
-        $RunDir = Join-Path $InstallDir "run"
-        foreach ($pidFile in @("backend.pid", "frontend.pid")) {
-            $pidPath = Join-Path $RunDir $pidFile
-            if (Test-Path $pidPath) {
-                try {
-                    $pid = [int](Get-Content $pidPath -ErrorAction SilentlyContinue)
-                    taskkill /F /T /PID $pid 2>&1 | Out-Null
-                    Remove-Item $pidPath -Force -ErrorAction SilentlyContinue
-                    Write-Host "[OK] Stopped PID $pid ($pidFile)." -ForegroundColor Green
-                } catch {
-                    Write-Host "[WARN] Could not stop $pidFile process." -ForegroundColor Yellow
-                }
-            }
-        }
-        Start-Sleep -Seconds 2
-
-        # ---------------------------------------------------------------
-        # 2. Pull latest changes
-        # ---------------------------------------------------------------
-        Write-Host ""
-        Write-Host "==> Pulling latest changes..." -ForegroundColor Cyan
-        
-        $oldErrPref = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        $pullResult = git -C $InstallDir pull --ff-only 2>&1
-        $exitCode = $LASTEXITCODE
-        $ErrorActionPreference = $oldErrPref
-        
-        if ($exitCode -eq 0) {
-            if ($pullResult -match "Already up to date") {
-                Write-Host "[OK] Already up to date -- no code changes." -ForegroundColor Green
-            } else {
-                Write-Host "[OK] Updated to the latest version." -ForegroundColor Green
-                Write-Host $pullResult
-            }
+            & $SynapseBat upgrade
         } else {
-            Write-Host "[WARN] Could not pull latest changes:" -ForegroundColor Yellow
-            Write-Host $pullResult
+            throw "synapse.bat not found at $SynapseBat — installation may be corrupted."
         }
 
-        # ---------------------------------------------------------------
-        # 3. Rebuild via setup.py (backend + frontend)
-        # ---------------------------------------------------------------
-        Write-Host ""
-        Write-Host "==> Rebuilding Synapse AI..." -ForegroundColor Cyan
-        $SetupScript = Join-Path $InstallDir "setup.py"
-
-        # We need Python and Node to be available for the rebuild.
-        # Run a lightweight prerequisite check (no install, just detect).
-        Invoke-PrerequisitesCheck
-
-        # Invoke setup.py with the --upgrade flag so it skips the wizard
-        # and goes straight to rebuild.
-        if ($global:PYTHON_CMD -match " ") {
-            $parts = $global:PYTHON_CMD -split " "
-            & $parts[0] $parts[1..($parts.Length - 1)] $SetupScript --upgrade
-        } else {
-            & $global:PYTHON_CMD $SetupScript --upgrade
-        }
-
-        # ---------------------------------------------------------------
-        # 4. Show instructions
-        # ---------------------------------------------------------------
         Write-Host ""
         Write-Host "======================================================" -ForegroundColor Green
-        Write-Host "   Synapse AI has been updated and rebuilt!" -ForegroundColor Green
+        Write-Host "   Synapse AI has been updated!" -ForegroundColor Green
         Write-Host "======================================================" -ForegroundColor Green
         Write-Host ""
-        Write-Host "To start Synapse:" -ForegroundColor White
-        Write-Host "  synapse start" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "Other commands:" -ForegroundColor Gray
-        Write-Host "  synapse stop      -- stop running services" -ForegroundColor Gray
-        Write-Host "  synapse status    -- check service status" -ForegroundColor Gray
-        Write-Host "  synapse restart   -- restart services" -ForegroundColor Gray
+        Write-Host "To start Synapse:  synapse start" -ForegroundColor Cyan
         Write-Host ""
         return
     }
 
     Invoke-PrerequisitesCheck
 
-    $RepoUrl = "https://github.com/naveenraj-17/synapse-ai.git"
+    # Download latest release tarball from GitHub (no git required)
+    Write-Host ""
+    Write-Host "Fetching latest Synapse AI release..." -ForegroundColor Cyan
+    try {
+        $release = Invoke-RestMethod `
+            "https://api.github.com/repos/naveenraj-17/synapse-ai/releases/latest" `
+            -Headers @{"User-Agent" = "synapse-install/1.0"} `
+            -ErrorAction Stop
+        $tarballUrl = $release.tarball_url
+    } catch {
+        Write-Host "[WARN] Could not reach GitHub API: $($_.Exception.Message)" -ForegroundColor Yellow
+        $tarballUrl = $null
+    }
 
-    # Clone or update at the fixed install location
-    if (Test-Path (Join-Path $InstallDir ".git")) {
-        Write-Host ""
-        Write-Host "Repository found at $InstallDir -- pulling latest changes..."
-        $oldErrPref = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        git -C $InstallDir pull --ff-only
-        $ErrorActionPreference = $oldErrPref
-    } else {
-        Write-Host ""
-        Write-Host "Installing Synapse AI to: $InstallDir"
-        # Create parent directory if needed
-        $ParentDir = Split-Path $InstallDir -Parent
-        if (-not (Test-Path $ParentDir)) {
-            New-Item -ItemType Directory -Path $ParentDir -Force | Out-Null
+    # Create install dir
+    $ParentDir = Split-Path $InstallDir -Parent
+    if (-not (Test-Path $ParentDir)) {
+        New-Item -ItemType Directory -Path $ParentDir -Force | Out-Null
+    }
+    if (-not (Test-Path $InstallDir)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    }
+
+    if ($tarballUrl) {
+        Write-Host "Downloading release..." -ForegroundColor Cyan
+        $tmpTar = [System.IO.Path]::GetTempFileName() + ".tar.gz"
+        try {
+            Invoke-WebRequest $tarballUrl -OutFile $tmpTar -UseBasicParsing -ErrorAction Stop
+            # tar.exe ships with Windows 10 1803+
+            $tarOutput = tar -xzf $tmpTar --strip-components=1 -C $InstallDir 2>&1
+            Remove-Item $tmpTar -Force -ErrorAction SilentlyContinue
+            Write-Host "[OK] Release downloaded and extracted." -ForegroundColor Green
+        } catch {
+            Remove-Item $tmpTar -Force -ErrorAction SilentlyContinue
+            Write-Host "[WARN] Download failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            $tarballUrl = $null
+        }
+    }
+
+    if (-not $tarballUrl) {
+        # Fallback: git clone
+        Write-Host "[INFO] Falling back to git clone..." -ForegroundColor Cyan
+        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Write-Host "[WARN] git not found. Installing Git first..." -ForegroundColor Yellow
+            Install-Git
         }
         $oldErrPref = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        git clone $RepoUrl $InstallDir
+        git clone https://github.com/naveenraj-17/synapse-ai.git $InstallDir
         $ErrorActionPreference = $oldErrPref
     }
 
@@ -543,6 +497,10 @@ function Start-SynapseSetup {
         Write-Host "   Synapse AI setup complete!" -ForegroundColor Green
         Write-Host "   To start Synapse:  synapse start" -ForegroundColor Cyan
         Write-Host "   Installed at:      $InstallDir" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "   To upgrade in the future:  synapse upgrade" -ForegroundColor Cyan
+        Write-Host "   (pip users: pip install --upgrade synapse-orch-ai)" -ForegroundColor Gray
+        Write-Host "   (npm users: npm update -g synapse-orch-ai)" -ForegroundColor Gray
         Write-Host "========================================================" -ForegroundColor Green
     } else {
         throw "Could not find installation directory: $InstallDir"

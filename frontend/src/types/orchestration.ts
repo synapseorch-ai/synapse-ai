@@ -1,6 +1,6 @@
 import type { Node, Edge } from '@xyflow/react';
 
-export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'end';
+export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'extract_json' | 'if_else' | 'switch' | 'print' | 'end';
 
 export interface StepConfig {
     id: string;
@@ -35,6 +35,19 @@ export interface StepConfig {
 
     // TRANSFORM
     transform_code?: string;
+
+    // PRINT — user-defined text/markdown with {state.key} interpolation
+    print_content?: string;
+
+    // IF_ELSE — Python condition, routes to true/false path
+    if_condition?: string;
+    if_true_step_id?: string;
+    if_false_step_id?: string;
+
+    // SWITCH — match expression against case values
+    switch_expression?: string;
+    switch_cases?: Record<string, string | null>;
+    switch_default_step_id?: string;
 
     // HUMAN
     human_prompt?: string;
@@ -131,6 +144,10 @@ export const STEP_TYPE_META: Record<StepType, { label: string; color: string; ic
     merge:     { label: 'Merge',     color: '#ec4899', icon: 'GitMerge' },
     loop:      { label: 'Loop',      color: '#f59e0b', icon: 'RefreshCw' },
     human:     { label: 'Human',     color: '#ef4444', icon: 'User' },
-    transform: { label: 'Transform', color: '#6366f1', icon: 'Code' },
-    end:       { label: 'End',       color: '#6b7280', icon: 'Square' },
+    transform:    { label: 'Transform',    color: '#6366f1', icon: 'Code' },
+    extract_json: { label: 'Extract JSON', color: '#f97316', icon: 'Braces' },
+    if_else:      { label: 'If / Else',    color: '#eab308', icon: 'GitFork' },
+    switch:       { label: 'Switch',       color: '#06b6d4', icon: 'ArrowLeftRight' },
+    print:        { label: 'Print',        color: '#84cc16', icon: 'FileText' },
+    end:          { label: 'End',          color: '#6b7280', icon: 'Square' },
 };

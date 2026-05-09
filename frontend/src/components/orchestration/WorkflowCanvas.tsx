@@ -92,6 +92,73 @@ function stepsToEdges(steps: StepConfig[]): Edge[] {
             if (labels.length > 0) continue;
         }
 
+        // --- IF/ELSE: true edge (green) and false edge (red) ---
+        if (step.type === 'if_else') {
+            if (step.if_true_step_id) {
+                edges.push({
+                    id: `${step.id}->if_true->${step.if_true_step_id}`,
+                    source: step.id,
+                    sourceHandle: 'if_true',
+                    target: step.if_true_step_id,
+                    type: 'smoothstep',
+                    label: 'true',
+                    labelStyle: { fill: '#22c55e', fontSize: 10 },
+                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#22c55e' },
+                    style: { stroke: '#22c55e', strokeWidth: 2 },
+                });
+            }
+            if (step.if_false_step_id) {
+                edges.push({
+                    id: `${step.id}->if_false->${step.if_false_step_id}`,
+                    source: step.id,
+                    sourceHandle: 'if_false',
+                    target: step.if_false_step_id,
+                    type: 'smoothstep',
+                    label: 'false',
+                    labelStyle: { fill: '#ef4444', fontSize: 10 },
+                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#ef4444' },
+                    style: { stroke: '#ef4444', strokeWidth: 2 },
+                });
+            }
+            continue;
+        }
+
+        // --- SWITCH: one edge per case + default ---
+        if (step.type === 'switch' && step.switch_cases) {
+            const caseKeys = Object.keys(step.switch_cases);
+            for (const caseVal of caseKeys) {
+                const targetId = step.switch_cases[caseVal];
+                if (!targetId) continue;
+                const idx = caseKeys.indexOf(caseVal);
+                const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
+                edges.push({
+                    id: `${step.id}->case_${caseVal}->${targetId}`,
+                    source: step.id,
+                    sourceHandle: `case_${caseVal}`,
+                    target: targetId,
+                    type: 'smoothstep',
+                    label: caseVal,
+                    labelStyle: { fill: color, fontSize: 10 },
+                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
+                    style: { stroke: color, strokeWidth: 2 },
+                });
+            }
+            if (step.switch_default_step_id) {
+                edges.push({
+                    id: `${step.id}->default->${step.switch_default_step_id}`,
+                    source: step.id,
+                    sourceHandle: 'default',
+                    target: step.switch_default_step_id,
+                    type: 'smoothstep',
+                    label: 'default',
+                    labelStyle: { fill: '#9ca3af', fontSize: 10 },
+                    markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: '#9ca3af' },
+                    style: { stroke: '#9ca3af', strokeWidth: 2 },
+                });
+            }
+            continue;
+        }
+
         // --- LOOP: body handle → first body step, done handle → next_step_id ---
         if (step.type === 'loop') {
             const bodyIds = step.loop_step_ids || [];
@@ -246,6 +313,26 @@ export function WorkflowCanvas({
                         }
                         if (connection.sourceHandle === 'done') {
                             return { ...s, next_step_id: connection.target! };
+                        }
+                    }
+                    // IF/ELSE handles
+                    if (s.type === 'if_else') {
+                        if (connection.sourceHandle === 'if_true') {
+                            return { ...s, if_true_step_id: connection.target! };
+                        }
+                        if (connection.sourceHandle === 'if_false') {
+                            return { ...s, if_false_step_id: connection.target! };
+                        }
+                    }
+                    // SWITCH handles
+                    if (s.type === 'switch') {
+                        if (connection.sourceHandle?.startsWith('case_')) {
+                            const caseVal = connection.sourceHandle.replace('case_', '');
+                            const newCases = { ...(s.switch_cases || {}), [caseVal]: connection.target! };
+                            return { ...s, switch_cases: newCases };
+                        }
+                        if (connection.sourceHandle === 'default') {
+                            return { ...s, switch_default_step_id: connection.target! };
                         }
                     }
                     return { ...s, next_step_id: connection.target! };

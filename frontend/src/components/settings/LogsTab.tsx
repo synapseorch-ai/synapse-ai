@@ -127,6 +127,35 @@ export const LogsTab = () => {
         groupedLogs[sid].push(log);
     });
 
+    const renderLogContent = (text: string) => {
+        const segments: Array<{ type: 'text' | 'compact'; content: string }> = [];
+        let lastIndex = 0;
+        const re = /={10,}[\s\S]*?CONTEXT COMPACTED[\s\S]*?={10,}/g;
+        let match: RegExpExecArray | null;
+        while ((match = re.exec(text)) !== null) {
+            if (match.index > lastIndex) {
+                segments.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+            }
+            segments.push({ type: 'compact', content: match[0] });
+            lastIndex = match.index + match[0].length;
+        }
+        if (lastIndex < text.length) {
+            segments.push({ type: 'text', content: text.slice(lastIndex) });
+        }
+        if (segments.length === 0) {
+            return <pre className="text-zinc-300 whitespace-pre-wrap break-words">{text}</pre>;
+        }
+        return segments.map((seg, i) =>
+            seg.type === 'compact' ? (
+                <div key={i} className="my-3 border border-cyan-800/60 bg-cyan-950/30 px-4 py-3">
+                    <pre className="text-cyan-300 whitespace-pre-wrap break-words">{seg.content}</pre>
+                </div>
+            ) : (
+                <pre key={i} className="text-zinc-300 whitespace-pre-wrap break-words">{seg.content}</pre>
+            )
+        );
+    };
+
     return (
         <div className="flex flex-col h-full overflow-hidden font-mono">
 
@@ -295,9 +324,9 @@ export const LogsTab = () => {
                             Loading log...
                         </div>
                     ) : content ? (
-                        <pre className="h-full overflow-auto p-6 text-[11px] font-mono text-zinc-300 leading-relaxed whitespace-pre-wrap break-words">
-                            {content}
-                        </pre>
+                        <div className="h-full overflow-auto p-6 font-mono text-[11px] leading-relaxed">
+                            {renderLogContent(content)}
+                        </div>
                     ) : (
                         <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-700">
                             <ScrollText className="h-10 w-10" />

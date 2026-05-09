@@ -2,12 +2,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench } from 'lucide-react';
+import { Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText } from 'lucide-react';
 import { STEP_TYPE_META } from '@/types/orchestration';
 import type { StepConfig, StepType } from '@/types/orchestration';
 
 const ICONS: Record<string, React.FC<{ size?: number; className?: string }>> = {
-    Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench,
+    Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText,
 };
 
 // Consistent color palette for evaluator routes (avoids red which implies error)
@@ -32,9 +32,12 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
 
     const borderClass = runStatus ? statusColors[runStatus] || 'border-zinc-600' : selected ? 'border-blue-500' : 'border-zinc-600';
     const routeLabels = step.type === 'evaluator' ? Object.keys(step.route_map || {}) : [];
+    const switchCaseLabels = step.type === 'switch' ? Object.keys(step.switch_cases || {}) : [];
     const isEnd = step.type === 'end';
     const isLoop = step.type === 'loop';
     const isEvaluator = step.type === 'evaluator';
+    const isIfElse = step.type === 'if_else';
+    const isSwitch = step.type === 'switch';
 
     return (
         <div
@@ -108,6 +111,45 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                     <div className="text-[10px] text-zinc-500">Terminates flow</div>
                 )}
 
+                {/* Extract JSON — show input info */}
+                {step.type === 'extract_json' && (
+                    <div className="text-[10px] text-orange-400 truncate">
+                        {step.input_keys && step.input_keys.length > 0
+                            ? `From: ${step.input_keys.join(', ')}`
+                            : 'No input configured'}
+                    </div>
+                )}
+
+                {/* Print — show content preview */}
+                {step.type === 'print' && (
+                    <div className="text-[10px] text-lime-400 truncate">
+                        {step.print_content
+                            ? step.print_content.slice(0, 40) + (step.print_content.length > 40 ? '…' : '')
+                            : 'No content set'}
+                    </div>
+                )}
+
+                {/* IF/Else — show condition */}
+                {isIfElse && (
+                    <div className="text-[10px] text-yellow-400 truncate">
+                        {step.if_condition
+                            ? step.if_condition.slice(0, 40) + (step.if_condition.length > 40 ? '…' : '')
+                            : 'No condition set'}
+                    </div>
+                )}
+
+                {/* Switch — show case count + expression */}
+                {isSwitch && switchCaseLabels.length > 0 && (
+                    <div className="text-[10px] text-cyan-400">
+                        {switchCaseLabels.length} case{switchCaseLabels.length !== 1 ? 's' : ''}: {switchCaseLabels.join(', ')}
+                    </div>
+                )}
+                {isSwitch && step.switch_expression && (
+                    <div className="text-[10px] text-cyan-300/60 truncate">
+                        {step.switch_expression.slice(0, 35) + (step.switch_expression.length > 35 ? '…' : '')}
+                    </div>
+                )}
+
                 {/* Input keys */}
                 {step.input_keys && step.input_keys.length > 0 && (
                     <div className="text-[10px] text-zinc-500">
@@ -179,6 +221,64 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                     <div className="absolute -right-1 translate-x-full text-[9px] flex flex-col pointer-events-none" style={{ top: '25%' }}>
                         <span className="text-amber-400 leading-relaxed">body</span>
                         <span className="text-green-500 leading-relaxed">done</span>
+                    </div>
+                </>
+            ) : isIfElse ? (
+                // IF/Else — "true" (green, top) and "false" (red, bottom) handles
+                <>
+                    <Handle
+                        type="source"
+                        position={Position.Right}
+                        id="if_true"
+                        className="!w-3 !h-3 !border-2 !border-zinc-700 !bg-green-500"
+                        style={{ top: '35%' }}
+                    />
+                    <Handle
+                        type="source"
+                        position={Position.Right}
+                        id="if_false"
+                        className="!w-3 !h-3 !border-2 !border-zinc-700 !bg-red-500"
+                        style={{ top: '65%' }}
+                    />
+                    <div className="absolute -right-1 translate-x-full text-[9px] flex flex-col pointer-events-none" style={{ top: '25%' }}>
+                        <span className="text-green-500 leading-relaxed">true</span>
+                        <span className="text-red-500 leading-relaxed">false</span>
+                    </div>
+                </>
+            ) : isSwitch && switchCaseLabels.length > 0 ? (
+                // Switch — one handle per case + default, stacked vertically (like evaluator)
+                <>
+                    {switchCaseLabels.map((caseVal, idx) => {
+                        const total = switchCaseLabels.length + 1; // +1 for default
+                        const offset = total === 1 ? 50 : 15 + (idx * 70) / (total - 1);
+                        const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
+                        return (
+                            <Handle
+                                key={`case_${caseVal}`}
+                                type="source"
+                                position={Position.Right}
+                                id={`case_${caseVal}`}
+                                className="!w-3 !h-3 !border-2 !border-zinc-700"
+                                style={{ top: `${offset}%`, backgroundColor: color }}
+                            />
+                        );
+                    })}
+                    {/* Default handle at the bottom */}
+                    <Handle
+                        type="source"
+                        position={Position.Right}
+                        id="default"
+                        className="!w-3 !h-3 !border-2 !border-zinc-700 !bg-zinc-400"
+                        style={{ top: `${15 + (switchCaseLabels.length * 70) / switchCaseLabels.length}%` }}
+                    />
+                    <div className="absolute -right-1 translate-x-full text-[9px] flex flex-col gap-0.5 pointer-events-none" style={{ top: '15%' }}>
+                        {switchCaseLabels.map((caseVal, idx) => {
+                            const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
+                            return (
+                                <span key={caseVal} className="leading-tight" style={{ color }}>{caseVal}</span>
+                            );
+                        })}
+                        <span className="leading-tight text-zinc-400">default</span>
                     </div>
                 </>
             ) : (

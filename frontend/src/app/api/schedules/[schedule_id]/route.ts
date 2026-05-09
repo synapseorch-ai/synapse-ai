@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-
-const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
+import { BACKEND_URL, backendHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,7 +9,10 @@ export async function GET(
 ) {
     const { schedule_id } = await params;
     try {
-        const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}`, { cache: 'no-store' });
+        const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}`, {
+            cache: 'no-store',
+            headers: backendHeaders(),
+        });
         const data = await res.json();
         return NextResponse.json(data, { status: res.status });
     } catch (error: unknown) {
@@ -28,7 +30,7 @@ export async function PUT(
         const body = await req.json();
         const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: backendHeaders(),
             body: JSON.stringify(body),
             cache: 'no-store',
         });
@@ -49,7 +51,7 @@ export async function PATCH(
         const body = await req.json();
         const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
+            headers: backendHeaders(),
             body: JSON.stringify(body),
             cache: 'no-store',
         });
@@ -70,6 +72,7 @@ export async function DELETE(
         const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}`, {
             method: 'DELETE',
             cache: 'no-store',
+            headers: backendHeaders(),
         });
         const data = await res.json();
         return NextResponse.json(data, { status: res.status });

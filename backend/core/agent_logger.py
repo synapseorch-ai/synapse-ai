@@ -3,8 +3,9 @@ Plain-text debug logging for individual agent runs.
 Logs each call to an agent (from chat or orchestration) including all tools
 used and their responses, in the same terminal-style format as orchestration logs.
 """
-import asyncio
 import json
+import queue
+import threading
 import time
 from pathlib import Path
 
@@ -43,6 +44,9 @@ class AgentLogger:
         self.run_id = f"agentrun_{short_id}_{int(time.time() * 1000)}"
         self.path = LOGS_DIR / f"{self.run_id}.log"
         self._start_time = time.time()
+        self._q: queue.SimpleQueue = queue.SimpleQueue()
+        self._thread = threading.Thread(target=self._drain, daemon=True, name=f"agent-log-{self.run_id}")
+        self._thread.start()
 
         self._write(f"""
 {'='*80}
@@ -61,18 +65,23 @@ class AgentLogger:
     # ── Core write ─────────────────────────────────────────────────
 
     def _write(self, text: str):
-        """Sync write — only call from a thread (via _write_async) or startup."""
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(text)
 
     def _write_bg(self, text: str):
-        """Fire-and-forget write that offloads to a thread so the event loop isn't blocked."""
-        try:
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._write, text)
-        except RuntimeError:
-            # No running loop (e.g. called from sync context at startup)
-            self._write(text)
+        """Fire-and-forget: enqueue for the background writer thread."""
+        self._q.put(text)
+
+    def _drain(self):
+        """Background thread: drains the write queue in order."""
+        while True:
+            text = self._q.get()
+            if text is None:
+                break
+            try:
+                self._write(text)
+            except Exception:
+                pass
 
     # ── Run lifecycle ──────────────────────────────────────────────
 
@@ -100,6 +109,40 @@ class AgentLogger:
   📝 INPUT PROMPT:
 {self._indent(prompt)}
 {'─'*80}
+""")
+
+        elif etype == "_log_llm_call":
+            turn = event.get("turn", "?")
+            model = event.get("model", "")
+            sys_chars = event.get("system_chars", 0)
+            prompt_chars = event.get("prompt_chars", 0)
+            mem_chars = event.get("memory_chars", 0)
+            hist_turns = event.get("history_turns", 0)
+            total_chars = event.get("total_chars", 0)
+            prompt_text = event.get("prompt", "")
+            sys_text = event.get("system_prompt", "")
+
+            MAX_SYS_LOG = 3000
+            sys_display = sys_text if len(sys_text) <= MAX_SYS_LOG else (
+                sys_text[:MAX_SYS_LOG] + f"\n    [...truncated {len(sys_text) - MAX_SYS_LOG:,} chars]"
+            )
+
+            self._write_bg(f"""
+{'═'*80}
+  🔄 LLM CALL — TURN {turn}  │  model: {model}
+{'─'*80}
+  System Prompt   : {sys_chars:>10,} chars  (~{sys_chars // 4:,} tokens est.)
+  Context/Prompt  : {prompt_chars:>10,} chars  (~{prompt_chars // 4:,} tokens est.)
+  Memory Context  : {mem_chars:>10,} chars
+  History Turns   : {hist_turns:>10} turns
+  ── TOTAL ───────: {total_chars:>10,} chars  (~{total_chars // 4:,} tokens est.)
+{'─'*80}
+  SYSTEM PROMPT ({sys_chars:,} chars):
+{self._indent(sys_display)}
+
+  CONTEXT / PROMPT SENT ({prompt_chars:,} chars):
+{self._indent(prompt_text)}
+{'═'*80}
 """)
 
         elif etype == "tool_execution":
@@ -136,6 +179,23 @@ class AgentLogger:
 
         elif etype == "error":
             self._write_bg(f"\n  ❌ ERROR: {event.get('message', '')}\n")
+
+        elif etype == "context_compact":
+            stage = event.get("stage", "unknown").upper()
+            cb = event.get("chars_before", 0)
+            ca = event.get("chars_after", 0)
+            pct = event.get("reduction_pct", 0)
+            archive = event.get("archive_path")
+            archive_line = f"\n  Archive  : {archive}" if archive else ""
+            sep = "=" * 60
+            self._write_bg(f"""
+{sep}
+  CONTEXT COMPACTED [{stage}]
+  Before   : {cb:>12,} chars  (~{cb // 4:,} tokens est.)
+  After    : {ca:>12,} chars  (~{ca // 4:,} tokens est.)
+  Saved    : {cb - ca:>12,} chars  (-{pct}%){archive_line}
+{sep}
+""")
 
         elif etype == "thinking":
             pass  # skip noise

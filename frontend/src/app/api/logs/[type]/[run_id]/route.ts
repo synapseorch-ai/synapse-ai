@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-
-const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
+import { BACKEND_URL, backendHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,7 +9,10 @@ export async function GET(
 ) {
     const { type, run_id } = await params;
     try {
-        const res = await fetch(`${BACKEND_URL}/api/logs/${type}/${run_id}`, { cache: 'no-store' });
+        const res = await fetch(`${BACKEND_URL}/api/logs/${type}/${run_id}`, {
+            cache: 'no-store',
+            headers: backendHeaders(),
+        });
         if (!res.ok) return NextResponse.json({ error: 'Not found' }, { status: res.status });
         const text = await res.text();
         return new NextResponse(text, {
@@ -31,6 +33,7 @@ export async function DELETE(
         const res = await fetch(`${BACKEND_URL}/api/logs/${type}/${run_id}`, {
             method: 'DELETE',
             cache: 'no-store',
+            headers: backendHeaders(),
         });
         const data = await res.json();
         return NextResponse.json(data, { status: res.status });

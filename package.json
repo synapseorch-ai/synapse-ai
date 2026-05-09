@@ -1,15 +1,15 @@
 {
-  "name": "synapse-ai",
-  "version": "0.1.0",
+  "name": "synapse-orch-ai",
+  "version": "1.4.5",
   "description": "Synapse - A Multi Agent Orchestrator",
   "keywords": ["ai", "agent", "mcp", "llm", "orchestrator", "local", "ollama"],
-  "homepage": "https://github.com/naveenraj-17/synapse",
+  "homepage": "https://github.com/naveenraj-17/synapse-ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/naveenraj-17/synapse.git"
+    "url": "git+https://github.com/naveenraj-17/synapse-ai.git"
   },
   "bugs": {
-    "url": "https://github.com/naveenraj-17/synapse/issues"
+    "url": "https://github.com/naveenraj-17/synapse-ai/issues"
   },
   "license": "AGPL-3.0-only",
   "bin": {
@@ -17,18 +17,23 @@
   },
   "files": [
     "bin/",
+    "scripts/postinstall.js",
+    "scripts/preuninstall.js",
     "frontend-build/",
     "backend/core/",
     "backend/services/",
     "backend/tools/",
     "backend/main.py",
-    "backend/requirements.txt"
+    "backend/requirements.txt",
+    "backend/requirements-coding.txt",
+    "backend/requirements-messaging.txt"
   ],
   "engines": {
     "node": ">=18.0.0"
   },
   "scripts": {
     "build": "node scripts/bundle-frontend.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "preuninstall": "node scripts/preuninstall.js"
   }
 }

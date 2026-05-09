@@ -33,6 +33,12 @@ interface GeneralTabProps {
     setEmbedCode: (v: boolean) => void;
     bashAllowedDirs: string[];
     setBashAllowedDirs: (v: string[]) => void;
+    loginEnabled: boolean;
+    setLoginEnabled: (v: boolean) => void;
+    loginUsername: string;
+    setLoginUsername: (v: string) => void;
+    onSaveLogin: (enabled: boolean, username: string, password: string) => Promise<void>;
+    isLoginSaving?: boolean;
     onSave: () => void;
     isSaving?: boolean;
 }
@@ -46,12 +52,21 @@ export function GeneralTab({
     allowDbWrite, setAllowDbWrite,
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
+    loginEnabled, setLoginEnabled,
+    loginUsername, setLoginUsername,
+    onSaveLogin, isLoginSaving,
     onSave, isSaving,
 }: GeneralTabProps) {
     const [embedChecking, setEmbedChecking] = useState(false);
     const [newDir, setNewDir] = useState('');
     const [vaultDraft, setVaultDraft] = useState(String(vaultThreshold));
     const [compactDraft, setCompactDraft] = useState(String(autoCompactThreshold));
+
+    // Login form local state
+    const [showLoginForm, setShowLoginForm] = useState(false);
+    const [loginPassword, setLoginPassword] = useState('');
+    const [loginConfirmPassword, setLoginConfirmPassword] = useState('');
+    const [loginFormError, setLoginFormError] = useState('');
 
     useEffect(() => { setVaultDraft(String(vaultThreshold)); }, [vaultThreshold]);
     useEffect(() => { setCompactDraft(String(autoCompactThreshold)); }, [autoCompactThreshold]);
@@ -493,6 +508,154 @@ export function GeneralTab({
                         Add
                     </button>
                 </div>
+            </div>
+
+            {/* Login & Security */}
+            <div className="space-y-4">
+                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Login &amp; Security</label>
+
+                <div className="flex items-center justify-between">
+                    <div>
+                        <p className="text-sm text-zinc-300 font-medium">Require Login</p>
+                        <p className="text-xs text-zinc-600 mt-0.5">Protect Synapse with a username and password.</p>
+                    </div>
+                    <button
+                        onClick={() => {
+                            if (!loginEnabled) {
+                                setShowLoginForm(true);
+                            }
+                            setLoginEnabled(!loginEnabled);
+                            setLoginFormError('');
+                        }}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${loginEnabled ? 'bg-white' : 'bg-zinc-700'}`}
+                    >
+                        <span className={`inline-block h-4 w-4 transform rounded-full transition-transform ${loginEnabled ? 'translate-x-6 bg-black' : 'translate-x-1 bg-zinc-400'}`} />
+                    </button>
+                </div>
+
+                {/* Configured state: show summary + actions */}
+                {loginEnabled && !showLoginForm && loginUsername && (
+                    <div className="p-3 bg-zinc-900 border border-zinc-800 space-y-2">
+                        <p className="text-xs text-zinc-400">
+                            Login enabled for user: <span className="text-white font-mono">{loginUsername}</span>
+                        </p>
+                        <div className="flex gap-4">
+                            <button
+                                onClick={() => { setShowLoginForm(true); setLoginFormError(''); }}
+                                className="text-xs text-zinc-400 hover:text-white transition-colors"
+                            >
+                                Change Password
+                            </button>
+                            <button
+                                onClick={() => onSaveLogin(false, '', '')}
+                                className="text-xs text-red-500 hover:text-red-400 transition-colors"
+                            >
+                                Disable Login
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Credentials form */}
+                {loginEnabled && (showLoginForm || !loginUsername) && (
+                    <div className="p-4 bg-zinc-900 border border-zinc-800 space-y-3">
+                        <p className="text-xs font-bold text-zinc-300">
+                            {loginUsername ? 'Update Credentials' : 'Set Login Credentials'}
+                        </p>
+
+                        <div className="space-y-1">
+                            <label className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Username</label>
+                            <input
+                                type="text"
+                                value={loginUsername}
+                                onChange={e => setLoginUsername(e.target.value)}
+                                autoComplete="off"
+                                className="w-full bg-zinc-950 border border-zinc-700 p-2 text-sm focus:border-white focus:outline-none text-white"
+                                placeholder="admin"
+                            />
+                        </div>
+
+                        <div className="space-y-1">
+                            <label className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">
+                                {loginUsername ? 'New Password' : 'Password'}
+                            </label>
+                            <input
+                                type="password"
+                                value={loginPassword}
+                                onChange={e => setLoginPassword(e.target.value)}
+                                autoComplete="new-password"
+                                className="w-full bg-zinc-950 border border-zinc-700 p-2 text-sm focus:border-white focus:outline-none text-white"
+                                placeholder={loginUsername ? 'Leave blank to keep current' : 'Min. 8 characters'}
+                            />
+                        </div>
+
+                        <div className="space-y-1">
+                            <label className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Confirm Password</label>
+                            <input
+                                type="password"
+                                value={loginConfirmPassword}
+                                onChange={e => setLoginConfirmPassword(e.target.value)}
+                                autoComplete="new-password"
+                                className="w-full bg-zinc-950 border border-zinc-700 p-2 text-sm focus:border-white focus:outline-none text-white"
+                            />
+                        </div>
+
+                        {loginFormError && (
+                            <p className="text-red-400 text-xs">{loginFormError}</p>
+                        )}
+
+                        <div className="flex gap-2 pt-1">
+                            <button
+                                onClick={async () => {
+                                    setLoginFormError('');
+                                    if (!loginUsername.trim()) {
+                                        setLoginFormError('Username is required.');
+                                        return;
+                                    }
+                                    if (loginPassword && loginPassword !== loginConfirmPassword) {
+                                        setLoginFormError('Passwords do not match.');
+                                        return;
+                                    }
+                                    if (!loginPassword && !loginUsername) {
+                                        setLoginFormError('Password is required for first-time setup.');
+                                        return;
+                                    }
+                                    if (loginPassword && loginPassword.length < 8) {
+                                        setLoginFormError('Password must be at least 8 characters.');
+                                        return;
+                                    }
+                                    await onSaveLogin(true, loginUsername, loginPassword);
+                                    setShowLoginForm(false);
+                                    setLoginPassword('');
+                                    setLoginConfirmPassword('');
+                                }}
+                                disabled={isLoginSaving}
+                                className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-white text-black hover:bg-zinc-200 transition-all disabled:opacity-50"
+                            >
+                                {isLoginSaving && <Loader2 className="w-3 h-3 animate-spin" />}
+                                {isLoginSaving ? 'Saving…' : 'Save Login Settings'}
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setShowLoginForm(false);
+                                    setLoginFormError('');
+                                    setLoginPassword('');
+                                    setLoginConfirmPassword('');
+                                    if (!loginUsername) setLoginEnabled(false);
+                                }}
+                                className="px-3 py-2 text-xs text-zinc-500 hover:text-white transition-colors"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+
+                        <p className="text-xs text-zinc-600 pt-1">
+                            Forgot your password? Run{' '}
+                            <code className="text-zinc-400 bg-zinc-950 px-1 font-mono text-[11px]">synapse reset-password</code>
+                            {' '}in your terminal.
+                        </p>
+                    </div>
+                )}
             </div>
 
             <div className="pt-4 flex justify-end">

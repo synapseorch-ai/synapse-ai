@@ -73,7 +73,7 @@ def save_pricing_table(table: dict) -> None:
     with _lock:
         with open(PRICING_FILE, "w", encoding="utf-8") as f:
             json.dump(table, f, indent=4)
-    print(f"DEBUG usage_tracker: pricing table saved ({len(table)} entries)", flush=True)
+    print(f"DEBUG usage_tracker: pricing table updated ({len(table)} entries)", flush=True)
 
 
 # -------------------------------------------------------------
@@ -142,9 +142,10 @@ def log_usage(
         logs = _load_logs()
         logs.append(record)
         _save_logs(logs)
+    _sid_display = (session_id[:8] + '…') if session_id and len(session_id) > 8 else (session_id or '-')
     print(
         f"DEBUG usage: {model} in={input_tokens} out={output_tokens} "
-        f"cost=${estimated_cost:.6f} session={session_id}",
+        f"cost=${estimated_cost:.6f} session={_sid_display}",
         flush=True,
     )
 
@@ -156,6 +157,7 @@ def log_compaction_event(
     chars_after: int,
     session_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    run_id: Optional[str] = None,
     archive_path: Optional[str] = None,
     model: str = "",
 ):
@@ -174,6 +176,7 @@ def log_compaction_event(
         "stage": stage,
         "session_id": session_id or "unknown",
         "agent_id": agent_id or "unknown",
+        "run_id": run_id,
         "chars_before": chars_before,
         "chars_after": chars_after,
         "chars_saved": chars_saved,

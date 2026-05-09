@@ -40,7 +40,8 @@ STEPS_JSON_DESCRIPTION = (
     "in your system prompt for the full field list per type. Keep each step "
     "lean — include only fields that differ from zero-defaults.\n"
     "Sub-structures MUST be JSON strings inside each step: route_map_json, "
-    "route_descriptions_json, parallel_branches_json, human_fields_json.\n"
+    "route_descriptions_json, parallel_branches_json, human_fields_json, "
+    "switch_cases_json.\n"
     "Minimal example (2 agent steps):\n"
     "'[{\"id\":\"step_abc1234\",\"name\":\"Analyse\",\"type\":\"agent\","
     "\"agent_id\":\"agent_123\",\"prompt_template\":\"Summarise {state.user_input}\","
@@ -544,7 +545,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "name": {"type": "string", "description": "Human-readable step name"},
                     "type": {
                         "type": "string",
-                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "end"],
+                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end"],
                         "description": "Step type",
                     },
                     "agent_id": {"type": "string", "description": "Agent ID (required for agent/tool steps)"},
@@ -554,7 +555,7 @@ BUILDER_TOOL_SCHEMAS = [
                         "description": "State keys this step reads",
                     },
                     "output_key": {"type": "string", "description": "State key this step writes to"},
-                    "next_step_id": {"type": "string", "description": "Next step ID. NOT used for evaluator steps (routing via route_map)."},
+                    "next_step_id": {"type": "string", "description": "Next step ID. NOT used for evaluator/if_else/switch steps."},
                     "evaluator_prompt": {"type": "string", "description": "Routing instructions for evaluator steps"},
                     "route_map_json": {
                         "type": "string",
@@ -584,6 +585,41 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "loop_count": {"type": "integer", "description": "Number of loop iterations"},
                     "transform_code": {"type": "string", "description": "Python code: reads `state`, assigns `result` (transform steps)"},
+                    # ── New deterministic step fields ──────────────────────────
+                    "print_content": {
+                        "type": "string",
+                        "description": (
+                            "Markdown or plain text to store in output_key (print steps). "
+                            "Use {state.key} or {state.key.nested} to embed shared state values."
+                        ),
+                    },
+                    "if_condition": {
+                        "type": "string",
+                        "description": (
+                            "Python expression evaluated against shared state (if_else steps). "
+                            "Use dot-notation: e.g. `state.result.flag == True` or `state.score > 5`. "
+                            "Missing keys are treated as None."
+                        ),
+                    },
+                    "if_true_step_id": {"type": "string", "description": "Step to go to when if_condition is True (if_else steps)"},
+                    "if_false_step_id": {"type": "string", "description": "Step to go to when if_condition is False (if_else steps)"},
+                    "switch_expression": {
+                        "type": "string",
+                        "description": (
+                            "Python expression whose str() result is matched against switch_cases (switch steps). "
+                            "Example: `state.category` or `state.result.status.lower()`."
+                        ),
+                    },
+                    "switch_cases_json": {
+                        "type": "string",
+                        "description": (
+                            "JSON string mapping string values to step IDs (switch steps). "
+                            "Example: '{\"approved\":\"step_abc\",\"rejected\":\"step_def\"}'. "
+                            "Unmatched values fall through to switch_default_step_id."
+                        ),
+                    },
+                    "switch_default_step_id": {"type": "string", "description": "Fallback step when no switch case matches"},
+                    # ──────────────────────────────────────────────────────────
                     "max_turns": {"type": "integer", "description": "Max agent turns (default 15)"},
                     "timeout_seconds": {"type": "integer", "description": "Step timeout (default 300)"},
                     "model": {"type": "string", "description": "LLM model override for this step"},
@@ -615,7 +651,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "name": {"type": "string", "description": "Step name"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "end"],
+                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end"],
                                 },
                                 "agent_id": {"type": "string"},
                                 "prompt_template": {"type": "string"},
@@ -633,6 +669,13 @@ BUILDER_TOOL_SCHEMAS = [
                                 "loop_step_ids": {"type": "array", "items": {"type": "string"}},
                                 "loop_count": {"type": "integer"},
                                 "transform_code": {"type": "string"},
+                                "print_content": {"type": "string", "description": "Markdown/text for print steps. Supports {state.key} interpolation."},
+                                "if_condition": {"type": "string", "description": "Python condition for if_else steps (e.g. `state.flag == True`)"},
+                                "if_true_step_id": {"type": "string", "description": "Step ID when condition is True"},
+                                "if_false_step_id": {"type": "string", "description": "Step ID when condition is False"},
+                                "switch_expression": {"type": "string", "description": "Expression to evaluate for switch steps"},
+                                "switch_cases_json": {"type": "string", "description": "JSON string: '{\"value\":\"step_id\"}'"},
+                                "switch_default_step_id": {"type": "string", "description": "Fallback step when no case matches"},
                                 "max_turns": {"type": "integer"},
                                 "timeout_seconds": {"type": "integer"},
                                 "model": {"type": "string"},
@@ -1282,6 +1325,28 @@ def _validate_orchestration(orch: dict) -> dict:
             issues.append(f"Human step '{sid}' has no human_prompt.")
         if stype == "transform" and not s.get("transform_code"):
             issues.append(f"Transform step '{sid}' has no transform_code.")
+        if stype == "if_else":
+            if not s.get("if_condition"):
+                issues.append(f"If/Else step '{sid}' has no if_condition.")
+            if s.get("if_true_step_id") and not _ref_ok(s.get("if_true_step_id")):
+                issues.append(f"If/Else step '{sid}' if_true_step_id points to unknown step.")
+            if s.get("if_false_step_id") and not _ref_ok(s.get("if_false_step_id")):
+                issues.append(f"If/Else step '{sid}' if_false_step_id points to unknown step.")
+        if stype == "switch":
+            if not s.get("switch_expression"):
+                issues.append(f"Switch step '{sid}' has no switch_expression.")
+            if not (s.get("switch_cases") or {}):
+                issues.append(f"Switch step '{sid}' has no switch_cases defined.")
+            for val, target in (s.get("switch_cases") or {}).items():
+                if target and not _ref_ok(target):
+                    issues.append(f"Switch step '{sid}' case '{val}' points to unknown step '{target}'.")
+            default_id = s.get("switch_default_step_id")
+            if default_id and not _ref_ok(default_id):
+                issues.append(f"Switch step '{sid}' switch_default_step_id points to unknown step.")
+        if stype == "extract_json" and not s.get("output_key"):
+            issues.append(f"Extract JSON step '{sid}' has no output_key — extracted JSON will not be stored.")
+        if stype == "print" and not s.get("print_content"):
+            issues.append(f"Print step '{sid}' has no print_content.")
 
     # Writer-membership check: every input_key must be `user_input` /
     # `user_query` (engine-seeded) or the `output_key` of some step. Branch
@@ -1332,6 +1397,14 @@ def _validate_orchestration(orch: dict) -> dict:
                 for bsid in branch:
                     if bsid in by_id:
                         successors.append(bsid)
+            # New branching step successors
+            for ref_key in ("if_true_step_id", "if_false_step_id", "switch_default_step_id"):
+                ref = s.get(ref_key)
+                if ref and ref in by_id:
+                    successors.append(ref)
+            for target in (s.get("switch_cases") or {}).values():
+                if target and target in by_id:
+                    successors.append(target)
             if not successors:
                 issues.append(
                     f"Step '{cur}' (type={s.get('type')}) has no next_step_id / routes / branches — path dead-ends without reaching an `end` step."
@@ -1392,6 +1465,8 @@ def _normalize_step_inputs(step: dict) -> dict:
         s["parallel_branches"] = _parse_json_field(s.pop("parallel_branches_json"), [])
     if "human_fields_json" in s:
         s["human_fields"] = _parse_json_field(s.pop("human_fields_json"), [])
+    if "switch_cases_json" in s:
+        s["switch_cases"] = _parse_json_field(s.pop("switch_cases_json"), {})
     return s
 
 
@@ -1476,6 +1551,14 @@ def _fill_step_defaults(steps: list) -> list:
         s.setdefault("allowed_tools", None)
         s.setdefault("next_step_id", None)
         s.setdefault("max_iterations", 3)
+        # New deterministic step defaults
+        s.setdefault("print_content", None)
+        s.setdefault("if_condition", None)
+        s.setdefault("if_true_step_id", None)
+        s.setdefault("if_false_step_id", None)
+        s.setdefault("switch_expression", None)
+        s.setdefault("switch_cases", {})
+        s.setdefault("switch_default_step_id", None)
         result.append(s)
     return result
 

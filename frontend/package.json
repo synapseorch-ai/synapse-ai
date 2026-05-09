@@ -20,6 +20,7 @@
     "@xyflow/react": "^12.10.1",
     "clsx": "^2.1.1",
     "codemirror": "^6.0.2",
+    "jose": "^5.10.0",
     "lucide-react": "^0.554.0",
     "next": "16.2.3",
     "react": "19.2.0",

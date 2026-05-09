@@ -8,7 +8,6 @@ then use the Filesystem MCP tools (read_file, search_files) to access parts of t
 file without flooding its context window.
 """
 import json
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +50,10 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
 
     path = _make_vault_path(tool_name, ext)
     path.write_text(content, encoding="utf-8")
+    try:
+        path.chmod(0o644)
+    except Exception:
+        pass
 
     total_lines = content.count("\n") + 1
     return json.dumps({
@@ -58,6 +61,7 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
         "file_type": ext,
         "size_chars": len(raw_output),
         "total_lines": total_lines,
+        "content_preview": content[:500],
         "message": (
             f"Output too large ({len(raw_output):,} chars, {total_lines:,} lines). Saved to vault at: {path}. "
             f"Instead: use read_file_by_lines with start_line/end_line to read a slice, "
