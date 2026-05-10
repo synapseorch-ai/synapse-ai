@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse-orch-ai"
-version = "1.4.5"
+version = "1.4.6"
 description = "Synapse - A Multi Agent Orchestrator"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
@@ -55,9 +55,9 @@ synapse = "synapse.cli:main"
 "synapse-ai" = "synapse.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/naveenraj-17/synapse-ai"
-Repository = "https://github.com/naveenraj-17/synapse-ai"
-Issues = "https://github.com/naveenraj-17/synapse-ai/issues"
+Homepage = "https://github.com/synapseorch-ai/synapse-ai"
+Repository = "https://github.com/synapseorch-ai/synapse-ai"
+Issues = "https://github.com/synapseorch-ai/synapse-ai/issues"
 
 [tool.hatch.build.hooks.custom]
 path = "hatch_build.py"

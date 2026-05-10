@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="https://discord.gg/9UN45qyGh8"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/naveenraj-17/synapse-ai"><img src="https://img.shields.io/github/stars/naveenraj-17/synapse-ai?style=social" alt="GitHub stars"></a>
-  <a href="https://github.com/naveenraj-17/synapse-ai?tab=AGPL-3.0-1-ov-file"><img src="https://img.shields.io/github/license/naveenraj-17/synapse-ai" alt="License"></a>
+  <a href="https://github.com/synapseorch-ai/synapse-ai"><img src="https://img.shields.io/github/stars/synapseorch-ai/synapse-ai?style=social" alt="GitHub stars"></a>
+  <a href="https://github.com/synapseorch-ai/synapse-ai?tab=AGPL-3.0-1-ov-file"><img src="https://img.shields.io/github/license/synapseorch-ai/synapse-ai" alt="License"></a>
   <a href="https://www.npmjs.com/package/synapse-orch-ai"><img src="https://img.shields.io/npm/v/synapse-orch-ai?logo=npm&label=npm" alt="npm"></a>
   <a href="https://pypi.org/project/synapse-orch-ai/"><img src="https://img.shields.io/pypi/v/synapse--orch-ai?logo=pypi&logoColor=white&label=pypi" alt="PyPI"></a>
   <a href="https://hub.docker.com/r/synapseorchai/synapse-ai"><img src="https://img.shields.io/docker/pulls/synapseorchai/synapse-ai?logo=docker&logoColor=white&label=docker" alt="Docker Pulls"></a>
@@ -38,12 +38,12 @@ The easiest way to get started. Clones the repository, installs all dependencies
 
 **macOS / Linux:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/naveenraj-17/synapse-ai/main/setup.sh | bash
+curl -sSL https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/main/setup.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/naveenraj-17/synapse-ai/main/setup.ps1 | iex
+irm https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/main/setup.ps1 | iex
 ```
 
 ### npm
@@ -627,7 +627,7 @@ Switch providers per-agent or globally in **Settings → Model**.
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=naveenraj-17/synapse-ai&type=date&legend=top-left)](https://www.star-history.com/#naveenraj-17/synapse-ai&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=synapseorch-ai/synapse-ai&type=date&legend=top-left)](https://www.star-history.com/#synapseorch-ai/synapse-ai&type=date&legend=top-left)
 
 ---
 

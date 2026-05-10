@@ -5,7 +5,7 @@
 **Prerequisites:** Python 3.11+, Node.js 18+, [Ollama](https://ollama.com/) (optional)
 
 ```bash
-git clone https://github.com/naveenraj-17/synapse-ai
+git clone https://github.com/synapseorch-ai/synapse-ai
 cd synapse-ai
 bash setup.sh      # installs all dependencies
 bash start.sh      # starts backend (port 8765) + frontend (port 3000)

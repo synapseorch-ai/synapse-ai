@@ -1,5 +1,5 @@
 # Synapse AI Setup Script for Windows
-# Run with: irm https://raw.githubusercontent.com/naveenraj-17/synapse-ai/main/setup.ps1 | iex
+# Run with: irm https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/main/setup.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
@@ -421,7 +421,7 @@ function Start-SynapseSetup {
     Write-Host "Fetching latest Synapse AI release..." -ForegroundColor Cyan
     try {
         $release = Invoke-RestMethod `
-            "https://api.github.com/repos/naveenraj-17/synapse-ai/releases/latest" `
+            "https://api.github.com/repos/synapseorch-ai/synapse-ai/releases/latest" `
             -Headers @{"User-Agent" = "synapse-install/1.0"} `
             -ErrorAction Stop
         $tarballUrl = $release.tarball_url
@@ -464,7 +464,7 @@ function Start-SynapseSetup {
         }
         $oldErrPref = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        git clone https://github.com/naveenraj-17/synapse-ai.git $InstallDir
+        git clone https://github.com/synapseorch-ai/synapse-ai.git $InstallDir
         $ErrorActionPreference = $oldErrPref
     }
 

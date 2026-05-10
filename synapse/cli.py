@@ -1017,7 +1017,7 @@ def _get_latest_github_release() -> "tuple[str, str] | tuple[None, None]":
     """Return (tag_name, tarball_url) for the latest GitHub release, or (None, None) on failure."""
     import urllib.request as _req
     import json as _json
-    url = "https://api.github.com/repos/naveenraj-17/synapse-ai/releases/latest"
+    url = "https://api.github.com/repos/synapseorch-ai/synapse-ai/releases/latest"
     try:
         req = _req.Request(url, headers={"User-Agent": "synapse-upgrade/1.0"})
         with _req.urlopen(req, timeout=15) as resp:

@@ -325,7 +325,7 @@ main() {
     fi
 
     # Download latest release from GitHub (no git required)
-    GITHUB_API="https://api.github.com/repos/naveenraj-17/synapse-ai/releases/latest"
+    GITHUB_API="https://api.github.com/repos/synapseorch-ai/synapse-ai/releases/latest"
     echo ""
     echo -e "\033[96mFetching latest Synapse AI release...\033[0m"
     if command -v curl &> /dev/null; then
@@ -351,7 +351,7 @@ main() {
             echo "git not found and GitHub download failed. Please install git or check your internet connection."
             exit 1
         fi
-        git clone https://github.com/naveenraj-17/synapse-ai.git "$INSTALL_DIR"
+        git clone https://github.com/synapseorch-ai/synapse-ai.git "$INSTALL_DIR"
     fi
     
     cd "$INSTALL_DIR"

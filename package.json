@@ -1,15 +1,15 @@
 {
   "name": "synapse-orch-ai",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "description": "Synapse - A Multi Agent Orchestrator",
   "keywords": ["ai", "agent", "mcp", "llm", "orchestrator", "local", "ollama"],
-  "homepage": "https://github.com/naveenraj-17/synapse-ai",
+  "homepage": "https://github.com/synapseorch-ai/synapse-ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/naveenraj-17/synapse-ai.git"
+    "url": "git+https://github.com/synapseorch-ai/synapse-ai.git"
   },
   "bugs": {
-    "url": "https://github.com/naveenraj-17/synapse-ai/issues"
+    "url": "https://github.com/synapseorch-ai/synapse-ai/issues"
   },
   "license": "AGPL-3.0-only",
   "bin": {
