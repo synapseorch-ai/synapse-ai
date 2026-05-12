@@ -52,6 +52,7 @@ class Agent(BaseModel):
     model: str | None = None  # per-agent model override (None = use default)
     provider: str | None = None  # auto-detected from model name
     max_turns: int | None = None  # per-agent turn limit override (None = use global default of 30)
+    delegate_agent_ids: list[str] = []  # for delegate-type agents; empty = allow all
 
 class Repo(BaseModel):
     id: str

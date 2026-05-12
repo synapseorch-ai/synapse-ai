@@ -454,6 +454,7 @@ async def run_agent_step(
         )
         print(f"DEBUG RUN_AGENT: aggregate_all_tools done, tool_count={len(all_tools)}", flush=True)
     allowed_tools = list(allowed_tools_override) if allowed_tools_override else active_agent.get("tools", ["all"])
+    agent_type = active_agent.get("type", "conversational")
 
     # ── DELEGATE AGENT: inject synthetic delegate_to_agent tool + agent context ──
     _delegate_agents_map: dict = {}  # agent_id -> agent dict (populated only for delegates)
@@ -504,7 +505,6 @@ async def run_agent_step(
     # ReAct loop state
     user_message = message
     memory_context = ""
-    agent_type = active_agent.get("type", "conversational")
     # Orchestrator, builder, and delegate agents always start fresh — no history carryover between runs
     is_orchestrator = agent_type in ("orchestrator", "builder", "delegate")
     if history_override is not None:
