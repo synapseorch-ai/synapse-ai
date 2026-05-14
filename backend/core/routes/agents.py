@@ -104,6 +104,7 @@ Before writing, reason through:
   - `conversational` — multi-turn; handle context shifts and follow-ups
   - `code` — precision required; read before write, cite paths/lines
   - `orchestrator` — decompose tasks, manage sub-agent handoffs, synthesize results
+  - `delegate` — dynamic router; receives queries and routes to sub-agents via delegate_to_agent tool; focus on routing logic, clear task framing, and synthesizing results
 - **Failure Modes:** Where will this agent most likely hallucinate, go off-scope, or stall?
 
 ━━━ PHASE 2: GENERATE THE SYSTEM PROMPT ━━━
@@ -284,6 +285,23 @@ async def generate_agent_prompt(req: GeneratePromptRequest):
             f"---\n{req.existing_prompt.strip()}\n---"
         )
 
+    # Build delegate sub-agents section (only for delegate-type agents)
+    delegates_section = ""
+    if req.agent_type == "delegate" and req.agents:
+        agent_lines = "\n".join(
+            f"  - [{a.get('id', '')}] {a.get('name', '')} ({a.get('type', 'conversational')})"
+            + (f": {a['description']}" if a.get('description') else "")
+            for a in req.agents
+        )
+        delegates_section = (
+            f"\n\n━━━ AVAILABLE SUB-AGENTS (delegation targets) ━━━\n"
+            f"This delegate agent can route tasks to the following sub-agents:\n"
+            f"{agent_lines}\n"
+            f"\nThe generated prompt should reference these agents by name where relevant, "
+            f"describe how to decide which agent to delegate to, and explain how to synthesize "
+            f"results when multiple agents are involved."
+        )
+
     user_message = (
         f"Current Date & Time: {current_datetime}\n\n"
         f"━━━ AGENT TYPE ━━━\n"
@@ -295,6 +313,7 @@ async def generate_agent_prompt(req: GeneratePromptRequest):
         f"What problem are they trying to solve? What would make this agent "
         f"genuinely useful vs. just technically correct?"
         f"{tools_section}"
+        f"{delegates_section}"
         f"{existing_section}"
     )
 

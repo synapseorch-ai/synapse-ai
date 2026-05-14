@@ -189,7 +189,7 @@ def _build_native_mcp_servers() -> list[dict]:
         servers.append({
             "name": "Browser Automation",
             "command": _NPX_CMD,
-            "args": ["-y", "@playwright/mcp@latest", "--browser", "chromium", "--output-dir", "data/vault/playwright"],
+            "args": ["-y", "@playwright/mcp@latest", "--browser", "chrome", "--output-dir", "data/vault/playwright"],
             "env": env_dict,
         })
 

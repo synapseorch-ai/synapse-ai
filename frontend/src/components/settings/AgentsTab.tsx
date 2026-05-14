@@ -169,6 +169,12 @@ export const AgentsTab = ({
                 }
             }
 
+            const delegateAgents = agentType === 'delegate'
+                ? agents
+                    .filter((a: any) => a.id !== draftAgent.id && a.type !== 'builder')
+                    .map((a: any) => ({ id: a.id, name: a.name, description: a.description || '', type: a.type }))
+                : [];
+
             const res = await fetch('/api/agents/generate-prompt', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -177,6 +183,7 @@ export const AgentsTab = ({
                     agent_type: agentType,
                     tools: selectedTools,
                     existing_prompt: draftAgent.system_prompt || '',
+                    agents: delegateAgents,
                 }),
                 signal: AbortSignal.timeout(180_000), // 3 minutes timeout for LLM generation
             });

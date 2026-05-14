@@ -98,7 +98,8 @@ BUILDER_TOOL_SCHEMAS = [
             "description": (
                 "Create a new agent and save it. Returns the created agent with its new ID. "
                 "Use type='conversational' for general-purpose agents, 'code' for agents that work with repos/files, "
-                "'orchestrator' for agents that run orchestrations. "
+                "'orchestrator' for agents that run orchestrations, "
+                "'delegate' for agents that dynamically route queries to sub-agents (set delegate_agent_ids to restrict which agents it can delegate to; empty = all agents). "
                 "Set tools=['all'] to give access to all tools, or list specific tool names."
             ),
             "parameters": {
@@ -133,6 +134,11 @@ BUILDER_TOOL_SCHEMAS = [
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "List of DB config IDs (for agents needing database access).",
+                    },
+                    "delegate_agent_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "For delegate agents: list of agent IDs to restrict delegation to. Leave empty to allow delegation to any agent.",
                     },
                 },
                 "required": ["name", "description", "type", "tools", "system_prompt"],
@@ -183,6 +189,11 @@ BUILDER_TOOL_SCHEMAS = [
                                 "db_configs": {
                                     "type": "array",
                                     "items": {"type": "string"},
+                                },
+                                "delegate_agent_ids": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "For delegate agents: agent IDs to restrict delegation to. Empty = allow any agent.",
                                 },
                             },
                             "required": ["name", "description", "type", "tools", "system_prompt"],
@@ -623,6 +634,14 @@ BUILDER_TOOL_SCHEMAS = [
                     "max_turns": {"type": "integer", "description": "Max agent turns (default 15)"},
                     "timeout_seconds": {"type": "integer", "description": "Step timeout (default 300)"},
                     "model": {"type": "string", "description": "LLM model override for this step"},
+                    "include_full_history": {
+                        "type": "boolean",
+                        "description": (
+                            "For agent/llm/tool steps: on re-invocation (evaluator loop-back or retry), "
+                            "include every prior turn's inputs, tools, and output instead of only the last attempt. "
+                            "Useful for feedback loops; increases prompt length."
+                        ),
+                    },
                 },
                 "required": ["orch_id", "step_id", "name", "type"],
             },
@@ -679,6 +698,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "max_turns": {"type": "integer"},
                                 "timeout_seconds": {"type": "integer"},
                                 "model": {"type": "string"},
+                                "include_full_history": {"type": "boolean", "description": "Include full revision history on re-invocation (agent/llm/tool steps)"},
                             },
                             "required": ["step_id", "name", "type"],
                         },
@@ -752,6 +772,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "model": args.get("model") or None,
             "provider": None,
             "max_turns": None,
+            "delegate_agent_ids": args.get("delegate_agent_ids", []) or [],
         }
         agents.append(agent)
         save_user_agents(agents)
@@ -793,6 +814,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                     "model": spec.get("model") or None,
                     "provider": None,
                     "max_turns": None,
+                    "delegate_agent_ids": spec.get("delegate_agent_ids", []) or [],
                 }
                 agents.append(agent)
                 created.append({
@@ -1559,6 +1581,7 @@ def _fill_step_defaults(steps: list) -> list:
         s.setdefault("switch_expression", None)
         s.setdefault("switch_cases", {})
         s.setdefault("switch_default_step_id", None)
+        s.setdefault("include_full_history", None)
         result.append(s)
     return result
 

@@ -152,6 +152,7 @@ class GeneratePromptRequest(BaseModel):
     agent_type: str = "conversational"
     tools: list[str] = []
     existing_prompt: str = ""
+    agents: list[dict] = []  # list of {id, name, description, type} — for delegate agents
 
 
 class GoogleCredsRequest(BaseModel):

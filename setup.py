@@ -861,6 +861,21 @@ def ask_embed_code(cfg):
 # ---------------------------------------------------------------------------
 # Browser Automation -- install playwright automatically, no prompt
 # ---------------------------------------------------------------------------
+def _install_chrome_for_testing(pw_path: str) -> bool:
+    """Install Chrome for Testing for the @playwright/mcp Browser Automation server.
+    Returns True on success."""
+    npx_cmd = shutil.which("npx.cmd") if IS_WIN else shutil.which("npx") or "npx"
+    env = os.environ.copy()
+    env["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
+    try:
+        subprocess.check_call([npx_cmd, "-y", "@playwright/mcp", "install-browser", "chrome-for-testing"], env=env)
+        return True
+    except Exception as e:
+        warn(f"Failed to install Chrome for Testing: {e}")
+        info("You can install it manually: npx -y @playwright/mcp install-browser chrome-for-testing")
+        return False
+
+
 def setup_browser_automation(cfg):
     cfg["browser_automation_enabled"] = True
 
@@ -873,9 +888,14 @@ def setup_browser_automation(cfg):
     else:  # Linux
         default_pw_path = os.path.join(user_home, ".cache", "ms-playwright")
 
+    has_mcp_browser = False
     if os.path.exists(default_pw_path) and os.path.isdir(default_pw_path) and os.listdir(default_pw_path):
         ok("Playwright browsers found.")
         cfg["playwright_browsers_path"] = default_pw_path
+        for d in os.scandir(default_pw_path):
+            if d.is_dir() and (d.name.startswith("mcp-chrome") or d.name.startswith("mcp-chromium")):
+                has_mcp_browser = True
+                break
     else:
         info("Playwright browsers not found. Installing... (this may take a minute)")
         try:
@@ -894,6 +914,11 @@ def setup_browser_automation(cfg):
             info("You can install it manually by running:")
             info("  npx -y playwright install chromium")
             cfg["playwright_browsers_path"] = default_pw_path
+
+    if not has_mcp_browser:
+        info("Installing Chrome for Testing for Browser Automation MCP server...")
+        if _install_chrome_for_testing(default_pw_path):
+            ok("Chrome for Testing installed.")
 
 
 # ---------------------------------------------------------------------------
@@ -2471,6 +2496,17 @@ def main():
             _rebuild_frontend(ROOT_DIR)
         except Exception as e:
             warn(f"Frontend rebuild failed: {e}")
+        system = platform.system()
+        user_home = os.path.expanduser("~")
+        if system == "Windows":
+            _upgrade_pw_path = os.path.join(os.environ.get("LOCALAPPDATA", os.path.join(user_home, "AppData", "Local")), "ms-playwright")
+        elif system == "Darwin":
+            _upgrade_pw_path = os.path.join(user_home, "Library", "Caches", "ms-playwright")
+        else:
+            _upgrade_pw_path = os.path.join(user_home, ".cache", "ms-playwright")
+        info("Installing/updating Chrome for Testing for Browser Automation MCP server...")
+        if _install_chrome_for_testing(_upgrade_pw_path):
+            ok("Chrome for Testing up to date.")
         setup_path()
         print()
         ok("Rebuild complete.")

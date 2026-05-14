@@ -24,7 +24,7 @@ __all__ = [
 # their zero-defaults (`route_map: {}`, `parallel_branches: []`, etc.) so the
 # engine deserialises cleanly.
 STEP_TYPE_CHEATSHEET = """\
-- **agent**: runs a configured sub-agent with a prompt + its tool set. Required: `agent_id`, `prompt_template`. Use for any step that needs multi-turn reasoning or tool use.
+- **agent**: runs a configured sub-agent with a prompt + its tool set. Required: `agent_id`, `prompt_template`. Optional: `include_full_history` (bool) — on re-invocation show every prior turn's inputs/tools/output instead of only the last attempt; useful for feedback/retry loops. Use for any step that needs multi-turn reasoning or tool use.
 - **llm**: single one-shot LLM call, no tools. Required: `prompt_template` (optional `model`). Use for lightweight summarisation, rewriting, or deterministic prose generation.
 - **tool**: forces a single tool call with no LLM reasoning. Required: `forced_tool` (+ `agent_id` for tool-resolution). Use when the arguments are already in state and just need forwarding.
 - **evaluator**: pure routing node. Required: `route_map_json` (JSON-encoded `{label: target_step_id}`), `route_descriptions_json` (JSON), `evaluator_prompt`. Output_key stores the bare route label. Use to fork on a classifier decision.
