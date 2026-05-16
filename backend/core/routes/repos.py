@@ -165,6 +165,7 @@ async def reindex_repo(repo_id: str, background_tasks: BackgroundTasks):
 
     # Set status
     repo["status"] = "indexing"
+    repo["error_message"] = None  # Clear any previous error
     for i, r in enumerate(repos):
         if r["id"] == repo_id:
             repos[i] = repo
@@ -173,13 +174,30 @@ async def reindex_repo(repo_id: str, background_tasks: BackgroundTasks):
 
     # Run in background
     try:
-        from services.code_indexer import run_index
+        from services.code_indexer import run_index, COCOINDEX_AVAILABLE, _coco_import_error
+        if not COCOINDEX_AVAILABLE:
+            detail = _coco_import_error or "unknown import error"
+            repo["status"] = "error"
+            repo["error_message"] = (
+                f"CocoIndex dependency error: {detail}. "
+                f"Install the correct version into the backend venv: "
+                f"pip install 'cocoindex>=0.3.30,<1.0' psycopg, then restart Synapse."
+            )
+            save_repos(repos)
+            raise HTTPException(
+                status_code=500,
+                detail=f"CocoIndex not available: {detail}. "
+                       f"Install 'cocoindex>=0.3.30,<1.0' and psycopg into the backend venv, then restart."
+            )
         background_tasks.add_task(run_index, repo_id, real_path, repo["included_patterns"], repo["excluded_patterns"])
+    except HTTPException:
+        raise
     except ImportError as e:
         print("Indexer unavailable:", e)
         repo["status"] = "error"
+        repo["error_message"] = f"Indexer import failed: {e}"
         save_repos(repos)
-        raise HTTPException(status_code=500, detail="Indexer service not available")
+        raise HTTPException(status_code=500, detail=f"Indexer service not available: {e}")
 
     return {"status": "indexing_started"}
 

@@ -12,22 +12,26 @@ from datetime import datetime
 from typing import Annotated, Any
 from core.config import load_settings, sanitize_db_url
 
+COCOINDEX_AVAILABLE = False
+_coco_import_error: str | None = None
+
 try:
     import cocoindex
     import psycopg
-    COCOINDEX_AVAILABLE = True
     import numpy as np
     from numpy.typing import NDArray
     from cocoindex.typing import VectorInfo
+    COCOINDEX_AVAILABLE = True
 except ImportError as _coco_import_err:
-    COCOINDEX_AVAILABLE = False
     NDArray = None
     VectorInfo = None
+    _coco_import_error = str(_coco_import_err)
     print(
-        f"[code-indexer] WARNING: cocoindex/psycopg not found in this Python environment ({_coco_import_err}).\n"
+        f"[code-indexer] WARNING: cocoindex/psycopg not available ({_coco_import_err}).\n"
         "  Code indexing is disabled. To enable it, install into the backend venv:\n"
-        "    <synapse-install-dir>/backend/venv/bin/pip install cocoindex psycopg\n"
-        "  Then restart Synapse."
+        "    <synapse-install-dir>/backend/venv/bin/pip install 'cocoindex>=0.3.30,<1.0' psycopg\n"
+        "  Then restart Synapse.\n"
+        "  NOTE: cocoindex 1.x has a different API. This project requires 0.3.x."
     )
 
 # Lock for repos.json read/write
@@ -401,16 +405,19 @@ def _update_repo_status(repo_id: str, **fields):
 
 def run_index_task(repo_id: str, repo_path: str, included_patterns: list[str], excluded_patterns: list[str]):
     if not COCOINDEX_AVAILABLE:
+        detail = _coco_import_error or "unknown import error"
         msg = (
-            "CocoIndex not installed in the backend venv — indexing skipped.\n"
-            "Fix: run   <synapse-install-dir>/backend/venv/bin/pip install cocoindex psycopg\n"
-            "then restart Synapse.  (Running bare 'pip install cocoindex' installs into\n"
-            "your system Python, not the venv the backend uses.)"
+            f"CocoIndex not available in the backend venv — indexing skipped.\n"
+            f"Import error: {detail}\n"
+            f"Fix: run   <synapse-install-dir>/backend/venv/bin/pip install 'cocoindex>=0.3.30,<1.0' psycopg\n"
+            f"then restart Synapse.  (Running bare 'pip install cocoindex' installs v1.x\n"
+            f"which has an incompatible API. This project requires cocoindex 0.3.x.)"
         )
         print(msg)
         _update_repo_status(repo_id, status="error", error_message=
-            "cocoindex not installed in backend venv. "
-            "Run: <install-dir>/backend/venv/bin/pip install cocoindex psycopg, then restart.")
+            f"CocoIndex dependency error: {detail}. "
+            f"Install the correct version: pip install 'cocoindex>=0.3.30,<1.0' psycopg "
+            f"(into the backend venv), then restart Synapse.")
         return
 
     stop = _stop_events.setdefault(repo_id, threading.Event())

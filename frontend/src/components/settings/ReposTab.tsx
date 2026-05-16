@@ -29,6 +29,7 @@ export interface Repo {
     last_indexed: string | null;
     status: string;
     file_count: number;
+    error_message?: string;
 }
 
 interface ReposTabProps {
@@ -52,7 +53,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
 
     const showToast = (message: string, type: 'success' | 'warning' | 'error' = 'success') => {
         setToast({ show: true, message, type });
-        setTimeout(() => setToast(null), 4000);
+        setTimeout(() => setToast(null), type === 'error' ? 8000 : 4000);
     };
 
     const fetchRepos = useCallback(async () => {
@@ -182,6 +183,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                 const detail = await res.json().catch(() => ({ detail: res.statusText }));
                 showToast(`Re-index failed: ${detail?.detail ?? res.statusText}`, 'error');
                 setReindexingIds(prev => { const n = new Set(prev); n.delete(id); return n; });
+                fetchRepos(); // Refresh to show error_message in the repo card
             }
         } catch {
             showToast('Re-index request failed', 'error');
@@ -464,6 +466,14 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
 
                                 {repo.description && (
                                     <p className="text-sm text-zinc-400 mt-3 line-clamp-2">{repo.description}</p>
+                                )}
+
+                                {repo.status === 'error' && repo.error_message && (
+                                    <div className="mt-3 p-3 bg-red-500/5 border border-red-500/20 rounded">
+                                        <p className="text-xs text-red-400 font-mono break-words whitespace-pre-wrap">
+                                            {repo.error_message}
+                                        </p>
+                                    </div>
                                 )}
 
                                 {embedCode && (
