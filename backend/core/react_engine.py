@@ -723,9 +723,8 @@ async def run_agent_step(
                         yield {"type": "tool_result", "tool_name": tool_name, "preview": "Blocked: sequentialthinking already used 5 times (call a real tool now)"}
                         continue
 
-                # Execution guard — external MCP tools (prefixed with server__) always pass
-                is_ext_mcp_tool = "__" in tool_name and tool_name in server_module.tool_router
-                if not is_ext_mcp_tool and "all" not in allowed_tools and tool_name not in allowed_tools and tool_name not in always_allowed:
+                # Execution guard
+                if "all" not in allowed_tools and tool_name not in allowed_tools and tool_name not in always_allowed:
                     block_msg = f"Tool '{tool_name}' is not available for this agent. Available tools: {', '.join(allowed_tools)}."
                     current_context_text += f"\nSystem: {block_msg}\n"
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": "Blocked: Tool not available for this agent"}
