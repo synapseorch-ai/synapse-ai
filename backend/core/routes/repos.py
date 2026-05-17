@@ -52,8 +52,12 @@ async def get_repos():
                         r["file_count"] = stats["count"]
                         updated = True
                 elif stats["status"] == "error":
-                    if r.get("status") != "error":
+                    # Only mark as error if it was never successfully indexed.
+                    # Transient DB connection failures (e.g. too many clients)
+                    # should not overwrite a previously good "indexed" status.
+                    if r.get("status") not in ("indexed", "error"):
                         r["status"] = "error"
+                        r["error_message"] = stats.get("message")
                         updated = True
             if updated:
                 save_repos(repos)

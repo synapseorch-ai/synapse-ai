@@ -47,9 +47,16 @@ _active_threads: dict[str, threading.Thread] = {}
 def _get_db_url() -> str:
     """Always read the database URL from settings.json (never from the environment).
     Sanitizes the URL so that an empty password (e.g. user:@host) is rewritten
-    to the form psycopg can parse (user@host)."""
+    to the form psycopg can parse (user@host).
+    Also appends sslmode=disable for localhost connections to avoid SSL cert
+    verification errors against local PostgreSQL."""
     raw = load_settings().get("sql_connection_string", "")
-    return sanitize_db_url(raw)
+    url = sanitize_db_url(raw)
+    if url and ("localhost" in url or "127.0.0.1" in url):
+        sep = "&" if "?" in url else "?"
+        if "sslmode" not in url:
+            url += f"{sep}sslmode=disable"
+    return url
 
 # Known output dimensions for popular embedding models.
 # Only base model IDs are listed here — provisioned-throughput suffixes
@@ -480,6 +487,16 @@ def run_index_task(repo_id: str, repo_path: str, included_patterns: list[str], e
             _update_repo_status(repo_id, status="error", error_message=str(e)[:500])
     finally:
         _active_threads.pop(repo_id, None)
+        # Close the CocoIndex flow to release its internal DB connections.
+        # Without this, each indexed repo holds persistent connections and
+        # eventually exhausts PostgreSQL's max_connections limit.
+        flow_name = f"ci_{repo_id}"
+        if flow_name in _active_flows:
+            try:
+                _active_flows[flow_name].close()
+            except Exception:
+                pass
+            del _active_flows[flow_name]
 
 
 def stop_index(repo_id: str) -> bool:
