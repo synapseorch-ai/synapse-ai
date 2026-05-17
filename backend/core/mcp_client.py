@@ -495,6 +495,7 @@ class MCPClientManager:
             if session:
                 self._set_status(name, "connected")
                 new_config["status"] = "connected"
+                await self._auto_register(name)
             return {"config": new_config, "connected": bool(session), "status": new_config["status"]}
 
         # Remote + OAuth

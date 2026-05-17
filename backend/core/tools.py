@@ -123,9 +123,8 @@ async def aggregate_all_tools(agent_sessions, active_agent, custom_tools_list):
         if is_external:
             for t in session_tools:
                 prefixed = f"{server_name}__{t.name}"
-                # Always include external MCP tools — the user explicitly connected
-                # these servers, so they should be available to all agents.
-                all_tools.append(VirtualTool(prefixed, t.description, t.inputSchema))
+                if "all" in allowed_tools or prefixed in allowed_tools:
+                    all_tools.append(VirtualTool(prefixed, t.description, t.inputSchema))
         else:
             if "all" in allowed_tools:
                 all_tools.extend(session_tools)
