@@ -705,10 +705,12 @@ export default function Home() {
       }
 
       case 'tool_result': {
-        const resultToolName = data.tool_name
-          ? (data.tool_name as string).replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
-          : 'Tool';
-        setStreamingActivity(`✓ ${resultToolName}`);
+        const rawToolName = data.tool_name as string || 'Tool';
+        const resultToolName = rawToolName
+          .replace(/_/g, ' ')
+          .replace(/\b\w/g, (l: string) => l.toUpperCase());
+        const subtaskSuffix = data.subtask_name ? ` › ${data.subtask_name}` : '';
+        setStreamingActivity(`✓ ${resultToolName}${subtaskSuffix}`);
         setIsThinking(false);
         break;
       }

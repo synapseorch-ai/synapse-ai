@@ -385,6 +385,70 @@ def _inject_delegate_roster(system_template: str, agents_map: dict) -> str:
     return system_template + "\n\n" + "\n".join(roster_lines)
 
 
+async def _run_spawn_subtask_batch(
+    subtask_calls: list[dict],
+    parent_agent_id: str,
+    available_tools: list[str],
+    session_id: str,
+    server_module,
+    source: str,
+    run_id: str | None,
+) -> list[tuple[str, str]]:
+    """Run a batch of spawn_subtask calls in parallel.
+
+    Each call gets an ephemeral agent config with only the requested tools
+    (validated as a subset of the parent's available tools). Returns a list of
+    (name, result_text) tuples in the same order as subtask_calls.
+    """
+    import uuid
+    import asyncio
+
+    async def _run_one(args: dict) -> tuple[str, str]:
+        task = args.get("task", "")
+        requested_tools = args.get("tools") or []
+        name = args.get("name") or task[:40]
+        # Enforce subset — sub-agent can only use tools the parent actually has
+        valid_tools = [t for t in requested_tools if t in available_tools]
+        if not valid_tools:
+            valid_tools = available_tools[:5]
+
+        ephemeral_agent = {
+            "id": f"subtask_{uuid.uuid4().hex[:8]}",
+            "name": name,
+            "type": "conversational",
+            "model": None,  # inherit global default
+            "system_prompt": (
+                "You are a focused sub-agent. Complete the given task using only "
+                "the provided tools. Return a concise, structured result."
+            ),
+            "tools": valid_tools,
+            "max_turns": 10,
+        }
+
+        sub_final = ""
+        try:
+            async for sub_event in run_agent_step(
+                message=task,
+                agent_id=ephemeral_agent["id"],
+                session_id=session_id,
+                server_module=server_module,
+                max_turns=10,
+                source=source,
+                run_id=run_id,
+                agent_override=ephemeral_agent,
+            ):
+                if sub_event.get("type") == "final":
+                    sub_final = sub_event.get("response", "")
+        except Exception as exc:
+            sub_final = f"Subtask error: {exc}"
+            print(f"DEBUG: ❌ spawn_subtask '{name}' failed: {exc}", flush=True)
+
+        print(f"DEBUG: ✅ spawn_subtask '{name}' completed ({len(sub_final)} chars)", flush=True)
+        return (name, sub_final)
+
+    return list(await asyncio.gather(*[_run_one(args) for args in subtask_calls]))
+
+
 async def run_agent_step(
     message,
     agent_id,
@@ -472,6 +536,44 @@ async def run_agent_step(
             allowed_tools.append("delegate_to_agent")
         # Inject agent roster into system prompt
         agent_system_template = _inject_delegate_roster(agent_system_template, _delegate_agents_map)
+
+    # ── SPAWN_SUBTASK: inject dynamic tool when agent has opted in ──
+    from core.spawn_subtask import SPAWN_SUBTASK_TOOL_NAME, build_dynamic_spawn_subtask_tool
+    _spawn_subtask_enabled = (
+        tools_override is None
+        and SPAWN_SUBTASK_TOOL_NAME in (active_agent.get("tools") or [])
+    )
+    _spawn_subtask_available_tools: list[str] = []
+    if _spawn_subtask_enabled:
+        # Collect all tool names currently available to this agent (excluding spawn_subtask itself)
+        _spawn_subtask_available_tools = [
+            t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")
+            for t in all_tools
+        ]
+        _spawn_subtask_available_tools = [
+            n for n in _spawn_subtask_available_tools
+            if n and n != SPAWN_SUBTASK_TOOL_NAME
+        ]
+        if _spawn_subtask_available_tools:
+            spawn_tool = build_dynamic_spawn_subtask_tool(_spawn_subtask_available_tools)
+            # Remove any static placeholder that may have been loaded via aggregate_all_tools
+            all_tools = [t for t in all_tools if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) != SPAWN_SUBTASK_TOOL_NAME]
+            all_tools.append(spawn_tool)
+            tool_schema_map[SPAWN_SUBTASK_TOOL_NAME] = spawn_tool.inputSchema
+            ollama_tools = [t for t in ollama_tools if t.get("function", {}).get("name") != SPAWN_SUBTASK_TOOL_NAME]
+            ollama_tools.append({"type": "function", "function": {
+                "name": spawn_tool.name,
+                "description": spawn_tool.description,
+                "parameters": spawn_tool.inputSchema,
+            }})
+            tools_json = str([
+                {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+                 "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+                 "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+                for t in all_tools
+            ])
+            print(f"DEBUG: 🤖 spawn_subtask injected for agent '{agent_id_for_session}' "
+                  f"with {len(_spawn_subtask_available_tools)} delegatable tools", flush=True)
 
     system_prompt_text = build_system_prompt(
         agent_system_template, tools_json, session_id,
@@ -666,6 +768,29 @@ async def run_agent_step(
             if llm_output.strip():
                 current_context_text += f"\nAssistant Thought: {llm_output}\n"
 
+            # ── SPAWN_SUBTASK batch pre-run ──────────────────────────────────────
+            # Collect all spawn_subtask calls from this turn and run them in parallel
+            # BEFORE the sequential tool loop. Results are consumed in order below.
+            _spawn_subtask_result_queue: list[tuple[str, str]] = []
+            if _spawn_subtask_enabled:
+                _spawn_calls_this_turn = [
+                    tc.get("arguments", {})
+                    for tc in tool_calls
+                    if tc.get("tool") == SPAWN_SUBTASK_TOOL_NAME
+                ]
+                if _spawn_calls_this_turn:
+                    n = len(_spawn_calls_this_turn)
+                    yield {"type": "thinking", "message": f"Spawning {n} sub-agent{'s' if n > 1 else ''}..."}
+                    _spawn_subtask_result_queue = await _run_spawn_subtask_batch(
+                        subtask_calls=_spawn_calls_this_turn,
+                        parent_agent_id=agent_id_for_session,
+                        available_tools=_spawn_subtask_available_tools,
+                        session_id=session_id,
+                        server_module=server_module,
+                        source=source,
+                        run_id=run_id,
+                    )
+
             for tool_call in tool_calls:
                 tool_name = tool_call.get("tool", "")
                 if not isinstance(tool_name, str) or not tool_name.strip():
@@ -752,6 +877,31 @@ async def run_agent_step(
                             async for _extra in post_tool_hook(tool_name, raw_output):
                                 yield _extra
                         continue
+
+                # ===== SPAWN_SUBTASK =====
+                if tool_name == SPAWN_SUBTASK_TOOL_NAME and _spawn_subtask_enabled:
+                    if _spawn_subtask_result_queue:
+                        sub_name, result_text = _spawn_subtask_result_queue.pop(0)
+                    else:
+                        # Fallback: run synchronously if queue is unexpectedly empty
+                        sub_name = tool_args.get("name") or tool_args.get("task", "")[:40]
+                        results = await _run_spawn_subtask_batch(
+                            subtask_calls=[tool_args],
+                            parent_agent_id=agent_id_for_session,
+                            available_tools=_spawn_subtask_available_tools,
+                            session_id=session_id,
+                            server_module=server_module,
+                            source=source,
+                            run_id=run_id,
+                        )
+                        sub_name, result_text = results[0] if results else (sub_name, "No result")
+
+                    current_context_text += f"\nSubtask '{sub_name}' result:\n{result_text}\n"
+                    tools_used_summary.append(f"spawn_subtask({sub_name}): {result_text[:200]}")
+                    preview = result_text[:500] + "..." if len(result_text) > 500 else result_text
+                    yield {"type": "tool_result", "tool_name": SPAWN_SUBTASK_TOOL_NAME,
+                           "preview": preview, "subtask_name": sub_name}
+                    continue
 
                 # ===== DELEGATE_TO_AGENT (delegate agents) =====
                 if tool_name == "delegate_to_agent" and _delegate_agents_map:
