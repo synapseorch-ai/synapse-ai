@@ -8,6 +8,7 @@ import zoneinfo
 
 from fastapi import APIRouter, HTTPException
 
+from pydantic import BaseModel
 from core.models import Agent, AgentActiveRequest, GeneratePromptRequest
 from core.config import DATA_DIR, load_settings
 from core.json_store import JsonStore
@@ -156,6 +157,113 @@ How the agent should think before acting:
 - Use markdown with clear `###` section headers.
 
 YOUR RESPONSE = THE SYSTEM PROMPT. Nothing before it. Nothing after it. No commentary, no labels, no wrapping."""
+
+
+class BuildAgentToolInfo(BaseModel):
+    name: str
+    description: str = ""
+
+class BuildAgentRepoInfo(BaseModel):
+    id: str
+    name: str
+
+class BuildAgentDbInfo(BaseModel):
+    id: str
+    name: str
+    db_type: str = ""
+
+class BuildAgentRequest(BaseModel):
+    description: str
+    available_tools: list[BuildAgentToolInfo] = []
+    available_repos: list[BuildAgentRepoInfo] = []
+    available_db_configs: list[BuildAgentDbInfo] = []
+
+
+AGENT_FACTORY_SYSTEM = """You are an AI agent factory. Given a user's description and a list of available tools/repos/databases, return a JSON object with these exact keys:
+- name: short descriptive name (2-4 words, title case)
+- description: one sentence explaining what the agent does
+- type: one of "conversational", "code", or "delegate"
+  - Use "code" for agents that write/execute code, analyze data, work with files, or need repository access
+  - Use "delegate" for orchestrator/routing agents that hand off tasks to other agents
+  - Use "conversational" for everything else (support, research, writing, Q&A, etc.)
+- system_prompt: a comprehensive, professional system prompt (3-6 paragraphs)
+- tools: array of tool names from the available tools list that this agent needs (empty array if none needed)
+- repos: array of repo IDs from the available repos that are relevant (empty array if none, only for code agents)
+- db_configs: array of db config IDs that are relevant (empty array if none)
+
+Select tools/repos/dbs that are genuinely needed for the agent's purpose. Don't over-select.
+Return ONLY the JSON object, no markdown, no explanation."""
+
+
+@router.post("/api/agents/build")
+async def build_agent(req: BuildAgentRequest):
+    """Create a full agent config from a description in one LLM call, auto-selecting tools/repos/dbs."""
+    settings = load_settings()
+    model = settings.get("model", "mistral")
+    mode = detect_mode_from_model(model)
+
+    now = datetime.datetime.now(zoneinfo.ZoneInfo("UTC"))
+    current_datetime = now.strftime("%B %d, %Y %I:%M %p UTC")
+
+    tools_section = ""
+    if req.available_tools:
+        tool_lines = "\n".join(
+            f"  - {t.name}" + (f": {t.description}" if t.description else "")
+            for t in req.available_tools
+        )
+        tools_section = f"\n\nAVAILABLE TOOLS:\n{tool_lines}"
+
+    repos_section = ""
+    if req.available_repos:
+        repo_lines = "\n".join(f"  - id={r.id} name={r.name}" for r in req.available_repos)
+        repos_section = f"\n\nAVAILABLE REPOS:\n{repo_lines}"
+
+    dbs_section = ""
+    if req.available_db_configs:
+        db_lines = "\n".join(f"  - id={d.id} name={d.name} ({d.db_type})" for d in req.available_db_configs)
+        dbs_section = f"\n\nAVAILABLE DATABASES:\n{db_lines}"
+
+    user_message = (
+        f"Current date: {current_datetime}\n\n"
+        f"Create an agent for: {req.description}"
+        f"{tools_section}{repos_section}{dbs_section}"
+    )
+
+    try:
+        raw = await llm_generate_response(
+            prompt_msg=user_message,
+            sys_prompt=AGENT_FACTORY_SYSTEM,
+            mode=mode,
+            current_model=model,
+            current_settings=settings,
+        )
+        cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        config = json.loads(cleaned)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM generation failed: {e}")
+
+    agent_type = config.get("type", "conversational")
+    agent_id = f"agent_{int(datetime.datetime.now(zoneinfo.ZoneInfo('UTC')).timestamp() * 1000)}"
+    agent_dict = {
+        "id": agent_id,
+        "name": config.get("name", "New Agent"),
+        "description": config.get("description", ""),
+        "avatar": "default",
+        "type": agent_type,
+        "system_prompt": config.get("system_prompt", ""),
+        "tools": config.get("tools", []),
+        "repos": config.get("repos", []) if agent_type == "code" else [],
+        "db_configs": config.get("db_configs", []),
+        "max_turns": 50 if agent_type == "code" else 30,
+        "model": None,
+        "provider": None,
+        "delegate_agent_ids": [],
+    }
+
+    agents = load_user_agents()
+    agents.append(agent_dict)
+    save_user_agents(agents)
+    return agent_dict
 
 
 @router.get("/api/agent-types")

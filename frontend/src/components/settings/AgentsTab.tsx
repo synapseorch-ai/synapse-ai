@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Bot, Plus, Save, Trash, ChevronDown, ChevronRight, Lock, Sparkles, Eye, EyeOff, Loader2, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
+import { Bot, Plus, Save, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, Eye, EyeOff, Loader2, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
 import { VaultTextarea } from '@/components/VaultMention';
 import { CAPABILITIES, AUTO_TOOLS_BY_TYPE } from './types';
 import { renderTextContent } from '@/lib/utils';
@@ -42,10 +42,73 @@ export const AgentsTab = ({
     const [agentChannels, setAgentChannels] = useState<any[]>([]);
     const [isSaving, setIsSaving] = useState(false);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'error' } | null>(null);
+    const [aiBuilderOpen, setAiBuilderOpen] = useState(false);
+    const [aiBuilderDesc, setAiBuilderDesc] = useState('');
+    const [isBuilding, setIsBuilding] = useState(false);
 
     const showToast = (message: string, type: 'success' | 'error') => {
         setToast({ show: true, message, type });
         setTimeout(() => setToast(null), 4000);
+    };
+
+    const handleDuplicate = async (agent: any, e: React.MouseEvent) => {
+        e.stopPropagation();
+        const copy = { ...agent, id: `agent_${Date.now()}`, name: `${agent.name} (Copy)` };
+        delete copy.created_at;
+        delete copy.updated_at;
+        try {
+            const res = await fetch('/api/agents', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(copy),
+            });
+            if (res.ok) {
+                const saved = await res.json();
+                dispatch(addAgent(saved));
+                setSelectedAgentId(saved.id);
+                setDraftAgent(saved);
+                showToast('Agent duplicated', 'success');
+            } else {
+                showToast('Failed to duplicate agent', 'error');
+            }
+        } catch {
+            showToast('Error duplicating agent', 'error');
+        }
+    };
+
+    const buildAgentWithAI = async () => {
+        if (!aiBuilderDesc.trim() || isBuilding) return;
+        setIsBuilding(true);
+        try {
+            const available_tools = availableCapabilities.flatMap((cap: any) =>
+                (cap.toolDetails || cap.tools.map((t: string) => ({ name: t, description: '' })))
+                    .map((t: any) => ({ name: t.name, description: t.description || '' }))
+            );
+            const available_repos = repos.map((r: any) => ({ id: r.id, name: r.name }));
+            const available_db_configs = dbConfigs.map((d: any) => ({ id: d.id, name: d.name, db_type: d.db_type || '' }));
+
+            const res = await fetch('/api/agents/build', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ description: aiBuilderDesc, available_tools, available_repos, available_db_configs }),
+                signal: AbortSignal.timeout(60_000),
+            });
+            if (res.ok) {
+                const saved = await res.json();
+                dispatch(addAgent(saved));
+                setSelectedAgentId(saved.id);
+                setDraftAgent(saved);
+                setAiBuilderDesc('');
+                setAiBuilderOpen(false);
+                showToast(`Agent "${saved.name}" created`, 'success');
+            } else {
+                showToast('Failed to build agent', 'error');
+            }
+        } catch {
+            showToast('Error building agent', 'error');
+        } finally {
+            setIsBuilding(false);
+        }
     };
 
     const handleSaveAgent = async () => {
@@ -205,28 +268,60 @@ export const AgentsTab = ({
             <div className="md:col-span-4 border-r border-zinc-800 pr-4 flex flex-col max-h-[calc(100vh-180px)] sticky top-0 self-start">
                 <div className="mb-4 flex justify-between items-center">
                     <h3 className="text-sm font-bold text-zinc-400">YOUR AGENTS</h3>
-                    <button
-                        onClick={() => {
-                            const newAgent = {
-                                id: `agent_${Date.now()}`,
-                                name: "New Agent",
-                                description: "A custom agent.",
-                                system_prompt: "You are a helpful assistant.",
-                                tools: [],
-                                repos: [],
-                                type: "conversational",
-                                avatar: "default",
-                                max_turns: 30,
-                            };
-                            setDraftAgent(newAgent);
-                            setSelectedAgentId(newAgent.id);
-                        }}
-                        className="p-1.5 hover:bg-zinc-800 text-white transition-colors border border-dashed border-zinc-600 hover:border-white"
-                        title="Create New Agent"
-                    >
-                        <Plus className="h-4 w-4" />
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                        <button
+                            onClick={() => setAiBuilderOpen(v => !v)}
+                            className={`p-1.5 transition-colors ${aiBuilderOpen ? 'bg-purple-500 text-white' : 'bg-purple-600 hover:bg-purple-500 text-white'}`}
+                            title="Build Agent with AI"
+                        >
+                            <Sparkles className="h-4 w-4" />
+                        </button>
+                        <button
+                            onClick={() => {
+                                const newAgent = {
+                                    id: `agent_${Date.now()}`,
+                                    name: "New Agent",
+                                    description: "A custom agent.",
+                                    system_prompt: "You are a helpful assistant.",
+                                    tools: [],
+                                    repos: [],
+                                    type: "conversational",
+                                    avatar: "default",
+                                    max_turns: 30,
+                                };
+                                setDraftAgent(newAgent);
+                                setSelectedAgentId(newAgent.id);
+                            }}
+                            className="p-1.5 hover:bg-zinc-800 text-white transition-colors border border-dashed border-zinc-600 hover:border-white"
+                            title="Create New Agent"
+                        >
+                            <Plus className="h-4 w-4" />
+                        </button>
+                    </div>
                 </div>
+
+                {aiBuilderOpen && (
+                    <div className="mb-3 p-3 border border-dashed border-purple-800 bg-purple-950/20 space-y-2">
+                        <p className="text-[9px] text-purple-400 font-bold uppercase">Build with AI</p>
+                        <textarea
+                            value={aiBuilderDesc}
+                            onChange={e => setAiBuilderDesc(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); buildAgentWithAI(); } }}
+                            placeholder="Describe what this agent should do... e.g. 'A customer support agent that searches our knowledge base'"
+                            rows={3}
+                            className="w-full bg-zinc-950 border border-zinc-800 p-2 text-xs text-white focus:border-purple-500 focus:outline-none placeholder:text-zinc-600 resize-none"
+                        />
+                        <button
+                            onClick={buildAgentWithAI}
+                            disabled={isBuilding || !aiBuilderDesc.trim()}
+                            className="w-full py-1.5 bg-purple-700 hover:bg-purple-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-bold flex items-center justify-center gap-2 transition-colors"
+                        >
+                            {isBuilding
+                                ? <><Loader2 className="h-3 w-3 animate-spin" /> BUILDING…</>
+                                : <><Sparkles className="h-3 w-3" /> CREATE AGENT</>}
+                        </button>
+                    </div>
+                )}
 
                 <div className="space-y-2 flex-1 overflow-y-auto modern-scrollbar">
                     {loadingAgents && agents.length === 0 && (
@@ -259,6 +354,13 @@ export const AgentsTab = ({
                                     <div className="text-[10px] text-zinc-500 truncate">{a.description}</div>
                                 </div>
                             </div>
+                            <button
+                                onClick={(e) => handleDuplicate(a, e)}
+                                className="absolute top-2 right-7 p-1 text-zinc-600 hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Duplicate agent"
+                            >
+                                <Copy className="h-3 w-3" />
+                            </button>
                             <button
                                 onClick={(e) => {
                                     e.stopPropagation();
