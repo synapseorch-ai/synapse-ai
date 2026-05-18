@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Check, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Info, Loader2, Terminal } from 'lucide-react';
+import { Check, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Info, Loader2, Terminal, Eye, EyeOff } from 'lucide-react';
 import React, { useState } from 'react';
 
 type BrandIconProps = { className?: string; style?: React.CSSProperties };
@@ -212,6 +212,8 @@ export const ModelsTab = ({
     localCompatibleEmbedModels, setLocalCompatibleEmbedModels,
 }: ModelsTabProps) => {
     const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+    const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
+    const toggleKeyVisible = (k: string) => setVisibleKeys(prev => ({ ...prev, [k]: !prev[k] }));
 
     // Build all available models list for default selector
     const allAvailable: string[] = [];
@@ -305,13 +307,19 @@ export const ModelsTab = ({
                                         {key !== 'ollama' && key !== 'bedrock' && key !== 'openai_compatible' && key !== 'local_compatible' && !key.endsWith('_cli') && (
                                             <div className="space-y-1.5">
                                                 <label className="text-[10px] uppercase font-bold text-zinc-500">API Key</label>
-                                                <input
-                                                    type="password"
-                                                    value={getKeyValue(key)}
-                                                    onChange={e => setKeyValue(key, e.target.value)}
-                                                    className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors"
-                                                    placeholder={meta.keyPlaceholder}
-                                                />
+                                                <div className="relative">
+                                                    <input
+                                                        type={visibleKeys[key] ? 'text' : 'password'}
+                                                        value={getKeyValue(key)}
+                                                        onChange={e => setKeyValue(key, e.target.value)}
+                                                        className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors pr-8"
+                                                        placeholder={meta.keyPlaceholder}
+                                                    />
+                                                    <button type="button" onClick={() => toggleKeyVisible(key)}
+                                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                                                        {visibleKeys[key] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                                    </button>
+                                                </div>
                                                 {/* Key instructions */}
                                                 {meta.keyNote && (
                                                     <p className="text-[10px] text-zinc-600">{meta.keyNote}</p>
@@ -335,8 +343,14 @@ export const ModelsTab = ({
                                             <div className="space-y-3">
                                                 <div className="space-y-1.5">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">Bedrock API Key</label>
-                                                    <input type="password" value={bedrockApiKey} onChange={e => setBedrockApiKey(e.target.value)}
-                                                        className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors" placeholder="ABSK... or bedrock-api-key..." />
+                                                    <div className="relative">
+                                                        <input type={visibleKeys['bedrock'] ? 'text' : 'password'} value={bedrockApiKey} onChange={e => setBedrockApiKey(e.target.value)}
+                                                            className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors pr-8" placeholder="ABSK... or bedrock-api-key..." />
+                                                        <button type="button" onClick={() => toggleKeyVisible('bedrock')}
+                                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                                                            {visibleKeys['bedrock'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                                        </button>
+                                                    </div>
                                                     {meta.keyNote && (
                                                         <p className="text-[10px] text-zinc-600">{meta.keyNote}</p>
                                                     )}
@@ -397,8 +411,14 @@ export const ModelsTab = ({
                                             <div className="space-y-3">
                                                 <div className="space-y-1.5">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">API Key</label>
-                                                    <input type="password" value={openaiCompatibleKey} onChange={e => setOpenaiCompatibleKey(e.target.value)}
-                                                        className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors" placeholder="sk-..." />
+                                                    <div className="relative">
+                                                        <input type={visibleKeys['openai_compatible'] ? 'text' : 'password'} value={openaiCompatibleKey} onChange={e => setOpenaiCompatibleKey(e.target.value)}
+                                                            className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors pr-8" placeholder="sk-..." />
+                                                        <button type="button" onClick={() => toggleKeyVisible('openai_compatible')}
+                                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                                                            {visibleKeys['openai_compatible'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                                        </button>
+                                                    </div>
                                                 </div>
                                                 <div className="space-y-1">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">Base URL</label>
@@ -426,8 +446,14 @@ export const ModelsTab = ({
                                             <div className="space-y-3">
                                                 <div className="space-y-1.5">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">API Key (optional)</label>
-                                                    <input type="password" value={localCompatibleKey} onChange={e => setLocalCompatibleKey(e.target.value)}
-                                                        className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors" placeholder="Leave blank if not required" />
+                                                    <div className="relative">
+                                                        <input type={visibleKeys['local_compatible'] ? 'text' : 'password'} value={localCompatibleKey} onChange={e => setLocalCompatibleKey(e.target.value)}
+                                                            className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors pr-8" placeholder="Leave blank if not required" />
+                                                        <button type="button" onClick={() => toggleKeyVisible('local_compatible')}
+                                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                                                            {visibleKeys['local_compatible'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                                        </button>
+                                                    </div>
                                                 </div>
                                                 <div className="space-y-1">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">Base URL</label>

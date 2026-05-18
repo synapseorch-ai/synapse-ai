@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Settings, Terminal, Sun, Moon, Plus, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, ImageIcon, Cpu, Wrench, Network, CalendarClock, Sparkles} from 'lucide-react';
+import { Send, Bot, User, Settings, Terminal, Sun, Moon, Plus, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, ImageIcon, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check} from 'lucide-react';
 
 import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';
@@ -109,6 +109,7 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
 }) {
   // Fallback chain: content → data.content → data.result → empty
   const displayContent = msg.content || (msg.data as any)?.content || (msg.data as any)?.result || '';
+  const [copied, setCopied] = useState(false);
   return (
     <div className="flex gap-3 max-w-4xl">
       <div className="h-7 w-7 shrink-0 flex items-center justify-center border border-purple-800/50 bg-purple-950/30 text-purple-400 mt-1 rounded-sm">
@@ -120,10 +121,17 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
             {msg.stepName}
           </div>
         )}
-        <div className="p-3 text-[14px] leading-7 border border-purple-900/30 bg-purple-950/10 relative font-sans rounded-sm">
+        <div className="p-3 text-[14px] leading-7 border border-purple-900/30 bg-purple-950/10 relative font-sans rounded-sm group">
           <div className="prose prose-invert max-w-none text-zinc-200 font-normal">
             {renderTextContent(displayContent)}
           </div>
+          <button
+            onClick={() => { navigator.clipboard.writeText(displayContent); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-purple-950/60 hover:bg-purple-900/60 text-purple-400 hover:text-purple-200"
+            title="Copy response"
+          >
+            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+          </button>
         </div>
         {/* Thoughts */}
         {msg.thoughts && msg.thoughts.length > 0 && (
@@ -136,6 +144,52 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Assistant Message Bubble ────────────────────────────────────────────────
+function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex flex-col self-start min-w-72 max-w-full gap-2">
+      <div className={cn(
+        "text-[15px] leading-7 border relative font-sans px-4 pb-4 bg-zinc-900/50 border-zinc-800 text-zinc-100 w-full group",
+        msg.intent ? "pt-6" : "pt-4"
+      )}>
+        {msg.intent && (
+          <div className="absolute -top-3 left-2 bg-zinc-950 border border-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-400 font-mono">
+            {agentName}
+          </div>
+        )}
+        <div className="prose prose-invert max-w-none text-zinc-100 font-normal">
+          {renderTextContent(msg.content)}
+        </div>
+        {msg.images && msg.images.length > 0 && (
+          <div className="flex flex-wrap gap-3 mt-4">
+            {msg.images.map((img, imgIdx) => (
+              <div key={imgIdx} className="relative group">
+                <img
+                  src={img}
+                  alt={`Attached ${imgIdx + 1}`}
+                  className="h-[4.5rem] w-[4.5rem] object-cover border border-zinc-700/60 rounded-xl cursor-pointer hover:border-zinc-400 hover:scale-[1.03] hover:shadow-lg transition-all"
+                  onClick={() => window.open(img, '_blank')}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+        <button
+          onClick={() => { navigator.clipboard.writeText(msg.content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+          className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-zinc-800/60 hover:bg-zinc-700/80 text-zinc-500 hover:text-zinc-200"
+          title="Copy response"
+        >
+          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+        </button>
+      </div>
+      {msg.thoughts && msg.thoughts.length > 0 && (
+        <ThoughtCollapsible thoughts={msg.thoughts} />
+      )}
     </div>
   );
 }
@@ -1180,44 +1234,7 @@ export default function Home() {
               )}
             </div>
           ) : (
-            /* ── Assistant bubble + reasoning — shared width via self-start wrapper ── */
-            <div className="flex flex-col self-start min-w-72 max-w-full gap-2">
-              <div className={cn(
-                "text-[15px] leading-7 border relative font-sans px-4 pb-4 bg-zinc-900/50 border-zinc-800 text-zinc-100 w-full",
-                msg.intent ? "pt-6" : "pt-4"
-              )}>
-                {/* Agent Name Badge */}
-                {msg.intent && (
-                  <div className="absolute -top-3 left-2 bg-zinc-950 border border-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-400 font-mono">
-                    {agentName}
-                  </div>
-                )}
-                {/* Content */}
-                <div className="prose prose-invert max-w-none text-zinc-100 font-normal">
-                  {renderTextContent(msg.content)}
-                </div>
-                {/* Attached Images */}
-                {msg.images && msg.images.length > 0 && (
-                  <div className="flex flex-wrap gap-3 mt-4">
-                    {msg.images.map((img, imgIdx) => (
-                      <div key={imgIdx} className="relative group">
-                        <img
-                          src={img}
-                          alt={`Attached ${imgIdx + 1}`}
-                          className="h-[4.5rem] w-[4.5rem] object-cover border border-zinc-700/60 rounded-xl cursor-pointer hover:border-zinc-400 hover:scale-[1.03] hover:shadow-lg transition-all"
-                          onClick={() => window.open(img, '_blank')}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* LLM Thoughts — same width as bubble via shared wrapper */}
-              {msg.thoughts && msg.thoughts.length > 0 && (
-                <ThoughtCollapsible thoughts={msg.thoughts} />
-              )}
-            </div>
+            <AssistantBubble msg={msg} agentName={agentName} />
           )}
 
           {/* Dynamic UI based on Intent - Rendered Outside Bubble */}
