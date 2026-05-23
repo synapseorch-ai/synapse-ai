@@ -93,6 +93,9 @@ def set_exact(
 # semantic hits limited to nearly-identical prompts.
 
 _semantic_collections: dict[str, Any] = {}
+# Track step IDs we've already warned about so the "embedding unavailable" log
+# fires at most once per step per process — avoids spamming during a long run.
+_warned_no_embed_steps: set[str] = set()
 
 
 def _get_memory_store():
@@ -132,6 +135,19 @@ def _embed(text: str) -> Optional[list[float]]:
         return None
 
 
+def _warn_no_embedding(step_id: str) -> None:
+    """One-shot log when the embedding provider is unreachable for this step."""
+    if step_id in _warned_no_embed_steps:
+        return
+    _warned_no_embed_steps.add(step_id)
+    print(
+        f"DEBUG cache: ⚠️  semantic cache disabled for step '{step_id}' — "
+        f"embedding provider unavailable. Start Ollama with `nomic-embed-text` "
+        f"or set `embedding_model` in Settings. Exact-match cache still works.",
+        flush=True,
+    )
+
+
 def get_semantic(
     step_id: str,
     model: str,
@@ -145,6 +161,7 @@ def get_semantic(
         return None
     emb = _embed((system or "") + "\n\n" + user_message)
     if emb is None:
+        _warn_no_embedding(step_id)
         return None
     try:
         res = coll.query(query_embeddings=[emb], n_results=1)
@@ -183,6 +200,7 @@ def set_semantic(
         return
     emb = _embed((system or "") + "\n\n" + user_message)
     if emb is None:
+        _warn_no_embedding(step_id)
         return
     # Reuse the exact-cache key as the Chroma document ID so storage stays unified.
     key = store.make_key("resp_semantic", model, step_id, user_message)

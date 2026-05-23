@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse-orch-ai"
-version = "1.6.0"
+version = "1.6.1"
 description = "Synapse - A Multi Agent Orchestrator"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }

@@ -666,6 +666,9 @@ function CacheSection({ step, update }: { step: StepConfig; update: (patch: Part
                                     <span className="block text-[10px] text-zinc-500 mt-0.5">
                                         Reuse a near-identical prior response when exact match misses. Threshold {(step.cache_response_threshold ?? 0.95).toFixed(2)} cosine similarity.
                                     </span>
+                                    <span className="block text-[10px] text-amber-500/80 mt-0.5">
+                                        Needs an embedding provider — Ollama with <code>nomic-embed-text</code> (default) or an <code>embedding_model</code> set in Settings. Without one, semantic match silently does nothing; exact match still works.
+                                    </span>
                                 </span>
                             </label>
                             <div className="pl-5 grid grid-cols-2 gap-2">
