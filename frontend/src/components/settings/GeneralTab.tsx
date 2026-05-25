@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, AlertTriangle } from 'lucide-react';
 
 type EmbedIssue = 'no_psql' | 'no_db' | 'existing_url_broken' | 'no_pgvector' | 'connection_error';
 
@@ -33,6 +33,8 @@ interface GeneralTabProps {
     setEmbedCode: (v: boolean) => void;
     bashAllowedDirs: string[];
     setBashAllowedDirs: (v: string[]) => void;
+    transformRuntime: 'docker' | 'host';
+    setTransformRuntime: (v: 'docker' | 'host') => void;
     loginEnabled: boolean;
     setLoginEnabled: (v: boolean) => void;
     loginUsername: string;
@@ -52,6 +54,7 @@ export function GeneralTab({
     allowDbWrite, setAllowDbWrite,
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
+    transformRuntime, setTransformRuntime,
     loginEnabled, setLoginEnabled,
     loginUsername, setLoginUsername,
     onSaveLogin, isLoginSaving,
@@ -67,6 +70,10 @@ export function GeneralTab({
     const [loginPassword, setLoginPassword] = useState('');
     const [loginConfirmPassword, setLoginConfirmPassword] = useState('');
     const [loginFormError, setLoginFormError] = useState('');
+
+    // Confirmation modal shown when user tries to flip transform runtime to "host".
+    // Going back to "docker" doesn't need confirmation (safe default).
+    const [showHostRuntimeModal, setShowHostRuntimeModal] = useState(false);
 
     useEffect(() => { setVaultDraft(String(vaultThreshold)); }, [vaultThreshold]);
     useEffect(() => { setCompactDraft(String(autoCompactThreshold)); }, [autoCompactThreshold]);
@@ -509,6 +516,83 @@ export function GeneralTab({
                     </button>
                 </div>
             </div>
+
+            {/* Transform Step Python Runtime */}
+            <div className="space-y-4">
+                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Transform Step Python Runtime</label>
+                <div className="flex items-center justify-between">
+                    <div>
+                        <p className="text-xs text-zinc-600 mt-0.5">
+                            Where Transform-step Python code runs. <strong className="text-zinc-400">Docker</strong> (default) sandboxes execution with 512 MB / 1 CPU / 60s caps and no GPU access — safe but limited.
+                            <strong className="text-zinc-400"> Host</strong> runs Python directly on the host with full RAM, GPU, filesystem, and network.
+                        </p>
+                    </div>
+                    <button
+                        onClick={() => {
+                            if (transformRuntime === 'docker') {
+                                setShowHostRuntimeModal(true);
+                            } else {
+                                setTransformRuntime('docker');
+                            }
+                        }}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${transformRuntime === 'host' ? 'bg-amber-500' : 'bg-zinc-700'}`}
+                    >
+                        <span className={`inline-block h-4 w-4 transform rounded-full transition-transform ${transformRuntime === 'host' ? 'translate-x-6 bg-black' : 'translate-x-1 bg-zinc-400'}`} />
+                    </button>
+                </div>
+                {transformRuntime === 'host' && (
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs flex items-start gap-2">
+                        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                        <div>
+                            <strong>Host mode active.</strong> Any Python in any Transform step now runs unsandboxed with full backend permissions. Only use on self-hosted instances you control.
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Host-mode confirmation modal */}
+            {showHostRuntimeModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setShowHostRuntimeModal(false)}>
+                    <div className="bg-zinc-950 border border-amber-500/40 max-w-lg w-full p-6 space-y-4" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-start gap-3">
+                            <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                            <div className="space-y-1">
+                                <h3 className="text-sm font-bold text-white">Enable host-mode Transform execution?</h3>
+                                <p className="text-xs text-zinc-400">This removes the Docker sandbox from Transform steps.</p>
+                            </div>
+                        </div>
+                        <div className="text-xs text-zinc-400 space-y-2 leading-relaxed">
+                            <p>With host mode on, Transform-step Python code runs as a subprocess on the host machine with:</p>
+                            <ul className="list-disc list-inside space-y-1 text-zinc-500 pl-1">
+                                <li>Full backend filesystem access (including <code className="text-zinc-300">backend/data/</code>)</li>
+                                <li>Full network access</li>
+                                <li>Access to any GPU and all host RAM</li>
+                                <li>The same permissions as the Synapse backend process</li>
+                            </ul>
+                            <p className="text-amber-400/90 pt-1">
+                                Only enable this on a self-hosted instance you control. It is the wrong choice for any deployment where untrusted code or untrusted users can reach the Transform step.
+                            </p>
+                        </div>
+                        <div className="flex items-center justify-end gap-2 pt-2">
+                            <button
+                                onClick={() => setShowHostRuntimeModal(false)}
+                                className="px-4 py-2 text-xs font-bold text-zinc-400 hover:text-white transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setTransformRuntime('host');
+                                    setShowHostRuntimeModal(false);
+                                }}
+                                className="px-4 py-2 text-xs font-bold bg-amber-500 text-black hover:bg-amber-400 transition-colors"
+                            >
+                                I understand — enable host mode
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Login & Security */}
             <div className="space-y-4">

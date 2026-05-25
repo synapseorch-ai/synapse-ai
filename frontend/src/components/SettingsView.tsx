@@ -75,6 +75,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [localCompatibleKey, setLocalCompatibleKey] = useState('');
     const [localCompatibleModels, setLocalCompatibleModels] = useState('');
     const [localCompatibleEmbedModels, setLocalCompatibleEmbedModels] = useState('');
+    const [huggingfaceToken, setHuggingfaceToken] = useState('');
+    const [huggingfaceModels, setHuggingfaceModels] = useState('');
+    const [transformRuntime, setTransformRuntime] = useState<'docker' | 'host'>('docker');
     const [awsRegion, setAwsRegion] = useState('us-east-1');
     const [bedrockInferenceProfile, setBedrockInferenceProfile] = useState('');
     const [bedrockInferenceProfiles, setBedrockInferenceProfiles] = useState<Array<{ id: string; arn: string; name: string; status?: string; type?: string }>>([]);
@@ -231,6 +234,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             local_compatible_key: localCompatibleKey,
             local_compatible_models: localCompatibleModels,
             local_compatible_embed_models: localCompatibleEmbedModels,
+            huggingface_token: huggingfaceToken,
+            huggingface_models: huggingfaceModels,
+            transform_runtime: transformRuntime,
             bedrock_api_key: bedrockApiKey,
             bedrock_inference_profile: bedrockInferenceProfile,
             aws_region: awsRegion,
@@ -450,6 +456,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setLocalCompatibleKey(data.local_compatible_key || '');
                 setLocalCompatibleModels(data.local_compatible_models || '');
                 setLocalCompatibleEmbedModels(data.local_compatible_embed_models || '');
+                setHuggingfaceToken(data.huggingface_token || '');
+                setHuggingfaceModels(data.huggingface_models || '');
+                setTransformRuntime((data.transform_runtime === 'host' ? 'host' : 'docker'));
                 setBedrockApiKey(data.bedrock_api_key || '');
                 setAwsRegion(data.aws_region || 'us-east-1');
                 setBedrockInferenceProfile(data.bedrock_inference_profile || '');
@@ -949,6 +958,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                             setEmbedCode={setEmbedCode}
                             bashAllowedDirs={bashAllowedDirs}
                             setBashAllowedDirs={setBashAllowedDirs}
+                            transformRuntime={transformRuntime}
+                            setTransformRuntime={setTransformRuntime}
                             loginEnabled={loginEnabled}
                             setLoginEnabled={setLoginEnabled}
                             loginUsername={loginUsername}
@@ -1064,6 +1075,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                             localCompatibleKey={localCompatibleKey} setLocalCompatibleKey={setLocalCompatibleKey}
                             localCompatibleModels={localCompatibleModels} setLocalCompatibleModels={setLocalCompatibleModels}
                             localCompatibleEmbedModels={localCompatibleEmbedModels} setLocalCompatibleEmbedModels={setLocalCompatibleEmbedModels}
+                            huggingfaceToken={huggingfaceToken} setHuggingfaceToken={setHuggingfaceToken}
+                            huggingfaceModels={huggingfaceModels} setHuggingfaceModels={setHuggingfaceModels}
                         />
                     )}
 

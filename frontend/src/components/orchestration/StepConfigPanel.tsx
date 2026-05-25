@@ -312,7 +312,7 @@ export function StepConfigPanel({ step, agents, allStepIds, onUpdate, onDelete, 
                 {step.type === 'transform' && (
                     <div className="space-y-2">
                         <div className="rounded bg-amber-950/40 border border-amber-800/40 px-3 py-2 text-[10px] text-amber-400 leading-relaxed">
-                            <strong>Python sandbox</strong> — runs in Docker (512MB RAM, no network). <code>state</code> dict is injected. Assign to <code>result</code> to write the output key.
+                            <strong>Python execution</strong> — runs in Docker by default (512MB RAM, no network); switch to host mode in Settings → General to lift the sandbox. <code>state</code> dict is injected. Assign to <code>result</code> to write the output key.
                         </div>
                         <label className="text-xs text-zinc-400 block mb-1">Python Code</label>
                         <div className="border border-zinc-700 rounded overflow-hidden h-[220px] focus-within:border-amber-600 transition-colors">

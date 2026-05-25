@@ -125,6 +125,8 @@ def detect_mode_from_model(model_name: str) -> str:
         return "local"
     if m.startswith("ollama."):
         return "local"
+    if m.startswith("hf."):
+        return "hf"
     return "local"
 
 
@@ -162,6 +164,8 @@ def detect_provider_from_model(model_name: str) -> str:
         return "local_compatible"
     if m.startswith("ollama."):
         return "ollama"
+    if m.startswith("hf."):
+        return "huggingface"
     return "ollama"
 
 
@@ -1656,6 +1660,174 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
     raise LLMError(error_msg)
 
 
+# ─── HuggingFace local-model provider ───────────────────────────────────────────
+#
+# Loads transformers models in-process and runs inference on the host's GPU/CPU.
+# Used for `hf.<org>/<model>` model names (e.g. `hf.Qwen/Qwen2.5-7B-Instruct`).
+# Models are kept warm in a process-level cache so the 20-60s load cost is paid
+# once per model, not per call. torch + transformers are lazy-imported so users
+# who never use hf.* models don't need them installed.
+
+_hf_model_cache: dict[str, tuple] = {}
+_hf_cache_lock = threading.Lock()
+
+
+def _hf_device() -> str:
+    """Best available device for HF models: cuda > mps > cpu."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _load_hf_model(model_id: str, hf_token: str | None = None):
+    """Load (or fetch from cache) an HF tokenizer + model pair.
+
+    Lock-guarded so concurrent calls don't double-load the same model.
+    """
+    with _hf_cache_lock:
+        if model_id in _hf_model_cache:
+            return _hf_model_cache[model_id]
+
+        try:
+            import torch
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+        except ImportError as e:
+            raise LLMError(
+                "HuggingFace provider: 'torch' and 'transformers' are not installed. "
+                "Install them on the Synapse host (e.g. `pip install torch transformers`) "
+                "to use hf.* models."
+            ) from e
+
+        device = _hf_device()
+        dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
+        load_kwargs: dict = {"torch_dtype": dtype}
+        if device == "cuda":
+            load_kwargs["device_map"] = "auto"
+        if hf_token:
+            load_kwargs["token"] = hf_token
+
+        print(f"DEBUG: 🤗 Loading HF model '{model_id}' on {device} — first call pays 20-60s load cost...", flush=True)
+
+        tok_kwargs: dict = {"token": hf_token} if hf_token else {}
+        tokenizer = AutoTokenizer.from_pretrained(model_id, **tok_kwargs)
+        model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+
+        # device_map="auto" already places shards; only move when we didn't use it.
+        if device != "cuda":
+            model = model.to(device)
+        model.eval()
+
+        _hf_model_cache[model_id] = (tokenizer, model)
+        print(f"DEBUG: ✅ HF model '{model_id}' loaded and cached.", flush=True)
+        return tokenizer, model
+
+
+async def call_huggingface(
+    model: str,
+    messages: list[dict],
+    system: str,
+    settings: dict,
+    tools: list[dict] | None = None,
+    images: list[str] | None = None,
+):
+    """Run inference on a local HuggingFace transformers model.
+
+    Args:
+        model: Full model name with hf. prefix (e.g. 'hf.Qwen/Qwen2.5-7B-Instruct').
+        messages: OpenAI-style [{"role": ..., "content": ...}] list.
+        system: System instruction text.
+        settings: User settings dict. Reads `huggingface_token` (for gated models)
+                  and `huggingface_max_new_tokens` (default 1024).
+        tools: Ignored with a warning — native tool calling varies by model and
+               is left to the caller to inject via prompt text if needed.
+        images: Ignored — vision is model-specific and not supported in this MVP.
+
+    Returns:
+        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        — cache fields are always 0 (no cross-call prompt caching for local inference).
+    """
+    model_id = model[len("hf."):] if model.startswith("hf.") else model
+    if not model_id:
+        raise LLMError("HuggingFace provider: empty model name after 'hf.' prefix.")
+
+    if tools:
+        print(
+            f"DEBUG: ⚠️ HF provider received {len(tools)} tool(s) but does not support "
+            f"native tool calling. Inject tool descriptions into the system prompt if needed.",
+            flush=True,
+        )
+    if images:
+        print(
+            f"DEBUG: ⚠️ HF provider received {len(images)} image(s) but vision is not "
+            f"supported in this MVP — they will be dropped.",
+            flush=True,
+        )
+
+    hf_token = (settings.get("huggingface_token") or "").strip() or None
+    max_new_tokens = int(settings.get("huggingface_max_new_tokens") or 1024)
+
+    def _run():
+        import torch
+        tokenizer, model_obj = _load_hf_model(model_id, hf_token)
+
+        chat_messages: list[dict] = []
+        if system and system.strip():
+            chat_messages.append({"role": "system", "content": system.strip()})
+        chat_messages.extend(messages or [])
+
+        # Prefer the model's chat template; fall back to a plain transcript if
+        # the tokenizer doesn't define one (some base / non-instruct models).
+        try:
+            input_ids = tokenizer.apply_chat_template(
+                chat_messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
+        except Exception as e:
+            print(f"DEBUG: ⚠️ HF chat template unavailable ({e}); using transcript fallback.", flush=True)
+            transcript_parts: list[str] = []
+            if system and system.strip():
+                transcript_parts.append(f"System: {system.strip()}")
+            t = _messages_to_transcript(messages)
+            if t:
+                transcript_parts.append(t)
+            transcript_parts.append("Assistant:")
+            transcript = "\n\n".join(transcript_parts)
+            input_ids = tokenizer(transcript, return_tensors="pt").input_ids
+
+        input_ids = input_ids.to(model_obj.device)
+        prompt_token_count = int(input_ids.shape[-1])
+
+        with torch.no_grad():
+            output_ids = model_obj.generate(
+                input_ids,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        new_tokens = output_ids[0, prompt_token_count:]
+        text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        output_token_count = int(new_tokens.shape[-1])
+        return text, prompt_token_count, output_token_count
+
+    try:
+        print(f"DEBUG: 🔄 HF call start (model={model_id})", flush=True)
+        text, input_tokens, output_tokens = await asyncio.to_thread(_run)
+        print(f"DEBUG: ✅ HF call complete (model={model_id}, out_tokens={output_tokens})", flush=True)
+        return text, input_tokens, output_tokens, 0, 0
+    except LLMError:
+        raise
+    except Exception as e:
+        raise LLMError(f"HuggingFace provider error ({model_id}): {e}")
+
+
 def _messages_to_transcript(messages: list[dict] | None) -> str:
     """Lossy conversion of role/content messages to plain text for providers that only accept a single prompt."""
     if not messages:
@@ -1930,7 +2102,26 @@ async def generate_response(
         except Exception as e:
             return f"CLI Provider Error: {str(e)}"
 
-    
+    elif mode == "hf":
+        try:
+            messages_for_hf = []
+            if history_messages:
+                messages_for_hf.extend(history_messages)
+            messages_for_hf.append({"role": "user", "content": prompt_msg})
+
+            result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_huggingface(
+                current_model,
+                messages_for_hf,
+                augmented_system,
+                current_settings,
+                tools=tools,
+                images=images,
+            )
+        except LLMError:
+            raise
+        except Exception as e:
+            return f"HuggingFace Provider Error: {str(e)}"
+
     else:
         # Local Ollama
         # Strip the ollama. prefix — the Ollama API expects bare model names

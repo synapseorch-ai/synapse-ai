@@ -5,6 +5,7 @@ Each executor is an async generator that yields SSE-compatible events.
 import asyncio
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1098,7 +1099,12 @@ class TransformStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Transform Code]\n{code}"}
 
         try:
-            result = await self._run_sandboxed(code, run.shared_state, timeout=step.timeout_seconds)
+            from core.config import load_settings
+            runtime = (load_settings().get("transform_runtime") or "docker").strip().lower()
+            if runtime == "host":
+                result = await self._run_host(code, run.shared_state, timeout=step.timeout_seconds)
+            else:
+                result = await self._run_sandboxed(code, run.shared_state, timeout=step.timeout_seconds)
 
             if step.output_key and result is not None:
                 run.shared_state[step.output_key] = result
@@ -1111,6 +1117,82 @@ class TransformStepExecutor:
         except Exception as e:
             yield {"type": "step_error", "orch_step_id": step.id, "error": f"Transform error: {e}"}
 
+    def _build_script(self, code: str, state: dict) -> str:
+        """Build the JSON-in/JSON-out script wrapper used by both runtimes."""
+        state_json = json.dumps(state, default=str)
+        escaped = state_json.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+        return (
+            f'import json\nstate = json.loads("""{escaped}""")\nresult = None\n\n'
+            + code
+            + '\n\nif result is not None:\n    print(json.dumps({"result": result}, default=str))\nelse:\n    print(json.dumps({"result": None}))\n'
+        )
+
+    def _parse_script_output(self, stdout_text: str):
+        """Parse the JSON output of the wrapped script. Falls back to plain text."""
+        try:
+            output = json.loads(stdout_text)
+            return output.get("result")
+        except json.JSONDecodeError:
+            return stdout_text.strip() if stdout_text.strip() else None
+
+    async def _run_host(self, code: str, state: dict, timeout: int = 30):
+        """Run Python code directly on the host via subprocess (NO sandbox).
+
+        Used when transform_runtime == "host". Gives the script full access to
+        the host's Python env, GPU, filesystem, and network. Required for
+        torch/transformers workloads that can't run in the 512MB Docker sandbox.
+
+        Same JSON-in/JSON-out contract as the docker path. The script inherits
+        the backend process env (so CUDA_VISIBLE_DEVICES, HF_HOME, etc. flow
+        through naturally) and runs under the same Python interpreter as the
+        backend (sys.executable).
+
+        Timeout: caps at 30 minutes to bound runaway loads/inference. The docker
+        path's 60s cap is too low for model loading, so we deliberately lift it
+        here. Step-level timeout_seconds still applies.
+        """
+        import sys
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        script_content = self._build_script(code, state)
+        effective_timeout = min(max(int(timeout or 30), 1), 1800)
+
+        tmp_dir = tempfile.mkdtemp(prefix="transform_host_")
+        script_path = str(Path(tmp_dir) / "transform.py")
+        try:
+            with open(script_path, "w") as f:
+                f.write(script_content)
+
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, script_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=os.environ.copy(),
+            )
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(), timeout=effective_timeout + 5
+                )
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                raise RuntimeError(f"Transform (host) timed out after {effective_timeout}s")
+
+            stdout_text = stdout_b.decode("utf-8", errors="replace")
+            stderr_text = stderr_b.decode("utf-8", errors="replace")
+
+            if proc.returncode != 0:
+                raise RuntimeError(f"Transform (host) failed (exit {proc.returncode}): {stderr_text[:500]}")
+
+            return self._parse_script_output(stdout_text)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
     async def _run_sandboxed(self, code: str, state: dict, timeout: int = 30):
         """Run Python code in the Docker sandbox (sandbox-python:latest)."""
         import shutil
@@ -1120,13 +1202,7 @@ class TransformStepExecutor:
         if not shutil.which("docker"):
             raise RuntimeError("Docker is not available. Cannot execute transform code in sandbox.")
 
-        state_json = json.dumps(state, default=str)
-        escaped = state_json.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-        script_content = (
-            f'import json\nstate = json.loads("""{escaped}""")\nresult = None\n\n'
-            + code
-            + '\n\nif result is not None:\n    print(json.dumps({"result": result}, default=str))\nelse:\n    print(json.dumps({"result": None}))\n'
-        )
+        script_content = self._build_script(code, state)
 
         DATA_DIR_PATH = Path(__file__).resolve().parent.parent.parent / "data"
         vault_root = DATA_DIR_PATH / "vault"
@@ -1172,11 +1248,7 @@ class TransformStepExecutor:
             if proc.returncode != 0:
                 raise RuntimeError(f"Transform failed (exit {proc.returncode}): {stderr_text[:500]}")
 
-            try:
-                output = json.loads(stdout_text)
-                return output.get("result")
-            except json.JSONDecodeError:
-                return stdout_text.strip() if stdout_text.strip() else None
+            return self._parse_script_output(stdout_text)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 

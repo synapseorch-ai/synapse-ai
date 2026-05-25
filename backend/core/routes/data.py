@@ -190,6 +190,7 @@ async def get_models():
     local_compatible_models_str = (settings.get("local_compatible_models") or "").strip()
     openai_compatible_embed_models_str = (settings.get("openai_compatible_embed_models") or "").strip()
     local_compatible_embed_models_str = (settings.get("local_compatible_embed_models") or "").strip()
+    huggingface_models_str = (settings.get("huggingface_models") or "").strip()
     bedrock_available = bool((settings.get("bedrock_api_key") or "").strip() or
                              (settings.get("aws_access_key_id") or "").strip())
 
@@ -466,6 +467,22 @@ async def get_models():
         prefixed_embed = [f"locv1.{m}" for m in all_embed]
         return available, prefixed, prefixed_embed
 
+    async def fetch_huggingface() -> tuple[bool, list[str], list[str]]:
+        """List user-configured HuggingFace model IDs, prefixed with hf.
+
+        No API discovery — HF model namespace is enormous and not enumerable.
+        The user lists the specific model IDs they want available (one per line
+        or comma-separated) in Settings → Models → HuggingFace Models.
+        """
+        models = [
+            m.strip() for m in huggingface_models_str.replace("\n", ",").split(",")
+            if m.strip()
+        ]
+        if not models:
+            return False, [], []
+        prefixed = [f"hf.{m}" if not m.startswith("hf.") else m for m in models]
+        return True, prefixed, []
+
     # Run all fetches concurrently; return_exceptions=True ensures one provider failure
     # doesn't cancel the others.
     _PROVIDER_FALLBACKS = [
@@ -482,8 +499,9 @@ async def get_models():
         (False, [], []),                                                                 # gemini_cli
         (False, [], []),                                                                 # codex_cli
         (False, [], []),                                                                 # github_copilot_cli
+        (False, [], []),                                                                 # huggingface
     ]
-    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli"]
+    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli", "huggingface"]
 
     raw = await asyncio.gather(
         fetch_ollama(), fetch_openai(), fetch_anthropic(),
@@ -491,6 +509,7 @@ async def get_models():
         fetch_openai_compatible(), fetch_local_compatible(),
         fetch_claude_cli(), fetch_gemini_cli(), fetch_codex_cli(),
         fetch_github_copilot_cli(),
+        fetch_huggingface(),
         return_exceptions=True,
     )
 
@@ -515,6 +534,7 @@ async def get_models():
     c_gemini_avail, c_gemini_chat, _ = results[10]
     c_codex_avail, c_codex_chat, _ = results[11]
     c_copilot_avail, c_copilot_chat, _ = results[12]
+    hf_avail, hf_chat, _ = results[13]
 
     # --- Build provider map ---
     providers = {
@@ -531,6 +551,7 @@ async def get_models():
         "gemini_cli": {"available": c_gemini_avail, "models": c_gemini_chat, "embedding_models": []},
         "codex_cli": {"available": c_codex_avail, "models": c_codex_chat, "embedding_models": []},
         "github_copilot_cli": {"available": c_copilot_avail, "models": c_copilot_chat, "embedding_models": []},
+        "huggingface": {"available": hf_avail, "models": hf_chat, "embedding_models": []},
     }
 
     # --- Flat list of all available models ---
@@ -540,7 +561,7 @@ async def get_models():
             all_available.extend(info["models"])
 
     # --- Backward compat ---
-    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat
+    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat
 
     return {
         "providers": providers,
