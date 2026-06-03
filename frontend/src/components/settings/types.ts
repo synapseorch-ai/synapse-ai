@@ -7,7 +7,7 @@ export interface SettingsModalProps {
     credentials?: any;
 }
 
-export type Tab = 'general' | 'models' | 'workspace' | 'memory' | 'agents' | 'orchestrations' | 'datalab' | 'custom_tools' | 'personal_details' | 'mcp_servers' | 'repos' | 'db_configs' | 'logs' | 'messaging' | 'usage' | 'schedules' | 'import_export' | 'vault' | 'api_keys' | 'support';
+export type Tab = 'general' | 'models' | 'workspace' | 'memory' | 'agents' | 'orchestrations' | 'datalab' | 'custom_tools' | 'personal_details' | 'mcp_servers' | 'repos' | 'db_configs' | 'logs' | 'messaging' | 'usage' | 'schedules' | 'import_export' | 'vault' | 'api_keys' | 'scale' | 'support';
 
 // Tools auto-injected by the backend per agent type.
 // Shown as 'DEFAULT' in the UI and not editable.

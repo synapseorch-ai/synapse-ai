@@ -11,6 +11,8 @@ beautifulsoup4
 playwright
 boto3
 sqlalchemy
+sqlalchemy[asyncio]
+asyncpg>=0.29
 psycopg2-binary
 pymysql
 pdfplumber
@@ -22,3 +24,6 @@ google-genai
 pyinstrument
 croniter
 crawl4ai
+arq>=0.26
+redis[hiredis]>=5.0
+async-timeout>=4.0

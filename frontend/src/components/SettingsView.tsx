@@ -33,6 +33,7 @@ import { ImportExportTab } from './settings/ImportExportTab';
 import { VaultTab } from './settings/VaultTab';
 import { SupportTab } from './settings/SupportTab';
 import { APIKeysTab } from './settings/APIKeysTab';
+import { ScaleTab } from './settings/ScaleTab';
 
 
 export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initialTab?: string; initialSubTab?: string }) => {
@@ -858,6 +859,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         { id: 'import_export', label: 'Import / Export', icon: ArrowLeftRight },
         { id: 'vault', label: 'Vault', icon: Vault },
         { id: 'api_keys', label: 'API Keys', icon: Key },
+        { id: 'scale', label: 'Scale', icon: Server },
         { id: 'support', label: 'Support & Docs', icon: LifeBuoy },
     ];
 
@@ -1126,6 +1128,11 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                     {/* API KEYS TAB */}
                     {activeTab === 'api_keys' && (
                         <APIKeysTab />
+                    )}
+
+                    {/* SCALE TAB */}
+                    {activeTab === 'scale' && (
+                        <ScaleTab />
                     )}
 
                     {/* SUPPORT TAB */}

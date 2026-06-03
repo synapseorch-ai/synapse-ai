@@ -55,6 +55,8 @@ from core.routes.vault import router as vault_router
 from core.routes.builder import router as builder_router
 from core.routes.api_keys import router as api_keys_router
 from core.routes.api_v1 import router as api_v1_router
+from core.routes.api_v2 import router as api_v2_router
+from core.routes.scale import router as scale_router
 from core.profiling import TimingMiddleware
 from core.internal_auth import InternalTokenMiddleware
 
@@ -558,6 +560,69 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Warning: Zombie run sweep failed: {e}")
 
+        # --- Initialize Telemetry (OpenTelemetry + Prometheus) ---
+        try:
+            from core.scale.config import get_scale_config as _get_scale_cfg
+            _tcfg = _get_scale_cfg()
+            if _tcfg.otlp_endpoint:
+                from core.scale.telemetry import setup_telemetry
+                setup_telemetry("synapse-api", otlp_endpoint=_tcfg.otlp_endpoint)
+        except Exception as e:
+            print(f"Warning: Telemetry setup failed: {e}")
+
+        # --- Initialize Scale Layer (Redis + Postgres + ARQ) ---
+        app.state.redis = None
+        app.state.arq_redis = None
+        app.state.pg_engine = None
+        app.state.pg_session_factory = None
+        try:
+            from core.scale.config import get_scale_config
+            _scale_cfg = get_scale_config()
+            if _scale_cfg.scale_mode:
+                from arq import create_pool as arq_create_pool
+                from arq.connections import RedisSettings as ArqRedisSettings
+                from core.scale.db import build_engine, build_session_factory, init_db
+
+                # Redis client for Pub/Sub and Stream reading
+                from core.scale.pubsub import get_redis_client
+                _redis = get_redis_client(_scale_cfg.redis_url)
+                app.state.redis = _redis
+
+                # ARQ Redis pool for enqueueing jobs
+                _arq_settings = ArqRedisSettings.from_dsn(
+                    _scale_cfg.redis_url.replace("redis+cluster://", "redis://").split(",")[0]
+                )
+                _arq_redis = await arq_create_pool(_arq_settings)
+                app.state.arq_redis = _arq_redis
+
+                # Postgres engine + session factory
+                _pg_engine = build_engine(
+                    _scale_cfg.postgres_url,
+                    pgbouncer_mode=_scale_cfg.pgbouncer_mode,
+                )
+                await init_db(_pg_engine)
+                _pg_session_factory = build_session_factory(_pg_engine)
+                app.state.pg_engine = _pg_engine
+                app.state.pg_session_factory = _pg_session_factory
+
+                # Background task: reap workers that crash without sending shutdown
+                from core.scale.heartbeat import reap_stale_workers
+                _reap_task = asyncio.create_task(
+                    reap_stale_workers(_pg_session_factory),
+                    name="reap_stale_workers",
+                )
+                app.state.reap_task = _reap_task
+
+                print(f"Scale mode enabled: Redis={_scale_cfg.redis_url[:30]}... Postgres connected.")
+            else:
+                print("Scale mode disabled (no redis_url configured). Running in standalone mode.")
+        except Exception as e:
+            print(f"Warning: Failed to initialize scale layer: {e}")
+            app.state.redis = None
+            app.state.arq_redis = None
+            app.state.pg_engine = None
+            app.state.pg_session_factory = None
+
         # --- Initialize Messaging Manager (if enabled) ---
         if _settings.get("messaging_enabled", False):
             try:
@@ -607,6 +672,26 @@ async def lifespan(app: FastAPI):
                 await _filesystem_manager_task
             except (asyncio.CancelledError, Exception):
                 pass
+        # Scale layer cleanup
+        try:
+            _reap = getattr(app.state, "reap_task", None)
+            if _reap and not _reap.done():
+                _reap.cancel()
+                try:
+                    await _reap
+                except (asyncio.CancelledError, Exception):
+                    pass
+            _arq = getattr(app.state, "arq_redis", None)
+            if _arq:
+                await _arq.close()
+            _redis = getattr(app.state, "redis", None)
+            if _redis:
+                await _redis.aclose()
+            _pg = getattr(app.state, "pg_engine", None)
+            if _pg:
+                await _pg.dispose()
+        except Exception as e:
+            print(f"Warning: Scale layer shutdown error: {e}")
         if exit_stack:
             try:
                 await exit_stack.aclose()
@@ -692,6 +777,8 @@ app.include_router(vault_router)
 app.include_router(builder_router)
 app.include_router(api_keys_router)
 app.include_router(api_v1_router, prefix="/api/v1")
+app.include_router(api_v2_router, prefix="/api/v2")
+app.include_router(scale_router)
 
 if __name__ == "__main__":
     import uvicorn

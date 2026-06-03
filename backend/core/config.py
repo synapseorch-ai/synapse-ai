@@ -77,6 +77,18 @@ def load_settings():
         "login_enabled": False,
         "login_username": "",
         "login_password_hash": "",
+        # Scale / distributed execution
+        "redis_url": "",
+        "scale_postgres_url": "",
+        "scale_mode_enabled": False,
+        "scale_auto_sync": False,
+        "worker_concurrency": 10,
+        "otlp_endpoint": "",
+        "metrics_token": "",
+        "max_global_queue_depth": 1_000_000,
+        "rate_limit_per_tenant_rps": 1000,
+        "pgbouncer_mode": False,
+        "num_queue_shards": 1,
     }
     
     if not os.path.exists(SETTINGS_FILE):

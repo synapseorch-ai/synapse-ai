@@ -22,6 +22,7 @@ const tabs = [
     { id: 'logs', label: 'Logs', icon: ScrollText },
     { id: 'memory', label: 'Memory', icon: Trash },
     { id: 'api_keys', label: 'API Keys', icon: Key },
+    { id: 'scale', label: 'Scale', icon: Server },
     { id: 'support', label: 'Support & Docs', icon: LifeBuoy },
 ];
 

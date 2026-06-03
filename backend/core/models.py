@@ -124,6 +124,19 @@ class Settings(BaseModel):
     login_username: str = ""
     login_password_hash: str = ""
 
+    # Scale / distributed execution settings
+    redis_url: str = ""
+    scale_postgres_url: str = ""
+    scale_mode_enabled: bool = False
+    scale_auto_sync: bool = False
+    worker_concurrency: int = 10
+    otlp_endpoint: str = ""
+    metrics_token: str = ""
+    max_global_queue_depth: int = 1_000_000
+    rate_limit_per_tenant_rps: int = 1000
+    pgbouncer_mode: bool = False
+    num_queue_shards: int = 1
+
 
 class PersonalAddress(BaseModel):
     address1: str = ""

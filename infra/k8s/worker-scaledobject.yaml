@@ -1,0 +1,39 @@
+# KEDA ScaledObject — scales synapse-worker based on ARQ queue depth.
+# Install KEDA: https://keda.sh/docs/latest/deploy/
+#
+# Scaling math:
+#   listLength: "5" means KEDA adds 1 replica for every 5 queued jobs.
+#   With WORKER_CONCURRENCY=20 per replica, 100 queued jobs → 20 replicas → 400 concurrent steps.
+#   Adjust listLength and maxReplicaCount to match your infrastructure budget.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: synapse-worker-scaler
+spec:
+  scaleTargetRef:
+    name: synapse-worker
+  minReplicaCount: 1
+  maxReplicaCount: 100
+  cooldownPeriod: 60          # seconds to wait before scaling down
+  pollingInterval: 10         # seconds between queue depth checks
+  triggers:
+    - type: redis
+      metadata:
+        address: synapse-redis:6379    # replace with Redis Cluster address if applicable
+        listName: "synapse:orchestrations:default"
+        listLength: "5"               # target: 5 queued jobs per replica
+---
+# Service for health checks and metrics scraping
+apiVersion: v1
+kind: Service
+metadata:
+  name: synapse-worker
+  labels:
+    app: synapse-worker
+spec:
+  selector:
+    app: synapse-worker
+  ports:
+    - name: health
+      port: 9000
+      targetPort: 9000

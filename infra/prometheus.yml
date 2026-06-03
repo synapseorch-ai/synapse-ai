@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: synapse-api
+    static_configs:
+      - targets: ['synapse-backend:8765']
+    metrics_path: /api/v2/metrics
+    bearer_token: ${METRICS_TOKEN}
+
+  - job_name: synapse-workers
+    # Workers register themselves; add addresses here or use service discovery
+    static_configs:
+      - targets: ['synapse-worker:9000']
+    metrics_path: /metrics

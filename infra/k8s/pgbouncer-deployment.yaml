@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synapse-pgbouncer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: synapse-pgbouncer
+  template:
+    metadata:
+      labels:
+        app: synapse-pgbouncer
+    spec:
+      containers:
+        - name: pgbouncer
+          image: pgbouncer/pgbouncer:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: DATABASES_HOST
+              value: "${POSTGRES_HOST}"
+            - name: DATABASES_PORT
+              value: "5432"
+            - name: DATABASES_DBNAME
+              value: "synapse"
+            - name: PGBOUNCER_POOL_MODE
+              value: "transaction"
+            - name: PGBOUNCER_MAX_CLIENT_CONN
+              value: "10000"
+            - name: PGBOUNCER_DEFAULT_POOL_SIZE
+              value: "25"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: synapse-pgbouncer
+spec:
+  selector:
+    app: synapse-pgbouncer
+  ports:
+    - port: 5432
+      targetPort: 5432

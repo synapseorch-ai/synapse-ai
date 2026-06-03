@@ -13,6 +13,7 @@ export { UsageTab } from './UsageTab';
 export { ConfirmationModal } from './ConfirmationModal';
 export { ToastNotification } from './ToastNotification';
 export { N8nFullscreenOverlay } from './N8nFullscreenOverlay';
+export { ScaleTab } from './ScaleTab';
 export { CAPABILITIES } from './types';
 export type { SettingsModalProps, Tab } from './types';
 

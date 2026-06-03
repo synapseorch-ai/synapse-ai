@@ -4,7 +4,7 @@ checkpointing, loop guards, and yielding SSE events.
 """
 import asyncio
 import time
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Awaitable, Callable
 
 import anyio
 
@@ -20,10 +20,20 @@ MAX_NESTED_DEPTH = 3
 class OrchestrationEngine:
     """Runs an orchestration by walking through its step graph."""
 
-    def __init__(self, orchestration: Orchestration, server_module, depth: int = 0):
+    def __init__(
+        self,
+        orchestration: Orchestration,
+        server_module,
+        depth: int = 0,
+        cancel_hook: Callable[[], Awaitable[bool]] | None = None,
+    ):
         self.orch = orchestration
         self.server_module = server_module
         self.depth = depth  # 0 = top-level run; >0 = nested sub-orchestration
+        # Optional async callable returning True when the run should be cancelled.
+        # Used by distributed workers to check Redis instead of the in-memory set.
+        # V1 never sets this — cancel_hook=None uses the existing in-memory check.
+        self.cancel_hook = cancel_hook
         self.step_map: dict[str, StepConfig] = {s.id: s for s in orchestration.steps}
         self.executors = STEP_EXECUTORS
         self.agent_names: dict[str, str] = self._load_agent_names()
@@ -98,10 +108,20 @@ class OrchestrationEngine:
             # before the next step starts sending new requests.
             await anyio.sleep(0)
 
-            # Check if this run was cancelled via the cancel endpoint
+            # Check if this run was cancelled via the cancel endpoint.
+            # cancel_hook (set by distributed workers) checks Redis; the default
+            # path checks the in-memory _cancelled_run_ids set (V1 / standalone).
             from .state import _cancelled_run_ids
-            if run.run_id in _cancelled_run_ids:
+            _is_cancelled = False
+            if self.cancel_hook:
+                try:
+                    _is_cancelled = await self.cancel_hook()
+                except Exception:
+                    pass
+            if not _is_cancelled and run.run_id in _cancelled_run_ids:
                 _cancelled_run_ids.discard(run.run_id)
+                _is_cancelled = True
+            if _is_cancelled:
                 run.status = "cancelled"
                 print(f"DEBUG ENGINE: 🛑 run '{run.run_id}' cancelled by request", flush=True)
                 break

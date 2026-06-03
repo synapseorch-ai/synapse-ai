@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synapse-worker
+  labels:
+    app: synapse-worker
+spec:
+  replicas: 2  # KEDA ScaledObject overrides this
+  selector:
+    matchLabels:
+      app: synapse-worker
+  template:
+    metadata:
+      labels:
+        app: synapse-worker
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: synapse-worker:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9000
+              name: health
+          env:
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: synapse-secrets
+                  key: redis-url
+            - name: SCALE_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: synapse-secrets
+                  key: postgres-url
+            - name: WORKER_CONCURRENCY
+              value: "20"
+            - name: WORKER_JOB_TIMEOUT
+              value: "3600"
+            - name: WORKER_HEALTH_PORT
+              value: "9000"
+            - name: SYNAPSE_DATA_DIR
+              value: "/data"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: synapse-data-pvc
