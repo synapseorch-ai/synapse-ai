@@ -75,12 +75,38 @@ Then open `http://localhost:3000`. See the [Docker guide](https://docs.synapseor
 
 ---
 
+## Scale Mode
+
+Run unlimited agents and orchestrations concurrently. When you need to go beyond a single process, the distributed scale layer handles the load:
+
+- **Redis Cluster** — job queue, SSE event streams, pub/sub cancellation signals, auto-failover
+- **ARQ worker fleet** — 1 to 100+ independent workers, each running up to 20 concurrent orchestrations; autoscale with KEDA on queue depth
+- **PgBouncer** — multiplexes hundreds of worker connections into a small, stable Postgres pool
+- **S3 artifact storage** — stream large file outputs directly to AWS S3, Cloudflare R2, or MinIO
+- **Multi-tenant quotas** — per-team or per-customer concurrent run limits with HTTP 429 enforcement
+- **Per-step checkpoint recovery** — worker crashes don't lose jobs; the next worker resumes from the last completed step
+
+Three Docker images — pull only what you need:
+
+```bash
+docker pull synapseorchai/synapse-ai:latest             # full app (standalone mode)
+docker pull synapseorchai/synapse-ai-api-server:latest  # stateless API server (scale mode)
+docker pull synapseorchai/synapse-ai-worker:latest      # worker process (scale mode, run as many as needed)
+```
+
+The `docker-compose.yml` in the repo spins up the full stack. Production K8s manifests are in `infra/k8s/`.
+
+📖 [**Scale Mode docs →**](https://docs.synapseorch.com/scale/overview)
+
+---
+
 ## What Makes Synapse Different
 
 - **Multi-Model Orchestrations** — Run a different LLM at every step. Use a fast model for routing, a powerful one for analysis. You control where the compute goes.
 - **Deterministic DAG Execution** — Orchestrations follow the exact path you designed. No hallucinated detours.
 - **Turn Anything Into a Tool** — Python scripts, REST APIs, webhooks, MCP servers, or entire orchestrations — all become agent-callable tools.
 - **Human-in-the-Loop** — Pause workflows for human review. Resumable across restarts. Connect via UI, Slack, Telegram, or any messaging channel.
+- **Scales to Millions of Requests** — The distributed scale layer separates API servers, Redis job queues, and independent worker processes so you can run any number of agents or orchestrations concurrently. Start on one machine, grow to a Kubernetes cluster — the V2 API never changes.
 - **Local-First, No Lock-In** — Full local operation with Ollama. Mix local and cloud models freely. Your data stays yours.
 - **Built-In Scheduling & Messaging** — Cron-based automation with results pushed to Slack, Discord, Telegram, Teams, or WhatsApp.
 - **14+ LLM Providers** — Cloud, local, and CLI providers including Ollama, OpenAI, Anthropic, Gemini, xAI, DeepSeek, AWS Bedrock, and more.
@@ -122,7 +148,8 @@ https://github.com/user-attachments/assets/282cc99d-cdea-4ad0-b648-f22112c6e295
 | **AI Builder** | A meta-agent that designs and materializes orchestrations from natural language. [Docs →](https://docs.synapseorch.com/orchestrations/ai-builder) |
 | **Schedules** | Cron/interval automation with messaging notifications. [Docs →](https://docs.synapseorch.com/integrations/scheduling) |
 | **Messaging** | Slack, Discord, Telegram, Teams, WhatsApp — with multi-agent mode. [Docs →](https://docs.synapseorch.com/integrations/messaging) |
-| **REST API** | Trigger agents and orchestrations programmatically from any application. [Docs →](https://docs.synapseorch.com/api/overview) |
+| **Scale Mode** | Distributed execution layer: Redis job queue, independent worker fleet, per-step Postgres checkpoints, S3 artifact storage, and multi-tenant quotas. [Docs →](https://docs.synapseorch.com/scale/overview) |
+| **V2 API** | Stable versioned REST API for building products on top of Synapse — enqueue, stream, cancel, webhooks. [Docs →](https://docs.synapseorch.com/api/overview) |
 | **Vault** | Persistent file storage shared across agents and sessions. [Docs →](https://docs.synapseorch.com/vault) |
 
 ---
