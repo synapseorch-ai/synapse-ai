@@ -369,6 +369,11 @@ def check_python():
     if v < (3, 11):
         err(f"Python 3.11+ required. You have {v.major}.{v.minor}.{v.micro}")
         sys.exit(1)
+    if v >= (3, 14):
+        err(f"Python {v.major}.{v.minor} is not yet supported (prebuilt packages are "
+            f"unavailable, and source builds need a C/C++ toolchain).")
+        info("  Install Python 3.11-3.13 from https://www.python.org/downloads/")
+        sys.exit(1)
     ok(f"Python {v.major}.{v.minor}.{v.micro}")
 
     # Check that the venv module is available for this Python installation.
