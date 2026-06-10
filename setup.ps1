@@ -121,12 +121,12 @@ function Test-NodeVersion {
 # ---------------------------------------------------------------------------
 function Install-Python {
     Write-Host ""
-    Write-Host "Installing Python 3.11+..." -ForegroundColor Cyan
-    
+    Write-Host "Installing Python 3.11-3.13..." -ForegroundColor Cyan
+
     # Check if winget is available
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host "Installing Python 3.11 via winget..."
-        winget install --id Python.Python.3.11 -e --accept-source-agreements
+        Write-Host "Installing Python 3.13 via winget..."
+        winget install --id Python.Python.3.13 -e --accept-source-agreements
         Write-Host "[OK] Python installed successfully" -ForegroundColor Green
         Update-Environment
     } else {
@@ -141,8 +141,11 @@ function Test-PythonVersion {
     param([string]$cmd)
     try {
         # We use double quotes for the -c argument as it's more reliable on Windows.
-        # Python will exit with 0 if version >= 3.11, and 1 otherwise.
-        $check = "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)"
+        # Python will exit with 0 if 3.11 <= version < 3.14, and 1 otherwise.
+        # The upper bound keeps us off brand-new releases (e.g. 3.14) that lack
+        # prebuilt wheels for native deps like lxml, which would force a source
+        # build and fail without MSVC build tools.
+        $check = "import sys; sys.exit(0 if (3,11) <= sys.version_info < (3,14) else 1)"
         
         # Use Start-Process or direct execution with 2>$null
         # We check $LASTEXITCODE to determine compatibility
@@ -304,13 +307,13 @@ function Invoke-PrerequisitesCheck {
     $global:PYTHON_CMD = Get-PythonPath
 
     if (-not $global:PYTHON_CMD) {
-        Write-Host "[WARN] Python 3.11+ could not be found." -ForegroundColor Yellow
-        Write-Host "Attempting to install Python 3.11..."
+        Write-Host "[WARN] A supported Python (3.11-3.13) could not be found." -ForegroundColor Yellow
+        Write-Host "Attempting to install Python 3.13..."
         Install-Python
-        
+
         $global:PYTHON_CMD = Get-PythonPath
         if (-not $global:PYTHON_CMD) {
-        throw "Failed to install Python 3.11+ automatically. Please manually install Python 3.11 or higher."
+        throw "Failed to install a supported Python automatically. Please manually install Python 3.11-3.13 from https://www.python.org/downloads/"
     }
 }
 
