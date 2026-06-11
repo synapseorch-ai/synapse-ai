@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synapse-api
+  labels:
+    app: synapse-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: synapse-api
+  template:
+    metadata:
+      labels:
+        app: synapse-api
+    spec:
+      containers:
+        - name: api
+          image: synapseorchai/synapse-ai-api-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8765
+          env:
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: synapse-secrets
+                  key: redis-url
+            - name: SCALE_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: synapse-secrets
+                  key: postgres-url
+            - name: SYNAPSE_DATA_DIR
+              value: "/data"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /docs
+              port: 8765
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: synapse-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: synapse-api
+spec:
+  selector:
+    app: synapse-api
+  ports:
+    - port: 8765
+      targetPort: 8765
+---
+# HPA scales API servers based on CPU (I/O-bound — CPU HPA is appropriate here)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: synapse-api-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: synapse-api
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

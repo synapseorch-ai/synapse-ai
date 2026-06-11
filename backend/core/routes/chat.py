@@ -82,8 +82,16 @@ async def chat_stream(request: ChatRequest):
                 elif etype == "tool_result":
                     yield f"data: {json.dumps({'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': event['preview'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
 
+                elif etype == "llm_reasoning":
+                    # Private chain-of-thought extracted from [REASONING] blocks.
+                    # Rendered as a dedicated "thinking" panel above the tool call
+                    # in the chat UI / orchestration step view.
+                    yield f"data: {json.dumps({'type': 'llm_reasoning', 'reasoning': event['reasoning'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
+
                 elif etype == "llm_thought":
-                    # Forward LLM thought — carries orch_step_id & step_name when inside orchestration
+                    # Action text (tool-call JSON or final-response prose) with
+                    # reasoning already stripped — carries orch_step_id & step_name
+                    # when inside orchestration.
                     yield f"data: {json.dumps({'type': 'llm_thought', 'thought': event['thought'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
 
                 elif etype == "final":

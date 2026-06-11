@@ -30,6 +30,9 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
     If raw_output exceeds the vault threshold (from settings), persist it to vault and return a
     compact JSON reference the LLM can act on with the vault read/search tools.
     Returns raw_output unchanged when under the threshold or vault is disabled.
+
+    In scale mode with S3 configured, the file is also uploaded to S3 for durability
+    and cross-worker access (the local path remains valid for the duration of the run).
     """
     from core.config import load_settings
     settings = load_settings()
@@ -54,6 +57,16 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
         path.chmod(0o644)
     except Exception:
         pass
+
+    # Upload to S3 for durability in scale mode (fire-and-forget; local path still used by tools)
+    try:
+        from core.s3_storage import get_s3
+        s3 = get_s3()
+        if s3:
+            s3_rel_key = f"vault/tool_outputs/{path.name}"
+            s3.upload_text(s3_rel_key, content)
+    except Exception:
+        pass  # S3 upload failure must never break local execution
 
     total_lines = content.count("\n") + 1
     return json.dumps({
@@ -89,21 +102,34 @@ def expand_vault_mentions(message: str) -> str:
     """
     def _replace(match: re.Match) -> str:
         rel = match.group(1).strip()
+
         # Prevent path traversal
         try:
             resolved = (_VAULT_USER_DIR / rel).resolve()
             if not str(resolved).startswith(str(_VAULT_USER_DIR.resolve())):
-                return match.group(0)  # leave as-is if traversal attempt
+                return match.group(0)
         except Exception:
             return match.group(0)
 
-        if not resolved.exists() or not resolved.is_file():
-            return match.group(0)  # leave as-is if file not found
+        content: str | None = None
 
+        # Try S3 first in scale mode
         try:
-            content = resolved.read_text(encoding="utf-8")
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                content = s3.download_text(f"vault/{rel}")
         except Exception:
-            return match.group(0)
+            pass
+
+        # Fall back to local filesystem
+        if content is None:
+            if not resolved.exists() or not resolved.is_file():
+                return match.group(0)
+            try:
+                content = resolved.read_text(encoding="utf-8")
+            except Exception:
+                return match.group(0)
 
         return f"@[{rel}]\n```\n{content}\n```"
 
@@ -116,9 +142,49 @@ def _safe_path(path: str) -> Path:
     return p
 
 
+def _ensure_local_path(path: str) -> str:
+    """
+    If path doesn't exist locally but the file is a user vault file, try to download
+    it from S3 (scale mode) to a temp location and return the temp path.
+    Returns the original path if no S3 download is needed or possible.
+    """
+    p = Path(path)
+    if p.exists():
+        return path
+
+    vault_root = _VAULT_USER_DIR.resolve()
+    try:
+        resolved = p.resolve()
+        if not str(resolved).startswith(str(vault_root)):
+            return path  # not a vault file; leave as-is (will 404 below)
+        rel = str(resolved.relative_to(vault_root))
+    except Exception:
+        return path
+
+    try:
+        from core.s3_storage import get_s3
+        s3 = get_s3()
+        if not s3:
+            return path
+        content = s3.download_text(f"vault/{rel}")
+        if content is None:
+            return path
+        # Write to a temp file alongside the vault directory
+        import tempfile
+        tmp_dir = Path(tempfile.gettempdir()) / "synapse_vault_cache"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[/\\]", "_", rel)
+        tmp_path = tmp_dir / safe
+        tmp_path.write_text(content, encoding="utf-8")
+        return str(tmp_path)
+    except Exception:
+        return path
+
+
 def tool_read_file_chunk(path: str, start_line: int, end_line: int) -> str:
     """Read lines [start_line, end_line] (1-indexed, inclusive) from any file."""
     try:
+        path = _ensure_local_path(path)
         p = _safe_path(path)
         if not p.exists():
             return json.dumps({"error": f"File not found: {path}"})
@@ -141,6 +207,7 @@ def tool_read_file_chunk(path: str, start_line: int, end_line: int) -> str:
 def tool_search_file(path: str, query: str, context_lines: int = 5) -> str:
     """Grep-like search: returns matching lines with ±context_lines of surrounding context."""
     try:
+        path = _ensure_local_path(path)
         p = _safe_path(path)
         if not p.exists():
             return json.dumps({"error": f"File not found: {path}"})
@@ -186,6 +253,7 @@ def tool_read_json_chunk(path: str, offset: int = 0, limit: int = 50) -> str:
     - Object root → returns keys[offset : offset+limit] with their values
     """
     try:
+        path = _ensure_local_path(path)
         p = _safe_path(path)
         if not p.exists():
             return json.dumps({"error": f"File not found: {path}"})
@@ -237,6 +305,7 @@ def tool_search_json(path: str, query: str) -> str:
     Returns up to 20 matching {json_path, value} pairs.
     """
     try:
+        path = _ensure_local_path(path)
         p = _safe_path(path)
         if not p.exists():
             return json.dumps({"error": f"File not found: {path}"})

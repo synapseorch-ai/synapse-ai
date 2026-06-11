@@ -36,6 +36,13 @@ def load_settings():
         "local_compatible_models": "",
         "openai_compatible_embed_models": "",
         "local_compatible_embed_models": "",
+        "huggingface_token": "",
+        "huggingface_models": "",
+        "huggingface_max_new_tokens": 1024,
+        "anthropic_cli_models": "",
+        "gemini_cli_models": "",
+        "codex_cli_models": "",
+        "github_copilot_cli_models": "",
         "bedrock_api_key": "",
         "bedrock_inference_profile": "",
         "embedding_model": "",
@@ -50,8 +57,21 @@ def load_settings():
         "global_config": {},
         "vault_enabled": True,
         "vault_threshold": 100000,
-        "auto_compact_enabled": False,
-        "auto_compact_threshold": 100000,
+        "auto_compact_enabled": True,
+        "auto_compact_threshold": 80000,
+        # Prompt caching: decorate provider payloads with cache_control markers
+        # so subsequent ReAct turns reuse the cached system + tools prefix.
+        # ~50–80% cost reduction on multi-turn agents at the cost of a 25% write
+        # surcharge on the first turn. Disable only if a provider misbehaves.
+        "prompt_cache_enabled": True,
+        # Transform step Python execution runtime.
+        # "docker" (default): runs in the sandbox-python container — 512 MB / 1 CPU /
+        # 60s, isolated from the host.
+        # "host": runs as a subprocess on the host with full RAM, GPU, filesystem,
+        # and network access. Required for HuggingFace / RecursiveMAS workflows that
+        # need torch + GPU but removes the sandbox security boundary. Self-hosted
+        # single-user deployments only.
+        "transform_runtime": "docker",
         "allow_db_write": False,
         "coding_agent_enabled": True,
         "report_agent_enabled": True,
@@ -61,19 +81,45 @@ def load_settings():
         "login_enabled": False,
         "login_username": "",
         "login_password_hash": "",
+        # Scale / distributed execution
+        "redis_url": "",
+        "scale_postgres_url": "",
+        "scale_mode_enabled": False,
+        "scale_auto_sync": False,
+        "worker_concurrency": 10,
+        "otlp_endpoint": "",
+        "metrics_token": "",
+        "max_global_queue_depth": 1_000_000,
+        "rate_limit_per_tenant_rps": 1000,
+        "pgbouncer_mode": False,
+        "num_queue_shards": 1,
     }
     
     if not os.path.exists(SETTINGS_FILE):
-        return default_settings
-    
-    try:
-        with open(SETTINGS_FILE, 'r') as f:
-            data = json.load(f)
-            # Merge defaults
-            return {**default_settings, **data}
-    except Exception as e:
-        print(f"DEBUG: Error loading settings: {e}")
-        return default_settings
+        file_settings = {}
+    else:
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                file_settings = json.load(f)
+        except Exception as e:
+            print(f"DEBUG: Error loading settings: {e}")
+            file_settings = {}
+
+    settings = {**default_settings, **file_settings}
+
+    # In scale worker mode, inject_llm_env() populates SYNAPSE_SETTING_* env vars
+    # from Postgres. Overlay them here so all callers of load_settings() see the
+    # Postgres-sourced values without needing access to the local settings.json.
+    _prefix = "SYNAPSE_SETTING_"
+    for _env_key, _env_val in os.environ.items():
+        if _env_key.startswith(_prefix):
+            _setting_key = _env_key[len(_prefix):].lower()
+            try:
+                settings[_setting_key] = json.loads(_env_val)
+            except Exception:
+                settings[_setting_key] = _env_val
+
+    return settings
 
 
 def get_or_create_jwt_secret() -> str:

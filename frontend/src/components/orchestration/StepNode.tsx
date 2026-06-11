@@ -18,6 +18,8 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const isEntry: boolean = data.isEntry;
     const runStatus: string | undefined = data.runStatus;
     const agentName: string | undefined = data.agentName;
+    // Last-run cache stats injected by WorkflowCanvas: { hits, misses } per step.
+    const cacheStats: { hits?: number; misses?: number } | undefined = data.cacheStats;
     const meta = STEP_TYPE_META[step.type as StepType];
     if (!meta) return null;
     const IconComp = ICONS[meta.icon] || Bot;
@@ -168,6 +170,22 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                 {step.max_iterations && step.max_iterations > 1 && step.max_iterations < 100 && (
                     <div className="text-[10px] text-purple-400">max {step.max_iterations}x</div>
                 )}
+
+                {/* Cache hit-rate badge — only shown after a run with cache activity */}
+                {cacheStats && ((cacheStats.hits ?? 0) + (cacheStats.misses ?? 0)) > 0 && (() => {
+                    const hits = cacheStats.hits ?? 0;
+                    const total = hits + (cacheStats.misses ?? 0);
+                    const rate = hits / total;
+                    const color = rate >= 0.8 ? 'text-emerald-400 bg-emerald-950/40 border-emerald-800/40'
+                                : rate >= 0.4 ? 'text-amber-400 bg-amber-950/40 border-amber-800/40'
+                                : 'text-zinc-400 bg-zinc-900 border-zinc-700';
+                    return (
+                        <div className={`text-[10px] inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${color}`}>
+                            <span>cache:</span>
+                            <span className="font-mono">{hits}/{total}</span>
+                        </div>
+                    );
+                })()}
             </div>
 
             {/* Output handles — right side */}

@@ -62,6 +62,10 @@ function checkPrerequisites() {
         console.error(`Error: Python 3.11+ required, found ${major}.${minor}. Install from https://www.python.org/`);
         process.exit(1);
       }
+      if (major > 3 || (major === 3 && minor >= 14)) {
+        console.error(`Error: Python ${major}.${minor} is not yet supported (prebuilt packages are unavailable, and source builds need a C/C++ toolchain). Install Python 3.11–3.13 from https://www.python.org/downloads/`);
+        process.exit(1);
+      }
     }
   }
   if (!checkCmd('npx')) {
@@ -133,7 +137,11 @@ function installPipDeps(reqFile) {
       }, STALE_THRESHOLD);
     }
 
-    const pip = spawn(venvPip(), ['install', '-r', reqFile, '--progress-bar', 'off'], {
+    // Invoke pip via the venv's python (-m pip) rather than spawning the
+    // Scripts/pip.exe shim directly. On Windows a freshly created venv can come
+    // up without a working pip.exe wrapper (the pip *module* is present but the
+    // .exe shim is missing/locked), which makes a direct spawn fail with ENOENT.
+    const pip = spawn(venvPython(), ['-m', 'pip', 'install', '-r', reqFile, '--progress-bar', 'off'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -189,12 +197,6 @@ function venvPython() {
     : path.join(VENV_DIR, 'bin', 'python');
 }
 
-function venvPip() {
-  return IS_WIN
-    ? path.join(VENV_DIR, 'Scripts', 'pip.exe')
-    : path.join(VENV_DIR, 'bin', 'pip');
-}
-
 async function setupVenv() {
   const currentHash = getRequirementsHash();
   const savedHash = fs.existsSync(HASH_FILE) ? fs.readFileSync(HASH_FILE, 'utf8').trim() : null;
@@ -211,6 +213,12 @@ async function setupVenv() {
       process.exit(1);
     }
     console.log(' done.');
+
+    // Defensively bootstrap pip inside the venv. A venv occasionally comes up
+    // without a usable pip (no .exe shim, or pip module not seeded); ensurepip
+    // + upgrade guarantees `python -m pip` works before we install deps.
+    spawnSync(venvPython(), ['-m', 'ensurepip', '--upgrade'], { stdio: 'ignore' });
+    spawnSync(venvPython(), ['-m', 'pip', 'install', '--upgrade', 'pip'], { stdio: 'ignore' });
   }
 
   console.log('Installing Python dependencies...');

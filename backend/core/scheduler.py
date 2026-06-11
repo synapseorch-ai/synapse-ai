@@ -255,6 +255,7 @@ class ScheduleManager:
             status = "error"
         finally:
             sched_log.run_end(status)
+            sched_log.close()
 
         # Step 3: Update last_run_at in store
         schedules = _load_schedules()
@@ -298,6 +299,7 @@ class ScheduleManager:
                     final_response = event.get("response", "")
         finally:
             agent_log.run_end("completed")
+            agent_log.close()
 
         return final_response
 

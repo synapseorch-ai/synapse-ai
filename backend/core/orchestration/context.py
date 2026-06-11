@@ -472,14 +472,22 @@ def _origin_label(origin: dict | None, execution: int) -> str:
     return otype or "re-invocation"
 
 
-def _render_full_history(memory: list[dict]) -> str:
-    """Render every recorded turn as inputs → tools → output."""
+def _render_full_history(memory: list[dict], skip_last_output: bool = False) -> str:
+    """Render every recorded turn as inputs -> tools -> output.
+
+    `skip_last_output`: when the caller is also rendering the most recent
+    turn's output as a standalone YOUR PREVIOUS OUTPUT section, set this to
+    True so the history doesn't duplicate that body. The last turn still
+    shows its tools/inputs/label; only the Output: block is replaced with
+    a pointer back to the standalone section.
+    """
     lines: list[str] = ["## REVISION HISTORY (all prior turns)"]
-    for entry in memory:
+    last_idx = len(memory) - 1
+    for idx, entry in enumerate(memory):
         execution = entry.get("execution", 0)
         origin = entry.get("origin") or {}
         label = _origin_label(origin, execution)
-        lines.append(f"\n### Turn {execution} — {label}")
+        lines.append(f"\n### Turn {execution} - {label}")
 
         # Inputs at the time of this turn
         inputs = entry.get("inputs") or {}
@@ -509,10 +517,13 @@ def _render_full_history(memory: list[dict]) -> str:
         # Final output produced on that turn
         final_out = str(trace.get("final_output") or "")
         if final_out:
-            if len(final_out) > 800:
-                from .summarizer import smart_truncate
-                final_out = smart_truncate(final_out, 800)
-            lines.append(f"Output:\n{final_out}")
+            if skip_last_output and idx == last_idx:
+                lines.append("Output: (see YOUR PREVIOUS OUTPUT section above)")
+            else:
+                if len(final_out) > 800:
+                    from .summarizer import smart_truncate
+                    final_out = smart_truncate(final_out, 800)
+                lines.append(f"Output:\n{final_out}")
 
     return "\n".join(lines)
 
@@ -564,7 +575,17 @@ def _format_context_value(
     label: str,
     max_chars: int = 5000,
 ) -> str:
-    """Format a single shared_state value for inclusion in the prompt."""
+    """Format a single shared_state value for inclusion in the prompt.
+
+    Format:
+        ### <key>
+        Source: <producer agent or upstream description>
+        <value>
+
+    The bare key (no brackets) is used as the header so the heading cannot be
+    visually confused with `{state.<key>}` template placeholders. The Source
+    line carries provenance (which agent / step produced this value).
+    """
     # List values from loop/parallel accumulation
     if isinstance(val, list) and val and isinstance(val[0], dict) and "result" in val[0]:
         parts = []
@@ -575,16 +596,17 @@ def _format_context_value(
             if len(result_str) > max_chars:
                 from .summarizer import smart_truncate
                 result_str = smart_truncate(result_str, max_chars)
-            iter_label = f" (Iteration {iteration})" if iteration else ""
-            source = f"{agent} → {key}{iter_label}" if agent else f"{key}{iter_label}"
-            parts.append(f"### [{source}]\n{result_str}")
+            iter_suffix = f" (iteration {iteration})" if iteration else ""
+            source = f"{agent} → {key}" if agent else f"loop accumulator → {key}"
+            parts.append(f"### {key}{iter_suffix}\nSource: {source}\n{result_str}")
         return "\n\n".join(parts)
 
     val_str = str(val)
     if len(val_str) > max_chars:
         from .summarizer import smart_truncate
         val_str = smart_truncate(val_str, max_chars)
-    return f"### [{label}]\n{val_str}"
+    source = label if label and label != key else "shared state"
+    return f"### {key}\nSource: {source}\n{val_str}"
 
 
 def build_origin_aware_context(
@@ -592,18 +614,21 @@ def build_origin_aware_context(
     run: "OrchestrationRun",
     engine: "OrchestrationEngine",
     transition: TransitionContext,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """
-    Build (prompt, system_prompt_extra) for an agent/tool/llm step using
-    the structured, origin-aware format.
+    Build (prompt, system_prompt_extra, system_prompt_prefix) for an
+    agent/tool/llm step using the structured, origin-aware format.
 
-    Returns two strings:
-      prompt              — the full user-turn message to send to the LLM
-      system_prompt_extra — short orchestration-awareness block to append to
-                            the agent's system prompt (can be empty string)
+    Returns three strings:
+      prompt               full user-turn message to send to the LLM
+      system_prompt_extra  short orchestration-awareness block APPENDED to
+                           the agent's system prompt (can be empty)
+      system_prompt_prefix iteration banner PREPENDED to the system prompt
+                           on re-runs (execution_number > 1); empty otherwise
     """
     import re
     sections: list[str] = []
+    is_rerun = transition.execution_number > 1
 
     # ------------------------------------------------------------------
     # Section: ROLE
@@ -648,36 +673,99 @@ def build_origin_aware_context(
     sections.append("\n".join(role_lines))
 
     # ------------------------------------------------------------------
-    # Section: EVALUATOR FEEDBACK (only on evaluator re-invocation)
+    # Section: MAIN GOAL (always present)
+    # The user's original request is the root of every step in this
+    # workflow. Keep it at the top of every prompt so re-runs, branching,
+    # and deep step chains do not lose sight of what we are ultimately
+    # solving for. Sourced from run.shared_state["user_input"] which
+    # the engine seeds on the first step.
     # ------------------------------------------------------------------
-    if transition.origin_type == "evaluator" and (
-        transition.routing_decision or transition.routing_reasoning
-    ):
-        feedback_lines = ["## EVALUATOR FEEDBACK"]
-        if transition.routing_decision:
-            feedback_lines.append(f"Decision: \"{transition.routing_decision}\"")
-        if transition.routing_reasoning:
-            feedback_lines.append(f"Reason: {transition.routing_reasoning}")
+    main_goal = run.shared_state.get("user_input")
+    if main_goal:
+        goal_text = str(main_goal).strip()
+        if len(goal_text) > 2000:
+            from .summarizer import smart_truncate
+            goal_text = smart_truncate(goal_text, 2000)
+        sections.append(
+            "## MAIN GOAL (original user request)\n"
+            "Everything this workflow does exists to solve this. "
+            "Keep it in mind when deciding what to produce:\n\n"
+            f"{goal_text}"
+        )
 
-        # Previous output summary
-        if step.output_key and step.output_key in run.shared_state:
-            prev_out = str(run.shared_state[step.output_key])
-            if len(prev_out) > 2000:
-                from .summarizer import smart_truncate
-                prev_out = smart_truncate(prev_out, 2000)
-            feedback_lines.append(f"\n### Your previous output\n{prev_out}")
+    # ------------------------------------------------------------------
+    # Section: WHY YOU ARE RUNNING AGAIN (any re-run, any origin)
+    # ------------------------------------------------------------------
+    if is_rerun:
+        why_lines = [
+            "## WHY YOU ARE RUNNING AGAIN",
+            f"This is execution #{transition.execution_number} of this step.",
+        ]
+        if transition.origin_type == "evaluator":
+            if transition.routing_decision:
+                why_lines.append(f"Evaluator decision: \"{transition.routing_decision}\"")
+            if transition.routing_reasoning:
+                why_lines.append(f"Evaluator reasoning: {transition.routing_reasoning}")
+            why_lines.append(
+                "An evaluator reviewed your previous output and routed you back. "
+                "See HOW TO PROCEED below."
+            )
+        elif transition.origin_type == "loop":
+            iter_str = (
+                f"iteration {transition.loop_iteration} of {transition.loop_total}"
+                if transition.loop_iteration and transition.loop_total
+                else f"iteration #{transition.execution_number}"
+            )
+            why_lines.append(
+                f"You are inside a loop ({iter_str}). See HOW TO PROCEED below."
+            )
+        else:
+            why_lines.append(
+                "The workflow has routed control back to this step. See HOW TO PROCEED below."
+            )
+        sections.append("\n".join(why_lines))
 
-        sections.append("\n".join(feedback_lines))
+    # ------------------------------------------------------------------
+    # Section: YOUR PREVIOUS OUTPUT (any re-run)
+    # ------------------------------------------------------------------
+    if is_rerun and step.output_key and step.output_key in run.shared_state:
+        prev_out = str(run.shared_state[step.output_key])
+        if len(prev_out) > 2000:
+            from .summarizer import smart_truncate
+            prev_out = smart_truncate(prev_out, 2000)
+        sections.append(
+            "## YOUR PREVIOUS OUTPUT\n"
+            "This is what you produced last turn. Read it before responding:\n\n"
+            f"{prev_out}"
+        )
 
     # ------------------------------------------------------------------
     # Section: YOUR PREVIOUS WORK / REVISION HISTORY (on any re-invocation)
     # ------------------------------------------------------------------
-    if transition.execution_number > 1:
+    if is_rerun:
         memory = get_execution_memory(run, step.id)
         if memory:
-            if step.include_full_history:
-                sections.append(_render_full_history(memory))
+            use_full = (
+                step.include_full_history
+                if step.include_full_history is not None
+                else True
+            )
+            # Detect whether the standalone YOUR PREVIOUS OUTPUT section was
+            # rendered above (same condition used there). If so, avoid
+            # duplicating the most recent turn's body in the history.
+            previous_output_rendered = bool(
+                step.output_key and step.output_key in run.shared_state
+            )
+            if use_full:
+                # With only one prior turn, the history would just restate
+                # YOUR PREVIOUS OUTPUT under a turn label. Skip it then.
+                if len(memory) > 1:
+                    sections.append(_render_full_history(
+                        memory, skip_last_output=previous_output_rendered
+                    ))
             else:
+                # Last-attempt mode shows only tools/inputs (no output body),
+                # so it never duplicates YOUR PREVIOUS OUTPUT.
                 sections.append(_render_last_attempt(memory[-1]))
 
     # ------------------------------------------------------------------
@@ -711,9 +799,10 @@ def build_origin_aware_context(
     # ------------------------------------------------------------------
     context_parts = []
 
-    # Always include user_input unless explicitly in input_keys
-    if "user_input" in run.shared_state and "user_input" not in (step.input_keys or []):
-        context_parts.append(f"### [user_input]\n{run.shared_state['user_input']}")
+    # NOTE: user_input is rendered at the top under "## MAIN GOAL" so it is
+    # not duplicated here. If a step explicitly lists user_input in its
+    # input_keys, the explicit-input loop below will skip it for the same
+    # reason.
 
     # Human response keys (always inject unless already listed)
     human_keys = {"human_response"}
@@ -730,11 +819,11 @@ def build_origin_aware_context(
             if len(val) > 3000:
                 from .summarizer import smart_truncate
                 val = smart_truncate(val, 3000)
-            context_parts.append(f"### [{hkey}]\n{val}")
+            context_parts.append(f"### {hkey}\nSource: human response\n{val}")
 
-    # Explicitly declared input_keys
+    # Explicitly declared input_keys (skip user_input — shown under MAIN GOAL)
     for key in (step.input_keys or []):
-        if key not in run.shared_state:
+        if key not in run.shared_state or key == "user_input":
             continue
         val = run.shared_state[key]
         label = key
@@ -742,14 +831,48 @@ def build_origin_aware_context(
             (s for s in engine.step_map.values() if s.output_key == key), None
         )
         if producer and producer.agent_id and producer.agent_id in engine.agent_names:
-            label = f"{engine.agent_names[producer.agent_id]} \u2192 {key}"
+            label = f"{engine.agent_names[producer.agent_id]} → {key}"
         context_parts.append(_format_context_value(key, val, label))
 
     if context_parts:
         sections.append("## CONTEXT FROM PREVIOUS STEPS\n" + "\n\n".join(context_parts))
 
     # ------------------------------------------------------------------
-    # Section: TASK
+    # Section: HOW TO PROCEED (any re-run)
+    # Loose framing: agent decides between refine / redo / push back. The
+    # only firm requirement is that the new output explain the change (or
+    # the deliberate non-change) relative to the previous attempt.
+    # ------------------------------------------------------------------
+    if is_rerun:
+        if transition.origin_type == "loop":
+            proceed_block = (
+                "## HOW TO PROCEED\n"
+                "This is another iteration of a loop. Your previous iteration's output and "
+                "any sibling iterations are shown above.\n\n"
+                "Use your judgement: produce the next item, refine, or take a different angle. "
+                "Just don't silently re-emit what you produced before.\n\n"
+                "At the top of your output, include a brief note (1-3 lines) explaining what "
+                "this iteration adds or changes relative to the previous one."
+            )
+        else:
+            proceed_block = (
+                "## HOW TO PROCEED\n"
+                "You are running this step again. Your previous output and the reason for re-running "
+                "are shown above. Read them before responding.\n\n"
+                "You decide how to respond — any of these are valid:\n"
+                "  - Refine the previous output (small targeted edits).\n"
+                "  - Redo it from scratch if it was fundamentally off.\n"
+                "  - Push back if you believe the feedback is mistaken: explain why and either "
+                "defend the previous output or propose a different correction.\n\n"
+                "Whichever path you take, include a brief reasoning note at the top of your output "
+                "(1-3 lines) that explains:\n"
+                "  - What changed from your previous output (or why you kept it), and\n"
+                "  - Why you believe this is the right response to the feedback."
+            )
+        sections.append(proceed_block)
+
+    # ------------------------------------------------------------------
+    # Section: TASK (first run) / ORIGINAL TASK reference (re-run)
     # ------------------------------------------------------------------
     prompt_template = step.prompt_template or run.shared_state.get("user_input", "")
 
@@ -760,12 +883,17 @@ def build_origin_aware_context(
 
     task_text = re.sub(r"\{state\.(\w+)\}", replace_ref, prompt_template)
 
-    task_header = "## TASK (REVISION)" if transition.origin_type == "evaluator" else "## TASK"
-    task_suffix = ""
-    if transition.origin_type == "evaluator" and transition.routing_reasoning:
-        task_suffix = "\n\nAddress the evaluator's feedback above in your revised output."
-    elif transition.origin_type == "human_response":
-        task_suffix = "\n\nIncorporate the human's input above."
+    if is_rerun:
+        task_header = "## ORIGINAL TASK (reference only)"
+        task_suffix = (
+            "\n\nThis is the original task statement, included for reference. "
+            "Use it together with YOUR PREVIOUS OUTPUT and HOW TO PROCEED above to decide your response."
+        )
+    else:
+        task_header = "## TASK"
+        task_suffix = ""
+        if transition.origin_type == "human_response":
+            task_suffix = "\n\nIncorporate the human's input above."
 
     sections.append(f"{task_header}\n{task_text}{task_suffix}")
 
@@ -775,7 +903,9 @@ def build_origin_aware_context(
     prompt = "\n\n---\n\n".join(sections)
 
     # ------------------------------------------------------------------
-    # System prompt addition — datetime + workflow graph + step position
+    # System prompt addition — workflow graph + step position
+    # (Date/time is injected separately by build_system_prompt for every
+    # agent including orchestration steps — do not duplicate it here.)
     # ------------------------------------------------------------------
     # Count completed executions per step for the graph (×N badges).
     exec_counts: dict[str, int] = {}
@@ -784,13 +914,11 @@ def build_origin_aware_context(
         if sid:
             exec_counts[sid] = exec_counts.get(sid, 0) + 1
     # Use execution_number for the active step (counts this in-flight run).
-    if transition.execution_number > 1:
+    if is_rerun:
         exec_counts[step.id] = transition.execution_number
 
     graph_md = build_workflow_graph_markdown(engine.orch, step.id, exec_counts)
     sys_lines = [
-        datetime_context(),
-        "",
         graph_md,
         "",
         f"You are currently executing step **\"{step_name}\"** (execution #{transition.execution_number}).",
@@ -803,4 +931,26 @@ def build_origin_aware_context(
         )
     system_prompt_extra = "\n".join(sys_lines)
 
-    return prompt, system_prompt_extra
+    # ------------------------------------------------------------------
+    # System prompt PREFIX: iteration banner (re-runs only).
+    # Prepended to the system prompt so a long agent role description
+    # cannot drown out the iteration signal.
+    # ------------------------------------------------------------------
+    system_prompt_prefix = ""
+    if is_rerun:
+        why_short = ""
+        if transition.origin_type == "evaluator" and transition.routing_decision:
+            why_short = f" (evaluator routed back: \"{transition.routing_decision}\")"
+        elif transition.origin_type == "loop" and transition.loop_iteration:
+            why_short = f" (loop iteration {transition.loop_iteration})"
+        system_prompt_prefix = (
+            "ITERATION CONTEXT - READ BEFORE RESPONDING\n"
+            f"You are on execution #{transition.execution_number} of step "
+            f"\"{step_name}\"{why_short}. This is NOT your first attempt.\n"
+            "In the user message below, read YOUR PREVIOUS OUTPUT, WHY YOU ARE RUNNING AGAIN, "
+            "and HOW TO PROCEED. Then decide how to respond — refine, redo, or push back on the "
+            "feedback if you think it is mistaken. Whichever you choose, start your output with a "
+            "brief reasoning note explaining what changed (or why you kept the previous output)."
+        )
+
+    return prompt, system_prompt_extra, system_prompt_prefix

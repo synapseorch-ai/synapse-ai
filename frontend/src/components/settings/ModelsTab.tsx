@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Check, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Info, Loader2, Terminal } from 'lucide-react';
+import { Check, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Info, Loader2, Terminal, Eye, EyeOff } from 'lucide-react';
 import React, { useState } from 'react';
 
 type BrandIconProps = { className?: string; style?: React.CSSProperties };
@@ -39,6 +39,11 @@ const CliIcon = ({ className }: BrandIconProps) => (
     <Terminal className={className} />
 );
 
+// HuggingFace — yellow circle emoji-mark fallback (no external SVG dependency)
+const HuggingFaceIcon = ({ className, style }: BrandIconProps) => (
+    <span className={className} style={{ ...style, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9em', lineHeight: 1 }} aria-label="HuggingFace">🤗</span>
+);
+
 interface ProviderInfo {
     available: boolean;
     models: string[];
@@ -72,6 +77,12 @@ interface ModelsTabProps {
     localCompatibleKey: string; setLocalCompatibleKey: (v: string) => void;
     localCompatibleModels: string; setLocalCompatibleModels: (v: string) => void;
     localCompatibleEmbedModels: string; setLocalCompatibleEmbedModels: (v: string) => void;
+    huggingfaceToken: string; setHuggingfaceToken: (v: string) => void;
+    huggingfaceModels: string; setHuggingfaceModels: (v: string) => void;
+    anthropicCliModels: string; setAnthropicCliModels: (v: string) => void;
+    geminiCliModels: string; setGeminiCliModels: (v: string) => void;
+    codexCliModels: string; setCodexCliModels: (v: string) => void;
+    githubCopilotCliModels: string; setGithubCopilotCliModels: (v: string) => void;
     // Backward compat
     mode: string; setMode: (v: string) => void;
     localModels: string[]; cloudModels: string[];
@@ -96,6 +107,15 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         icon: OllamaIcon,
         color: '#22c55e',
         description: 'Runs locally on your machine. Private, free, no API key needed.',
+    },
+    huggingface: {
+        label: 'HuggingFace (Local)',
+        icon: HuggingFaceIcon,
+        color: '#facc15',
+        description: 'Run HuggingFace transformers models directly on the host machine. Requires torch + transformers installed and (for large models) a GPU.',
+        keyPlaceholder: 'hf_...',
+        keyLink: { label: 'Get a token at HuggingFace →', url: 'https://huggingface.co/settings/tokens' },
+        keyNote: 'Token is only needed for gated models (Llama, Gemma, etc.). Public models work without it.',
     },
     gemini: {
         label: 'Google Gemini',
@@ -210,8 +230,16 @@ export const ModelsTab = ({
     localCompatibleKey, setLocalCompatibleKey,
     localCompatibleModels, setLocalCompatibleModels,
     localCompatibleEmbedModels, setLocalCompatibleEmbedModels,
+    huggingfaceToken, setHuggingfaceToken,
+    huggingfaceModels, setHuggingfaceModels,
+    anthropicCliModels, setAnthropicCliModels,
+    geminiCliModels, setGeminiCliModels,
+    codexCliModels, setCodexCliModels,
+    githubCopilotCliModels, setGithubCopilotCliModels,
 }: ModelsTabProps) => {
     const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
+    const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
+    const toggleKeyVisible = (k: string) => setVisibleKeys(prev => ({ ...prev, [k]: !prev[k] }));
 
     // Build all available models list for default selector
     const allAvailable: string[] = [];
@@ -302,16 +330,22 @@ export const ModelsTab = ({
                                         <p className="text-[10px] text-zinc-500">{meta.description}</p>
 
                                         {/* API Key input (not for Ollama, Bedrock, or CLI — they have their own blocks) */}
-                                        {key !== 'ollama' && key !== 'bedrock' && key !== 'openai_compatible' && key !== 'local_compatible' && !key.endsWith('_cli') && (
+                                        {key !== 'ollama' && key !== 'bedrock' && key !== 'openai_compatible' && key !== 'local_compatible' && key !== 'huggingface' && !key.endsWith('_cli') && (
                                             <div className="space-y-1.5">
                                                 <label className="text-[10px] uppercase font-bold text-zinc-500">API Key</label>
-                                                <input
-                                                    type="password"
-                                                    value={getKeyValue(key)}
-                                                    onChange={e => setKeyValue(key, e.target.value)}
-                                                    className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors"
-                                                    placeholder={meta.keyPlaceholder}
-                                                />
+                                                <div className="relative">
+                                                    <input
+                                                        type={visibleKeys[key] ? 'text' : 'password'}
+                                                        value={getKeyValue(key)}
+                                                        onChange={e => setKeyValue(key, e.target.value)}
+                                                        className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors pr-8"
+                                                        placeholder={meta.keyPlaceholder}
+                                                    />
+                                                    <button type="button" onClick={() => toggleKeyVisible(key)}
+                                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                                                        {visibleKeys[key] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                                    </button>
+                                                </div>
                                                 {/* Key instructions */}
                                                 {meta.keyNote && (
                                                     <p className="text-[10px] text-zinc-600">{meta.keyNote}</p>
@@ -335,8 +369,14 @@ export const ModelsTab = ({
                                             <div className="space-y-3">
                                                 <div className="space-y-1.5">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">Bedrock API Key</label>
-                                                    <input type="password" value={bedrockApiKey} onChange={e => setBedrockApiKey(e.target.value)}
-                                                        className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors" placeholder="ABSK... or bedrock-api-key..." />
+                                                    <div className="relative">
+                                                        <input type={visibleKeys['bedrock'] ? 'text' : 'password'} value={bedrockApiKey} onChange={e => setBedrockApiKey(e.target.value)}
+                                                            className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors pr-8" placeholder="ABSK... or bedrock-api-key..." />
+                                                        <button type="button" onClick={() => toggleKeyVisible('bedrock')}
+                                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                                                            {visibleKeys['bedrock'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                                        </button>
+                                                    </div>
                                                     {meta.keyNote && (
                                                         <p className="text-[10px] text-zinc-600">{meta.keyNote}</p>
                                                     )}
@@ -397,8 +437,14 @@ export const ModelsTab = ({
                                             <div className="space-y-3">
                                                 <div className="space-y-1.5">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">API Key</label>
-                                                    <input type="password" value={openaiCompatibleKey} onChange={e => setOpenaiCompatibleKey(e.target.value)}
-                                                        className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors" placeholder="sk-..." />
+                                                    <div className="relative">
+                                                        <input type={visibleKeys['openai_compatible'] ? 'text' : 'password'} value={openaiCompatibleKey} onChange={e => setOpenaiCompatibleKey(e.target.value)}
+                                                            className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors pr-8" placeholder="sk-..." />
+                                                        <button type="button" onClick={() => toggleKeyVisible('openai_compatible')}
+                                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                                                            {visibleKeys['openai_compatible'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                                        </button>
+                                                    </div>
                                                 </div>
                                                 <div className="space-y-1">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">Base URL</label>
@@ -426,8 +472,14 @@ export const ModelsTab = ({
                                             <div className="space-y-3">
                                                 <div className="space-y-1.5">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">API Key (optional)</label>
-                                                    <input type="password" value={localCompatibleKey} onChange={e => setLocalCompatibleKey(e.target.value)}
-                                                        className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors" placeholder="Leave blank if not required" />
+                                                    <div className="relative">
+                                                        <input type={visibleKeys['local_compatible'] ? 'text' : 'password'} value={localCompatibleKey} onChange={e => setLocalCompatibleKey(e.target.value)}
+                                                            className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors pr-8" placeholder="Leave blank if not required" />
+                                                        <button type="button" onClick={() => toggleKeyVisible('local_compatible')}
+                                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                                                            {visibleKeys['local_compatible'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                                        </button>
+                                                    </div>
                                                 </div>
                                                 <div className="space-y-1">
                                                     <label className="text-[10px] uppercase font-bold text-zinc-500">Base URL</label>
@@ -446,6 +498,35 @@ export const ModelsTab = ({
                                                     <input type="text" value={localCompatibleEmbedModels} onChange={e => setLocalCompatibleEmbedModels(e.target.value)}
                                                         className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors" placeholder="e.g. bge-m3" />
                                                     <p className="text-[10px] text-zinc-600">Models listed here appear in the embedding model dropdown. Models with &quot;embed&quot; in the name are also auto-detected from /v1/models.</p>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* HuggingFace fields */}
+                                        {key === 'huggingface' && (
+                                            <div className="space-y-3">
+                                                <div className="p-2.5 bg-amber-500/5 border border-amber-500/20 text-[10px] text-amber-300 leading-relaxed">
+                                                    <strong>Requires torch + transformers on the host.</strong> Models load in the backend process and stay in memory. Expect 16-40 GB VRAM for 7B-class models. Without a GPU, inference runs on CPU and will be slow.
+                                                </div>
+                                                <div className="space-y-1.5">
+                                                    <label className="text-[10px] uppercase font-bold text-zinc-500">Access Token (optional)</label>
+                                                    <div className="relative">
+                                                        <input type={visibleKeys['huggingface'] ? 'text' : 'password'} value={huggingfaceToken} onChange={e => setHuggingfaceToken(e.target.value)}
+                                                            className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors pr-8" placeholder="hf_... (required for gated models like Llama, Gemma)" />
+                                                        <button type="button" onClick={() => toggleKeyVisible('huggingface')}
+                                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors">
+                                                            {visibleKeys['huggingface'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                                        </button>
+                                                    </div>
+                                                    <p className="text-[10px] text-zinc-600">Only needed for gated models. Public models load without a token.</p>
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] uppercase font-bold text-zinc-500">Model IDs (one per line or comma-separated)</label>
+                                                    <textarea value={huggingfaceModels} onChange={e => setHuggingfaceModels(e.target.value)} rows={4}
+                                                        className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors font-mono"
+                                                        placeholder={"Qwen/Qwen2.5-7B-Instruct\nmeta-llama/Llama-3.1-8B-Instruct\nmistralai/Mistral-7B-Instruct-v0.3"}
+                                                    />
+                                                    <p className="text-[10px] text-zinc-600">Each ID becomes a selectable <code className="text-zinc-400">hf.&lt;org&gt;/&lt;model&gt;</code> model. First call to a model pays a 20-60s load cost, then stays warm in memory.</p>
                                                 </div>
                                             </div>
                                         )}
@@ -505,6 +586,24 @@ export const ModelsTab = ({
                                                         </a>
                                                     )}
                                                 </div>
+                                                {(() => {
+                                                    const cliCustom: Record<string, { value: string; set: (v: string) => void; placeholder: string; prefix: string }> = {
+                                                        anthropic_cli: { value: anthropicCliModels, set: setAnthropicCliModels, placeholder: 'e.g. claude-opus-4-5-20251101', prefix: 'cli.claude' },
+                                                        gemini_cli: { value: geminiCliModels, set: setGeminiCliModels, placeholder: 'e.g. gemini-2.5-pro', prefix: 'cli.gemini' },
+                                                        codex_cli: { value: codexCliModels, set: setCodexCliModels, placeholder: 'e.g. gpt-5.4, gpt-5.4-mini', prefix: 'cli.codex' },
+                                                        github_copilot_cli: { value: githubCopilotCliModels, set: setGithubCopilotCliModels, placeholder: 'e.g. claude-sonnet-4-5, gpt-4.1', prefix: 'cli.copilot' },
+                                                    };
+                                                    const cfg = cliCustom[key];
+                                                    if (!cfg) return null;
+                                                    return (
+                                                        <div className="space-y-1">
+                                                            <label className="text-[10px] uppercase font-bold text-zinc-500">Custom Model Names (comma-separated)</label>
+                                                            <input type="text" value={cfg.value} onChange={e => cfg.set(e.target.value)}
+                                                                className="w-full bg-zinc-900 border border-zinc-800 p-2.5 text-xs text-white focus:border-white focus:outline-none transition-colors" placeholder={cfg.placeholder} />
+                                                            <p className="text-[10px] text-zinc-600">Each name is passed to the CLI's <code className="text-zinc-400">-m</code> flag and becomes a selectable <code className="text-zinc-400">{cfg.prefix}.&lt;name&gt;</code> model. Use this when the CLI's default model isn't available to your account.</p>
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         )}
 

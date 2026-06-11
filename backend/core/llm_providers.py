@@ -125,6 +125,8 @@ def detect_mode_from_model(model_name: str) -> str:
         return "local"
     if m.startswith("ollama."):
         return "local"
+    if m.startswith("hf."):
+        return "hf"
     return "local"
 
 
@@ -162,6 +164,8 @@ def detect_provider_from_model(model_name: str) -> str:
         return "local_compatible"
     if m.startswith("ollama."):
         return "ollama"
+    if m.startswith("hf."):
+        return "huggingface"
     return "ollama"
 
 
@@ -258,8 +262,11 @@ def _make_aws_client(service_name: str, region: str, settings: dict):
 _CLI_COMMANDS: dict[str, list[str]] = {
     "cli.claude":   ["claude", "-p", "--allowedTools", ""],
     "cli.gemini":   ["gemini", "--prompt", ""],
+    # `instructions` (codex's system-prompt slot) is set per-call in
+    # call_cli_provider — never left empty, since some accounts reject an empty
+    # value with 400 "Instructions are required".
     "cli.codex":    ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
-                     "-c", "instructions=", "-c", "features.shell_tool=false"],
+                     "-c", "features.shell_tool=false"],
     "cli.copilot":  ["copilot", "-p"],
 }
 
@@ -343,11 +350,16 @@ async def call_cli_provider(
     AUTH_PATTERNS = ["login", "authenticate", "auth", "expired", "sign in", "api key", "unauthorized"]
     RATE_LIMIT_PATTERNS = ["429", "rate limit", "ratelimit", "quota", "too many requests", "capacity", "resource_exhausted", "ratelimitexceeded"]
 
-    parts = cli_model.lower().split(".")
+    # Split into base ("cli.<provider>") + variant, preserving dots in the
+    # variant (e.g. "cli.codex.gpt-5.4" → variant "gpt-5.4"). The base is matched
+    # case-insensitively; the variant is kept verbatim since model names can be
+    # case-sensitive and are passed straight through to the CLI's -m/--model flag.
+    parts = cli_model.split(".", 2)
     if len(parts) >= 2:
-        base_cli = f"{parts[0]}.{parts[1]}"
+        base_cli = f"{parts[0]}.{parts[1]}".lower()
     else:
         base_cli = cli_model.lower()
+    variant = parts[2] if len(parts) > 2 else None
 
     base_cmd = _CLI_COMMANDS.get(base_cli)
     if not base_cmd:
@@ -361,8 +373,7 @@ async def call_cli_provider(
         cmd.extend(["--resume", cli_session_id])
 
     # ── Dynamic Model & Options Parsing ──
-    if len(parts) > 2:
-        variant = parts[2]
+    if variant:
         if base_cli == "cli.claude":
             # Extract base model by removing any thinking suffixes
             clean_variant = variant.replace('-thinking', '').replace('-max', '').replace('-high', '')
@@ -450,6 +461,15 @@ async def call_cli_provider(
                 # stdin carries only the content after the sys_prompt (tools + messages).
                 prefix = sys_prompt.strip()
                 stdin_payload = full_prompt[len(prefix):].lstrip("\n") if full_prompt.startswith(prefix) else full_prompt
+
+            elif base_cli == "cli.codex":
+                # Codex's `instructions` config is its system-prompt slot and must be
+                # non-empty — an empty value 400s with "Instructions are required" on
+                # some accounts. The agent's real (ReAct) system prompt continues to
+                # ride in stdin via full_prompt, exactly as before; this just
+                # satisfies the API with a neutral non-empty value.
+                cmd.extend(["-c", "instructions=You are a helpful assistant."])
+                stdin_payload = full_prompt
 
             else:
                 stdin_payload = full_prompt
@@ -573,10 +593,14 @@ async def call_cli_provider(
             )
 
         if not clean:
+            # Report the TAIL of stderr, not the head. CLIs like codex echo a
+            # startup banner (version/workdir/model) to the head of stderr and
+            # write the actual failure (e.g. an invalid_request_error for an
+            # unsupported model) at the tail — so [:200] would hide the real cause.
             raise LLMError(
                 f"CLI provider '{cli_model}' returned empty output. "
                 f"Return code: {process.returncode}. "
-                f"stderr: {stderr_text[:200]}"
+                f"stderr: {stderr_text[-600:]}"
             )
 
         print(f"DEBUG: ✅ CLI '{cli_model}' response ({len(clean)} chars)", flush=True)
@@ -605,18 +629,16 @@ async def call_cli_provider(
 
 # ────────────────────────────────────────────────────────────────────────────────
 
-async def call_openai(model, messages, api_key, tools=None, images=None):
+async def call_openai(model, messages, api_key, tools=None, images=None, prompt_cache: bool = True):
     """Call OpenAI with 5-attempt exponential backoff retry loop.
 
-    Args:
-        model: GPT model name (e.g. 'gpt-4o')
-        messages: List of {"role": ..., "content": ...} dicts
-        api_key: OpenAI API key
-        tools: Ollama-format tool list (forwarded as OpenAI function definitions)
-        images: List of base64 data-URI image strings to attach to the last user message
+    OpenAI prompt caching is automatic for stable prefixes ≥1024 tokens; we
+    just need to extract `usage.prompt_tokens_details.cached_tokens` from the
+    response so the savings are visible in usage logs.
 
     Returns:
-        (response_text, input_tokens, output_tokens)
+        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        — `input_tokens` is cache-miss tokens; `cache_read_tokens` is reused-prefix tokens.
     """
     # Inject images into the last user message
     if images:
@@ -660,18 +682,20 @@ async def call_openai(model, messages, api_key, tools=None, images=None):
             usage = data.get("usage", {})
             input_tokens = usage.get("prompt_tokens", 0)
             output_tokens = usage.get("completion_tokens", 0)
+            from core.cache.prompt_cache import extract_openai_cache_tokens
+            cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
+            # OpenAI reports prompt_tokens INCLUSIVE of cached tokens; subtract so
+            # `input_tokens` is cache-miss only for consistent billing math.
+            if cache_read:
+                input_tokens = max(0, input_tokens - cache_read)
             # Handle tool_calls response
             choice = data["choices"][0]
             msg = choice.get("message", {})
+            text = _openai_compat_extract(msg)
             if msg.get("tool_calls"):
-                tc = msg["tool_calls"][0]
-                text = json.dumps({
-                    "tool": tc["function"]["name"],
-                    "arguments": json.loads(tc["function"].get("arguments", "{}"))
-                })
-                return text, input_tokens, output_tokens
+                return text, input_tokens, output_tokens, cache_read, cache_write
             print(f"DEBUG: ✅ OpenAI call complete (attempt {attempt})", flush=True)
-            return msg.get("content", ""), input_tokens, output_tokens
+            return text, input_tokens, output_tokens, cache_read, cache_write
         except httpx.TimeoutException:
             last_error = f"Request timed out ({OPENAI_TIMEOUT}s)"
             print(f"DEBUG: ⏱️ OpenAI timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
@@ -723,29 +747,63 @@ def _convert_tools_for_anthropic(ollama_tools: list[dict] | None) -> list[dict] 
     return tools if tools else None
 
 
-def _extract_anthropic_response(response) -> str:
-    """Extract text or tool call from an Anthropic SDK response.
+def _openai_compat_extract(msg: dict) -> str:
+    """Normalize an OpenAI-compatible chat-completion message into the
+    `{"tool": ..., "arguments": ...}` shape (or plain text).
 
-    Checks for tool_use content blocks first (native tool calling),
-    then falls back to text blocks.
+    When the model emits BOTH content text and tool_calls in the same response
+    (newer reasoning models, some Claude-compat APIs), the text is preserved as
+    a `[REASONING]...[/REASONING]` preamble so the ReAct loop can project it
+    into the llm_reasoning event for the UI and orchestration log.
+    """
+    tool_calls = msg.get("tool_calls") or []
+    if tool_calls:
+        tc = tool_calls[0]
+        call_json = json.dumps({
+            "tool": tc["function"]["name"],
+            "arguments": json.loads(tc["function"].get("arguments") or "{}"),
+        })
+        reasoning = (msg.get("content") or "").strip()
+        if reasoning:
+            return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
+        return call_json
+    return msg.get("content", "") or ""
+
+
+def _extract_anthropic_response(response) -> str:
+    """Extract text and/or tool call from an Anthropic SDK response.
+
+    When the model emits a text block before a tool_use block (Claude does this
+    routinely), preserve the text as a [REASONING]...[/REASONING] preamble so
+    the downstream ReAct loop can project it into the llm_reasoning event.
+    Without this, native tool calling silently drops the model's pre-call
+    reasoning.
     """
     if not response.content:
         return "Error: Empty Anthropic response."
 
-    # Check for tool_use blocks first (native tool calling)
+    text_parts: list[str] = []
+    tool_use_call: dict | None = None
     for block in response.content:
-        if block.type == "tool_use":
-            return json.dumps({"tool": block.name, "arguments": block.input or {}})
+        if block.type == "tool_use" and tool_use_call is None:
+            tool_use_call = {"tool": block.name, "arguments": block.input or {}}
+        elif block.type == "text" and block.text:
+            text_parts.append(block.text)
 
-    # Collect text blocks
-    text_parts = [block.text for block in response.content if block.type == "text" and block.text]
+    if tool_use_call is not None:
+        call_json = json.dumps(tool_use_call)
+        reasoning = "\n".join(t for t in text_parts if t and t.strip()).strip()
+        if reasoning:
+            return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
+        return call_json
+
     if text_parts:
         return "\n".join(text_parts)
 
     return "Error: Anthropic returned no usable content."
 
 
-async def call_anthropic(model, messages, system, api_key, tools=None, images=None):
+async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
     """Call Anthropic using the official SDK with native tool calling.
 
     Args:
@@ -755,9 +813,14 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
         api_key: Anthropic API key
         tools: Ollama-format tool list (converted to Anthropic tool definitions)
         images: List of base64 data-URI image strings to attach to the last user message
+        prompt_cache: When True (default), mark the system prompt + tools as a cache
+                      breakpoint via cache_control. Adds ~25% to write cost but yields
+                      ~90% off subsequent reads.
 
     Returns:
-        (response_text, input_tokens, output_tokens)
+        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        — `input_tokens` is the cache-miss prompt tokens only; cache reads/writes are
+        separated so usage_tracker can apply the correct pricing tier.
     """
     # Inject images into the last user message
     if images:
@@ -800,6 +863,11 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
 
+    # Decorate with prompt cache markers when enabled and the prefix is large enough.
+    if prompt_cache:
+        from core.cache.prompt_cache import decorate_anthropic_kwargs
+        kwargs = decorate_anthropic_kwargs(kwargs, str(system).strip() if system else None)
+
     client = anthropic.AsyncAnthropic(
         api_key=api_key,
         timeout=ANTHROPIC_TIMEOUT,
@@ -817,7 +885,9 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
             # Extract actual token usage from the SDK response object
             input_tokens = getattr(getattr(response, 'usage', None), 'input_tokens', 0) or 0
             output_tokens = getattr(getattr(response, 'usage', None), 'output_tokens', 0) or 0
-            return _extract_anthropic_response(response), input_tokens, output_tokens
+            from core.cache.prompt_cache import extract_anthropic_cache_tokens
+            cache_read, cache_write = extract_anthropic_cache_tokens(response)
+            return _extract_anthropic_response(response), input_tokens, output_tokens, cache_read, cache_write
         except anthropic.APITimeoutError:
             last_error = f"Request timed out ({ANTHROPIC_TIMEOUT}s)"
             print(f"DEBUG: ⏱️ Anthropic timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
@@ -943,7 +1013,14 @@ def _convert_messages_for_gemini(messages: list[dict], images: list[str] | None 
 
 
 def _extract_gemini_response(response) -> str:
-    """Extract text or function call from a Gemini response."""
+    """Extract text and/or function call from a Gemini response.
+
+    When the model emits BOTH text and a function_call in the same response,
+    the text is preserved as a [REASONING]...[/REASONING] preamble so the
+    downstream ReAct loop can project it into the llm_reasoning event for the
+    chat UI and orchestration log. Without this, native function calling
+    silently drops the model's pre-call reasoning.
+    """
     if not response.candidates:
         return "Error: No response candidates from Gemini."
 
@@ -956,23 +1033,27 @@ def _extract_gemini_response(response) -> str:
         reason = candidate.finish_reason.name if candidate.finish_reason else "UNKNOWN"
         return f"Error: Empty Gemini response. Finish Reason: {reason}"
 
-    # Check for function calls first (native tool calling)
-    function_calls = []
+    # Walk parts in order, collecting text (reasoning) and function calls.
+    text_parts: list[str] = []
+    function_calls: list[dict] = []
     for p in candidate.content.parts:
         if p.function_call:
             fc = p.function_call
             args = dict(fc.args) if fc.args else {}
             function_calls.append({"tool": fc.name, "arguments": args})
+        elif p.text:
+            text_parts.append(p.text)
 
     if function_calls:
-        # Return the first function call (ReAct loop processes one at a time)
         if len(function_calls) > 1:
             names = [fc["tool"] for fc in function_calls]
             print(f"DEBUG: ⚠️ Gemini returned {len(function_calls)} function calls: {names}. Using first: {names[0]}")
-        return json.dumps(function_calls[0])
+        call_json = json.dumps(function_calls[0])
+        reasoning = "\n".join(t for t in text_parts if t and t.strip()).strip()
+        if reasoning:
+            return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
+        return call_json
 
-    # Collect text parts
-    text_parts = [p.text for p in candidate.content.parts if p.text]
     if text_parts:
         return "\n".join(text_parts)
 
@@ -982,20 +1063,18 @@ def _extract_gemini_response(response) -> str:
 _gemini_client = None
 
 
-async def call_gemini(model, messages, system, api_key, tools=None, images=None):
+async def call_gemini(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
     """Call Gemini using the google-genai SDK with native function calling.
 
-    Args:
-        model: Gemini model name (e.g. 'gemini-2.0-flash')
-        messages: List of {"role": "user"/"assistant", "content": "..."} dicts
-        system: System instruction text
-        api_key: Gemini API key
-        tools: Ollama-format tool list (converted to Gemini FunctionDeclarations)
-        images: List of base64 data-URI image strings to attach to the last user message
+    Gemini implicit caching (Gemini 2.5 and newer) auto-applies on the server
+    when prompts share a 1024+ token prefix. The hit count is reported in
+    `usage_metadata.cached_content_token_count`. We do not (yet) use the
+    explicit `cached_content` API since it requires lifecycle management.
 
     Returns:
-        (response_text, input_tokens, output_tokens)
+        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
     """
+    _ = prompt_cache  # reserved for future explicit cached_content support
     global _gemini_client
     from google import genai
     from google.genai import types
@@ -1050,14 +1129,20 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None)
             # Extract actual token usage from Gemini response metadata
             input_tokens = 0
             output_tokens = 0
+            cache_read = 0
+            cache_write = 0
             try:
                 um = getattr(response, 'usage_metadata', None)
                 if um:
                     input_tokens = getattr(um, 'prompt_token_count', 0) or 0
                     output_tokens = getattr(um, 'candidates_token_count', 0) or 0
+                    cache_read = int(getattr(um, 'cached_content_token_count', 0) or 0)
+                    # Gemini's prompt_token_count is INCLUSIVE of cached tokens.
+                    if cache_read:
+                        input_tokens = max(0, input_tokens - cache_read)
             except Exception:
                 pass
-            return result, input_tokens, output_tokens
+            return result, input_tokens, output_tokens, cache_read, cache_write
 
         # except asyncio.TimeoutError:
         #     last_error = f"Request timed out ({GEMINI_TIMEOUT}s)"
@@ -1078,19 +1163,11 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None)
     print(f"DEBUG: ❌ {error_msg}", flush=True)
     raise LLMError(error_msg)
 
-async def call_grok(model, messages, system, api_key, tools=None, images=None):
+async def call_grok(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
     """Call xAI Grok via its OpenAI-compatible API with 5-attempt exponential backoff.
 
-    Args:
-        model: Grok model name (e.g. 'grok-3', 'grok-3-mini')
-        messages: List of {"role": ..., "content": ...} dicts
-        system: System instruction text
-        api_key: xAI API key (starts with 'xai-')
-        tools: Ollama-format tool list (Grok is OpenAI-compatible for function calling)
-        images: List of base64 data-URI image strings to attach to the last user message
-
     Returns:
-        (response_text, input_tokens, output_tokens)
+        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
     """
     GROK_TIMEOUT = 180.0
     MAX_RETRIES = 5
@@ -1139,17 +1216,17 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None):
             usage = data.get("usage", {})
             input_tokens = usage.get("prompt_tokens", 0)
             output_tokens = usage.get("completion_tokens", 0)
+            from core.cache.prompt_cache import extract_openai_cache_tokens
+            cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
+            if cache_read:
+                input_tokens = max(0, input_tokens - cache_read)
             choice = data["choices"][0]
             msg = choice.get("message", {})
+            text = _openai_compat_extract(msg)
             if msg.get("tool_calls"):
-                tc = msg["tool_calls"][0]
-                text = json.dumps({
-                    "tool": tc["function"]["name"],
-                    "arguments": json.loads(tc["function"].get("arguments", "{}"))
-                })
-                return text, input_tokens, output_tokens
+                return text, input_tokens, output_tokens, cache_read, cache_write
             print(f"DEBUG: ✅ Grok call complete (attempt {attempt})", flush=True)
-            return msg.get("content", ""), input_tokens, output_tokens
+            return text, input_tokens, output_tokens, cache_read, cache_write
         except httpx.TimeoutException:
             last_error = f"Request timed out ({GROK_TIMEOUT}s)"
             print(f"DEBUG: ⏱️ Grok timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
@@ -1175,20 +1252,15 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None):
     raise LLMError(error_msg)
 
 
-async def call_deepseek(model, messages, system, api_key, tools=None, images=None):
+async def call_deepseek(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
     """Call DeepSeek via its OpenAI-compatible API with 5-attempt exponential backoff.
 
-    Args:
-        model: DeepSeek model name (e.g. 'deepseek-chat', 'deepseek-reasoner')
-        messages: List of {"role": ..., "content": ...} dicts
-        system: System instruction text
-        api_key: DeepSeek API key
-        tools: Ollama-format tool list (deepseek-chat supports function calling;
-               deepseek-reasoner does NOT — tools are silently dropped for it)
-        images: List of base64 data-URI image strings (NOT SUPPORTED — silently dropped)
+    DeepSeek prompt caching is automatic server-side. It surfaces hit/miss as
+    `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` in `usage`. We just
+    read those and report them.
 
     Returns:
-        (response_text, input_tokens, output_tokens)
+        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
     """
     # DeepSeek does not support vision — drop images with a warning
     if images:
@@ -1231,17 +1303,17 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
             usage = data.get("usage", {})
             input_tokens = usage.get("prompt_tokens", 0)
             output_tokens = usage.get("completion_tokens", 0)
+            from core.cache.prompt_cache import extract_deepseek_cache_tokens
+            cache_read, cache_write = extract_deepseek_cache_tokens(usage) if prompt_cache else (0, 0)
+            # DeepSeek's prompt_tokens already separates hit/miss via prompt_cache_*_tokens,
+            # so input_tokens here is the MISS count already; do NOT subtract again.
             choice = data["choices"][0]
             msg = choice.get("message", {})
+            text = _openai_compat_extract(msg)
             if msg.get("tool_calls"):
-                tc = msg["tool_calls"][0]
-                text = json.dumps({
-                    "tool": tc["function"]["name"],
-                    "arguments": json.loads(tc["function"].get("arguments", "{}"))
-                })
-                return text, input_tokens, output_tokens
+                return text, input_tokens, output_tokens, cache_read, cache_write
             print(f"DEBUG: ✅ DeepSeek call complete (attempt {attempt})", flush=True)
-            return msg.get("content", ""), input_tokens, output_tokens
+            return text, input_tokens, output_tokens, cache_read, cache_write
         except httpx.TimeoutException:
             last_error = f"Request timed out ({DEEPSEEK_TIMEOUT}s)"
             print(f"DEBUG: ⏱️ DeepSeek timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
@@ -1275,7 +1347,7 @@ def _normalize_v1_base_url(base_url: str) -> str:
     return url
 
 
-async def call_v1_compatible(model, messages, system, base_url, api_key, tools=None, images=None):
+async def call_v1_compatible(model, messages, system, base_url, api_key, tools=None, images=None, prompt_cache: bool = True):
     """Call any OpenAI v1-compatible endpoint with 5-attempt exponential backoff.
 
     Used for both cloud OpenAI-compatible providers (OpenRouter, Together, etc.)
@@ -1344,17 +1416,17 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             usage = data.get("usage", {})
             input_tokens = usage.get("prompt_tokens", 0)
             output_tokens = usage.get("completion_tokens", 0)
+            from core.cache.prompt_cache import extract_openai_cache_tokens
+            cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
+            if cache_read:
+                input_tokens = max(0, input_tokens - cache_read)
             choice = data["choices"][0]
             msg = choice.get("message", {})
+            text = _openai_compat_extract(msg)
             if msg.get("tool_calls"):
-                tc = msg["tool_calls"][0]
-                text = json.dumps({
-                    "tool": tc["function"]["name"],
-                    "arguments": json.loads(tc["function"].get("arguments", "{}"))
-                })
-                return text, input_tokens, output_tokens
+                return text, input_tokens, output_tokens, cache_read, cache_write
             print(f"DEBUG: ✅ V1-compatible call complete (attempt {attempt})", flush=True)
-            return msg.get("content", ""), input_tokens, output_tokens
+            return text, input_tokens, output_tokens, cache_read, cache_write
         except httpx.TimeoutException:
             last_error = f"Request timed out ({V1_TIMEOUT}s)"
             print(f"DEBUG: ⏱️ V1-compatible timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
@@ -1430,11 +1502,15 @@ async def _bedrock_converse_direct(
     return await asyncio.to_thread(_run)
 
 
-async def call_bedrock(model_id, messages, system, region, settings, images=None):
+async def call_bedrock(model_id, messages, system, region, settings, images=None, prompt_cache: bool = True):
     """Call AWS Bedrock with 5-attempt exponential backoff retry loop.
 
     Prefers the Converse API (standardized); falls back to InvokeModel for older models.
     Raises LLMError on final failure after all retries.
+
+    Returns:
+        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        — token counts are zero for the InvokeModel fallback path (older models).
     """
     MAX_RETRIES = 5
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]
@@ -1497,6 +1573,9 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
     system_blocks = []
     if system and str(system).strip():
         system_blocks = [{"text": str(system)}]
+    if prompt_cache:
+        from core.cache.prompt_cache import decorate_bedrock_system_blocks
+        system_blocks = decorate_bedrock_system_blocks(system_blocks, str(system) if system else None)
 
     async def _converse_call():
         def _run():
@@ -1546,10 +1625,17 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                         resp = await _converse_call()
                     msg = (((resp or {}).get("output") or {}).get("message") or {})
                     content = msg.get("content") or []
-                    if content and isinstance(content, list) and isinstance(content[0], dict):
-                        print(f"DEBUG: ✅ Bedrock (converse) complete (attempt {attempt})", flush=True)
-                        return content[0].get("text", "")
-                    return ""
+                    text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
+                    usage = (resp or {}).get("usage") or {}
+                    inp = int(usage.get("inputTokens") or 0)
+                    out = int(usage.get("outputTokens") or 0)
+                    from core.cache.prompt_cache import extract_bedrock_cache_tokens
+                    cache_read, cache_write = extract_bedrock_cache_tokens(resp or {})
+                    # Bedrock inputTokens may include cache hits; subtract for consistent billing math.
+                    if cache_read:
+                        inp = max(0, inp - cache_read)
+                    print(f"DEBUG: ✅ Bedrock (converse) complete (attempt {attempt})", flush=True)
+                    return text, inp, out, cache_read, cache_write
                 except Exception as converse_err:
                     msg_str = str(converse_err)
                     if "on-demand throughput" in msg_str:
@@ -1569,18 +1655,16 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                     resp = await _invoke_model_call()
                     response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
                     content = response_body.get("content") or []
-                    if content and isinstance(content, list) and isinstance(content[0], dict):
-                        print(f"DEBUG: ✅ Bedrock (invoke_model) complete (attempt {attempt})", flush=True)
-                        return content[0].get("text", "")
-                    return ""
+                    text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
+                    print(f"DEBUG: ✅ Bedrock (invoke_model) complete (attempt {attempt})", flush=True)
+                    return text, 0, 0, 0, 0
             else:
                 resp = await _invoke_model_call()
                 response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
                 content = response_body.get("content") or []
-                if content and isinstance(content, list) and isinstance(content[0], dict):
-                    print(f"DEBUG: ✅ Bedrock (invoke_model) complete (attempt {attempt})", flush=True)
-                    return content[0].get("text", "")
-                return ""
+                text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
+                print(f"DEBUG: ✅ Bedrock (invoke_model) complete (attempt {attempt})", flush=True)
+                return text, 0, 0, 0, 0
         except LLMError:
             raise  # Non-retryable (config error)
         except Exception as e:
@@ -1594,6 +1678,174 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
     error_msg = f"Bedrock LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
     print(f"DEBUG: ❌ {error_msg}", flush=True)
     raise LLMError(error_msg)
+
+
+# ─── HuggingFace local-model provider ───────────────────────────────────────────
+#
+# Loads transformers models in-process and runs inference on the host's GPU/CPU.
+# Used for `hf.<org>/<model>` model names (e.g. `hf.Qwen/Qwen2.5-7B-Instruct`).
+# Models are kept warm in a process-level cache so the 20-60s load cost is paid
+# once per model, not per call. torch + transformers are lazy-imported so users
+# who never use hf.* models don't need them installed.
+
+_hf_model_cache: dict[str, tuple] = {}
+_hf_cache_lock = threading.Lock()
+
+
+def _hf_device() -> str:
+    """Best available device for HF models: cuda > mps > cpu."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _load_hf_model(model_id: str, hf_token: str | None = None):
+    """Load (or fetch from cache) an HF tokenizer + model pair.
+
+    Lock-guarded so concurrent calls don't double-load the same model.
+    """
+    with _hf_cache_lock:
+        if model_id in _hf_model_cache:
+            return _hf_model_cache[model_id]
+
+        try:
+            import torch
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+        except ImportError as e:
+            raise LLMError(
+                "HuggingFace provider: 'torch' and 'transformers' are not installed. "
+                "Install them on the Synapse host (e.g. `pip install torch transformers`) "
+                "to use hf.* models."
+            ) from e
+
+        device = _hf_device()
+        dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
+        load_kwargs: dict = {"torch_dtype": dtype}
+        if device == "cuda":
+            load_kwargs["device_map"] = "auto"
+        if hf_token:
+            load_kwargs["token"] = hf_token
+
+        print(f"DEBUG: 🤗 Loading HF model '{model_id}' on {device} — first call pays 20-60s load cost...", flush=True)
+
+        tok_kwargs: dict = {"token": hf_token} if hf_token else {}
+        tokenizer = AutoTokenizer.from_pretrained(model_id, **tok_kwargs)
+        model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
+
+        # device_map="auto" already places shards; only move when we didn't use it.
+        if device != "cuda":
+            model = model.to(device)
+        model.eval()
+
+        _hf_model_cache[model_id] = (tokenizer, model)
+        print(f"DEBUG: ✅ HF model '{model_id}' loaded and cached.", flush=True)
+        return tokenizer, model
+
+
+async def call_huggingface(
+    model: str,
+    messages: list[dict],
+    system: str,
+    settings: dict,
+    tools: list[dict] | None = None,
+    images: list[str] | None = None,
+):
+    """Run inference on a local HuggingFace transformers model.
+
+    Args:
+        model: Full model name with hf. prefix (e.g. 'hf.Qwen/Qwen2.5-7B-Instruct').
+        messages: OpenAI-style [{"role": ..., "content": ...}] list.
+        system: System instruction text.
+        settings: User settings dict. Reads `huggingface_token` (for gated models)
+                  and `huggingface_max_new_tokens` (default 1024).
+        tools: Ignored with a warning — native tool calling varies by model and
+               is left to the caller to inject via prompt text if needed.
+        images: Ignored — vision is model-specific and not supported in this MVP.
+
+    Returns:
+        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        — cache fields are always 0 (no cross-call prompt caching for local inference).
+    """
+    model_id = model[len("hf."):] if model.startswith("hf.") else model
+    if not model_id:
+        raise LLMError("HuggingFace provider: empty model name after 'hf.' prefix.")
+
+    if tools:
+        print(
+            f"DEBUG: ⚠️ HF provider received {len(tools)} tool(s) but does not support "
+            f"native tool calling. Inject tool descriptions into the system prompt if needed.",
+            flush=True,
+        )
+    if images:
+        print(
+            f"DEBUG: ⚠️ HF provider received {len(images)} image(s) but vision is not "
+            f"supported in this MVP — they will be dropped.",
+            flush=True,
+        )
+
+    hf_token = (settings.get("huggingface_token") or "").strip() or None
+    max_new_tokens = int(settings.get("huggingface_max_new_tokens") or 1024)
+
+    def _run():
+        import torch
+        tokenizer, model_obj = _load_hf_model(model_id, hf_token)
+
+        chat_messages: list[dict] = []
+        if system and system.strip():
+            chat_messages.append({"role": "system", "content": system.strip()})
+        chat_messages.extend(messages or [])
+
+        # Prefer the model's chat template; fall back to a plain transcript if
+        # the tokenizer doesn't define one (some base / non-instruct models).
+        try:
+            input_ids = tokenizer.apply_chat_template(
+                chat_messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
+        except Exception as e:
+            print(f"DEBUG: ⚠️ HF chat template unavailable ({e}); using transcript fallback.", flush=True)
+            transcript_parts: list[str] = []
+            if system and system.strip():
+                transcript_parts.append(f"System: {system.strip()}")
+            t = _messages_to_transcript(messages)
+            if t:
+                transcript_parts.append(t)
+            transcript_parts.append("Assistant:")
+            transcript = "\n\n".join(transcript_parts)
+            input_ids = tokenizer(transcript, return_tensors="pt").input_ids
+
+        input_ids = input_ids.to(model_obj.device)
+        prompt_token_count = int(input_ids.shape[-1])
+
+        with torch.no_grad():
+            output_ids = model_obj.generate(
+                input_ids,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        new_tokens = output_ids[0, prompt_token_count:]
+        text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        output_token_count = int(new_tokens.shape[-1])
+        return text, prompt_token_count, output_token_count
+
+    try:
+        print(f"DEBUG: 🔄 HF call start (model={model_id})", flush=True)
+        text, input_tokens, output_tokens = await asyncio.to_thread(_run)
+        print(f"DEBUG: ✅ HF call complete (model={model_id}, out_tokens={output_tokens})", flush=True)
+        return text, input_tokens, output_tokens, 0, 0
+    except LLMError:
+        raise
+    except Exception as e:
+        raise LLMError(f"HuggingFace provider error ({model_id}): {e}")
 
 
 def _messages_to_transcript(messages: list[dict] | None) -> str:
@@ -1647,6 +1899,13 @@ async def generate_response(
     run_id: str | None = None,
     tool_name: str | None = None,
     images: list[str] | None = None,
+    # Response cache — opt-in per call; should NEVER be used for AGENT-step ReAct
+    # loops because skipping the LLM call would diverge shared_state silently.
+    cache_response: bool = False,
+    cache_response_semantic: bool = False,
+    cache_response_ttl: int = 3600,
+    cache_response_step_id: str | None = None,
+    cache_response_threshold: float = 0.95,
 ):
     """
     Unified LLM dispatch function. Routes to the appropriate provider
@@ -1667,10 +1926,58 @@ async def generate_response(
     _all_msgs.append({"role": "user", "content": prompt_msg})
     context_chars = sum(len(str(m.get("content", ""))) for m in _all_msgs) + len(augmented_system)
 
+    # Global prompt-cache toggle
+    from core.cache.prompt_cache import cache_enabled as _cache_enabled
+    _prompt_cache = _cache_enabled(current_settings)
+
     _t0 = _time.time()
     result_text = ""
     input_tokens = 0
     output_tokens = 0
+    cache_read_tokens = 0
+    cache_write_tokens = 0
+
+    # ── Response cache (opt-in per call) ─────────────────────────────────────
+    # Built BEFORE dispatch so a hit short-circuits the entire LLM round-trip.
+    # We rebuild the messages list locally here for hashing — the cache must see
+    # the same shape the provider will receive.
+    if cache_response:
+        from core.cache import response_cache as _resp_cache
+        _cache_messages = []
+        if history_messages:
+            _cache_messages.extend(history_messages)
+        _cache_messages.append({"role": "user", "content": prompt_msg})
+
+        _hit = _resp_cache.get_exact(
+            current_model, augmented_system, _cache_messages, tools,
+        )
+        if _hit is None and cache_response_semantic and cache_response_step_id:
+            _hit = _resp_cache.get_semantic(
+                cache_response_step_id, current_model,
+                augmented_system, str(prompt_msg),
+                threshold=cache_response_threshold,
+            )
+        if _hit is not None:
+            print(f"DEBUG: ⚡ response_cache hit ({current_model}) — skipping LLM call", flush=True)
+            try:
+                provider = detect_provider_from_model(current_model)
+                usage_tracker.log_usage(
+                    model=current_model,
+                    provider=provider,
+                    input_tokens=0,
+                    output_tokens=0,
+                    context_chars=context_chars,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    source=source,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    latency_seconds=_time.time() - _t0,
+                    response_cache_hit=True,
+                )
+            except Exception as _track_err:
+                print(f"DEBUG usage_tracker: log_usage (cache hit) failed: {_track_err}", flush=True)
+            return _hit.get("text", "")
 
     if mode in ["cloud", "bedrock"]:
         try:
@@ -1681,65 +1988,72 @@ async def generate_response(
             messages.append({"role": "user", "content": prompt_msg})
 
             if current_model.startswith("gpt"):
-                result_text, input_tokens, output_tokens = await call_openai(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_openai(
                     current_model,
                     [{"role": "system", "content": augmented_system}] + messages,
                     current_settings.get("openai_key"),
                     tools=tools,
                     images=images,
+                    prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("claude"):
-                result_text, input_tokens, output_tokens = await call_anthropic(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_anthropic(
                     current_model,
                     messages,
                     augmented_system,
                     current_settings.get("anthropic_key"),
                     tools=tools,
                     images=images,
+                    prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("gemini") or current_model.startswith("gemma") or current_model.startswith("lyria"):
-                result_text, input_tokens, output_tokens = await call_gemini(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_gemini(
                     current_model,
                     messages,
                     augmented_system,
                     current_settings.get("gemini_key"),
                     tools=tools,
                     images=images,
+                    prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("bedrock"):
-                result_text = await call_bedrock(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_bedrock(
                     current_model,
                     messages,
                     augmented_system,
                     current_settings.get("aws_region"),
                     current_settings,
                     images=images,
+                    prompt_cache=_prompt_cache,
                 )
-                # Bedrock does not surface token counts the same way — fall back to heuristic
-                input_tokens = usage_tracker.estimate_tokens_from_text(
-                    augmented_system + " ".join(str(m.get("content", "")) for m in messages)
-                )
-                output_tokens = usage_tracker.estimate_tokens_from_text(result_text)
+                # Bedrock's invoke_model fallback path returns zero tokens; estimate from text.
+                if input_tokens == 0 and output_tokens == 0:
+                    input_tokens = usage_tracker.estimate_tokens_from_text(
+                        augmented_system + " ".join(str(m.get("content", "")) for m in messages)
+                    )
+                    output_tokens = usage_tracker.estimate_tokens_from_text(result_text)
             elif current_model.startswith("grok"):
-                result_text, input_tokens, output_tokens = await call_grok(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_grok(
                     current_model,
                     messages,
                     augmented_system,
                     current_settings.get("grok_key"),
                     tools=tools,
                     images=images,
+                    prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("deepseek"):
-                result_text, input_tokens, output_tokens = await call_deepseek(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_deepseek(
                     current_model,
                     messages,
                     augmented_system,
                     current_settings.get("deepseek_key"),
                     tools=tools,
                     images=images,
+                    prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("oaic."):
-                result_text, input_tokens, output_tokens = await call_v1_compatible(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_v1_compatible(
                     current_model[len("oaic."):],
                     messages,
                     augmented_system,
@@ -1747,9 +2061,10 @@ async def generate_response(
                     current_settings.get("openai_compatible_key", ""),
                     tools=tools,
                     images=images,
+                    prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("locv1."):
-                result_text, input_tokens, output_tokens = await call_v1_compatible(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_v1_compatible(
                     current_model[len("locv1."):],
                     messages,
                     augmented_system,
@@ -1757,6 +2072,7 @@ async def generate_response(
                     current_settings.get("local_compatible_key", ""),
                     tools=tools,
                     images=images,
+                    prompt_cache=_prompt_cache,
                 )
             else:
                 return "Error: Unknown cloud model selected."
@@ -1806,7 +2122,26 @@ async def generate_response(
         except Exception as e:
             return f"CLI Provider Error: {str(e)}"
 
-    
+    elif mode == "hf":
+        try:
+            messages_for_hf = []
+            if history_messages:
+                messages_for_hf.extend(history_messages)
+            messages_for_hf.append({"role": "user", "content": prompt_msg})
+
+            result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_huggingface(
+                current_model,
+                messages_for_hf,
+                augmented_system,
+                current_settings,
+                tools=tools,
+                images=images,
+            )
+        except LLMError:
+            raise
+        except Exception as e:
+            return f"HuggingFace Provider Error: {str(e)}"
+
     else:
         # Local Ollama
         # Strip the ollama. prefix — the Ollama API expects bare model names
@@ -1848,13 +2183,21 @@ async def generate_response(
 
                     # Check for native tool calls
                     if "tool_calls" in msg and msg["tool_calls"]:
-                        # Convert Ollama native tool call to our internal JSON format
+                        # Convert Ollama native tool call to our internal JSON format.
+                        # Preserve any text content the model emitted alongside the
+                        # call as a [REASONING] preamble (some Ollama models emit
+                        # both — qwen3, deepseek-r1 routinely do).
                         tc = msg["tool_calls"][0]
                         print(f"DEBUG: Native Tool Call received: {tc['function']['name']}", flush=True)
-                        result_text = json.dumps({
+                        call_json = json.dumps({
                             "tool": tc["function"]["name"],
                             "arguments": tc["function"]["arguments"]
                         })
+                        reasoning = (msg.get("content") or "").strip()
+                        if reasoning:
+                            result_text = f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
+                        else:
+                            result_text = call_json
                     else:
                         result_text = msg.get("content", "")
 
@@ -1906,9 +2249,39 @@ async def generate_response(
             run_id=run_id,
             tool_name=tool_name,
             latency_seconds=_time.time() - _t0,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
     except Exception as _track_err:
         print(f"DEBUG usage_tracker: log_usage failed (non-fatal): {_track_err}", flush=True)
+
+    # ── Populate response cache on successful call ───────────────────────────
+    if cache_response and result_text and not str(result_text).startswith("Error"):
+        try:
+            from core.cache import response_cache as _resp_cache
+            _cache_messages = []
+            if history_messages:
+                _cache_messages.extend(history_messages)
+            _cache_messages.append({"role": "user", "content": prompt_msg})
+            _resp_cache.set_exact(
+                current_model, augmented_system, _cache_messages, tools,
+                text=result_text,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                ttl_seconds=cache_response_ttl,
+                step_id=cache_response_step_id,
+            )
+            if cache_response_semantic and cache_response_step_id:
+                _resp_cache.set_semantic(
+                    cache_response_step_id, current_model,
+                    augmented_system, str(prompt_msg),
+                    text=result_text,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    ttl_seconds=cache_response_ttl,
+                )
+        except Exception as _cache_err:
+            print(f"DEBUG response_cache: set failed (non-fatal): {_cache_err}", flush=True)
 
     return result_text
 

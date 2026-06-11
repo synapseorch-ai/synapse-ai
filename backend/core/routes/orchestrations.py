@@ -52,6 +52,52 @@ async def get_orchestration(orch_id: str):
     return orch
 
 
+@router.get("/api/orchestrations/{orch_id}/estimate")
+async def estimate_orchestration_cost(orch_id: str, sample_size: int = 5):
+    """Estimate next-run cost based on the last N runs' usage logs.
+
+    Returns the average cost and average cache hit-rate across recent runs.
+    When no history exists, returns zeros — the UI should show this as
+    "no prior runs" rather than $0.00.
+    """
+    from core.usage_tracker import get_usage_logs
+    # Pull recent orchestration logs and filter to this orch_id's runs.
+    raw = get_usage_logs(limit=500, source="orchestration")
+    by_run: dict[str, dict] = {}
+    for r in raw:
+        rid = r.get("run_id") or ""
+        if not rid.startswith(f"run_{orch_id}_"):
+            continue
+        b = by_run.setdefault(rid, {
+            "cost": 0.0, "requests": 0, "hits": 0,
+            "cache_read": 0, "cache_write": 0,
+        })
+        b["cost"] += float(r.get("estimated_cost") or 0.0)
+        b["requests"] += 1
+        if r.get("response_cache_hit"):
+            b["hits"] += 1
+        b["cache_read"] += int(r.get("cache_read_tokens") or 0)
+        b["cache_write"] += int(r.get("cache_write_tokens") or 0)
+
+    runs_sorted = sorted(by_run.items(), key=lambda kv: kv[0], reverse=True)[:sample_size]
+    if not runs_sorted:
+        return {
+            "sample_size": 0,
+            "average_cost_usd": 0.0,
+            "average_cache_hit_rate": 0.0,
+            "average_cache_read_tokens": 0,
+        }
+    avg_cost = sum(b[1]["cost"] for b in runs_sorted) / len(runs_sorted)
+    avg_hit = sum((b[1]["hits"] / b[1]["requests"]) for b in runs_sorted) / len(runs_sorted)
+    avg_cache_read = sum(b[1]["cache_read"] for b in runs_sorted) / len(runs_sorted)
+    return {
+        "sample_size": len(runs_sorted),
+        "average_cost_usd": round(avg_cost, 6),
+        "average_cache_hit_rate": round(avg_hit, 4),
+        "average_cache_read_tokens": int(avg_cache_read),
+    }
+
+
 @router.post("/api/orchestrations")
 async def create_or_update_orchestration(orch: Orchestration):
     orchs = load_orchestrations()
@@ -211,9 +257,9 @@ async def resume_failed_run(run_id: str, request: Request):
 async def submit_human_input(run_id: str, request: Request):
     """Submit human input and resume the orchestration. Returns SSE stream.
 
-    Also resolves any pending messaging-channel Future for this run
-    (first-response-wins: if the messaging app already answered, this
-    call is a no-op for the Future but still streams the resumed run).
+    For V2 (distributed) runs the response is published to Redis and a
+    resume job is enqueued to ARQ — no in-process engine is started.
+    For V1 (in-process) runs the existing behaviour is unchanged.
     """
     body = await request.json()
     human_response = body.get("response", {})
@@ -221,12 +267,10 @@ async def submit_human_input(run_id: str, request: Request):
 
     server_module = request.app.state.server_module
 
-    # Try to resolve messaging Future (first-wins).  If the Future was
-    # already resolved by the messaging adapter, this is a no-op.
+    # Try to resolve messaging Future (first-wins)
     messaging_manager = getattr(request.app.state, "messaging_manager", None)
     if messaging_manager and step_id:
         key = f"{run_id}:{step_id}"
-        # Flatten response to string for messaging resolution
         response_text = ""
         if isinstance(human_response, dict):
             response_text = " ".join(str(v) for v in human_response.values())
@@ -234,6 +278,61 @@ async def submit_human_input(run_id: str, request: Request):
             response_text = str(human_response)
         messaging_manager.resolve_human_input_by_key(key, response_text)
 
+    # --- V2 distributed path: detect via Postgres run row ---
+    redis = getattr(request.app.state, "redis", None)
+    arq_redis = getattr(request.app.state, "arq_redis", None)
+    pg_session_factory = getattr(request.app.state, "pg_session_factory", None)
+
+    if redis and arq_redis and pg_session_factory:
+        # Check if this is a V2 run (has worker_id set in Postgres)
+        try:
+            from sqlalchemy import select
+            from core.scale.models_db import OrchestrationRunDB
+            async with pg_session_factory() as session:
+                result = await session.execute(
+                    select(OrchestrationRunDB.worker_id, OrchestrationRunDB.tenant_id).where(
+                        OrchestrationRunDB.run_id == run_id
+                    )
+                )
+                row = result.one_or_none()
+
+            if row and row.worker_id:
+                # V2 run: publish to Redis and enqueue resume job to the correct shard queue
+                from core.scale.pubsub import publish_human_input
+                from core.scale.config import get_scale_config as _get_scale_cfg
+                import os as _os
+                _scale_cfg = _get_scale_cfg()
+                _queue_name = (
+                    f"synapse:orchestrations:{row.tenant_id or _scale_cfg.default_tenant_id}"
+                    if _scale_cfg.enable_tenant_isolation
+                    else f"synapse:orchestrations:{_os.getenv('WORKER_QUEUE_SHARD', 'default')}"
+                )
+                resp = human_response if isinstance(human_response, dict) else {"response": human_response}
+                await publish_human_input(redis, run_id, resp)
+
+                await arq_redis.enqueue_job(
+                    "resume_orchestration_job",
+                    run_id=run_id,
+                    human_response=resp,
+                    _queue_name=_queue_name,
+                    _job_id=f"resume_{run_id}_{int(time.time())}",
+                )
+
+                # Return SSE stream bridged from Redis
+                from core.scale.event_bridge import stream_run_events
+                return StreamingResponse(
+                    stream_run_events(redis, run_id, "0"),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                        "Connection": "keep-alive",
+                    },
+                )
+        except Exception:
+            pass  # Fall through to in-process V1 path
+
+    # --- V1 in-process path (unchanged) ---
     from core.orchestration.engine import OrchestrationEngine
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -273,11 +372,11 @@ async def submit_human_input(run_id: str, request: Request):
 
 
 @router.post("/api/orchestrations/runs/{run_id}/cancel")
-async def cancel_run(run_id: str):
-    """Cancel a running orchestration."""
+async def cancel_run(run_id: str, request: Request):
+    """Cancel a running orchestration (works for both V1 in-process and V2 distributed runs)."""
     from core.orchestration.state import SharedState, _cancelled_run_ids
 
-    # Signal the engine loop to exit on its next iteration
+    # Signal the engine loop to exit on its next iteration (V1 in-process path)
     _cancelled_run_ids.add(run_id)
 
     # Cancel the asyncio task to interrupt any in-progress await (e.g. LLM call)
@@ -285,7 +384,16 @@ async def cancel_run(run_id: str):
     if task and not task.done():
         task.cancel()
 
-    # Persist cancelled status to disk
+    # Distributed cancel: publish Redis key so workers on other machines stop too
+    redis = getattr(request.app.state, "redis", None)
+    if redis:
+        try:
+            from core.scale.pubsub import publish_cancellation
+            await publish_cancellation(redis, run_id)
+        except Exception:
+            pass
+
+    # Persist cancelled status to disk (V1 checkpoint)
     try:
         restored = SharedState.restore(run_id)
         restored.run.status = "cancelled"

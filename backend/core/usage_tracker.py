@@ -41,12 +41,9 @@ def _load_pricing() -> dict:
     return {}
 
 
-def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Return estimated USD cost for a call. Returns 0.0 for unknown models."""
-    pricing = _load_pricing()
-
-    # Try the exact model string, then progressively shorter prefixes
-    # so e.g. "claude-sonnet-4-20250514" matches its exact key.
+def _resolve_pricing_entry(model: str, pricing: dict | None = None) -> dict | None:
+    """Look up a model's pricing entry with fuzzy-prefix fallback."""
+    pricing = pricing if pricing is not None else _load_pricing()
     entry = pricing.get(model)
     if entry is None:
         # Fuzzy prefix match -- pick the longest prefix that fits
@@ -54,13 +51,79 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
             if model.startswith(key) or key.startswith(model.split("-")[0]):
                 entry = pricing[key]
                 break
+    return entry
 
+
+# Provider-specific cache pricing as a fraction of base input rate.
+# Used when a pricing entry doesn't explicitly set cache_read_per_1m / cache_write_per_1m.
+# Sourced from each provider's docs at the time of writing.
+_CACHE_RATE_DEFAULTS = {
+    "anthropic":  {"read": 0.10, "write": 1.25},
+    "openai":     {"read": 0.50, "write": 1.00},  # OpenAI has no write surcharge
+    "deepseek":   {"read": 0.10, "write": 1.00},
+    "gemini":     {"read": 0.25, "write": 1.00},
+    "bedrock":    {"read": 0.10, "write": 1.25},  # Bedrock Anthropic mirrors Anthropic
+    "grok":       {"read": 0.25, "write": 1.00},
+}
+
+
+def _cache_rates(entry: dict, input_per_1m: float) -> tuple[float, float]:
+    """Resolve cache_read / cache_write per-1M rates, applying provider defaults."""
+    read = entry.get("cache_read_per_1m")
+    write = entry.get("cache_write_per_1m")
+    if read is not None and write is not None:
+        return float(read), float(write)
+    provider = (entry.get("provider") or "").lower()
+    defaults = _CACHE_RATE_DEFAULTS.get(provider, {"read": 0.10, "write": 1.25})
+    if read is None:
+        read = input_per_1m * defaults["read"]
+    if write is None:
+        write = input_per_1m * defaults["write"]
+    return float(read), float(write)
+
+
+def calculate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> float:
+    """Return estimated USD cost for a call. Returns 0.0 for unknown models.
+
+    `input_tokens` should be the TOTAL prompt tokens billed at full rate (i.e.
+    cache-miss tokens). `cache_read_tokens` and `cache_write_tokens` are billed
+    separately using provider-specific discounted/premium tiers.
+    """
+    entry = _resolve_pricing_entry(model)
     if not entry:
         return 0.0
 
-    input_cost = (input_tokens / 1_000_000) * entry.get("input_per_1m", 0.0)
-    output_cost = (output_tokens / 1_000_000) * entry.get("output_per_1m", 0.0)
-    return round(input_cost + output_cost, 8)
+    input_per_1m = entry.get("input_per_1m", 0.0)
+    output_per_1m = entry.get("output_per_1m", 0.0)
+    cache_read_per_1m, cache_write_per_1m = _cache_rates(entry, input_per_1m)
+
+    input_cost = (input_tokens / 1_000_000) * input_per_1m
+    output_cost = (output_tokens / 1_000_000) * output_per_1m
+    cache_read_cost = (cache_read_tokens / 1_000_000) * cache_read_per_1m
+    cache_write_cost = (cache_write_tokens / 1_000_000) * cache_write_per_1m
+    return round(input_cost + output_cost + cache_read_cost + cache_write_cost, 8)
+
+
+def calculate_savings(
+    model: str,
+    cache_read_tokens: int,
+) -> float:
+    """USD saved on this call vs. paying full input rate for the cache_read tokens."""
+    if cache_read_tokens <= 0:
+        return 0.0
+    entry = _resolve_pricing_entry(model)
+    if not entry:
+        return 0.0
+    input_per_1m = entry.get("input_per_1m", 0.0)
+    cache_read_per_1m, _ = _cache_rates(entry, input_per_1m)
+    delta_per_1m = max(0.0, input_per_1m - cache_read_per_1m)
+    return round((cache_read_tokens / 1_000_000) * delta_per_1m, 8)
 
 
 def get_pricing_table() -> dict:
@@ -119,9 +182,21 @@ def log_usage(
     run_id: Optional[str] = None,   # orchestration run id
     tool_name: Optional[str] = None,  # tool called on this turn (if any)
     latency_seconds: float = 0.0,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    response_cache_hit: bool = False,  # True when the LLM call was skipped entirely
 ):
-    """Append a usage record to usage_logs.json (thread-safe)."""
-    estimated_cost = calculate_cost(model, input_tokens, output_tokens)
+    """Append a usage record to usage_logs.json (thread-safe).
+
+    `input_tokens` should be the cache-miss prompt tokens (i.e. tokens billed
+    at the full input rate). Provider helpers split this out before calling us.
+    """
+    estimated_cost = calculate_cost(
+        model, input_tokens, output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+    )
+    estimated_savings = calculate_savings(model, cache_read_tokens)
     record = {
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "model": model,
@@ -133,19 +208,28 @@ def log_usage(
         "tool_name": tool_name,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
+        "total_tokens": input_tokens + output_tokens + cache_read_tokens + cache_write_tokens,
         "context_chars": context_chars,
         "estimated_cost": estimated_cost,
         "latency_seconds": round(latency_seconds, 2),
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "estimated_savings": estimated_savings,
+        "response_cache_hit": response_cache_hit,
     }
     with _lock:
         logs = _load_logs()
         logs.append(record)
         _save_logs(logs)
     _sid_display = (session_id[:8] + '…') if session_id and len(session_id) > 8 else (session_id or '-')
+    _cache_tag = ""
+    if response_cache_hit:
+        _cache_tag = " [response_cache_hit]"
+    elif cache_read_tokens or cache_write_tokens:
+        _cache_tag = f" cache_r={cache_read_tokens} cache_w={cache_write_tokens}"
     print(
         f"DEBUG usage: {model} in={input_tokens} out={output_tokens} "
-        f"cost=${estimated_cost:.6f} session={_sid_display}",
+        f"cost=${estimated_cost:.6f} session={_sid_display}{_cache_tag}",
         flush=True,
     )
 
@@ -248,6 +332,10 @@ def get_usage_summary() -> dict:
     total_cost = 0.0
     total_input = 0
     total_output = 0
+    total_cache_read = 0
+    total_cache_write = 0
+    total_savings = 0.0
+    total_cache_hits = 0
     # Compaction events are observational (0 tokens/cost) — exclude from request count
     total_requests = sum(1 for r in logs if r.get("event_type") != "compaction")
     by_model: dict[str, dict] = {}
@@ -269,9 +357,19 @@ def get_usage_summary() -> dict:
         ctx = r.get("context_chars", 0)
         agent_id = r.get("agent_id", "unknown")
 
+        cache_r = r.get("cache_read_tokens", 0) or 0
+        cache_w = r.get("cache_write_tokens", 0) or 0
+        savings = r.get("estimated_savings", 0.0) or 0.0
+        is_response_hit = bool(r.get("response_cache_hit"))
+
         total_cost += cost
         total_input += inp
         total_output += out
+        total_cache_read += cache_r
+        total_cache_write += cache_w
+        total_savings += savings
+        if is_response_hit:
+            total_cache_hits += 1
 
         # By model
         if model not in by_model:
@@ -283,6 +381,10 @@ def get_usage_summary() -> dict:
                 "output_tokens": 0,
                 "total_tokens": 0,
                 "estimated_cost": 0.0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "estimated_savings": 0.0,
+                "response_cache_hits": 0,
             }
         bm = by_model[model]
         bm["requests"] += 1
@@ -290,6 +392,11 @@ def get_usage_summary() -> dict:
         bm["output_tokens"] += out
         bm["total_tokens"] += inp + out
         bm["estimated_cost"] = round(bm["estimated_cost"] + cost, 8)
+        bm["cache_read_tokens"] += cache_r
+        bm["cache_write_tokens"] += cache_w
+        bm["estimated_savings"] = round(bm["estimated_savings"] + savings, 8)
+        if is_response_hit:
+            bm["response_cache_hits"] += 1
 
         # Schedule entries are grouped by run_id
         if run_id and source == "schedule":
@@ -407,10 +514,103 @@ def get_usage_summary() -> dict:
         "total_output_tokens": total_output,
         "total_tokens": total_input + total_output,
         "total_requests": total_requests,
+        "total_cache_read_tokens": total_cache_read,
+        "total_cache_write_tokens": total_cache_write,
+        "total_estimated_savings": round(total_savings, 8),
+        "total_response_cache_hits": total_cache_hits,
         "by_model": by_model_list,
         "by_session": by_session_list,
         "by_schedule": by_schedule_list,
     }
+
+def get_cache_summary() -> dict:
+    """Return cache-focused aggregates: per-model + per-run hit rates and savings.
+
+    Powers the cache analytics dashboard. Cheaper than walking get_usage_summary()
+    on the frontend because it strips out the chat/session detail.
+    """
+    with _lock:
+        logs = _load_logs()
+
+    by_model: dict[str, dict] = {}
+    by_run: dict[str, dict] = {}
+    total_savings = 0.0
+    total_requests = 0
+    total_cache_hits = 0
+    total_cache_read = 0
+    total_cache_write = 0
+
+    for r in logs:
+        if r.get("event_type") == "compaction":
+            continue
+        total_requests += 1
+        model = r.get("model", "unknown")
+        run_id = r.get("run_id")
+        cache_r = r.get("cache_read_tokens", 0) or 0
+        cache_w = r.get("cache_write_tokens", 0) or 0
+        savings = r.get("estimated_savings", 0.0) or 0.0
+        is_hit = bool(r.get("response_cache_hit"))
+        cost = r.get("estimated_cost", 0.0) or 0.0
+
+        total_savings += savings
+        total_cache_read += cache_r
+        total_cache_write += cache_w
+        if is_hit:
+            total_cache_hits += 1
+
+        m = by_model.setdefault(model, {
+            "model": model,
+            "requests": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "estimated_savings": 0.0,
+            "estimated_cost": 0.0,
+            "response_cache_hits": 0,
+        })
+        m["requests"] += 1
+        m["cache_read_tokens"] += cache_r
+        m["cache_write_tokens"] += cache_w
+        m["estimated_savings"] = round(m["estimated_savings"] + savings, 8)
+        m["estimated_cost"] = round(m["estimated_cost"] + cost, 8)
+        if is_hit:
+            m["response_cache_hits"] += 1
+
+        if run_id:
+            br = by_run.setdefault(run_id, {
+                "run_id": run_id,
+                "requests": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "estimated_savings": 0.0,
+                "estimated_cost": 0.0,
+                "response_cache_hits": 0,
+                "last_ts": r.get("timestamp"),
+            })
+            br["requests"] += 1
+            br["cache_read_tokens"] += cache_r
+            br["cache_write_tokens"] += cache_w
+            br["estimated_savings"] = round(br["estimated_savings"] + savings, 8)
+            br["estimated_cost"] = round(br["estimated_cost"] + cost, 8)
+            if is_hit:
+                br["response_cache_hits"] += 1
+            br["last_ts"] = r.get("timestamp")
+
+    by_model_list = sorted(by_model.values(), key=lambda x: x["estimated_savings"], reverse=True)
+    by_run_list = sorted(by_run.values(), key=lambda x: x["estimated_savings"], reverse=True)[:20]
+
+    overall_hit_rate = (total_cache_hits / total_requests) if total_requests else 0.0
+
+    return {
+        "total_estimated_savings": round(total_savings, 8),
+        "total_requests": total_requests,
+        "total_response_cache_hits": total_cache_hits,
+        "response_cache_hit_rate": round(overall_hit_rate, 4),
+        "total_cache_read_tokens": total_cache_read,
+        "total_cache_write_tokens": total_cache_write,
+        "by_model": by_model_list,
+        "by_run": by_run_list,
+    }
+
 
 def clear_usage_logs() -> int:
     """Delete all usage logs. Returns count deleted."""

@@ -312,7 +312,7 @@ export function StepConfigPanel({ step, agents, allStepIds, onUpdate, onDelete, 
                 {step.type === 'transform' && (
                     <div className="space-y-2">
                         <div className="rounded bg-amber-950/40 border border-amber-800/40 px-3 py-2 text-[10px] text-amber-400 leading-relaxed">
-                            <strong>Python sandbox</strong> — runs in Docker (512MB RAM, no network). <code>state</code> dict is injected. Assign to <code>result</code> to write the output key.
+                            <strong>Python execution</strong> — runs in Docker by default (512MB RAM, no network); switch to host mode in Settings → General to lift the sandbox. <code>state</code> dict is injected. Assign to <code>result</code> to write the output key.
                         </div>
                         <label className="text-xs text-zinc-400 block mb-1">Python Code</label>
                         <div className="border border-zinc-700 rounded overflow-hidden h-[220px] focus-within:border-amber-600 transition-colors">
@@ -457,6 +457,8 @@ export function StepConfigPanel({ step, agents, allStepIds, onUpdate, onDelete, 
                                 onChange={(e) => update({ max_iterations: e.target.value === '' ? undefined : parseInt(e.target.value) })}
                             />
                         </div>
+
+                        <CacheSection step={step} update={update} />
                     </>
                 )}
             </div>
@@ -611,6 +613,128 @@ function ToolStepConfig({ step, update, textareaCls, selectCls, availableModels 
                 </select>
             </div>
             <HistoryToggle step={step} update={update} />
+        </div>
+    );
+}
+
+/**
+ * Cache controls: response cache + deterministic tool memoization.
+ *
+ * Response cache is silently disabled for AGENT steps — skipping a ReAct loop
+ * would let shared_state diverge from what the LLM "saw". Tool memoization is
+ * safe everywhere because only tools in the DETERMINISTIC_TOOLS registry are
+ * eligible (bash, sql_agent, web_scraper, sandbox are skipped at the backend).
+ */
+function CacheSection({ step, update }: { step: StepConfig; update: (patch: Partial<StepConfig>) => void }) {
+    const responseCacheAllowed = step.type !== 'agent';
+    const responseEnabled = !!step.cache_responses_enabled;
+    const semanticEnabled = !!step.cache_semantic_enabled;
+    const toolCacheEnabled = step.cache_tools_enabled !== false; // default on
+
+    return (
+        <div className="space-y-2">
+            <div className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Caching</div>
+
+            {responseCacheAllowed ? (
+                <div className="rounded bg-zinc-900/60 border border-zinc-700 px-3 py-2 space-y-2">
+                    <label className="flex items-start gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={responseEnabled}
+                            onChange={(e) => update({ cache_responses_enabled: e.target.checked || undefined })}
+                            className="mt-0.5 accent-emerald-500"
+                        />
+                        <span className="text-xs text-zinc-300">
+                            Cache LLM responses
+                            <span className="block text-[10px] text-zinc-500 mt-0.5">
+                                Skip the call entirely when a previous run saw the same prompt. Cache hits cost ~0 (no tokens billed).
+                            </span>
+                        </span>
+                    </label>
+
+                    {responseEnabled && (
+                        <>
+                            <label className="flex items-start gap-2 cursor-pointer pl-5">
+                                <input
+                                    type="checkbox"
+                                    checked={semanticEnabled}
+                                    onChange={(e) => update({ cache_semantic_enabled: e.target.checked || undefined })}
+                                    className="mt-0.5 accent-emerald-500"
+                                />
+                                <span className="text-xs text-zinc-300">
+                                    Semantic match (fuzzy)
+                                    <span className="block text-[10px] text-zinc-500 mt-0.5">
+                                        Reuse a near-identical prior response when exact match misses. Threshold {(step.cache_response_threshold ?? 0.95).toFixed(2)} cosine similarity.
+                                    </span>
+                                    <span className="block text-[10px] text-amber-500/80 mt-0.5">
+                                        Needs an embedding provider — Ollama with <code>nomic-embed-text</code> (default) or an <code>embedding_model</code> set in Settings. Without one, semantic match silently does nothing; exact match still works.
+                                    </span>
+                                </span>
+                            </label>
+                            <div className="pl-5 grid grid-cols-2 gap-2">
+                                <div>
+                                    <label className="text-[10px] text-zinc-500 block mb-0.5">TTL (seconds)</label>
+                                    <input
+                                        type="number"
+                                        className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 outline-none"
+                                        value={step.cache_response_ttl_seconds ?? ''}
+                                        placeholder="3600"
+                                        onChange={(e) => update({ cache_response_ttl_seconds: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+                                    />
+                                </div>
+                                {semanticEnabled && (
+                                    <div>
+                                        <label className="text-[10px] text-zinc-500 block mb-0.5">Similarity ≥</label>
+                                        <input
+                                            type="number"
+                                            min={0.5}
+                                            max={1}
+                                            step={0.01}
+                                            className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 outline-none"
+                                            value={step.cache_response_threshold ?? ''}
+                                            placeholder="0.95"
+                                            onChange={(e) => update({ cache_response_threshold: e.target.value === '' ? undefined : parseFloat(e.target.value) })}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        </>
+                    )}
+                </div>
+            ) : (
+                <div className="rounded bg-zinc-900/30 border border-zinc-800 px-3 py-2 text-[10px] text-zinc-500 leading-relaxed">
+                    Response cache is disabled for agent steps — skipping the ReAct loop would diverge shared state.
+                </div>
+            )}
+
+            <div className="rounded bg-zinc-900/60 border border-zinc-700 px-3 py-2 space-y-2">
+                <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                        type="checkbox"
+                        checked={toolCacheEnabled}
+                        onChange={(e) => update({ cache_tools_enabled: e.target.checked ? undefined : false })}
+                        className="mt-0.5 accent-emerald-500"
+                    />
+                    <span className="text-xs text-zinc-300">
+                        Cache deterministic tools
+                        <span className="block text-[10px] text-zinc-500 mt-0.5">
+                            Memoize results from <code>code_search</code>, <code>pdf_parser</code>, <code>xlsx_parser</code>, <code>time</code>, <code>collect_data</code>, etc. Side-effectful tools (bash, sql_agent, web_scraper) are never cached.
+                        </span>
+                    </span>
+                </label>
+                {toolCacheEnabled && (
+                    <div className="pl-5">
+                        <label className="text-[10px] text-zinc-500 block mb-0.5">TTL (seconds)</label>
+                        <input
+                            type="number"
+                            className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 outline-none"
+                            value={step.cache_tool_ttl_seconds ?? ''}
+                            placeholder="3600"
+                            onChange={(e) => update({ cache_tool_ttl_seconds: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+                        />
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

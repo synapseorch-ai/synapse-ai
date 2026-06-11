@@ -443,6 +443,16 @@ def _read_file_by_lines(file_path: str, start_line: int = 1, end_line: int = 100
         except Exception:
             pass
 
+    # Fallback: download from S3 if this is a vault file that exists only on another worker
+    if not resolved:
+        try:
+            from core.vault import _ensure_local_path
+            maybe_local = _ensure_local_path(file_path)
+            if maybe_local != file_path and os.path.exists(maybe_local):
+                resolved = maybe_local
+        except Exception:
+            pass
+
     if not resolved:
         cwd = os.getcwd()
 

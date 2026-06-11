@@ -67,6 +67,34 @@ class OrchestrationLogger:
 {'='*80}
 """)
 
+    def close(self) -> None:
+        """Upload the completed log to S3 (scale mode). No-op in standalone mode."""
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3 and self.path.exists():
+                head = self.path.read_text(encoding="utf-8", errors="replace")[:1000]
+
+                def _extract(label: str) -> str:
+                    for line in head.split("\n"):
+                        if label in line:
+                            return line.split(":", 1)[1].strip()
+                    return ""
+
+                s3.upload_text(
+                    f"logs/orchestration/{self.path.name}",
+                    self.path.read_text(encoding="utf-8"),
+                    metadata={
+                        "orchestration_name": _extract("Orchestration   :"),
+                        "orchestration_id": _extract("Orchestration ID:"),
+                        "session_id": _extract("Session ID      :"),
+                        "started_at": _extract("Started at      :"),
+                        "user_input": _extract("User Input      :")[:200],
+                    },
+                )
+        except Exception:
+            pass
+
     # ── Step lifecycle ─────────────────────────────────────────────
 
     def step_start(self, step_id: str, step_name: str, step_type: str,
@@ -181,11 +209,19 @@ class OrchestrationLogger:
      Preview: {preview}
 """)
 
+        elif etype == "llm_reasoning":
+            reasoning = event.get("reasoning", "")
+            turn = event.get("turn", "")
+            self._write(f"""
+  💭 REASONING (turn {turn}):
+{self._indent(reasoning)}
+""")
+
         elif etype == "llm_thought":
             thought = event.get("thought", "")
             turn = event.get("turn", "")
             self._write(f"""
-  🧠 LLM THOUGHT (turn {turn}):
+  🛠️  ACTION (turn {turn}):
 {self._indent(thought)}
 """)
 
@@ -287,43 +323,94 @@ class OrchestrationLogger:
     @staticmethod
     def get_log(run_id: str) -> str | None:
         path = LOGS_DIR / f"{run_id}.log"
-        if not path.exists():
-            return None
-        return path.read_text(encoding="utf-8")
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                return s3.download_text(f"logs/orchestration/{run_id}.log")
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def list_logs(limit: int = 100, offset: int = 0) -> list[dict]:
         _ensure_logs_dir()
-        logs = []
+
+        def _parse_head(head: str, run_id: str, size_kb: float) -> dict:
+            def _extract(label: str) -> str:
+                for line in head.split("\n"):
+                    if label in line:
+                        return line.split(":", 1)[1].strip()
+                return ""
+            return {
+                "run_id": run_id,
+                "orchestration_name": _extract("Orchestration   :"),
+                "orchestration_id": _extract("Orchestration ID:"),
+                "session_id": _extract("Session ID      :"),
+                "started_at": _extract("Started at      :"),
+                "user_input": _extract("User Input      :")[:200],
+                "file_size_kb": size_kb,
+            }
+
+        local_ids: set[str] = set()
+        logs: list[dict] = []
         files = sorted(LOGS_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for f in files[offset : offset + limit]:
+        for f in files:
             run_id = f.stem
-            # Parse header lines for summary
+            local_ids.add(run_id)
             try:
                 head = f.read_text(encoding="utf-8", errors="replace")[:1000]
-                def _extract(label: str) -> str:
-                    for line in head.split("\n"):
-                        if label in line:
-                            return line.split(":", 1)[1].strip()
-                    return ""
-
-                logs.append({
-                    "run_id": run_id,
-                    "orchestration_name": _extract("Orchestration   :"),
-                    "orchestration_id": _extract("Orchestration ID:"),
-                    "session_id": _extract("Session ID      :"),
-                    "started_at": _extract("Started at      :"),
-                    "user_input": _extract("User Input      :")[:200],
-                    "file_size_kb": round(f.stat().st_size / 1024, 1),
-                })
+                logs.append(_parse_head(head, run_id, round(f.stat().st_size / 1024, 1)))
             except Exception:
-                logs.append({"run_id": run_id})
-        return logs
+                logs.append({"run_id": run_id, "file_size_kb": 0})
+
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                from concurrent.futures import ThreadPoolExecutor
+                s3_keys = s3.list_keys("logs/orchestration/")
+                missing_keys = [k for k in s3_keys if k.endswith(".log") and Path(k).stem not in local_ids]
+
+                def _fetch_meta(rel_key: str) -> dict:
+                    run_id = Path(rel_key).stem
+                    try:
+                        meta = s3.get_metadata(rel_key) or {}
+                        return {
+                            "run_id": run_id,
+                            "orchestration_name": meta.get("orchestration_name", ""),
+                            "orchestration_id": meta.get("orchestration_id", ""),
+                            "session_id": meta.get("session_id", ""),
+                            "started_at": meta.get("started_at", ""),
+                            "user_input": meta.get("user_input", "")[:200],
+                            "file_size_kb": 0,
+                        }
+                    except Exception:
+                        return {"run_id": run_id}
+
+                with ThreadPoolExecutor(max_workers=10) as pool:
+                    logs.extend(pool.map(_fetch_meta, missing_keys))
+        except Exception:
+            pass
+
+        logs.sort(key=lambda x: x.get("started_at", ""), reverse=True)
+        return logs[offset: offset + limit]
 
     @staticmethod
     def delete_log(run_id: str) -> bool:
         path = LOGS_DIR / f"{run_id}.log"
+        deleted = False
         if path.exists():
             path.unlink()
-            return True
-        return False
+            deleted = True
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                s3.delete(f"logs/orchestration/{run_id}.log")
+                deleted = True
+        except Exception:
+            pass
+        return deleted

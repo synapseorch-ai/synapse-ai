@@ -149,12 +149,19 @@ def load_settings():
 
 def save_settings(cfg):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(SETTINGS_FILE, "w") as f:
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=4)
 
 
 def run():
-    print("\nSynapse — Interactive Setup")
+    # Best-effort: ensure console output uses UTF-8 so stray non-ASCII
+    # characters never crash or render as garbage on Windows (cp1252).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+    print("\nSynapse - Interactive Setup")
     cfg = load_settings()
 
     print("\nGeneral")

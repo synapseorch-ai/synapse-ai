@@ -190,6 +190,7 @@ async def get_models():
     local_compatible_models_str = (settings.get("local_compatible_models") or "").strip()
     openai_compatible_embed_models_str = (settings.get("openai_compatible_embed_models") or "").strip()
     local_compatible_embed_models_str = (settings.get("local_compatible_embed_models") or "").strip()
+    huggingface_models_str = (settings.get("huggingface_models") or "").strip()
     bedrock_available = bool((settings.get("bedrock_api_key") or "").strip() or
                              (settings.get("aws_access_key_id") or "").strip())
 
@@ -361,9 +362,23 @@ async def get_models():
         except Exception:
             return True, BEDROCK_FALLBACK, ["bedrock.amazon.titan-embed-text-v1"]
 
+    def _cli_custom_models(setting_key: str, prefix: str) -> list[str]:
+        """Turn a comma-separated custom-model setting into cli.<provider>.<name>
+        entries. Skips blanks and anything already carrying the prefix."""
+        raw = (settings.get(setting_key) or "").strip()
+        out: list[str] = []
+        for name in raw.split(","):
+            name = name.strip()
+            if not name:
+                continue
+            out.append(name if name.startswith(prefix) else f"{prefix}{name}")
+        return out
+
     async def fetch_claude_cli() -> tuple[bool, list[str], list[str]]:
         import shutil
-        models = [
+        if not shutil.which("claude"):
+            return False, [], []
+        models = _cli_custom_models("anthropic_cli_models", "cli.claude.") + [
             "cli.claude.claude-sonnet-4-6",
             "cli.claude.claude-sonnet-4-6-thinking",
             "cli.claude.claude-opus-4-6",
@@ -373,22 +388,57 @@ async def get_models():
             "cli.claude.claude-opus-4-5-20251101",
             "cli.claude.claude-opus-4-5-20251101-thinking",
             "cli.claude"
-        ] if shutil.which("claude") else []
-        return bool(models), models, []
+        ]
+        return True, models, []
 
     async def fetch_gemini_cli() -> tuple[bool, list[str], list[str]]:
         import shutil
-        models = [
+        if not shutil.which("gemini"):
+            return False, [], []
+        models = _cli_custom_models("gemini_cli_models", "cli.gemini.") + [
             "cli.gemini.pro",
             "cli.gemini.flash",
             "cli.gemini"
-        ] if shutil.which("gemini") else []
-        return bool(models), models, []
+        ]
+        return True, models, []
+
+    def _codex_cached_models() -> list[str]:
+        """Surface the models this account is actually entitled to, read from
+        codex's local cache (~/.codex/models_cache.json, or $CODEX_HOME). Codex's
+        compiled-in default model — used by a bare `cli.codex` with no -m — can be
+        one the account can't use (e.g. ChatGPT accounts get gpt-5.4, not the
+        default gpt-5.x-codex), which 400s. Listing the real entitlements lets the
+        user pick a working model without knowing the names."""
+        import json
+        home = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+        try:
+            with open(os.path.join(home, "models_cache.json"), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            entries = []
+            for m in data.get("models", []):
+                slug = m.get("slug")
+                # visibility "list" = user-selectable; skip hidden/internal models
+                if not slug or m.get("visibility") != "list" or not m.get("supported_in_api", True):
+                    continue
+                entries.append((m.get("priority", 999), slug))
+            entries.sort(key=lambda x: x[0])
+            return [f"cli.codex.{slug}" for _, slug in entries]
+        except Exception:
+            return []
 
     async def fetch_codex_cli() -> tuple[bool, list[str], list[str]]:
         import shutil
-        models = ["cli.codex"] if shutil.which("codex") else []
-        return bool(models), models, []
+        if not shutil.which("codex"):
+            return False, [], []
+        # Order: user custom entries, then account-entitled models from the cache,
+        # then bare `cli.codex` (defers to codex's own default, which may mismatch
+        # the account and 400 — so it's last). Dedupe, preserving order.
+        seen, models = set(), []
+        for m in _cli_custom_models("codex_cli_models", "cli.codex.") + _codex_cached_models() + ["cli.codex"]:
+            if m not in seen:
+                seen.add(m)
+                models.append(m)
+        return True, models, []
 
     async def fetch_github_copilot_cli() -> tuple[bool, list[str], list[str]]:
         import shutil
@@ -406,7 +456,7 @@ async def get_models():
                 return False, [], []
         except Exception:
             return False, [], []
-        models = await _fetch_copilot_models()
+        models = _cli_custom_models("github_copilot_cli_models", "cli.copilot.") + await _fetch_copilot_models()
         return True, models, []
 
     async def fetch_openai_compatible() -> tuple[bool, list[str], list[str]]:
@@ -466,6 +516,22 @@ async def get_models():
         prefixed_embed = [f"locv1.{m}" for m in all_embed]
         return available, prefixed, prefixed_embed
 
+    async def fetch_huggingface() -> tuple[bool, list[str], list[str]]:
+        """List user-configured HuggingFace model IDs, prefixed with hf.
+
+        No API discovery — HF model namespace is enormous and not enumerable.
+        The user lists the specific model IDs they want available (one per line
+        or comma-separated) in Settings → Models → HuggingFace Models.
+        """
+        models = [
+            m.strip() for m in huggingface_models_str.replace("\n", ",").split(",")
+            if m.strip()
+        ]
+        if not models:
+            return False, [], []
+        prefixed = [f"hf.{m}" if not m.startswith("hf.") else m for m in models]
+        return True, prefixed, []
+
     # Run all fetches concurrently; return_exceptions=True ensures one provider failure
     # doesn't cancel the others.
     _PROVIDER_FALLBACKS = [
@@ -482,8 +548,9 @@ async def get_models():
         (False, [], []),                                                                 # gemini_cli
         (False, [], []),                                                                 # codex_cli
         (False, [], []),                                                                 # github_copilot_cli
+        (False, [], []),                                                                 # huggingface
     ]
-    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli"]
+    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli", "huggingface"]
 
     raw = await asyncio.gather(
         fetch_ollama(), fetch_openai(), fetch_anthropic(),
@@ -491,6 +558,7 @@ async def get_models():
         fetch_openai_compatible(), fetch_local_compatible(),
         fetch_claude_cli(), fetch_gemini_cli(), fetch_codex_cli(),
         fetch_github_copilot_cli(),
+        fetch_huggingface(),
         return_exceptions=True,
     )
 
@@ -515,6 +583,7 @@ async def get_models():
     c_gemini_avail, c_gemini_chat, _ = results[10]
     c_codex_avail, c_codex_chat, _ = results[11]
     c_copilot_avail, c_copilot_chat, _ = results[12]
+    hf_avail, hf_chat, _ = results[13]
 
     # --- Build provider map ---
     providers = {
@@ -531,6 +600,7 @@ async def get_models():
         "gemini_cli": {"available": c_gemini_avail, "models": c_gemini_chat, "embedding_models": []},
         "codex_cli": {"available": c_codex_avail, "models": c_codex_chat, "embedding_models": []},
         "github_copilot_cli": {"available": c_copilot_avail, "models": c_copilot_chat, "embedding_models": []},
+        "huggingface": {"available": hf_avail, "models": hf_chat, "embedding_models": []},
     }
 
     # --- Flat list of all available models ---
@@ -540,7 +610,7 @@ async def get_models():
             all_available.extend(info["models"])
 
     # --- Backward compat ---
-    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat
+    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat
 
     return {
         "providers": providers,

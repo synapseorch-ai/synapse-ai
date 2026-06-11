@@ -1,7 +1,7 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useRef, useEffect } from 'react';
-import { X, Send, Sparkles, ChevronDown, ChevronUp, Loader2, Bot, Plus, CheckCircle2, ArrowRight } from 'lucide-react';
+import { X, Send, Sparkles, ChevronDown, ChevronUp, Loader2, Bot, Plus, CheckCircle2, ArrowRight, ChevronsRight } from 'lucide-react';
 import type { Orchestration } from '@/types/orchestration';
 import { renderTextContent } from '@/lib/utils';
 
@@ -197,9 +197,14 @@ export function BuilderPanel({
     const [streamingStatus, setStreamingStatus] = useState<string | null>(null);
     const [accordionOpen, setAccordionOpen] = useState(false);
     const [pendingRun, setPendingRun] = useState<{ run_id: string; field: string } | null>(null);
+    const [collapsed, setCollapsed] = useState(false);
 
     const bottomRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    useEffect(() => {
+        if (isOpen) setCollapsed(false);
+    }, [isOpen]);
 
     useEffect(() => {
         if (sessionKey === undefined) return;
@@ -418,6 +423,23 @@ export function BuilderPanel({
 
     if (!isOpen) return null;
 
+    if (collapsed) {
+        return (
+            <div className="fixed inset-y-0 right-0 z-50 flex items-center">
+                <button
+                    onClick={() => setCollapsed(false)}
+                    title="Show AI Builder"
+                    className="flex flex-col items-center gap-2 px-2 py-4 bg-zinc-900 border border-zinc-800 border-r-0 rounded-l-lg shadow-xl text-purple-400 hover:text-purple-300 hover:bg-zinc-800 transition-colors"
+                >
+                    <Sparkles size={14} />
+                    <span className="text-[10px] font-semibold tracking-wide [writing-mode:vertical-rl] rotate-180 text-zinc-400">
+                        AI Builder
+                    </span>
+                </button>
+            </div>
+        );
+    }
+
     return (
         <div className="fixed inset-y-0 right-0 z-50 w-[620px] bg-zinc-950 border-l border-zinc-800 shadow-2xl flex flex-col">
 
@@ -427,9 +449,18 @@ export function BuilderPanel({
                     <Sparkles size={15} className="text-purple-400" />
                     <span className="text-sm font-semibold text-zinc-100">AI Builder</span>
                 </div>
-                <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300 transition-colors">
-                    <X size={16} />
-                </button>
+                <div className="flex items-center gap-1">
+                    <button
+                        onClick={() => setCollapsed(true)}
+                        title="Hide panel"
+                        className="text-zinc-500 hover:text-zinc-300 transition-colors"
+                    >
+                        <ChevronsRight size={16} />
+                    </button>
+                    <button onClick={onClose} title="Close" className="text-zinc-500 hover:text-zinc-300 transition-colors">
+                        <X size={16} />
+                    </button>
+                </div>
             </div>
 
             {/* ── Chat area ───────────────────────────────────────────── */}

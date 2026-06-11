@@ -90,6 +90,46 @@ class ScheduleLogger:
 {'='*80}
 """)
 
+    def close(self) -> None:
+        """
+        Flush pending writes and upload the completed log to S3 (scale mode).
+        Writes a final sync marker to ensure the run_end text (queued via executor)
+        has been flushed before uploading.
+        """
+        # Sync write acts as a barrier — the executor pool is FIFO so this waits
+        # for any pending _write_bg tasks to drain (they run in the same default
+        # thread pool as this blocking call).
+        try:
+            self._write("")  # zero-length write, flushes preceding executor tasks
+        except Exception:
+            pass
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3 and self.path.exists():
+                head = self.path.read_text(encoding="utf-8", errors="replace")[:1000]
+
+                def _extract(label: str) -> str:
+                    for line in head.split("\n"):
+                        if label in line:
+                            return line.split(":", 1)[1].strip()
+                    return ""
+
+                s3.upload_text(
+                    f"logs/schedule/{self.path.name}",
+                    self.path.read_text(encoding="utf-8"),
+                    metadata={
+                        "schedule_name": _extract("Schedule Name   :"),
+                        "schedule_id": _extract("Schedule ID     :"),
+                        "target_type": _extract("Target Type     :"),
+                        "target_id": _extract("Target ID       :"),
+                        "started_at": _extract("Started at      :"),
+                        "prompt": _extract("Prompt          :")[:200],
+                    },
+                )
+        except Exception:
+            pass
+
     # -- Event logging ---------------------------------------------------
 
     def log_event(self, event: dict):
@@ -174,53 +214,101 @@ class ScheduleLogger:
 
     @staticmethod
     def get_log(run_id: str) -> str | None:
-        # Sanitize input immediately to satisfy scanner trace
         if not run_id or not re.match(r"^[a-zA-Z0-9_\-\.]+$", str(run_id)):
             return None
-
         path = ScheduleLogger._safe_log_path(run_id)
-        if not path or not path.exists():
-            return None
-        return path.read_text(encoding="utf-8")
+        if path and path.exists():
+            return path.read_text(encoding="utf-8")
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                return s3.download_text(f"logs/schedule/{run_id}.log")
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def list_logs(limit: int = 100, offset: int = 0) -> list[dict]:
         _ensure_logs_dir()
-        logs = []
+
+        def _parse_head(head: str, run_id: str, size_kb: float) -> dict:
+            def _extract(label: str) -> str:
+                for line in head.split("\n"):
+                    if label in line:
+                        return line.split(":", 1)[1].strip()
+                return ""
+            return {
+                "run_id": run_id,
+                "schedule_name": _extract("Schedule Name   :"),
+                "schedule_id": _extract("Schedule ID     :"),
+                "target_type": _extract("Target Type     :"),
+                "target_id": _extract("Target ID       :"),
+                "started_at": _extract("Started at      :"),
+                "prompt": _extract("Prompt          :")[:200],
+                "file_size_kb": size_kb,
+            }
+
+        local_ids: set[str] = set()
+        logs: list[dict] = []
         files = sorted(LOGS_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for f in files[offset: offset + limit]:
+        for f in files:
             run_id = f.stem
+            local_ids.add(run_id)
             try:
                 head = f.read_text(encoding="utf-8", errors="replace")[:1000]
-
-                def _extract(label: str) -> str:
-                    for line in head.split("\n"):
-                        if label in line:
-                            return line.split(":", 1)[1].strip()
-                    return ""
-
-                logs.append({
-                    "run_id": run_id,
-                    "schedule_name": _extract("Schedule Name   :"),
-                    "schedule_id": _extract("Schedule ID     :"),
-                    "target_type": _extract("Target Type     :"),
-                    "target_id": _extract("Target ID       :"),
-                    "started_at": _extract("Started at      :"),
-                    "prompt": _extract("Prompt          :")[:200],
-                    "file_size_kb": round(f.stat().st_size / 1024, 1),
-                })
+                logs.append(_parse_head(head, run_id, round(f.stat().st_size / 1024, 1)))
             except Exception:
-                logs.append({"run_id": run_id})
-        return logs
+                logs.append({"run_id": run_id, "file_size_kb": 0})
+
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                from concurrent.futures import ThreadPoolExecutor
+                s3_keys = s3.list_keys("logs/schedule/")
+                missing_keys = [k for k in s3_keys if k.endswith(".log") and Path(k).stem not in local_ids]
+
+                def _fetch_meta(rel_key: str) -> dict:
+                    run_id = Path(rel_key).stem
+                    try:
+                        meta = s3.get_metadata(rel_key) or {}
+                        return {
+                            "run_id": run_id,
+                            "schedule_name": meta.get("schedule_name", ""),
+                            "schedule_id": meta.get("schedule_id", ""),
+                            "target_type": meta.get("target_type", ""),
+                            "target_id": meta.get("target_id", ""),
+                            "started_at": meta.get("started_at", ""),
+                            "prompt": meta.get("prompt", "")[:200],
+                            "file_size_kb": 0,
+                        }
+                    except Exception:
+                        return {"run_id": run_id}
+
+                with ThreadPoolExecutor(max_workers=10) as pool:
+                    logs.extend(pool.map(_fetch_meta, missing_keys))
+        except Exception:
+            pass
+
+        logs.sort(key=lambda x: x.get("started_at", ""), reverse=True)
+        return logs[offset: offset + limit]
 
     @staticmethod
     def delete_log(run_id: str) -> bool:
-        # Sanitize input immediately to satisfy scanner trace
         if not run_id or not re.match(r"^[a-zA-Z0-9_\-\.]+$", str(run_id)):
             return False
-
         path = ScheduleLogger._safe_log_path(run_id)
+        deleted = False
         if path and path.exists():
             path.unlink()
-            return True
-        return False
+            deleted = True
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                s3.delete(f"logs/schedule/{run_id}.log")
+                deleted = True
+        except Exception:
+            pass
+        return deleted

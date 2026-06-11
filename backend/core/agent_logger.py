@@ -96,6 +96,37 @@ class AgentLogger:
 {'='*80}
 """)
 
+    def close(self) -> None:
+        """Drain the write queue, then upload the completed log to S3 (scale mode)."""
+        self._q.put(None)  # poison pill — stops the drain thread
+        self._thread.join(timeout=10)
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3 and self.path.exists():
+                head = self.path.read_text(encoding="utf-8", errors="replace")[:1000]
+
+                def _extract(label: str) -> str:
+                    for line in head.split("\n"):
+                        if label in line:
+                            return line.split(":", 1)[1].strip()
+                    return ""
+
+                s3.upload_text(
+                    f"logs/agent/{self.path.name}",
+                    self.path.read_text(encoding="utf-8"),
+                    metadata={
+                        "agent_name": _extract("Agent Name      :"),
+                        "agent_id": _extract("Agent ID        :"),
+                        "source": _extract("Source          :"),
+                        "session_id": _extract("Session ID      :"),
+                        "started_at": _extract("Started at      :"),
+                        "user_input": _extract("User Input      :")[:200],
+                    },
+                )
+        except Exception:
+            pass  # S3 upload failure must never surface to callers
+
     # ── Event logging ──────────────────────────────────────────────
 
     def log_event(self, event: dict):
@@ -212,44 +243,101 @@ class AgentLogger:
     @staticmethod
     def get_log(run_id: str) -> str | None:
         path = LOGS_DIR / f"{run_id}.log"
-        if not path.exists():
-            return None
-        return path.read_text(encoding="utf-8")
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        # Fall back to S3 for logs written by other workers
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                return s3.download_text(f"logs/agent/{run_id}.log")
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def list_logs(limit: int = 100, offset: int = 0) -> list[dict]:
         _ensure_logs_dir()
-        logs = []
+
+        def _parse_head(head: str, run_id: str, size_kb: float) -> dict:
+            def _extract(label: str) -> str:
+                for line in head.split("\n"):
+                    if label in line:
+                        return line.split(":", 1)[1].strip()
+                return ""
+            return {
+                "run_id": run_id,
+                "agent_name": _extract("Agent Name      :"),
+                "agent_id": _extract("Agent ID        :"),
+                "source": _extract("Source          :"),
+                "session_id": _extract("Session ID      :"),
+                "started_at": _extract("Started at      :"),
+                "user_input": _extract("User Input      :")[:200],
+                "file_size_kb": size_kb,
+            }
+
+        # Collect local entries
+        local_ids: set[str] = set()
+        logs: list[dict] = []
         files = sorted(LOGS_DIR.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for f in files[offset : offset + limit]:
+        for f in files:
             run_id = f.stem
+            local_ids.add(run_id)
             try:
                 head = f.read_text(encoding="utf-8", errors="replace")[:1000]
-
-                def _extract(label: str) -> str:
-                    for line in head.split("\n"):
-                        if label in line:
-                            return line.split(":", 1)[1].strip()
-                    return ""
-
-                logs.append({
-                    "run_id": run_id,
-                    "agent_name": _extract("Agent Name      :"),
-                    "agent_id": _extract("Agent ID        :"),
-                    "source": _extract("Source          :"),
-                    "session_id": _extract("Session ID      :"),
-                    "started_at": _extract("Started at      :"),
-                    "user_input": _extract("User Input      :")[:200],
-                    "file_size_kb": round(f.stat().st_size / 1024, 1),
-                })
+                logs.append(_parse_head(head, run_id, round(f.stat().st_size / 1024, 1)))
             except Exception:
-                logs.append({"run_id": run_id})
-        return logs
+                logs.append({"run_id": run_id, "file_size_kb": 0})
+
+        # Merge S3 entries that aren't already local
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                from concurrent.futures import ThreadPoolExecutor
+                s3_keys = s3.list_keys("logs/agent/")
+                missing_keys = [k for k in s3_keys if k.endswith(".log") and Path(k).stem not in local_ids]
+
+                def _fetch_meta(rel_key: str) -> dict:
+                    run_id = Path(rel_key).stem
+                    try:
+                        meta = s3.get_metadata(rel_key) or {}
+                        return {
+                            "run_id": run_id,
+                            "agent_name": meta.get("agent_name", ""),
+                            "agent_id": meta.get("agent_id", ""),
+                            "source": meta.get("source", ""),
+                            "session_id": meta.get("session_id", ""),
+                            "started_at": meta.get("started_at", ""),
+                            "user_input": meta.get("user_input", "")[:200],
+                            "file_size_kb": 0,
+                        }
+                    except Exception:
+                        return {"run_id": run_id}
+
+                with ThreadPoolExecutor(max_workers=10) as pool:
+                    s3_entries = list(pool.map(_fetch_meta, missing_keys))
+                logs.extend(s3_entries)
+        except Exception:
+            pass
+
+        # Sort by started_at descending (local files already sorted; blend with S3)
+        logs.sort(key=lambda x: x.get("started_at", ""), reverse=True)
+        return logs[offset: offset + limit]
 
     @staticmethod
     def delete_log(run_id: str) -> bool:
         path = LOGS_DIR / f"{run_id}.log"
+        deleted = False
         if path.exists():
             path.unlink()
-            return True
-        return False
+            deleted = True
+        try:
+            from core.s3_storage import get_s3
+            s3 = get_s3()
+            if s3:
+                s3.delete(f"logs/agent/{run_id}.log")
+                deleted = True
+        except Exception:
+            pass
+        return deleted

@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
     FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown,
-    Plus, Trash2, Save, Eye, EyeOff, RefreshCw, X, FolderPlus, FilePlus, Loader2, AlignLeft,
+    Plus, Trash2, Save, Eye, EyeOff, RefreshCw, X, FolderPlus, FilePlus, Loader2, AlignLeft, Cloud,
 } from 'lucide-react';
 import { renderTextContent } from '@/lib/utils';
 
@@ -406,10 +406,13 @@ export function VaultTab() {
     // Context for right-click / folder selection for new items
     const [contextFolder, setContextFolder] = useState<string>('');
 
+    const [s3Bucket, setS3Bucket] = useState<string>('');
+    const [storageSource, setStorageSource] = useState<'s3' | 'local'>('s3');
+
     const fetchTree = useCallback(async () => {
         setLoading(true);
         try {
-            const res = await fetch('/api/vault/tree');
+            const res = await fetch(`/api/vault/tree?source=${storageSource}`);
             if (res.ok) {
                 const data = await res.json();
                 setTree(data.tree || []);
@@ -419,16 +422,24 @@ export function VaultTab() {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [storageSource]);
 
     useEffect(() => { fetchTree(); }, [fetchTree]);
+
+    // Fetch scale config to show S3 banner when configured
+    useEffect(() => {
+        fetch('/api/scale/config')
+            .then(r => r.ok ? r.json() : null)
+            .then(data => { if (data?.s3_bucket) setS3Bucket(data.s3_bucket); })
+            .catch(() => {});
+    }, []);
 
     // Load file content when a file is selected
     useEffect(() => {
         if (!selectedNode || selectedNode.type !== 'file') return;
         setLoadingFile(true);
         setSaveStatus('idle');
-        fetch(`/api/vault/file?path=${encodeURIComponent(selectedNode.path)}`)
+        fetch(`/api/vault/file?path=${encodeURIComponent(selectedNode.path)}&source=${storageSource}`)
             .then(r => r.ok ? r.json() : null)
             .then(data => {
                 const c = data?.content ?? '';
@@ -440,7 +451,7 @@ export function VaultTab() {
                 setSavedContent('');
             })
             .finally(() => setLoadingFile(false));
-    }, [selectedNode]);
+    }, [selectedNode, storageSource]);
 
     const handleSave = async () => {
         if (!selectedNode || selectedNode.type !== 'file') return;
@@ -450,7 +461,7 @@ export function VaultTab() {
             const res = await fetch('/api/vault/file', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: selectedNode.path, content: fileContent }),
+                body: JSON.stringify({ path: selectedNode.path, content: fileContent, source: storageSource }),
             });
             if (res.ok) {
                 setSavedContent(fileContent);
@@ -473,7 +484,7 @@ export function VaultTab() {
             const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: contextFolder, name }),
+                body: JSON.stringify({ path: contextFolder, name, source: storageSource }),
             });
             if (res.ok) {
                 const data = await res.json();
@@ -495,7 +506,7 @@ export function VaultTab() {
             const res = await fetch('/api/vault/item', {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: deleteTarget.path }),
+                body: JSON.stringify({ path: deleteTarget.path, source: storageSource }),
             });
             if (res.ok) {
                 if (selectedNode?.path === deleteTarget.path ||
@@ -516,7 +527,34 @@ export function VaultTab() {
     const isDirty = fileContent !== savedContent;
 
     return (
-        <div className="flex-1 flex min-h-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            {/* S3 storage banner with source toggle */}
+            {s3Bucket && (
+                <div className="flex items-center gap-2 px-4 py-2 bg-zinc-900 border-b border-zinc-800 text-xs text-zinc-400 shrink-0">
+                    <Cloud className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                    <span>
+                        <span className="text-sky-400 font-semibold">S3 Connected</span>
+                        {' — '}bucket: <span className="font-mono text-zinc-300">{s3Bucket}</span>
+                    </span>
+                    <div className="ml-auto flex items-center gap-1.5">
+                        <span className="text-[10px] text-zinc-600">View:</span>
+                        <button
+                            onClick={() => { setStorageSource('s3'); setSelectedNode(null); setFileContent(''); setSavedContent(''); }}
+                            className={`px-2 py-0.5 text-[10px] font-bold border transition-colors ${storageSource === 's3' ? 'border-sky-500 bg-sky-950/40 text-sky-400' : 'border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300'}`}
+                        >
+                            S3
+                        </button>
+                        <button
+                            onClick={() => { setStorageSource('local'); setSelectedNode(null); setFileContent(''); setSavedContent(''); }}
+                            className={`px-2 py-0.5 text-[10px] font-bold border transition-colors ${storageSource === 'local' ? 'border-amber-500 bg-amber-950/40 text-amber-400' : 'border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300'}`}
+                        >
+                            Local
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            <div className="flex-1 flex min-h-0 overflow-hidden">
             {/* Left: Tree sidebar */}
             <div className="w-64 flex-shrink-0 border-r border-zinc-800 flex flex-col bg-zinc-950">
                 {/* Toolbar */}
@@ -678,6 +716,7 @@ export function VaultTab() {
                     onCancel={() => setDeleteTarget(null)}
                 />
             )}
+        </div>
         </div>
     );
 }

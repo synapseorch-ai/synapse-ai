@@ -369,6 +369,11 @@ def check_python():
     if v < (3, 11):
         err(f"Python 3.11+ required. You have {v.major}.{v.minor}.{v.micro}")
         sys.exit(1)
+    if v >= (3, 14):
+        err(f"Python {v.major}.{v.minor} is not yet supported (prebuilt packages are "
+            f"unavailable, and source builds need a C/C++ toolchain).")
+        info("  Install Python 3.11-3.13 from https://www.python.org/downloads/")
+        sys.exit(1)
     ok(f"Python {v.major}.{v.minor}.{v.micro}")
 
     # Check that the venv module is available for this Python installation.
@@ -750,7 +755,7 @@ def save_settings(cfg):
     if "installed_at" not in cfg:
         import datetime
         cfg["installed_at"] = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    with open(SETTINGS_FILE, "w") as f:
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=4)
         
     # Always save model pricing on setup in data folder
@@ -764,7 +769,7 @@ def save_settings(cfg):
             pass
     elif not os.path.exists(dst_pricing):
         try:
-            with open(dst_pricing, "w") as f:
+            with open(dst_pricing, "w", encoding="utf-8") as f:
                 json.dump(DEFAULT_MODEL_PRICING, f, indent=4)
         except Exception:
             pass
@@ -794,7 +799,7 @@ def ask_embed_code(cfg):
     if not psql_found:
         warn("PostgreSQL (psql) not found on your system.")
         info("Code repository indexing will be disabled.")
-        info("You can enable it later in Settings → General after installing PostgreSQL.")
+        info("You can enable it later in Settings -> General after installing PostgreSQL.")
         cfg["embed_code"] = False
         return
 
@@ -1080,7 +1085,7 @@ def ask_google_workspace(cfg):
 
     try:
         parsed = json.loads(raw_json)
-        with open(CREDENTIALS_FILE, "w") as f:
+        with open(CREDENTIALS_FILE, "w", encoding="utf-8") as f:
             json.dump(parsed, f, indent=4)
         ok(f"credentials.json saved to {CREDENTIALS_FILE}")
         info("After Synapse starts, go to Settings -> Integrations -> 'Connect Google Account' to complete OAuth.")
@@ -1185,7 +1190,7 @@ def _get_github_token_sync():
         p = config_dir / "hosts.json"
         if p.exists():
             try:
-                data = _json.loads(p.read_text())
+                data = _json.loads(p.read_text(encoding="utf-8"))
                 t = (data.get("github.com", {}).get("oauth_token")
                      or data.get("github.com", {}).get("token"))
                 if t:
@@ -1195,7 +1200,7 @@ def _get_github_token_sync():
     p = Path.home() / ".copilot" / "config.json"
     if p.exists():
         try:
-            data = _json.loads(p.read_text())
+            data = _json.loads(p.read_text(encoding="utf-8"))
             if t := (data.get("oauth_token") or data.get("token")):
                 return t
         except Exception:
@@ -1613,7 +1618,7 @@ def create_default_agent():
 
     # Prepend so it appears first
     agents.insert(0, DEFAULT_AGENT)
-    with open(agents_file, "w") as f:
+    with open(agents_file, "w", encoding="utf-8") as f:
         json.dump(agents, f, indent=4)
     ok("Created default 'Synapse AI' agent with access to all tools.")
 
@@ -1639,7 +1644,7 @@ def _register_synapse_pth(venv_dir, root_dir):
         site_pkgs = candidates[-1]
     os.makedirs(site_pkgs, exist_ok=True)
     pth = os.path.join(site_pkgs, "synapse-source.pth")
-    with open(pth, "w") as f:
+    with open(pth, "w", encoding="utf-8") as f:
         f.write(str(root_dir) + "\n")
 
 
@@ -1728,7 +1733,7 @@ def _update_env_file(key: str, value: str):
     env_lines = []
     found = False
     if os.path.exists(ENV_FILE):
-        with open(ENV_FILE, "r") as f:
+        with open(ENV_FILE, "r", encoding="utf-8") as f:
             env_lines = f.readlines()
         for i, line in enumerate(env_lines):
             stripped = line.strip()
@@ -1738,7 +1743,7 @@ def _update_env_file(key: str, value: str):
                 break
     if not found:
         env_lines.append(f"{key}={value}\n")
-    with open(ENV_FILE, "w") as f:
+    with open(ENV_FILE, "w", encoding="utf-8") as f:
         f.writelines(env_lines)
 
 
@@ -1845,19 +1850,19 @@ def add_to_bashrc():
     export_line = f"\nexport PATH=\"{bin_dir}:$PATH\"  # Synapse AI"
     
     if not os.path.exists(bashrc):
-        with open(bashrc, "w") as f:
+        with open(bashrc, "w", encoding="utf-8") as f:
             f.write(export_line + "\n")
         ok(f"Created {bashrc} with Synapse PATH")
         return True
     
-    with open(bashrc, "r") as f:
+    with open(bashrc, "r", encoding="utf-8") as f:
         content = f.read()
     
     if bin_dir in content:
         ok("Synapse already in PATH (bashrc)")
         return True
 
-    with open(bashrc, "a") as f:
+    with open(bashrc, "a", encoding="utf-8") as f:
         f.write(export_line + "\n")
     ok(f"Added Synapse to PATH (bashrc)")
     return True
@@ -1871,14 +1876,14 @@ def add_to_zshrc():
     bin_dir = os.path.join(ROOT_DIR, "bin")
     export_line = f"\nexport PATH=\"{bin_dir}:$PATH\"  # Synapse AI"
     
-    with open(zshrc, "r") as f:
+    with open(zshrc, "r", encoding="utf-8") as f:
         content = f.read()
     
     if bin_dir in content:
         ok("Synapse already in PATH (zshrc)")
         return True
     
-    with open(zshrc, "a") as f:
+    with open(zshrc, "a", encoding="utf-8") as f:
         f.write(export_line + "\n")
     ok(f"Added Synapse to PATH (zshrc)")
     return True
@@ -2014,7 +2019,7 @@ def _write_install_marker():
     """Write a .installed marker so future runs detect an existing install."""
     import datetime
     marker = os.path.join(ROOT_DIR, ".installed")
-    with open(marker, "w") as f:
+    with open(marker, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "installed_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -2330,7 +2335,7 @@ def _register_startup_mac():
 </plist>
 """
     try:
-        with open(plist_path, "w") as f:
+        with open(plist_path, "w", encoding="utf-8") as f:
             f.write(plist)
         subprocess.run(["launchctl", "load", plist_path], check=False, capture_output=True)
         ok(f"LaunchAgent installed -- Synapse will start on login.")
@@ -2392,7 +2397,7 @@ RestartSec=5
 WantedBy=default.target
 """
     try:
-        with open(service_path, "w") as f:
+        with open(service_path, "w", encoding="utf-8") as f:
             f.write(service_content)
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)
         subprocess.run(["systemctl", "--user", "enable", "synapse-ai.service"], check=False, capture_output=True)
@@ -2476,6 +2481,13 @@ def ask_startup_on_boot(cfg):
 # Main
 # ---------------------------------------------------------------------------
 def main():
+    # Best-effort: ensure console output uses UTF-8 so stray non-ASCII
+    # characters never crash or render as garbage on Windows (cp1252).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     # ------------------------------------------------------------------
     # --upgrade flag: skip the wizard, just rebuild and exit
     # ------------------------------------------------------------------

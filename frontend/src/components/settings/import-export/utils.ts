@@ -12,3 +12,8 @@ export function agentMcpDeps(agent: AgentType, allMcp: McpServerType[]): string[
 export function agentToolDeps(agent: AgentType, allTools: CustomToolType[]): string[] {
   return allTools.filter(t => (agent.tools || []).includes(t.name)).map(t => t.name);
 }
+
+export function agentDelegateDeps(agent: AgentType): string[] {
+  // Non-empty = explicit sub-agent list; empty = "any agent" (no specific deps to lock)
+  return agent.delegate_agent_ids || [];
+}

@@ -637,9 +637,10 @@ BUILDER_TOOL_SCHEMAS = [
                     "include_full_history": {
                         "type": "boolean",
                         "description": (
-                            "For agent/llm/tool steps: on re-invocation (evaluator loop-back or retry), "
-                            "include every prior turn's inputs, tools, and output instead of only the last attempt. "
-                            "Useful for feedback loops; increases prompt length."
+                            "For agent/llm/tool steps: controls revision-history rendering on re-runs. "
+                            "Default (unset) auto-enables full history whenever this step runs more than once. "
+                            "Set false to force last-attempt only (smaller prompt); set true is equivalent to default. "
+                            "Only relevant if you want to explicitly opt OUT of full history."
                         ),
                     },
                 },
@@ -698,7 +699,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "max_turns": {"type": "integer"},
                                 "timeout_seconds": {"type": "integer"},
                                 "model": {"type": "string"},
-                                "include_full_history": {"type": "boolean", "description": "Include full revision history on re-invocation (agent/llm/tool steps)"},
+                                "include_full_history": {"type": "boolean", "description": "Opt OUT of full revision history on re-runs (default: auto-on for any re-run). Set false to keep prompts small."},
                             },
                             "required": ["step_id", "name", "type"],
                         },

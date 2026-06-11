@@ -4,7 +4,7 @@ checkpointing, loop guards, and yielding SSE events.
 """
 import asyncio
 import time
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Awaitable, Callable
 
 import anyio
 
@@ -20,10 +20,20 @@ MAX_NESTED_DEPTH = 3
 class OrchestrationEngine:
     """Runs an orchestration by walking through its step graph."""
 
-    def __init__(self, orchestration: Orchestration, server_module, depth: int = 0):
+    def __init__(
+        self,
+        orchestration: Orchestration,
+        server_module,
+        depth: int = 0,
+        cancel_hook: Callable[[], Awaitable[bool]] | None = None,
+    ):
         self.orch = orchestration
         self.server_module = server_module
         self.depth = depth  # 0 = top-level run; >0 = nested sub-orchestration
+        # Optional async callable returning True when the run should be cancelled.
+        # Used by distributed workers to check Redis instead of the in-memory set.
+        # V1 never sets this — cancel_hook=None uses the existing in-memory check.
+        self.cancel_hook = cancel_hook
         self.step_map: dict[str, StepConfig] = {s.id: s for s in orchestration.steps}
         self.executors = STEP_EXECUTORS
         self.agent_names: dict[str, str] = self._load_agent_names()
@@ -98,10 +108,20 @@ class OrchestrationEngine:
             # before the next step starts sending new requests.
             await anyio.sleep(0)
 
-            # Check if this run was cancelled via the cancel endpoint
+            # Check if this run was cancelled via the cancel endpoint.
+            # cancel_hook (set by distributed workers) checks Redis; the default
+            # path checks the in-memory _cancelled_run_ids set (V1 / standalone).
             from .state import _cancelled_run_ids
-            if run.run_id in _cancelled_run_ids:
+            _is_cancelled = False
+            if self.cancel_hook:
+                try:
+                    _is_cancelled = await self.cancel_hook()
+                except Exception:
+                    pass
+            if not _is_cancelled and run.run_id in _cancelled_run_ids:
                 _cancelled_run_ids.discard(run.run_id)
+                _is_cancelled = True
+            if _is_cancelled:
                 run.status = "cancelled"
                 print(f"DEBUG ENGINE: 🛑 run '{run.run_id}' cancelled by request", flush=True)
                 break
@@ -160,6 +180,14 @@ class OrchestrationEngine:
                 # reaches a waiter in a different Task's context).
                 # This properly interrupts a stuck session.call_tool() inside
                 # the executor when the step deadline is reached.
+                #
+                # IMPORTANT: never yield human_input_required inside the
+                # fail_after scope. Python's GC finalizer runs aclose() on
+                # abandoned async generators in a NEW asyncio Task; if a
+                # cancel scope is active at the suspension point, anyio raises
+                # "cancel scope in a different task". We break out of the scope
+                # cleanly (in the current task) and yield the event below.
+                human_input_event: dict | None = None
                 try:
                     with anyio.fail_after(step_timeout):
                         async for event in executor.execute(step, run, self):
@@ -175,12 +203,26 @@ class OrchestrationEngine:
                                 run.waiting_for_human = True
                                 run.status = "paused"
                                 run.current_step_id = step.id
+                                # Track the sub-run that needs human input when the
+                                # request originated inside a nested orchestration.
+                                if event.get("nested_run_id"):
+                                    run.nested_run_id = event["nested_run_id"]
+                                    run.nested_orch_id = event.get("nested_orch_id")
+                                else:
+                                    run.nested_run_id = None
+                                    run.nested_orch_id = None
                                 state.checkpoint()
                                 if logger:
                                     logger.step_end(step.id, "paused")
                                     logger.run_end("paused")
-                                yield event
-                                return
+                                    logger.close()
+                                # Break exits the async-for and then the
+                                # fail_after scope cleanly in this task.
+                                # The event is yielded below, outside the scope,
+                                # so the generator suspends with no cancel scope
+                                # active — safe for cross-task GC finalization.
+                                human_input_event = event
+                                break
 
                             if event.get("type") == "orchestration_end":
                                 yield event
@@ -203,6 +245,14 @@ class OrchestrationEngine:
                     run.status = "failed"
                     if logger:
                         logger.step_end(step.id, "failed", f"Timed out after {step_timeout}s")
+
+                # Yield human_input_required OUTSIDE the anyio cancel scope.
+                # The generator suspends here with no active cancel scope, so
+                # Python's GC-triggered aclose() (which runs in a new asyncio
+                # Task) won't hit "cancel scope in a different task".
+                if human_input_event is not None:
+                    yield human_input_event
+                    return
 
                 # If END step or timeout set status, break out
                 if run.status in ("completed", "failed"):
@@ -266,6 +316,7 @@ class OrchestrationEngine:
 
         if logger:
             logger.run_end(run.status)
+            logger.close()
 
         final_output = self._build_final_response(run)
 
@@ -347,19 +398,24 @@ class OrchestrationEngine:
         """Resume a paused orchestration after human input."""
         from .state import SharedState as SS
 
+        print(f"[engine.resume] ▶ restoring state from JSON checkpoint for run_id={run_id}", flush=True)
         restored = SS.restore(run_id)
         run = restored.run
+        print(f"[engine.resume] 📋 restored run: orch_id={run.orchestration_id} status={run.status} current_step_id={run.current_step_id} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}", flush=True)
 
         # Load the orchestration definition
         from core.routes.orchestrations import load_orchestrations
         orchestrations = load_orchestrations()
+        print(f"[engine.resume] 📦 loaded {len(orchestrations)} orchestrations from disk, looking for id={run.orchestration_id}", flush=True)
         orch_data = next((o for o in orchestrations if o["id"] == run.orchestration_id), None)
         if not orch_data:
+            print(f"[engine.resume] ❌ orchestration '{run.orchestration_id}' NOT FOUND on disk — available ids: {[o.get('id') for o in orchestrations]}", flush=True)
             yield {"type": "orchestration_error", "error": f"Orchestration '{run.orchestration_id}' not found"}
             return
 
         orch = Orchestration.model_validate(orch_data)
         engine = cls(orch, server_module)
+        print(f"[engine.resume] 🗺  step_map keys: {list(engine.step_map.keys())}", flush=True)
 
         # Create logger — appends to existing log file if present
         engine.logger = OrchestrationLogger(
@@ -370,8 +426,18 @@ class OrchestrationEngine:
             session_id=run.session_id,
         )
 
+        # If the parent was paused because a NESTED orchestration hit a human step,
+        # resume the sub-run and let it complete before continuing the parent.
+        if run.nested_run_id:
+            print(f"[engine.resume] 🔗 nested run detected: nested_run_id={run.nested_run_id}, delegating to _resume_nested_orch", flush=True)
+            async for event in cls._resume_nested_orch(run, engine, human_response, server_module):
+                yield event
+            return
+
+        # Normal path: human step is directly in this orchestration.
         # Move to next step after the HUMAN step
         current_step = engine.step_map.get(run.current_step_id)
+        print(f"[engine.resume] 🔍 current_step lookup: current_step_id={run.current_step_id!r} → found={current_step is not None} type={current_step.type.value if current_step else 'N/A'}", flush=True)
 
         # Write human response to shared state under the step's configured output_key.
         # Falling back to "human_response" preserves backward-compat for steps with no output_key.
@@ -386,6 +452,125 @@ class OrchestrationEngine:
 
         if current_step:
             next_id, _ = engine._resolve_next(current_step, run)
+            run.current_step_id = next_id
+            print(f"[engine.resume] ➡  _resolve_next({run.current_step_id!r} was HUMAN) → next_step_id={next_id!r}", flush=True)
+        else:
+            print(f"[engine.resume] ⚠️  current_step not found in step_map — current_step_id stays as {run.current_step_id!r}, loop will likely fail immediately", flush=True)
+
+        print(f"[engine.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}", flush=True)
+        state = SharedState(run)
+        async for event in engine._execute_loop(run, state):
+            yield event
+        print(f"[engine.resume] 🏁 _execute_loop finished, run.status={run.status} run.current_step_id={run.current_step_id!r}", flush=True)
+
+    @classmethod
+    async def _resume_nested_orch(
+        cls,
+        run: OrchestrationRun,
+        engine: "OrchestrationEngine",
+        human_response: dict,
+        server_module,
+    ) -> AsyncGenerator[dict, None]:
+        """Resume a parent run whose nested sub-orchestration was paused at a human step.
+
+        Resumes the sub-run, forwards its events tagged with the parent step's
+        context, then writes the sub-orch result to parent shared_state and
+        continues the parent execution loop.
+        """
+        parent_step = engine.step_map.get(run.current_step_id)
+        nested_run_id = run.nested_run_id
+        nested_orch_id = run.nested_orch_id
+        _NESTED_FILTER_TYPES = {"orchestration_start", "orchestration_complete", "orchestration_end"}
+
+        final_response: str | None = None
+        sub_events: list[dict] = []
+
+        async for sub_event in cls.resume(nested_run_id, human_response, server_module):
+            sub_events.append(sub_event)
+
+            # Sub-orch hit another human step (multi-turn human interaction inside nested orch)
+            if sub_event.get("type") == "human_input_required":
+                run.nested_run_id = sub_event.get("nested_run_id") or nested_run_id
+                run.nested_orch_id = sub_event.get("nested_orch_id") or nested_orch_id
+                state = SharedState(run)
+                state.checkpoint()
+                yield {
+                    **sub_event,
+                    "run_id": run.run_id,
+                    "orch_step_id": run.current_step_id,
+                    "step_name": parent_step.name if parent_step else "",
+                    "nested_run_id": nested_run_id,
+                    "nested_orch_id": nested_orch_id,
+                }
+                return
+
+            if sub_event.get("type") == "final" and sub_event.get("intent") == "orchestration":
+                final_response = sub_event.get("response", "")
+
+            # Skip sub-orch lifecycle meta-events (same filter as initial execution)
+            if sub_event.get("type") in _NESTED_FILTER_TYPES:
+                continue
+
+            yield {
+                **sub_event,
+                "run_id": run.run_id,
+                "orch_step_id": run.current_step_id,
+                "step_name": parent_step.name if parent_step else "",
+                "nested_run_id": nested_run_id,
+                "nested_orch_id": nested_orch_id,
+            }
+
+        # Fallback: extract result from orchestration_complete if no "final" event was emitted
+        if final_response is None:
+            from core.routes.orchestrations import load_orchestrations
+            from core.models_orchestration import Orchestration
+            orchs = load_orchestrations()
+            sub_orch_data = next((o for o in orchs if o["id"] == nested_orch_id), None)
+            if sub_orch_data:
+                sub_orch = Orchestration.model_validate(sub_orch_data)
+                for ev in reversed(sub_events):
+                    if ev.get("type") == "orchestration_complete":
+                        state_data = ev.get("final_state") or {}
+                        for sub_step in reversed(sub_orch.steps):
+                            if sub_step.output_key and sub_step.output_key in state_data:
+                                final_response = str(state_data[sub_step.output_key])
+                                break
+                        break
+
+        if final_response is None:
+            run.status = "failed"
+            state = SharedState(run)
+            state.checkpoint()
+            yield {
+                "type": "orchestration_error",
+                "error": "Nested orchestration failed to produce a result after human input",
+            }
+            return
+
+        # Write sub-orch result into parent shared_state
+        if parent_step and parent_step.output_key:
+            run.shared_state[parent_step.output_key] = final_response
+
+        # Record agent step completion in history
+        import time as _time
+        run.step_history.append({
+            "step_id": run.current_step_id,
+            "step_name": parent_step.name if parent_step else "",
+            "step_type": "agent",
+            "status": "completed",
+            "ended_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+        })
+
+        # Clear nested context and resume parent from next step after agent step
+        run.nested_run_id = None
+        run.nested_orch_id = None
+        run.waiting_for_human = False
+        run.status = "running"
+
+        if parent_step:
+            next_id, extra_event = engine._resolve_next(parent_step, run)
+            if extra_event:
+                yield extra_event
             run.current_step_id = next_id
 
         state = SharedState(run)

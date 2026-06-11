@@ -1,0 +1,12 @@
+# Additional dependencies for the ARQ worker image.
+# The main requirements.txt is also installed; this adds the scale-layer packages.
+arq>=0.26
+redis[hiredis]>=5.0
+asyncpg>=0.29
+sqlalchemy[asyncio]>=2.0
+opentelemetry-sdk>=1.20
+opentelemetry-exporter-otlp-proto-grpc>=1.20
+opentelemetry-instrumentation-fastapi>=0.41b0
+opentelemetry-instrumentation-asyncpg>=0.41b0
+opentelemetry-instrumentation-redis>=0.41b0
+prometheus-client>=0.19

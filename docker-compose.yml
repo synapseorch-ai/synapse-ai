@@ -45,8 +45,148 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Scale profile services (not started in standalone mode)
+  # Usage: docker compose --profile scale up
+  # ---------------------------------------------------------------------------
+
+  redis:
+    image: redis:7-alpine
+    profiles: [scale]
+    container_name: synapse-redis
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - synapse-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - default
+
+  worker:
+    image: ${DOCKERHUB_USERNAME:-synapseorchai}/synapse-ai-worker:${SYNAPSE_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    profiles: [scale]
+    container_name: synapse-worker
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://synapse-redis:6379/0
+      - SCALE_POSTGRES_URL=${SCALE_POSTGRES_URL}
+      - SYNAPSE_DATA_DIR=/data
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-10}
+      - WORKER_JOB_TIMEOUT=${WORKER_JOB_TIMEOUT:-3600}
+      - WORKER_MAX_RETRIES=${WORKER_MAX_RETRIES:-3}
+      - WORKER_HEALTH_PORT=9000
+      - WORKER_FILESYSTEM_PATHS=/data
+      - NUM_QUEUE_SHARDS=${NUM_QUEUE_SHARDS:-1}
+      - DEFAULT_TENANT_ID=${DEFAULT_TENANT_ID:-default}
+      - ENABLE_TENANT_ISOLATION=${ENABLE_TENANT_ISOLATION:-0}
+      - PGBOUNCER_MODE=${PGBOUNCER_MODE:-0}
+      - K8S_MODE=0
+      - S3_BUCKET=${S3_BUCKET:-}
+      - S3_REGION=${S3_REGION:-us-east-1}
+      - S3_PREFIX=${S3_PREFIX:-synapse}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-}
+      - OTLP_ENDPOINT=${OTLP_ENDPOINT:-}
+      - METRICS_TOKEN=${METRICS_TOKEN:-}
+    volumes:
+      - synapse-data:/data
+      - ./backend/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "${WORKER_HEALTH_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - default
+
+  # ---------------------------------------------------------------------------
+  # Enterprise profile services (Redis Cluster, PgBouncer, Observability)
+  # Usage: docker compose --profile enterprise up
+  # ---------------------------------------------------------------------------
+
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    profiles: [enterprise]
+    container_name: synapse-pgbouncer
+    environment:
+      - DATABASES_HOST=${POSTGRES_HOST:-postgres}
+      - DATABASES_PORT=${POSTGRES_PORT:-5432}
+      - DATABASES_DBNAME=${POSTGRES_DB:-synapse}
+      - DATABASES_USER=${POSTGRES_USER:-postgres}
+      - DATABASES_PASSWORD=${POSTGRES_PASSWORD:-}
+      - PGBOUNCER_POOL_MODE=transaction
+      - PGBOUNCER_MAX_CLIENT_CONN=10000
+      - PGBOUNCER_DEFAULT_POOL_SIZE=25
+    ports:
+      - "6432:5432"
+    restart: unless-stopped
+    networks:
+      - default
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    profiles: [enterprise]
+    container_name: synapse-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    restart: unless-stopped
+    networks:
+      - default
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: [enterprise]
+    container_name: synapse-prometheus
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    networks:
+      - default
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: [enterprise]
+    container_name: synapse-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-synapse}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - synapse-grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+    networks:
+      - default
+
 volumes:
   synapse-data:
+    driver: local
+  synapse-redis-data:
+    driver: local
+  synapse-grafana-data:
     driver: local
 
 networks:

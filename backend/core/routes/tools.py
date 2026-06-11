@@ -55,7 +55,9 @@ async def get_available_tools():
     """List all available tools from all sources (Native Agents, External MCP, Custom HTTP)"""
     import core.server as _server
 
-    all_tools = []
+    # Native engine tools appear first so they show above MCP and custom tools
+    from core.spawn_subtask import SPAWN_SUBTASK_STATIC_SCHEMA
+    all_tools = [SPAWN_SUBTASK_STATIC_SCHEMA]
 
     # 1. Active MCP Sessions (Native + External)
     for name, session in list(_server.agent_sessions.items()):
@@ -288,6 +290,39 @@ async def _register_session(name: str):
             _server.tool_router[f"{name}__{tool.name}"] = (agent_key, tool.name)
 
 
+async def _maybe_sync_mcp_to_pg() -> None:
+    """Sync all MCP configs to Postgres if scale_auto_sync is enabled."""
+    try:
+        from core.config import load_settings
+        if not load_settings().get("scale_auto_sync", False):
+            return
+        import core.server as _server
+        sf = getattr(_server.app.state, "pg_session_factory", None)
+        if not sf:
+            return
+        from core.scale.sync import sync_mcp_servers_to_pg
+        async with sf() as session:
+            await sync_mcp_servers_to_pg(session)
+    except Exception as e:
+        print(f"[tools] MCP auto-sync error: {e}", flush=True)
+
+
+async def _delete_mcp_from_pg(name: str) -> None:
+    """Delete an MCP server entry from Postgres."""
+    try:
+        import core.server as _server
+        sf = getattr(_server.app.state, "pg_session_factory", None)
+        if not sf:
+            return
+        from sqlalchemy import delete
+        from core.scale.models_db import MCPServerDB
+        async with sf() as session:
+            await session.execute(delete(MCPServerDB).where(MCPServerDB.name == name))
+            await session.commit()
+    except Exception as e:
+        print(f"[tools] MCP PG delete error: {e}", flush=True)
+
+
 @router.get("/api/mcp/servers")
 async def list_mcp_servers():
     import core.server as _server
@@ -317,6 +352,9 @@ async def add_mcp_server(req: AddMCPServerRequest):
 
         if connected:
             await _register_session(req.name)
+
+        # Auto-sync to Postgres if scale_auto_sync is enabled
+        await _maybe_sync_mcp_to_pg()
 
         if status == "oauth_pending":
             return {
@@ -443,6 +481,9 @@ async def remove_mcp_server(name: str):
         keys_to_del = [k for k, (ak, _) in _server.tool_router.items() if ak == agent_key]
         for k in keys_to_del:
             del _server.tool_router[k]
+
+        # Remove from Postgres immediately (regardless of auto_sync setting)
+        await _delete_mcp_from_pg(name)
 
         return {"status": "success"}
     except Exception as e:

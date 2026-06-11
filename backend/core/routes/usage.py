@@ -8,10 +8,12 @@ from pydantic import BaseModel
 from core.usage_tracker import (
     get_usage_logs,
     get_usage_summary,
+    get_cache_summary,
     get_pricing_table,
     save_pricing_table,
     clear_usage_logs,
 )
+from core.cache import store as cache_store
 
 router = APIRouter()
 
@@ -20,6 +22,18 @@ router = APIRouter()
 async def usage_summary():
     """Aggregate cost/token totals, grouped by model and session."""
     return get_usage_summary()
+
+
+@router.get("/api/usage/cache_summary")
+async def usage_cache_summary():
+    """Cache-focused aggregates for the Cache Analytics dashboard.
+
+    Returns total estimated savings, per-model hit rates, and the top 20
+    orchestration runs by savings. Disk-only — no LLM call.
+    """
+    out = get_cache_summary()
+    out["disk_stats"] = cache_store.stats()
+    return out
 
 
 @router.get("/api/usage/logs")

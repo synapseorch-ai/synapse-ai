@@ -441,6 +441,13 @@ class MCPClientManager:
             if session:
                 self._set_status(name, "connected")
                 await self._auto_register(name)   # ← register on startup
+            else:
+                # Remote servers without a bearer token use OAuth — failure likely means re-auth needed.
+                # Stdio and bearer-token servers just go disconnected.
+                if server_type == "remote" and not config.get("token"):
+                    self._set_status(name, "reauth_needed")
+                else:
+                    self._set_status(name, "disconnected")
         return self.sessions
 
     # ── add_server ─────────────────────────────────────────────────────────────

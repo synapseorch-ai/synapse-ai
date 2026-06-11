@@ -3,8 +3,27 @@ import base64
 import json
 import logging
 import os
+import sys
 import tempfile
+from contextlib import contextmanager
 from urllib.parse import urlparse
+
+
+@contextmanager
+def _stderr_stdout():
+    """Redirect stdout→stderr for the duration of a crawl4ai call.
+
+    crawl4ai's progress reporter writes directly to sys.stdout, which corrupts
+    the MCP stdio JSON-RPC stream.  The MCP framework writes its JSON-RPC
+    responses only after the tool handler returns, so temporarily swapping
+    sys.stdout here is safe.
+    """
+    _real = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        yield
+    finally:
+        sys.stdout = _real
 
 import mcp.types as types
 from mcp.server import Server
@@ -487,7 +506,8 @@ async def _handle_scrape_url(args: dict) -> list[types.TextContent]:
         excluded_tags=["script", "style", "nav", "footer"],
     )
 
-    result = await crawler.arun(url=url, config=run_config)
+    with _stderr_stdout():
+        result = await crawler.arun(url=url, config=run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 
@@ -524,7 +544,8 @@ async def _handle_scrape_structured(args: dict) -> list[types.TextContent]:
         extraction_strategy=strategy,
     )
 
-    result = await crawler.arun(url=url, config=run_config)
+    with _stderr_stdout():
+        result = await crawler.arun(url=url, config=run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 
@@ -554,7 +575,8 @@ async def _handle_crawl_multiple(args: dict) -> list[types.TextContent]:
 
     async def scrape_one(url: str) -> dict:
         try:
-            r = await crawler.arun(url=url, config=run_config)
+            with _stderr_stdout():
+                r = await crawler.arun(url=url, config=run_config)
             item: dict = {"url": url, "success": r.success}
             if r.success:
                 item["markdown"] = _truncate(r.markdown or "")
@@ -582,7 +604,8 @@ async def _handle_extract_links(args: dict) -> list[types.TextContent]:
     crawler = await get_crawler()
     run_config = _build_run_config(wait_for=args.get("wait_for"))
 
-    result = await crawler.arun(url=url, config=run_config)
+    with _stderr_stdout():
+        result = await crawler.arun(url=url, config=run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 
@@ -614,7 +637,8 @@ async def _handle_screenshot_url(args: dict) -> list[types.TextContent]:
         delay_before_return_html=delay,
     )
 
-    result = await crawler.arun(url=url, config=run_config)
+    with _stderr_stdout():
+        result = await crawler.arun(url=url, config=run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
     if not result.screenshot:
@@ -666,7 +690,8 @@ async def _handle_scrape_with_session(args: dict) -> list[types.TextContent]:
                 wait_for=step.get("wait_for"),
                 headers=global_headers,
             )
-            r = await crawler.arun(url=step_url, config=run_config)
+            with _stderr_stdout():
+                r = await crawler.arun(url=step_url, config=run_config)
             step_result: dict = {"step": i, "url": step_url, "success": r.success}
             if r.success and step.get("extract", True):
                 step_result["markdown"] = _truncate(r.markdown or "")
@@ -711,7 +736,8 @@ async def _handle_search_page(args: dict) -> list[types.TextContent]:
         scan_full_page=True,
     )
 
-    result = await crawler.arun(url=url, config=run_config)
+    with _stderr_stdout():
+        result = await crawler.arun(url=url, config=run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 

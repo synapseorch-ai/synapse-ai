@@ -64,25 +64,66 @@ class UnauthenticatedError(Exception):
 # and Google returns "Missing code verifier".
 _pending_flow = None
 
+def _email_from_token_data(token_data: dict) -> str | None:
+    """Best-effort extract of the user's email from a token dict."""
+    email = token_data.get("email")
+    if email:
+        return email
+    id_token = token_data.get("id_token")
+    if id_token and "." in id_token:
+        try:
+            payload_b64 = id_token.split(".")[1]
+            payload_b64 += "=" * (4 - len(payload_b64) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+            return payload.get("email")
+        except Exception:
+            return None
+    return None
+
+
+def _sync_token_to_mcp(token_data: dict, email: str | None = None) -> None:
+    """Mirror token.json into google-credentials/ so workspace-mcp sees fresh creds."""
+    try:
+        os.makedirs(GOOGLE_CREDENTIALS_DIR, exist_ok=True)
+        with open(GOOGLE_CREDENTIALS_DIR / "token.json", "w") as f:
+            json.dump(token_data, f, indent=2)
+        if email:
+            with open(GOOGLE_CREDENTIALS_DIR / f"{email}.json", "w") as f:
+                json.dump(token_data, f, indent=2)
+    except Exception as e:
+        print(f"Warning: Failed to sync token to workspace-mcp dir: {e}")
+
+
 def get_google_credentials():
     """Returns valid credentials or None."""
     creds = None
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    
+
     if creds and creds.valid:
         return creds
-        
+
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            # Save the refreshed credentials
+            # Preserve fields like `email` that aren't part of creds.to_json()
+            try:
+                with open(TOKEN_FILE, "r") as f:
+                    prior = json.load(f)
+            except Exception:
+                prior = {}
+            refreshed = json.loads(creds.to_json())
+            email = prior.get("email") or _email_from_token_data(refreshed)
+            merged = {**prior, **refreshed}
+            if email:
+                merged["email"] = email
             with open(TOKEN_FILE, "w") as token:
-                token.write(creds.to_json())
+                json.dump(merged, token, indent=2)
+            _sync_token_to_mcp(merged, email)
             return creds
-        except Exception:
-            pass
-            
+        except Exception as e:
+            print(f"Warning: Token refresh failed: {e}")
+
     return None
 
 def get_auth_url(redirect_uri):

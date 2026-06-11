@@ -23,6 +23,8 @@ export interface AgentType {
   tools?: string[];
   model?: string | null;
   provider?: string | null;
+  type?: string;
+  delegate_agent_ids?: string[];
 }
 
 export interface McpServerType {

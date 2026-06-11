@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Save, Play, Trash, Square, Loader2, Copy, Radio, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Zap, Wrench, ExternalLink, X, Sparkles, Braces, GitFork, ArrowLeftRight, FileText } from 'lucide-react';
+import { Plus, Save, Play, Trash, Square, Loader2, Copy, Check, Radio, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Zap, Wrench, ExternalLink, X, Sparkles, Braces, GitFork, ArrowLeftRight, FileText } from 'lucide-react';
 import { BuilderPanel } from '../orchestration/BuilderPanel';
 import { STEP_TYPE_META } from '@/types/orchestration';
 import { ReactFlowProvider } from '@xyflow/react';
@@ -874,6 +874,7 @@ export function OrchestrationTab() {
                             runLog={runLog}
                             runInput={runInput}
                             setRunInput={setRunInput}
+                            onStartRun={startRun}
                             humanPrompt={humanPrompt}
                             humanContext={humanContext}
                             humanResponse={humanResponse}
@@ -979,6 +980,7 @@ function ResponseModal({ stepName, stepType, content, onClose }: { stepName: str
             formattedJson = content;
         }
     }
+    const [copied, setCopied] = useState(false);
     useEffect(() => {
         const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
         document.addEventListener('keydown', handler);
@@ -1001,9 +1003,18 @@ function ResponseModal({ stepName, stepType, content, onClose }: { stepName: str
                         <span className="text-sm font-semibold text-zinc-100">{stepName}</span>
                         <span className="text-xs text-zinc-500">— full response</span>
                     </div>
-                    <button onClick={onClose} className="text-zinc-400 hover:text-zinc-100 transition-colors p-1 rounded hover:bg-zinc-700">
-                        <X size={15} />
-                    </button>
+                    <div className="flex items-center gap-1">
+                        <button
+                            onClick={() => { navigator.clipboard.writeText(isJson ? formattedJson : content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                            className="text-zinc-400 hover:text-zinc-100 transition-colors p-1 rounded hover:bg-zinc-700"
+                            title="Copy to clipboard"
+                        >
+                            {copied ? <Check size={15} className="text-green-400" /> : <Copy size={15} />}
+                        </button>
+                        <button onClick={onClose} className="text-zinc-400 hover:text-zinc-100 transition-colors p-1 rounded hover:bg-zinc-700">
+                            <X size={15} />
+                        </button>
+                    </div>
                 </div>
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-5">
@@ -1066,7 +1077,7 @@ function ResponseModal({ stepName, stepType, content, onClose }: { stepName: str
 
 // --- Bottom panel with collapsible sections ---
 function BottomPanel({
-    draft, setDraft, runStatus, runLog, runInput, setRunInput,
+    draft, setDraft, runStatus, runLog, runInput, setRunInput, onStartRun,
     humanPrompt, humanContext, humanResponse, setHumanResponse, onSubmitHuman, onOpenResponseModal,
     runId, onResumeRun, pastRuns, onRestoreRun,
 }: {
@@ -1076,6 +1087,7 @@ function BottomPanel({
     runLog: LogEntry[];
     runInput: string;
     setRunInput: (v: string) => void;
+    onStartRun: () => void;
     humanPrompt: string | null;
     humanContext: string | null;
     humanResponse: string;
@@ -1275,7 +1287,7 @@ function BottomPanel({
                                     value={runInput}
                                     onChange={(e) => setRunInput(e.target.value)}
                                     placeholder="Initial input for the orchestration..."
-                                    onKeyDown={(e) => { if (e.key === 'Enter') { /* startRun triggered from top bar */ } }}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') onStartRun(); }}
                                 />
                                 {(runStatus === 'failed' || runStatus === 'cancelled') && runId && (
                                     <button

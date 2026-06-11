@@ -268,7 +268,7 @@ def ensure_data_dir():
     for filename, default in DEFAULT_JSON_FILES.items():
         target = DATA_DIR / filename
         if not target.exists():
-            target.write_text(default)
+            target.write_text(default, encoding="utf-8")
 
 
 def _ensure_playwright_browsers():
@@ -331,7 +331,7 @@ def _ensure_playwright_browsers():
             with open(settings_file, "r") as f:
                 settings = json.load(f)
             settings["playwright_browsers_path"] = str(browsers_path)
-            with open(settings_file, "w") as f:
+            with open(settings_file, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=4)
     except Exception as e:
         print(f"\n  Warning: Failed to save playwright_browsers_path to settings: {e}")
@@ -406,8 +406,8 @@ def start_frontend(detach: bool = False, port: int | None = None, backend_port: 
         if standalone_src.exists():
             src_id_file = standalone_src / ".next" / "BUILD_ID"
             bundled_id_file = _BUNDLED_FRONTEND / ".next" / "BUILD_ID"
-            src_id = src_id_file.read_text().strip() if src_id_file.exists() else None
-            bundled_id = bundled_id_file.read_text().strip() if bundled_id_file.exists() else None
+            src_id = src_id_file.read_text(encoding="utf-8").strip() if src_id_file.exists() else None
+            bundled_id = bundled_id_file.read_text(encoding="utf-8").strip() if bundled_id_file.exists() else None
             if src_id and src_id != bundled_id:
                 print("  Syncing updated frontend build into synapse/_frontend/...")
                 _sync_bundled_frontend(verbose=False)
@@ -475,14 +475,14 @@ def open_browser(url: str):
 def _write_pidfile(path: Path, pid: int):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(str(pid))
+        path.write_text(str(pid), encoding="utf-8")
     except Exception as e:
         print(f"Warning: could not write pidfile {path}: {e}")
 
 
 def _read_pidfile(path: Path):
     try:
-        return int(path.read_text().strip())
+        return int(path.read_text(encoding="utf-8").strip())
     except Exception:
         return None
 
@@ -596,7 +596,7 @@ def _ensure_coding_deps() -> None:
     if check.returncode == 0:
         return  # All good — nothing to do.
 
-    print("  Coding-agent dependencies missing or outdated — installing now...")
+    print("  Coding-agent dependencies missing or outdated - installing now...")
     result = subprocess.run(
         [str(venv_python), "-m", "pip", "install", "-q", "--upgrade", "-r", str(coding_req)],
         capture_output=True,
@@ -626,7 +626,7 @@ def _ensure_internal_token():
     # Check if present in .env file
     if env_file.exists():
         try:
-            content = env_file.read_text()
+            content = env_file.read_text(encoding="utf-8")
             for line in content.splitlines():
                 line = line.strip()
                 if line.startswith(f"{token_var}=") and len(line) > len(f"{token_var}="):
@@ -644,8 +644,8 @@ def _ensure_internal_token():
 
     # Append to .env file
     try:
-        with open(env_file, "a") as f:
-            f.write(f"\n# Internal token for frontend↔backend security (auto-generated)\n")
+        with open(env_file, "a", encoding="utf-8") as f:
+            f.write(f"\n# Internal token for frontend<->backend security (auto-generated)\n")
             f.write(f"{token_var}={token}\n")
     except Exception as e:
         print(f"  Warning: could not write {token_var} to .env: {e}")
@@ -662,7 +662,7 @@ def _ensure_jwt_secret():
 
     if env_file.exists():
         try:
-            content = env_file.read_text()
+            content = env_file.read_text(encoding="utf-8")
             for line in content.splitlines():
                 line = line.strip()
                 if line.startswith(f"{var}=") and len(line) > len(f"{var}="):
@@ -677,7 +677,7 @@ def _ensure_jwt_secret():
     secret = _secrets.token_hex(32)
     os.environ[var] = secret
     try:
-        with open(env_file, "a") as f:
+        with open(env_file, "a", encoding="utf-8") as f:
             f.write(f"\n# JWT secret for session tokens (auto-generated)\n")
             f.write(f"{var}={secret}\n")
     except Exception as e:
@@ -699,14 +699,14 @@ def _reset_password_command():
         sys.exit(1)
 
     try:
-        settings = _json.loads(settings_file.read_text())
+        settings = _json.loads(settings_file.read_text(encoding="utf-8"))
     except Exception as e:
         print(f"  Error reading settings: {e}")
         sys.exit(1)
 
     if not settings.get("login_enabled"):
         print("  Login is not currently enabled.")
-        print("  Enable it first in Settings → General → Require Login.")
+        print("  Enable it first in Settings -> General -> Require Login.")
         sys.exit(1)
 
     current_username = settings.get("login_username", "")
@@ -737,7 +737,7 @@ def _reset_password_command():
     settings["login_password_hash"] = hash_password(password)
 
     try:
-        settings_file.write_text(_json.dumps(settings, indent=4))
+        settings_file.write_text(_json.dumps(settings, indent=4), encoding="utf-8")
         print("\n  Password reset successfully.")
         print("  Re-login will be required if a session was active.")
     except Exception as e:
@@ -761,7 +761,7 @@ def _api_keys_command(action: str, name: str = "", key_id: str = ""):
         print(f"  Name:    {record['name']}")
         print(f"  Key:     {masked_key}  (copy full key below)")
         print(f"  ID:      {record['id']}")
-        print(f"\n  ⚠  Save this key now — it cannot be retrieved again.")
+        print(f"\n  !  Save this key now - it cannot be retrieved again.")
         print(f"\n  {raw_key}\n")
         print(f"  Usage:")
         print(f"    curl -X POST http://localhost:8765/api/v1/chat \\")
@@ -777,9 +777,9 @@ def _api_keys_command(action: str, name: str = "", key_id: str = ""):
             print("  No API keys found. Generate one with: synapse api-keys generate \"My App\"")
             return
         print(f"\n  {'PREFIX':<18} {'NAME':<25} {'CREATED':<22} {'LAST USED':<22} {'ACTIVE'}")
-        print(f"  {'─' * 18} {'─' * 25} {'─' * 22} {'─' * 22} {'─' * 6}")
+        print(f"  {'-' * 18} {'-' * 25} {'-' * 22} {'-' * 22} {'-' * 6}")
         for k in keys:
-            active = "✓" if k.get("is_active", True) else "✗"
+            active = "[x]" if k.get("is_active", True) else "[ ]"
             last_used = k.get("last_used_at") or "never"
             print(f"  {k['key_prefix']:<18} {k['name']:<25} {k['created_at']:<22} {last_used:<22} {active}")
         print(f"\n  Total: {len(keys)} key(s)")
@@ -827,7 +827,7 @@ def _start_command(
     _saved_frontend_port: int | None = None
     try:
         import json as _json
-        _s = _json.loads(_settings_file.read_text())
+        _s = _json.loads(_settings_file.read_text(encoding="utf-8"))
         if "backend_port" in _s:
             _saved_backend_port = int(_s["backend_port"])
         if "frontend_port" in _s:
@@ -972,7 +972,7 @@ def _status_command():
 def _get_current_version() -> str:
     """Read the version string from pyproject.toml."""
     try:
-        content = (ROOT_DIR / "pyproject.toml").read_text()
+        content = (ROOT_DIR / "pyproject.toml").read_text(encoding="utf-8")
         for line in content.splitlines():
             line = line.strip()
             if line.startswith("version") and "=" in line:
@@ -1009,7 +1009,7 @@ def _register_synapse_pth(venv_dir: str, root_dir: str) -> None:
         site_pkgs = candidates[-1]
     os.makedirs(site_pkgs, exist_ok=True)
     pth = os.path.join(site_pkgs, "synapse-source.pth")
-    with open(pth, "w") as f:
+    with open(pth, "w", encoding="utf-8") as f:
         f.write(str(root_dir) + "\n")
 
 
@@ -1072,7 +1072,7 @@ def _download_and_apply_release(tarball_url: str) -> bool:
 
         entries = os.listdir(extract_dir)
         if not entries:
-            print("  Warning: tarball was empty — skipping file copy.")
+            print("  Warning: tarball was empty - skipping file copy.")
             return False
         src_root = os.path.join(extract_dir, entries[0])
 
@@ -1180,11 +1180,11 @@ def _upgrade_command():
                         )
                         sys.exit(result.returncode)
                 else:
-                    print("  Warning: file apply failed — continuing with existing code.")
+                    print("  Warning: file apply failed - continuing with existing code.")
             else:
                 print(f"  Already at latest version ({current_ver}).")
         else:
-            print("  Warning: could not reach GitHub releases — continuing with existing code.")
+            print("  Warning: could not reach GitHub releases - continuing with existing code.")
     else:
         print("\n(Continuing upgrade with updated CLI...)")
 
@@ -1249,7 +1249,7 @@ def _upgrade_command():
     _settings: dict = {}
     if settings_file.exists():
         try:
-            _settings = _json.loads(settings_file.read_text())
+            _settings = _json.loads(settings_file.read_text(encoding="utf-8"))
         except Exception:
             pass
 
@@ -1533,12 +1533,12 @@ def _uninstall_command(keep_data: bool = False):
         ):
             if rc_file.exists():
                 try:
-                    lines = rc_file.read_text().splitlines(keepends=True)
+                    lines = rc_file.read_text(encoding="utf-8").splitlines(keepends=True)
                     new_lines = [l for l in lines
                                  if "SynapseAI" not in l and "Synapse AI" not in l
                                  and not any(d in l for d in _bin_dirs_lower)]
                     if len(new_lines) != len(lines):
-                        rc_file.write_text("".join(new_lines))
+                        rc_file.write_text("".join(new_lines), encoding="utf-8")
                         print(f"  Cleaned PATH entry from {rc_file}")
                 except Exception:
                     pass
@@ -1601,7 +1601,7 @@ def _profile_command(action: str, output: str | None = None, limit: int = 20, du
         if result is None:
             return
         if output:
-            Path(output).write_text(result)
+            Path(output).write_text(result, encoding="utf-8")
             print(f"CPU profile saved to {output}")
         else:
             print(result)
@@ -1707,7 +1707,18 @@ def _warn_versions():
             pass  # version check failed; let downstream tools surface the error
 
 
+def _force_utf8_streams():
+    """Best-effort: ensure console output uses UTF-8 so stray non-ASCII
+    characters never crash or render as garbage on Windows (cp1252)."""
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
 def main():
+    _force_utf8_streams()
     _warn_if_not_on_path()
     _warn_versions()
     parser = argparse.ArgumentParser(prog="synapse", description="Manage Synapse server (backend + frontend)")

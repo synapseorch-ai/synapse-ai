@@ -55,6 +55,9 @@ export interface Message {
     stepType?: string;
     orchStepId?: string;
     thoughts?: string[];
+    // Per-turn private reasoning extracted from [REASONING] blocks. One entry
+    // per turn the model produced a [REASONING] block, in chronological order.
+    reasoning?: string[];
     // Attached images (base64 data URIs) — user messages only
     images?: string[];
 }

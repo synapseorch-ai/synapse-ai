@@ -88,6 +88,20 @@ class Settings(BaseModel):
     local_compatible_models: str = ""  # Comma-separated model names for local v1-compatible
     openai_compatible_embed_models: str = ""  # Comma-separated embedding model names for OpenAI-compatible cloud
     local_compatible_embed_models: str = ""  # Comma-separated embedding model names for local v1-compatible
+    huggingface_token: str = ""  # Optional HF access token (required for gated models like Llama, Gemma)
+    huggingface_models: str = ""  # Comma- or newline-separated HF model IDs (e.g. Qwen/Qwen2.5-7B-Instruct)
+    # Comma-separated custom model names for the local CLI session providers.
+    # Each entry becomes a selectable cli.<provider>.<name> model (e.g. "gpt-5.4"
+    # → cli.codex.gpt-5.4), passed to the CLI via its -m/--model flag at call time.
+    anthropic_cli_models: str = ""
+    gemini_cli_models: str = ""
+    codex_cli_models: str = ""
+    github_copilot_cli_models: str = ""
+    huggingface_max_new_tokens: int = 1024  # Max tokens to generate per HF call
+    # Transform step Python execution runtime: "docker" (sandboxed, default) or
+    # "host" (unsandboxed subprocess on host — needed for torch/GPU workloads,
+    # removes the sandbox security boundary).
+    transform_runtime: str = "docker"
     bedrock_api_key: str = ""  # e.g. ABSK... (Amazon Bedrock API key)
     # Optional: required for some Bedrock models that don't support on-demand throughput.
     # Can be an inference profile ID or full ARN.
@@ -116,6 +130,19 @@ class Settings(BaseModel):
     login_enabled: bool = False
     login_username: str = ""
     login_password_hash: str = ""
+
+    # Scale / distributed execution settings
+    redis_url: str = ""
+    scale_postgres_url: str = ""
+    scale_mode_enabled: bool = False
+    scale_auto_sync: bool = False
+    worker_concurrency: int = 10
+    otlp_endpoint: str = ""
+    metrics_token: str = ""
+    max_global_queue_depth: int = 1_000_000
+    rate_limit_per_tenant_rps: int = 1000
+    pgbouncer_mode: bool = False
+    num_queue_shards: int = 1
 
 
 class PersonalAddress(BaseModel):

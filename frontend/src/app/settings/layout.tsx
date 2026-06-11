@@ -22,6 +22,7 @@ const tabs = [
     { id: 'logs', label: 'Logs', icon: ScrollText },
     { id: 'memory', label: 'Memory', icon: Trash },
     { id: 'api_keys', label: 'API Keys', icon: Key },
+    { id: 'scale', label: 'Scale', icon: Server },
     { id: 'support', label: 'Support & Docs', icon: LifeBuoy },
 ];
 
@@ -109,7 +110,7 @@ export default function SettingsLayout({
 
                     <div className="p-4 border-t border-zinc-800 hidden md:block">
                         <div className="text-[10px] text-zinc-500 font-mono text-center">
-                            Synapse v1.0
+                            Synapse v1
                         </div>
                     </div>
                 </div>

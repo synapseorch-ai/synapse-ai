@@ -7,7 +7,7 @@ import {
   Workflow, Bot, Server, Wrench,
 } from "lucide-react";
 import type { ExportData } from "./types";
-import { orchAgentDeps, agentMcpDeps, agentToolDeps } from "./utils";
+import { orchAgentDeps, agentMcpDeps, agentToolDeps, agentDelegateDeps } from "./utils";
 import { SectionTable } from "./SectionTable";
 
 const inputCls = "w-full bg-zinc-900 border border-zinc-800 p-2 text-sm text-white focus:border-white focus:outline-none placeholder:text-zinc-700";
@@ -43,7 +43,13 @@ export function ExportView() {
       const o = d.orchestrations.find(x => x.id === oid);
       if (o) orchAgentDeps(o).forEach(a => orchLockedAgents.add(a));
     }
-    const allAgents = new Set([...newSelAgent, ...orchLockedAgents]);
+    const delegateLockedAgents = new Set<string>();
+    const allSelectedAgents = new Set([...newSelAgent, ...orchLockedAgents]);
+    for (const aid of allSelectedAgents) {
+      const ag = d.agents.find(a => a.id === aid);
+      if (ag) agentDelegateDeps(ag).forEach(id => delegateLockedAgents.add(id));
+    }
+    const allAgents = new Set([...allSelectedAgents, ...delegateLockedAgents]);
     const agentLockedMcp = new Set<string>();
     const agentLockedTool = new Set<string>();
     for (const aid of allAgents) {
@@ -53,10 +59,11 @@ export function ExportView() {
         agentToolDeps(ag, d.custom_tools).forEach(t => agentLockedTool.add(t));
       }
     }
-    setLockedAgent(orchLockedAgents);
+    const allLockedAgents = new Set([...orchLockedAgents, ...delegateLockedAgents]);
+    setLockedAgent(allLockedAgents);
     setLockedMcp(agentLockedMcp);
     setLockedTool(agentLockedTool);
-    setSelAgent(prev => new Set([...prev, ...orchLockedAgents]));
+    setSelAgent(prev => new Set([...prev, ...allLockedAgents]));
     setSelMcp(prev => new Set([...prev, ...agentLockedMcp]));
     setSelTool(prev => new Set([...prev, ...agentLockedTool]));
   }, []);

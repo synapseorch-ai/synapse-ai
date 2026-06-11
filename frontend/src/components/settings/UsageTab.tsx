@@ -16,9 +16,35 @@ interface UsageSummary {
     total_output_tokens: number;
     total_tokens: number;
     total_requests: number;
+    total_cache_read_tokens?: number;
+    total_cache_write_tokens?: number;
+    total_estimated_savings?: number;
+    total_response_cache_hits?: number;
     by_model: ModelStat[];
     by_session: SessionStat[];
     by_schedule?: ScheduleStat[];
+}
+
+interface CacheSummary {
+    total_estimated_savings: number;
+    total_requests: number;
+    total_response_cache_hits: number;
+    response_cache_hit_rate: number;
+    total_cache_read_tokens: number;
+    total_cache_write_tokens: number;
+    by_model: Array<{
+        model: string; requests: number;
+        cache_read_tokens: number; cache_write_tokens: number;
+        estimated_savings: number; estimated_cost: number;
+        response_cache_hits: number;
+    }>;
+    by_run: Array<{
+        run_id: string; requests: number;
+        cache_read_tokens: number; cache_write_tokens: number;
+        estimated_savings: number; estimated_cost: number;
+        response_cache_hits: number; last_ts?: string;
+    }>;
+    disk_stats?: Record<string, { entries: number; bytes: number }>;
 }
 interface ScheduleStat {
     run_id: string;
@@ -52,6 +78,11 @@ interface UsageLog {
     tool_name?: string | null;
     input_tokens: number; output_tokens: number; total_tokens: number;
     context_chars: number; estimated_cost: number; latency_seconds: number;
+    // Cache fields (present for cache-aware LLM calls)
+    cache_read_tokens?: number;
+    cache_write_tokens?: number;
+    estimated_savings?: number;
+    response_cache_hit?: boolean;
     // Compaction-specific fields (present when event_type === "compaction")
     event_type?: string;
     stage?: string;
@@ -133,6 +164,106 @@ function ProviderBadge({ provider }: { provider: string }) {
             <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.dot }} />
             {provider || 'local'}
         </span>
+    );
+}
+
+/**
+ * Cache Analytics block — savings overview, per-model hit rate, top runs.
+ * Hidden when there's no cache activity yet.
+ */
+function CacheDashboard({ summary }: { summary: CacheSummary }) {
+    if (summary.total_requests === 0) return null;
+    const hitRatePct = (summary.response_cache_hit_rate * 100).toFixed(1);
+    const totalReuseTokens = summary.total_cache_read_tokens;
+    if (summary.total_estimated_savings === 0 && totalReuseTokens === 0 && summary.total_response_cache_hits === 0) {
+        return null;
+    }
+    return (
+        <div className="bg-zinc-900/60 border border-white/5 p-5 space-y-4">
+            <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-emerald-400" />
+                <h2 className="text-sm font-semibold text-white tracking-wide">Cache Analytics</h2>
+                <span className="text-xs text-zinc-600">prompt + response cache savings</span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <StatCard
+                    icon={DollarSign}
+                    label="Saved"
+                    value={fmt$(summary.total_estimated_savings)}
+                    sub="vs. full-rate input"
+                    color="#10b981"
+                />
+                <StatCard
+                    icon={Zap}
+                    label="Cache reads"
+                    value={fmtK(summary.total_cache_read_tokens)}
+                    sub="reused prefix tokens"
+                    color="#06b6d4"
+                />
+                <StatCard
+                    icon={TrendingUp}
+                    label="Cache writes"
+                    value={fmtK(summary.total_cache_write_tokens)}
+                    sub="prefix tokens written"
+                    color="#a855f7"
+                />
+                <StatCard
+                    icon={Activity}
+                    label="Response hits"
+                    value={`${summary.total_response_cache_hits} / ${summary.total_requests}`}
+                    sub={`${hitRatePct}% short-circuit rate`}
+                    color="#f59e0b"
+                />
+            </div>
+
+            {(() => {
+                const activeModels = summary.by_model.filter(m =>
+                    m.estimated_savings > 0 || m.cache_read_tokens > 0 || m.response_cache_hits > 0
+                );
+                if (activeModels.length === 0) return null;
+                return (
+                    <div className="border border-white/5 divide-y divide-white/5">
+                        <div className="grid grid-cols-[1fr_90px_90px_120px] gap-2 px-4 py-2 text-[10px] text-zinc-500 uppercase tracking-wider bg-zinc-950/40">
+                            <span>Model</span>
+                            <span className="text-right">Cache reads</span>
+                            <span className="text-right">Resp hits</span>
+                            <span className="text-right">Saved</span>
+                        </div>
+                        {activeModels.slice(0, 8).map(m => (
+                            <div key={m.model} className="grid grid-cols-[1fr_90px_90px_120px] gap-2 px-4 py-2 text-xs hover:bg-white/2">
+                                <span className="text-zinc-300 truncate">{m.model}</span>
+                                <span className="text-right text-cyan-400 font-mono">{fmtK(m.cache_read_tokens)}</span>
+                                <span className="text-right text-amber-400 font-mono">{m.response_cache_hits}/{m.requests}</span>
+                                <span className="text-right text-emerald-400 font-mono">{fmt$(m.estimated_savings)}</span>
+                            </div>
+                        ))}
+                    </div>
+                );
+            })()}
+
+            {(() => {
+                const activeRuns = summary.by_run.filter(r =>
+                    r.estimated_savings > 0 || r.cache_read_tokens > 0 || r.response_cache_hits > 0
+                );
+                if (activeRuns.length === 0) return null;
+                return (
+                    <div className="border border-white/5">
+                        <div className="grid grid-cols-[1fr_90px_120px] gap-2 px-4 py-2 text-[10px] text-zinc-500 uppercase tracking-wider bg-zinc-950/40 border-b border-white/5">
+                            <span>Top orchestration runs by savings</span>
+                            <span className="text-right">Cache reads</span>
+                            <span className="text-right">Saved</span>
+                        </div>
+                        {activeRuns.slice(0, 5).map(r => (
+                            <div key={r.run_id} className="grid grid-cols-[1fr_90px_120px] gap-2 px-4 py-2 text-xs hover:bg-white/2 border-b border-white/3 last:border-0">
+                                <span className="text-zinc-400 font-mono truncate">{r.run_id}</span>
+                                <span className="text-right text-cyan-400 font-mono">{fmtK(r.cache_read_tokens)}</span>
+                                <span className="text-right text-emerald-400 font-mono">{fmt$(r.estimated_savings)}</span>
+                            </div>
+                        ))}
+                    </div>
+                );
+            })()}
+        </div>
     );
 }
 
@@ -323,7 +454,7 @@ type IndexedLog = UsageLog & { globalIdx: number };
 
 function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; showAgentDividers?: boolean }) {
     const sorted = [...logs].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    const COL_COUNT = 10; // # Time Model Tool Context DCtx In Out Latency Cost
+    const COL_COUNT = 11; // # Time Model Tool Context DCtx In Out Latency Saved Cost
     return (
         <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -338,14 +469,20 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                         <th className="text-right py-2 pr-3 text-zinc-500 font-medium">In</th>
                         <th className="text-right py-2 pr-3 text-zinc-500 font-medium">Out</th>
                         <th className="text-right py-2 pr-3 text-zinc-500 font-medium">Latency</th>
+                        <th className="text-right py-2 pr-3 text-zinc-500 font-medium">Saved</th>
                         <th className="text-right py-2 pr-3 text-zinc-500 font-medium">Cost</th>
                     </tr>
                 </thead>
                 <tbody>
                     {(() => {
-                        // Pre-compute call count per agent segment for divider labels
+                        // Pre-compute call count + cache savings per agent segment for divider labels
                         const agentCounts: Record<string, number> = {};
-                        sorted.forEach(l => { const a = l.agent_id || ''; agentCounts[a] = (agentCounts[a] || 0) + 1; });
+                        const agentSavings: Record<string, number> = {};
+                        sorted.forEach(l => {
+                            const a = l.agent_id || '';
+                            agentCounts[a] = (agentCounts[a] || 0) + 1;
+                            agentSavings[a] = (agentSavings[a] || 0) + (l.estimated_savings || 0);
+                        });
                         return sorted.map((log, i) => {
                             if (log.event_type === 'compaction') {
                                 return <CompactionRow key={`compact-${log.globalIdx}`} log={log} idx={i} />;
@@ -360,17 +497,24 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                             // Canvas colors: agent=#3b82f6 (blue), evaluator=#10b981 (green)
                             const dividerColor = isEvaluator ? '#10b981' : '#3b82f6';
                             const callCount = agentCounts[currentAgent] ?? 0;
+                            const agentSaved = agentSavings[currentAgent] ?? 0;
+                            const cacheRead = log.cache_read_tokens || 0;
+                            const savings = log.estimated_savings || 0;
+                            const respHit = !!log.response_cache_hit;
                             return (
                                 <React.Fragment key={log.globalIdx}>
                                     {agentChanged && (
                                         <tr className="border-t border-b border-white/5">
-                                            <td colSpan={COL_COUNT - 1} style={{ background: `${dividerColor}10` }} className="px-3 py-2">
+                                            <td colSpan={COL_COUNT - 2} style={{ background: `${dividerColor}10` }} className="px-3 py-2">
                                                 <span className="flex items-center gap-2">
                                                     <Cpu className="w-3 h-3 shrink-0" style={{ color: dividerColor }} />
                                                     <span className="font-mono font-semibold text-xs truncate max-w-[180px]" title={currentAgent} style={{ color: dividerColor }}>
                                                         {currentAgent}
                                                     </span>
                                                 </span>
+                                            </td>
+                                            <td style={{ background: `${dividerColor}10` }} className="py-2 pr-3 text-right text-xs tabular-nums font-medium text-emerald-400">
+                                                {agentSaved > 0 ? fmt$(agentSaved) : ''}
                                             </td>
                                             <td style={{ background: `${dividerColor}10`, color: `${dividerColor}bb` }} className="py-2 pr-3 text-right text-xs tabular-nums font-medium">
                                                 {callCount} call{callCount !== 1 ? 's' : ''}
@@ -397,6 +541,22 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                                         <td className="py-2.5 pr-3 text-right text-zinc-400 tabular-nums">{fmtK(log.input_tokens)}</td>
                                         <td className="py-2.5 pr-3 text-right text-zinc-400 tabular-nums">{fmtK(log.output_tokens)}</td>
                                         <td className="py-2.5 pr-3 text-right text-zinc-500 tabular-nums">{log.latency_seconds.toFixed(1)}s</td>
+                                        <td className="py-2.5 pr-3 text-right tabular-nums">
+                                            {respHit ? (
+                                                <span className="inline-flex items-center gap-1 text-amber-400 font-medium" title="Response cache hit — LLM call skipped">
+                                                    <Zap className="w-3 h-3" />hit
+                                                </span>
+                                            ) : savings > 0 || cacheRead > 0 ? (
+                                                <span
+                                                    className="text-emerald-400 font-medium"
+                                                    title={cacheRead > 0 ? `${fmtK(cacheRead)} cached tokens reused` : undefined}
+                                                >
+                                                    {fmt$(savings)}
+                                                </span>
+                                            ) : (
+                                                <span className="text-zinc-700">--</span>
+                                            )}
+                                        </td>
                                         <td className="py-2.5 pr-3 text-right font-medium tabular-nums" style={{ color: metaDot }}>{fmt$(log.estimated_cost)}</td>
                                     </tr>
                                 </React.Fragment>
@@ -432,6 +592,7 @@ function CompactionRow({ log, idx }: { log: IndexedLog; idx: number }) {
             <td colSpan={3} className="py-2.5 pr-3 text-right text-cyan-400 font-semibold tabular-nums text-xs">
                 -{reductionPct}%
             </td>
+            <td className="py-2.5 pr-3 text-right text-zinc-700 text-xs">--</td>
             <td className="py-2.5 pr-3 text-right text-zinc-700 text-xs">--</td>
         </tr>
     );
@@ -588,7 +749,8 @@ function PricingEditor({ initialPricing, onSaved }: {
             <div>
                 {(activeProvider === 'all' ? providerList : [activeProvider]).map(provider => {
                     const models = providerModels(provider);
-                    if (models.length === 0 && addingFor !== provider) return null;
+                    // When a specific provider tab is selected, always show the header so the user can add models even if none exist yet
+                    if (models.length === 0 && addingFor !== provider && activeProvider === 'all') return null;
                     const meta = PROVIDER_META[provider];
                     return (
                         <div key={provider} className="border-b border-white/5 last:border-0">
@@ -713,6 +875,7 @@ function PricingEditor({ initialPricing, onSaved }: {
 // -------------------------------------------------------------
 export function UsageTab() {
     const [summary, setSummary] = useState<UsageSummary | null>(null);
+    const [cacheSummary, setCacheSummary] = useState<CacheSummary | null>(null);
     const [pricing, setPricing] = useState<Record<string, PricingEntry>>({});
     const [loading, setLoading] = useState(true);
     const [clearing, setClearing] = useState(false);
@@ -728,15 +891,19 @@ export function UsageTab() {
         setLoading(true);
         setError(null);
         try {
-            const [sumRes, priceRes] = await Promise.all([
+            const [sumRes, priceRes, cacheRes] = await Promise.all([
                 fetch('/api/usage/summary'),
                 fetch('/api/usage/pricing'),
+                fetch('/api/usage/cache_summary'),
             ]);
             if (!sumRes.ok) throw new Error(`Summary fetch failed: ${sumRes.status}`);
             if (!priceRes.ok) throw new Error(`Pricing fetch failed: ${priceRes.status}`);
             const [sumData, priceData] = await Promise.all([sumRes.json(), priceRes.json()]);
             setSummary(sumData);
             setPricing(priceData);
+            if (cacheRes.ok) {
+                setCacheSummary(await cacheRes.json());
+            }
         } catch (e: any) {
             setError(e.message || 'Failed to load usage data');
         } finally {
@@ -859,6 +1026,8 @@ export function UsageTab() {
                             <StatCard icon={Zap} label="Input Tokens" value={fmtK(summary.total_input_tokens)} sub="prompt tokens" color="#f59e0b" />
                             <StatCard icon={Cpu} label="Output Tokens" value={fmtK(summary.total_output_tokens)} sub="completion tokens" color="#8b5cf6" />
                         </div>
+
+                        {cacheSummary && <CacheDashboard summary={cacheSummary} />}
 
                         {/* Cost by Model */}
                         <div className="bg-zinc-900/60 border border-white/5 p-5">

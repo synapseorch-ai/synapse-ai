@@ -165,7 +165,16 @@ export const IntegrationsTab = ({
                                     <div className="mt-2 pt-2 border-t border-zinc-800 flex items-center gap-2">
                                         <User className="h-3.5 w-3.5 text-green-500" />
                                         <span className="text-xs text-zinc-300">{userEmail}</span>
-                                        <span className="ml-auto text-[10px] text-green-500 uppercase tracking-wider">Authenticated</span>
+                                        <a
+                                            href="/auth/login"
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="ml-auto text-[10px] text-zinc-500 hover:text-zinc-300 underline decoration-dotted"
+                                            title="Re-authenticate with Google"
+                                        >
+                                            Reconnect
+                                        </a>
+                                        <span className="text-[10px] text-green-500 uppercase tracking-wider">Authenticated</span>
                                     </div>
                                 ) : isConnected ? (
                                     <div className="mt-2 pt-2 border-t border-zinc-800 flex items-center gap-2">

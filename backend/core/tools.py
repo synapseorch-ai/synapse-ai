@@ -232,35 +232,50 @@ def build_system_prompt(agent_system_template, tools_json, session_id, session_s
     current_time = now.strftime("%I:%M %p")
     timezone = "UTC"
 
-    # Start with the user's system prompt as-is
-    system_prompt_text = agent_system_template.strip()
-
-    # --- INJECT GOOGLE WORKSPACE EMAIL ---
+    # ── Resolve Google Workspace email (used later in the stable section) ──
+    google_email = None
     try:
         from core.config import TOKEN_FILE
         import os
         if os.path.exists(TOKEN_FILE):
             with open(TOKEN_FILE, "r") as f:
                 token_data = json.load(f)
-                email = token_data.get("email")
-                if not email and token_data.get("id_token"):
+                google_email = token_data.get("email")
+                if not google_email and token_data.get("id_token"):
                     import base64
                     id_token = token_data["id_token"]
                     payload_b64 = id_token.split(".")[1]
                     payload_b64 += "=" * (4 - len(payload_b64) % 4)
                     payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-                    email = payload.get("email")
-                if email:
-                    system_prompt_text += f"\n\n### GOOGLE WORKSPACE CONTEXT\nYou are authenticated with Google Workspace as **{email}**. Whenever a tool requires `user_google_email` or similar, ALWAYS use {email}.\n"
+                    google_email = payload.get("email")
     except Exception as e:
-        print(f"DEBUG: Error injecting Google Workspace Email: {e}")
+        print(f"DEBUG: Error reading Google Workspace email: {e}")
 
-    # --- TURN AWARENESS ---
+    # ── Resolve RAG context (volatile — appended after the separator) ──
+    rag_context_block = ""
+    try:
+        ss = session_state_getter(session_id)
+        last_report = ss.get("last_report_context")
+        if last_report and (time.time() - last_report.get("timestamp", 0) < 600):
+            rag_context_block = f"""
+### ACTIVE RAG CONTEXT (AUTOMATICALLY INJECTED)
+You have {last_report.get('row_count', 'some')} items of '{last_report.get('type', 'data')}' embedded in memory (generated {int(time.time() - last_report.get('timestamp', 0))}s ago).
+
+**HOW TO ANSWER QUESTIONS ABOUT THIS DATA:**
+1. **AGGREGATION QUESTIONS** (totals, averages, counts, min/max): If a SUMMARY with `numeric_aggregations` is in the tool output above, use those pre-computed values directly. They are accurate.
+2. **SPECIFIC LOOKUPS** (e.g., "email from John", "meeting tomorrow", "flight details"): Call `search_embedded_report` with a descriptive query. The full data is embedded in RAG memory.
+3. **PATTERN/TREND QUESTIONS** (e.g., "frequent topics", "common contacts"): Call `search_embedded_report` with the pattern description.
+4. **DO NOT RE-RUN TOOL FOR EXISTING DATA:** The data is already here. Only call tools if the user explicitly asks for NEW/DIFFERENT data (e.g., "refresh", "different date", "different query").
+"""
+            print(f"DEBUG: 💉 Injected RAG context into system prompt")
+    except Exception as e:
+        print(f"DEBUG: Error resolving RAG context: {e}")
+
+    # ── Resolve turn-budget block (volatile — appended after the separator) ──
     turns_block = ""
     if turns_remaining is not None and max_turns is not None:
         if turns_remaining <= 0:
             turns_block = f"""
-
 ### ⚠️ TURN LIMIT REACHED — FINAL RESPONSE REQUIRED
 You have used all {max_turns} available turns. You MUST stop calling tools and provide your **final answer now** based on everything gathered so far.
 - Summarize what you did and what you found.
@@ -269,7 +284,6 @@ You have used all {max_turns} available turns. You MUST stop calling tools and p
 """
         elif turns_remaining == 1:
             turns_block = f"""
-
 ### ⚠️ LAST TURN — RESPOND NOW
 This is your **final turn** (Turn {max_turns}/{max_turns}). You MUST provide your final answer now. Do NOT call any more tools.
 - If you have enough information, give the complete answer.
@@ -278,7 +292,6 @@ This is your **final turn** (Turn {max_turns}/{max_turns}). You MUST provide you
 """
         else:
             turns_block = f"""
-
 ### TURN BUDGET
 You have **{turns_remaining} turn(s) remaining** out of {max_turns} total.
 - Plan your tool calls efficiently — prioritize the most impactful steps first.
@@ -286,10 +299,7 @@ You have **{turns_remaining} turn(s) remaining** out of {max_turns} total.
 - On the last turn you MUST answer in plain text (no tool calls), even if the task is not fully complete.
 """
 
-    # Build tools section — only injected for providers without native tool calling
-    # (cli and bedrock). Cloud providers (Anthropic, OpenAI, Gemini, Grok, DeepSeek)
-    # and Ollama receive tools via the API's tools= param, so injecting here is
-    # redundant and adds thousands of tokens to every request.
+    # ── Tools section (only for providers without native tool calling) ──
     if inject_tools:
         tools_section = f"""
 ### TOOLS
@@ -315,18 +325,54 @@ If you do not need to use a tool, reply in plain text.
     else:
         tools_section = ""
 
-    # Append date/time, tools (if applicable), and runtime instructions
-    system_prompt_text += f"""
+    google_block = ""
+    if google_email:
+        google_block = (
+            f"\n### GOOGLE WORKSPACE CONTEXT\n"
+            f"You are authenticated with Google Workspace as **{google_email}**. "
+            f"Whenever a tool requires `user_google_email` or similar, ALWAYS use {google_email}.\n"
+        )
 
-### CURRENT DATE & TIME CONTEXT
-**Current Date:** {current_date}
-**Current Time:** {current_time}
-**Timezone:** {timezone}
+    # ──────────────────────────────────────────────────────────────────────────
+    # STABLE SECTION — identical across every turn of the same conversation,
+    # so Anthropic prompt caching and Gemini implicit caching can hit on it.
+    # Order: identity → reasoning protocol → tools → capabilities → example
+    #        → semi-stable workspace context.
+    # ──────────────────────────────────────────────────────────────────────────
+    stable_section = (
+        agent_system_template.strip()
+        + """
 
-**IMPORTANT:**
-Before using any tools, write a brief `plan:` line detailing the exact steps you will take. Execute the plan step-by-step. Before each subsequent tool call, write a `thought:` line explaining why the previous data was insufficient and why this new call is necessary.
-After every tool call, evaluate the information gathered. If you have enough information, STOP using tools and write your final response in markdown — do NOT include any `plan:` or `thought:` lines in the final response.
-{tools_section}
+### REASONING & ACTION FORMAT
+You operate in a Reason–Act loop. Each turn produces ONE of:
+  (a) A tool call **preceded by a `[REASONING]...[/REASONING]` block** explaining why you are making that specific call. The reasoning block is REQUIRED before every tool call — it is what the user sees as your "thinking" panel, and it is what lets you (next turn) recover the intent behind the call.
+  (b) A final response in plain markdown for the user (no `[REASONING]` block, no JSON).
+
+The `[REASONING]` block is private scratch space — it is stripped from your final response and from the context you see next turn, but it is surfaced live to the user as a "thinking" panel and recorded in the run log.
+
+What to put in `[REASONING]`:
+- WHY you are calling this tool right now (what you concluded from the previous observation).
+- WHAT you expect the tool to return.
+- HOW the result will move you toward the user's goal.
+2–4 sentences is plenty. Do not restate the user's question; do not narrate obvious facts.
+
+Example tool-calling turn:
+[REASONING]
+The previous result gave a high-level overview but not the specific field the user asked for. I need to drill into the most relevant source from those results — that should yield the exact value, after which I can answer directly.
+[/REASONING]
+{"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
+
+Example final-response turn (after gathering enough info):
+Here is the requested information, with the key points the user asked about and any caveats worth flagging.
+
+Rules:
+- Emit a `[REASONING]` block before EVERY tool call. Skipping it produces an empty "thinking" panel for the user.
+- Never wrap a final response in `[REASONING]` blocks.
+- Never put commentary between the closing `[/REASONING]` and the JSON tool call.
+- One tool call per turn unless you genuinely need multiple independent calls (then emit them sequentially in one response, no prose between).
+"""
+        + tools_section
+        + """
 **VAULT (LARGE OUTPUT HANDLING):**
 When a tool's output exceeds the character limit, it is automatically saved to a vault file. You will receive a JSON reference containing the vault file path, file type, size, and total line count — instead of the raw output. To access the data: use `grep` to search for specific values within the vault file, or use `read_file_by_lines` with `start_line`/`end_line` to read a slice. Do NOT use `read_file` on vault files — they are too large and will be re-vaulted.
 
@@ -335,29 +381,39 @@ When a tool's output exceeds the character limit, it is automatically saved to a
 
 ### LINKS & REFERENCES
 Whenever a tool returns URLs, source links, documentation references, or any other hyperlinks — **always include them in your response**. Present them clearly so the user can visit them directly. If you know of relevant official documentation, articles, or resources that would help the user, proactively include those links even if not explicitly returned by a tool.
-"""
 
-    system_prompt_text += turns_block
-    
-    # --- DYNAMIC RAG INJECTION ---
-    # If we have active embeddings, force the LLM to know about them
-    try:
-        ss = session_state_getter(session_id)
-        last_report = ss.get("last_report_context")
-        if last_report and (time.time() - last_report.get("timestamp", 0) < 600):  # 10 mins validity
-            rag_context_msg = f"""
-### ACTIVE RAG CONTEXT (AUTOMATICALLY INJECTED)
-You have {last_report.get('row_count', 'some')} items of '{last_report.get('type', 'data')}' embedded in memory (generated {int(time.time() - last_report.get('timestamp', 0))}s ago).
+### EXAMPLE INTERACTION
+User: <a question that requires looking something up>
 
-**HOW TO ANSWER QUESTIONS ABOUT THIS DATA:**
-1. **AGGREGATION QUESTIONS** (totals, averages, counts, min/max): If a SUMMARY with `numeric_aggregations` is in the tool output above, use those pre-computed values directly. They are accurate.
-2. **SPECIFIC LOOKUPS** (e.g., "email from John", "meeting tomorrow", "flight details"): Call `search_embedded_report` with a descriptive query. The full data is embedded in RAG memory.
-3. **PATTERN/TREND QUESTIONS** (e.g., "frequent topics", "common contacts"): Call `search_embedded_report` with the pattern description.
-4. **DO NOT RE-RUN TOOL FOR EXISTING DATA:** The data is already here. Only call tools if the user explicitly asks for NEW/DIFFERENT data (e.g., "refresh", "different date", "different query").
+Turn 1 (yours):
+[REASONING]
+I don't have this in context. I'll use the most relevant available tool with the narrowest arguments that satisfy the question, so the result is precise rather than a broad dump.
+[/REASONING]
+{"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
+
+Tool result: <some structured payload>
+
+Turn 2 (yours):
+A direct answer in plain markdown, citing the specific value(s) from the tool result.
 """
-            system_prompt_text += rag_context_msg
-            print(f"DEBUG: 💉 Injected RAG context into system prompt")
-    except Exception as e:
-        print(f"DEBUG: Error injecting RAG prompt: {e}")
-    
-    return system_prompt_text
+        + google_block
+    )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # VOLATILE SECTION — changes every turn (datetime, turn budget) or every
+    # ~10 minutes (RAG context). Placed after a separator so the cache prefix
+    # boundary is unambiguous.
+    # ──────────────────────────────────────────────────────────────────────────
+    volatile_section = "\n---\n"
+    if rag_context_block:
+        volatile_section += rag_context_block
+    volatile_section += f"""
+### CURRENT DATE & TIME CONTEXT
+**Current Date:** {current_date}
+**Current Time:** {current_time}
+**Timezone:** {timezone}
+"""
+    if turns_block:
+        volatile_section += turns_block
+
+    return stable_section + volatile_section

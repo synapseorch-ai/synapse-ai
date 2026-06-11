@@ -62,6 +62,15 @@ export interface StepConfig {
     timeout_seconds?: number;
     allowed_tools?: string[];
 
+    // Response cache (skipped for AGENT steps)
+    cache_responses_enabled?: boolean;
+    cache_semantic_enabled?: boolean;
+    cache_response_ttl_seconds?: number;
+    cache_response_threshold?: number;
+    // Tool memoization (default on for tools in the deterministic registry)
+    cache_tools_enabled?: boolean;
+    cache_tool_ttl_seconds?: number;
+
     // On re-invocation, include every prior turn (inputs/tools/output) in the prompt.
     include_full_history?: boolean;
 
@@ -120,6 +129,11 @@ export interface OrchestrationRun {
     human_fields?: { name: string; type: string; label: string }[];
     total_tokens_used: number;
     total_cost_usd: number;
+    cache_read_tokens_total?: number;
+    cache_write_tokens_total?: number;
+    cache_hit_count?: number;
+    cache_miss_count?: number;
+    estimated_savings_usd?: number;
     started_at?: string;
     ended_at?: string;
 }
