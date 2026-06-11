@@ -8,13 +8,14 @@ as an X-Synapse-Internal header on every proxied request. External callers
 that try to hit /api/settings, /api/agents, etc. directly will get 403.
 
 Rules:
-- /api/v1/*          → SKIP (uses API key auth instead)
+- /api/v1/*, /api/v2/*, ... → SKIP (external versioned API; uses API key auth instead)
 - /docs, /openapi.json, /redoc  → SKIP (FastAPI docs)
 - /chat*, /auth/*    → SKIP (direct backend routes, not under /api/)
 - /api/*             → REQUIRE X-Synapse-Internal header
 - If SYNAPSE_INTERNAL_TOKEN is not set → permissive (backward compatible)
 """
 import os
+import re
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -35,8 +36,10 @@ class InternalTokenMiddleware(BaseHTTPMiddleware):
         if not self.token:
             return await call_next(request)
 
-        # Skip: V1 API routes (they use API key auth)
-        if path.startswith("/api/v1/") or path == "/api/v1":
+        # Skip: external versioned API routes (v1, v2, ...) — they use API key
+        # auth (require_api_key), not the internal frontend token. Match any
+        # /api/v<N> prefix so future versions are exempt automatically.
+        if re.match(r"^/api/v\d+(/|$)", path):
             return await call_next(request)
 
         # Skip: MCP OAuth callback — called by external OAuth providers, not frontend
