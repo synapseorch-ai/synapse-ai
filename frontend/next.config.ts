@@ -60,11 +60,12 @@ const nextConfig: NextConfig = {
     // Route handlers can read process.env.BACKEND_URL without their own fallback.
     BACKEND_URL,
     BACKEND_PORT,
-    // Inject secrets so they are available in the Edge Runtime middleware bundle.
-    // (Edge Runtime only sees vars in this block or NEXT_PUBLIC_* — raw process.env
-    //  assignments from earlier in this file are NOT guaranteed to reach the Edge.)
-    SYNAPSE_JWT_SECRET: process.env.SYNAPSE_JWT_SECRET || '',
-    SYNAPSE_INTERNAL_TOKEN: process.env.SYNAPSE_INTERNAL_TOKEN || '',
+    // NOTE: SYNAPSE_INTERNAL_TOKEN and SYNAPSE_JWT_SECRET are intentionally NOT
+    // listed here. Keys in this block are inlined as literals at BUILD time, which
+    // would bake a fixed (or empty) secret into the distributed bundle. These
+    // secrets are generated per-install at runtime, so they must be read from the
+    // live process.env at request time instead. proxy.ts runs on the Node.js
+    // runtime (Next 16) and route handlers run on Node, so both read them at runtime.
     // Expose backend port to client-side code (e.g., for UI instructions)
     NEXT_PUBLIC_BACKEND_PORT: BACKEND_PORT,
     NEXT_PUBLIC_FRONTEND_PORT: _frontendPort,

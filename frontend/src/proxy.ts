@@ -1,6 +1,12 @@
 /**
- * Next.js Edge Middleware
- * -----------------------
+ * Next.js Proxy (formerly Middleware)
+ * -----------------------------------
+ * Runs on the Node.js runtime (Next 16: proxy.ts defaults to Node, unlike the
+ * legacy Edge middleware). This is REQUIRED so that SYNAPSE_INTERNAL_TOKEN and
+ * SYNAPSE_JWT_SECRET are read from the live process.env at request time. These
+ * secrets are generated per-install at runtime and must NOT be inlined at build
+ * time (see next.config.ts — they are deliberately omitted from the `env` block).
+ *
  * 1. Injects X-Synapse-Internal header for backend-proxied routes.
  * 2. Enforces login gate: redirects unauthenticated users to /login
  *    when login_enabled is configured in Synapse settings.
@@ -40,7 +46,7 @@ async function verifyJwt(token: string, secret: string): Promise<boolean> {
     }
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
     const { pathname } = request.nextUrl;
     const internalToken = process.env.SYNAPSE_INTERNAL_TOKEN || '';
 
