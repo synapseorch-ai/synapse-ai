@@ -149,7 +149,7 @@ async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require
     chat_request = _build_chat_request(body, agent)
 
     async def event_generator():
-        from core.react_engine import run_react_loop
+        from core.react_engine import run_react_loop, iter_with_heartbeat
         try:
             # Emit session info first so the consumer can capture the session_id
             yield _format_sse_event({
@@ -158,7 +158,11 @@ async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require
                 "agent_id": agent["id"],
                 "agent_name": agent["name"],
             })
-            async for event in run_react_loop(chat_request, _server):
+            async for event in iter_with_heartbeat(run_react_loop(chat_request, _server)):
+                # Heartbeat comments are yielded as raw SSE strings — pass through.
+                if isinstance(event, str):
+                    yield event
+                    continue
                 etype = event.get("type", "")
 
                 if etype == "status":
@@ -309,8 +313,13 @@ async def v1_orchestration_run_stream(
     engine = OrchestrationEngine(orch, _server)
 
     async def event_stream():
+        from core.react_engine import iter_with_heartbeat
         try:
-            async for event in engine.run(body.message, run_id):
+            async for event in iter_with_heartbeat(engine.run(body.message, run_id)):
+                # Heartbeat comments are yielded as raw SSE strings — pass through.
+                if isinstance(event, str):
+                    yield event
+                    continue
                 etype = event.get("type", "")
 
                 # Skip internal log events
@@ -426,8 +435,13 @@ async def v1_orchestration_resume_stream(
         human_response = {"response": human_response}
 
     async def event_stream():
+        from core.react_engine import iter_with_heartbeat
         try:
-            async for event in OrchestrationEngine.resume(run_id, human_response, _server):
+            async for event in iter_with_heartbeat(OrchestrationEngine.resume(run_id, human_response, _server)):
+                # Heartbeat comments are yielded as raw SSE strings — pass through.
+                if isinstance(event, str):
+                    yield event
+                    continue
                 etype = event.get("type", "")
 
                 if etype.startswith("_log_"):

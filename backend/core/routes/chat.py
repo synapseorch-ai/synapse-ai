@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from core.models import ChatRequest, ChatResponse
-from core.react_engine import run_react_loop, parse_tool_call  # noqa: F401 — re-export for backwards compat
+from core.react_engine import run_react_loop, parse_tool_call, iter_with_heartbeat  # noqa: F401 — re-export for backwards compat
 
 router = APIRouter()
 
@@ -67,7 +67,11 @@ async def chat_stream(request: ChatRequest):
             return
 
         try:
-            async for event in run_react_loop(request, _server):
+            async for event in iter_with_heartbeat(run_react_loop(request, _server)):
+                # Heartbeat comments are yielded as raw SSE strings — pass through.
+                if isinstance(event, str):
+                    yield event
+                    continue
                 etype = event["type"]
 
                 if etype == "status":

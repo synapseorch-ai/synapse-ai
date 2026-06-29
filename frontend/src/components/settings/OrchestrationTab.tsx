@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { Plus, Save, Play, Trash, Square, Loader2, Copy, Check, Radio, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Zap, Wrench, ExternalLink, X, Sparkles, Braces, GitFork, ArrowLeftRight, FileText } from 'lucide-react';
 import { BuilderPanel } from '../orchestration/BuilderPanel';
 import { STEP_TYPE_META } from '@/types/orchestration';
+import { readWithStallTimeout } from '@/lib/sse';
 import { ReactFlowProvider } from '@xyflow/react';
 import { WorkflowCanvas } from '../orchestration/WorkflowCanvas';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
@@ -83,6 +84,13 @@ export function OrchestrationTab() {
     const [humanContext, setHumanContext] = useState<string | null>(null);
     const [humanResponse, setHumanResponse] = useState('');
     const abortRef = useRef<AbortController | null>(null);
+    // Mirrors `runId` so the streamSSE catch / wake handler can read the live run
+    // id without a stale closure. Timestamp of the last byte (incl. heartbeats)
+    // tells a healthy stream from a dead one after sleep. reattachActiveRef
+    // guards against overlapping reconnect loops.
+    const currentRunIdRef = useRef<string | null>(null);
+    const lastChunkAtRef = useRef(0);
+    const reattachActiveRef = useRef(false);
     // Map of orch_step_id -> pending step result (supports parallel branches)
     const pendingStepResultRef = useRef<Map<string, { step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string }>>(new Map());
     const [responseModal, setResponseModal] = useState<{ step_name: string; step_type?: string; content: string } | null>(null);
@@ -393,10 +401,81 @@ export function OrchestrationTab() {
         setDraft(orch);
     }, []);
 
+    // --- Re-attach to a run after the SSE connection drops ---
+    // The engine runs in a background task on the server and keeps executing
+    // even if this client disconnects (e.g. the laptop slept). So a lost
+    // connection is NOT a failure: poll the persisted run state and track it to
+    // completion, rather than marking it failed and offering resume_failed
+    // (which correctly refuses a still-running run).
+    const reattachRun = useCallback(async (rid: string | null) => {
+        if (!rid) { setRunStatus('failed'); setRunLog(prev => [...prev, '[Connection lost]']); return; }
+        if (reattachActiveRef.current) return;       // already reconnecting
+        reattachActiveRef.current = true;
+        setRunLog(prev => [...prev, '[Connection lost — reconnecting to run…]']);
+        const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+        const deadline = Date.now() + 10 * 60 * 1000; // give up after 10 min
+        let notFound = 0; // tolerate brief 404 windows at run start/end before giving up
+        try {
+            while (Date.now() < deadline) {
+                if (currentRunIdRef.current !== rid) return;  // user started/restored a different run
+                let data: any;
+                try {
+                    const res = await fetch(`/api/orchestrations/runs/${rid}`);
+                    if (res.status === 404) {
+                        if (++notFound >= 3) {
+                            setRunStatus('failed');
+                            setRunLog(prev => [...prev, '[Reconnect failed — run not found]']);
+                            return;
+                        }
+                        await sleep(3000); continue;
+                    }
+                    if (!res.ok) { await sleep(3000); continue; }
+                    notFound = 0;
+                    data = await res.json();
+                } catch { await sleep(3000); continue; }
+
+                // Sync step statuses from the persisted history
+                if (Array.isArray(data.step_history)) {
+                    setRunStepStatuses(prev => {
+                        const next = { ...prev };
+                        for (const h of data.step_history) {
+                            if (h?.step_id) next[h.step_id] = h.status === 'failed' ? 'failed' : 'completed';
+                        }
+                        return next;
+                    });
+                }
+
+                if (data.status === 'running') {
+                    setRunStatus('running');
+                    await sleep(3000);
+                    continue;
+                }
+                if (data.status === 'paused') {
+                    setRunStatus('paused');
+                    if (data.waiting_for_human && data.human_prompt) {
+                        setHumanPrompt(data.human_prompt);
+                        setHumanContext(data.human_context || null);
+                    }
+                    setRunLog(prev => [...prev, '[Reconnected — run is waiting for your input]']);
+                    return;
+                }
+                // Terminal: completed / failed / cancelled
+                const final = data.status === 'completed' ? 'completed' : data.status === 'cancelled' ? 'cancelled' : 'failed';
+                setRunStatus(final);
+                setRunLog(prev => [...prev, `[Reconnected — run ${data.status}]`]);
+                return;
+            }
+            setRunLog(prev => [...prev, '[Reconnect timed out — see Active Runs to rejoin]']);
+        } finally {
+            reattachActiveRef.current = false;
+        }
+    }, []);
+
     // --- SSE stream reader helper ---
     const streamSSE = async (url: string, body: Record<string, any>) => {
         const controller = new AbortController();
         abortRef.current = controller;
+        lastChunkAtRef.current = Date.now();
 
         try {
             const res = await fetch(url, {
@@ -416,8 +495,9 @@ export function OrchestrationTab() {
             let buffer = '';
 
             while (true) {
-                const { done, value } = await reader.read();
+                const { done, value } = await readWithStallTimeout(reader, controller);
                 if (done) break;
+                lastChunkAtRef.current = Date.now();  // heartbeats keep this fresh while alive
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
@@ -435,9 +515,13 @@ export function OrchestrationTab() {
                 }
             }
         } catch (e: any) {
-            if (e.name !== 'AbortError') {
-                setRunStatus('failed');
-                setRunLog(prev => [...prev, '[Connection lost]']);
+            // A stall/transport error, or a 'recover' abort from the wake handler,
+            // means the connection dropped while the run is likely still executing
+            // server-side → re-attach via polling. A plain AbortError is an
+            // intentional stop (cancel / unmount / terminal event) → ignore.
+            const lostConnection = e.name !== 'AbortError' || controller.signal.reason === 'recover';
+            if (lostConnection) {
+                reattachRun(currentRunIdRef.current);
             }
         } finally {
             abortRef.current = null;
@@ -649,6 +733,28 @@ export function OrchestrationTab() {
         setRunLog(prev => [...prev, '[Resuming from where run stopped...]']);
         streamSSE(`/api/orchestrations/runs/${runId}/resume`, {});
     };
+
+    // Keep a ref mirror of runId so async handlers read the live value.
+    useEffect(() => { currentRunIdRef.current = runId; }, [runId]);
+
+    // Wake / network recovery: on refocus or network-back, if a run's stream has
+    // gone silent past several heartbeat windows (≈ dead socket after sleep),
+    // abort it with a 'recover' reason so streamSSE re-attaches to the run.
+    // A recent chunk (heartbeat <60s ago) means it's alive — leave it be.
+    useEffect(() => {
+        const maybeRecover = () => {
+            if (!abortRef.current) return;                         // no active stream
+            if (document.visibilityState === 'hidden') return;
+            if (Date.now() - lastChunkAtRef.current <= 60000) return;
+            abortRef.current.abort('recover');
+        };
+        window.addEventListener('online', maybeRecover);
+        document.addEventListener('visibilitychange', maybeRecover);
+        return () => {
+            window.removeEventListener('online', maybeRecover);
+            document.removeEventListener('visibilitychange', maybeRecover);
+        };
+    }, []);
 
     // Cleanup on unmount
     useEffect(() => {

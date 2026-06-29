@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';
 
 import { renderTextContent, cn } from '@/lib/utils';
+import { readWithStallTimeout } from '@/lib/sse';
 import { Message, OrchMsgType, SystemStatus } from '@/types';
 
 // ─── LLM Thought Collapsible ────────────────────────────────────────────────
@@ -504,6 +505,12 @@ export default function Home() {
   const lastToolRef = useRef<string | null>(null);
   // SSE abort controller — cancelled on new chat, unmount, or confirmed Settings navigation
   const sseAbortRef = useRef<AbortController | null>(null);
+  // True while a chat/SSE request is in flight — gates the wake/network
+  // recovery listeners so they don't abort an already-finished stream.
+  const streamActiveRef = useRef(false);
+  // Timestamp of the last byte received on the active stream. Used to tell a
+  // healthy stream (recent heartbeat) from a dead one after sleep/network loss.
+  const lastChunkAtRef = useRef(0);
   // Persists across SSE calls: true once orchestration_complete is received
   const orchestrationCompletedRef = useRef(false);
 
@@ -532,6 +539,30 @@ export default function Home() {
   // Abort any in-flight SSE stream on unmount (e.g. navigating away after confirm)
   useEffect(() => {
     return () => { sseAbortRef.current?.abort(); };
+  }, []);
+
+  // Wake / network recovery: when the network comes back or the tab is
+  // refocused, a stream that was alive before the machine slept is usually a
+  // dead TCP socket that will never deliver another byte. If the active stream
+  // has been silent for several heartbeat windows, abort it with a 'recover'
+  // reason so processMessageSSE falls back/retries instead of hanging. A recent
+  // chunk (heartbeat within 60s — 6 missed pings) means the stream is just slow
+  // but alive, so leave it alone; plain tab switches and slow LLM turns don't
+  // kill a working stream.
+  useEffect(() => {
+    const maybeRecover = () => {
+      if (!streamActiveRef.current || !sseAbortRef.current) return;
+      if (document.visibilityState === 'hidden') return;
+      if (Date.now() - lastChunkAtRef.current <= 60000) return;
+      setStreamingActivity('Connection lost — reconnecting…');
+      sseAbortRef.current.abort('recover');
+    };
+    window.addEventListener('online', maybeRecover);
+    document.addEventListener('visibilitychange', maybeRecover);
+    return () => {
+      window.removeEventListener('online', maybeRecover);
+      document.removeEventListener('visibilitychange', maybeRecover);
+    };
   }, []);
 
 
@@ -1057,6 +1088,8 @@ export default function Home() {
 
       const controller = new AbortController();
       sseAbortRef.current = controller;
+      streamActiveRef.current = true;
+      lastChunkAtRef.current = Date.now();
 
       console.log('[SSE] Attempting SSE connection to /api/chat/stream');
       fetch('/api/chat/stream', {
@@ -1081,8 +1114,9 @@ export default function Home() {
           let buffer = '';
 
           while (true) {
-            const { done, value } = await reader.read();
+            const { done, value } = await readWithStallTimeout(reader, controller);
             if (done) break;
+            lastChunkAtRef.current = Date.now();
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
@@ -1111,9 +1145,15 @@ export default function Home() {
           resolve();
         })
         .catch((err) => {
-          if (err.name === 'AbortError') { resolve(); return; }
-          reject(err);
-        });
+          // A 'recover' abort (network back / refocus on a dead post-sleep
+          // connection) should retry via the HTTP fallback, not resolve quietly.
+          if (err.name === 'AbortError') {
+            if (controller.signal.reason === 'recover') { reject(new Error('Connection lost — recovering')); return; }
+            resolve(); return; // user-initiated stop / unmount
+          }
+          reject(err); // stall watchdog or transport error → HTTP fallback
+        })
+        .finally(() => { streamActiveRef.current = false; });
     });
   };
 
@@ -1146,11 +1186,13 @@ export default function Home() {
     pendingThoughtsRef.current = [];
     pendingReasoningRef.current = [];
 
+    const controller = new AbortController();
     try {
       const response = await fetch(`/api/orchestrations/runs/${runId}/human-input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ response: values, step_id: stepId || '' }),
+        signal: controller.signal,
       });
 
       if (!response.ok) throw new Error(`Resume failed: ${response.status}`);
@@ -1163,7 +1205,7 @@ export default function Home() {
       let buffer = '';
 
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await readWithStallTimeout(reader, controller);
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });

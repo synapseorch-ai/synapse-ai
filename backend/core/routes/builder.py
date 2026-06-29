@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from core.models_orchestration import Orchestration
 from core.orchestration.engine import OrchestrationEngine
 from core.native_builder import NATIVE_BUILDER_ORCH_ID
+from core.react_engine import iter_with_heartbeat
 
 router = APIRouter()
 
@@ -397,7 +398,10 @@ async def run_builder_stream_compat(request, server_module):
         model=getattr(request, "model", None),
     )
 
-    async for event in run_builder_stream(builder_req, server_module):
+    async for event in iter_with_heartbeat(run_builder_stream(builder_req, server_module)):
+        if isinstance(event, str):  # heartbeat comment — pass through
+            yield event
+            continue
         etype = event["type"]
 
         if etype == "thinking":
@@ -446,7 +450,10 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
 
     async def event_generator():
         try:
-            async for event in run_builder_stream(request, server_module):
+            async for event in iter_with_heartbeat(run_builder_stream(request, server_module)):
+                if isinstance(event, str):  # heartbeat comment — pass through
+                    yield event
+                    continue
                 yield f"data: {json.dumps(event, default=str)}\n\n"
                 await asyncio.sleep(0)
         except Exception as exc:
@@ -472,7 +479,10 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
 
     async def event_generator():
         try:
-            async for event in run_builder_resume_stream(request.run_id, request.response, server_module, model=request.model):
+            async for event in iter_with_heartbeat(run_builder_resume_stream(request.run_id, request.response, server_module, model=request.model)):
+                if isinstance(event, str):  # heartbeat comment — pass through
+                    yield event
+                    continue
                 yield f"data: {json.dumps(event, default=str)}\n\n"
                 await asyncio.sleep(0)
         except Exception as exc:

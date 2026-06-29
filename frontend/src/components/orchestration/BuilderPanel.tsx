@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { X, Send, Sparkles, ChevronDown, ChevronUp, Loader2, Bot, Plus, CheckCircle2, ArrowRight, ChevronsRight } from 'lucide-react';
 import type { Orchestration } from '@/types/orchestration';
 import { renderTextContent } from '@/lib/utils';
+import { readWithStallTimeout } from '@/lib/sse';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -248,6 +249,8 @@ export function BuilderPanel({
         const resumeCtx = pendingRun;
         if (resumeCtx) setPendingRun(null);
 
+        const controller = new AbortController();
+
         try {
             const res = resumeCtx
                 ? await fetch('/api/builder/resume', {
@@ -258,6 +261,7 @@ export function BuilderPanel({
                         response: { [resumeCtx.field]: text },
                         model: selectedModel || undefined,
                     }),
+                    signal: controller.signal,
                 })
                 : await fetch('/api/builder/chat', {
                     method: 'POST',
@@ -270,6 +274,7 @@ export function BuilderPanel({
                         model: selectedModel || undefined,
                         current_orchestration_id: currentOrchestrationId,
                     }),
+                    signal: controller.signal,
                 });
 
             if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -279,7 +284,7 @@ export function BuilderPanel({
             let buffer = '';
 
             while (true) {
-                const { done, value } = await reader.read();
+                const { done, value } = await readWithStallTimeout(reader, controller);
                 if (done) break;
 
                 buffer += decoder.decode(value, { stream: true });
