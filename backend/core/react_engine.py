@@ -1416,7 +1416,7 @@ async def run_agent_step(
 
                     print(f"DEBUG MCP: ✓ ping OK [{round(time.time()-_mcp_t0,2)}s] — call_tool starting", flush=True)
 
-                    _timeout = timedelta(seconds=45) if actual_tool_name.startswith("browser_") else timedelta(seconds=30)
+                    _timeout = timedelta(seconds=60)
 
                     # Checkpoint again right before the actual call_tool —
                     # gives background transport tasks one more scheduling
