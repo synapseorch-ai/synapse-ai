@@ -3,6 +3,7 @@ Shared ReAct loop engine used by both /chat and /chat/stream endpoints.
 Yields structured event dicts that callers can handle differently
 (collect for sync response, or stream as SSE).
 """
+import asyncio
 import json
 import sys
 import time
@@ -28,6 +29,91 @@ import re as _re
 from datetime import timedelta
 
 MAX_TURNS = 30
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SSE keepalive
+#
+# Long-running streaming endpoints (chat / orchestration) can sit silent for
+# many seconds while waiting on an LLM call. A silent SSE stream looks idle to
+# browsers, proxies, and OS network stacks, any of which may reset the
+# connection — surfacing as "Failed to proxy ... aborted / ECONNRESET" and a
+# hung UI.
+#
+# `iter_with_heartbeat` wraps any event async-generator and emits a periodic
+# SSE comment line whenever no real event has arrived within `interval` seconds.
+# The comment is ignored by EventSource and our `data:`-only client parser, but
+# the bytes keep the connection alive and reset the client's stall watchdog.
+# Heartbeats are yielded as the raw SSE string, so endpoints can pass them
+# straight through; real events remain dicts (`isinstance(item, str)`
+# distinguishes them).
+# ──────────────────────────────────────────────────────────────────────────────
+SSE_HEARTBEAT = ": ping\n\n"
+
+
+async def iter_with_heartbeat(agen, interval: float = 10.0):
+    """Yield items from `agen`, injecting `SSE_HEARTBEAT` whenever no item
+    arrives within `interval` seconds.
+
+    The underlying generator is never cancelled on a heartbeat timeout — only
+    when the consumer stops early (e.g. a client disconnect closes this
+    generator), in which case the pending pull is cancelled and the source is
+    closed in the finally block.
+    """
+    ait = agen.__aiter__()
+    pending = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(ait.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if not done:
+                # No event within the interval — keep the stream warm.
+                yield SSE_HEARTBEAT
+                continue
+            task = pending
+            pending = None
+            try:
+                item = task.result()
+            except StopAsyncIteration:
+                return
+            yield item
+    finally:
+        if pending is not None:
+            pending.cancel()
+            try:
+                await pending
+            except BaseException:
+                pass
+        aclose = getattr(agen, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except BaseException:
+                pass
+
+
+async def drain_queue_with_heartbeat(queue, sentinel, interval: float = 10.0):
+    """Yield formatted SSE `data:` strings from an ``asyncio.Queue`` of event
+    dicts, emitting ``SSE_HEARTBEAT`` whenever the queue stays empty for
+    `interval` seconds, and returning once `sentinel` is dequeued.
+
+    This is the queue-based counterpart to ``iter_with_heartbeat`` for the
+    background-task streaming pattern (the orchestration endpoints run the
+    engine in a task that pushes events into a queue while the SSE generator
+    drains it). Without the heartbeat, a long LLM/compaction step leaves the
+    queue empty and the stream silent — which a client stall watchdog would
+    wrongly read as a dropped connection.
+    """
+    while True:
+        try:
+            event = await asyncio.wait_for(queue.get(), timeout=interval)
+        except asyncio.TimeoutError:
+            yield SSE_HEARTBEAT
+            continue
+        if event is sentinel:
+            return
+        yield f"data: {json.dumps(event, default=str)}\n\n"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from core.models_orchestration import Orchestration
 from core.config import DATA_DIR
 from core.json_store import JsonStore
+from core.react_engine import drain_queue_with_heartbeat
 
 router = APIRouter()
 
@@ -179,11 +180,10 @@ async def run_orchestration(orch_id: str, request: Request):
     _active_tasks[run_id] = task
 
     async def event_stream():
-        while True:
-            event = await queue.get()
-            if event is _SENTINEL:
-                break
-            yield f"data: {json.dumps(event, default=str)}\n\n"
+        # Heartbeats keep the stream warm during long LLM/compaction steps so a
+        # busy-but-alive run is not mistaken for a dropped connection.
+        async for chunk in drain_queue_with_heartbeat(queue, _SENTINEL):
+            yield chunk
         yield "data: {\"type\": \"done\"}\n\n"
 
     return StreamingResponse(
@@ -205,6 +205,13 @@ async def get_run_status(run_id: str):
         restored = SharedState.restore(run_id)
         return restored.run.model_dump()
     except FileNotFoundError:
+        # Checkpoints are only written at step boundaries, so a run still inside
+        # its first long-running step has no checkpoint yet. If it's a live
+        # in-process background task, report it as running so a reconnecting
+        # client re-attaches instead of seeing "Run not found".
+        task = _active_tasks.get(run_id)
+        if task is not None and not task.done():
+            return {"run_id": run_id, "status": "running", "step_history": [], "waiting_for_human": False}
         raise HTTPException(status_code=404, detail="Run not found")
 
 
@@ -235,11 +242,10 @@ async def resume_failed_run(run_id: str, request: Request):
     _active_tasks[run_id] = task
 
     async def event_stream():
-        while True:
-            event = await queue.get()
-            if event is _SENTINEL:
-                break
-            yield f"data: {json.dumps(event, default=str)}\n\n"
+        # Heartbeats keep the stream warm during long LLM/compaction steps so a
+        # busy-but-alive run is not mistaken for a dropped connection.
+        async for chunk in drain_queue_with_heartbeat(queue, _SENTINEL):
+            yield chunk
         yield "data: {\"type\": \"done\"}\n\n"
 
     return StreamingResponse(
@@ -353,11 +359,10 @@ async def submit_human_input(run_id: str, request: Request):
     asyncio.create_task(_run_engine())
 
     async def event_stream():
-        while True:
-            event = await queue.get()
-            if event is _SENTINEL:
-                break
-            yield f"data: {json.dumps(event, default=str)}\n\n"
+        # Heartbeats keep the stream warm during long LLM/compaction steps so a
+        # busy-but-alive run is not mistaken for a dropped connection.
+        async for chunk in drain_queue_with_heartbeat(queue, _SENTINEL):
+            yield chunk
         yield "data: {\"type\": \"done\"}\n\n"
 
     return StreamingResponse(
