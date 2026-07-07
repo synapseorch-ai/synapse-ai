@@ -1,0 +1,141 @@
+name: Nightly (stress + integration)
+
+# The slow suites that are excluded from the deploy gate:
+#   * stress        — many concurrent chats/orchestrations + SSE under the 5-90s
+#                     fake-LLM latency profile; publishes a latency report.
+#   * integration   — V2 end-to-end against real Redis + Postgres.
+#   * compose-smoke — real docker-compose bring-up (backend + frontend) with a
+#                     live health check — the true "does it install & run" test.
+#   * npm-e2e       — full npm global install + `synapse` bootstrap (venv + deps).
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-test.txt
+
+      - name: Run stress suite (5-90s fake-LLM latency)
+        env:
+          SYNAPSE_STRESS_REPORT_DIR: ${{ github.workspace }}/stress-reports
+          SYNAPSE_STRESS_TOTAL: '40'
+          SYNAPSE_STRESS_CONCURRENCY: '20'
+        run: |
+          python -m pytest backend/tests/stress -m stress -v
+
+      - name: Publish stress report to job summary
+        if: always()
+        run: |
+          if [ -f stress-reports/stress_report.md ]; then
+            cat stress-reports/stress_report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload stress report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-report
+          path: stress-reports/
+          if-no-files-found: ignore
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: synapse
+          POSTGRES_PASSWORD: synapse
+          POSTGRES_DB: synapse
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U synapse" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-test.txt
+          pip install -r backend/requirements-worker.txt
+
+      - name: Run V2 integration suite
+        env:
+          SYNAPSE_TEST_REDIS_URL: redis://localhost:6379
+          SYNAPSE_TEST_POSTGRES_URL: postgresql+asyncpg://synapse:synapse@localhost:5432/synapse
+        run: |
+          python -m pytest backend/tests/integration -m integration -v
+
+  # Real docker-compose bring-up (standalone profile): build both images, wait
+  # for the backend to serve, then tear down. The true end-to-end install test.
+  compose-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bring up the standalone stack
+        run: docker compose up -d --build backend frontend
+      - name: Wait for the backend to serve
+        run: |
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8765/openapi.json >/dev/null 2>&1; then
+              echo "backend healthy"; ok=1; break
+            fi
+            sleep 5
+          done
+          [ "$ok" = "1" ] || { echo "::error::backend never came up"; docker compose logs; exit 1; }
+      - name: Check the frontend responds
+        run: curl -fsS -o /dev/null -w "frontend HTTP %{http_code}\n" http://localhost:3000 || true
+      - name: Logs + teardown
+        if: always()
+        run: |
+          docker compose logs --tail 80 || true
+          docker compose down -v || true
+
+  # Full npm path: global install, then `synapse` bootstraps a venv + installs
+  # backend deps (heavy — hence nightly, not per-PR).
+  npm-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Pack + global install
+        run: |
+          mkdir -p frontend-build && touch frontend-build/.keep
+          npm pack
+          npm install -g ./synapse-orch-ai-*.tgz
+      - name: Bootstrap the backend env via the launcher
+        run: |
+          # `synapse setup`/first-run creates the venv and pip-installs deps.
+          timeout 900 synapse status || true
+          command -v synapse

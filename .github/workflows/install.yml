@@ -1,0 +1,117 @@
+name: Install matrix
+
+# Validates every packaging / installation path so a release can't ship a broken
+# install: PyPI (wheel + sdist across Python versions), npm (bin + files + no
+# stray bytecode), docker-compose config for all profiles, and the setup scripts.
+# The heavy Docker image builds live in docker-build.yml; a full container/npm
+# bring-up runs in nightly.yml.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── PyPI / pip ──────────────────────────────────────────────────────────────
+  pip-install:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Build wheel + sdist (stub the frontend bundle)
+        run: |
+          mkdir -p synapse/_frontend && touch synapse/_frontend/.keep
+          pip install hatch
+          hatch build
+
+      - name: Install the WHEEL in a clean venv and run the CLI
+        run: |
+          python -m venv /tmp/whl
+          /tmp/whl/bin/pip install --upgrade pip
+          /tmp/whl/bin/pip install dist/*.whl
+          /tmp/whl/bin/synapse --help
+          /tmp/whl/bin/python -c "import synapse.cli; assert callable(synapse.cli.main)"
+
+      - name: Install the SDIST in a clean venv and run the CLI
+        run: |
+          python -m venv /tmp/sdist
+          /tmp/sdist/bin/pip install --upgrade pip
+          /tmp/sdist/bin/pip install dist/*.tar.gz
+          /tmp/sdist/bin/synapse --help
+
+  # ── npm ─────────────────────────────────────────────────────────────────────
+  npm-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax-check the launcher
+        run: node --check bin/synapse.js
+
+      - name: Pack the npm package (stub the frontend bundle)
+        run: |
+          mkdir -p frontend-build && touch frontend-build/.keep
+          npm pack
+
+      - name: Assert tarball hygiene + required files
+        run: |
+          tgz=$(ls synapse-orch-ai-*.tgz)
+          echo "Packed: $tgz"
+          if tar tzf "$tgz" | grep -E '__pycache__|\.pyc$'; then
+            echo "::error::npm tarball ships Python bytecode"; exit 1
+          fi
+          for f in package/bin/synapse.js package/backend/main.py \
+                   package/backend/core/server.py package/scripts/postinstall.js; do
+            tar tzf "$tgz" | grep -qx "$f" || { echo "::error::missing $f in npm tarball"; exit 1; }
+          done
+
+      - name: Global install links the `synapse` binary
+        run: |
+          npm install -g ./synapse-orch-ai-*.tgz
+          command -v synapse
+          # A full run bootstraps a venv + pip install (heavy) — that E2E lives in nightly.
+
+  # ── docker-compose ──────────────────────────────────────────────────────────
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose (all profiles)
+        run: |
+          docker compose config --quiet
+          docker compose --profile scale config --quiet
+          docker compose --profile enterprise config --quiet
+
+  # ── setup scripts ───────────────────────────────────────────────────────────
+  setup-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Shell + Python setup-script syntax
+        run: |
+          bash -n setup.sh
+          bash -n start.sh
+          python -m py_compile setup.py
+      - name: Parse the PowerShell installer
+        shell: pwsh
+        run: |
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD/setup.ps1", [ref]$null, [ref]$null)
+          Write-Host "setup.ps1 parses OK"
