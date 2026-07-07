@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse-orch-ai"
-version = "1.7.9"
+version = "1.8.0"
 description = "Synapse - A Multi Agent Orchestrator"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
@@ -77,6 +77,78 @@ include = [
     "backend/requirements-messaging.txt",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-html>=4.0",
+    "pytest-cov>=5.0",
+    "fakeredis>=2.20",
+    "httpx>=0.27",
+]
+
+[tool.coverage.run]
+source = ["core"]
+branch = false
+# Omit modules that are inherently external/runtime and cannot be meaningfully
+# unit-tested (they need a live ARQ worker, real Redis/Postgres, chat-platform
+# bot connections, or spawned MCP/CLI subprocesses). These are exercised by the
+# nightly integration job (.github/workflows/nightly.yml) instead.
+omit = [
+    "*/core/scale/worker.py",
+    "*/core/scale/worker_engine_adapter.py",
+    "*/core/scale/worker_server_module.py",
+    "*/core/scale/sync.py",
+    "*/core/scale/telemetry.py",
+    "*/core/scale/metrics.py",
+    "*/core/scale/heartbeat.py",
+    "*/core/scale/db.py",
+    "*/core/scale/models_db.py",
+    "*/core/messaging/*",
+    "*/core/mcp_client.py",
+    "*/core/mcp_oauth_state.py",
+    "*/core/scheduler.py",
+    "*/core/schedule_logger.py",
+    "*/core/native_builder/*",
+    "*/core/builder_tools.py",
+    # Integration-only: app lifespan wiring, scale admin, chat-builder streaming,
+    # vector memory (chromadb + embeddings), and AWS S3 — validated by the
+    # nightly integration job and manual/e2e, not unit tests.
+    "*/core/server.py",
+    "*/core/routes/scale.py",
+    "*/core/routes/builder.py",
+    "*/core/memory.py",
+    "*/core/s3_storage.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise AssertionError",
+    "\\.\\.\\.",
+    "except ImportError",
+]
+
+[tool.pytest.ini_options]
+# Invoke from the repo root: `python -m pytest`
+testpaths = ["backend/tests"]
+asyncio_mode = "auto"
+# The deploy gate runs the fast suite only; stress/integration are opt-in.
+addopts = "-m 'not stress and not integration' -ra"
+markers = [
+    "stress: long-running load tests (5-90s fake-LLM latency); excluded from the gate",
+    "integration: needs real Redis/Postgres/ARQ; run nightly, excluded from the gate",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
 [tool.bandit]
 targets = ["backend", "synapse"]
 exclude_dirs = [
@@ -85,5 +157,6 @@ exclude_dirs = [
     "backend/data",
     "backend/logs",
     "backend/chroma_db",
+    "backend/tests",
 ]
 skips = []

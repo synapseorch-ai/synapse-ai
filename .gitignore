@@ -24,6 +24,15 @@ backend/chroma_db/
 backend/data/chroma_db/
 backend/.venv/
 
+# Test / stress reports (published as CI artifacts, never committed)
+stress-reports/
+htmlcov/
+report.html
+coverage.xml
+junit.xml
+.coverage
+.pytest_cache/
+
 # Distribution artifacts
 dist/
 *.egg-info/

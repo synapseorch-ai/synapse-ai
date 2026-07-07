@@ -77,3 +77,6 @@ exclude_paths:
   - synapse/_frontend/**
   - "**/__pycache__/**"
   - "**/*.egg-info/**"
+  # Test code: asserts (B101) and dummy/fake credentials are expected here and
+  # are false positives for security scanners.
+  - backend/tests/**

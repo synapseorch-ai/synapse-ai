@@ -6,7 +6,51 @@ on:
       - 'v*'
 
 jobs:
+  # ── Deploy gate ────────────────────────────────────────────────────────────
+  # Runs the fast backend test suite + install checks + version/tag consistency.
+  # Every publish job below `needs: gate`, so a single failing test aborts the
+  # entire release to PyPI, npm, and Docker Hub.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-test.txt
+
+      - name: Verify version matches the release tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PY=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          NPM=$(python -c "import json,pathlib; print(json.loads(pathlib.Path('package.json').read_text())['version'])")
+          echo "tag=$TAG pyproject=$PY package.json=$NPM"
+          if [ "$PY" != "$TAG" ] || [ "$NPM" != "$TAG" ]; then
+            echo "::error::Version mismatch — tag=$TAG pyproject=$PY package.json=$NPM"
+            exit 1
+          fi
+
+      - name: Run gate test suite
+        run: |
+          python -m pytest --junitxml=junit.xml -ra
+
+      - name: Upload gate test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-junit
+          path: junit.xml
+          if-no-files-found: ignore
+
   build-frontend:
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +73,7 @@ jobs:
 
   publish-python:
     runs-on: ubuntu-latest
-    needs: build-frontend
+    needs: [gate, build-frontend]
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +91,16 @@ jobs:
           pip install hatch
           hatch build
 
+      - name: Verify the built wheel installs and the CLI runs
+        # Gate the ACTUAL artifact before it reaches PyPI. --no-deps keeps it fast;
+        # the full-dependency install is validated on main by install.yml.
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install --upgrade pip
+          /tmp/verify/bin/pip install --no-deps dist/*.whl
+          /tmp/verify/bin/synapse --help
+          /tmp/verify/bin/python -c "import synapse.cli; assert callable(synapse.cli.main)"
+
       - name: Publish to PyPI
         run: |
           pip install twine
@@ -57,7 +111,7 @@ jobs:
 
   publish-npm:
     runs-on: ubuntu-latest
-    needs: build-frontend
+    needs: [gate, build-frontend]
     steps:
       - uses: actions/checkout@v4
 
@@ -71,6 +125,15 @@ jobs:
         with:
           name: frontend-builds
 
+      - name: Verify tarball hygiene before publish
+        run: |
+          npm pack
+          tgz=$(ls synapse-orch-ai-*.tgz)
+          if tar tzf "$tgz" | grep -E '__pycache__|\.pyc$'; then
+            echo "::error::npm tarball ships Python bytecode"; exit 1
+          fi
+          tar tzf "$tgz" | grep -qx package/bin/synapse.js || { echo "::error::missing launcher"; exit 1; }
+
       - name: Publish to npm
         run: npm publish --access public
         env:
@@ -78,6 +141,7 @@ jobs:
 
   publish-docker:
     runs-on: ubuntu-latest
+    needs: gate
     steps:
       - uses: actions/checkout@v4
 

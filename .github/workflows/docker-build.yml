@@ -1,0 +1,96 @@
+name: Docker build
+
+# Builds every published image so a Dockerfile/dependency break is caught before
+# release, and boots the API-server image to confirm it actually serves. Runs
+# only when packaging-relevant files change (image builds are expensive) and uses
+# the GitHub Actions layer cache. The release workflow (publish.yml) does the
+# multi-arch push.
+on:
+  # Only the inputs that actually go into the published images — so a test-only
+  # or docs PR never triggers the (slow) image builds.
+  pull_request:
+    paths:
+      - 'Dockerfile*'
+      - 'docker/**'
+      - 'backend/core/**'
+      - 'backend/services/**'
+      - 'backend/tools/**'
+      - 'backend/main.py'
+      - 'backend/requirements.txt'
+      - 'backend/requirements-worker.txt'
+      - 'frontend/**'
+      - 'scripts/build_frontend.sh'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile*'
+      - 'docker/**'
+      - 'backend/core/**'
+      - 'backend/services/**'
+      - 'backend/tools/**'
+      - 'backend/main.py'
+      - 'backend/requirements.txt'
+      - 'backend/requirements-worker.txt'
+      - 'frontend/**'
+      - 'scripts/build_frontend.sh'
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { file: Dockerfile.backend, scope: api-server }
+          - { file: Dockerfile.worker,  scope: worker }
+          - { file: Dockerfile,         scope: combined }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.file }} (linux/amd64, cached)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: false
+          load: false
+          tags: synapse-ci/${{ matrix.scope }}:ci
+          cache-from: type=gha,scope=${{ matrix.scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
+
+  api-server-healthcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the API-server image (from cache)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.backend
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: synapse-ci/api-server:test
+          cache-from: type=gha,scope=api-server
+      - name: Boot the container and hit the health endpoint
+        run: |
+          docker run -d --name syn -p 8765:8765 -v /tmp/syndata:/data synapse-ci/api-server:test
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8765/openapi.json >/dev/null 2>&1; then
+              echo "API server healthy after ~$((i*3))s"; ok=1; break
+            fi
+            sleep 3
+          done
+          echo "----- container logs (tail) -----"
+          docker logs syn 2>&1 | tail -60
+          docker rm -f syn >/dev/null 2>&1 || true
+          if [ "$ok" != "1" ]; then
+            echo "::error::API-server image did not serve /openapi.json within 180s"; exit 1
+          fi

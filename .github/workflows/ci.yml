@@ -1,0 +1,73 @@
+name: CI
+
+# Fast backend test suite + install smoke. Runs on every PR and every push to
+# main. The same suite hard-blocks releases via .github/workflows/publish.yml.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    # 3.11 is the reference version and hard-gates. 3.12/3.13 still run and
+    # report, but don't block the PR — a transitive dependency may not yet ship
+    # wheels for the newest interpreter (that's a dep issue, not a test failure).
+    continue-on-error: ${{ matrix.python-version != '3.11' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-test.txt
+
+      - name: Run fast test suite (the deploy gate)
+        # addopts in pyproject.toml already excludes -m stress and -m integration.
+        run: |
+          python -m pytest \
+            --html=report.html --self-contained-html \
+            --cov=core --cov-report=xml --cov-report=html --cov-report=term-missing \
+            --cov-fail-under=50 \
+            --junitxml=junit.xml
+
+      - name: Test summary
+        if: always()
+        run: |
+          {
+            echo "## Backend tests — Python ${{ matrix.python-version }}"
+            if [ -f coverage.xml ]; then
+              cov=$(python -c "import xml.etree.ElementTree as ET; print(round(float(ET.parse('coverage.xml').getroot().get('line-rate',0))*100,1))")
+              echo ""
+              echo "**Line coverage: ${cov}%**"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-py${{ matrix.python-version }}
+          path: |
+            report.html
+            htmlcov/
+            coverage.xml
+            junit.xml
+          if-no-files-found: ignore
+
+  # Installation validation (pip/npm/docker-compose/setup scripts) lives in a
+  # dedicated workflow: .github/workflows/install.yml

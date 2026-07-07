@@ -2,25 +2,14 @@
 Unit tests for the cache layer (prompt_cache, tool_cache, response_cache, store).
 
 Run with:
-    cd backend && python -m pytest tests/test_cache.py -v
+    python -m pytest backend/tests/unit/test_cache.py -v
 
-Tests use SYNAPSE_DATA_DIR so the real data/ is never touched. Set BEFORE
-importing core modules — module-level reads of DATA_DIR happen at import time.
+Data-dir sandboxing and sys.path setup are handled once by the suite-wide
+conftest.py (backend/tests/conftest.py), which sets SYNAPSE_DATA_DIR before any
+core module is imported.
 """
-import os
-import sys
 import time
-import tempfile
-import pathlib
 from unittest.mock import patch
-
-# Sandbox a temp data dir for all tests in this module
-_TMP_DATA_DIR = tempfile.mkdtemp(prefix="synapse_test_cache_")
-os.environ["SYNAPSE_DATA_DIR"] = _TMP_DATA_DIR
-
-# Ensure backend/ is importable when run from the repo root
-_BACKEND_DIR = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_BACKEND_DIR))
 
 
 # ── store ──────────────────────────────────────────────────────────────────
