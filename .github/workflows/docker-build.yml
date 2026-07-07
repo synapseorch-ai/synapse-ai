@@ -6,21 +6,31 @@ name: Docker build
 # the GitHub Actions layer cache. The release workflow (publish.yml) does the
 # multi-arch push.
 on:
+  # Only the inputs that actually go into the published images — so a test-only
+  # or docs PR never triggers the (slow) image builds.
   pull_request:
     paths:
       - 'Dockerfile*'
-      - 'docker-compose.yml'
       - 'docker/**'
-      - 'backend/**'
+      - 'backend/core/**'
+      - 'backend/services/**'
+      - 'backend/tools/**'
+      - 'backend/main.py'
+      - 'backend/requirements.txt'
+      - 'backend/requirements-worker.txt'
       - 'frontend/**'
       - 'scripts/build_frontend.sh'
   push:
     branches: [main]
     paths:
       - 'Dockerfile*'
-      - 'docker-compose.yml'
       - 'docker/**'
-      - 'backend/**'
+      - 'backend/core/**'
+      - 'backend/services/**'
+      - 'backend/tools/**'
+      - 'backend/main.py'
+      - 'backend/requirements.txt'
+      - 'backend/requirements-worker.txt'
       - 'frontend/**'
       - 'scripts/build_frontend.sh'
 

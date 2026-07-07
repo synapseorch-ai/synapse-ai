@@ -36,10 +36,13 @@ jobs:
           hatch build
 
       - name: Install the WHEEL in a clean venv and run the CLI
+        # --no-deps keeps this a fast packaging/entry-point check; the full
+        # dependency resolution across this Python matrix is covered by the
+        # backend-tests job in ci.yml (which installs backend/requirements.txt).
         run: |
           python -m venv /tmp/whl
           /tmp/whl/bin/pip install --upgrade pip
-          /tmp/whl/bin/pip install dist/*.whl
+          /tmp/whl/bin/pip install --no-deps dist/*.whl
           /tmp/whl/bin/synapse --help
           /tmp/whl/bin/python -c "import synapse.cli; assert callable(synapse.cli.main)"
 
@@ -47,7 +50,7 @@ jobs:
         run: |
           python -m venv /tmp/sdist
           /tmp/sdist/bin/pip install --upgrade pip
-          /tmp/sdist/bin/pip install dist/*.tar.gz
+          /tmp/sdist/bin/pip install --no-deps dist/*.tar.gz
           /tmp/sdist/bin/synapse --help
 
   # ── npm ─────────────────────────────────────────────────────────────────────
@@ -90,6 +93,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Provide a .env file for compose (git-ignored)
+        run: cp .env.example .env 2>/dev/null || touch .env
       - name: Validate docker-compose (all profiles)
         run: |
           docker compose config --quiet

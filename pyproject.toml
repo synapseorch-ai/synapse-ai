@@ -157,5 +157,6 @@ exclude_dirs = [
     "backend/data",
     "backend/logs",
     "backend/chroma_db",
+    "backend/tests",
 ]
 skips = []

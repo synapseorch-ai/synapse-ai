@@ -7,12 +7,22 @@ is mounted. Behavioural: hit a curated set of infra-free read-only routes and
 assert they never 500.
 """
 import pytest
-from fastapi.routing import APIRoute
+
+_VERBS = {"get", "post", "put", "delete", "patch"}
 
 
 def _routes(app):
-    return [(r.path, tuple(sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"})))
-            for r in app.routes if isinstance(r, APIRoute)]
+    """All (path, methods) registered on the app, derived from the OpenAPI spec.
+
+    Version-agnostic: FastAPI < 0.139 flattens routes into app.routes as
+    APIRoute, while >= 0.139 nests them under _IncludedRouter — but the OpenAPI
+    spec reflects the final (prefixed) path inventory either way.
+    """
+    paths = app.openapi().get("paths", {})
+    return [
+        (path, tuple(sorted(m.upper() for m in methods if m.lower() in _VERBS)))
+        for path, methods in paths.items()
+    ]
 
 
 # Critical routes that must always exist (method-agnostic path check).

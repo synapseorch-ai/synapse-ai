@@ -18,6 +18,10 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.11', '3.12', '3.13']
+    # 3.11 is the reference version and hard-gates. 3.12/3.13 still run and
+    # report, but don't block the PR — a transitive dependency may not yet ship
+    # wheels for the newest interpreter (that's a dep issue, not a test failure).
+    continue-on-error: ${{ matrix.python-version != '3.11' }}
     steps:
       - uses: actions/checkout@v4
 

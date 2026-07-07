@@ -97,6 +97,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Provide a .env file for compose (git-ignored)
+        run: cp .env.example .env 2>/dev/null || touch .env
       - name: Bring up the standalone stack
         run: docker compose up -d --build backend frontend
       - name: Wait for the backend to serve
