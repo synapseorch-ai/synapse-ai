@@ -39,12 +39,12 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 
-from core.config import DATA_DIR
+from core.config import DATA_DIR, MCP_SESSION_READ_TIMEOUT
 import core.mcp_oauth_state as oauth_state
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-_SESSION_READ_TIMEOUT = timedelta(seconds=60)
+_SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
 
 MCP_SERVERS_FILE = os.path.join(DATA_DIR, "mcp_servers.json")
 MCP_TOKENS_DIR   = os.path.join(DATA_DIR, "mcp_tokens")

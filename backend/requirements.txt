@@ -27,3 +27,4 @@ crawl4ai
 arq>=0.26
 redis[hiredis]>=5.0
 async-timeout>=4.0
+pyyaml>=6.0

@@ -4,6 +4,7 @@ export { MemoryTab } from './MemoryTab';
 export { DatabaseTab } from './DatabaseTab';
 export { AgentsTab } from './AgentsTab';
 export { CustomToolsTab } from './CustomToolsTab';
+export { OpenApiImport } from './OpenApiImport';
 export { PythonToolEditor } from './PythonToolEditor';
 export { DataLabTab } from './DataLabTab';
 export { ModelsTab } from './ModelsTab';

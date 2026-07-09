@@ -40,13 +40,14 @@ class WorkerServerModule:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
         from datetime import timedelta
+        from core.config import MCP_SESSION_READ_TIMEOUT
 
         instance = cls()
         disabled = set(disabled_mcp_names or [])
         exit_stack = AsyncExitStack()
         instance._exit_stack = exit_stack
 
-        _SESSION_READ_TIMEOUT = timedelta(seconds=60)
+        _SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
 
         # --- Python-native MCP tools (always available on workers) ---
         TOOLS_DIR = Path(__file__).resolve().parent.parent.parent / "tools"

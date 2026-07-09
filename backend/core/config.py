@@ -18,6 +18,36 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 CREDENTIALS_FILE = os.path.join(DATA_DIR, "credentials.json")
 TOKEN_FILE = os.path.join(DATA_DIR, "token.json")
 
+
+# ── Configurable timeouts ────────────────────────────────────────────────────
+# Each is read from the environment, falling back to the value hardcoded before
+# these were made configurable. Unset env → identical behavior to before.
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "") or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "") or default)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+# Timeouts (seconds, unless the name says otherwise).
+MCP_SESSION_READ_TIMEOUT = _env_float("SYNAPSE_MCP_SESSION_READ_TIMEOUT", 60.0)
+MCP_TOOL_CALL_TIMEOUT    = _env_float("SYNAPSE_MCP_TOOL_CALL_TIMEOUT", 60.0)
+MCP_LIST_TOOLS_TIMEOUT   = _env_float("SYNAPSE_MCP_LIST_TOOLS_TIMEOUT", 15.0)
+LLM_REQUEST_TIMEOUT      = _env_float("SYNAPSE_LLM_TIMEOUT", 180.0)
+HTTP_TOOL_TIMEOUT        = _env_float("SYNAPSE_HTTP_TOOL_TIMEOUT", 30.0)
+ORCH_STEP_TIMEOUT        = _env_float("SYNAPSE_ORCH_STEP_TIMEOUT", 300.0)
+ORCH_GLOBAL_TIMEOUT_MIN  = _env_int("SYNAPSE_ORCH_GLOBAL_TIMEOUT_MINUTES", 30)
+ORCH_HUMAN_TIMEOUT       = _env_float("SYNAPSE_ORCH_HUMAN_TIMEOUT", 3600.0)
+
+
 def load_settings():
     default_settings = {
         "agent_name": "Synapse",

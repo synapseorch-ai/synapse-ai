@@ -694,6 +694,12 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         });
     };
 
+    // Handle tools imported from an OpenAPI spec (already persisted by the backend)
+    const handleImportedTools = (tools: any[]) => {
+        tools.forEach(t => dispatch(updateCustomTool(t)));
+        showToast(`Imported ${tools.length} tool${tools.length === 1 ? '' : 's'}`, 'success');
+    };
+
     // Handle Save Custom Tool
     const handleSaveTool = async () => {
         if (!draftTool) return;
@@ -1038,6 +1044,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                             getN8nBaseUrl={getN8nBaseUrl}
                             onSaveTool={handleSaveTool}
                             onDeleteTool={handleDeleteTool}
+                            onImported={handleImportedTools}
                             n8nIntegrated={!!(n8nApiKey && n8nApiKey.trim())}
                         />
                     )}

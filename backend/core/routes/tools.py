@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from core.models import AddMCPServerRequest
 from core.config import DATA_DIR
 from core.json_store import JsonStore
+from core.openapi_import import parse_openapi_spec
 import core.mcp_oauth_state as oauth_state
 
 router = APIRouter()
@@ -105,15 +106,87 @@ async def get_available_tools():
     return {"tools": all_tools}
 
 
+def _upsert_custom_tools(new_tools: list[dict]) -> None:
+    """Upsert tools by name into the custom-tools store, preserving existing order."""
+    tools = load_custom_tools()
+    for nt in new_tools:
+        if any(t['name'] == nt['name'] for t in tools):
+            tools = [t if t['name'] != nt['name'] else nt for t in tools]
+        else:
+            tools.append(nt)
+    save_custom_tools(tools)
+
+
 @router.post("/api/tools/custom")
 async def create_custom_tool(tool: dict):
-    tools = load_custom_tools()
-    if any(t['name'] == tool['name'] for t in tools):
-        tools = [t if t['name'] != tool['name'] else tool for t in tools]
-    else:
-        tools.append(tool)
-    save_custom_tools(tools)
+    _upsert_custom_tools([tool])
     return {"status": "success", "tool": tool}
+
+
+@router.post("/api/tools/custom/bulk")
+async def create_custom_tools_bulk(payload: dict):
+    """Upsert many tools at once. Body: {"tools": [ {tool}, ... ]}."""
+    tools = payload.get("tools")
+    if not isinstance(tools, list) or not tools:
+        raise HTTPException(status_code=400, detail="Body must include a non-empty 'tools' list.")
+    for t in tools:
+        if not isinstance(t, dict) or not t.get("name"):
+            raise HTTPException(status_code=400, detail="Each tool must be an object with a 'name'.")
+    _upsert_custom_tools(tools)
+    return {"status": "success", "imported": len(tools)}
+
+
+class OpenAPIImportRequest(BaseModel):
+    spec: str                          # raw JSON or YAML text of the spec
+    base_url: Optional[str] = None     # override the server base URL
+    headers: Optional[dict] = None     # static headers applied to every tool (e.g. auth)
+    name_prefix: str = ""              # prepended to every generated tool name
+    save: bool = False                 # False → preview only; True → upsert all generated tools
+
+
+def _parse_spec_text(text: str) -> dict:
+    """Parse spec text as JSON, falling back to YAML (if PyYAML is available)."""
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty spec.")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    try:
+        import yaml  # optional dependency; specs are often YAML
+    except ImportError:
+        raise HTTPException(
+            status_code=400,
+            detail="Spec is not valid JSON and PyYAML is not installed to parse YAML. Paste JSON instead.",
+        )
+    try:
+        data = yaml.safe_load(text)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse spec as JSON or YAML: {e}")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Spec did not parse to an object.")
+    return data
+
+
+@router.post("/api/tools/import/openapi")
+async def import_openapi(req: OpenAPIImportRequest):
+    """Convert an OpenAPI 3.x / Swagger 2.0 spec into HTTP custom tools.
+
+    With save=False (default) returns the generated tools as a preview so the user
+    can pick a subset; with save=True upserts all of them.
+    """
+    spec = _parse_spec_text(req.spec)
+    try:
+        generated = parse_openapi_spec(
+            spec, base_url=req.base_url, headers=req.headers, name_prefix=req.name_prefix,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if req.save:
+        _upsert_custom_tools(generated)
+    return {"tools": generated, "count": len(generated), "saved": req.save}
 
 
 @router.delete("/api/tools/custom/{tool_name}")

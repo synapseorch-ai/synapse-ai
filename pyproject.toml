@@ -48,6 +48,7 @@ dependencies = [
     "python-telegram-bot>=20.0",
     "discord.py>=2.3",
     "slack-bolt>=1.18",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
