@@ -1,8 +1,24 @@
 FROM python:3.11-slim
 
+# Node 20 from nodesource (distro `nodejs` on bookworm is v18, too old for the
+# current MCP servers). Mirrors the combined root Dockerfile.
 RUN apt-get update && apt-get install -y \
-    build-essential curl nodejs npm libpq-dev \
+    build-essential curl libpq-dev \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Pre-install the native MCP servers so the backend's `npx -y …` startup calls
+# resolve them from disk instead of downloading from npm on a cold container —
+# those cold downloads pushed boot past the compose healthcheck window and made
+# synapse-backend report unhealthy. Browser binaries come from the pip
+# `playwright install` step below, so skip npm's browser download here.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN npm install -g \
+    @modelcontextprotocol/server-filesystem \
+    @modelcontextprotocol/server-memory \
+    @modelcontextprotocol/server-sequential-thinking \
+    @playwright/mcp
 
 RUN pip install playwright && playwright install chromium --with-deps
 
