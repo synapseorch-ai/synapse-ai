@@ -19,7 +19,43 @@ import { ToastNotification } from './ToastNotification';
 type ToolCallLogEntry = { kind: 'tool_call'; tool_name: string; args: Record<string, any>; step_name?: string };
 type ToolResultLogEntry = { kind: 'tool_result'; tool_name: string; preview: string };
 type StepResultLogEntry = { kind: 'step_result'; step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string };
-type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry;
+// A block of recovered persisted-log lines rendered on reconnect. Kept as a
+// single <pre> node (not N markdown entries) so a large log stays cheap to render.
+type RecoveredLogEntry = { kind: 'recovered_log'; lines: string[] };
+type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry | RecoveredLogEntry;
+
+type RunStepStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed';
+
+// Pure reducer: mark each step present in a persisted checkpoint's step_history
+// as completed/failed. Shared by restoreRun and reattachRun.
+function applyStepHistory(
+    prev: Record<string, RunStepStatus>,
+    stepHistory: any[],
+): Record<string, RunStepStatus> {
+    const next = { ...prev };
+    for (const h of stepHistory) {
+        if (h?.step_id) next[h.step_id] = h.status === 'failed' ? 'failed' : 'completed';
+    }
+    return next;
+}
+
+// Fetch the persisted detailed orchestration log (plain text) for a run and
+// return it as lines, capped to the last `maxLines` to bound render cost.
+// Returns [] on any error (log not yet written, network failure, etc.).
+async function fetchRecoveredLog(runId: string, maxLines = 800): Promise<string[]> {
+    try {
+        const res = await fetch(`/api/logs/orchestrations/${runId}`);
+        if (!res.ok) return [];
+        const text = await res.text();
+        const lines = text.split('\n');
+        if (lines.length > maxLines) {
+            return [`…(showing last ${maxLines} of ${lines.length} log lines)…`, ...lines.slice(-maxLines)];
+        }
+        return lines;
+    } catch {
+        return [];
+    }
+}
 
 const STEP_ICONS: Record<StepType, React.FC<{ size?: number }>> = {
     llm: Zap, agent: Bot, tool: Wrench, evaluator: Scale, parallel: GitBranch,
@@ -150,29 +186,68 @@ export function OrchestrationTab() {
         };
     }, [fetchActiveRuns]);
 
-    // --- Restore a run from the active runs banner ---
+    // --- Restore a run from the active runs banner / recent runs ---
+    // Standalone mode has no replayable event stream, so we reconstruct as much
+    // as we can on reconnect: hydrate step statuses from the step-boundary
+    // checkpoint, load the persisted detailed log (which DOES contain the
+    // parallel branch / sub-step activity the checkpoint can't expose), then
+    // resume live tracking for a still-running run.
     const restoreRun = useCallback(async (runInfo: { run_id: string; orchestration_id: string; status: string }) => {
         const orch = orchestrations.find(o => o.id === runInfo.orchestration_id);
         setSelectedOrchId(runInfo.orchestration_id);
         setSelectedStepId(null);
         setDraft(orch ? { ...orch } : null);
         setRunId(runInfo.run_id);
+        // Sync the ref synchronously — the useEffect that mirrors runId only runs
+        // after render, but reattachRun's guard reads currentRunIdRef immediately.
+        currentRunIdRef.current = runInfo.run_id;
         setRunStatus(runInfo.status as 'running' | 'paused' | 'completed' | 'failed' | 'cancelled');
-        setRunLog([`[Reconnected to run ${runInfo.run_id}]`]);
         setHumanPrompt(null);
         setHumanContext(null);
 
-        if (runInfo.status === 'paused') {
-            try {
-                const res = await fetch(`/api/orchestrations/runs/${runInfo.run_id}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.waiting_for_human && data.human_prompt) {
-                        setHumanPrompt(data.human_prompt);
-                    }
-                }
-            } catch { /* ignore */ }
+        // Baseline: mark all steps pending (like a fresh run) before overlaying
+        // completed/failed from the checkpoint.
+        if (orch) {
+            const seeded: Record<string, RunStepStatus> = {};
+            orch.steps.forEach(s => { seeded[s.id] = 'pending'; });
+            setRunStepStatuses(seeded);
         }
+
+        // Restore step statuses + human-input state from the persisted checkpoint.
+        let waitingForHuman = false;
+        try {
+            const res = await fetch(`/api/orchestrations/runs/${runInfo.run_id}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (Array.isArray(data.step_history)) {
+                    setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
+                }
+                waitingForHuman = !!data.waiting_for_human;
+                if (data.waiting_for_human && data.human_prompt) {
+                    setHumanPrompt(data.human_prompt);
+                    setHumanContext(data.human_context || null);
+                }
+            }
+        } catch { /* ignore */ }
+
+        // Load and display the persisted detailed log as recovered context.
+        const logLines = await fetchRecoveredLog(runInfo.run_id);
+        const logBlock: LogEntry[] = logLines.length > 0
+            ? ['── Recovered log (persisted) ──', { kind: 'recovered_log', lines: logLines }]
+            : ['── Recovered log (persisted) ──', '[No persisted log available yet.]'];
+        setRunLog([
+            ...logBlock,
+            '[Standalone reconnect: restored step-boundary checkpoint + persisted log. Live updates resume at the next step boundary.]',
+        ]);
+
+        // Keep tracking a live run to completion / human-input. A paused run
+        // already waiting for input needs no poll loop.
+        if (runInfo.status === 'running' || (runInfo.status === 'paused' && !waitingForHuman)) {
+            reattachRun(runInfo.run_id, { silent: true });
+        }
+        // reattachRun is a stable useCallback([]) declared below; adding it to the
+        // deps array would be a temporal-dead-zone read during render.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [orchestrations]);
 
     // --- Select orchestration ---
@@ -407,11 +482,13 @@ export function OrchestrationTab() {
     // connection is NOT a failure: poll the persisted run state and track it to
     // completion, rather than marking it failed and offering resume_failed
     // (which correctly refuses a still-running run).
-    const reattachRun = useCallback(async (rid: string | null) => {
+    const reattachRun = useCallback(async (rid: string | null, opts?: { silent?: boolean }) => {
         if (!rid) { setRunStatus('failed'); setRunLog(prev => [...prev, '[Connection lost]']); return; }
         if (reattachActiveRef.current) return;       // already reconnecting
         reattachActiveRef.current = true;
-        setRunLog(prev => [...prev, '[Connection lost — reconnecting to run…]']);
+        // On a deliberate restore (silent) the "Connection lost" framing is wrong —
+        // nothing was lost; the user is re-opening a still-running run.
+        if (!opts?.silent) setRunLog(prev => [...prev, '[Connection lost — reconnecting to run…]']);
         const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
         const deadline = Date.now() + 10 * 60 * 1000; // give up after 10 min
         let notFound = 0; // tolerate brief 404 windows at run start/end before giving up
@@ -436,13 +513,7 @@ export function OrchestrationTab() {
 
                 // Sync step statuses from the persisted history
                 if (Array.isArray(data.step_history)) {
-                    setRunStepStatuses(prev => {
-                        const next = { ...prev };
-                        for (const h of data.step_history) {
-                            if (h?.step_id) next[h.step_id] = h.status === 'failed' ? 'failed' : 'completed';
-                        }
-                        return next;
-                    });
+                    setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
                 }
 
                 if (data.status === 'running') {
@@ -1526,6 +1597,18 @@ function BottomPanel({
                                                         </button>
                                                     </div>
                                                 </div>
+                                            );
+                                        }
+                                        if (entry.kind === 'recovered_log') {
+                                            return (
+                                                <details key={i} open className="my-1.5">
+                                                    <summary className="cursor-pointer list-none text-[10px] text-zinc-500 uppercase tracking-wider">
+                                                        Recovered log ({entry.lines.length} lines)
+                                                    </summary>
+                                                    <pre className="mt-1 bg-zinc-900/60 border border-zinc-800 rounded p-2 text-[10px] text-zinc-400 whitespace-pre-wrap overflow-x-auto max-h-96 overflow-y-auto">
+                                                        {entry.lines.join('\n')}
+                                                    </pre>
+                                                </details>
                                             );
                                         }
                                         return null;

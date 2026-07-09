@@ -98,7 +98,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Provide a .env file for compose (git-ignored)
-        run: cp .env.example .env 2>/dev/null || touch .env
+        # Use the Docker template — it pins the container-internal backend port to
+        # 8765 (matching the healthcheck and frontend). .env.example targets the
+        # native path and uses a different port, which leaves the backend serving
+        # on the wrong port and the healthcheck failing.
+        run: cp .env.docker .env 2>/dev/null || touch .env
       - name: Bring up the standalone stack
         run: docker compose up -d --build backend frontend
       - name: Wait for the backend to serve
