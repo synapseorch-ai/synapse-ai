@@ -23,7 +23,11 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8765/docs"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      # Backend boot connects several MCP servers before serving /docs; give it
+      # grace so a slow-but-successful startup isn't marked unhealthy (which
+      # aborts `docker compose up` via the frontend's service_healthy dep).
+      start_period: 90s
     restart: unless-stopped
 
   frontend:
