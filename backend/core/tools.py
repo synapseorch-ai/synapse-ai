@@ -9,7 +9,7 @@ import zoneinfo
 
 import anyio
 
-from core.config import load_settings
+from core.config import load_settings, MCP_LIST_TOOLS_TIMEOUT
 
 
 # Tools auto-injected per agent type. These bypass the agent's tools[] array.
@@ -118,10 +118,11 @@ async def aggregate_all_tools(agent_sessions, active_agent, custom_tools_list):
             print(f"DEBUG: 📦 Using cached tools for '{session_name}' ({len(session_tools)} tools)", flush=True)
         else:
             try:
-                # Bounded list_tools() — 15s timeout prevents a single flaky
+                # Bounded list_tools() — timeout (default 15s, override via
+                # SYNAPSE_MCP_LIST_TOOLS_TIMEOUT) prevents a single flaky
                 # session from blocking all subsequent tool aggregation.
                 print(f"DEBUG: 🔄 Fetching tools for '{session_name}'...", flush=True)
-                with anyio.fail_after(15):
+                with anyio.fail_after(MCP_LIST_TOOLS_TIMEOUT):
                     result = await session.list_tools()
                 session_tools = result.tools
                 _session_tools_cache[session_name] = session_tools

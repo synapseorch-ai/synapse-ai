@@ -18,7 +18,8 @@ from mcp.client.stdio import stdio_client
 
 # Default timeout for all MCP session requests — prevents any call from hanging
 # forever.  Per-request read_timeout_seconds overrides this when supplied.
-_SESSION_READ_TIMEOUT = timedelta(seconds=60)
+from core.config import MCP_SESSION_READ_TIMEOUT
+_SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
 
 try:
     from core.memory import MemoryStore

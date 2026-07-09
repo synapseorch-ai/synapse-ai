@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useCallback, useEffect, useState } from 'react';
-import { Wrench, Plus, Trash, X, ExternalLink, AlertTriangle, CheckCircle2, RefreshCw, Container } from 'lucide-react';
+import { Wrench, Plus, Trash, X, ExternalLink, AlertTriangle, CheckCircle2, RefreshCw, Container, Import } from 'lucide-react';
 import { PythonToolEditor, type PythonDraftTool } from './PythonToolEditor';
+import { OpenApiImport } from './OpenApiImport';
 
 interface CustomToolsTabProps {
     customTools: any[];
@@ -18,6 +19,8 @@ interface CustomToolsTabProps {
     getN8nBaseUrl: () => string;
     onSaveTool: () => void;
     onDeleteTool: (name: string) => void;
+    /** Called with tools imported from an OpenAPI spec (already saved to backend) */
+    onImported: (tools: any[]) => void;
     /** True when n8n URL + API key are configured */
     n8nIntegrated: boolean;
 }
@@ -28,9 +31,11 @@ export const CustomToolsTab = ({
     headerRows, setHeaderRows,
     n8nWorkflows, n8nWorkflowsLoading,
     n8nWorkflowId, setN8nWorkflowId,
-    getN8nBaseUrl, onSaveTool, onDeleteTool,
+    getN8nBaseUrl, onSaveTool, onDeleteTool, onImported,
     n8nIntegrated,
 }: CustomToolsTabProps) => {
+    // OpenAPI import panel toggle
+    const [showImport, setShowImport] = useState(false);
     // Docker status state
     type DockerStatus = { installed: boolean; running: boolean; image_exists: boolean } | null;
     const [dockerStatus, setDockerStatus] = useState<DockerStatus>(null);
@@ -81,7 +86,13 @@ export const CustomToolsTab = ({
 
     return (
         <div className="flex flex-col min-h-[600px]">
-            {!draftTool ? (
+            {showImport && !draftTool ? (
+                /* ── OpenAPI Import View ──────────────────────────────────── */
+                <OpenApiImport
+                    onClose={() => setShowImport(false)}
+                    onImported={(tools) => { onImported(tools); setShowImport(false); }}
+                />
+            ) : !draftTool ? (
                 /* ── List View ───────────────────────────────────────────── */
                 <div className="space-y-4">
                     <div className="flex justify-between items-center">
@@ -93,27 +104,35 @@ export const CustomToolsTab = ({
                                 Extend your agent with n8n webhooks, HTTP endpoints, or Python functions.
                             </p>
                         </div>
-                        <button
-                            onClick={() => {
-                                const initialInput = { type: 'object', properties: { input: { type: 'string' } } };
-                                setDraftTool({
-                                    name: '',
-                                    generalName: '',
-                                    description: '',
-                                    url: '',
-                                    method: 'POST',
-                                    inputSchema: initialInput,
-                                    inputSchemaStr: JSON.stringify(initialInput, null, 2),
-                                    outputSchemaStr: '',
-                                    tool_type: 'http',
-                                });
-                                setHeaderRows([{ id: 'h1', key: '', value: '' }]);
-                                setToolBuilderMode('config');
-                            }}
-                            className="px-3 py-2 bg-zinc-800 border border-zinc-700 text-zinc-300 font-bold text-xs uppercase flex items-center gap-2 hover:bg-zinc-700 hover:text-white transition-colors"
-                        >
-                            <Plus className="h-4 w-4" /> New Tool
-                        </button>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => setShowImport(true)}
+                                className="px-3 py-2 bg-zinc-800 border border-zinc-700 text-zinc-300 font-bold text-xs uppercase flex items-center gap-2 hover:bg-zinc-700 hover:text-white transition-colors"
+                            >
+                                <Import className="h-4 w-4" /> Import OpenAPI
+                            </button>
+                            <button
+                                onClick={() => {
+                                    const initialInput = { type: 'object', properties: { input: { type: 'string' } } };
+                                    setDraftTool({
+                                        name: '',
+                                        generalName: '',
+                                        description: '',
+                                        url: '',
+                                        method: 'POST',
+                                        inputSchema: initialInput,
+                                        inputSchemaStr: JSON.stringify(initialInput, null, 2),
+                                        outputSchemaStr: '',
+                                        tool_type: 'http',
+                                    });
+                                    setHeaderRows([{ id: 'h1', key: '', value: '' }]);
+                                    setToolBuilderMode('config');
+                                }}
+                                className="px-3 py-2 bg-zinc-800 border border-zinc-700 text-zinc-300 font-bold text-xs uppercase flex items-center gap-2 hover:bg-zinc-700 hover:text-white transition-colors"
+                            >
+                                <Plus className="h-4 w-4" /> New Tool
+                            </button>
+                        </div>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

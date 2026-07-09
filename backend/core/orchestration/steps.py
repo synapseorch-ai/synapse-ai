@@ -14,6 +14,7 @@ from typing import AsyncGenerator, TYPE_CHECKING
 
 import anyio
 
+from core.config import HTTP_TOOL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT, ORCH_STEP_TIMEOUT
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 if TYPE_CHECKING:
@@ -451,7 +452,7 @@ class ToolStepExecutor:
             session = server_module.agent_sessions.get(agent_name)
             if session:
                 result = await session.call_tool(
-                    actual_tool_name, tool_args, read_timeout_seconds=timedelta(seconds=30)
+                    actual_tool_name, tool_args, read_timeout_seconds=timedelta(seconds=MCP_TOOL_CALL_TIMEOUT)
                 )
                 return result.content[0].text if result.content else ""
         # Custom tools — Python or HTTP
@@ -597,10 +598,10 @@ class ToolStepExecutor:
                 remaining_args = {k: v for k, v in tool_args.items() if k not in consumed_keys}
                 params = {k: (json.dumps(v) if isinstance(v, (dict, list)) else str(v))
                           for k, v in remaining_args.items()}
-                resp = await client.request(method, url, params=params, headers=headers, timeout=30.0)
+                resp = await client.request(method, url, params=params, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
             else:
                 # POST / PUT – all args in body even if some were used in the URL
-                resp = await client.request(method, url, json=tool_args, headers=headers, timeout=30.0)
+                resp = await client.request(method, url, json=tool_args, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
 
         try:
             return json.dumps(resp.json())
@@ -827,7 +828,7 @@ class ParallelStepExecutor:
                     continue
 
                 step_start = time.time()
-                sub_timeout = sub_step.timeout_seconds or 300
+                sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
                 print(f"DEBUG PARALLEL:   ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s", flush=True)
                 yield {"type": "step_start", "orch_step_id": sub_step.id,
                        "step_name": sub_step.name, "step_type": sub_step.type.value}
@@ -942,7 +943,7 @@ class LoopStepExecutor:
                     continue
 
                 step_start = time.time()
-                sub_timeout = sub_step.timeout_seconds or 300
+                sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
                 yield {"type": "step_start", "orch_step_id": sub_step.id,
                        "step_name": sub_step.name, "step_type": sub_step.type.value}
 

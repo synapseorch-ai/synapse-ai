@@ -6,6 +6,8 @@ from typing import Any
 from enum import Enum
 from pydantic import BaseModel
 
+from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_HUMAN_TIMEOUT, ORCH_STEP_TIMEOUT
+
 
 class StepType(str, Enum):
     AGENT = "agent"
@@ -74,7 +76,7 @@ class StepConfig(BaseModel):
     human_prompt: str | None = None
     human_fields: list[dict[str, str]] = []  # [{name, type, label}]
     human_channel_id: str | None = None      # messaging channel to notify (optional)
-    human_timeout_seconds: int = 3600        # how long to wait for messaging response
+    human_timeout_seconds: int = int(ORCH_HUMAN_TIMEOUT)  # how long to wait for messaging response
 
     # I/O mapping
     input_keys: list[str] = []    # Keys to pull from shared state as context
@@ -85,7 +87,7 @@ class StepConfig(BaseModel):
 
     # Per-step guardrails
     max_turns: int = 15
-    timeout_seconds: int = 300
+    timeout_seconds: int = int(ORCH_STEP_TIMEOUT)
     allowed_tools: list[str] | None = None  # Override agent's tools (narrows only)
 
     # Response cache (skipped for AGENT steps — state-dependent behaviour)
@@ -126,7 +128,7 @@ class Orchestration(BaseModel):
     # Global guardrails
     max_total_turns: int = 100
     max_total_cost_usd: float | None = None
-    timeout_minutes: int = 30
+    timeout_minutes: int = ORCH_GLOBAL_TIMEOUT_MIN
 
     trigger: str = "manual"  # "manual" | "scheduled"
     created_at: str | None = None

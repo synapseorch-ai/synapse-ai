@@ -8,6 +8,7 @@ from typing import AsyncGenerator, Awaitable, Callable
 
 import anyio
 
+from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_STEP_TIMEOUT
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
 from .state import SharedState
 from .steps import STEP_EXECUTORS
@@ -100,7 +101,7 @@ class OrchestrationEngine:
         total_turns = len(run.step_history)
         logger = getattr(self, "logger", None)
         loop_start_time = time.time()
-        timeout_seconds = (self.orch.timeout_minutes or 30) * 60
+        timeout_seconds = (self.orch.timeout_minutes or ORCH_GLOBAL_TIMEOUT_MIN) * 60
 
         while run.current_step_id and run.status == "running":
             # Checkpoint between steps — ensures MCP background tasks
@@ -154,7 +155,7 @@ class OrchestrationEngine:
                 break
 
             step_start_time = time.time()
-            step_timeout = step.timeout_seconds or 300  # default 5 min
+            step_timeout = step.timeout_seconds or ORCH_STEP_TIMEOUT  # default 5 min
 
             # Build and store TransitionContext so executors can access it
             from .context import build_transition_context

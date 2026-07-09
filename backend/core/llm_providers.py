@@ -22,6 +22,8 @@ import botocore.exceptions
 from botocore import UNSIGNED as _BEDROCK_UNSIGNED
 from botocore.config import Config
 
+from core.config import LLM_REQUEST_TIMEOUT
+
 # Lock to guard the process-level AWS_BEARER_TOKEN_BEDROCK env var.
 # Multiple threads (via asyncio.to_thread) could otherwise race on set/clear.
 _aws_env_lock = threading.Lock()
@@ -649,7 +651,7 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                     str(messages[i].get("content", "")), images
                 )
                 break
-    OPENAI_TIMEOUT = 180.0
+    OPENAI_TIMEOUT = LLM_REQUEST_TIMEOUT
     MAX_RETRIES = 5
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]
 
@@ -833,7 +835,7 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
                 break
     import anthropic
 
-    ANTHROPIC_TIMEOUT = 180.0  # seconds per attempt (Claude can take >60s for complex prompts)
+    ANTHROPIC_TIMEOUT = LLM_REQUEST_TIMEOUT  # seconds per attempt (Claude can take >60s for complex prompts)
     MAX_RETRIES = 5
 
     # --- Input validation to prevent 400 errors ---
@@ -1079,7 +1081,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     from google import genai
     from google.genai import types
 
-    GEMINI_TIMEOUT = 180.0   # seconds per attempt
+    GEMINI_TIMEOUT = LLM_REQUEST_TIMEOUT   # seconds per attempt
     MAX_RETRIES = 5
 
     if _gemini_client is None:
@@ -1169,7 +1171,7 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
     Returns:
         (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
     """
-    GROK_TIMEOUT = 180.0
+    GROK_TIMEOUT = LLM_REQUEST_TIMEOUT
     MAX_RETRIES = 5
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]
 
@@ -1265,7 +1267,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
     # DeepSeek does not support vision — drop images with a warning
     if images:
         print(f"DEBUG: ⚠️ DeepSeek does not support images. {len(images)} image(s) will be dropped.", flush=True)
-    DEEPSEEK_TIMEOUT = 180.0
+    DEEPSEEK_TIMEOUT = LLM_REQUEST_TIMEOUT
     MAX_RETRIES = 5
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]
 
@@ -1371,7 +1373,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
     if not base_url or not base_url.strip():
         raise LLMError("V1-compatible provider: base URL is not configured.")
 
-    V1_TIMEOUT = 180.0
+    V1_TIMEOUT = LLM_REQUEST_TIMEOUT
     MAX_RETRIES = 5
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]
 

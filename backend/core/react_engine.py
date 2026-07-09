@@ -10,7 +10,7 @@ import time
 
 import httpx
 
-from core.config import load_settings
+from core.config import load_settings, HTTP_TOOL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT
 from core.vault import maybe_vault, expand_vault_mentions
 from core.compaction import maybe_compact
 from core.session import (
@@ -1330,10 +1330,10 @@ async def run_agent_step(
                                 remaining_args = {k: v for k, v in tool_args.items() if k not in consumed_keys}
                                 params = {k: (json.dumps(v) if isinstance(v, (dict, list)) else str(v))
                                           for k, v in remaining_args.items()}
-                                resp = await client.request(method, url, params=params, headers=headers, timeout=30.0)
+                                resp = await client.request(method, url, params=params, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
                             else:
                                 # POST / PUT – all args in body even if some were used in the URL
-                                resp = await client.request(method, url, json=tool_args, headers=headers, timeout=30.0)
+                                resp = await client.request(method, url, json=tool_args, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
 
                             json_resp = None
                             try:
@@ -1416,7 +1416,7 @@ async def run_agent_step(
 
                     print(f"DEBUG MCP: ✓ ping OK [{round(time.time()-_mcp_t0,2)}s] — call_tool starting", flush=True)
 
-                    _timeout = timedelta(seconds=60)
+                    _timeout = timedelta(seconds=MCP_TOOL_CALL_TIMEOUT)
 
                     # Checkpoint again right before the actual call_tool —
                     # gives background transport tasks one more scheduling
