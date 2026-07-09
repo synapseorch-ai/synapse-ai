@@ -11,6 +11,7 @@ CLI providers (cli.claude, cli.gemini, cli.codex) use locally authenticated CLI 
 No API key needed — tool calling is emulated via system prompt injection + <tool_call> parsing.
 """
 import os
+import re
 import json
 import tempfile
 import asyncio
@@ -27,6 +28,43 @@ from core.config import LLM_REQUEST_TIMEOUT
 # Lock to guard the process-level AWS_BEARER_TOKEN_BEDROCK env var.
 # Multiple threads (via asyncio.to_thread) could otherwise race on set/clear.
 _aws_env_lock = threading.Lock()
+
+
+# ─── CLI auth-failure detection ──────────────────────────────────────────────
+# Specific, word-boundaried phrases only. A bare "auth" substring (the old
+# behavior) false-positives on normal model output containing "authority",
+# "authorization", "authorized", "author", etc. — which aborted otherwise
+# successful CLI runs. Keep this list specific enough that it only matches real
+# authentication failures, not incidental words in a model's response.
+_AUTH_RE = re.compile(
+    r"(?:"
+    r"not logged in"
+    r"|please log in"
+    r"|log in to"
+    r"|sign in to"
+    r"|authentication required"
+    r"|not authenticated"
+    r"|authentication failed"
+    r"|invalid api key"
+    r"|expired api key"
+    r"|api key (?:is )?(?:invalid|expired|required)"
+    r"|session (?:has )?expired"
+    r"|expired session"
+    r"|\bunauthorized\b"
+    r"|\b401\b"
+    r"|/login"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _match_auth(text: str) -> bool:
+    """Return True only if `text` contains a specific auth-failure phrase.
+
+    Deliberately avoids bare substrings like "auth"/"login"/"expired" so normal
+    model output ("authority", "authorization", ...) is never flagged.
+    """
+    return bool(text) and _AUTH_RE.search(text) is not None
 
 
 # ─── Image helpers ──────────────────────────────────────────────────────────────
@@ -345,11 +383,11 @@ async def call_cli_provider(
     Raises:
         LLMError: on timeout, auth failure, binary not found, or empty output
     """
-    import re
     from core import usage_tracker
 
     ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-    AUTH_PATTERNS = ["login", "authenticate", "auth", "expired", "sign in", "api key", "unauthorized"]
+    # Auth-failure detection uses the module-level _match_auth() helper (specific
+    # phrases only). Rate-limit detection keeps its broad substring list below.
     RATE_LIMIT_PATTERNS = ["429", "rate limit", "ratelimit", "quota", "too many requests", "capacity", "resource_exhausted", "ratelimitexceeded"]
 
     # Split into base ("cli.<provider>") + variant, preserving dots in the
@@ -538,7 +576,7 @@ async def call_cli_provider(
                     f"CLI provider '{cli_model}' rate limit / capacity error.\n"
                     f"Details: {stderr_text[:400]}"
                 )
-            if any(p in lower_err for p in AUTH_PATTERNS):
+            if _match_auth(stderr_text[-600:]):
                 raise LLMError(
                     f"CLI provider '{cli_model}' authentication failure detected.\n"
                     f"Run the CLI in your terminal to re-authenticate.\n"
@@ -570,8 +608,12 @@ async def call_cli_provider(
                 extracted = obj.get("result", "")
                 if isinstance(extracted, str) and extracted.strip():
                     clean = extracted.strip()
-                # Propagate JSON-level auth errors before the generic check below
-                if obj.get("is_error") and any(p in str(obj).lower() for p in AUTH_PATTERNS):
+                # Propagate JSON-level auth errors before the generic check below.
+                # Gate on the structured is_error flag and scan only the message
+                # fields — not the stringified whole object — so unrelated keys
+                # can't trip a false positive.
+                err_text = " ".join(str(obj.get(k, "")) for k in ("result", "error", "subtype"))
+                if obj.get("is_error") and _match_auth(err_text):
                     raise LLMError(
                         f"CLI provider '{cli_model}' authentication failure.\n"
                         f"Run 'claude' in your terminal to re-authenticate.\n"
@@ -586,8 +628,13 @@ async def call_cli_provider(
             sid_match = re.search(r"session[_\-]?id[:\s]+([a-zA-Z0-9_\-]{8,})", clean, re.IGNORECASE)
             new_session_id = sid_match.group(1) if sid_match else None
 
-        # Auth failure check (also catches plain-text "Not logged in" from claude)
-        if any(p in clean.lower() for p in AUTH_PATTERNS):
+        # Auth failure check (also catches plain-text "Not logged in" from claude).
+        # `clean` is the model's normal stdout on success, so only treat it as an
+        # auth failure when the process ALSO exited non-zero — a successful (exit-0)
+        # response is a valid answer, never an auth error, even if it happens to
+        # mention words like "authorization". Genuine auth failures exit non-zero
+        # (or, for claude JSON, are caught by the is_error block above).
+        if process.returncode != 0 and _match_auth(clean):
             raise LLMError(
                 f"CLI provider '{cli_model}' is not authenticated.\n"
                 f"Run the CLI in your terminal and complete the login flow, then retry.\n"

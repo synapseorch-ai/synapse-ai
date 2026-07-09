@@ -94,7 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Provide a .env file for compose (git-ignored)
-        run: cp .env.example .env 2>/dev/null || touch .env
+        run: cp .env.docker .env 2>/dev/null || touch .env
       - name: Validate docker-compose (all profiles)
         run: |
           docker compose config --quiet
