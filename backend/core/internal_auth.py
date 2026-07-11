@@ -45,11 +45,37 @@ class InternalTokenMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
-        # No token configured → permissive ONLY for loopback callers. A remote
-        # client hitting a token-less backend directly is rejected, so the
-        # internal /api/* surface is never exposed unauthenticated over the
-        # network even in a misconfigured/bare-metal deployment.
+        # ── Skips run FIRST, independent of the internal token ──────────────────
+        # These routes are either externally authenticated (versioned API → API
+        # key) or intentionally public, so they must stay reachable even when the
+        # token is unset/loopback-gated. This lets external clients hit the open
+        # /api/v1|v2 API through the frontend proxy (or a directly-published
+        # backend port) without the internal frontend token.
+
+        # External versioned API (v1, v2, ...) — uses require_api_key, not the
+        # internal token. Match any /api/v<N> prefix so future versions are exempt.
+        if re.match(r"^/api/v\d+(/|$)", path):
+            return await call_next(request)
+
+        # MCP OAuth callback — called by external OAuth providers, not the frontend.
+        if path == "/api/mcp/oauth/callback":
+            return await call_next(request)
+
+        # FastAPI docs.
+        if path in ("/docs", "/openapi.json", "/redoc"):
+            return await call_next(request)
+
+        # Non-API routes (chat, auth, health, websocket, etc.).
+        if not path.startswith("/api/"):
+            return await call_next(request)
+
+        # ── Internal /api/* surface — the sensitive routes (settings, agents,
+        # mcp/servers, …) that rely on the internal token for protection ────────
         if not self.token:
+            # No token configured → permissive ONLY for loopback callers. A remote
+            # client hitting a token-less backend directly is rejected, so the
+            # internal surface is never exposed unauthenticated over the network
+            # even in a misconfigured/bare-metal deployment (GHSA-3j67-x3j8-r32x).
             if _is_loopback(request):
                 return await call_next(request)
             return JSONResponse(
@@ -57,25 +83,7 @@ class InternalTokenMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Forbidden: internal token not configured"},
             )
 
-        # Skip: external versioned API routes (v1, v2, ...) — they use API key
-        # auth (require_api_key), not the internal frontend token. Match any
-        # /api/v<N> prefix so future versions are exempt automatically.
-        if re.match(r"^/api/v\d+(/|$)", path):
-            return await call_next(request)
-
-        # Skip: MCP OAuth callback — called by external OAuth providers, not frontend
-        if path == "/api/mcp/oauth/callback":
-            return await call_next(request)
-
-        # Skip: FastAPI docs
-        if path in ("/docs", "/openapi.json", "/redoc"):
-            return await call_next(request)
-
-        # Skip: non-API routes (chat, auth, health, websocket, etc.)
-        if not path.startswith("/api/"):
-            return await call_next(request)
-
-        # This is an /api/* route — require internal token
+        # Token configured → require the matching header.
         provided = request.headers.get("X-Synapse-Internal", "")
         if provided != self.token:
             return JSONResponse(

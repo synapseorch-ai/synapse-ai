@@ -90,12 +90,26 @@ async def test_no_token_allows_loopback():
 async def test_token_set_requires_header_even_from_loopback():
     mw = InternalTokenMiddleware(app=None)
     mw.token = "s3cret"
-    # A set token is required for every /api/* caller, loopback included.
+    # A set token is required for every internal /api/* caller, loopback included.
     resp = await mw.dispatch(_make_request(client=("127.0.0.1", 4444)), _ok)
     assert resp.status_code == 403
     # Correct header → allowed.
     resp = await mw.dispatch(_make_request(headers={"X-Synapse-Internal": "s3cret"}), _ok)
     assert json.loads(resp.body) == {"ok": True}
+
+
+async def test_external_versioned_api_bypasses_internal_token():
+    """The open /api/v1|v2 API (API-key auth) must stay reachable regardless of
+    the internal-token state — including remote callers and a token-less backend.
+    Guards against the loopback fallback ordering ahead of the v<N> skip."""
+    for token in ("", "s3cret"):
+        mw = InternalTokenMiddleware(app=None)
+        mw.token = token
+        for path in ("/api/v1/chat", "/api/v2/orchestrations"):
+            resp = await mw.dispatch(
+                _make_request(path=path, client=("203.0.113.9", 4444)), _ok
+            )
+            assert json.loads(resp.body) == {"ok": True}, (token, path)
 
 
 # ── route: stdio registration gate (the RCE sink) ─────────────────────────────

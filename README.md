@@ -75,6 +75,8 @@ Then open `http://localhost:3000`. See the [Docker guide](https://docs.synapseor
 | npm | `npm update -g synapse-orch-ai` |
 | Docker | `docker pull synapseorchai/synapse-ai:latest` |
 
+> **Upgrade note (security hardening):** the backend now auto-generates a shared internal token and, under docker-compose, binds its port to `127.0.0.1` by default. The UI and its API are unaffected (the frontend proxies the backend internally). If you previously called the **backend directly** on `:8765` (e.g. external API clients), either point them at the frontend instead — `http://host:3000/api/v1|v2/...` — or set `SYNAPSE_BACKEND_BIND=0.0.0.0` in `.env` to keep publishing `:8765`.
+
 ---
 
 ## Scale Mode

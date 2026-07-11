@@ -20,10 +20,14 @@ services:
       - synapse-secrets:/secrets
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      # Bind to loopback only: the frontend reaches the backend over the compose
-      # network (synapse-backend:8765). Publishing on 0.0.0.0 would expose the
-      # unauthenticated internal /api/* surface directly (GHSA-3j67-x3j8-r32x).
-      - "127.0.0.1:${SYNAPSE_BACKEND_PORT:-8765}:8765"
+      # Bind to loopback by default: the frontend reaches the backend over the
+      # compose network (synapse-backend:8765), and external API consumers use
+      # the frontend port (http://host:3000/api/v1|v2/...). Publishing on
+      # 0.0.0.0 would also expose the internal /api/* surface — safe now that the
+      # token auto-generates, but off by default (GHSA-3j67-x3j8-r32x). To hit
+      # the backend directly (e.g. bypass the Next hop for the open API), set
+      # SYNAPSE_BACKEND_BIND=0.0.0.0 in .env.
+      - "${SYNAPSE_BACKEND_BIND:-127.0.0.1}:${SYNAPSE_BACKEND_PORT:-8765}:8765"
     extra_hosts:
       - "host-gateway:host-gateway"
     healthcheck:
