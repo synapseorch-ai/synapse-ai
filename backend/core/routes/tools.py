@@ -407,6 +407,16 @@ async def list_mcp_servers():
 @router.post("/api/mcp/servers")
 async def add_mcp_server(req: AddMCPServerRequest):
     import core.server as _server
+    from core.mcp_client import stdio_mcp_allowed
+
+    # stdio MCP servers launch arbitrary local commands. Gate that capability up
+    # front (before touching the manager) so it is enforced in scale mode / when
+    # explicitly disabled, independent of auth. See GHSA-3j67-x3j8-r32x.
+    if req.server_type == "stdio" and not stdio_mcp_allowed():
+        raise HTTPException(
+            status_code=403,
+            detail="stdio MCP server registration is disabled on this deployment.",
+        )
     if not _server.mcp_manager:
         raise HTTPException(status_code=500, detail="MCP Manager not initialized")
     try:
@@ -443,6 +453,8 @@ async def add_mcp_server(req: AddMCPServerRequest):
             "connected": connected,
             "message": "Server connected and saved." if connected else "Config saved. Use Retry to reconnect.",
         }
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -477,6 +489,8 @@ async def reconnect_mcp_server(name: str):
                 pass
 
         return {"status": "failed", "connected": False, "needs_oauth": False, "message": "Could not reconnect."}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -11,12 +11,19 @@ services:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host-gateway:11434}
       - CORS_ORIGINS=http://localhost:${SYNAPSE_FRONTEND_PORT:-3000}
       - SYNAPSE_INTERNAL_TOKEN=${SYNAPSE_INTERNAL_TOKEN}
+      # Auto-generate + persist a shared internal token to the secrets volume so
+      # the frontend can read the same value (see docker/entrypoint.sh).
+      - SYNAPSE_SECRETS_DIR=/secrets
     volumes:
       - synapse-data:/data
       - ./backend/data:/data
+      - synapse-secrets:/secrets
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "${SYNAPSE_BACKEND_PORT:-8765}:8765"
+      # Bind to loopback only: the frontend reaches the backend over the compose
+      # network (synapse-backend:8765). Publishing on 0.0.0.0 would expose the
+      # unauthenticated internal /api/* surface directly (GHSA-3j67-x3j8-r32x).
+      - "127.0.0.1:${SYNAPSE_BACKEND_PORT:-8765}:8765"
     extra_hosts:
       - "host-gateway:host-gateway"
     healthcheck:
@@ -42,6 +49,10 @@ services:
     environment:
       - BACKEND_URL=http://synapse-backend:8765
       - SYNAPSE_INTERNAL_TOKEN=${SYNAPSE_INTERNAL_TOKEN}
+      # Read the shared internal token the backend wrote to the secrets volume.
+      - SYNAPSE_SECRETS_DIR=/secrets
+    volumes:
+      - synapse-secrets:/secrets
     ports:
       - "${SYNAPSE_FRONTEND_PORT:-3000}:3000"
     depends_on:
@@ -187,6 +198,8 @@ services:
 
 volumes:
   synapse-data:
+    driver: local
+  synapse-secrets:
     driver: local
   synapse-redis-data:
     driver: local

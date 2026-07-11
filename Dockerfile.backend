@@ -31,9 +31,17 @@ COPY backend/core ./core
 COPY backend/services ./services
 COPY backend/tools ./tools
 COPY backend/main.py .
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 ENV SYNAPSE_DATA_DIR=/data
 ENV PYTHONPATH=/app
+# Auto-generate + persist the internal token so InternalTokenMiddleware enforces
+# by default. In compose, SYNAPSE_SECRETS_DIR is pointed at the shared volume so
+# the frontend can read the same value; standalone `docker run` persists to /data.
+ENV SYNAPSE_AUTOGEN_TOKEN=1
+ENV SYNAPSE_TOKEN_MODE=generate
 
 EXPOSE 8765
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "main.py"]

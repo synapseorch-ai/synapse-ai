@@ -373,10 +373,32 @@ mcp_manager: Optional[MCPClientManager] = None
 messaging_manager: Any = None  # MessagingManager (set in lifespan if enabled)
 schedule_manager: Any = None   # ScheduleManager (set in lifespan)
 
+def _log_security_posture() -> None:
+    """Warn loudly when the backend starts with the exact weak-default posture
+    that GHSA-3j67-x3j8-r32x exploits: no internal token, login disabled, and
+    stdio MCP registration allowed. Docker images auto-generate a token, so this
+    normally only fires for a misconfigured bare-metal deployment."""
+    try:
+        from core.mcp_client import stdio_mcp_allowed
+        no_token = not os.getenv("SYNAPSE_INTERNAL_TOKEN", "")
+        login_off = not _settings.get("login_enabled")
+        if no_token and login_off and stdio_mcp_allowed():
+            print(
+                "[SECURITY] No SYNAPSE_INTERNAL_TOKEN set and login is disabled. "
+                "Remote /api/* access is refused (loopback-only), but if this backend "
+                "is reachable through the frontend without login, stdio MCP registration "
+                "can execute local commands. Enable login and/or set allow_stdio_mcp=false "
+                "for any network-reachable deployment. See GHSA-3j67-x3j8-r32x."
+            )
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global exit_stack
     print("Starting Multi-Agent Orchestrator...")
+    _log_security_posture()
     exit_stack = AsyncExitStack()
     
     if _settings.get("coding_agent_enabled"):

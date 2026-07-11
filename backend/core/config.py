@@ -108,6 +108,16 @@ def load_settings():
         "messaging_enabled": True,
         "embed_code": False,
         "bash_allowed_dirs": [],
+        # ── MCP stdio server registration (security) ──
+        # stdio MCP servers launch local OS processes (npx/uvx/python/…). This is
+        # a powerful, admin-only capability. Allowed by default for local
+        # single-user use, but force-disabled in scale mode (multi-tenant /
+        # network-exposed) — see stdio_mcp_allowed(). See GHSA-3j67-x3j8-r32x.
+        "allow_stdio_mcp": True,
+        # Optional hardening: when non-empty, only these command basenames may be
+        # registered as stdio servers. Empty = allow any command in PATH.
+        # Recommended for exposed UIs: ["npx","uvx","uv","node","python","python3","docker"]
+        "mcp_command_allowlist": [],
         "login_enabled": False,
         "login_username": "",
         "login_password_hash": "",

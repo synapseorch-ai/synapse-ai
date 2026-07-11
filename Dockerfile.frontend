@@ -13,5 +13,14 @@ ENV NODE_ENV=production
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+# Read-only role: the frontend never mints the token (no python in node:alpine);
+# it waits for the backend-written token file on the shared secrets volume and
+# exports it so proxy.ts can inject X-Synapse-Internal. SYNAPSE_SECRETS_DIR is
+# set to the shared volume in compose.
+ENV SYNAPSE_AUTOGEN_TOKEN=1
+ENV SYNAPSE_TOKEN_MODE=read
 EXPOSE 3000
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "server.js"]

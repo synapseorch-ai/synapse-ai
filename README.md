@@ -64,6 +64,8 @@ docker run -d \
 
 Then open `http://localhost:3000`. See the [Docker guide](https://docs.synapseorch.com/getting-started/installation#docker) in the docs for custom ports and environment variable configuration.
 
+> **Security:** publish only the frontend port `3000` — the backend (`8765`) serves an internal API and should not be exposed on `0.0.0.0` (docker-compose binds it to `127.0.0.1`). The container auto-generates a shared internal token so that surface is authenticated by default. For any network-reachable deployment, enable **login** (Settings → Security) and/or set `allow_stdio_mcp=false`, since registering a stdio MCP server launches local commands.
+
 ### Upgrading
 
 | Install method | Upgrade command |

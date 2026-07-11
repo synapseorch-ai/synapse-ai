@@ -39,12 +39,43 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 
-from core.config import DATA_DIR, MCP_SESSION_READ_TIMEOUT
+from core.config import DATA_DIR, MCP_SESSION_READ_TIMEOUT, load_settings
 import core.mcp_oauth_state as oauth_state
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 _SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
+
+
+# ── stdio MCP registration policy (security) ────────────────────────────────────
+# stdio MCP servers launch arbitrary local OS processes (npx/uvx/python -c/…),
+# which is the whole point of the transport but also an RCE-shaped capability.
+# These helpers gate every path that can spawn one. See GHSA-3j67-x3j8-r32x.
+
+def stdio_mcp_allowed() -> bool:
+    """Whether stdio MCP servers may be registered/spawned on this deployment.
+
+    Disabled in scale mode (multi-tenant / network-exposed) and toggleable via
+    the ``allow_stdio_mcp`` setting. Fails open only if settings are unreadable,
+    to preserve local behaviour when config is unavailable.
+    """
+    try:
+        s = load_settings()
+    except Exception:
+        return True
+    if s.get("scale_mode_enabled"):
+        return False
+    return bool(s.get("allow_stdio_mcp", True))
+
+
+def check_stdio_command_allowed(command: str) -> None:
+    """Enforce the optional ``mcp_command_allowlist`` (empty list = allow any)."""
+    try:
+        allowlist = load_settings().get("mcp_command_allowlist") or []
+    except Exception:
+        allowlist = []
+    if allowlist and os.path.basename(command) not in allowlist:
+        raise ValueError(f"Command '{command}' is not in the allowed MCP command list.")
 
 MCP_SERVERS_FILE = os.path.join(DATA_DIR, "mcp_servers.json")
 MCP_TOKENS_DIR   = os.path.join(DATA_DIR, "mcp_tokens")
@@ -432,6 +463,13 @@ class MCPClientManager:
 
             server_type = config.get("server_type", "stdio")
             if server_type == "stdio":
+                # Do not re-spawn persisted stdio servers when the capability is
+                # disabled — otherwise a saved (possibly malicious) config would
+                # execute on every boot. See GHSA-3j67-x3j8-r32x.
+                if not stdio_mcp_allowed():
+                    print(f"[MCP] Skipping stdio server '{name}': stdio MCP disabled on this deployment.")
+                    self._set_status(name, "disabled")
+                    continue
                 session = await self.connect_stdio_server(config)
             elif config.get("token"):
                 session = await self.connect_remote_server(config)
@@ -472,8 +510,11 @@ class MCPClientManager:
         new_config: Dict[str, Any] = {"name": name, "label": label or name, "server_type": server_type, "status": "disconnected"}
 
         if server_type == "stdio":
+            if not stdio_mcp_allowed():
+                raise PermissionError("stdio MCP server registration is disabled on this deployment.")
             if not command:
                 raise ValueError("Command is required for stdio servers.")
+            check_stdio_command_allowed(command)
             if shutil.which(command) is None:
                 hints = {"uvx": "Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh",
                          "npx": "Install Node.js/npm."}
@@ -527,6 +568,8 @@ class MCPClientManager:
 
         server_type = config.get("server_type", "stdio")
         if server_type == "stdio":
+            if not stdio_mcp_allowed():
+                raise PermissionError("stdio MCP servers are disabled on this deployment.")
             session = await self.connect_stdio_server(config)
         elif config.get("token"):
             session = await self.connect_remote_server(config)

@@ -33,13 +33,22 @@ COPY --from=frontend-builder /app/.next/static ./.next/static
 COPY --from=frontend-builder /app/public ./public
 
 COPY docker/supervisord.conf /etc/supervisor/conf.d/synapse.conf
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 ENV SYNAPSE_DATA_DIR=/data
 ENV PYTHONPATH=/app/backend
 ENV NODE_ENV=production
 ENV SYNAPSE_BACKEND_PORT=8765
 ENV SYNAPSE_FRONTEND_PORT=3000
+# Auto-generate a shared internal token on first boot so the backend's
+# InternalTokenMiddleware enforces by default. Both supervisord programs inherit
+# it from the entrypoint's exported environment. Persisted under /data.
+ENV SYNAPSE_AUTOGEN_TOKEN=1
+ENV SYNAPSE_SECRETS_DIR=/data
+ENV SYNAPSE_TOKEN_MODE=generate
 
 EXPOSE 3000 8765
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/usr/bin/supervisord", "-n"]
