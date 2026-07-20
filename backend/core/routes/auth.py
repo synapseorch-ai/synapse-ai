@@ -2,12 +2,12 @@
 Authentication routes: Google OAuth + Synapse login gate.
 """
 import os
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel
 from services.google import get_auth_url, finish_auth
 from core.config import load_settings
-from core.user_auth import verify_password, create_session_token
+from core.user_auth import verify_password, create_session_token, verify_session_token
 
 router = APIRouter()
 
@@ -37,8 +37,17 @@ class LoginRequest(BaseModel):
 
 
 @router.get("/api/auth/status")
-async def auth_status():
-    """Returns whether login is enabled and fully configured."""
+async def auth_status(request: Request):
+    """Returns whether login is enabled/configured and whether THIS request's
+    session token is valid.
+
+    The proxy (frontend/src/proxy.ts) forwards the `synapse_session` cookie via
+    the `X-Synapse-Session` header. The backend is the single owner of
+    SYNAPSE_JWT_SECRET, so `authenticated` is the authoritative gate when the
+    proxy's local JWT fast-path can't verify (e.g. the frontend process has a
+    different/empty secret). `verify_session_token` never raises, so a missing
+    backend secret yields `authenticated: false` rather than a 500.
+    """
     s = load_settings()
     login_enabled = s.get("login_enabled", False)
     login_configured = bool(
@@ -46,7 +55,13 @@ async def auth_status():
         and s.get("login_username")
         and s.get("login_password_hash")
     )
-    return {"login_enabled": login_enabled, "login_configured": login_configured}
+    session = request.headers.get("X-Synapse-Session", "")
+    authenticated = bool(session) and verify_session_token(session) is not None
+    return {
+        "login_enabled": login_enabled,
+        "login_configured": login_configured,
+        "authenticated": authenticated,
+    }
 
 
 @router.post("/api/auth/login")

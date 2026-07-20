@@ -12,10 +12,15 @@
  *    when login_enabled is configured in Synapse settings.
  *
  * Auth flow (per request):
- *   a. Check `synapse_session` cookie → verify JWT locally (no network call)
+ *   a. Check `synapse_session` cookie → verify JWT locally (no network call).
+ *      This is only an optimization: it needs SYNAPSE_JWT_SECRET in this process.
  *   b. Check `synapse_auth_cache` cookie (60s TTL) → skip backend call if login is disabled
- *   c. Fetch /api/auth/status from backend (server-side, internal token injected)
- *   d. If login required → redirect to /login?redirect=<original_path>
+ *   c. Fetch /api/auth/status from backend (server-side, internal token injected).
+ *      The backend is the single owner of SYNAPSE_JWT_SECRET, so this call ALSO
+ *      validates the session (via the forwarded X-Synapse-Session header) and
+ *      returns `authenticated`. This is the authoritative gate — it works even
+ *      when the local fast-path can't (empty/mismatched secret in this process).
+ *   d. If login required and not authenticated → redirect to /login?redirect=<original_path>
  *   e. If login not required → cache result for 60s and proceed
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -24,7 +29,8 @@ import { jwtVerify } from 'jose';
 const AUTH_BYPASS_PREFIXES = [
     '/login',
     '/api/auth/',
-    '/api/v1/',
+    '/api/v1/',   // external versioned API — Bearer API-key auth, not the login gate
+    '/api/v2/',   // (kept in sync with InternalTokenMiddleware's /api/v\d+ skip)
     '/auth/',
     '/_next/',
     '/favicon',
@@ -78,13 +84,17 @@ export async function proxy(request: NextRequest) {
         return NextResponse.next({ request: { headers: requestHeaders } });
     }
 
-    // Cache miss: ask the backend whether login is enabled
+    // Cache miss: ask the backend whether login is required AND validate our
+    // session. Forwarding the cookie lets the backend (the sole secret owner)
+    // authenticate us even when the local fast-path above couldn't.
     const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
     let loginRequired = false;
+    let authenticated = false;
     try {
         const statusRes = await fetch(`${backendUrl}/api/auth/status`, {
             headers: {
                 'X-Synapse-Internal': internalToken,
+                ...(sessionCookie ? { 'X-Synapse-Session': sessionCookie } : {}),
                 'Content-Type': 'application/json',
             },
             signal: AbortSignal.timeout(2000),
@@ -92,21 +102,27 @@ export async function proxy(request: NextRequest) {
         if (statusRes.ok) {
             const status = await statusRes.json();
             loginRequired = status.login_enabled === true && status.login_configured === true;
+            authenticated = status.authenticated === true;
         }
     } catch {
         // Backend unreachable — fail open so we don't lock users out
         loginRequired = false;
     }
 
-    if (!loginRequired) {
-        // Cache the "no auth" result for 60 seconds to avoid hitting backend on every request
+    // Not required, OR required but the backend validated our session → proceed.
+    if (!loginRequired || authenticated) {
         const res = NextResponse.next({ request: { headers: requestHeaders } });
-        res.cookies.set('synapse_auth_cache', 'no_auth_required', {
-            httpOnly: true,
-            sameSite: 'lax',
-            maxAge: 60,
-            path: '/',
-        });
+        if (!loginRequired) {
+            // Cache only the "login disabled" result for 60s to avoid hitting the
+            // backend on every request. Do NOT cache `authenticated` — JWTs are
+            // stateless, so caching would delay logout taking effect.
+            res.cookies.set('synapse_auth_cache', 'no_auth_required', {
+                httpOnly: true,
+                sameSite: 'lax',
+                maxAge: 60,
+                path: '/',
+            });
+        }
         return res;
     }
 

@@ -29,9 +29,16 @@ export async function POST(req: NextRequest) {
         const response = NextResponse.json({ success: true });
 
         if (data.token) {
+            // Set `Secure` based on the actual request protocol, not NODE_ENV.
+            // Self-hosted HTTP/LAN installs run NODE_ENV=production but over plain
+            // http, where a Secure cookie would be dropped (→ login loop). A
+            // TLS-terminating reverse proxy forwards the real scheme via header.
+            const isHttps =
+                req.nextUrl.protocol === 'https:' ||
+                req.headers.get('x-forwarded-proto') === 'https';
             response.cookies.set('synapse_session', data.token, {
                 httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
+                secure: isHttps,
                 sameSite: 'lax',
                 maxAge: 60 * 60 * 24 * 7,
                 path: '/',
