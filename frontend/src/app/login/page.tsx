@@ -27,6 +27,9 @@ function LoginForm() {
 
             if (res.ok) {
                 router.replace(redirectTo);
+                // Refresh so the RSC router cache re-fetches with the freshly-set
+                // session cookie present (guards against router-cache staleness).
+                router.refresh();
             } else {
                 const data = await res.json().catch(() => ({}));
                 setError(data.error || 'Invalid username or password');
