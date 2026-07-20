@@ -19,12 +19,10 @@ import { ToastNotification } from './ToastNotification';
 type ToolCallLogEntry = { kind: 'tool_call'; tool_name: string; args: Record<string, any>; step_name?: string };
 type ToolResultLogEntry = { kind: 'tool_result'; tool_name: string; preview: string };
 type StepResultLogEntry = { kind: 'step_result'; step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string };
-// A block of recovered persisted-log lines rendered on reconnect. Kept as a
-// single <pre> node (not N markdown entries) so a large log stays cheap to render.
-type RecoveredLogEntry = { kind: 'recovered_log'; lines: string[] };
-type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry | RecoveredLogEntry;
+type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry;
 
 type RunStepStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed';
+type StepResultType = 'agent' | 'llm' | 'print' | 'extract_json';
 
 // Pure reducer: mark each step present in a persisted checkpoint's step_history
 // as completed/failed. Shared by restoreRun and reattachRun.
@@ -39,21 +37,69 @@ function applyStepHistory(
     return next;
 }
 
-// Fetch the persisted detailed orchestration log (plain text) for a run and
-// return it as lines, capped to the last `maxLines` to bound render cost.
-// Returns [] on any error (log not yet written, network failure, etc.).
-async function fetchRecoveredLog(runId: string, maxLines = 800): Promise<string[]> {
-    try {
-        const res = await fetch(`/api/logs/orchestrations/${runId}`);
-        if (!res.ok) return [];
-        const text = await res.text();
-        const lines = text.split('\n');
-        if (lines.length > maxLines) {
-            return [`…(showing last ${maxLines} of ${lines.length} log lines)…`, ...lines.slice(-maxLines)];
+// Map a raw StepConfig type onto the four the step_result renderer styles;
+// anything else falls back to the generic 'llm' bubble.
+function coerceStepType(t: unknown): StepResultType {
+    return t === 'agent' || t === 'print' || t === 'extract_json' ? t : 'llm';
+}
+
+// Tool calls a step made, recovered from its execution trace persisted in
+// shared_state["_exec_memory_<step_id>"] (see backend context.build_execution_trace).
+// Each trace carries tool name/args/result_preview — enough to rebuild the
+// tool_call/tool_result bubbles the live stream showed.
+function reconstructToolCalls(sharedState: Record<string, any>, stepId: string, stepName: string): LogEntry[] {
+    const mem = sharedState?.[`_exec_memory_${stepId}`];
+    if (!Array.isArray(mem)) return [];
+    const out: LogEntry[] = [];
+    for (const exec of mem) {
+        const toolCalls = exec?.trace?.tool_calls;
+        if (!Array.isArray(toolCalls)) continue;
+        for (const tc of toolCalls) {
+            if (!tc?.name) continue;
+            out.push({ kind: 'tool_call', tool_name: tc.name, args: tc.args || {}, step_name: stepName });
+            if (tc.result_preview) {
+                out.push({ kind: 'tool_result', tool_name: tc.name, preview: tc.result_preview });
+            }
         }
-        return lines;
-    } catch {
-        return [];
+    }
+    return out;
+}
+
+// Rebuild "what happened so far" from the run checkpoint (structured), not the
+// raw log: for each completed step, recover its tool calls (from execution
+// memory) then its output value (shared_state[output_key]) as native bubbles.
+// Only completed steps are present (checkpoints are written at step boundaries),
+// so there's no in-flight detail — that's an accepted trade-off.
+function reconstructRunLog(stepHistory: any[], sharedState: Record<string, any>): LogEntry[] {
+    const entries: LogEntry[] = [];
+    for (const h of stepHistory) {
+        if (!h?.step_id) continue;
+        const name = h.step_name || h.step_id;
+        entries.push(...reconstructToolCalls(sharedState, h.step_id, name));
+        if (h.status === 'failed') {
+            entries.push(`✗ ${name} failed${h.error ? `: ${h.error}` : ''}`);
+            continue;
+        }
+        const raw = h.output_key ? sharedState?.[h.output_key] : undefined;
+        if (raw == null || raw === '') {
+            entries.push(`✓ ${name}`);
+            continue;
+        }
+        const content = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
+        entries.push({ kind: 'step_result', step_name: name, step_type: coerceStepType(h.step_type), content });
+    }
+    return entries;
+}
+
+// Stable dedup key for a log entry — used when merging reconstructed entries so
+// we don't re-append what's already on screen (live or previously recovered).
+function logEntrySignature(e: LogEntry): string {
+    if (typeof e === 'string') return `s:${e}`;
+    switch (e.kind) {
+        case 'tool_call': return `tc:${e.tool_name}:${JSON.stringify(e.args)}`;
+        case 'tool_result': return `tr:${e.tool_name}:${e.preview}`;
+        case 'step_result': return `sr:${e.content.trim()}`;
+        default: return 'x';
     }
 }
 
@@ -180,7 +226,7 @@ export function OrchestrationTab() {
 
     useEffect(() => {
         fetchActiveRuns();
-        activeRunsPollRef.current = setInterval(fetchActiveRuns, 5000);
+        activeRunsPollRef.current = setInterval(fetchActiveRuns, 3000);
         return () => {
             if (activeRunsPollRef.current) clearInterval(activeRunsPollRef.current);
         };
@@ -188,10 +234,10 @@ export function OrchestrationTab() {
 
     // --- Restore a run from the active runs banner / recent runs ---
     // Standalone mode has no replayable event stream, so we reconstruct as much
-    // as we can on reconnect: hydrate step statuses from the step-boundary
-    // checkpoint, load the persisted detailed log (which DOES contain the
-    // parallel branch / sub-step activity the checkpoint can't expose), then
-    // resume live tracking for a still-running run.
+    // as we can on reconnect from the persisted run checkpoint: hydrate step
+    // statuses, rebuild the completed steps' outputs (step_history joined to
+    // shared_state) as native result bubbles, then resume live tracking for a
+    // still-running run.
     const restoreRun = useCallback(async (runInfo: { run_id: string; orchestration_id: string; status: string }) => {
         const orch = orchestrations.find(o => o.id === runInfo.orchestration_id);
         setSelectedOrchId(runInfo.orchestration_id);
@@ -213,14 +259,16 @@ export function OrchestrationTab() {
             setRunStepStatuses(seeded);
         }
 
-        // Restore step statuses + human-input state from the persisted checkpoint.
+        // Restore step statuses, outputs, and human-input state from the checkpoint.
         let waitingForHuman = false;
+        let recovered: LogEntry[] = [];
         try {
             const res = await fetch(`/api/orchestrations/runs/${runInfo.run_id}`);
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data.step_history)) {
                     setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
+                    recovered = reconstructRunLog(data.step_history, data.shared_state || {});
                 }
                 waitingForHuman = !!data.waiting_for_human;
                 if (data.waiting_for_human && data.human_prompt) {
@@ -230,14 +278,11 @@ export function OrchestrationTab() {
             }
         } catch { /* ignore */ }
 
-        // Load and display the persisted detailed log as recovered context.
-        const logLines = await fetchRecoveredLog(runInfo.run_id);
-        const logBlock: LogEntry[] = logLines.length > 0
-            ? ['── Recovered log (persisted) ──', { kind: 'recovered_log', lines: logLines }]
-            : ['── Recovered log (persisted) ──', '[No persisted log available yet.]'];
+        // Render the reconstructed completed-step outputs as recovered context.
         setRunLog([
-            ...logBlock,
-            '[Standalone reconnect: restored step-boundary checkpoint + persisted log. Live updates resume at the next step boundary.]',
+            '── Recovered from checkpoint ──',
+            ...(recovered.length > 0 ? recovered : ['[No completed steps recorded yet.]']),
+            '[Showing completed steps up to the last checkpoint. Live updates resume at the next step boundary.]',
         ]);
 
         // Keep tracking a live run to completion / human-input. A paused run
@@ -514,6 +559,26 @@ export function OrchestrationTab() {
                 // Sync step statuses from the persisted history
                 if (Array.isArray(data.step_history)) {
                     setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
+                    // Recover completed-step detail not already shown — covers steps that
+                    // finished after we reconnected (or before the first checkpoint
+                    // existed, so restoreRun had nothing to reconstruct). In the
+                    // deliberate-restore (silent) path there are no live entries, so we
+                    // also recover the tool calls; in the live-drop path we only fill in
+                    // step outputs, since tool calls were already shown live.
+                    const rebuilt = reconstructRunLog(data.step_history, data.shared_state || {}).filter(e => {
+                        if (typeof e === 'string') return false;         // skip terse ✓/✗ lines
+                        return !!opts?.silent || e.kind === 'step_result';
+                    });
+                    if (rebuilt.length) {
+                        setRunLog(prev => {
+                            const shown = new Set(prev.map(logEntrySignature));
+                            const additions = rebuilt.filter(e => !shown.has(logEntrySignature(e)));
+                            if (!additions.length) return prev;
+                            // Drop the "nothing yet" placeholder now that we have outputs.
+                            const cleaned = prev.filter(e => e !== '[No completed steps recorded yet.]');
+                            return [...cleaned, ...additions];
+                        });
+                    }
                 }
 
                 if (data.status === 'running') {
@@ -661,11 +726,34 @@ export function OrchestrationTab() {
                 break;
 
             case 'final': {
-                // Capture the full final response keyed by step id
                 const response = data.response || '';
                 const stepId = data.orch_step_id || '';
                 if (stepId && pendingStepResultRef.current.has(stepId) && response) {
+                    // Per-step final: capture the full response keyed by step id;
+                    // it is flushed as a bubble on that step's step_complete.
                     pendingStepResultRef.current.get(stepId)!.content = response;
+                } else if (data.intent === 'orchestration' && response.trim()) {
+                    // Orchestration-level final (the synthesized last output). Render
+                    // it as a result bubble so the final response is always visible —
+                    // but only if it wasn't already shown as the last step's bubble,
+                    // and insert it before the trailing "Done — status" line.
+                    setRunLog(prev => {
+                        const alreadyShown = prev.some(
+                            e => typeof e !== 'string' && e.kind === 'step_result' && e.content.trim() === response.trim()
+                        );
+                        if (alreadyShown) return prev;
+                        const bubble: StepResultLogEntry = {
+                            kind: 'step_result', step_name: 'Final result', step_type: 'agent', content: response.trim(),
+                        };
+                        const lastIdx = prev.length - 1;
+                        const last = prev[lastIdx];
+                        if (typeof last === 'string' && last.startsWith('Done')) {
+                            const next = [...prev];
+                            next.splice(lastIdx, 0, bubble);
+                            return next;
+                        }
+                        return [...prev, bubble];
+                    });
                 }
                 break;
             }
@@ -721,8 +809,11 @@ export function OrchestrationTab() {
             case 'orchestration_complete':
                 setRunStatus(data.status === 'completed' ? 'completed' : 'failed');
                 setRunLog(prev => [...prev, `Done — status: ${data.status}`]);
-                abortRef.current?.abort();
-                abortRef.current = null;
+                // Do NOT abort here: the orchestration-level `final` event (the
+                // synthesized last response) is emitted right after this one, and
+                // aborting could drop it. The backend sends a `done` sentinel and
+                // closes the stream immediately after `final`, so the reader ends
+                // naturally without a reattach.
                 break;
 
             case 'orchestration_error':
@@ -1597,18 +1688,6 @@ function BottomPanel({
                                                         </button>
                                                     </div>
                                                 </div>
-                                            );
-                                        }
-                                        if (entry.kind === 'recovered_log') {
-                                            return (
-                                                <details key={i} open className="my-1.5">
-                                                    <summary className="cursor-pointer list-none text-[10px] text-zinc-500 uppercase tracking-wider">
-                                                        Recovered log ({entry.lines.length} lines)
-                                                    </summary>
-                                                    <pre className="mt-1 bg-zinc-900/60 border border-zinc-800 rounded p-2 text-[10px] text-zinc-400 whitespace-pre-wrap overflow-x-auto max-h-96 overflow-y-auto">
-                                                        {entry.lines.join('\n')}
-                                                    </pre>
-                                                </details>
                                             );
                                         }
                                         return null;

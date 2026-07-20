@@ -21,6 +21,11 @@ _orch_store = JsonStore(os.path.join(DATA_DIR, "orchestrations.json"), cache_ttl
 # In-memory registry of active run tasks (for mid-step cancellation)
 _active_tasks: dict[str, asyncio.Task] = {}
 
+# Lightweight metadata for in-process runs, so the runs list can surface a run
+# that is still inside its first long step (no checkpoint written yet) instead
+# of hiding it until the first step-boundary checkpoint. Keyed by run_id.
+_active_run_meta: dict[str, dict] = {}
+
 
 def load_orchestrations() -> list[dict]:
     return _orch_store.load()
@@ -39,9 +44,20 @@ async def list_orchestrations():
 
 @router.get("/api/orchestrations/runs")
 async def list_runs():
-    """List recent orchestration runs."""
+    """List recent orchestration runs.
+
+    Merges checkpoint-file runs with live in-process runs so a run still inside
+    its first long-running step (no checkpoint yet) shows up immediately. The
+    checkpoint is authoritative, so it wins whenever both exist for a run_id.
+    """
     from core.orchestration.state import SharedState
-    return SharedState.list_runs()
+    runs = SharedState.list_runs()
+    seen = {r.get("run_id") for r in runs}
+    live = [dict(meta) for run_id, meta in _active_run_meta.items() if run_id not in seen]
+    if live:
+        runs = live + runs
+        runs.sort(key=lambda r: r.get("started_at") or "", reverse=True)
+    return runs
 
 
 @router.get("/api/orchestrations/{orch_id}")
@@ -172,12 +188,20 @@ async def run_orchestration(orch_id: str, request: Request):
             await queue.put({"type": "orchestration_error", "error": str(e)})
         finally:
             _active_tasks.pop(run_id, None)
+            _active_run_meta.pop(run_id, None)
             print(f"DEBUG SSE QUEUE: sentinel sent, stream closing", flush=True)
             await queue.put(_SENTINEL)
 
     # Engine runs independently of SSE consumer; store task for cancellation
     task = asyncio.create_task(_run_engine())
     _active_tasks[run_id] = task
+    _active_run_meta[run_id] = {
+        "run_id": run_id,
+        "orchestration_id": orch_id,
+        "status": "running",
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "ended_at": None,
+    }
 
     async def event_stream():
         # Heartbeats keep the stream warm during long LLM/compaction steps so a
