@@ -155,6 +155,15 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                 {summary && (
                     <div className="truncate text-[11px] text-text-muted" translate="no">{summary}</div>
                 )}
+                {/* An agent step's own prompt template wins over the text typed
+                    into the run box (context.py gives it precedence) — invisible
+                    here is how a run "ignores" its input. Show it. */}
+                {step.type === 'agent' && step.prompt_template && (
+                    <div className="truncate text-[10px] text-text-faint" translate="no">
+                        <span className="opacity-70">prompt:</span>{' '}
+                        {step.prompt_template.slice(0, 40) + (step.prompt_template.length > 40 ? '…' : '')}
+                    </div>
+                )}
                 {step.type === 'switch' && step.switch_expression && (
                     <div className="truncate font-code text-[10px] text-text-faint" translate="no">
                         {step.switch_expression.slice(0, 35) + (step.switch_expression.length > 35 ? '…' : '')}
