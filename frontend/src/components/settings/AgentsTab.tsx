@@ -34,6 +34,7 @@ export const AgentsTab = ({
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const [repos, setRepos] = useState<any[]>([]);
+    const [allSkills, setAllSkills] = useState<any[]>([]);
     const [dbConfigs, setDbConfigs] = useState<any[]>([]);
     const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string }[]>([]);
     const [expandedCaps, setExpandedCaps] = useState<Set<string>>(new Set());
@@ -155,6 +156,10 @@ export const AgentsTab = ({
             .then(res => res.json())
             .then(data => setRepos(data))
             .catch(err => console.error("Failed to fetch repos", err));
+        fetch('/api/skills')
+            .then(res => res.json())
+            .then(data => setAllSkills(Array.isArray(data) ? data : []))
+            .catch(err => console.error("Failed to fetch skills", err));
         fetch('/api/db-configs')
             .then(res => res.json())
             .then(data => setDbConfigs(data))
@@ -833,6 +838,38 @@ export const AgentsTab = ({
                                         })()}
                                     </div>
                                     )}
+
+                                    {/* Skills — roster in the prompt, bodies on demand via load_skill */}
+                                    <div className="space-y-1">
+                                        <Label className="block">Skills</Label>
+                                        <div className="bg-bg border border-border p-3 flex flex-wrap gap-2 min-h-[50px] rounded-md">
+                                            {allSkills.filter((s: any) => !s.shadowed).length === 0 && (
+                                                <span className="text-xs text-text-faint">No skills yet — create one on the Skills page.</span>
+                                            )}
+                                            {allSkills.filter((s: any) => !s.shadowed).map((skill: any) => {
+                                                const isSelected = draftAgent.skills?.includes(skill.name);
+                                                return (
+                                                    <button
+                                                        key={skill.name}
+                                                        title={skill.description}
+                                                        onClick={() => {
+                                                            const current = draftAgent.skills || [];
+                                                            setDraftAgent(isSelected
+                                                                ? { ...draftAgent, skills: current.filter((n: string) => n !== skill.name) }
+                                                                : { ...draftAgent, skills: [...current, skill.name] });
+                                                        }}
+                                                        className={`px-3 py-1.5 text-xs font-bold border transition-colors ${isSelected
+                                                            ? 'bg-accent text-accent-fg border-border-strong'
+                                                            : 'bg-surface border-border text-text-muted hover:border-text-faint'
+                                                            } rounded-md`}
+                                                    >
+                                                        {skill.name} {isSelected && '✓'}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                        <p className="text-2xs text-text-faint mt-1">A selected skill costs one roster line in the prompt; the agent loads its full instructions with load_skill only when needed.</p>
+                                    </div>
 
                                     {/* Prompt Generator */}
                                     <div className="space-y-2">

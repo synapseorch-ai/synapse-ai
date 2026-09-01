@@ -889,6 +889,42 @@ async def run_agent_step(
             for t in all_tools
         ])
 
+    # ── SKILLS: roster in the prompt, bodies on demand via load_skill ──
+    # Progressive disclosure (settled before the editor existed): an agent's
+    # selected skills cost their name and one-line description per turn; the
+    # body enters the context only through the load_skill call below.
+    from core.skills import (
+        SKILL_TOOL_NAME, build_load_skill_tool, clip_body, render_roster,
+    )
+    from core.skills import get_skill as _get_skill
+    from core.skills import normalize_name as _normalize_skill_name
+    from core.skills import resolve_selected as _resolve_skills
+    _skill_names: list[str] = []
+    _loaded_skills: set[str] = set()
+    if tools_override is None and (active_agent.get("skills") or []):
+        _selected_skills = await _resolve_skills(active_agent.get("skills") or [])
+        _skill_names = [s["name"] for s in _selected_skills]
+        if _skill_names:
+            agent_system_template = agent_system_template + "\n\n" + render_roster(_selected_skills)
+            _skill_tool = build_load_skill_tool(_skill_names)
+            all_tools = [t for t in all_tools if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) != SKILL_TOOL_NAME]
+            all_tools.append(_skill_tool)
+            tool_schema_map[SKILL_TOOL_NAME] = _skill_tool.inputSchema
+            ollama_tools = [t for t in ollama_tools if t.get("function", {}).get("name") != SKILL_TOOL_NAME]
+            ollama_tools.append({"type": "function", "function": {
+                "name": _skill_tool.name,
+                "description": _skill_tool.description,
+                "parameters": _skill_tool.inputSchema,
+            }})
+            tools_json = str([
+                {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+                 "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+                 "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+                for t in all_tools
+            ])
+            print(f"DEBUG: 📚 skills injected for agent '{agent_id_for_session}': "
+                  f"{', '.join(_skill_names)}", flush=True)
+
     system_prompt_text = build_system_prompt(
         agent_system_template, tools_json, session_id,
         _get_session_state, server_module.memory_store, agent_id=agent_id_for_session,
@@ -976,6 +1012,10 @@ async def run_agent_step(
     # Build type-aware set of always-allowed tools
     always_allowed = set(DEFAULT_TOOLS_BY_TYPE.get("all_types", set()))
     always_allowed |= set(DEFAULT_TOOLS_BY_TYPE.get(agent_type, set()))
+    if _skill_names:
+        # Injected because the agent selected skills, not via tools[] — the
+        # execution guard must not block it for narrowly-scoped agents.
+        always_allowed.add(SKILL_TOOL_NAME)
 
     MAX_PROMPT_CHARS = 400000
 
@@ -1265,6 +1305,41 @@ async def run_agent_step(
                     yield {"type": "tasks_updated", "tasks": [dict(t) for t in _tasks], "turn": turn + 1}
                     yield {"type": "tool_result", "tool_name": TASK_TOOL_NAME, "preview": _board[:500]}
                     print(f"DEBUG: 📋 Task list updated — {_summary}", flush=True)
+                    continue
+
+                # ── LOAD_SKILL: a skill's body enters the context on demand ───────
+                if tool_name == SKILL_TOOL_NAME and _skill_names:
+                    _sk_name = _normalize_skill_name(str(tool_args.get("name") or ""))
+                    if _sk_name not in _skill_names:
+                        _sk_msg = (f"Unknown skill '{_sk_name}'. Your skills: "
+                                   f"{', '.join(_skill_names)}.")
+                        current_context_text += f"\nSystem: {_sk_msg}\n"
+                        yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME, "preview": _sk_msg}
+                        continue
+                    if _sk_name in _loaded_skills:
+                        _sk_msg = (f"Skill '{_sk_name}' is already loaded — its instructions "
+                                   "are in your context above.")
+                        current_context_text += f"\nSystem: {_sk_msg}\n"
+                        yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME, "preview": _sk_msg}
+                        continue
+                    _skill_doc = await _get_skill(_sk_name)
+                    if _skill_doc is None:
+                        _sk_msg = f"Skill '{_sk_name}' could not be read (it may have been deleted)."
+                        current_context_text += f"\nSystem: {_sk_msg}\n"
+                        yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME, "preview": _sk_msg}
+                        continue
+                    _sk_body = clip_body(_skill_doc.get("body") or "(this skill has an empty body)")
+                    _loaded_skills.add(_sk_name)
+                    current_context_text += (
+                        f"\n[Turn {turn + 1} — Observation] Skill '{_sk_name}' loaded. "
+                        f"Follow its instructions where they apply:\n"
+                        f"<<SKILL {_sk_name}>>\n{_sk_body}\n<<END SKILL>>\n"
+                    )
+                    tools_used_summary.append(f"{SKILL_TOOL_NAME}({_sk_name})")
+                    yield {"type": "skill_loaded", "skill": _sk_name, "turn": turn + 1}
+                    yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME,
+                           "preview": f"Loaded skill '{_sk_name}' ({len(_sk_body)} chars)"}
+                    print(f"DEBUG: 📚 skill loaded: {_sk_name} ({len(_sk_body)} chars)", flush=True)
                     continue
 
                 # Execution guard

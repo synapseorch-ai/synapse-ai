@@ -45,6 +45,7 @@ class Agent(BaseModel):
     avatar: str = "default"
     type: str = "conversational"  # conversational | analysis | code | orchestrator
     tools: list[str] # ["all"] or ["search_codebase", "get_weather"]
+    skills: list[str] = [] # skill names (core/skills.py); roster in prompt, body via load_skill
     repos: list[str] = [] # list of repo IDs for code agents
     db_configs: list[str] = [] # list of db config IDs for code agents
     system_prompt: str

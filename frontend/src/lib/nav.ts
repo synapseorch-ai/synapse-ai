@@ -12,7 +12,7 @@
  * component would fail — and the symptom is a 200 with a 404 body.
  */
 import {
-    ArrowLeftRight, Bot, Clock, Cloud, Cpu, Database, DollarSign, Eraser, LayoutDashboard,
+    ArrowLeftRight, BookOpen, Bot, Clock, Cloud, Cpu, Database, DollarSign, Eraser, LayoutDashboard,
     FolderGit2, Gauge, Key, LayoutGrid, LifeBuoy, MessageSquare, MessagesSquare,
     ScrollText, Server, Shield, Vault, Workflow, Wrench,
     type LucideIcon,
@@ -63,6 +63,10 @@ export const PRIMARY_NAV: NavGroup[] = [
             {
                 id: 'agents', label: 'Agents', href: '/agents', icon: Bot,
                 blurb: 'Build and configure the agents that do the work.',
+            },
+            {
+                id: 'skills', label: 'Skills', href: '/skills', icon: BookOpen,
+                blurb: 'Reusable instruction packages agents load on demand.',
             },
             {
                 id: 'custom_tools', label: 'Tools', href: '/tools', icon: Wrench,
