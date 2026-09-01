@@ -144,6 +144,9 @@ class OrchestrationRun(BaseModel):
     shared_state: dict[str, Any] = {}
     step_history: list[dict[str, Any]] = []
     current_step_id: str | None = None
+    # The run's task list (core/task_list.py): written through on every
+    # accepted update_tasks call, shared across steps, survives a resume.
+    tasks: list[dict[str, Any]] = []
 
     # Human-in-the-loop
     waiting_for_human: bool = False

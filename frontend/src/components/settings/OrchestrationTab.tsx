@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Save, Play, Trash, Square, Loader2, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare } from 'lucide-react';
+import { Plus, Save, Play, Trash, Square, Loader2, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX } from 'lucide-react';
 import { Button, Combobox, Hint, IconButton, Modal, SearchInput } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
 import { BuilderPanel } from '../orchestration/BuilderPanel';
@@ -27,12 +27,14 @@ type StepResultLogEntry = { kind: 'step_result'; step_name: string; step_type: '
 // chatty agent doesn't drown the structural log lines.
 type ReasoningLogEntry = { kind: 'reasoning'; step_name?: string; content: string };
 type ThoughtLogEntry = { kind: 'thought'; step_name?: string; content: string };
+type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
+type TasksLogEntry = { kind: 'tasks'; step_name?: string; tasks: { content: string; status: TaskStatus }[] };
 // A structural log line: the tone picks an icon and a colour in the renderer,
 // which is what replaced the emoji prefixes — an icon column reads as product
 // chrome where a row of pictographs read as a group chat.
 type LineTone = 'start' | 'ok' | 'error' | 'pause' | 'loop' | 'flow' | 'parallel' | 'merge' | 'end' | 'info' | 'warn' | 'compact' | 'branch' | 'muted';
 type LineLogEntry = { kind: 'line'; tone: LineTone; text: string };
-type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry | ReasoningLogEntry | ThoughtLogEntry | LineLogEntry;
+type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry | ReasoningLogEntry | ThoughtLogEntry | TasksLogEntry | LineLogEntry;
 
 const line = (tone: LineTone, text: string): LineLogEntry => ({ kind: 'line', tone, text });
 
@@ -1047,6 +1049,12 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 break;
 
             case 'tool_execution':
+                // update_tasks renders as the live checklist (tasks_updated) —
+                // the raw call/result pair would only be noise around it.
+                if (data.tool_name === 'update_tasks') {
+                    setLiveActivity('tasks · updating plan');
+                    break;
+                }
                 setLiveActivity(`tool · ${data.tool_name}`);
                 setRunLog(prev => [...prev, {
                     kind: 'tool_call',
@@ -1057,12 +1065,31 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 break;
 
             case 'tool_result':
+                if (data.tool_name === 'update_tasks') break;
                 setRunLog(prev => [...prev, {
                     kind: 'tool_result',
                     tool_name: data.tool_name,
                     preview: data.preview || '',
                 } as ToolResultLogEntry]);
                 break;
+
+            case 'tasks_updated': {
+                // One live checklist: the task list is run-global state, so the
+                // previous snapshot is superseded — re-render it at the tail,
+                // where the action is (journal replay reproduces the same walk).
+                const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+                setRunLog(prev => [
+                    ...prev.filter(e => typeof e === 'string' || e.kind !== 'tasks'),
+                    { kind: 'tasks', step_name: data.step_name, tasks } as TasksLogEntry,
+                ]);
+                break;
+            }
+
+            case 'tasks_incomplete': {
+                const n = Array.isArray(data.tasks) ? data.tasks.length : 0;
+                setRunLog(prev => [...prev, line('warn', `Step ended with ${n} open task${n !== 1 ? 's' : ''}`)]);
+                break;
+            }
 
             case 'token_usage':
                 // Silently track
@@ -2027,6 +2054,41 @@ function BottomPanel({
                                                             View full
                                                         </span>
                                                     </button>
+                                                </div>
+                                            );
+                                        }
+                                        if (entry.kind === 'tasks') {
+                                            const done = entry.tasks.filter(t => t.status === 'completed').length;
+                                            return (
+                                                <div key={i} className="my-1.5 ml-1 rounded-lg border border-zinc-700/50 bg-zinc-800/40 px-3 py-2">
+                                                    <div className="flex items-center gap-1.5 mb-1">
+                                                        <ListTodo size={11} className="text-accent shrink-0" aria-hidden />
+                                                        <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Tasks</span>
+                                                        <span className="text-[9px] text-zinc-600">
+                                                            {done}/{entry.tasks.length} done{entry.step_name ? ` · ${entry.step_name}` : ''}
+                                                        </span>
+                                                    </div>
+                                                    <ul className="space-y-0.5">
+                                                        {entry.tasks.map((t, j) => (
+                                                            <li key={j} className="flex items-start gap-1.5 text-[11px] leading-snug">
+                                                                {t.status === 'completed' ? (
+                                                                    <CircleCheck size={11} className="mt-[2px] shrink-0 text-emerald-400" aria-hidden />
+                                                                ) : t.status === 'in_progress' ? (
+                                                                    <CircleDot size={11} className="mt-[2px] shrink-0 text-accent" aria-hidden />
+                                                                ) : t.status === 'cancelled' ? (
+                                                                    <CircleX size={11} className="mt-[2px] shrink-0 text-zinc-600" aria-hidden />
+                                                                ) : (
+                                                                    <Circle size={11} className="mt-[2px] shrink-0 text-zinc-600" aria-hidden />
+                                                                )}
+                                                                <span className={
+                                                                    t.status === 'completed' ? 'text-zinc-500 line-through' :
+                                                                    t.status === 'in_progress' ? 'text-zinc-200' :
+                                                                    t.status === 'cancelled' ? 'text-zinc-600 line-through' :
+                                                                    'text-zinc-400'
+                                                                }>{t.content}</span>
+                                                            </li>
+                                                        ))}
+                                                    </ul>
                                                 </div>
                                             );
                                         }

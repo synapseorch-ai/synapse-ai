@@ -45,6 +45,10 @@ _ADDITIONS: tuple[tuple[str, str, str, str | None], ...] = (
     ("agents", "created_at", "TIMESTAMP", "updated_at"),
     ("tools", "created_at", "TIMESTAMP", "updated_at"),
     ("mcp_servers", "created_at", "TIMESTAMP", "updated_at"),
+    # The run's task list (core/task_list.py). `JSON` is the spelling both
+    # dialects accept; new installs get the model's JSONB variant on Postgres
+    # via create_all, and readers treat the migration's NULLs as [].
+    ("orchestration_runs", "tasks", "JSON", None),
 )
 
 

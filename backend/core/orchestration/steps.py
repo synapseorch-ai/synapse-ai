@@ -128,7 +128,18 @@ class AgentStepExecutor:
                 model_override=step.model,
                 resume_state=resume_state,
                 progress_events=True,
+                initial_tasks=[dict(t) for t in (run.tasks or [])],
             ):
+                if event.get("type") == "tasks_updated":
+                    # Task state lives on the run, not in a tool's process
+                    # memory: checkpointing here is what makes the plan survive
+                    # a resume on any worker. The event still falls through to
+                    # the journal (structural) and the live stream.
+                    run.tasks = [dict(t) for t in (event.get("tasks") or [])]
+                    try:
+                        await SharedState(run).checkpoint()
+                    except Exception as ckpt_err:
+                        print(f"WARNING: task-list checkpoint failed: {ckpt_err}", flush=True)
                 if event.get("type") == "_step_progress":
                     # Turn-boundary transcript checkpoint: persist so a crash
                     # resumes mid-step. Swallowed here — never logged, never

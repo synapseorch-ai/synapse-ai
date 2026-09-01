@@ -251,12 +251,9 @@ async def _build_native_mcp_servers() -> list[dict]:
         "env": {"MEMORY_FILE_PATH": str(memory_file_path)},
     })
 
-    # --- Sequential Thinking MCP Server ---
-    servers.append({
-        "name": "Sequential Thinking",
-        "command": _NPX_CMD,
-        "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-    })
+    # Sequential Thinking used to be spawned here as an npx server. It is now
+    # the native task list (core/task_list.py) — engine-owned, journaled,
+    # resume-safe — and the old name survives as a dispatch alias only.
 
     return servers
 

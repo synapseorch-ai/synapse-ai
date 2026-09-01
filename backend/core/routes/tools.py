@@ -56,7 +56,8 @@ async def get_available_tools():
 
     # Native engine tools appear first so they show above MCP and custom tools
     from core.spawn_subtask import SPAWN_SUBTASK_STATIC_SCHEMA
-    all_tools = [SPAWN_SUBTASK_STATIC_SCHEMA]
+    from core.task_list import TASK_LIST_STATIC_SCHEMA
+    all_tools = [TASK_LIST_STATIC_SCHEMA, SPAWN_SUBTASK_STATIC_SCHEMA]
 
     # 1. Active MCP Sessions (Native + External)
     for name, session in list(_server.agent_sessions.items()):

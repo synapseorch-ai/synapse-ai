@@ -300,7 +300,7 @@ def _categorize_tools(tools: list[str]) -> str:
         "Communication & Workspace": ["gmail_", "gcal_", "gdrive_", "slack_", "jira_", "send_", "google_"],
         "Database": ["run_sql", "list_tables", "get_table_schema", "db_"],
         "Persistence & Vault": ["vault_", "memory_"],
-        "Reasoning & Planning": ["sequentialthinking"],
+        "Reasoning & Planning": ["update_tasks", "sequentialthinking"],
     }
 
     for tool_entry in tools:

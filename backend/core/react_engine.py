@@ -742,6 +742,7 @@ async def run_agent_step(
     # ── mid-node crash recovery (used by AgentStepExecutor) ───────────────────
     resume_state: dict | None = None,     # prior interrupted attempt's loop state; continues mid-step
     progress_events: bool = False,        # yield _step_progress after each completed tool turn
+    initial_tasks: list | None = None,    # the run's task list (seeds update_tasks; see core/task_list.py)
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -856,6 +857,38 @@ async def run_agent_step(
             print(f"DEBUG: 🤖 spawn_subtask injected for agent '{agent_id_for_session}' "
                   f"with {len(_spawn_subtask_available_tools)} delegatable tools", flush=True)
 
+    # ── UPDATE_TASKS: native task list, declared to every agent ──
+    # The engine owns it (no MCP, no subprocess): calls are intercepted in the
+    # dispatch loop, state seeds from the run and is yielded back to it as
+    # `tasks_updated` events. Agents with skip_default_tools keep their
+    # deliberately minimal declarations.
+    from core.task_list import (
+        TASK_TOOL_NAME, LEGACY_TASK_TOOL_ALIAS, build_task_tool,
+        validate_tasks_args, render_tasks, summarize_tasks, open_tasks,
+    )
+    _task_tool_enabled = (
+        tools_override is None
+        and not active_agent.get("skip_default_tools", False)
+    )
+    if _task_tool_enabled:
+        _task_tool = build_task_tool()
+        _task_shadow_names = (TASK_TOOL_NAME, LEGACY_TASK_TOOL_ALIAS)
+        all_tools = [t for t in all_tools if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) not in _task_shadow_names]
+        all_tools.append(_task_tool)
+        tool_schema_map[TASK_TOOL_NAME] = _task_tool.inputSchema
+        ollama_tools = [t for t in ollama_tools if t.get("function", {}).get("name") not in _task_shadow_names]
+        ollama_tools.append({"type": "function", "function": {
+            "name": _task_tool.name,
+            "description": _task_tool.description,
+            "parameters": _task_tool.inputSchema,
+        }})
+        tools_json = str([
+            {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+             "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+             "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+            for t in all_tools
+        ])
+
     system_prompt_text = build_system_prompt(
         agent_system_template, tools_json, session_id,
         _get_session_state, server_module.memory_store, agent_id=agent_id_for_session,
@@ -907,7 +940,13 @@ async def run_agent_step(
     tool_name = None
     last_tool_logged = None  # track tool from previous turn for usage log
     tools_used_summary = []
-    tool_repetition_counts = {}
+    # ── Task list: the run's working plan (see core/task_list.py) ──
+    # Seeded from the run so a later step (or a resumed one) sees the plan
+    # earlier steps wrote; every accepted update is yielded as a structural
+    # `tasks_updated` event that the step executor persists onto the run.
+    _tasks: list[dict] = [dict(t) for t in (initial_tasks or [])]
+    _tasks_touched = False   # this agent called update_tasks at least once
+    _task_nudges = 0         # binding: final-response refusals issued so far
     # Compact log of browser actions taken this run — prepended before the live
     # <<BROWSER_STATE>> block so the agent retains full action history even
     # though the DOM snapshot is replaced on each navigation/click.
@@ -932,6 +971,7 @@ async def run_agent_step(
         start_turn = min(int(resume_state.get("turn") or 0), max(0, max_turns - 1))
         _resumed_mid_step = True
         print(f"DEBUG RUN_AGENT: ⏯ resuming mid-step from turn {start_turn + 1}/{max_turns}", flush=True)
+
 
     # Build type-aware set of always-allowed tools
     always_allowed = set(DEFAULT_TOOLS_BY_TYPE.get("all_types", set()))
@@ -971,6 +1011,15 @@ async def run_agent_step(
             # step context, shared state, or turn-budget instructions.
             if system_prompt_extra:
                 active_sys_prompt = active_sys_prompt + "\n\n" + system_prompt_extra
+            # The run's task list rides the system prompt, rebuilt every turn so
+            # it is always current — turn 0 included, where the plain user
+            # message (not the accumulated context) is the prompt.
+            if _task_tool_enabled and _tasks:
+                active_sys_prompt = (
+                    active_sys_prompt
+                    + "\n\nCurrent task list for this run (keep statuses true with "
+                    + f"{TASK_TOOL_NAME} as you work):\n{render_tasks(_tasks)}"
+                )
             if system_prompt_prefix:
                 active_sys_prompt = system_prompt_prefix + "\n\n" + active_sys_prompt
 
@@ -1086,6 +1135,27 @@ async def run_agent_step(
             tool_calls = parse_all_tool_calls(action_text)
 
             if not tool_calls:
+                # ── Task binding: an agent that opened tasks must close them ──
+                # Deterministic and bounded: the final response is refused at
+                # most twice, then accepted with a structural tasks_incomplete
+                # on the record. `cancelled` is the honest escape for work that
+                # turned out not to matter.
+                _open = open_tasks(_tasks) if _tasks_touched else []
+                if _open and _task_nudges < 2 and turn + 1 < max_turns:
+                    _task_nudges += 1
+                    current_context_text += (
+                        f"\nSystem: You still have {len(_open)} open task(s):\n"
+                        f"{render_tasks(_open)}\n"
+                        f"Finish them and mark them completed via {TASK_TOOL_NAME}, or mark them "
+                        "cancelled if they no longer apply. Then give your final response.\n"
+                    )
+                    print(f"DEBUG: 📋 final deferred — {len(_open)} open task(s), nudge {_task_nudges}/2", flush=True)
+                    yield {"type": "status",
+                           "message": f"Final response deferred — {len(_open)} open task{'s' if len(_open) != 1 else ''} remain"}
+                    continue
+                if _open:
+                    yield {"type": "tasks_incomplete", "tasks": [dict(t) for t in _open]}
+
                 # Final response: strip any leftover reasoning so it never
                 # reaches the user or the session history.
                 final_response = action_text
@@ -1126,6 +1196,10 @@ async def run_agent_step(
                 if not isinstance(tool_name, str) or not tool_name.strip():
                     continue
                 tool_args = tool_call.get("arguments", {})
+                # Legacy alias: saved agents and shipped bundles that still name
+                # the retired npx tool get the native task list instead.
+                if tool_name == LEGACY_TASK_TOOL_ALIAS:
+                    tool_name = TASK_TOOL_NAME
                 last_tool_logged = tool_name  # record for next turn's log entry
 
                 # Apply sticky args
@@ -1160,23 +1234,38 @@ async def run_agent_step(
                 print(f"DEBUG: 🔧 Tool Call: {tool_name}")
                 print(f"DEBUG: 📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}")
 
-                # ── sequentialthinking hard cap (5 calls per task) ─────────────────
-                # sequentialthinking changes `thoughtNumber` on every call so the
-                # identical-args guard below never fires.  Limit to 5 calls so the
-                # LLM cannot spin in an infinite think loop.
-                if tool_name == "sequentialthinking":
-                    _seq_count = tool_repetition_counts.get("__sequentialthinking__", 0) + 1
-                    tool_repetition_counts["__sequentialthinking__"] = _seq_count
-                    if _seq_count > 5:
-                        _seq_msg = (
-                            "sequentialthinking has already been called 5 times this task. "
-                            "You MUST now call a real action tool (browser, search, data tool, etc.) "
-                            "to make progress. Do NOT call sequentialthinking again."
-                        )
-                        print(f"DEBUG: 🔁 sequentialthinking cap hit (call #{_seq_count}) — blocked", flush=True)
-                        current_context_text += f"\nSystem: {_seq_msg}\n"
-                        yield {"type": "tool_result", "tool_name": tool_name, "preview": "Blocked: sequentialthinking already used 5 times (call a real tool now)"}
+                # ── UPDATE_TASKS: native task list, handled in-engine ─────────────
+                if tool_name == TASK_TOOL_NAME and _task_tool_enabled:
+                    _new_tasks, _task_err = validate_tasks_args(tool_args)
+                    if _task_err:
+                        current_context_text += f"\nSystem: {_task_err}\n"
+                        yield {"type": "tool_result", "tool_name": TASK_TOOL_NAME,
+                               "preview": f"Rejected: {_task_err}"}
                         continue
+                    if _tasks_touched and _new_tasks == _tasks:
+                        # Resubmitting the same list is the think-loop shape the
+                        # old tool's changing thoughtNumber used to smuggle past
+                        # detection. Name it and demand progress.
+                        _noop_msg = (
+                            "Task list unchanged — do not resubmit an identical list. "
+                            "Call a real tool to make progress, or give your final response."
+                        )
+                        current_context_text += f"\nSystem: {_noop_msg}\n"
+                        yield {"type": "tool_result", "tool_name": TASK_TOOL_NAME,
+                               "preview": "No change: identical task list"}
+                        continue
+                    _tasks = _new_tasks
+                    _tasks_touched = True
+                    _board = render_tasks(_tasks)
+                    _summary = summarize_tasks(_tasks)
+                    current_context_text += (
+                        f"\n[Turn {turn + 1} — Observation] Task list updated ({_summary}):\n{_board}\n"
+                    )
+                    tools_used_summary.append(f"{TASK_TOOL_NAME}: {_summary}")
+                    yield {"type": "tasks_updated", "tasks": [dict(t) for t in _tasks], "turn": turn + 1}
+                    yield {"type": "tool_result", "tool_name": TASK_TOOL_NAME, "preview": _board[:500]}
+                    print(f"DEBUG: 📋 Task list updated — {_summary}", flush=True)
+                    continue
 
                 # Execution guard
                 if "all" not in allowed_tools and tool_name not in allowed_tools and tool_name not in always_allowed:

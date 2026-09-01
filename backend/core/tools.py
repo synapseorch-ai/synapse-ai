@@ -17,7 +17,7 @@ from core.tool_router import SEP, ToolRouter
 # "all_types" applies to every agent regardless of type.
 DEFAULT_TOOLS_BY_TYPE = {
     "all_types": {
-        "sequentialthinking",         # multi-step tool execution
+        "update_tasks",               # native task list — see core/task_list.py
         # Filesystem MCP — always available for reading repo + vault files
         "read_file",                  # read any allowed file
         "read_multiple_files",        # batch read
@@ -474,8 +474,8 @@ Rules:
 **VAULT (LARGE OUTPUT HANDLING):**
 When a tool's output exceeds the character limit, it is automatically saved to a vault file. You will receive a JSON reference containing the vault file path, file type, size, and total line count — instead of the raw output. To access the data: use `grep` to search for specific values within the vault file, or use `read_file_by_lines` with `start_line`/`end_line` to read a slice. Do NOT use `read_file` on vault files — they are too large and will be re-vaulted.
 
-**SEQUENTIALTHINKING (OPTIONAL — USE SPARINGLY):**
-`sequentialthinking` is a lightweight planning aid. If the request is complex, you MAY call it to outline your plan or refine your thinking — up to **5 times** per task. After each call you MUST make progress with real action tools (browser, search, data tool, etc.). Never call `sequentialthinking` more than 5 times per task, and never call it in place of a real tool — it cannot fetch data, browse the web, or do anything productive by itself.
+**TASK LIST (`update_tasks`):**
+Your task list is shown to the user live — it is how they watch you work. For any multi-step job (3+ distinct actions), call `update_tasks` FIRST to write the plan, then keep it true: exactly one task `in_progress` at a time, mark a task `completed` the moment it is done (never batch updates), and mark a task `cancelled` if it turns out not to apply. Every call must contain the FULL list — it replaces the previous one. Skip the task list for trivial single-step requests. You will not be able to finish while tasks are still open: complete them or cancel them before giving your final response. `update_tasks` only records the plan — it cannot fetch data or act; make progress with real tools between updates.
 
 ### LINKS & REFERENCES
 Whenever a tool returns URLs, source links, documentation references, or any other hyperlinks — **always include them in your response**. Present them clearly so the user can visit them directly. If you know of relevant official documentation, articles, or resources that would help the user, proactively include those links even if not explicitly returned by a tool.

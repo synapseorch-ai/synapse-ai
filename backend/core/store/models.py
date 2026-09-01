@@ -184,6 +184,9 @@ class OrchestrationRunDB(Base):
     shared_state = Column(JSONType, nullable=False, default=dict)
     step_history = Column(JSONType, nullable=False, default=list)
     current_step_id = Column(String(255))
+    # The run's task list (core/task_list.py). Nullable because the column is
+    # migration-added on existing installs; readers treat NULL as [].
+    tasks = Column(JSONType, default=list)
     waiting_for_human = Column(Boolean, default=False)
     human_prompt = Column(Text)
     human_fields = Column(JSONType, default=list)
