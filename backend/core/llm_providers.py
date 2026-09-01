@@ -167,6 +167,8 @@ def detect_mode_from_model(model_name: str) -> str:
         return "cloud"
     if m.startswith("deepseek"):
         return "cloud"
+    if m.startswith("synapse."):
+        return "cloud"
     if m.startswith("oaic."):
         return "cloud"
     if m.startswith("locv1."):
@@ -206,6 +208,8 @@ def detect_provider_from_model(model_name: str) -> str:
         return "grok"
     if m.startswith("deepseek"):
         return "deepseek"
+    if m.startswith("synapse."):
+        return "model_gateway"
     if m.startswith("oaic."):
         return "openai_compatible"
     if m.startswith("locv1."):
@@ -1779,7 +1783,9 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
-            last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
+            # The body, not str(e): a gateway's refusal carries its reason (and
+            # figures) in the response body, and the URL alone explains nothing.
+            last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
             print(f"DEBUG: ❌ V1-compatible HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
@@ -1795,6 +1801,42 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
     error_msg = f"V1-compatible LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
     print(f"DEBUG: ❌ {error_msg}", flush=True)
     raise LLMError(error_msg)
+
+
+async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True):
+    """Call the configured model gateway (synapse.* models).
+
+    A first-class provider like `call_openai`, except the endpoint belongs to
+    the deployment rather than to a vendor: `model_gateway_base_url` and
+    `model_gateway_key` name a v1-compatible service the operator runs —
+    LiteLLM, a proxy, or a hosted platform's own model service.
+
+    Delegates the HTTP work to `call_v1_compatible` — the gateway speaks the
+    OpenAI v1 shape precisely so a second client does not exist to drift —
+    and adds the one behaviour the generic caller cannot: a 402 (the gateway
+    refusing over quota or balance) is re-raised carrying the gateway's own
+    sentence, which is where the figures are. A refusal with no number in it
+    is unanswerable from a run log.
+    """
+    real_model = model[len("synapse."):] if model.startswith("synapse.") else model
+    try:
+        return await call_v1_compatible(
+            real_model,
+            messages,
+            system,
+            settings.get("model_gateway_base_url", ""),
+            settings.get("model_gateway_key", ""),
+            tools=tools,
+            images=images,
+            prompt_cache=prompt_cache,
+        )
+    except LLMError as e:
+        if "HTTP 402" not in str(e):
+            raise
+        detail = re.search(r'"message"\s*:\s*"([^"]+)"', str(e))
+        if detail is None:
+            raise
+        raise LLMError(f"Model gateway refused the call: {detail.group(1)}") from e
 
 
 async def _bedrock_converse_direct(
@@ -2397,6 +2439,16 @@ async def generate_response(
                     images=images,
                     prompt_cache=_prompt_cache,
                 )
+            elif current_model.startswith("synapse."):
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_model_gateway(
+                    current_model,
+                    messages,
+                    augmented_system,
+                    current_settings,
+                    tools=tools,
+                    images=images,
+                    prompt_cache=_prompt_cache,
+                )
             elif current_model.startswith("oaic."):
                 result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_v1_compatible(
                     current_model[len("oaic."):],
@@ -2644,6 +2696,9 @@ async def embed_batch(texts: list[str], model: str, settings: dict) -> list[list
 
     if provider == "openai":
         return await _embed_openai(texts, model, settings.get("openai_key", ""))
+    elif provider == "model_gateway":
+        clean_model = model[len("synapse."):] if model.startswith("synapse.") else model
+        return await _embed_v1_compatible(texts, clean_model, settings.get("model_gateway_base_url", ""), settings.get("model_gateway_key", ""))
     elif provider == "openai_compatible":
         clean_model = model[len("oaic."):] if model.startswith("oaic.") else model
         return await _embed_v1_compatible(texts, clean_model, settings.get("openai_compatible_base_url", ""), settings.get("openai_compatible_key", ""))

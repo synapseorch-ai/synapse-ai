@@ -44,6 +44,53 @@ class TestCloudDispatch:
         out2 = await _REAL_GENERATE("hi", "s", "cloud", "locv1.model", {"local_compatible_base_url": "http://y"})
         assert out1 == "compat" and out2 == "compat"
 
+    async def test_synapse_routes_to_model_gateway(self, monkeypatch):
+        monkeypatch.setattr(_llm_mod, "call_model_gateway", _stub_call(text="gateway said hi"))
+        out = await _REAL_GENERATE("hi", "s", "cloud", "synapse.nova-pro", {"model_gateway_base_url": "http://gw"})
+        assert out == "gateway said hi"
+
+    async def test_model_gateway_delegates_stripped_to_v1_compatible(self, monkeypatch):
+        seen = {}
+
+        async def _spy(model, messages, system, base_url, api_key, **k):
+            seen.update(model=model, base_url=base_url, api_key=api_key)
+            return "ok", 1, 1, 0, 0
+
+        monkeypatch.setattr(_llm_mod, "call_v1_compatible", _spy)
+        out = await _llm_mod.call_model_gateway(
+            "synapse.nova-pro", [], "s",
+            {"model_gateway_base_url": "http://gw", "model_gateway_key": "tok"},
+        )
+        assert out[0] == "ok"
+        assert seen == {"model": "nova-pro", "base_url": "http://gw", "api_key": "tok"}
+
+    async def test_model_gateway_402_surfaces_the_figures(self, monkeypatch):
+        body = '{"error":{"message":"model wallet has 0 microUSD available; this call needs about 12"}}'
+
+        async def _refused(*a, **k):
+            raise _llm_mod.LLMError(f"V1-compatible LLM Error: All 5 attempts failed. Last error: HTTP 402: {body}")
+
+        monkeypatch.setattr(_llm_mod, "call_v1_compatible", _refused)
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _llm_mod.call_model_gateway("synapse.nova-pro", [], "s", {"model_gateway_base_url": "http://gw"})
+        assert "model wallet has 0 microUSD available" in str(err.value)
+        assert str(err.value).startswith("Model gateway refused the call")
+
+    async def test_embed_routes_synapse_to_gateway(self, monkeypatch):
+        seen = {}
+
+        async def _spy(texts, model, base_url, api_key, **k):
+            seen.update(model=model, base_url=base_url, api_key=api_key)
+            return [[0.1] * 4 for _ in texts]
+
+        monkeypatch.setattr(_llm_mod, "_embed_v1_compatible", _spy)
+        out = await _llm_mod.embed_batch(
+            ["a", "b"], "synapse.titan-embed-v2",
+            {"model_gateway_base_url": "http://gw", "model_gateway_key": "tok"},
+        )
+        assert len(out) == 2
+        assert seen == {"model": "titan-embed-v2", "base_url": "http://gw", "api_key": "tok"}
+
     async def test_unknown_cloud_model(self, monkeypatch):
         out = await _REAL_GENERATE("hi", "s", "cloud", "weirdmodel", {})
         assert "Unknown cloud model" in out

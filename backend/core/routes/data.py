@@ -197,6 +197,10 @@ async def get_models():
     openai_compatible_embed_models_str = (settings.get("openai_compatible_embed_models") or "").strip()
     local_compatible_embed_models_str = (settings.get("local_compatible_embed_models") or "").strip()
     huggingface_models_str = (settings.get("huggingface_models") or "").strip()
+    model_gateway_base_url = (settings.get("model_gateway_base_url") or "").strip()
+    model_gateway_key = (settings.get("model_gateway_key") or "").strip()
+    model_gateway_models_str = (settings.get("model_gateway_models") or "").strip()
+    model_gateway_embed_models_str = (settings.get("model_gateway_embed_models") or "").strip()
     bedrock_available = bool((settings.get("bedrock_api_key") or "").strip() or
                              (settings.get("aws_access_key_id") or "").strip())
 
@@ -538,6 +542,38 @@ async def get_models():
         prefixed = [f"hf.{m}" if not m.startswith("hf.") else m for m in models]
         return True, prefixed, []
 
+    async def fetch_model_gateway() -> tuple[bool, list[str], list[str]]:
+        """Models served through the configured model gateway (synapse.*).
+
+        Same shape as `fetch_openai_compatible`: the manual lists are the
+        baseline, and a reachable `/v1/models` replaces the chat list.
+        """
+        if not model_gateway_base_url:
+            return False, [], []
+        models = [m.strip() for m in model_gateway_models_str.split(",") if m.strip()]
+        manual_embed = [m.strip() for m in model_gateway_embed_models_str.split(",") if m.strip()]
+        try:
+            url = model_gateway_base_url.rstrip("/")
+            if url.endswith("/v1"):
+                url = url[:-3]
+            async with httpx.AsyncClient() as client:
+                headers = {}
+                if model_gateway_key:
+                    headers["Authorization"] = f"Bearer {model_gateway_key}"
+                r = await client.get(f"{url}/v1/models", headers=headers, timeout=5.0)
+                if r.status_code == 200:
+                    data = r.json().get("data", [])
+                    api_models = sorted(set(m["id"] for m in data if m.get("id")))
+                    if api_models:
+                        models = api_models
+        except Exception as e:
+            print(f"Error fetching model-gateway models: {type(e).__name__}: {e}")
+        prefixed = [f"synapse.{m}" for m in models]
+        auto_embed = [m for m in models if "embed" in m.lower()]
+        all_embed = list(dict.fromkeys(manual_embed + auto_embed))
+        prefixed_embed = [f"synapse.{m}" for m in all_embed]
+        return True, prefixed, prefixed_embed
+
     # Run all fetches concurrently; return_exceptions=True ensures one provider failure
     # doesn't cancel the others.
     _PROVIDER_FALLBACKS = [
@@ -555,8 +591,9 @@ async def get_models():
         (False, [], []),                                                                 # codex_cli
         (False, [], []),                                                                 # github_copilot_cli
         (False, [], []),                                                                 # huggingface
+        (False, [], []),                                                                 # model_gateway
     ]
-    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli", "huggingface"]
+    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli", "huggingface", "model_gateway"]
 
     raw = await asyncio.gather(
         fetch_ollama(), fetch_openai(), fetch_anthropic(),
@@ -565,6 +602,7 @@ async def get_models():
         fetch_claude_cli(), fetch_gemini_cli(), fetch_codex_cli(),
         fetch_github_copilot_cli(),
         fetch_huggingface(),
+        fetch_model_gateway(),
         return_exceptions=True,
     )
 
@@ -590,6 +628,7 @@ async def get_models():
     c_codex_avail, c_codex_chat, _ = results[11]
     c_copilot_avail, c_copilot_chat, _ = results[12]
     hf_avail, hf_chat, _ = results[13]
+    mg_avail, mg_chat, mg_embed = results[14]
 
     # --- Build provider map ---
     providers = {
@@ -607,6 +646,7 @@ async def get_models():
         "codex_cli": {"available": c_codex_avail, "models": c_codex_chat, "embedding_models": []},
         "github_copilot_cli": {"available": c_copilot_avail, "models": c_copilot_chat, "embedding_models": []},
         "huggingface": {"available": hf_avail, "models": hf_chat, "embedding_models": []},
+        "model_gateway": {"available": mg_avail, "models": mg_chat, "embedding_models": mg_embed},
     }
 
     # --- Flat list of all available models ---
@@ -616,7 +656,7 @@ async def get_models():
             all_available.extend(info["models"])
 
     # --- Backward compat ---
-    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat
+    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat + mg_chat
 
     return {
         "providers": providers,
