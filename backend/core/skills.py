@@ -104,6 +104,17 @@ async def save_library(items: list[dict]) -> None:
 # ── disk (read-only) ─────────────────────────────────────────────────────────
 
 def _disk_roots() -> list[Path]:
+    """Where installed skills are looked for, most specific first.
+
+    The home directory is in this list because that is where people actually
+    keep them: a skill is curated by a person and reused across projects, the
+    same way Claude Code has personal skills alongside a project's own. Scanning
+    only the install root found nothing on a machine whose skills all lived in
+    `~/.agents/skills`, which is the ordinary case rather than the exotic one.
+
+    Order is precedence — the first root to define a name wins — so an install's
+    own skills override the operator's personal copies of the same name.
+    """
     roots: list[Path] = []
     env_dir = os.environ.get("SYNAPSE_SKILLS_DIR", "").strip()
     if env_dir:
@@ -111,6 +122,10 @@ def _disk_roots() -> list[Path]:
     backend_root = Path(__file__).resolve().parent.parent
     roots.append(backend_root.parent / ".agents" / "skills")
     roots.append(Path.cwd() / ".agents" / "skills")
+    try:
+        roots.append(Path.home() / ".agents" / "skills")
+    except RuntimeError:
+        pass  # no resolvable home (some service accounts); the others still apply
     seen: set[Path] = set()
     unique: list[Path] = []
     for root in roots:

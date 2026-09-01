@@ -16,6 +16,7 @@ What must be true:
     (agents select skills by name).
 """
 import json
+from pathlib import Path
 
 import pytest
 
@@ -116,6 +117,24 @@ class TestDiskAndMerge:
 
         resolved = await resolve_selected(["market-summary", "no-such-skill"])
         assert [s["source"] for s in resolved] == ["library"]  # unknown skipped, library wins
+
+    def test_home_directory_is_scanned(self, tmp_path, monkeypatch):
+        """Skills live in `~/.agents/skills` on a real machine.
+
+        Scanning only the install root and the cwd found nothing on a laptop
+        whose skills were all personal — reported as "the skills section is
+        empty even though I have skills in .agents/skills".
+        """
+        home = tmp_path / "home"
+        (home / ".agents" / "skills" / "personal-skill").mkdir(parents=True)
+        (home / ".agents" / "skills" / "personal-skill" / "SKILL.md").write_text(
+            "---\nname: personal-skill\ndescription: Lives in the home directory\n---\nBody.",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("SYNAPSE_SKILLS_DIR", raising=False)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+        assert "personal-skill" in {s["name"] for s in scan_disk_skills()}
 
     def test_roster_carries_names_and_descriptions_only(self):
         roster = render_roster([{"name": "a-skill", "description": "does A"}])
