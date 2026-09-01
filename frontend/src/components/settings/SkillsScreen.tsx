@@ -13,14 +13,13 @@
  * until the agent calls load_skill.
  */
 import { useCallback, useEffect, useState } from "react";
-import { Download, Eye, HardDrive, Library, Pencil, PencilLine, Plus, Trash } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Download, Eye, EyeOff, HardDrive, Library, Pencil, Plus, Trash } from "lucide-react";
 
 import {
     Badge, Button, Card, CardBody, ConfirmDialog, EmptyState, Field, IconButton,
-    Input, Modal, Textarea, Toast, useToast,
+    Input, Label, Modal, Textarea, Toast, useToast,
 } from "@/components/ui";
+import { renderTextContent } from "@/lib/utils";
 
 type Skill = {
     name: string;
@@ -292,80 +291,45 @@ export function SkillsScreen() {
                                 placeholder="When and how to format the weekly market summary"
                             />
                         </Field>
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium text-text">Instructions (markdown)</span>
-                            <div className="flex overflow-hidden rounded-md border border-border">
-                                {(["edit", "preview"] as const).map((tab) => {
-                                    const TabIcon = tab === "edit" ? PencilLine : Eye;
-                                    return (
-                                        <button
-                                            key={tab}
-                                            type="button"
-                                            onClick={() => setDraftTab(tab)}
-                                            aria-pressed={draftTab === tab}
-                                            className={`flex items-center gap-1 px-2.5 py-1 text-xs transition-colors ${
-                                                draftTab === tab
-                                                    ? "bg-accent text-accent-fg"
-                                                    : "bg-surface text-text-muted hover:bg-surface-2"
-                                            }`}
-                                        >
-                                            <TabIcon size={11} aria-hidden />
-                                            {tab === "edit" ? "Edit" : "Preview"}
-                                        </button>
-                                    );
-                                })}
+                        {/* Instructions, with the same Preview/Edit affordance the
+                            agent editor's System Prompt uses — one toggle button, and
+                            `renderTextContent`, so both screens render markdown
+                            identically instead of each keeping its own overrides.
+
+                            Both panes share one height, and it is clamped against the
+                            viewport rather than fixed: everything else in the dialog is
+                            ~390px, so the pane absorbing the remainder is what keeps the
+                            modal body from growing its own scrollbar next to the pane's.
+                            Two nested scrollbars was the bug. */}
+                        <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                                <Label className="block">Instructions (markdown)</Label>
+                                <button
+                                    type="button"
+                                    onClick={() => setDraftTab(draftTab === "preview" ? "edit" : "preview")}
+                                    className="flex items-center gap-1.5 px-2 py-1 text-2xs font-bold text-text-faint transition-colors hover:text-text"
+                                >
+                                    {draftTab === "preview"
+                                        ? <><EyeOff className="h-3 w-3" aria-hidden /> EDIT</>
+                                        : <><Eye className="h-3 w-3" aria-hidden /> PREVIEW</>}
+                                </button>
                             </div>
+                            {draftTab === "preview" ? (
+                                <div className="h-[clamp(160px,calc(85vh-390px),320px)] w-full overflow-y-auto rounded-md border border-border bg-bg p-4 text-sm leading-relaxed text-text">
+                                    {renderTextContent(draft.body || "*No instructions yet.*")}
+                                </div>
+                            ) : (
+                                <Textarea
+                                    value={draft.body}
+                                    onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+                                    className="h-[clamp(160px,calc(85vh-390px),320px)] w-full resize-none font-mono text-xs leading-relaxed"
+                                    placeholder={"# My skill\n\nStep-by-step instructions the agent follows once loaded…"}
+                                />
+                            )}
+                            <p className="text-2xs text-text-faint">
+                                Loaded into the agent&apos;s context only when it calls load_skill.
+                            </p>
                         </div>
-                        {draftTab === "preview" ? (
-                            <div className="max-h-80 overflow-y-auto rounded-md border border-border bg-bg px-3 py-2">
-                                {draft.body.trim() ? (
-                                    /* Explicit overrides rather than a `prose` class: there is no
-                                       typography plugin here, and preflight resets headings and
-                                       lists to nothing — which is exactly what a skill body is
-                                       made of. Same approach the run log already uses. */
-                                    <div className="text-sm text-text-muted">
-                                        <ReactMarkdown
-                                            remarkPlugins={[remarkGfm]}
-                                            components={{
-                                                h1: ({ children }) => <h1 className="mb-1.5 mt-3 text-base font-semibold text-text first:mt-0">{children}</h1>,
-                                                h2: ({ children }) => <h2 className="mb-1 mt-3 text-sm font-semibold text-text first:mt-0">{children}</h2>,
-                                                h3: ({ children }) => <h3 className="mb-1 mt-2.5 text-xs font-semibold uppercase tracking-wide text-text-muted first:mt-0">{children}</h3>,
-                                                p: ({ children }) => <p className="mb-2 leading-relaxed">{children}</p>,
-                                                ul: ({ children }) => <ul className="mb-2 list-disc space-y-0.5 pl-5">{children}</ul>,
-                                                ol: ({ children }) => <ol className="mb-2 list-decimal space-y-0.5 pl-5">{children}</ol>,
-                                                li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-                                                strong: ({ children }) => <strong className="font-semibold text-text">{children}</strong>,
-                                                a: ({ href, children }) => <a href={href} className="text-accent underline" target="_blank" rel="noreferrer">{children}</a>,
-                                                code: ({ children }) => <code className="rounded-md bg-surface-2 px-1 py-0.5 font-code text-[11px] text-text">{children}</code>,
-                                                pre: ({ children }) => <pre className="mb-2 overflow-x-auto rounded-md bg-surface-2 p-2 font-code text-[11px]">{children}</pre>,
-                                                blockquote: ({ children }) => <blockquote className="mb-2 border-l-2 border-border pl-3 italic">{children}</blockquote>,
-                                                hr: () => <hr className="my-3 border-border" />,
-                                                table: ({ children }) => <div className="mb-2 overflow-x-auto"><table className="w-full text-xs">{children}</table></div>,
-                                                th: ({ children }) => <th className="border-b border-border px-2 py-1 text-left font-semibold text-text">{children}</th>,
-                                                td: ({ children }) => <td className="border-b border-border/50 px-2 py-1">{children}</td>,
-                                            }}
-                                        >{draft.body}</ReactMarkdown>
-                                    </div>
-                                ) : (
-                                    <p className="text-xs text-text-faint">
-                                        Nothing to preview yet — switch to Edit and write the instructions.
-                                    </p>
-                                )}
-                            </div>
-                        ) : (
-                        <Field
-                            label=""
-                            hint="Loaded into the agent's context only when it calls load_skill."
-                        >
-                            <Textarea
-                                value={draft.body}
-                                onChange={(e) => setDraft({ ...draft, body: e.target.value })}
-                                rows={14}
-                                className="font-mono text-xs"
-                                placeholder={"# My skill\n\nStep-by-step instructions the agent follows once loaded…"}
-                            />
-                        </Field>
-                        )}
                     </div>
                 )}
             </Modal>
