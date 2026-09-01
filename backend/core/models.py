@@ -129,6 +129,12 @@ class Settings(BaseModel):
     report_agent_enabled: bool = True
     coding_agent_enabled: bool = True
     messaging_enabled: bool = True
+    # Public HTTPS base a platform can reach this deployment at (a domain or a
+    # tunnel). Only webhook-mode messaging channels need it: the Telegram
+    # adapter registers `{base}/api/messaging/telegram/webhook/{id}` with
+    # setWebhook, and the UI shows the equivalent URL to paste into the Slack
+    # and Discord portals. Empty = polling modes only.
+    messaging_webhook_base_url: str = ""
     login_enabled: bool = False
     login_username: str = ""
     login_password_hash: str = ""

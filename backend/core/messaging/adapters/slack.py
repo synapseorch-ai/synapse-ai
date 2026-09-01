@@ -1,11 +1,22 @@
 """
-Slack adapter using slack-bolt >= 1.18 with Socket Mode.
-No public URL required — uses an outbound WebSocket connection to Slack.
+Slack adapter. Two receive modes:
 
-Required Slack App permissions:
+* **polling** (default; historically "Socket Mode") — slack-bolt holds an
+  outbound WebSocket. No public URL required. Needs the `app_token`
+  (xapp-..., connections:write) beside the bot token.
+* **webhook** — the app's Event Subscriptions Request URL points at
+  `{base}/api/messaging/slack/webhook/{channel_id}` and deliveries arrive
+  through `core/routes/messaging.py` after the signing-secret check
+  (`core/messaging/verify.py::verify_slack`). Needs `signing_secret` in the
+  channel credentials instead of `app_token`; nothing is held open and
+  slack-bolt is never imported.
+
+Required Slack App permissions either way:
   Bot Token Scopes: app_mentions:read, channels:history, chat:write, im:history, im:write
   Event Subscriptions: message.im, app_mention
-  Socket Mode: enabled (generates App-Level Token with connections:write scope)
+
+Sending is identical in both modes: `chat.postMessage` over REST via
+`core/messaging/senders.py`.
 """
 import asyncio
 import logging
@@ -26,10 +37,19 @@ class SlackAdapter(MessagingAdapter):
         self._handler = None
         self._task: asyncio.Task | None = None
         creds = channel["credentials"]
-        self.bot_token: str = creds["bot_token"]   # xoxb-...
-        self.app_token: str = creds["app_token"]   # xapp-...
+        self.bot_token: str = creds["bot_token"]        # xoxb-...
+        self.app_token: str = creds.get("app_token", "")  # xapp-... (socket mode only)
+        self._slack_app = None
 
     async def start(self) -> None:
+        if self.mode == "webhook":
+            await self._start_webhook()
+            return
+        if not self.app_token:
+            raise RuntimeError(
+                "Socket Mode needs an App-Level Token (xapp-...). "
+                "Either add one, or switch the channel to webhook mode."
+            )
         try:
             from slack_bolt.async_app import AsyncApp
             from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -99,7 +119,40 @@ class SlackAdapter(MessagingAdapter):
         self._task = asyncio.create_task(_run())
         logger.info("[Slack] Adapter started for channel %s", self.channel_id)
 
+    async def _start_webhook(self) -> None:
+        """Prove the bot token works; Slack pushes to the route from here on.
+
+        `auth.test` is the cheapest authenticated call Slack has, and failing
+        now surfaces a bad token as the channel's error instead of as silence
+        when the first event arrives.
+        """
+        import httpx
+
+        if not self.channel.get("credentials", {}).get("signing_secret"):
+            raise RuntimeError(
+                "Webhook mode needs the app's Signing Secret in the channel "
+                "credentials — it is what authenticates each delivery."
+            )
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://slack.com/api/auth.test",
+                headers={"Authorization": f"Bearer {self.bot_token}"},
+            )
+            body = resp.json() if resp.status_code == 200 else {}
+            if not body.get("ok"):
+                raise RuntimeError(
+                    f"auth.test failed: {body.get('error') or resp.status_code}"
+                )
+        logger.info(
+            "[Slack] Webhook mode ready for channel %s (bot %s)",
+            self.channel_id,
+            body.get("user"),
+        )
+
     async def stop(self) -> None:
+        if self.mode == "webhook":
+            logger.info("[Slack] Adapter stopped for channel %s", self.channel_id)
+            return
         if self._handler:
             try:
                 await self._handler.close_async()
@@ -114,10 +167,8 @@ class SlackAdapter(MessagingAdapter):
         logger.info("[Slack] Adapter stopped for channel %s", self.channel_id)
 
     async def _send_raw(self, chat_id: str, text: str) -> None:
-        if not self._slack_app or not text.strip():
+        if not text.strip():
             return
-        await self._slack_app.client.chat_postMessage(
-            channel=chat_id,
-            text=text,
-            mrkdwn=True,
-        )
+        from core.messaging import senders
+
+        await senders.send_slack_raw({"bot_token": self.bot_token}, chat_id, text)

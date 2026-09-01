@@ -6,7 +6,7 @@ The shared dispatch logic lives here.
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from core.messaging.markdown import format_for_platform
 
@@ -43,6 +43,10 @@ class MessagingAdapter(ABC):
         self.platform: str = channel["platform"]
         self.agent_id: str = channel.get("agent_id", "default")
         self.multi_agent_mode: bool = channel.get("multi_agent_mode", False)
+        # "polling" holds a connection to the platform; "webhook" holds nothing
+        # and receives through core/routes/messaging.py. Sending is identical
+        # in both modes (REST, via core/messaging/senders.py).
+        self.mode: str = channel.get("mode", "polling")
         # Tracks the most recent chat_id that sent a message -- used for proactive
         # schedule completion notifications when no notify_chat_id is configured.
         self._last_chat_id: Optional[str] = None
@@ -165,13 +169,21 @@ class MessagingAdapter(ABC):
         user_text: str,
         user_id: str,
         session_id: Optional[str] = None,
+        send: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> None:
         """
         Route an incoming message through the agent's ReAct loop.
         Also checks if this message resolves a pending human-step Future.
+
+        `send` replaces `send_message` for this one exchange — a webhook
+        transport that must answer through a delivery-specific route (Discord's
+        interaction follow-up) passes its own; everything else answers into the
+        conversation.
         """
         if session_id is None:
             session_id = f"{self.platform}_{self.channel_id}_{chat_id}"
+        if send is None:
+            send = self.send_message
 
         # Track most recent chat_id for proactive schedule notifications
         self._last_chat_id = chat_id
@@ -184,7 +196,7 @@ class MessagingAdapter(ABC):
             response=user_text,
         )
         if resolved:
-            await self.send_message(
+            await send(
                 chat_id,
                 "? Response received. Resuming the workflow..."
             )
@@ -206,4 +218,60 @@ class MessagingAdapter(ABC):
 
         # -- 4. Send response ---------------------------------------------
         if response:
-            await self.send_message(chat_id, response)
+            await send(chat_id, response)
+
+    # ------------------------------------------------------------------ #
+    # Webhook-mode entry point
+    # ------------------------------------------------------------------ #
+
+    async def handle_inbound(
+        self,
+        payload: dict,
+        send: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    ) -> None:
+        """One provider webhook delivery, already signature-verified upstream.
+
+        The webhook counterpart of the platform callbacks the polling adapters
+        register: parse the payload (`core/messaging/inbound.py`), remember the
+        conversation for proactive sends, run the shared command handling, and
+        dispatch. Subclasses override only when a delivery needs an answer the
+        conversation cannot carry (Discord's interactions).
+        """
+        from core.messaging import inbound as inbound_messages
+
+        message = inbound_messages.parse(self.platform, payload)
+        if message is None:
+            return
+
+        # Durable sibling of `_last_chat_id`: proactive sends (schedule
+        # results, run notifications, human-step prompts) need somewhere to go
+        # even after a restart, and for most platforms the only way to learn a
+        # conversation id is to be spoken to in it.
+        try:
+            from core.messaging import store as channel_store
+            await channel_store.set_default_conversation(
+                self.channel_id, message.conversation_id
+            )
+        except Exception:
+            logger.debug("[%s] could not persist default conversation", self.platform)
+
+        session_id = f"{self.platform}_{self.channel_id}_{message.conversation_id}"
+
+        if message.text.startswith("/"):
+            parts = message.text.split(" ", 1)
+            consumed = await self._handle_command(
+                message.conversation_id,
+                parts[0],
+                parts[1] if len(parts) > 1 else "",
+                session_id,
+            )
+            if consumed:
+                return
+
+        await self._dispatch(
+            message.conversation_id,
+            message.text,
+            message.user_id,
+            session_id,
+            send=send,
+        )

@@ -1,6 +1,21 @@
 """
-Discord adapter using discord.py >= 2.3.
-No public URL required — uses a persistent websocket connection to Discord.
+Discord adapter. Two receive modes:
+
+* **polling** (default) — discord.py >= 2.3 holds the gateway websocket and
+  answers DMs and @-mentions. No public URL required.
+* **webhook** — the application's Interactions Endpoint URL points at
+  `{base}/api/messaging/discord/webhook/{channel_id}` and slash-command
+  invocations arrive through `core/routes/messaging.py` after the Ed25519
+  check (`core/messaging/verify.py::verify_discord`). Needs `public_key` and
+  `application_id` in the channel credentials; nothing is held open and
+  discord.py is never imported. What webhook mode gives up is ambient
+  messages — Discord only pushes *interactions* over HTTP, so the bot answers
+  `/ask` and nothing else.
+
+Sending is identical in both modes: channel REST via
+`core/messaging/senders.py`. A slash command is answered through its
+interaction follow-up while the 15-minute token lasts, falling back to a
+plain channel message after that.
 """
 import asyncio
 import logging
@@ -24,8 +39,13 @@ class DiscordAdapter(MessagingAdapter):
         self.bot_token: str = creds["bot_token"]
         # Optional: restrict to a specific Discord channel ID
         self.restrict_channel_id: str | None = creds.get("channel_id")
+        # Webhook mode only
+        self.application_id: str = creds.get("application_id", "")
 
     async def start(self) -> None:
+        if self.mode == "webhook":
+            await self._start_webhook()
+            return
         try:
             import discord
         except ImportError:
@@ -88,7 +108,96 @@ class DiscordAdapter(MessagingAdapter):
         self._task = asyncio.create_task(_run())
         logger.info("[Discord] Adapter started for channel %s", self.channel_id)
 
+    async def _start_webhook(self) -> None:
+        """Register the `/ask` slash command; Discord pushes interactions from here.
+
+        Registration is an idempotent bulk PUT — running it on every start is
+        how the command survives the application being reinstalled.
+        """
+        import httpx
+
+        creds = self.channel.get("credentials", {})
+        if not creds.get("public_key") or not self.application_id:
+            raise RuntimeError(
+                "Webhook mode needs the application's Public Key and "
+                "Application ID — both are on the Discord developer portal's "
+                "General Information page."
+            )
+        commands = [
+            {
+                "name": "ask",
+                "description": "Ask the agent",
+                "type": 1,  # CHAT_INPUT
+                "options": [
+                    {
+                        "name": "message",
+                        "description": "What to ask",
+                        "type": 3,  # STRING
+                        "required": True,
+                    }
+                ],
+            }
+        ]
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.put(
+                f"https://discord.com/api/v10/applications/{self.application_id}/commands",
+                json=commands,
+                headers={"Authorization": f"Bot {self.bot_token}"},
+            )
+            if resp.status_code not in (200, 201):
+                raise RuntimeError(
+                    f"command registration failed: {resp.status_code} {resp.text[:200]}"
+                )
+        logger.info("[Discord] Webhook mode ready for channel %s", self.channel_id)
+
+    async def handle_inbound(self, payload: dict, send=None) -> None:
+        """Answer a slash command through its interaction, not the channel.
+
+        The route has already ACKed the interaction as deferred ("thinking…"),
+        so the first chunk of the answer must PATCH that placeholder — a plain
+        channel message would leave the placeholder spinning forever. Later
+        chunks, and anything after the token's 15-minute window, go to the
+        channel like any other send.
+        """
+        from core.messaging import inbound as inbound_messages
+
+        message = inbound_messages.parse("discord", payload)
+        if message is not None and message.interaction and send is None:
+            interaction = message.interaction
+            replied = False
+
+            async def send_via_interaction(chat_id: str, text: str) -> None:
+                nonlocal replied
+                from core.messaging.markdown import format_for_platform
+                from core.messaging import senders
+
+                chunks = format_for_platform("discord", text)
+                for chunk in chunks:
+                    if not replied:
+                        try:
+                            await senders.send_discord_followup(
+                                interaction["application_id"],
+                                interaction["token"],
+                                chunk,
+                            )
+                            replied = True
+                            continue
+                        except Exception as e:
+                            logger.warning(
+                                "[Discord] follow-up failed, using channel: %s", e
+                            )
+                            replied = True  # don't retry the dead token per chunk
+                    await senders.send_discord_raw(
+                        {"bot_token": self.bot_token}, chat_id, chunk
+                    )
+
+            send = send_via_interaction
+        await super().handle_inbound(payload, send=send)
+
     async def stop(self) -> None:
+        if self.mode == "webhook":
+            logger.info("[Discord] Adapter stopped for channel %s", self.channel_id)
+            return
         if self._client and not self._client.is_closed():
             await self._client.close()
         if self._task:
@@ -100,13 +209,8 @@ class DiscordAdapter(MessagingAdapter):
         logger.info("[Discord] Adapter stopped for channel %s", self.channel_id)
 
     async def _send_raw(self, chat_id: str, text: str) -> None:
-        if not self._client or not text.strip():
+        if not text.strip():
             return
-        channel = self._client.get_channel(int(chat_id))
-        if channel is None:
-            try:
-                channel = await self._client.fetch_channel(int(chat_id))
-            except Exception as e:
-                logger.error("[Discord] Cannot fetch channel %s: %s", chat_id, e)
-                return
-        await channel.send(text)
+        from core.messaging import senders
+
+        await senders.send_discord_raw({"bot_token": self.bot_token}, chat_id, text)

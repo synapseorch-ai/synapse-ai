@@ -1,8 +1,12 @@
 """
 REST API for messaging channel management.
-Includes webhook endpoints for Teams and WhatsApp (which require inbound HTTP).
+
+Includes the webhook endpoints: the platform-specific Teams/WhatsApp pair that
+predate webhook mode, and the generic verified endpoint every webhook-mode
+channel (Telegram, Slack, Discord) receives through.
 """
-import time
+import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
@@ -29,11 +33,19 @@ def _get_manager(request: Request):
 
 @router.get("/api/messaging/channels")
 async def list_channels(request: Request, agent_id: str | None = None):
-    """List all channels with live status, optionally filtered by agent."""
+    """List all channels with live status, optionally filtered by agent.
+
+    The agent filter goes through the assignment join (with its legacy-scalar
+    fallback), and every channel carries its `agent_ids` so the UI can show
+    who answers where without a request per channel.
+    """
     manager = _get_manager(request)
     channels = await manager.get_status()
     if agent_id:
-        channels = [c for c in channels if c.get("agent_id") == agent_id]
+        assigned = {c["id"] for c in await channel_store.get_channels_for_agent(agent_id)}
+        channels = [c for c in channels if c["id"] in assigned]
+    for ch in channels:
+        ch["agent_ids"] = await channel_store.get_agent_ids_for_channel(ch["id"])
     return channels
 
 
@@ -57,6 +69,40 @@ async def delete_channel(channel_id: str, request: Request):
     if not deleted:
         raise HTTPException(status_code=404, detail="Channel not found")
     return {"status": "deleted", "channel_id": channel_id}
+
+
+# ── Assignments — channels are standalone; agents are assigned ────────────────
+
+@router.get("/api/messaging/channels/{channel_id}/assignments")
+async def list_assignments(channel_id: str, request: Request):
+    _get_manager(request)
+    if not await channel_store.get_channel(channel_id):
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return await channel_store.list_assignments(channel_id)
+
+
+@router.post("/api/messaging/channels/{channel_id}/assignments")
+async def assign_agent(channel_id: str, request: Request):
+    """Bind an agent to a channel. Body: `{agent_id, is_default?}`."""
+    _get_manager(request)
+    if not await channel_store.get_channel(channel_id):
+        raise HTTPException(status_code=404, detail="Channel not found")
+    body = await request.json()
+    agent_id = (body.get("agent_id") or "").strip()
+    if not agent_id:
+        raise HTTPException(status_code=422, detail="agent_id is required")
+    return await channel_store.assign_channel(
+        channel_id, agent_id, is_default=body.get("is_default")
+    )
+
+
+@router.delete("/api/messaging/channels/{channel_id}/assignments/{agent_id}")
+async def unassign_agent(channel_id: str, agent_id: str, request: Request):
+    _get_manager(request)
+    removed = await channel_store.unassign_channel(channel_id, agent_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return {"status": "removed", "channel_id": channel_id, "agent_id": agent_id}
 
 
 # ── Enable / Disable ──────────────────────────────────────────────────────────
@@ -145,6 +191,86 @@ async def test_channel(channel_id: str, request: Request):
         "status": "ok",
         "message": f"{platform.title()} adapter is running.",
     }
+
+
+# ── Generic webhook (webhook-mode Telegram / Slack / Discord) ─────────────────
+
+@router.post("/api/messaging/{platform}/webhook/{channel_id}")
+async def platform_webhook(platform: str, channel_id: str, request: Request):
+    """One provider delivery for a webhook-mode channel.
+
+    Signature first, on the exact bytes received, before anything is parsed —
+    the channel's own credentials say what to check
+    (`core/messaging/verify.py`). Then the handshakes platforms probe with
+    (Slack's `url_verification`, Discord's PING) are answered from the payload
+    alone, and a real message is dispatched **in the background**: Slack and
+    Discord retry any delivery not answered within seconds, and an agent turn
+    takes longer than that. The 200 means "received", not "answered" — the
+    answer arrives in the conversation when the agent is done.
+    """
+    from core.messaging import inbound, verify
+
+    if platform not in ("telegram", "slack", "discord"):
+        raise HTTPException(status_code=404, detail="Unknown platform")
+
+    manager = _get_manager(request)
+    ch = await channel_store.get_channel(channel_id)
+    if not ch or ch.get("platform") != platform:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    body = await request.body()
+    creds = ch.get("credentials") or {}
+    if platform == "telegram":
+        ok = verify.verify_telegram(
+            creds.get("webhook_secret", ""),
+            request.headers.get("x-telegram-bot-api-secret-token", ""),
+        )
+    elif platform == "slack":
+        ok = verify.verify_slack(
+            creds.get("signing_secret", ""),
+            request.headers.get("x-slack-request-timestamp", ""),
+            request.headers.get("x-slack-signature", ""),
+            body,
+        )
+    else:
+        ok = verify.verify_discord(
+            creds.get("public_key", ""),
+            request.headers.get("x-signature-ed25519", ""),
+            request.headers.get("x-signature-timestamp", ""),
+            body,
+        )
+    if not ok:
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Body is not JSON")
+
+    # Platform handshakes — answered whether or not the channel is running,
+    # because they arrive while someone is still setting the channel up.
+    if platform == "slack":
+        challenge = inbound.slack_url_verification(payload)
+        if challenge is not None:
+            return {"challenge": challenge}
+    if platform == "discord" and inbound.discord_is_ping(payload):
+        return inbound.DISCORD_PONG
+
+    adapter = manager.get_adapter(channel_id, platform=platform)
+    if adapter is None:
+        # 200, not an error: a disabled channel must not put the platform into
+        # a retry loop. Discord needs a real interaction response to say so.
+        if platform == "discord":
+            return {"type": 4, "data": {"content": "This channel is disabled."}}
+        return {"status": "ignored", "reason": "channel not running"}
+
+    asyncio.create_task(adapter.handle_inbound(payload))
+
+    if platform == "discord":
+        # "Thinking…" — buys the 15-minute follow-up window the adapter
+        # answers through.
+        return inbound.DISCORD_DEFERRED_REPLY
+    return {"status": "ok"}
 
 
 # ── Teams Webhook ─────────────────────────────────────────────────────────────

@@ -326,8 +326,14 @@ class ScheduleManager:
             if not adapter:
                 continue
 
-            # Prefer an explicitly configured notification target
-            chat_id = ch.get("notify_chat_id") or getattr(adapter, "_last_chat_id", None)
+            # Prefer an explicitly configured notification target; the stored
+            # default conversation covers webhook-mode channels and restarts,
+            # where the in-memory _last_chat_id is empty.
+            chat_id = (
+                ch.get("notify_chat_id")
+                or ch.get("default_conversation_id")
+                or getattr(adapter, "_last_chat_id", None)
+            )
             if not chat_id:
                 logger.debug(
                     "[Scheduler] No chat_id for channel %s -- skipping notification", ch["id"]

@@ -86,6 +86,15 @@ class MessagingManager:
             await self.stop_channel(channel_id)
 
         platform = ch.get("platform", "")
+
+        # The adapter's default agent comes from the assignment join, with the
+        # legacy scalar as fallback (core/messaging/store.py). Injected into the
+        # runtime copy only — never saved back — so the adapter keeps its
+        # one-`agent_id` view of the world while the store holds many.
+        default_agent = await channel_store.get_default_agent_id(channel_id)
+        if default_agent:
+            ch["agent_id"] = default_agent
+
         try:
             AdapterClass = _import_adapter(platform)
             adapter = AdapterClass(ch, self)
@@ -111,6 +120,20 @@ class MessagingManager:
     async def restart_channel(self, channel_id: str) -> None:
         await self.stop_channel(channel_id)
         await self.start_channel(channel_id)
+
+    def get_adapter(self, channel_id: str, platform: str | None = None):
+        """The running adapter for a channel, or None.
+
+        The generic webhook route uses this instead of the per-platform
+        registries below; `platform` guards against a delivery addressed to
+        the right channel id on the wrong platform's URL.
+        """
+        adapter = self._adapters.get(channel_id)
+        if adapter is None:
+            return None
+        if platform is not None and adapter.platform != platform:
+            return None
+        return adapter
 
     # ------------------------------------------------------------------ #
     # Status

@@ -1,6 +1,17 @@
 """
-Telegram adapter using python-telegram-bot >= 20 (async long-polling).
-No public URL required — polling is outbound-only.
+Telegram adapter. Two receive modes:
+
+* **polling** (default) — python-telegram-bot >= 20 long-polls `getUpdates`.
+  No public URL required; the right mode for a laptop or a LAN install.
+* **webhook** — `setWebhook` points Telegram at
+  `{messaging_webhook_base_url}/api/messaging/telegram/webhook/{channel_id}`,
+  and deliveries arrive through `core/routes/messaging.py` after the
+  `X-Telegram-Bot-Api-Secret-Token` check. No connection is held and the
+  optional python-telegram-bot dependency is never imported. A bot can only be
+  in one mode at a time — Telegram itself refuses `getUpdates` while a webhook
+  is set, so a token shared with another install will fight over this.
+
+Sending is identical in both modes: plain REST via `core/messaging/senders.py`.
 """
 import asyncio
 import logging
@@ -23,6 +34,9 @@ class TelegramAdapter(MessagingAdapter):
         self.bot_token: str = channel["credentials"]["bot_token"]
 
     async def start(self) -> None:
+        if self.mode == "webhook":
+            await self._start_webhook()
+            return
         try:
             from telegram.ext import Application, MessageHandler, CommandHandler, filters
         except ImportError:
@@ -58,7 +72,64 @@ class TelegramAdapter(MessagingAdapter):
         self._task = asyncio.create_task(_run())
         logger.info("[Telegram] Adapter started for channel %s", self.channel_id)
 
+    async def _start_webhook(self) -> None:
+        """Register the webhook with Telegram. Holds nothing afterwards.
+
+        The secret token is minted here on first start and persisted on the
+        channel, because it has to match what the webhook route later compares
+        against (`core/messaging/verify.py::verify_telegram`).
+        """
+        import secrets as _secrets
+
+        import httpx
+
+        from core.config import load_settings
+        from core.messaging import store as channel_store
+
+        base = (load_settings().get("messaging_webhook_base_url") or "").rstrip("/")
+        if not base:
+            raise RuntimeError(
+                "Webhook mode needs messaging_webhook_base_url in Settings — "
+                "a public HTTPS address Telegram can reach."
+            )
+
+        secret = self.channel.get("credentials", {}).get("webhook_secret")
+        if not secret:
+            secret = _secrets.token_urlsafe(32)
+            self.channel.setdefault("credentials", {})["webhook_secret"] = secret
+            await channel_store.save_channel(self.channel)
+
+        url = f"{base}/api/messaging/telegram/webhook/{self.channel_id}"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{self.bot_token}/setWebhook",
+                json={
+                    "url": url,
+                    "secret_token": secret,
+                    "drop_pending_updates": True,
+                },
+            )
+            body = resp.json() if resp.status_code == 200 else {}
+            if not body.get("ok"):
+                raise RuntimeError(
+                    f"setWebhook failed: {resp.status_code} "
+                    f"{body.get('description') or resp.text[:200]}"
+                )
+        logger.info("[Telegram] Webhook registered for channel %s", self.channel_id)
+
     async def stop(self) -> None:
+        if self.mode == "webhook":
+            import httpx
+
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{self.bot_token}/deleteWebhook"
+                    )
+            except Exception as e:
+                logger.warning("[Telegram] deleteWebhook failed: %s", e)
+            logger.info("[Telegram] Webhook removed for channel %s", self.channel_id)
+            return
         if self._task:
             self._task.cancel()
             try:
@@ -75,13 +146,12 @@ class TelegramAdapter(MessagingAdapter):
         logger.info("[Telegram] Adapter stopped for channel %s", self.channel_id)
 
     async def _send_raw(self, chat_id: str, text: str) -> None:
-        from telegram.constants import ParseMode
-        if not self._app or not text.strip():
+        if not text.strip():
             return
-        await self._app.bot.send_message(
-            chat_id=int(chat_id),
-            text=text,
-            parse_mode=ParseMode.MARKDOWN_V2,
+        from core.messaging import senders
+
+        await senders.send_telegram_raw(
+            {"bot_token": self.bot_token}, chat_id, text
         )
 
     # ------------------------------------------------------------------ #

@@ -162,6 +162,7 @@ _DEFAULTS = {
         "coding_agent_enabled": True,
         "report_agent_enabled": True,
         "messaging_enabled": True,
+        "messaging_webhook_base_url": "",
         "embed_code": False,
         "bash_allowed_dirs": [],
         # ── MCP stdio server registration (security) ──
