@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import tempfile
+import weakref
 from contextlib import contextmanager
 from urllib.parse import urlparse
 
@@ -36,12 +37,64 @@ logging.getLogger("crawl4ai.async_webcrawler").setLevel(logging.ERROR)
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
 
+from core.egress_guard import BlockedEgress, check_host, check_url
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 MAX_MARKDOWN_LEN = 50_000
 MAX_SCREENSHOT_B64 = 2_000_000  # auto-save to tmp file above this size
+
+# ---------------------------------------------------------------------------
+# Egress guard — the browser must not reach private networks
+# ---------------------------------------------------------------------------
+#
+# The pre-flight `check_url` calls in the handlers give clean, attributable
+# errors, but they only see the URL the tool was handed. Redirect hops,
+# `js_code`-driven navigation, and in-page fetches all happen inside Chromium,
+# so the deny has to sit on the browser's own network layer too: every request
+# in every context goes through `_guard_route`, and anything that lands in a
+# blocked range is aborted before a connection is opened.
+
+_routed_contexts: weakref.WeakSet = weakref.WeakSet()
+
+
+async def _guard_route(route) -> None:
+    allowed = False
+    try:
+        parsed = urlparse(route.request.url)
+        if parsed.scheme in {"http", "https"}:
+            await check_host(parsed.hostname or "")
+            allowed = True
+    except Exception:
+        # BlockedEgress, a resolution failure, or a guard bug: never fail open.
+        allowed = False
+    try:
+        if allowed:
+            await route.continue_()
+        else:
+            await route.abort("blockedbyclient")
+    except Exception:
+        pass  # the page or request is already gone
+
+
+async def _attach_egress_guard(page, context=None, **kwargs):
+    ctx = context if context is not None else page.context
+    if ctx not in _routed_contexts:
+        await ctx.route("**/*", _guard_route)
+        _routed_contexts.add(ctx)
+    return page
+
+
+async def _preflight(url: str) -> str | None:
+    """Error message if this URL must not be fetched, else None."""
+    try:
+        await check_url(url)
+    except BlockedEgress as exc:
+        return f"URL blocked: {exc}"
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Crawler singleton — started lazily on first use
@@ -67,6 +120,9 @@ async def get_crawler() -> AsyncWebCrawler:
                 ),
             )
             _crawler = AsyncWebCrawler(config=config)
+            _crawler.crawler_strategy.set_hook(
+                "on_page_context_created", _attach_egress_guard
+            )
             await _crawler.start()
     return _crawler
 
@@ -495,6 +551,8 @@ async def _handle_scrape_url(args: dict) -> list[types.TextContent]:
     url = args.get("url", "").strip()
     if not url:
         return _err("url is required")
+    if (blocked := await _preflight(url)) is not None:
+        return _err(blocked)
 
     crawler = await get_crawler()
     run_config = _build_run_config(
@@ -534,6 +592,8 @@ async def _handle_scrape_structured(args: dict) -> list[types.TextContent]:
         return _err("url is required")
     if not schema or not schema.get("baseSelector") or not schema.get("fields"):
         return _err("schema must include baseSelector and fields")
+    if (blocked := await _preflight(url)) is not None:
+        return _err(blocked)
 
     strategy = JsonCssExtractionStrategy(schema, verbose=False)
     crawler = await get_crawler()
@@ -574,6 +634,8 @@ async def _handle_crawl_multiple(args: dict) -> list[types.TextContent]:
     include_links = args.get("include_links", False)
 
     async def scrape_one(url: str) -> dict:
+        if (blocked := await _preflight(url)) is not None:
+            return {"url": url, "success": False, "error": blocked}
         try:
             with _stderr_stdout():
                 r = await crawler.arun(url=url, config=run_config)
@@ -589,13 +651,25 @@ async def _handle_crawl_multiple(args: dict) -> list[types.TextContent]:
             return {"url": url, "success": False, "error": str(exc)}
 
     results = await asyncio.gather(*[scrape_one(u) for u in urls])
-    return _ok({"success": True, "count": len(results), "results": list(results)})
+    succeeded = sum(1 for r in results if r.get("success"))
+    return _ok({
+        # A parallel batch: partial data is still data, but all-fail must
+        # read as failure to the caller deciding whether to retry.
+        "success": succeeded > 0,
+        "count": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": list(results),
+    })
 
 
 async def _handle_extract_links(args: dict) -> list[types.TextContent]:
     url = args.get("url", "").strip()
     if not url:
         return _err("url is required")
+
+    if (blocked := await _preflight(url)) is not None:
+        return _err(blocked)
 
     base_domain = urlparse(url).netloc
     filter_external = args.get("filter_external", False)
@@ -625,6 +699,9 @@ async def _handle_screenshot_url(args: dict) -> list[types.TextContent]:
     url = args.get("url", "").strip()
     if not url:
         return _err("url is required")
+
+    if (blocked := await _preflight(url)) is not None:
+        return _err(blocked)
 
     delay = float(args.get("delay", 0))
     full_page = args.get("full_page", False)
@@ -682,6 +759,9 @@ async def _handle_scrape_with_session(args: dict) -> list[types.TextContent]:
         if not step_url:
             results.append({"step": i, "success": False, "error": "url is required in each step"})
             continue
+        if (blocked := await _preflight(step_url)) is not None:
+            results.append({"step": i, "url": step_url, "success": False, "error": blocked})
+            continue
 
         try:
             run_config = _build_run_config(
@@ -702,7 +782,9 @@ async def _handle_scrape_with_session(args: dict) -> list[types.TextContent]:
             results.append({"step": i, "url": step_url, "success": False, "error": str(exc)})
 
     return _ok({
-        "success": True,
+        # A sequential workflow: a failed step invalidates what follows, so
+        # the whole call only succeeds when every step did.
+        "success": all(r.get("success") for r in results),
         "session_id": session_id,
         "steps_completed": len(results),
         "results": results,
@@ -713,6 +795,9 @@ async def _handle_search_page(args: dict) -> list[types.TextContent]:
     url = args.get("url", "").strip()
     if not url:
         return _err("url is required")
+
+    if (blocked := await _preflight(url)) is not None:
+        return _err(blocked)
 
     scroll_count = max(1, min(int(args.get("scroll_count", 3)), 20))
     extract_schema = args.get("extract_schema")
