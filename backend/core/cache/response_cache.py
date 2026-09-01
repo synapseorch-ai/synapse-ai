@@ -84,6 +84,66 @@ def set_exact(
     )
 
 
+# ── Semantic backend seam ─────────────────────────────────────────────────────
+#
+# The local semantic cache below keys per-step Chroma collections, which in a
+# multi-tenant process is a cross-tenant leak by construction (finding T1) —
+# it is why multi-tenant workers refuse to attach a memory store at all. An
+# embedder registers a backend that scopes entries properly (org + step + a
+# hash of the system prompt and history); the local behaviour stays the
+# single-tenant default.
+
+_backend: Any = None
+
+
+def set_response_cache_backend(backend: Any) -> None:
+    """Install a semantic-cache backend. None restores the local default.
+
+    A backend implements `async get(step_id, model, system, user_message,
+    threshold) -> dict | None` and `async set(step_id, model, system,
+    user_message, *, text, input_tokens, output_tokens, ttl_seconds)`.
+    """
+    global _backend
+    _backend = backend
+
+
+async def get_semantic_routed(
+    step_id: str,
+    model: str,
+    system: str | None,
+    user_message: str,
+    threshold: float = 0.95,
+) -> Optional[dict]:
+    if _backend is not None:
+        return await _backend.get(step_id, model, system, user_message, threshold)
+    return get_semantic(step_id, model, system, user_message, threshold)
+
+
+async def set_semantic_routed(
+    step_id: str,
+    model: str,
+    system: str | None,
+    user_message: str,
+    *,
+    text: str,
+    input_tokens: int,
+    output_tokens: int,
+    ttl_seconds: int = 3600,
+) -> None:
+    if _backend is not None:
+        await _backend.set(
+            step_id, model, system, user_message,
+            text=text, input_tokens=input_tokens,
+            output_tokens=output_tokens, ttl_seconds=ttl_seconds,
+        )
+        return
+    set_semantic(
+        step_id, model, system, user_message,
+        text=text, input_tokens=input_tokens,
+        output_tokens=output_tokens, ttl_seconds=ttl_seconds,
+    )
+
+
 # ── Semantic cache (optional, ChromaDB-backed via memory.MemoryStore) ─────────
 #
 # Implementation is intentionally light. We reuse the same embedding pipeline

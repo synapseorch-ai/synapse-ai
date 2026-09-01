@@ -871,6 +871,24 @@ export const AgentsTab = ({
                                         <p className="text-2xs text-text-faint mt-1">A selected skill costs one roster line in the prompt; the agent loads its full instructions with load_skill only when needed.</p>
                                     </div>
 
+                                    {/* Memory — persistent per-agent memory (index eager, rest on demand) */}
+                                    <div className="space-y-1">
+                                        <Label className="block">Memory</Label>
+                                        <label className="flex items-start gap-2 bg-bg border border-border p-3 rounded-md cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={!!draftAgent.memory}
+                                                onChange={(e) => setDraftAgent({ ...draftAgent, memory: e.target.checked })}
+                                                className="mt-0.5 accent-[var(--accent)]"
+                                            />
+                                            <span className="text-xs text-text-muted">
+                                                Give this agent persistent memory: it can save facts with <span className="font-mono">remember</span>,
+                                                search past sessions with <span className="font-mono">search_memory</span>, and its memory index
+                                                rides the prompt. Sessions leave summaries automatically.
+                                            </span>
+                                        </label>
+                                    </div>
+
                                     {/* Prompt Generator */}
                                     <div className="space-y-2">
                                         <Label htmlFor="agn-prompt-description" className="flex items-center gap-1.5">

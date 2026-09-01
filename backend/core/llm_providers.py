@@ -2297,7 +2297,7 @@ async def generate_response(
             current_model, augmented_system, _cache_messages, tools,
         )
         if _hit is None and cache_response_semantic and cache_response_step_id:
-            _hit = _resp_cache.get_semantic(
+            _hit = await _resp_cache.get_semantic_routed(
                 cache_response_step_id, current_model,
                 augmented_system, str(prompt_msg),
                 threshold=cache_response_threshold,
@@ -2617,7 +2617,7 @@ async def generate_response(
                 step_id=cache_response_step_id,
             )
             if cache_response_semantic and cache_response_step_id:
-                _resp_cache.set_semantic(
+                await _resp_cache.set_semantic_routed(
                     cache_response_step_id, current_model,
                     augmented_system, str(prompt_msg),
                     text=result_text,

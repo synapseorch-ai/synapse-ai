@@ -378,6 +378,13 @@ class OrchestrationEngine:
         run.ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await state.checkpoint()
 
+        # Memory-enabled agents keep a summary of what this run did — the
+        # crisp end signal chat never has. Never allowed to fail the run.
+        try:
+            await self._write_memory_summaries(run)
+        except Exception as exc:
+            print(f"WARNING: run memory summaries failed: {exc}", flush=True)
+
         if logger:
             logger.run_end(run.status)
             logger.close()
@@ -806,6 +813,62 @@ class OrchestrationEngine:
             "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "output_key": step.output_key,
         })
+
+    async def _write_memory_summaries(self, run: OrchestrationRun) -> None:
+        """One session summary per memory-enabled agent that took part.
+
+        Top-level runs only — a nested sub-orchestration's work is part of its
+        parent's story. LLM-compressed when a model is reachable, truncated
+        otherwise (`compress_for_context`'s own fallback).
+        """
+        if self.depth > 0:
+            return
+        agent_ids = {s.agent_id for s in self.orch.steps if getattr(s, "agent_id", None)}
+        if not agent_ids:
+            return
+
+        from core.react_engine import _resolve_agent_by_id
+        from core.scale.context import resolve_agent as _ctx_resolve_agent
+
+        enabled: list[str] = []
+        for agent_id in agent_ids:
+            try:
+                agent = await _ctx_resolve_agent(agent_id)
+                if agent is None:
+                    agent = await _resolve_agent_by_id(agent_id)
+            except Exception:
+                agent = None
+            if agent and agent.get("memory"):
+                enabled.append(agent_id)
+        if not enabled:
+            return
+
+        lines = [f"Run {run.run_id} of '{self.orch.name}' — {run.status}."]
+        for entry in run.step_history[-40:]:
+            line = f"- {entry.get('step_name')} ({entry.get('step_type')}): {entry.get('status')}"
+            if entry.get("error"):
+                line += f" — {str(entry['error'])[:200]}"
+            lines.append(line)
+        for key, value in list(run.shared_state.items())[:20]:
+            if str(key).startswith("__"):
+                continue
+            lines.append(f"[{key}] {str(value)[:300]}")
+
+        from core.config import load_settings
+        from core.orchestration.summarizer import compress_for_context
+        summary = await compress_for_context(
+            "\n".join(lines), max_chars=2000, purpose="session memory",
+            settings=load_settings(), session_id=run.session_id, run_id=run.run_id,
+        )
+
+        from core import agent_memory
+        for agent_id in enabled:
+            try:
+                await agent_memory.write_session_summary(
+                    agent_id, run.session_id or run.run_id, summary, run_id=run.run_id,
+                )
+            except Exception as exc:
+                print(f"WARNING: memory summary for '{agent_id}' failed: {exc}", flush=True)
 
     def _build_final_response(self, run: OrchestrationRun) -> str:
         """Build a human-readable summary from the run."""

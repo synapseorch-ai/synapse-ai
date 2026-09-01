@@ -46,6 +46,7 @@ class Agent(BaseModel):
     type: str = "conversational"  # conversational | analysis | code | orchestrator
     tools: list[str] # ["all"] or ["search_codebase", "get_weather"]
     skills: list[str] = [] # skill names (core/skills.py); roster in prompt, body via load_skill
+    memory: bool = False # persistent per-agent memory (core/agent_memory.py); index eager, rest on demand
     repos: list[str] = [] # list of repo IDs for code agents
     db_configs: list[str] = [] # list of db config IDs for code agents
     system_prompt: str

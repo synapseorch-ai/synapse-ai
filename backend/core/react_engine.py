@@ -925,6 +925,40 @@ async def run_agent_step(
             print(f"DEBUG: 📚 skills injected for agent '{agent_id_for_session}': "
                   f"{', '.join(_skill_names)}", flush=True)
 
+    # ── MEMORY: the index is eager, everything else is behind the tools ──
+    # (Design settled 2026-09-01: eager index only, search on demand, caps
+    # with auto-archive. See core/agent_memory.py.)
+    from core.agent_memory import (
+        MEMORY_TOOL_NAMES, build_memory_tools, render_index_block, render_hits,
+    )
+    import core.agent_memory as _agent_memory
+    _memory_enabled = tools_override is None and bool(active_agent.get("memory"))
+    _memory_index_text = ""
+    if _memory_enabled:
+        try:
+            _memory_index_text = _agent_memory.read_index(agent_id_for_session)
+        except Exception as _mem_exc:
+            print(f"WARNING: memory index read failed: {_mem_exc}", flush=True)
+        _mem_shadow = set(MEMORY_TOOL_NAMES)
+        all_tools = [t for t in all_tools if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) not in _mem_shadow]
+        ollama_tools = [t for t in ollama_tools if t.get("function", {}).get("name") not in _mem_shadow]
+        for _mem_tool in build_memory_tools():
+            all_tools.append(_mem_tool)
+            tool_schema_map[_mem_tool.name] = _mem_tool.inputSchema
+            ollama_tools.append({"type": "function", "function": {
+                "name": _mem_tool.name,
+                "description": _mem_tool.description,
+                "parameters": _mem_tool.inputSchema,
+            }})
+        tools_json = str([
+            {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+             "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+             "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+            for t in all_tools
+        ])
+        print(f"DEBUG: 🧠 memory enabled for agent '{agent_id_for_session}' "
+              f"({len(_memory_index_text.splitlines())} index lines)", flush=True)
+
     system_prompt_text = build_system_prompt(
         agent_system_template, tools_json, session_id,
         _get_session_state, server_module.memory_store, agent_id=agent_id_for_session,
@@ -1016,6 +1050,8 @@ async def run_agent_step(
         # Injected because the agent selected skills, not via tools[] — the
         # execution guard must not block it for narrowly-scoped agents.
         always_allowed.add(SKILL_TOOL_NAME)
+    if _memory_enabled:
+        always_allowed |= set(MEMORY_TOOL_NAMES)  # injected via the memory flag, same reason
 
     MAX_PROMPT_CHARS = 400000
 
@@ -1060,6 +1096,10 @@ async def run_agent_step(
                     + "\n\nCurrent task list for this run (keep statuses true with "
                     + f"{TASK_TOOL_NAME} as you work):\n{render_tasks(_tasks)}"
                 )
+            # The memory index is the one eager piece of a memory-enabled
+            # agent's memory; it refreshes in place after remember/forget.
+            if _memory_enabled:
+                active_sys_prompt = active_sys_prompt + "\n\n" + render_index_block(_memory_index_text)
             if system_prompt_prefix:
                 active_sys_prompt = system_prompt_prefix + "\n\n" + active_sys_prompt
 
@@ -1340,6 +1380,61 @@ async def run_agent_step(
                     yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME,
                            "preview": f"Loaded skill '{_sk_name}' ({len(_sk_body)} chars)"}
                     print(f"DEBUG: 📚 skill loaded: {_sk_name} ({len(_sk_body)} chars)", flush=True)
+                    continue
+
+                # ── MEMORY tools: handled in-engine (see core/agent_memory.py) ────
+                if tool_name in MEMORY_TOOL_NAMES and _memory_enabled:
+                    _mem_preview = ""
+                    try:
+                        if tool_name == "remember":
+                            _mem_content = str(tool_args.get("content") or "")
+                            _mem_name = str(tool_args.get("name") or "") or "-".join(
+                                _agent_memory.normalize_name(_mem_content[:48]).split("-")[:6]
+                            )
+                            _saved_name, _mem_err = await _agent_memory.write_memory(
+                                agent_id_for_session, _mem_name, _mem_content
+                            )
+                            _mem_preview = (f"Rejected: {_mem_err}" if _mem_err
+                                            else f"Saved memory '{_saved_name}'")
+                            if not _mem_err:
+                                _memory_index_text = _agent_memory.read_index(agent_id_for_session)
+                        elif tool_name == "forget_memory":
+                            _existed = await _agent_memory.delete_memory(
+                                agent_id_for_session, str(tool_args.get("name") or "")
+                            )
+                            _mem_preview = ("Memory deleted" if _existed
+                                            else "No memory by that name (nothing deleted)")
+                            _memory_index_text = _agent_memory.read_index(agent_id_for_session)
+                        elif tool_name == "read_memory":
+                            _mem_body = _agent_memory.read_memory(
+                                agent_id_for_session, str(tool_args.get("name") or "")
+                            )
+                            if _mem_body is None:
+                                _mem_preview = "No memory by that name — check your MEMORY index."
+                            else:
+                                current_context_text += (
+                                    f"\n[Turn {turn + 1} — Observation] Memory "
+                                    f"'{tool_args.get('name')}':\n{_mem_body}\n"
+                                )
+                                _mem_preview = f"Read memory ({len(_mem_body)} chars)"
+                        elif tool_name == "search_memory":
+                            _hits = await _agent_memory.search_memory(
+                                agent_id_for_session, str(tool_args.get("query") or "")
+                            )
+                            _rendered_hits = render_hits(_hits)
+                            current_context_text += (
+                                f"\n[Turn {turn + 1} — Observation] Memory search results:\n"
+                                f"{_rendered_hits}\n"
+                            )
+                            _mem_preview = f"{len(_hits)} match{'es' if len(_hits) != 1 else ''}"
+                    except Exception as _mem_exc:
+                        _mem_preview = f"Memory error: {_mem_exc}"
+                        current_context_text += f"\nSystem: {_mem_preview}\n"
+                    if tool_name in ("remember", "forget_memory"):
+                        current_context_text += f"\nSystem: {_mem_preview}.\n"
+                    tools_used_summary.append(f"{tool_name}: {_mem_preview}")
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _mem_preview}
+                    print(f"DEBUG: 🧠 {tool_name}: {_mem_preview}", flush=True)
                     continue
 
                 # Execution guard
@@ -1881,6 +1976,22 @@ async def run_agent_step(
 
     if not final_response:
         final_response = "I completed the requested actions."
+
+    # A memory-enabled chat agent leaves a cheap per-exchange trace — one line
+    # per turn, no LLM. Orchestration runs get their proper summary at run end.
+    if _memory_enabled and source == "chat" and not is_orchestrator:
+        try:
+            _trace = (
+                f"- {time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime())} "
+                f"user: {user_message[:200]} → {final_response[:200]}"
+            )
+            if tools_used_summary:
+                _trace += " (tools: " + ", ".join(
+                    s.split(":", 1)[0] for s in tools_used_summary[-8:]
+                ) + ")"
+            _agent_memory.append_session_note(agent_id_for_session, session_id, _trace)
+        except Exception as _mem_exc:
+            print(f"WARNING: session memory note failed: {_mem_exc}", flush=True)
 
     # Persist conversation turn to JSON session file (skip for orchestrator agents)
     if not is_orchestrator:
