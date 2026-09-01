@@ -463,11 +463,21 @@ The previous result gave a high-level overview but not the specific field the us
 Example final-response turn (after gathering enough info):
 Here is the requested information, with the key points the user asked about and any caveats worth flagging.
 
+**If your tool calls are made through a native function-calling interface** — a
+structured call rather than JSON you write into your reply — you cannot wrap it
+in `[REASONING]` markers, and you do not need to. Put the same two or three
+sentences in the **text of the same reply, alongside the call**. The markers are
+optional there; the sentences are not. A reply that is a bare function call with
+no text leaves the user watching a spinner with nothing to read, which is the
+one outcome this section exists to prevent.
+
 Rules:
 - Emit a `[REASONING]` block before EVERY tool call. Skipping it produces an empty "thinking" panel for the user.
 - Never wrap a final response in `[REASONING]` blocks.
 - Never put commentary between the closing `[/REASONING]` and the JSON tool call.
 - One tool call per turn unless you genuinely need multiple independent calls (then emit them sequentially in one response, no prose between).
+- Say WHY, not WHAT. "Searching DuckDuckGo for India GDP 2025" restates the call the user can already see; "the official statistics office release is the primary source, so I will find it before quoting a figure" is the part only you know.
+- Never describe your tool call in prose *instead of* making it, and never repeat the call's JSON back as commentary — the user sees the call itself.
 """
         + tools_section
         + """
