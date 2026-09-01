@@ -871,6 +871,26 @@ export const AgentsTab = ({
                                         <p className="text-2xs text-text-faint mt-1">A selected skill costs one roster line in the prompt; the agent loads its full instructions with load_skill only when needed.</p>
                                     </div>
 
+                                    {/* Planning — the native task list, on unless this agent
+                                        has no use for one. Above Memory because it is the
+                                        cheaper and more commonly wanted of the two. */}
+                                    <div className="space-y-1">
+                                        <Label className="block">Planning</Label>
+                                        <label className="flex items-start gap-2 bg-bg border border-border p-3 rounded-md cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={draftAgent.planning !== false}
+                                                onChange={(e) => setDraftAgent({ ...draftAgent, planning: e.target.checked })}
+                                                className="mt-0.5 accent-[var(--accent)]"
+                                            />
+                                            <span className="text-xs text-text-muted">
+                                                Let this agent write a plan with <span className="font-mono">update_tasks</span> and
+                                                keep it up to date as it works. The list shows live in the run log. Turn it off for
+                                                one-shot agents, where announcing three tasks costs a turn and tells nobody anything.
+                                            </span>
+                                        </label>
+                                    </div>
+
                                     {/* Memory — persistent per-agent memory (index eager, rest on demand) */}
                                     <div className="space-y-1">
                                         <Label className="block">Memory</Label>

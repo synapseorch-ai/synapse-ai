@@ -866,9 +866,19 @@ async def run_agent_step(
         TASK_TOOL_NAME, LEGACY_TASK_TOOL_ALIAS, build_task_tool,
         validate_tasks_args, render_tasks, summarize_tasks, open_tasks,
     )
+    # `planning` is the agent's own switch, defaulting ON: the task list is
+    # worth having for the multi-step work most agents do, and an agent whose
+    # author never thought about it should still show its plan. Turning it off
+    # is for the narrow, one-shot agents where a plan is ceremony — a classifier
+    # that reads a string and returns a label does not need to announce three
+    # tasks first, and every turn it spends doing so is paid for.
+    #
+    # Distinct from `skip_default_tools`, which drops the whole default set;
+    # this leaves the filesystem tools alone and removes only the plan.
     _task_tool_enabled = (
         tools_override is None
         and not active_agent.get("skip_default_tools", False)
+        and active_agent.get("planning", True) is not False
     )
     if _task_tool_enabled:
         _task_tool = build_task_tool()

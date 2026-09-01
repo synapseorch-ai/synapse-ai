@@ -218,6 +218,40 @@ class TestEngineFlow:
         )
         assert not _of_type(events, "tasks_updated")
 
+    async def test_planning_false_turns_the_task_list_off(self, fake_llm):
+        """The agent's own switch, for the one-shot agents a plan does not help.
+
+        Narrower than `skip_default_tools`, which drops the whole default set:
+        this removes the plan and leaves everything else in place.
+        """
+        events = await _events(
+            fake_llm,
+            [tool_call(TASK_TOOL_NAME, tasks=PLAN_DONE), "done"],
+            agent=_agent(planning=False),
+        )
+        assert not _of_type(events, "tasks_updated")
+
+    async def test_planning_is_on_when_unset(self, fake_llm):
+        """Default ON, and the default is the point.
+
+        An agent whose author never considered planning should still show its
+        work — every agent saved before the switch existed has no `planning`
+        key at all, and none of them should lose the task list to a bare
+        `.get()`.
+        """
+        events = await _events(
+            fake_llm, [tool_call(TASK_TOOL_NAME, tasks=PLAN_DONE), "done"]
+        )
+        assert _of_type(events, "tasks_updated")
+
+    async def test_planning_true_is_explicit_and_works(self, fake_llm):
+        events = await _events(
+            fake_llm,
+            [tool_call(TASK_TOOL_NAME, tasks=PLAN_DONE), "done"],
+            agent=_agent(planning=True),
+        )
+        assert _of_type(events, "tasks_updated")
+
 
 # ── orchestration persistence ────────────────────────────────────────────────
 
