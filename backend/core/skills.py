@@ -28,6 +28,7 @@ is actually used.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -176,6 +177,130 @@ def scan_disk_skills() -> list[dict]:
             # First root wins for duplicate names across roots.
             found.setdefault(skill["name"], skill)
     return list(found.values())
+
+
+# ── installing from the Skills CLI ───────────────────────────────────────────
+#
+# `npx skills add <package>` is the package manager for the open skills
+# ecosystem (skills.sh). Running it downloads and writes third-party
+# instructions onto this machine, so the surface is deliberately narrow:
+#
+#   * the package is matched against `_PACKAGE_RE` and passed as one **argv
+#     element** — there is no shell, so a package name cannot become a command;
+#   * `-g` installs at user level (`~/.agents/skills`), which keeps installs out
+#     of the install's own working tree, where they would show up as untracked
+#     files in a git checkout;
+#   * this is reachable from the UI only. It is deliberately **not** a tool an
+#     agent can call: an agent able to install skills could install its own
+#     instructions, which is the prompt-injection version of arbitrary code
+#     execution.
+#
+# Cloud never exposes this — it mounts its own API and its worker image has no
+# Node — and that is the intended split, not an accident of packaging.
+
+#: `owner/repo`, `owner/repo@skill`, or a bare name. Anchored, no spaces, no
+#: shell metacharacters, and it cannot start with `-` (which argv would read as
+#: a flag to npx rather than a package).
+_PACKAGE_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}"
+    r"(/[A-Za-z0-9][A-Za-z0-9._-]{0,99})?"
+    r"(@[A-Za-z0-9][A-Za-z0-9._-]{0,99})?$"
+)
+
+#: A cold `npx` fetches the CLI before it does anything, so this is generous.
+INSTALL_TIMEOUT_SECONDS = 180
+
+MAX_INSTALL_OUTPUT_CHARS = 8_000
+
+#: The CLI is a rich terminal UI — its output carries ~100 colour escapes per
+#: run, which render as literal garbage in a browser. Stripped before the
+#: output is shown to anyone.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+class SkillInstallError(RuntimeError):
+    """The install could not be run, or the CLI reported failure."""
+
+
+def npx_command() -> str:
+    """The npx binary's name for this platform (`.cmd` on Windows)."""
+    import platform
+
+    return "npx.cmd" if platform.system() == "Windows" else "npx"
+
+
+def npx_available() -> bool:
+    import shutil
+
+    return shutil.which(npx_command()) is not None
+
+
+async def install_from_cli(package: str) -> dict:
+    """Run `npx skills add <package> -g -y`, then report what appeared.
+
+    Returns `{package, installed, output}` where `installed` names the skills
+    that were not on disk before. Raises `SkillInstallError` with a message
+    written for a person when the CLI is missing, times out, or fails.
+    """
+    import asyncio
+    import shutil
+
+    package = str(package or "").strip()
+    if not _PACKAGE_RE.match(package):
+        raise SkillInstallError(
+            f"{package!r} is not a valid package. Use owner/repo, owner/repo@skill, "
+            "or a plain package name — no spaces or shell characters."
+        )
+
+    command = npx_command()
+    if shutil.which(command) is None:
+        raise SkillInstallError(
+            "npx was not found on this machine. The Skills CLI needs Node.js — "
+            "install Node, or add the skill by hand instead."
+        )
+
+    before = {s["name"] for s in scan_disk_skills()}
+
+    # No shell, argv only: `package` is one element and cannot become a command.
+    # `-y` on npx skips the "install this package?" prompt; the CLI's own `-y`
+    # skips its confirmation. Both are required for a non-interactive process.
+    argv = [command, "-y", "skills", "add", package, "-g", "-y"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            # Home rather than the install directory: `-g` writes to the user's
+            # skills folder anyway, and a cwd inside the repo invites the CLI to
+            # leave scratch files in a git working tree.
+            cwd=str(Path.home()),
+        )
+        stdout, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=INSTALL_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError as exc:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        raise SkillInstallError(
+            f"the install did not finish within {INSTALL_TIMEOUT_SECONDS}s and was stopped"
+        ) from exc
+    except OSError as exc:
+        raise SkillInstallError(f"could not run {command}: {exc}") from exc
+
+    output = _ANSI_RE.sub("", (stdout or b"").decode("utf-8", errors="replace"))
+    output = output[-MAX_INSTALL_OUTPUT_CHARS:]
+    # Exit code is not the signal. A real run that installed the skill for this
+    # machine still exited 0 while printing "Failed to install 1" for a
+    # *different* agent tool the CLI also targets — so the caller decides
+    # success by asking the disk what appeared, and this only catches a hard
+    # failure of the command itself.
+    if proc.returncode != 0:
+        raise SkillInstallError(
+            f"`skills add {package}` failed (exit {proc.returncode}).\n{output.strip()}"
+        )
+
+    installed = sorted({s["name"] for s in scan_disk_skills()} - before)
+    return {"package": package, "installed": installed, "output": output.strip()}
 
 
 # ── the merged view ──────────────────────────────────────────────────────────

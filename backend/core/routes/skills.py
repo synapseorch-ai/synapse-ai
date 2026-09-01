@@ -20,6 +20,10 @@ class SkillIn(BaseModel):
     body: str = Field(default="", max_length=200_000)
 
 
+class SkillInstallIn(BaseModel):
+    package: str = Field(min_length=1, max_length=200)
+
+
 def _validated(payload: SkillIn) -> dict:
     name = skills_mod.normalize_name(payload.name)
     if not skills_mod._NAME_RE.match(name):
@@ -47,6 +51,30 @@ async def get_skill(name: str):
     if skill is None:
         raise HTTPException(status_code=404, detail="Skill not found")
     return skill
+
+
+@router.get("/api/skills-cli")
+async def skills_cli_status():
+    """Whether installing from the Skills CLI is possible here.
+
+    The screen asks before offering the button, so a machine without Node says
+    so up front instead of failing at the end of a form.
+    """
+    return {"available": skills_mod.npx_available()}
+
+
+@router.post("/api/skills/install")
+async def install_skill(payload: SkillInstallIn):
+    """Install a skill with `npx skills add <package> -g -y`.
+
+    See `core/skills.py` for why this is narrow: one validated argv element, no
+    shell, user-level install, and reachable from the UI only — never as a tool
+    an agent can call.
+    """
+    try:
+        return await skills_mod.install_from_cli(payload.package)
+    except skills_mod.SkillInstallError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/skills")
