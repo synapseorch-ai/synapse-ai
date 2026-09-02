@@ -2,6 +2,7 @@
 import { Bot, Plus, Save, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, Eye, EyeOff, Loader2, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
 import { Combobox, Label, SearchInput, Select } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
+import { humanizeToolName } from '@/lib/toolNames';
 import { VaultTextarea } from '@/components/VaultMention';
 import { CAPABILITIES, AUTO_TOOLS_BY_TYPE } from './types';
 import { renderTextContent } from '@/lib/utils';
@@ -820,7 +821,13 @@ export const AgentsTab = ({
                                                                                         ></div>
                                                                                     )}
                                                                                     <div className="min-w-0 flex-1">
-                                                                                        <div className="text-2xs font-mono text-text">{tool.name}</div>
+                                                                                        {/* Humanized name leads; the dispatch key stays beside it
+                                                                                            (small, mono) because it is what a step stores and what
+                                                                                            a run log prints. */}
+                                                                                        <div className="text-2xs text-text">
+                                                                                            {humanizeToolName(tool.name)}
+                                                                                            <span className="ml-1.5 font-mono text-[10px] text-text-faint" translate="no">{tool.name}</span>
+                                                                                        </div>
                                                                                         {tool.description && (
                                                                                             <p className="text-2xs text-text-faint mt-0.5 leading-tight line-clamp-2">{tool.description}</p>
                                                                                         )}

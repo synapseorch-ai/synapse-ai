@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { Button, Checkbox, Combobox, Field, Input, Select, Textarea } from '@/components/ui';
 import { VaultTextarea } from '@/components/VaultMention';
+import { humanizeToolName } from '@/lib/toolNames';
 import type { StepConfig, StepType } from '@/types/orchestration';
 import {
     LocalInput, ModelSelect, Note, StateKeyHelper, StepTargetSelect,
@@ -94,8 +95,12 @@ function AllowedTools({ step, update, agents, availableTools }: StepSectionProps
                                 onChange={(checked) => toggle(name, checked)}
                                 label={name}
                             />
-                            <span className="truncate font-code text-[11px] text-text-muted" translate="no" title={descriptions.get(name)}>
-                                {name}
+                            <span
+                                className="truncate text-[11px] text-text-muted"
+                                translate="no"
+                                title={descriptions.get(name) ? `${name} — ${descriptions.get(name)}` : name}
+                            >
+                                {humanizeToolName(name)}
                             </span>
                         </label>
                     ))}
@@ -106,8 +111,8 @@ function AllowedTools({ step, update, agents, availableTools }: StepSectionProps
                                 onChange={() => toggle(name, false)}
                                 label={`${name} (not in this agent's tools)`}
                             />
-                            <span className="truncate font-code text-[11px] text-warning" translate="no" title="This agent no longer has this tool — the engine ignores it at run time. Uncheck to clean it up.">
-                                {name} — not in this agent&apos;s tools
+                            <span className="truncate text-[11px] text-warning" translate="no" title={`${name} — this agent no longer has this tool; the engine ignores it at run time. Uncheck to clean it up.`}>
+                                {humanizeToolName(name)} — not in this agent&apos;s tools
                             </span>
                         </label>
                     ))}

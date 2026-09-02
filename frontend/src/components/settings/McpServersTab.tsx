@@ -123,6 +123,30 @@ const NOTICE_TONES: Record<ToastTone, { chip: string; icon: React.ElementType }>
 const inputCls = "w-full bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none placeholder:text-text-faint";
 const monoInputCls = `${inputCls} font-mono`;
 
+/**
+ * A stable colour per server, hashed from its name — the gallery-tile idea:
+ * saturation and lightness fixed, hue the only free variable, so a column of
+ * marks reads as one family with the hue doing the distinguishing.
+ */
+function tileHue(name: string): number {
+    let hash = 0;
+    for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) % 360;
+    return hash;
+}
+
+function ServerMark({ label }: { label: string }) {
+    const hue = tileHue(label.toLowerCase());
+    return (
+        <span
+            aria-hidden
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-sm font-semibold"
+            style={{ backgroundColor: `hsl(${hue} 45% 22%)`, color: `hsl(${hue} 70% 72%)` }}
+        >
+            {label.charAt(0).toUpperCase()}
+        </span>
+    );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export const McpServersTab = ({
@@ -290,6 +314,8 @@ export const McpServersTab = ({
                     <div className="grid gap-3">
                         {mcpServers.map((server) => (
                             <div key={server.name} className="flex items-center justify-between p-4 bg-surface border border-border rounded-md group">
+                                <div className="flex items-center gap-3 min-w-0">
+                                <ServerMark label={server.label || server.name} />
                                 <div className="flex flex-col gap-1.5 min-w-0">
                                     <div className="flex items-center gap-2 flex-wrap">
                                         <span className="font-bold text-text text-sm">{server.label || server.name}</span>
@@ -304,6 +330,7 @@ export const McpServersTab = ({
                                             ? server.url
                                             : `${server.command} ${(server.args || []).join(' ')}`}
                                     </code>
+                                </div>
                                 </div>
                                 <div className="flex items-center gap-1 ml-4 shrink-0">
                                     {server.status === 'connecting' && (
