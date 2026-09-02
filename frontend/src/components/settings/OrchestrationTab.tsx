@@ -555,7 +555,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                     setOrchestrations([...orchestrations, saved]);
                 }
                 markSaved(saved);
-                const { errorCount } = validateOrchestration(saved);
+                const { errorCount } = validateOrchestration(saved, agents);
                 if (errorCount > 0) {
                     showToast(`Saved, with ${errorCount} configuration error${errorCount !== 1 ? 's' : ''} still to fix`, 'warning');
                 } else {
@@ -844,7 +844,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
         // Errors are exactly the class the engine would fail on mid-run —
         // dangling targets, an agent step with no agent. Block here, where the
         // author can still fix them, instead of three steps into a paid run.
-        const { errorCount } = validateOrchestration(draft);
+        const { errorCount } = validateOrchestration(draft, agents);
         if (errorCount > 0) {
             showToast(`Fix ${errorCount} configuration error${errorCount !== 1 ? 's' : ''} before running — see the marked steps`, 'error');
             return;
@@ -1205,7 +1205,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
 
     // Issues drive the toolbar chip and the Run gate; the canvas badges nodes
     // and the panel explains — all from the same validate.ts pass.
-    const validation = draft ? validateOrchestration(draft) : null;
+    const validation = draft ? validateOrchestration(draft, agents) : null;
 
     useBuilderShortcuts({
         enabled: !!draft,

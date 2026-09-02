@@ -292,7 +292,7 @@ export function WorkflowCanvas({
 }: WorkflowCanvasProps) {
     const { fitView, getNodes, screenToFlowPosition, zoomIn, zoomOut } = useReactFlow();
 
-    const validation = useMemo(() => validateOrchestration(orchestration), [orchestration]);
+    const validation = useMemo(() => validateOrchestration(orchestration, agents), [orchestration, agents]);
 
     const computedNodes = useMemo(
         () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, validation.byStep),

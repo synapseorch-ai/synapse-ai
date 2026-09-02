@@ -22,10 +22,18 @@ export interface ValidationResult {
 const error = (message: string): StepIssue => ({ severity: 'error', message });
 const warning = (message: string): StepIssue => ({ severity: 'warning', message });
 
-export function validateOrchestration(orch: Orchestration): ValidationResult {
+/**
+ * `agents` is the list the caller already holds for the picker. When it is
+ * given, an `agent_id` that names nothing in it is an error — the engine
+ * refuses to run such a step, and before it did it silently ran whichever
+ * agent sorted first, which is worse than any error. When it is omitted (a
+ * caller with no agent list), that check is skipped rather than guessed at.
+ */
+export function validateOrchestration(orch: Orchestration, agents?: { id: string }[]): ValidationResult {
     const byStep: Record<string, StepIssue[]> = {};
     const global: StepIssue[] = [];
     const ids = new Set(orch.steps.map((s) => s.id));
+    const agentIds = agents ? new Set(agents.map((a) => a.id)) : null;
     const add = (stepId: string, issue: StepIssue) => {
         (byStep[stepId] ??= []).push(issue);
     };
@@ -122,6 +130,12 @@ export function validateOrchestration(orch: Orchestration): ValidationResult {
             case 'extract_json':
                 if (!s.input_keys?.length) add(s.id, warning('No input keys — nothing to extract from'));
                 break;
+        }
+
+        // Any step may name an agent (agent steps must, evaluators may). A name
+        // that resolves to nothing is an error wherever it appears.
+        if (s.agent_id && agentIds && !agentIds.has(s.agent_id)) {
+            add(s.id, error('The selected agent no longer exists — pick another'));
         }
 
         checkTarget(s.id, s.next_step_id, 'Next step');

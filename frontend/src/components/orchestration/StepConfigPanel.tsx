@@ -95,8 +95,8 @@ export function StepConfigPanel({
     );
     const issues = useMemo(() => {
         if (!orchestration) return [];
-        return validateOrchestration(orchestration).byStep[step.id] || [];
-    }, [orchestration, step.id]);
+        return validateOrchestration(orchestration, agents).byStep[step.id] || [];
+    }, [orchestration, agents, step.id]);
 
     // ── Guarded type change ────────────────────────────────────────────────
     const [pendingType, setPendingType] = useState<StepType | null>(null);

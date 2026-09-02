@@ -295,13 +295,27 @@ async def _resolve_agent_by_id(agent_id):
     Goes through the resource provider, which is the tenant-scoped path. There
     is deliberately no second lookup when the provider returns nothing: a
     fallback is how an authorization failure turns into another tenant's agent.
+
+    That sentence was true of the *store* and false of what happened next: a
+    miss fell through to ``get_active_agent_data()``, which lists the tenant's
+    agents and returns the first — so a workflow step naming a deleted (or
+    never-existing) agent ran whichever agent happened to sort first, with its
+    prompt, its tools and its model, and nothing said so. With a provider
+    registered the miss is now the answer. Without one — the single-tenant
+    install — the active-agent fallback stays, because that is what a chat
+    with no agent selected means there.
     """
-    from core.scale.context import resolve_agent
+    from core.scale.context import get_resource_provider, resolve_agent
 
     if agent_id:
         agent = await resolve_agent(agent_id)
         if agent:
             return agent
+        if get_resource_provider() is not None:
+            raise RuntimeError(
+                f"Agent '{agent_id}' not found. Pick another agent for this step "
+                "— the one it named no longer exists."
+            )
 
     from core.routes.agents import get_active_agent_data
 
