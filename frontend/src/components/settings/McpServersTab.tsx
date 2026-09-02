@@ -312,7 +312,9 @@ export const McpServersTab = ({
                     </div>
                 ) : (
                     <div className="grid gap-3">
-                        {mcpServers.map((server) => (
+                        {[...mcpServers]
+                            .sort((a, b) => (a.label || a.name).localeCompare(b.label || b.name, undefined, { sensitivity: 'base' }))
+                            .map((server) => (
                             <div key={server.name} className="flex items-center justify-between p-4 bg-surface border border-border rounded-md group">
                                 <div className="flex items-center gap-3 min-w-0">
                                 <ServerMark label={server.label || server.name} />
