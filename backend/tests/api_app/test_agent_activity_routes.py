@@ -131,3 +131,21 @@ class TestAgentUsageSummary:
         body = (await client.get("/api/usage/logs?agent_id=agent_a")).json()
         assert body["count"] == 1
         assert body["logs"][0]["agent_id"] == "agent_a"
+
+    async def test_compaction_events_are_not_model_calls(self, client):
+        """They share the table; the usage screen's own totals exclude them too."""
+        from core.usage_tracker import log_compaction_event
+
+        await _usage("agent_a", cost=1.0)
+        await log_compaction_event(
+            stage="llm_summary",
+            chars_before=1000,
+            chars_after=400,
+            session_id="sess_agent_a",
+            agent_id="agent_a",
+        )
+
+        body = (await client.get("/api/usage/agents/agent_a")).json()
+        assert body["calls"] == 1
+        assert body["estimated_cost"] == pytest.approx(1.0)
+        assert [m["model"] for m in body["by_model"]] == ["gpt-x"]

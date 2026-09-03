@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 
 from core.tenancy import get_tenant
 
@@ -186,7 +186,16 @@ async def agent_summary(agent_id: str) -> dict:
     from core.store import session
     from core.store.models import UsageLogDB
 
-    scope = [UsageLogDB.tenant_id == get_tenant(), UsageLogDB.agent_id == agent_id]
+    scope = [
+        UsageLogDB.tenant_id == get_tenant(),
+        UsageLogDB.agent_id == agent_id,
+        # Compaction events share this table and are not model calls — the
+        # usage screen's own totals exclude them the same way
+        # (`usage_tracker.get_usage_summary`). Spelled as an explicit NULL test
+        # because `event_type != 'compaction'` is NULL, not true, for the LLM
+        # rows that leave it unset — which is every row that counts.
+        or_(UsageLogDB.event_type.is_(None), UsageLogDB.event_type != "compaction"),
+    ]
 
     totals_stmt = select(
         func.count(UsageLogDB.id),
