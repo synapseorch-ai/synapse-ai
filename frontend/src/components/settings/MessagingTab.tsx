@@ -300,7 +300,10 @@ export const MessagingTab = () => {
 
             await fetchChannels();
             setSelectedId(saved.id);
-            setDraft({ ...saved });
+            // `saved` is the channel document; `agent_ids` is a read projection
+            // of the join that only the list route adds. Saving changes no
+            // assignment, so carry the ones already on screen.
+            setDraft({ ...saved, agent_ids: draft.agent_ids ?? [] });
             showToast('✅ Channel saved and started');
         } catch (e: any) {
             showToast(`❌ ${e.message}`);
@@ -580,7 +583,7 @@ export const MessagingTab = () => {
                                 {PLATFORMS.map(p => (
                                     <button
                                         key={p.id}
-                                        onClick={() => setDraft({ ...EMPTY_CHANNEL, id: draft.id, platform: p.id, name: draft.name, agent_ids: draft.agent_ids })}
+                                        onClick={() => setDraft({ ...EMPTY_CHANNEL, platform: p.id, name: draft.name })}
                                         className={`flex flex-col items-center gap-1 p-3 border text-xs font-bold transition-all
                                             ${draft.platform === p.id
                                                 ? `${p.color} border-current`
@@ -615,7 +618,7 @@ export const MessagingTab = () => {
                                     a plain message.
                                 </p>
                             </div>
-                            {!selectedId ? (
+                            {!draft.id ? (
                                 <p className="text-[10px] text-zinc-600 p-3 border border-dashed border-zinc-800 rounded-md">
                                     Save the channel first — agents are assigned to it once it exists.
                                 </p>
