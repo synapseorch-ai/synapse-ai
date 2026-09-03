@@ -16,19 +16,32 @@ interface Channel {
     id?: string;
     name: string;
     platform: Platform;
-    agent_id: string;
+    /** Legacy single-agent scalar. Read for pre-join channels; never edited here
+     *  any more — the assignment join is what this screen writes. */
+    agent_id?: string;
+    /** The join, default first. Sent back by every channel read. */
+    agent_ids?: string[];
     multi_agent_mode: boolean;
+    /** "polling" holds a connection to the platform; "webhook" holds nothing. */
+    mode?: DeliveryMode;
     enabled: boolean;
     credentials: Record<string, string>;
     status?: 'running' | 'stopped' | 'error';
     last_error?: string | null;
 }
 
+type DeliveryMode = 'polling' | 'webhook';
+
+/** Platforms where delivery is a choice. Teams and WhatsApp are webhook-only
+ *  by construction, and their adapters have always had their own fields. */
+const MODE_CHOICE_PLATFORMS: Platform[] = ['telegram', 'discord', 'slack'];
+
 const EMPTY_CHANNEL: Channel = {
     name: '',
     platform: 'telegram',
-    agent_id: '',
+    agent_ids: [],
     multi_agent_mode: false,
+    mode: 'polling',
     enabled: true,
     credentials: {},
 };
@@ -159,6 +172,7 @@ export const MessagingTab = () => {
     const [toastMsg, setToastMsg] = useState<string | null>(null);
     const [guideOpen, setGuideOpen] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
+    const [assigning, setAssigning] = useState(false);
 
     // WhatsApp sub-mode UI state
     const [waMode, setWaMode] = useState<'meta_api' | 'unofficial'>('meta_api');
@@ -167,29 +181,46 @@ export const MessagingTab = () => {
 
     // Channel that mirrors run notifications ("" = in-app only)
     const [notifyChannelId, setNotifyChannelId] = useState('');
+    // Public HTTPS address webhook-mode channels register with their platform.
+    const [webhookBase, setWebhookBase] = useState('');
+    const [webhookBaseDraft, setWebhookBaseDraft] = useState('');
     const agentNameRef = useRef('');  // Settings.agent_name is required on POST
     useEffect(() => {
         fetch('/api/settings').then(r => r.json())
             .then(d => {
                 setNotifyChannelId(d.run_notification_channel_id || '');
+                setWebhookBase(d.messaging_webhook_base_url || '');
+                setWebhookBaseDraft(d.messaging_webhook_base_url || '');
                 agentNameRef.current = d.agent_name || 'Synapse';
             })
             .catch(() => {});
     }, []);
+    // POST /api/settings merges with exclude_unset, so sending two keys does not
+    // clear the rest. agent_name rides along because the model requires it.
+    const patchSettings = async (patch: Record<string, unknown>) =>
+        fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent_name: agentNameRef.current, ...patch }),
+        });
     const saveNotifyChannel = async (channelId: string) => {
         setNotifyChannelId(channelId);
         try {
-            await fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    agent_name: agentNameRef.current,
-                    run_notification_channel_id: channelId,
-                }),
-            });
+            await patchSettings({ run_notification_channel_id: channelId });
             showToast(channelId ? 'Run notifications enabled for channel' : 'Run notifications set to in-app only');
         } catch {
             showToast('Failed to save notification channel');
+        }
+    };
+    const saveWebhookBase = async () => {
+        const value = webhookBaseDraft.trim().replace(/\/+$/, '');
+        try {
+            await patchSettings({ messaging_webhook_base_url: value });
+            setWebhookBase(value);
+            setWebhookBaseDraft(value);
+            showToast(value ? 'Webhook address saved' : 'Webhook address cleared');
+        } catch {
+            showToast('Failed to save the webhook address');
         }
     };
 
@@ -239,14 +270,22 @@ export const MessagingTab = () => {
     const saveAndConnect = async () => {
         if (!draft) return;
         if (!draft.name.trim()) { showToast('Please enter a channel name'); return; }
-        if (!draft.agent_id) { showToast('Please select an agent'); return; }
+        if (draft.mode === 'webhook' && !webhookBase) {
+            showToast('Set the public webhook address below before using webhook mode');
+            return;
+        }
 
         setSaving(true);
         try {
             // Inject waMode into credentials for whatsapp
-            const payload = draft.platform === 'whatsapp'
+            const base = draft.platform === 'whatsapp'
                 ? { ...draft, credentials: { ...draft.credentials, whatsapp_mode: waMode } }
                 : draft;
+            // `agent_ids` is a read projection of the join, and `agent_id` is the
+            // legacy scalar the join replaced — POSTing either back would have
+            // save_channel mirror an agent into the join behind the chips.
+            const { agent_id: _legacy, agent_ids: _joined, ...payload } = base;
+            void _legacy; void _joined;
 
             const res = await fetch('/api/messaging/channels', {
                 method: 'POST',
@@ -299,6 +338,53 @@ export const MessagingTab = () => {
         await fetchChannels();
     };
 
+    /** One whole-list write of the channel's agents. The chips describe a set,
+     *  so the request describes a set — membership and the default move
+     *  together instead of in three calls that can disagree in between. */
+    const putAssignments = async (
+        channelId: string,
+        agentIds: string[],
+        defaultAgentId?: string,
+    ) => {
+        setAssigning(true);
+        try {
+            const res = await fetch(`/api/messaging/channels/${channelId}/assignments`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_ids: agentIds, default_agent_id: defaultAgentId }),
+            });
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.detail || 'Could not save the assignment');
+            }
+            const rows = await res.json();
+            const ordered: string[] = [
+                ...rows.filter((r: any) => r.is_default).map((r: any) => r.target_id),
+                ...rows.filter((r: any) => !r.is_default).map((r: any) => r.target_id),
+            ];
+            setDraft(d => (d && d.id === channelId ? { ...d, agent_ids: ordered, agent_id: undefined } : d));
+            setChannels(cs => cs.map(c => (c.id === channelId ? { ...c, agent_ids: ordered } : c)));
+        } catch (e: any) {
+            showToast(`❌ ${e.message}`);
+        } finally {
+            setAssigning(false);
+        }
+    };
+
+    const toggleAgent = (agentId: string) => {
+        if (!draft?.id) return;
+        const current = draft.agent_ids ?? [];
+        const next = current.includes(agentId)
+            ? current.filter(a => a !== agentId)
+            : [...current, agentId];
+        putAssignments(draft.id, next);
+    };
+
+    const makeDefault = (agentId: string) => {
+        if (!draft?.id) return;
+        putAssignments(draft.id, draft.agent_ids ?? [], agentId);
+    };
+
     const updateCred = (key: string, value: string) => {
         if (!draft) return;
         setDraft({ ...draft, credentials: { ...draft.credentials, [key]: value } });
@@ -307,6 +393,16 @@ export const MessagingTab = () => {
     const platform = draft?.platform || 'telegram';
     const platformMeta = PLATFORMS.find(p => p.id === platform)!;
     const guide = SETUP_GUIDES[platform];
+    /* The join, default first — with the pre-join scalar standing in for a
+       channel that has never been assigned through it. */
+    const assignedIds: string[] = draft?.agent_ids?.length
+        ? draft.agent_ids
+        : draft?.agent_id ? [draft.agent_id] : [];
+    const agentNames = (ids: string[]) =>
+        ids.map(id => agents.find(a => a.id === id)?.name || id);
+    const webhookUrl = draft?.id && webhookBase
+        ? `${webhookBase}/api/messaging/${platform}/webhook/${draft.id}`
+        : '';
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-12 gap-10">
@@ -363,7 +459,14 @@ export const MessagingTab = () => {
                                     <div className="flex-1 min-w-0">
                                         <div className="text-xs font-bold text-white truncate">{ch.name}</div>
                                         <div className="text-[10px] text-zinc-500 truncate">
-                                            {agents.find(a => a.id === ch.agent_id)?.name || ch.agent_id}
+                                            {(() => {
+                                                const ids = ch.agent_ids?.length
+                                                    ? ch.agent_ids
+                                                    : ch.agent_id ? [ch.agent_id] : [];
+                                                if (ids.length === 0) return 'no agents';
+                                                if (ids.length <= 2) return agentNames(ids).join(', ');
+                                                return `${agentNames(ids)[0]} +${ids.length - 1} more`;
+                                            })()}
                                         </div>
                                     </div>
                                     {/* Status badge: hidden on hover */}
@@ -413,6 +516,29 @@ export const MessagingTab = () => {
                         to this channel&apos;s notify chat.
                     </p>
                 </div>
+
+                {/* ── Public address for webhook-mode channels ───────── */}
+                <div className="mt-3 pt-3 border-t border-zinc-800">
+                    <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block mb-1.5">
+                        Webhook address
+                    </label>
+                    <div className="flex gap-1">
+                        <input
+                            type="text"
+                            value={webhookBaseDraft}
+                            onChange={e => setWebhookBaseDraft(e.target.value)}
+                            onBlur={saveWebhookBase}
+                            onKeyDown={e => { if (e.key === 'Enter') saveWebhookBase(); }}
+                            placeholder="https://synapse.example.com"
+                            aria-label="Public webhook base URL"
+                            className="flex-1 min-w-0 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-[10px] text-white font-mono focus:border-white focus:outline-none rounded-md"
+                        />
+                    </div>
+                    <p className="text-[10px] text-zinc-600 mt-1 leading-relaxed">
+                        Where platforms deliver messages for channels in webhook mode. A public
+                        HTTPS address for this backend — a tunnel URL works for local testing.
+                    </p>
+                </div>
             </div>
 
             {/* ── Right: Editor ──────────────────────────────────────── */}
@@ -454,7 +580,7 @@ export const MessagingTab = () => {
                                 {PLATFORMS.map(p => (
                                     <button
                                         key={p.id}
-                                        onClick={() => setDraft({ ...EMPTY_CHANNEL, platform: p.id, name: draft.name, agent_id: draft.agent_id })}
+                                        onClick={() => setDraft({ ...EMPTY_CHANNEL, id: draft.id, platform: p.id, name: draft.name, agent_ids: draft.agent_ids })}
                                         className={`flex flex-col items-center gap-1 p-3 border text-xs font-bold transition-all
                                             ${draft.platform === p.id
                                                 ? `${p.color} border-current`
@@ -468,27 +594,81 @@ export const MessagingTab = () => {
                         </div>
 
                         {/* Common fields */}
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-1">
-                                <label className="text-[10px] font-bold text-zinc-500 uppercase">Channel Name</label>
-                                <input
-                                    type="text"
-                                    value={draft.name}
-                                    onChange={e => setDraft({ ...draft, name: e.target.value })}
-                                    placeholder="e.g. Support Bot"
-                                    className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none rounded-md"
-                                />
+                        <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Channel Name</label>
+                            <input
+                                type="text"
+                                value={draft.name}
+                                onChange={e => setDraft({ ...draft, name: e.target.value })}
+                                placeholder="e.g. Support Bot"
+                                className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none rounded-md"
+                            />
+                        </div>
+
+                        {/* ── Agents on this channel ─────────────────────── */}
+                        <div className="space-y-2">
+                            <div>
+                                <label className="text-[10px] font-bold text-zinc-500 uppercase">Agents</label>
+                                <p className="text-[10px] text-zinc-500 mt-1 leading-relaxed">
+                                    Who answers messages arriving here. A channel can front several
+                                    agents; the one marked <strong className="text-zinc-300">default</strong> takes
+                                    a plain message.
+                                </p>
                             </div>
-                            <div className="space-y-1">
-                                <label className="text-[10px] font-bold text-zinc-500 uppercase">Bound Agent</label>
-                                <Select
-                                    value={draft.agent_id || undefined}
-                                    onChange={v => setDraft({ ...draft, agent_id: v })}
-                                    placeholder="Select an agent…"
-                                    aria-label="Agent"
-                                    options={agents.map(a => ({ value: a.id, label: a.name }))}
-                                />
-                            </div>
+                            {!selectedId ? (
+                                <p className="text-[10px] text-zinc-600 p-3 border border-dashed border-zinc-800 rounded-md">
+                                    Save the channel first — agents are assigned to it once it exists.
+                                </p>
+                            ) : agents.length === 0 ? (
+                                <p className="text-[10px] text-zinc-600 p-3 border border-dashed border-zinc-800 rounded-md">
+                                    No agents configured yet. Create one under Settings → Agents.
+                                </p>
+                            ) : (
+                                <>
+                                    <div className="flex flex-wrap gap-2">
+                                        {agents.map(a => {
+                                            const on = assignedIds.includes(a.id);
+                                            const isDefault = assignedIds[0] === a.id;
+                                            return (
+                                                <span key={a.id} className="inline-flex items-center">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => toggleAgent(a.id)}
+                                                        disabled={assigning}
+                                                        aria-pressed={on}
+                                                        className={`px-3 py-1.5 text-xs border transition-colors disabled:opacity-50 rounded-md
+                                                            ${on
+                                                                ? 'bg-accent text-accent-fg border-accent'
+                                                                : 'bg-black border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-white'}
+                                                            ${on && !isDefault ? 'rounded-r-none' : ''}`}
+                                                    >
+                                                        {a.name}
+                                                        {isDefault && (
+                                                            <span className="ml-2 text-[9px] font-bold uppercase opacity-70">default</span>
+                                                        )}
+                                                    </button>
+                                                    {on && !isDefault && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => makeDefault(a.id)}
+                                                            disabled={assigning}
+                                                            title={`Make ${a.name} the default agent`}
+                                                            className="px-2 py-1.5 text-[9px] font-bold uppercase border border-l-0 border-accent bg-zinc-900 text-zinc-400 hover:text-white transition-colors disabled:opacity-50 rounded-r-md"
+                                                        >
+                                                            set default
+                                                        </button>
+                                                    )}
+                                                </span>
+                                            );
+                                        })}
+                                    </div>
+                                    {assignedIds.length === 0 && (
+                                        <p className="text-[10px] text-amber-400/80">
+                                            Nobody is assigned — this channel will reply saying so instead of answering.
+                                        </p>
+                                    )}
+                                </>
+                            )}
                         </div>
 
                         <div className="flex items-start gap-4 p-3 bg-zinc-950 border border-zinc-800 rounded-md">
@@ -504,11 +684,87 @@ export const MessagingTab = () => {
                                     Multi-Agent Mode
                                 </label>
                                 <p className="text-[10px] text-zinc-500 mt-1.5 leading-relaxed">
-                                    When enabled, users can switch agents mid-chat using <code className="font-code bg-zinc-800 px-1">/agent &lt;name&gt;</code> and list them with <code className="font-code bg-zinc-800 px-1">/agents</code>.
-                                    The channel's bound agent is the default.
+                                    When enabled, people in the chat can switch between the agents
+                                    assigned above using <code className="font-code bg-zinc-800 px-1">/agent &lt;name&gt;</code>,
+                                    and list them with <code className="font-code bg-zinc-800 px-1">/agents</code>.
+                                    Only assigned agents are reachable; the default answers until somebody switches.
                                 </p>
+                                {draft.multi_agent_mode && assignedIds.length < 2 && (
+                                    <p className="text-[10px] text-amber-400/80 mt-1.5">
+                                        {assignedIds.length === 1
+                                            ? 'Only one agent is assigned, so there is nothing to switch between yet.'
+                                            : 'No agents are assigned, so there is nothing to switch between yet.'}
+                                    </p>
+                                )}
                             </div>
                         </div>
+
+                        {/* ── Delivery mode ──────────────────────────────── */}
+                        {MODE_CHOICE_PLATFORMS.includes(draft.platform) && (
+                            <div className="space-y-2">
+                                <div>
+                                    <label className="text-[10px] font-bold text-zinc-500 uppercase">Delivery</label>
+                                    <p className="text-[10px] text-zinc-500 mt-1 leading-relaxed">
+                                        How messages reach Synapse. Polling holds a connection open to the
+                                        platform and needs no public address. Webhook holds nothing — the
+                                        platform posts to you — which is what a multi-replica deployment
+                                        wants, since only one process may poll a bot at a time.
+                                    </p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    {([
+                                        { v: 'polling', label: 'Polling', desc: 'Works anywhere. One process per bot.' },
+                                        { v: 'webhook', label: 'Webhook', desc: 'Needs a public HTTPS address. Survives replicas.' },
+                                    ] as { v: DeliveryMode; label: string; desc: string }[]).map(opt => (
+                                        <button
+                                            key={opt.v}
+                                            onClick={() => setDraft({ ...draft, mode: opt.v })}
+                                            className={`p-3 border text-left text-xs transition-all rounded-md
+                                                ${(draft.mode || 'polling') === opt.v ? 'bg-zinc-900 border-white' : 'bg-black border-zinc-800 hover:border-zinc-600'}`}
+                                        >
+                                            <div className="font-bold text-white">{opt.label}</div>
+                                            <div className="text-zinc-500 mt-1">{opt.desc}</div>
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {draft.mode === 'webhook' && (
+                                    <div className="space-y-2 p-3 bg-zinc-950 border border-zinc-800 rounded-md">
+                                        {!webhookBase ? (
+                                            <p className="text-[10px] text-amber-400/90">
+                                                Set the public webhook address below before saving — without it
+                                                the channel cannot register with {platformMeta?.label}.
+                                            </p>
+                                        ) : !draft.id ? (
+                                            <p className="text-[10px] text-zinc-500">
+                                                The delivery URL appears here once the channel is saved.
+                                            </p>
+                                        ) : (
+                                            <div className="space-y-1">
+                                                <label className="text-[10px] font-bold text-zinc-500 uppercase">Delivery URL</label>
+                                                <input
+                                                    readOnly
+                                                    value={webhookUrl}
+                                                    onFocus={e => e.currentTarget.select()}
+                                                    className="w-full bg-black border border-zinc-800 p-2.5 text-[10px] text-zinc-300 font-mono rounded-md"
+                                                />
+                                                <p className="text-[9px] text-zinc-600">
+                                                    {draft.platform === 'telegram'
+                                                        ? 'Registered with Telegram automatically on Save & Connect.'
+                                                        : `Paste this into your ${platformMeta?.label} app configuration.`}
+                                                </p>
+                                            </div>
+                                        )}
+                                        {draft.platform === 'slack' && (
+                                            <p className="text-[9px] text-zinc-600">
+                                                Webhook mode does not need the app-level token (xapp-…) — that is
+                                                Socket Mode&apos;s, and Socket Mode is the polling option.
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
                         {/* Platform-specific credentials */}
                         <div className="space-y-3">

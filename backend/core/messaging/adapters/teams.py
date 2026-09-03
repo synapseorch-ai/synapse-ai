@@ -84,9 +84,16 @@ class TeamsAdapter(MessagingAdapter):
                 if consumed:
                     return
 
+            agent_id = await self.resolve_agent_id(chat_id)
+            if not agent_id:
+                from botbuilder.core import MessageFactory
+                from core.messaging.base import NO_AGENT_MESSAGE
+                await turn_context.send_activity(MessageFactory.text(NO_AGENT_MESSAGE))
+                return
+
             response_text = await self.manager.run_agent(
                 message=text,
-                agent_id=self.manager.get_chat_agent(self.channel_id, chat_id) or self.agent_id,
+                agent_id=agent_id,
                 session_id=session_id,
             )
             if response_text:

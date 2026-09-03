@@ -24,10 +24,17 @@ Available commands:
 /start -- Show this welcome message
 /help -- Show available commands
 /reset -- Clear your conversation memory
-/agent <name> -- Switch to a different agent (if multi-agent mode is on)
-/agents -- List available agents (if multi-agent mode is on)
+/agent <name> -- Switch to another agent assigned to this channel (if multi-agent mode is on)
+/agents -- List the agents assigned to this channel (if multi-agent mode is on)
 
 Just send any message to chat with the agent!"""
+
+# What a channel says when nobody is assigned to it. Not an error: a channel is
+# created before its agents are, so this is a reachable, ordinary state.
+NO_AGENT_MESSAGE = (
+    "No agent is assigned to this channel yet. "
+    "Assign one in Settings -> Messaging."
+)
 
 
 class MessagingAdapter(ABC):
@@ -126,11 +133,21 @@ class MessagingAdapter(ABC):
                     "?? Multi-agent mode is disabled for this bot."
                 )
                 return True
-            agent_list = await self.manager.list_agent_names()
+            agent_list = await self.manager.list_agent_names(self.channel_id)
             if not agent_list:
-                await self.send_message(chat_id, "No agents available.")
+                await self.send_message(
+                    chat_id,
+                    "No agents are assigned to this channel yet."
+                )
+            elif len(agent_list) == 1:
+                await self.send_message(
+                    chat_id,
+                    f"Only *{agent_list[0]}* is assigned to this channel, "
+                    "so there is nothing to switch to."
+                )
             else:
-                lines = ["Available agents:"] + [f"? {name}" for name in agent_list]
+                lines = ["Agents on this channel (the first one answers by default):"]
+                lines += [f"? {name}" for name in agent_list]
                 await self.send_message(chat_id, "\n".join(lines))
             return True
 
@@ -153,11 +170,43 @@ class MessagingAdapter(ABC):
             else:
                 await self.send_message(
                     chat_id,
-                    f"? Agent '{agent_name}' not found. Use /agents to list available agents."
+                    f"? Agent '{agent_name}' is not assigned to this channel. "
+                    "Use /agents to see who is."
                 )
             return True
 
         return False  # unrecognised command -- let agent handle it
+
+    # ------------------------------------------------------------------ #
+    # Which agent answers
+    # ------------------------------------------------------------------ #
+
+    async def resolve_agent_id(self, chat_id: str) -> Optional[str]:
+        """The agent this message should go to, or None if nobody is assigned.
+
+        Read per message rather than once at construction. `self.agent_id` is
+        seeded from the join when the adapter is built
+        (`manager.py::start_channel`), which meant a channel assigned a new
+        default kept answering as the old one until it was restarted — and
+        restarting churns Telegram's `setWebhook` and Slack's socket for what
+        is a settings edit.
+
+        None is a real answer, and the caller says so out loud: an unassigned
+        channel used to fall through to the literal string `"default"`, which
+        is not an agent id, and ran the ReAct loop against nothing.
+        """
+        chosen = self.manager.get_chat_agent(self.channel_id, chat_id)
+        if chosen:
+            return chosen
+        try:
+            from core.messaging import store as channel_store
+            assigned = await channel_store.get_default_agent_id(self.channel_id)
+        except Exception:
+            logger.debug("[%s] could not read channel assignments", self.platform)
+            assigned = None
+        if assigned:
+            return assigned
+        return self.agent_id if self.agent_id and self.agent_id != "default" else None
 
     # ------------------------------------------------------------------ #
     # Core dispatch
@@ -203,7 +252,10 @@ class MessagingAdapter(ABC):
             return
 
         # -- 2. Determine active agent ------------------------------------
-        active_agent_id = self.manager.get_chat_agent(self.channel_id, chat_id) or self.agent_id
+        active_agent_id = await self.resolve_agent_id(chat_id)
+        if not active_agent_id:
+            await send(chat_id, NO_AGENT_MESSAGE)
+            return
 
         # -- 3. Run agent -------------------------------------------------
         try:

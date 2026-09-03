@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from core.usage_tracker import (
+    get_agent_summary,
     get_usage_logs,
     get_usage_summary,
     get_cache_summary,
@@ -43,10 +44,25 @@ async def usage_logs(
     session_id: Optional[str] = Query(None),
     source: Optional[str] = Query(None),
     run_id: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query(None),
 ):
     """Paginated detailed per-call usage records, newest first."""
-    logs = await get_usage_logs(limit=limit, offset=offset, session_id=session_id, source=source, run_id=run_id)
+    logs = await get_usage_logs(
+        limit=limit, offset=offset, session_id=session_id, source=source,
+        run_id=run_id, agent_id=agent_id,
+    )
     return {"logs": logs, "count": len(logs)}
+
+
+@router.get("/api/usage/agents/{agent_id}")
+async def usage_for_agent(agent_id: str):
+    """Cost and token totals for one agent, plus its per-model breakdown.
+
+    Aggregated in the database rather than by filtering the usage screen's
+    records client-side: an agent that has been running for months has more
+    rows than a settings tab should ever move.
+    """
+    return await get_agent_summary(agent_id)
 
 
 @router.get("/api/usage/pricing")

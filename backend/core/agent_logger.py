@@ -287,7 +287,7 @@ class AgentLogger:
         return None
 
     @staticmethod
-    def list_logs(limit: int = 100, offset: int = 0) -> list[dict]:
+    def list_logs(limit: int = 100, offset: int = 0, agent_id: str | None = None) -> list[dict]:
 
         def _parse_head(head: str, run_id: str, size_kb: float) -> dict:
             def _extract(label: str) -> str:
@@ -343,6 +343,11 @@ class AgentLogger:
 
         # Sort by started_at descending (local files already sorted; blend with S3)
         logs.sort(key=lambda x: x.get("started_at", ""), reverse=True)
+        # Filtering happens before the slice: applying it after would page over
+        # every agent's runs and then hand back whichever of them survived, so
+        # a busy workspace would show empty pages for a quiet agent.
+        if agent_id:
+            logs = [l for l in logs if l.get("agent_id") == agent_id]
         return logs[offset: offset + limit]
 
     @staticmethod

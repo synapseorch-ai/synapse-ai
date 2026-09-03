@@ -126,6 +126,7 @@ async def query(
     session_id: str | None = None,
     source: str | None = None,
     run_id: str | None = None,
+    agent_id: str | None = None,
 ) -> list[dict]:
     """Usage records, filtered and paged by the database.
 
@@ -144,6 +145,8 @@ async def query(
         stmt = stmt.where(UsageLogDB.run_id == run_id)
     if source:
         stmt = stmt.where(UsageLogDB.source == source)
+    if agent_id:
+        stmt = stmt.where(UsageLogDB.agent_id == agent_id)
 
     if session_id or run_id:
         stmt = stmt.order_by(UsageLogDB.timestamp, UsageLogDB.id)
@@ -169,6 +172,76 @@ async def all_records() -> list[dict]:
             )
         ).scalars().all()
     return [_to_dict(r) for r in rows]
+
+
+async def agent_summary(agent_id: str) -> dict:
+    """Totals for one agent, aggregated by the database.
+
+    The exception to this module's "summaries group in Python" note, and for
+    the reason that note gives: this one collects no sets. It is `sum` and
+    `count` over a `group by model`, which SQLite and Postgres spell
+    identically, so there is no reason to stream every row an agent has ever
+    written into the process to add them up.
+    """
+    from core.store import session
+    from core.store.models import UsageLogDB
+
+    scope = [UsageLogDB.tenant_id == get_tenant(), UsageLogDB.agent_id == agent_id]
+
+    totals_stmt = select(
+        func.count(UsageLogDB.id),
+        func.coalesce(func.sum(UsageLogDB.input_tokens), 0),
+        func.coalesce(func.sum(UsageLogDB.output_tokens), 0),
+        func.coalesce(func.sum(UsageLogDB.total_tokens), 0),
+        func.coalesce(func.sum(UsageLogDB.cache_read_tokens), 0),
+        func.coalesce(func.sum(UsageLogDB.cache_write_tokens), 0),
+        func.coalesce(func.sum(UsageLogDB.estimated_cost), 0.0),
+        func.coalesce(func.sum(UsageLogDB.estimated_savings), 0.0),
+        func.max(UsageLogDB.timestamp),
+        func.min(UsageLogDB.timestamp),
+    ).where(*scope)
+
+    by_model_stmt = (
+        select(
+            UsageLogDB.model,
+            func.count(UsageLogDB.id),
+            func.coalesce(func.sum(UsageLogDB.total_tokens), 0),
+            func.coalesce(func.sum(UsageLogDB.estimated_cost), 0.0),
+        )
+        .where(*scope)
+        .group_by(UsageLogDB.model)
+        .order_by(func.coalesce(func.sum(UsageLogDB.estimated_cost), 0.0).desc())
+    )
+
+    async with session() as s:
+        row = (await s.execute(totals_stmt)).one()
+        models = (await s.execute(by_model_stmt)).all()
+
+    def _iso(value):
+        return value.isoformat() if value is not None else None
+
+    return {
+        "agent_id": agent_id,
+        "calls": int(row[0] or 0),
+        "input_tokens": int(row[1] or 0),
+        "output_tokens": int(row[2] or 0),
+        "total_tokens": int(row[3] or 0),
+        "cache_read_tokens": int(row[4] or 0),
+        "cache_write_tokens": int(row[5] or 0),
+        "estimated_cost": float(row[6] or 0.0),
+        "estimated_savings": float(row[7] or 0.0),
+        "last_used": _iso(row[8]),
+        "first_used": _iso(row[9]),
+        "by_model": [
+            {
+                "model": m or "unknown",
+                "calls": int(calls or 0),
+                "total_tokens": int(tokens or 0),
+                "estimated_cost": float(cost or 0.0),
+            }
+            for m, calls, tokens, cost in models
+        ],
+    }
 
 
 async def clear() -> int:

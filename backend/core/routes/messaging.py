@@ -96,6 +96,47 @@ async def assign_agent(channel_id: str, request: Request):
     )
 
 
+@router.put("/api/messaging/channels/{channel_id}/assignments")
+async def set_assignments(channel_id: str, request: Request):
+    """Replace a channel's agents in one call. Body: `{agent_ids, default_agent_id?}`.
+
+    The whole-list write the settings screen uses: its chips describe a set, so
+    the request describes a set. Every id is checked against the agent store
+    first — an assignment naming an agent that does not exist is the bug D68
+    already paid for once, where a dangling `agent_id` silently ran whichever
+    agent happened to be first.
+    """
+    _get_manager(request)
+    if not await channel_store.get_channel(channel_id):
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    body = await request.json()
+    agent_ids = body.get("agent_ids")
+    if not isinstance(agent_ids, list) or not all(isinstance(a, str) for a in agent_ids):
+        raise HTTPException(status_code=422, detail="agent_ids must be a list of agent ids")
+
+    from core.routes.agents import load_user_agents
+
+    known = {a["id"] for a in await load_user_agents()}
+    unknown = [a for a in agent_ids if a not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown agent(s): {', '.join(unknown)}",
+        )
+
+    default_agent_id = body.get("default_agent_id")
+    if default_agent_id and default_agent_id not in agent_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="default_agent_id must be one of agent_ids",
+        )
+
+    return await channel_store.set_assignments(
+        channel_id, agent_ids, default_agent_id=default_agent_id
+    )
+
+
 @router.delete("/api/messaging/channels/{channel_id}/assignments/{agent_id}")
 async def unassign_agent(channel_id: str, agent_id: str, request: Request):
     _get_manager(request)

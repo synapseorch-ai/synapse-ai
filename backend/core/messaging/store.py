@@ -272,6 +272,86 @@ async def unassign_channel(channel_id: str, agent_id: str) -> bool:
     return True
 
 
+async def set_assignments(
+    channel_id: str,
+    agent_ids: list[str],
+    *,
+    default_agent_id: Optional[str] = None,
+) -> list[dict]:
+    """Replace a channel's agents with exactly ``agent_ids``, in one write.
+
+    The whole-list counterpart of :func:`assign_channel` — what a screen made of
+    toggle chips actually does, where the unit of change is the set rather than
+    a delta. One save means a half-applied set is not reachable, and membership
+    and the default move together instead of in two round trips that can
+    disagree in between.
+
+    Rows that survive keep their ``id`` and ``created_at``, so the ordering
+    :func:`get_agent_ids_for_channel` sorts on stays put: re-saving a set does
+    not reshuffle it.
+
+    The default is resolved in order — ``default_agent_id`` if it is in the new
+    set, else the current default if it survived, else the first id given. An
+    empty set leaves no rows and therefore no default.
+    """
+    assignments = await _load_assignments()
+    others = [
+        a
+        for a in assignments
+        if a["channel_id"] != channel_id or a.get("target_type", "agent") != "agent"
+    ]
+    ours = {
+        a["target_id"]: a
+        for a in assignments
+        if a["channel_id"] == channel_id and a.get("target_type", "agent") == "agent"
+    }
+
+    wanted: list[str] = []
+    for agent_id in agent_ids:
+        if agent_id and agent_id not in wanted:
+            wanted.append(agent_id)
+
+    surviving_default = next(
+        (aid for aid in wanted if ours.get(aid, {}).get("is_default")), None
+    )
+    if default_agent_id in wanted:
+        chosen = default_agent_id
+    elif surviving_default:
+        chosen = surviving_default
+    else:
+        chosen = wanted[0] if wanted else None
+
+    rows: list[dict] = []
+    for agent_id in wanted:
+        row = ours.get(agent_id) or {
+            "id": f"asg_{uuid.uuid4().hex[:8]}",
+            "channel_id": channel_id,
+            "target_type": "agent",
+            "target_id": agent_id,
+            "created_at": _now(),
+        }
+        row["is_default"] = agent_id == chosen
+        rows.append(row)
+
+    await _save_assignments(others + rows)
+
+    # The join has now spoken for this channel, so the legacy scalar must stop
+    # answering — permanently, not just while rows exist. Without this, removing
+    # the last agent from a pre-join channel drops it back to zero rows, and
+    # `get_agent_ids_for_channel`'s fallback resurrects the very agent that was
+    # just unassigned.
+    channel = await get_channel(channel_id)
+    if channel and channel.get("agent_id"):
+        data = await _load_raw()
+        for c in data:
+            if c["id"] == channel_id:
+                c.pop("agent_id", None)
+                break
+        await _save_raw(data)
+
+    return rows
+
+
 async def get_agent_ids_for_channel(channel_id: str) -> list[str]:
     """Agents assigned to this channel, the default first.
 

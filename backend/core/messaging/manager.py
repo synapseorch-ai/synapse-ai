@@ -163,10 +163,10 @@ class MessagingManager:
 
     async def switch_agent(self, channel_id: str, chat_id: str, agent_name: str) -> bool:
         """
-        Switch the active agent for a chat by name.
-        Returns True if the agent was found, False otherwise.
+        Switch the active agent for a chat by name, within this channel's own
+        agents. Returns True if the agent was found, False otherwise.
         """
-        agents = await self.list_agents()
+        agents = await self.list_agents(channel_id)
         match = next(
             (a for a in agents if a.get("name", "").lower() == agent_name.lower()),
             None,
@@ -178,16 +178,32 @@ class MessagingManager:
         self._active_agents[channel_id][chat_id] = match["id"]
         return True
 
-    async def list_agents(self) -> list[dict]:
-        """Return all configured agents from the agent store."""
+    async def list_agents(self, channel_id: Optional[str] = None) -> list[dict]:
+        """Configured agents — every one, or just this channel's assignments.
+
+        Scoped by channel since D72: the assignment join is what the settings
+        screen shows and what a channel's `/agents` must therefore answer.
+        Before that, `/agent <name>` could switch a channel to any agent in the
+        workspace, so a screen listing three agents fronted a bot that would
+        happily become a fourth.
+
+        The join's order is kept — default first — so `/agents` lists the agent
+        that answers a plain message at the top.
+        """
         try:
             from core.routes.agents import load_user_agents
-            return await load_user_agents()
+            agents = await load_user_agents()
         except Exception:
             return []
+        if channel_id is None:
+            return agents
 
-    async def list_agent_names(self) -> list[str]:
-        agents = await self.list_agents()
+        assigned = await channel_store.get_agent_ids_for_channel(channel_id)
+        by_id = {a["id"]: a for a in agents}
+        return [by_id[aid] for aid in assigned if aid in by_id]
+
+    async def list_agent_names(self, channel_id: Optional[str] = None) -> list[str]:
+        agents = await self.list_agents(channel_id)
         return [a.get("name", a.get("id", "")) for a in agents]
 
     # ------------------------------------------------------------------ #

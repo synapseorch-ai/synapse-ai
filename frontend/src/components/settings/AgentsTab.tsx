@@ -10,6 +10,7 @@ import { useDispatch } from 'react-redux';
 import { AppDispatch } from '@/store';
 import { addAgent, updateAgent } from '@/store/settingsSlice';
 import { ToastNotification } from './ToastNotification';
+import { AgentActivity, ActivityTab } from './AgentActivity';
 
 interface AgentsTabProps {
     agents: any[];
@@ -42,7 +43,7 @@ export const AgentsTab = ({
     const [promptDescription, setPromptDescription] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
     const [showPreview, setShowPreview] = useState(false);
-    const [agentSubTab, setAgentSubTab] = useState<'config' | 'messaging'>('config');
+    const [agentSubTab, setAgentSubTab] = useState<'config' | 'messaging' | ActivityTab>('config');
     const [agentChannels, setAgentChannels] = useState<any[]>([]);
     const [isSaving, setIsSaving] = useState(false);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'error' } | null>(null);
@@ -453,12 +454,20 @@ export const AgentsTab = ({
 
                             {/* Sub-tab row */}
                             <div className="flex gap-0 border-b border-border">
-                                {[{ id: 'config', label: 'Configuration' }, { id: 'messaging', label: 'Messaging Channels' }].map(t => (
+                                {[
+                                    { id: 'config', label: 'Configuration' },
+                                    { id: 'messaging', label: 'Messaging Channels' },
+                                    { id: 'runs', label: 'Runs' },
+                                    { id: 'metrics', label: 'Metrics' },
+                                    { id: 'usedby', label: 'Used by' },
+                                ].map(t => (
                                     <button
                                         key={t.id}
                                         onClick={() => {
                                             setAgentSubTab(t.id as any);
-                                            if (t.id === 'messaging' && draftAgent.id) {
+                                            // "Used by" names the agent's channels too, so both tabs
+                                            // want the same fetch.
+                                            if ((t.id === 'messaging' || t.id === 'usedby') && draftAgent.id) {
                                                 fetch(`/api/messaging/channels?agent_id=${draftAgent.id}`)
                                                     .then(r => r.ok ? r.json() : [])
                                                     .then(d => setAgentChannels(Array.isArray(d) ? d : []))
@@ -978,13 +987,15 @@ export const AgentsTab = ({
                             {agentSubTab === 'messaging' && (
                                 <div className="space-y-4">
                                     <p className="text-2xs text-text-faint">
-                                        Messaging channels bound to this agent. Configure them in full from <strong className="text-text">Settings → Messaging</strong>.
+                                        Channels this agent answers on. A channel can front several agents,
+                                        and an agent can answer on several channels — assign them from{' '}
+                                        <strong className="text-text">Settings → Messaging</strong>.
                                     </p>
                                     {agentChannels.length === 0 ? (
                                         <div className="p-8 border border-dashed border-border text-center text-text-faint space-y-3">
                                             <MessageSquare className="h-8 w-8 mx-auto opacity-20" />
-                                            <p className="text-xs">No messaging channels bound to this agent yet.</p>
-                                            <p className="text-2xs">Go to <strong className="text-text-muted">Settings → Messaging</strong> and select this agent when creating a channel.</p>
+                                            <p className="text-xs">This agent is not assigned to any channel yet.</p>
+                                            <p className="text-2xs">Go to <strong className="text-text-muted">Settings → Messaging</strong>, pick a channel and add this agent to it.</p>
                                         </div>
                                     ) : (
                                         <div className="space-y-2">
@@ -995,7 +1006,12 @@ export const AgentsTab = ({
                                                         <span className="text-lg">{EMOJI[ch.platform] ?? '🤖'}</span>
                                                         <div className="flex-1 min-w-0">
                                                             <div className="text-xs font-bold text-text">{ch.name}</div>
-                                                            <div className="text-2xs text-text-faint capitalize">{ch.platform}{ch.multi_agent_mode ? ' · multi-agent' : ''}</div>
+                                                            <div className="text-2xs text-text-faint capitalize">
+                                                                {ch.platform}
+                                                                {ch.agent_ids?.[0] === draftAgent.id ? ' · answers by default' : ''}
+                                                                {(ch.agent_ids?.length ?? 0) > 1 ? ` · ${ch.agent_ids.length} agents` : ''}
+                                                                {ch.multi_agent_mode ? ' · switchable' : ''}
+                                                            </div>
                                                         </div>
                                                         {ch.status === 'running'
                                                             ? <span className="flex items-center gap-1 text-2xs text-success"><CheckCircle className="h-3 w-3" /> Running</span>
@@ -1009,6 +1025,18 @@ export const AgentsTab = ({
                                         </div>
                                     )}
                                 </div>
+                            )}
+
+                            {/* ── Runs / Metrics / Used by ───────────────────── */}
+                            {(agentSubTab === 'runs' || agentSubTab === 'metrics' || agentSubTab === 'usedby') && (
+                                <AgentActivity
+                                    /* Keyed by agent: switching agents remounts the tab, so its
+                                       loading state is its initial state rather than a reset. */
+                                    key={draftAgent.id}
+                                    agentId={draftAgent.id}
+                                    tab={agentSubTab}
+                                    channels={agentChannels}
+                                />
                             )}
                         </>)}
                     </div>

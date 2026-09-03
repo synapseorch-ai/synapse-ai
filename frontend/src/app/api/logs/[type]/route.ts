@@ -4,12 +4,17 @@ import { BACKEND_URL, backendHeaders } from '@/lib/backend';
 export const dynamic = 'force-dynamic';
 
 export async function GET(
-    _req: Request,
+    req: Request,
     { params }: { params: Promise<{ type: string }> }
 ) {
     const { type } = await params;
+    // Forward the query string. Without this the backend saw no `limit`/`offset`
+    // and answered with its defaults, so the Logs screen's "load more" re-fetched
+    // the same first page — and `?agent_id=` (the agent editor's Runs tab) would
+    // have listed every agent's runs under whichever agent was open.
+    const query = new URL(req.url).search;
     try {
-        const res = await fetch(`${BACKEND_URL}/api/logs/${type}`, {
+        const res = await fetch(`${BACKEND_URL}/api/logs/${type}${query}`, {
             cache: 'no-store',
             headers: backendHeaders(),
         });

@@ -294,6 +294,7 @@ async def get_usage_logs(
     session_id: Optional[str] = None,
     source: Optional[str] = None,
     run_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> list:
     """Return paginated usage records.
     - When filtering by session_id or run_id: oldest-first (for per-turn context delta display).
@@ -304,8 +305,14 @@ async def get_usage_logs(
     `limit=100_000` at the end of an orchestration run was paying for.
     """
     return await usage_store.query(
-        limit=limit, offset=offset, session_id=session_id, source=source, run_id=run_id,
+        limit=limit, offset=offset, session_id=session_id, source=source,
+        run_id=run_id, agent_id=agent_id,
     )
+
+
+async def get_agent_summary(agent_id: str) -> dict:
+    """Totals for one agent — what the agent editor's Metrics tab shows."""
+    return await usage_store.agent_summary(agent_id)
 
 
 async def get_usage_summary() -> dict:

@@ -120,3 +120,72 @@ async def test_default_conversation_is_learned_and_kept():
     # Idempotent — a repeat of the same value is not a write worth making.
     await store.set_default_conversation(ch["id"], "12345")
     assert (await store.get_channel(ch["id"]))["default_conversation_id"] == "12345"
+
+
+# ── The whole-list write (D72) ───────────────────────────────────────────────
+#
+# `set_assignments` is what a screen made of toggle chips actually does: the
+# unit of change is the set, not a delta. One save means a half-applied set is
+# unreachable, and membership and the default move together.
+
+async def test_set_assignments_replaces_the_set():
+    ch = await store.save_channel(_channel())
+    await store.set_assignments(ch["id"], ["agent_1", "agent_2"])
+    assert await store.get_agent_ids_for_channel(ch["id"]) == ["agent_1", "agent_2"]
+
+    await store.set_assignments(ch["id"], ["agent_2", "agent_3"])
+    assert set(await store.get_agent_ids_for_channel(ch["id"])) == {"agent_2", "agent_3"}
+    assert len(await store.list_assignments(ch["id"])) == 2
+
+
+async def test_set_assignments_keeps_a_surviving_default():
+    ch = await store.save_channel(_channel())
+    await store.set_assignments(ch["id"], ["agent_1", "agent_2"], default_agent_id="agent_2")
+    assert await store.get_default_agent_id(ch["id"]) == "agent_2"
+
+    # Re-sending the same membership must not hand the flag back to the first
+    # id: the default is a mark, not a position in the list.
+    await store.set_assignments(ch["id"], ["agent_1", "agent_2"])
+    assert await store.get_default_agent_id(ch["id"]) == "agent_2"
+
+    # But if the default is dropped from the set, the first survivor takes it.
+    await store.set_assignments(ch["id"], ["agent_1"])
+    assert await store.get_default_agent_id(ch["id"]) == "agent_1"
+
+
+async def test_set_assignments_preserves_row_identity():
+    """A surviving agent keeps its row, so re-saving a set does not reshuffle it."""
+    ch = await store.save_channel(_channel())
+    await store.set_assignments(ch["id"], ["agent_1", "agent_2"])
+    before = {a["target_id"]: a["id"] for a in await store.list_assignments(ch["id"])}
+
+    await store.set_assignments(ch["id"], ["agent_1", "agent_2", "agent_3"])
+    after = {a["target_id"]: a["id"] for a in await store.list_assignments(ch["id"])}
+    assert after["agent_1"] == before["agent_1"]
+    assert after["agent_2"] == before["agent_2"]
+    assert await store.get_agent_ids_for_channel(ch["id"]) == ["agent_1", "agent_2", "agent_3"]
+
+
+async def test_set_assignments_touches_only_its_own_channel():
+    a = await store.save_channel(_channel())
+    b = await store.save_channel(_channel())
+    await store.set_assignments(a["id"], ["agent_1"])
+    await store.set_assignments(b["id"], ["agent_2"])
+
+    await store.set_assignments(a["id"], [])
+    assert await store.get_agent_ids_for_channel(a["id"]) == []
+    assert await store.get_agent_ids_for_channel(b["id"]) == ["agent_2"]
+
+
+async def test_set_assignments_retires_the_legacy_scalar():
+    """Once the join has spoken, the pre-join scalar must never answer again.
+
+    Otherwise removing the last agent drops the channel to zero rows, and the
+    read-time fallback resurrects the very agent that was just unassigned.
+    """
+    ch = await store.save_channel(_channel(agent_id="agent_legacy"))
+    await store.set_assignments(ch["id"], ["agent_new"])
+    assert (await store.get_channel(ch["id"])).get("agent_id") is None
+
+    await store.set_assignments(ch["id"], [])
+    assert await store.get_agent_ids_for_channel(ch["id"]) == []
