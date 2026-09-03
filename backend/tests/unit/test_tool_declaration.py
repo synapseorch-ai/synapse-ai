@@ -195,3 +195,35 @@ class TestDefaultsStillUseBareNames:
         )
 
         assert sorted(names) == ["glob", "read_file"]
+
+
+class TestToolGroups:
+    """`group:<id>` in an agent's list admits every custom tool carrying that
+    group — including one added after the agent was saved, which is what makes
+    a group a unit rather than a picker heading (D68 tools pass)."""
+
+    CUSTOM = [
+        {"name": "list_pets", "description": "d", "inputSchema": {"type": "object"}, "group": "grp_petstore"},
+        {"name": "add_pet", "description": "d", "inputSchema": {"type": "object"}, "group": "grp_petstore"},
+        {"name": "send_mail", "description": "d", "inputSchema": {"type": "object"}, "group": "grp_mail"},
+        {"name": "lone_tool", "description": "d", "inputSchema": {"type": "object"}},
+    ]
+
+    async def test_a_group_entry_admits_its_tools_and_nothing_else(self, declared):
+        names = await declared({}, _agent(["group:grp_petstore"]), custom_tools=self.CUSTOM)
+        assert {"list_pets", "add_pet"} <= set(names)
+        assert "send_mail" not in names and "lone_tool" not in names
+
+    async def test_groups_and_names_combine(self, declared):
+        names = await declared({}, _agent(["group:grp_mail", "lone_tool"]), custom_tools=self.CUSTOM)
+        assert {"send_mail", "lone_tool"} <= set(names)
+        assert "list_pets" not in names
+
+    async def test_a_tool_added_to_the_group_later_is_included(self, declared):
+        later = [*self.CUSTOM, {"name": "delete_pet", "description": "d", "inputSchema": {"type": "object"}, "group": "grp_petstore"}]
+        names = await declared({}, _agent(["group:grp_petstore"]), custom_tools=later)
+        assert "delete_pet" in names
+
+    async def test_all_still_means_all(self, declared):
+        names = await declared({}, _agent(["all"]), custom_tools=self.CUSTOM)
+        assert {"list_pets", "add_pet", "send_mail", "lone_tool"} <= set(names)

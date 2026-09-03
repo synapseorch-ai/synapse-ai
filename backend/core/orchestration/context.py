@@ -882,6 +882,14 @@ def build_origin_aware_context(
         return str(run.shared_state.get(k, f"{{state.{k}}}"))
 
     task_text = re.sub(r"\{state\.(\w+)\}", replace_ref, prompt_template)
+    # `{{ global.key }}` and `{{ state.key }}` — the double-brace family shared
+    # with tools and system prompts (core/templating.py). Unknown references
+    # stay visible rather than vanishing.
+    from core import templating as _templating
+    task_text = _templating.render(
+        task_text,
+        {"global": getattr(engine, "global_variables", None) or {}, "state": run.shared_state},
+    )
 
     if is_rerun:
         task_header = "## ORIGINAL TASK (reference only)"

@@ -60,7 +60,19 @@ class OrchestrationEngine:
         # just to build an engine. It is display attribution only, so an empty
         # mapping until the run starts costs nothing.
         self.agent_names: dict[str, str] = {}
+        #: The tenant's `{{ global.* }}` values, loaded once per run/resume
+        #: (core/variables.py); prompt templates render against it.
+        self.global_variables: dict = {}
         self.current_transition = None  # set by _execute_loop before each step
+
+    async def _load_global_variables(self) -> dict:
+        """The tenant's global variables, or `{}` — a missing document is not
+        an error, and a store hiccup must not fail the run."""
+        try:
+            from core import variables
+            return await variables.load()
+        except Exception:
+            return {}
 
     async def _load_agent_names(self) -> dict[str, str]:
         """Load agent_id -> name mapping for context attribution."""
@@ -89,6 +101,7 @@ class OrchestrationEngine:
         # Agent display names, for step attribution in the event stream. Read
         # here rather than in __init__, which cannot await.
         self.agent_names = await self._load_agent_names()
+        self.global_variables = await self._load_global_variables()
 
         shared_state = self._init_state(initial_input)
         if initial_state:
@@ -445,6 +458,7 @@ class OrchestrationEngine:
 
         orch = Orchestration.model_validate(orch_data)
         engine = cls(orch, server_module)
+        engine.global_variables = await engine._load_global_variables()
         engine.agent_names = await engine._load_agent_names()
 
         engine.logger = OrchestrationLogger(
@@ -496,6 +510,7 @@ class OrchestrationEngine:
 
         orch = Orchestration.model_validate(orch_data)
         engine = cls(orch, server_module)
+        engine.global_variables = await engine._load_global_variables()
         print(f"[engine.resume] 🗺  step_map keys: {list(engine.step_map.keys())}", flush=True)
 
         # Create logger — appends to existing log file if present

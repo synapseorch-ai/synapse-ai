@@ -777,6 +777,12 @@ async def run_agent_step(
 
     # Build system prompt with repo and DB context injection
     agent_system_template = active_agent.get("system_prompt", "")
+    # `{{ global.key }}` in a system prompt — the tenant's variables document,
+    # read once per call (core/variables.py; core/templating.py for the syntax).
+    from core import templating as _templating
+    from core import variables as _variables
+    _global_variables = await _variables.load()
+    agent_system_template = _templating.render(agent_system_template, {"global": _global_variables})
     agent_system_template = await _inject_repo_context(active_agent, agent_system_template)
     agent_system_template = await _inject_db_context(active_agent, agent_system_template)
 
@@ -1765,19 +1771,39 @@ async def run_agent_step(
                                     return str(v) if not isinstance(v, (dict, list)) else json.dumps(v)
                                 return m.group(0)  # unrecognised – leave as-is
 
+                            # `{{ … }}` first — `{{global.key}}` and bare `{{arg}}`
+                            # (core/templating.py) — then the older single-brace
+                            # forms, so `{param}` and `{data.key}` keep working.
+                            from core import templating as _templating
+                            _render_ctx = {"global": _global_variables, "args": tool_args}
+                            for _ref in _templating.references(url):
+                                if not _ref.startswith(("global.", "state.", "args.")) and _ref.split(".")[0] in tool_args:
+                                    consumed_keys.add(_ref.split(".")[0])
+                            url = _templating.render(url, _render_ctx, bare="args")
+                            headers = _templating.render_mapping(dict(headers), _render_ctx, bare="args")
                             url = _re.sub(r"\{([^}]+)\}", _replace_placeholder, url)
 
-                            # Route args based on HTTP method:
-                            # GET/DELETE → non-consumed args as query params (avoid double-sending path vars)
-                            # POST/PUT   → full args always go in the body (path vars also stay in URL)
+                            # The body: what the tool's `body` template says —
+                            # nothing (the arguments), one reference (that
+                            # argument is the body), or a JSON template. Keys the
+                            # URL or the body used are not sent twice.
+                            body, body_consumed = _templating.request_body(
+                                target_tool.get("body"), tool_args, {"global": _global_variables}
+                            )
+                            consumed_keys |= body_consumed
                             if method in ("GET", "DELETE"):
                                 remaining_args = {k: v for k, v in tool_args.items() if k not in consumed_keys}
                                 params = {k: (json.dumps(v) if isinstance(v, (dict, list)) else str(v))
                                           for k, v in remaining_args.items()}
                                 resp = await client.request(method, url, params=params, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
                             else:
-                                # POST / PUT – all args in body even if some were used in the URL
-                                resp = await client.request(method, url, json=tool_args, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
+                                if not (target_tool.get("body") or "").strip():
+                                    # No template: the arguments, minus the ones the URL took.
+                                    body = {k: v for k, v in tool_args.items() if k not in consumed_keys}
+                                if isinstance(body, str):
+                                    resp = await client.request(method, url, content=body, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
+                                else:
+                                    resp = await client.request(method, url, json=body, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
 
                             json_resp = None
                             try:

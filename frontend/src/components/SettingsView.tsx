@@ -15,6 +15,7 @@ import { LinkButton, Screen } from '@/components/ui';
 import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 import { GeneralTab } from './settings/GeneralTab';
 import { PersonalDetailsTab } from './settings/PersonalDetailsTab';
+import { VariablesTab } from './settings/VariablesTab';
 import { MemoryTab } from './settings/MemoryTab';
 import { DataLabTab } from './settings/DataLabTab';
 import { ModelsTab } from './settings/ModelsTab';
@@ -499,6 +500,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 )}
 
                 {/* PERSONAL DETAILS TAB */}
+                {activeTab === 'variables' && <VariablesTab />}
                 {activeTab === 'personal_details' && (
                     <PersonalDetailsTab
                         pdFirstName={pdFirstName} setPdFirstName={setPdFirstName}

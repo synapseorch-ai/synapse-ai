@@ -4,6 +4,8 @@ sessions, vault, tools, repos, db_configs, logs, schedules, import/export,
 profiling, data). Read/list handlers are hit generically; create/delete
 roundtrips use the modules whose request models are simple + infra-free.
 """
+import json
+
 import pytest
 
 
@@ -117,3 +119,71 @@ class TestSessionRoutes:
 
     async def test_delete_session(self, client):
         assert (await client.delete("/api/sessions/ghost-session")).status_code < 500
+
+
+PETSTORE = {
+    "openapi": "3.0.0",
+    "info": {"title": "Pet Store", "description": "Pets, mostly."},
+    "servers": [{"url": "https://pets.example.test"}],
+    "paths": {
+        "/pets": {
+            "get": {"operationId": "listPets", "summary": "List pets"},
+            "post": {"operationId": "addPet", "summary": "Add a pet",
+                     "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"name": {"type": "string"}}}}}}},
+        }
+    },
+}
+
+
+class TestToolGroups:
+    async def test_groups_crud_and_delete_ungroups_the_tools(self, client):
+        created = await client.post("/api/tools/groups", json={"name": "Billing API", "description": "Invoices"})
+        assert created.status_code == 200, created.text
+        group = created.json()
+        assert group["id"] == "grp_billing_api"
+
+        other = await client.post("/api/tools/groups", json={"name": "Other"})
+        assert other.status_code == 200
+        listed = (await client.get("/api/tools/groups")).json()
+        assert {g["id"] for g in listed} >= {"grp_billing_api", "grp_other"}, "a second group did not replace the first"
+
+        renamed = await client.put(f"/api/tools/groups/{group['id']}", json={"name": "Billing", "description": ""})
+        assert renamed.status_code == 200 and renamed.json()["name"] == "Billing"
+
+        tool = {"name": "grp_tool", "description": "x", "tool_type": "http", "url": "https://x.test/", "method": "GET",
+                "inputSchema": {"type": "object"}, "group": group["id"]}
+        assert (await client.post("/api/tools/custom", json=tool)).status_code == 200
+        gone = await client.delete(f"/api/tools/groups/{group['id']}")
+        assert gone.status_code == 200 and gone.json()["ungrouped"] == 1
+        remaining = (await client.get("/api/tools/custom")).json()
+        assert next(t for t in remaining if t["name"] == "grp_tool").get("group") is None
+        assert (await client.put("/api/tools/groups/grp_nope", json={"name": "n"})).status_code == 404
+
+    async def test_an_openapi_import_is_one_group(self, client):
+        preview = await client.post("/api/tools/import/openapi", json={"spec": json.dumps(PETSTORE)})
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["group"] == {"id": "grp_pet_store", "name": "Pet Store", "description": "Pets, mostly."}
+        assert all(t["group"] == "grp_pet_store" for t in preview.json()["tools"])
+        assert (await client.get("/api/tools/groups")).json() == [] or all(
+            g["id"] != "grp_pet_store" for g in (await client.get("/api/tools/groups")).json()
+        ), "a preview writes nothing"
+
+        saved = await client.post("/api/tools/import/openapi", json={"spec": json.dumps(PETSTORE), "save": True, "group": "Pets v2"})
+        assert saved.status_code == 200 and saved.json()["group"]["id"] == "grp_pets_v2"
+        assert any(g["id"] == "grp_pets_v2" for g in (await client.get("/api/tools/groups")).json())
+        tools = {t["name"]: t for t in (await client.get("/api/tools/custom")).json()}
+        assert tools["listpets"]["group"] == "grp_pets_v2" and tools["addpet"]["group"] == "grp_pets_v2"
+
+
+class TestGlobalVariables:
+    async def test_roundtrip_and_key_rules(self, client):
+        assert (await client.get("/api/settings/variables")).json() == {"values": {}}
+        r = await client.post("/api/settings/variables", json={"values": {"api_base": "https://api.acme.test", "team": "ops"}})
+        assert r.status_code == 200, r.text
+        assert (await client.get("/api/settings/variables")).json()["values"]["api_base"] == "https://api.acme.test"
+        r = await client.post("/api/settings/variables", json={"values": {"1bad": "x"}})
+        assert r.status_code == 400
+        r = await client.post("/api/settings/variables", json={"values": {"has space": "x"}})
+        assert r.status_code == 400
+        r = await client.post("/api/settings/variables", json={"nope": 1})
+        assert r.status_code == 400

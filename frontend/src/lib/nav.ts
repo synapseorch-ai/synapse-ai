@@ -12,6 +12,7 @@
  * component would fail — and the symptom is a 200 with a 404 body.
  */
 import {
+    Braces,
     ArrowLeftRight, BookOpen, Bot, Clock, Cloud, Cpu, Database, DollarSign, Eraser, LayoutDashboard,
     FolderGit2, Gauge, Key, LayoutGrid, LifeBuoy, MessageSquare, MessagesSquare,
     ScrollText, Server, Shield, Vault, Workflow, Wrench,
@@ -117,6 +118,10 @@ export const SETTINGS_NAV: NavGroup[] = [
             {
                 id: 'personal_details', label: 'Personal Details', href: '/settings/personal_details', icon: Shield,
                 blurb: 'Details agents may use when acting on your behalf.',
+            },
+            {
+                id: 'variables', label: 'Variables', href: '/settings/variables', icon: Braces,
+                blurb: 'Values used across tools and prompts as {{ global.key }}.',
             },
             {
                 id: 'memory', label: 'Memory', href: '/settings/memory', icon: Eraser,

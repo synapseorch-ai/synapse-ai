@@ -20,6 +20,9 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
     const [authKey, setAuthKey] = useState('Authorization');
     const [authValue, setAuthValue] = useState('');
     const [namePrefix, setNamePrefix] = useState('');
+    // One group per import (the picker shows it as one row). Filled from the
+    // spec's title once previewed; editable before saving.
+    const [groupName, setGroupName] = useState('');
     const [preview, setPreview] = useState<any[] | null>(null);
     const [selected, setSelected] = useState<Record<string, boolean>>({});
     const [loading, setLoading] = useState(false);
@@ -51,11 +54,13 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                     base_url: baseUrl.trim() || null,
                     headers: buildHeaders(),
                     name_prefix: namePrefix.trim(),
+                    group: groupName.trim() || null,
                 }),
             });
             const data = await res.json();
             if (!res.ok) { setError(data.detail || 'Failed to parse spec'); return; }
             setPreview(data.tools);
+            if (!groupName.trim() && data.group?.name) setGroupName(data.group.name);
             const sel: Record<string, boolean> = {};
             (data.tools || []).forEach((t: any) => { sel[t.name] = true; });
             setSelected(sel);
@@ -150,6 +155,15 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                         value={namePrefix}
                         onChange={e => setNamePrefix(e.target.value)}
                         placeholder="petstore"
+                        className="w-full mt-1 bg-zinc-950 border border-zinc-800 text-zinc-200 text-xs p-2 focus:border-zinc-600 focus:outline-none rounded-md"
+                    />
+                </div>
+                <div className="md:col-span-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-zinc-400">Group <span className="text-zinc-600 normal-case font-normal">(one per import — the agent picker shows it as one row; defaults to the spec&apos;s title)</span></label>
+                    <input
+                        value={groupName}
+                        onChange={e => setGroupName(e.target.value)}
+                        placeholder="Pet Store API"
                         className="w-full mt-1 bg-zinc-950 border border-zinc-800 text-zinc-200 text-xs p-2 focus:border-zinc-600 focus:outline-none rounded-md"
                     />
                 </div>

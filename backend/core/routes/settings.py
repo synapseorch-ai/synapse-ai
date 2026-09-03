@@ -266,6 +266,33 @@ async def update_personal_details_api(details: PersonalDetails):
 
 # --- Google Credentials & Config ---
 
+# ── Global variables ──────────────────────────────────────────────────────────
+#
+# `{{ global.key }}` in tool URLs, headers and bodies, in agent system prompts
+# and in orchestration prompt templates — core/variables.py for the store,
+# core/templating.py for the syntax.
+
+
+@router.get("/api/settings/variables")
+async def get_global_variables():
+    from core import variables
+    return {"values": await variables.load()}
+
+
+@router.post("/api/settings/variables")
+async def set_global_variables(payload: dict):
+    """Replace the whole document. Body: {"values": {key: value}}."""
+    from core import variables
+    values = payload.get("values")
+    if not isinstance(values, dict):
+        raise HTTPException(status_code=400, detail="Body must include a 'values' object.")
+    bad = [k for k in values if not isinstance(k, str) or not variables.valid_key(k)]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Variable names must be letters, numbers, hyphens or underscores, and not start with a digit: {bad}")
+    await variables.save({k: v for k, v in values.items()})
+    return {"values": await variables.load()}
+
+
 @router.post("/api/setup/google-credentials")
 async def upload_google_creds(request: Request):
     try:

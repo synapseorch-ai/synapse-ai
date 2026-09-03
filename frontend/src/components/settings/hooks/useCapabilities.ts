@@ -33,12 +33,31 @@ type AvailableTool = {
     description?: string;
     label?: string;
     type?: string;
+    /** A custom tool's group id and name, when it belongs to one. */
+    group?: string | null;
+    group_label?: string | null;
 };
 
 function group(tools: AvailableTool[]): Capability[] {
     const groups: Record<string, Capability> = {};
 
     for (const t of tools) {
+        if (t.source === "custom_http" && t.group) {
+            // A grouped tool: one capability per group, taken whole. The agent's
+            // list then holds `group:<id>`, which the engine expands at run
+            // time — a tool added to the group later is included automatically.
+            const key = `group:${t.group}`;
+            groups[key] ??= {
+                id: key,
+                label: t.group_label || t.group,
+                description: `Every tool in ${t.group_label || t.group}`,
+                tools: [key],
+                toolDetails: [],
+                toolType: "custom",
+            };
+            groups[key].toolDetails.push({ name: t.name, description: t.description || "" });
+            continue;
+        }
         if (t.source === "custom_http") {
             // One capability per tool, not one per source. Deduped by name in
             // case the same tool is reported twice.

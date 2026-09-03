@@ -240,8 +240,15 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
         tool_schema_map[vt.name] = vt.inputSchema
     
     # Dynamic Custom Tools (n8n/Webhook)
+    #
+    # An agent's list may name a whole group — `group:<id>` — and every tool
+    # carrying that group is admitted, including one added to the group after
+    # the agent was saved. That is what makes a group a unit rather than a
+    # picker heading (the OpenAPI import makes one group per import).
+    group_ids = {entry[len("group:"):] for entry in allowed_tools if isinstance(entry, str) and entry.startswith("group:")}
     for ct in custom_tools_list:
-        if permits(allowed_tools, ct['name']):
+        in_group = bool(group_ids) and ct.get("group") in group_ids
+        if permits(allowed_tools, ct['name']) or in_group:
             vt = VirtualTool(ct['name'], ct['description'], ct['inputSchema'])
             all_tools.append(vt)
             tool_schema_map[vt.name] = vt.inputSchema

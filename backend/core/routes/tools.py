@@ -89,15 +89,21 @@ async def get_available_tools():
     # 2. Custom HTTP + Python Tools
     try:
         custom_tools = await load_custom_tools()
+        group_names = {g["id"]: g.get("name", g["id"]) for g in await _load_groups()}
         for t in custom_tools:
             tool_type = t.get("tool_type", "http")
+            group = t.get("group") if t.get("group") in group_names else None
             all_tools.append({
                 "name": t.get("name"),
                 "label": t.get("generalName", t.get("name")),
                 "description": t.get("description", ""),
                 "source": "custom_http" if tool_type != "python" else "custom_python",
                 "type": tool_type,
-                "schema": t.get("inputSchema") or t.get("schema")
+                "schema": t.get("inputSchema") or t.get("schema"),
+                # The picker shows one row per group; an agent may take the
+                # whole group as `group:<id>` (core/tools.py).
+                "group": group,
+                "group_label": group_names.get(group) if group else None,
             })
     except Exception as e:
         print(f"Error listing custom tools: {e}")
@@ -134,12 +140,86 @@ async def create_custom_tools_bulk(payload: dict):
     return {"status": "success", "imported": len(tools)}
 
 
+# ── Tool groups ───────────────────────────────────────────────────────────────
+#
+# A group is a small document — name, description — and a tool carries its
+# group's id in `group`. An agent may list `group:<id>` in `tools` and gets
+# every tool in it (core/tools.py). The OpenAPI import makes one group per
+# import, so fifty endpoints are one row in the picker rather than fifty.
+
+TOOL_GROUPS = "tool_groups"
+
+
+class ToolGroupBody(BaseModel):
+    name: str
+    description: str = ""
+
+
+def _group_id(name: str) -> str:
+    slug = "".join(c if c.isalnum() else "_" for c in name.strip().lower()).strip("_") or "group"
+    return f"grp_{slug}"[:80]
+
+
+async def _load_groups() -> list[dict]:
+    from core.store import collections
+    return [g for g in await collections.load(TOOL_GROUPS) if isinstance(g, dict) and g.get("id")]
+
+
+async def _save_groups(groups: list[dict]) -> None:
+    # `collections.save` replaces the whole collection with the list it is
+    # given, so every write here goes through the full list.
+    from core.store import collections
+    await collections.save(TOOL_GROUPS, groups)
+
+
+async def _upsert_group(group: dict) -> dict:
+    groups = [g for g in await _load_groups() if g["id"] != group["id"]]
+    await _save_groups([*groups, group])
+    return group
+
+
+@router.get("/api/tools/groups")
+async def list_tool_groups():
+    return await _load_groups()
+
+
+@router.post("/api/tools/groups")
+async def create_tool_group(body: ToolGroupBody):
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="A group needs a name.")
+    return await _upsert_group(
+        {"id": _group_id(body.name), "name": body.name.strip(), "description": body.description.strip()}
+    )
+
+
+@router.put("/api/tools/groups/{group_id}")
+async def update_tool_group(group_id: str, body: ToolGroupBody):
+    existing = next((g for g in await _load_groups() if g["id"] == group_id), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="No such group.")
+    return await _upsert_group(
+        {**existing, "name": body.name.strip() or existing["name"], "description": body.description.strip()}
+    )
+
+
+@router.delete("/api/tools/groups/{group_id}")
+async def delete_tool_group(group_id: str):
+    """Delete the group; its tools stay, ungrouped."""
+    from core.store.resources import load_tools, save_tools
+    await _save_groups([g for g in await _load_groups() if g["id"] != group_id])
+    orphaned = [{**t, "group": None} for t in await load_tools() if t.get("group") == group_id]
+    if orphaned:
+        await save_tools(orphaned)
+    return {"status": "deleted", "ungrouped": len(orphaned)}
+
+
 class OpenAPIImportRequest(BaseModel):
     spec: str                          # raw JSON or YAML text of the spec
     base_url: Optional[str] = None     # override the server base URL
     headers: Optional[dict] = None     # static headers applied to every tool (e.g. auth)
     name_prefix: str = ""              # prepended to every generated tool name
     save: bool = False                 # False → preview only; True → upsert all generated tools
+    group: Optional[str] = None        # group name for this import; default: the spec's title
 
 
 def _parse_spec_text(text: str) -> dict:
@@ -182,9 +262,16 @@ async def import_openapi(req: OpenAPIImportRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # One group per import: the spec's title unless the caller named one.
+    group_name = (req.group or "").strip() or str((spec.get("info") or {}).get("title") or "").strip() or (req.name_prefix or "Imported API")
+    group = {"id": _group_id(group_name), "name": group_name, "description": str((spec.get("info") or {}).get("description") or "").strip()[:500]}
+    for t in generated:
+        t["group"] = group["id"]
+
     if req.save:
+        await _upsert_group(group)
         await _upsert_custom_tools(generated)
-    return {"tools": generated, "count": len(generated), "saved": req.save}
+    return {"tools": generated, "count": len(generated), "saved": req.save, "group": group}
 
 
 @router.delete("/api/tools/custom/{tool_name}")

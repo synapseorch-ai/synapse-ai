@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Wrench, Plus, Trash, X, ExternalLink, AlertTriangle, CheckCircle2, RefreshCw, Container, Import } from 'lucide-react';
 import { PythonToolEditor, type PythonDraftTool } from './PythonToolEditor';
 import { OpenApiImport } from './OpenApiImport';
-import { Label, Select } from '@/components/ui';
+import { Button, Label, Select } from '@/components/ui';
 
 interface CustomToolsTabProps {
     customTools: any[];
@@ -40,6 +40,23 @@ export const CustomToolsTab = ({
     // Docker status state
     type DockerStatus = { installed: boolean; running: boolean; image_exists: boolean } | null;
     const [dockerStatus, setDockerStatus] = useState<DockerStatus>(null);
+    // Tool groups: a tool carries its group's id; the agent picker shows one
+    // row per group and an agent may take the whole group (`group:<id>`).
+    const [groups, setGroups] = useState<{ id: string; name: string; description?: string }[]>([]);
+    const [newGroupName, setNewGroupName] = useState('');
+    const reloadGroups = () => fetch('/api/tools/groups').then(r => r.json()).then(g => setGroups(Array.isArray(g) ? g : [])).catch(() => undefined);
+    useEffect(() => { reloadGroups(); }, []);
+    const createGroup = async () => {
+        const name = newGroupName.trim();
+        if (!name) return;
+        const res = await fetch('/api/tools/groups', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+        if (res.ok) {
+            const g = await res.json();
+            setNewGroupName('');
+            await reloadGroups();
+            if (draftTool) setDraftTool({ ...draftTool, group: g.id });
+        }
+    };
     const [dockerChecking, setDockerChecking] = useState(false);
     const [dockerBuilding, setDockerBuilding] = useState(false);
     const [dockerBuildError, setDockerBuildError] = useState<string | null>(null);
@@ -145,6 +162,9 @@ export const CustomToolsTab = ({
                                 </div>
                                 {t.generalName && <div className="text-2xs text-text-faint font-mono mb-1">({t.name})</div>}
                                 <div className="text-xs text-text-faint mb-2 h-8 overflow-hidden">{t.description}</div>
+                                {t.group && groups.find(g => g.id === t.group) && (
+                                    <div className="text-2xs text-accent mb-0.5">{groups.find(g => g.id === t.group)!.name}</div>
+                                )}
                                 {t.tool_type === 'python'
                                     ? <div className="text-2xs font-mono text-accent">🐍 Python sandboxed function</div>
                                     : <div className="text-2xs font-mono text-text-faint truncate">{t.url}</div>
@@ -299,6 +319,28 @@ export const CustomToolsTab = ({
                                 />
                             </div>
 
+                            {/* Group */}
+                            <div className="space-y-1">
+                                <Label className="block">Group <span className="text-text-faint font-normal normal-case">(optional — one row in the agent picker)</span></Label>
+                                <div className="flex gap-2">
+                                    <Select
+                                        value={draftTool.group || ''}
+                                        onChange={v => setDraftTool({ ...draftTool, group: v || null })}
+                                        aria-label="Tool group"
+                                        options={[{ value: '', label: 'No group' }, ...groups.map(g => ({ value: g.id, label: g.name }))]}
+                                    />
+                                    <input
+                                        type="text"
+                                        value={newGroupName}
+                                        onChange={e => setNewGroupName(e.target.value)}
+                                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); createGroup(); } }}
+                                        placeholder="New group name…"
+                                        className="w-44 bg-surface border border-border p-2 text-xs text-text focus:border-border-strong focus:outline-none rounded-md"
+                                    />
+                                    <Button type="button" variant="secondary" size="sm" onClick={createGroup} disabled={!newGroupName.trim()}>Add</Button>
+                                </div>
+                            </div>
+
                             {/* n8n Workflow — only shown when n8n is integrated */}
                             {n8nIntegrated && (
                                 <div className="space-y-1">
@@ -386,6 +428,20 @@ export const CustomToolsTab = ({
                                     );
                                 })()}
                             </div>
+
+                            {/* Body template — POST/PUT/DELETE */}
+                            {(draftTool.method || 'POST') !== 'GET' && (
+                                <div className="space-y-1">
+                                    <Label htmlFor="cus-drafttool-body" className="block">Request body <span className="text-text-faint font-normal normal-case">(optional)</span></Label>
+                                    <textarea id="cus-drafttool-body"
+                                        value={draftTool.body || ''}
+                                        onChange={e => setDraftTool({ ...draftTool, body: e.target.value })}
+                                        className="w-full h-20 bg-bg border border-border p-2 text-2xs font-mono text-text focus:border-border-strong focus:outline-none resize-y rounded-md"
+                                        placeholder={'{{body}}   — the "body" argument is the request body\n{{body.data}}   — a key inside it\n{"customer": {{body}}, "ref": "{{id}}", "via": "{{global.source}}"}   — a JSON template'}
+                                    />
+                                    <p className="text-2xs text-text-faint">Empty sends every argument the URL did not use. <code className="font-mono">{'{{global.key}}'}</code> works here, in the URL and in headers.</p>
+                                </div>
+                            )}
 
                             {/* Headers */}
                             <div className="space-y-2 pt-2">
