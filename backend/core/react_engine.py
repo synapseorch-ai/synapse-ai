@@ -1696,95 +1696,19 @@ async def run_agent_step(
 
                         # ── HTTP / Webhook Tool ───────────────────────────────────
                         try:
-                            method = target_tool.get("method", "POST").upper()
-                            url = target_tool.get("url")
-                            headers = target_tool.get("headers", {})
-                            if not url:
-                                raise ValueError("No URL configured for this tool.")
+                            # The request is built by `core.http_tool`, which the
+                            # orchestration TOOL step also uses — one place, so
+                            # `{{global.key}}`, the body template and "an argument
+                            # the URL used is not sent twice" cannot drift apart
+                            # between the two ways a tool gets called. They had.
+                            from core import http_tool as _http_tool
 
-                            # ── URL template interpolation ────────────────────────
-                            # Resolve {data} → full JSON payload, {data.key} → specific
-                            # field (dot-notation supported), consumed keys are tracked
-                            # so they are not redundantly sent in query params / body.
-                            import re as _re
-
-                            consumed_keys: set = set()
-
-                            def _resolve_path(obj: dict, path: str):
-                                """Walk dot-separated path into obj; return str or None."""
-                                parts = path.split(".")
-                                cur = obj
-                                for p in parts:
-                                    if not isinstance(cur, dict) or p not in cur:
-                                        return None
-                                    cur = cur[p]
-                                return str(cur) if not isinstance(cur, (dict, list)) else json.dumps(cur)
-
-                            def _replace_placeholder(m: "_re.Match") -> str:
-                                expr = m.group(1).strip()
-                                # {data} → full JSON payload (legacy)
-                                if expr == "data":
-                                    return json.dumps(tool_args)
-                                # {data.key} → nested dot-notation (legacy)
-                                if expr.startswith("data."):
-                                    path = expr[len("data."):]
-                                    top_key = path.split(".")[0]
-                                    val = _resolve_path(tool_args, path)
-                                    if val is not None:
-                                        consumed_keys.add(top_key)
-                                        return val
-                                # {key} → bare input schema field name (preferred)
-                                if expr in tool_args:
-                                    consumed_keys.add(expr)
-                                    v = tool_args[expr]
-                                    return str(v) if not isinstance(v, (dict, list)) else json.dumps(v)
-                                return m.group(0)  # unrecognised – leave as-is
-
-                            # `{{ … }}` first — `{{global.key}}` and bare `{{arg}}`
-                            # (core/templating.py) — then the older single-brace
-                            # forms, so `{param}` and `{data.key}` keep working.
-                            from core import templating as _templating
-                            _render_ctx = {"global": _global_variables, "args": tool_args}
-                            for _ref in _templating.references(url):
-                                if not _ref.startswith(("global.", "state.", "args.")) and _ref.split(".")[0] in tool_args:
-                                    consumed_keys.add(_ref.split(".")[0])
-                            url = _templating.render(url, _render_ctx, bare="args")
-                            headers = _templating.render_mapping(dict(headers), _render_ctx, bare="args")
-                            url = _re.sub(r"\{([^}]+)\}", _replace_placeholder, url)
-
-                            # The body: what the tool's `body` template says —
-                            # nothing (the arguments), one reference (that
-                            # argument is the body), or a JSON template. Keys the
-                            # URL or the body used are not sent twice.
-                            body, body_consumed = _templating.request_body(
-                                target_tool.get("body"), tool_args, {"global": _global_variables}
+                            _request = _http_tool.build_request(
+                                target_tool, tool_args, _global_variables
                             )
-                            consumed_keys |= body_consumed
-                            if method in ("GET", "DELETE"):
-                                remaining_args = {k: v for k, v in tool_args.items() if k not in consumed_keys}
-                                params = {k: (json.dumps(v) if isinstance(v, (dict, list)) else str(v))
-                                          for k, v in remaining_args.items()}
-                                resp = await client.request(method, url, params=params, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
-                            else:
-                                if not (target_tool.get("body") or "").strip():
-                                    # No template: the arguments, minus the ones the URL took.
-                                    body = {k: v for k, v in tool_args.items() if k not in consumed_keys}
-                                if isinstance(body, str):
-                                    resp = await client.request(method, url, content=body, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
-                                else:
-                                    resp = await client.request(method, url, json=body, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
+                            resp = await client.request(**_request, timeout=HTTP_TOOL_TIMEOUT)
 
-                            json_resp = None
-                            try:
-                                json_resp = resp.json()
-                                output_schema = target_tool.get("outputSchema", {})
-                                if output_schema and "properties" in output_schema and isinstance(json_resp, dict):
-                                    filtered = {k: json_resp[k] for k in output_schema["properties"] if k in json_resp}
-                                    if filtered:
-                                        json_resp = filtered
-                                raw_output = json.dumps(json_resp)
-                            except Exception:
-                                raw_output = resp.text or json.dumps({"error": f"Empty response (Status: {resp.status_code})"})
+                            json_resp, raw_output = _http_tool.decode(resp, target_tool)
 
                             # Vault large outputs
                             raw_output = maybe_vault(tool_name, raw_output)

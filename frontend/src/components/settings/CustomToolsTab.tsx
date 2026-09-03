@@ -408,7 +408,7 @@ export const CustomToolsTab = ({
                                     value={draftTool.url}
                                     onChange={e => setDraftTool({ ...draftTool, url: e.target.value })}
                                     className="w-full bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none font-mono rounded-md"
-                                    placeholder="https://api.example.com/users/{id}"
+                                    placeholder="https://api.example.com/users/{{id}}"
                                 />
                                 {/* URL templating hint — dynamic based on input schema */}
                                 {(() => {
@@ -417,12 +417,19 @@ export const CustomToolsTab = ({
                                         const schema = JSON.parse(draftTool.inputSchemaStr || '{}');
                                         keys = Object.keys(schema?.properties || {});
                                     } catch { /* ignore parse errors */ }
+                                    // Double braces, the one syntax used in the body
+                                    // template, headers and prompts too. `{field}`
+                                    // is still read for URLs written before this
+                                    // and for anything pasted from an OpenAPI spec,
+                                    // whose own path syntax is single-brace — but it
+                                    // is not what anything teaches any more.
                                     const examples = keys.length
-                                        ? keys.slice(0, 3).map(k => `{${k}}`).join(', ')
-                                        : '{field}';
+                                        ? keys.slice(0, 3).map(k => `{{${k}}}`).join(', ')
+                                        : '{{field}}';
                                     return (
                                         <p className="mt-1 text-2xs text-text-faint leading-relaxed">
                                             💡 Use <code className="font-code text-text-muted bg-surface px-1 rounded-md">{examples}</code> in the URL to inject input values.
+                                            {' '}<code className="font-code text-text-muted bg-surface px-1 rounded-md">{'{{global.key}}'}</code> works here too.
                                             {' '}GET/DELETE args become query params; POST/PUT go in the body.
                                         </p>
                                     );

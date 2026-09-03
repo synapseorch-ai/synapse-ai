@@ -3,8 +3,12 @@ Convert an OpenAPI 3.x / Swagger 2.0 spec into Synapse custom-tool dicts.
 
 Each spec operation (path + HTTP method) becomes one HTTP custom tool that plugs
 directly into the existing executor in react_engine.py:
-  - path parameters stay as ``{param}`` placeholders in the URL — the executor
-    substitutes them from the call arguments;
+  - path parameters become ``{{param}}`` placeholders in the URL — the executor
+    substitutes them from the call arguments. **The spec's own syntax is
+    single-brace** (`/pets/{petId}` is OpenAPI, not ours), and the executor
+    still reads that form, but an imported tool is written in the one syntax
+    the product documents everywhere else — the same `{{ … }}` used in headers,
+    request bodies and prompts;
   - query parameters and the JSON request body are described in ``inputSchema`` so
     the LLM supplies them (the executor routes them to query params for GET/DELETE
     or to the JSON body for POST/PUT).
@@ -18,6 +22,22 @@ import re
 from typing import Any
 
 _HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
+
+
+def _double_brace(path: str) -> str:
+    """`/pets/{petId}` → `/pets/{{petId}}`.
+
+    OpenAPI's path templating is single-brace, so this is the one place a tool's
+    URL arrives in a syntax nobody chose. Converting at import keeps every
+    stored tool in the `{{ … }}` form the UI teaches and the body template,
+    headers and prompts already use — rather than leaving imported tools as a
+    permanent second dialect nobody can explain.
+
+    Already-doubled braces are left alone, so re-importing a converted spec is
+    idempotent. The executor reads both forms either way; this is about what
+    gets written, not what can be read.
+    """
+    return re.sub(r"(?<!\{)\{([^{}]+)\}(?!\})", r"{{\1}}", path)
 
 
 def _sanitize_name(raw: str) -> str:
@@ -197,7 +217,7 @@ def parse_openapi_spec(
                 "description": description,
                 "tool_type": "http",
                 "method": method.upper(),
-                "url": f"{base}{path}",
+                "url": f"{base}{_double_brace(path)}",
                 "headers": dict(headers),
                 "inputSchema": _build_input_schema(spec, shared_params, op),
             })

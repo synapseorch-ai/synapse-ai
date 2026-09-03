@@ -78,3 +78,36 @@ class TestRequestBody:
     def test_json_roundtrip_of_a_string_value_is_not_double_quoted(self):
         body, _ = t.request_body('{"n": "{{note}}"}', self.ARGS, CTX)
         assert json.dumps(body) == '{"n": "hi"}'
+
+
+class TestABareNamespace:
+    """`{{args}}` is the whole argument payload — the one thing the single-brace
+    syntax could say (`{data}`) and this one could not.
+
+    Added when the URL field was moved onto the double-brace syntax the rest of
+    the product already used: "one syntax everywhere" is only true if everything
+    the old spelling could express has a new spelling.
+    """
+
+    def test_args_with_no_path_is_the_whole_payload(self):
+        rendered = t.render("{{args}}", {"args": {"a": 1, "b": 2}}, bare="args")
+        assert json.loads(rendered) == {"a": 1, "b": 2}
+
+    def test_a_path_into_args_still_works(self):
+        assert t.render("{{args.b.c}}", {"args": {"b": {"c": 7}}}, bare="args") == "7"
+
+    def test_a_bare_global_is_NOT_expanded(self):
+        """It would render every variable an organisation has — including the
+        ones backed by secrets on a hosted deployment — into whatever URL or
+        prompt it appeared in. Left unresolved, visibly."""
+        out = t.render("{{global}}", {"global": {"k": "v", "token": "S3CRET"}})
+        assert out == "{{global}}"
+        assert "S3CRET" not in out
+
+    def test_a_bare_state_is_not_expanded_either(self):
+        assert t.render("{{state}}", {"state": {"k": "v"}}) == "{{state}}"
+
+    def test_args_is_absent_when_there_is_no_args_namespace(self):
+        """A prompt template has no arguments, so `{{args}}` there is not a
+        reference to anything and must stay visible rather than render empty."""
+        assert t.render("{{args}}", {"global": {}, "state": {}}) == "{{args}}"

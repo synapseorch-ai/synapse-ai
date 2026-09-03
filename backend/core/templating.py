@@ -7,6 +7,7 @@ orchestration step's prompt template. Double braces with a namespace:
     {{ global.api_base }}     an organisation-wide variable (`global_variables`)
     {{ state.topic }}         orchestration shared state (beside the older `{state.topic}`)
     {{ body }}  {{ body.data }}   inside a tool: an input argument, or a path into one
+    {{ args }}                inside a tool: every argument, as JSON
 
 Inside a tool a bare name resolves against the tool's arguments, because that
 is what a person writing `{{body}}` means; everywhere else a bare name is left
@@ -59,8 +60,20 @@ def lookup(reference: str, context: dict[str, Any], *, bare: str | None = None) 
     `context` maps namespace → mapping. `bare` names the namespace a
     reference without one resolves in (a tool's arguments), or None to leave
     bare names unresolved.
+
+    **`{{args}}` with no path is the whole argument payload**, which is what the
+    single-brace `{data}` has always meant and the only thing that had no
+    double-brace spelling. Adding it is what makes "one syntax" true rather than
+    true-with-a-footnote.
+
+    Only `args`. A bare `{{global}}` would render every one of an organisation's
+    variables — including, on a hosted deployment, the ones backed by secrets —
+    into whatever URL or prompt it appeared in. That is not a shorthand anybody
+    wants by accident, so a bare namespace resolves for `args` and nothing else.
     """
     parts = reference.split(".")
+    if len(parts) == 1 and parts[0] == "args" and "args" in context:
+        return True, context["args"]
     if parts[0] in context and len(parts) > 1 and parts[0] in NAMESPACES:
         return _walk(context[parts[0]], parts[1:])
     if bare is not None and bare in context:

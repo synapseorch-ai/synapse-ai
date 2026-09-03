@@ -564,73 +564,28 @@ class ToolStepExecutor:
             return json.dumps({"output": result.stdout})
 
     async def _execute_http_tool(self, tool: dict, tool_args: dict) -> str:
-        """Execute a custom HTTP tool with URL templating and method-aware arg routing.
+        """Execute a custom HTTP tool.
 
-        URL template placeholders:
-          - ``{data}``       → replaced with the full JSON-encoded argument payload
-          - ``{data.field}`` → replaced with the value of ``field`` from tool_args
-                               (dot-notation supported for nested access)
-
-        Remaining (non-consumed) args are sent as:
-          - Query-string params for GET / DELETE
-          - JSON body for POST / PUT
+        The request is built by `core.http_tool`, which the agent's executor
+        also uses — so `{{global.key}}`, the request-body template and "an
+        argument the URL used is not sent twice" behave the same whether a tool
+        is called by an agent or by a TOOL step. They did not before: D69 fixed
+        all three in the agent's copy and this one kept none of them, so the
+        same tool sent a literal `{{global.api_base}}` to the server from here
+        and the real value from there.
         """
-        import re as _re
         import httpx as _httpx
 
-        method = tool.get("method", "POST").upper()
-        url = tool.get("url", "")
-        headers = tool.get("headers", {})
-        if not url:
-            raise ValueError("No URL configured for this tool.")
+        from core import http_tool
+        from core import variables as _variables
 
-        consumed_keys: set = set()
-
-        def _resolve_path(obj: dict, path: str):
-            parts = path.split(".")
-            cur = obj
-            for p in parts:
-                if not isinstance(cur, dict) or p not in cur:
-                    return None
-                cur = cur[p]
-            return str(cur) if not isinstance(cur, (dict, list)) else json.dumps(cur)
-
-        def _replace_placeholder(m: "_re.Match") -> str:
-            expr = m.group(1).strip()
-            # {data} → full JSON payload (legacy)
-            if expr == "data":
-                return json.dumps(tool_args)
-            # {data.key} → nested dot-notation (legacy)
-            if expr.startswith("data."):
-                path = expr[len("data."):]
-                top_key = path.split(".")[0]
-                val = _resolve_path(tool_args, path)
-                if val is not None:
-                    consumed_keys.add(top_key)
-                    return val
-            # {key} → bare input schema field name (preferred)
-            if expr in tool_args:
-                consumed_keys.add(expr)
-                v = tool_args[expr]
-                return str(v) if not isinstance(v, (dict, list)) else json.dumps(v)
-            return m.group(0)
-
-        url = _re.sub(r"\{([^}]+)\}", _replace_placeholder, url)
+        request = http_tool.build_request(tool, tool_args, await _variables.load())
 
         async with _httpx.AsyncClient() as client:
-            if method in ("GET", "DELETE"):
-                remaining_args = {k: v for k, v in tool_args.items() if k not in consumed_keys}
-                params = {k: (json.dumps(v) if isinstance(v, (dict, list)) else str(v))
-                          for k, v in remaining_args.items()}
-                resp = await client.request(method, url, params=params, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
-            else:
-                # POST / PUT – all args in body even if some were used in the URL
-                resp = await client.request(method, url, json=tool_args, headers=headers, timeout=HTTP_TOOL_TIMEOUT)
+            resp = await client.request(**request, timeout=HTTP_TOOL_TIMEOUT)
 
-        try:
-            return json.dumps(resp.json())
-        except Exception:
-            return resp.text or json.dumps({"error": f"Empty response (Status: {resp.status_code})"})
+        _, text = http_tool.decode(resp, tool)
+        return text
 
     async def _load_custom_tools(self) -> list:
         try:
