@@ -1626,90 +1626,59 @@ async def run_agent_step(
                         # ── Python Tool ──────────────────────────────────────────
                         if tool_type == "python":
                             try:
-                                import asyncio as _asyncio
-                                import shutil as _shutil
-                                import tempfile as _tempfile
+                                from core.execution import (
+                                    ExecRequest as _ExecRequest,
+                                    Network as _Network,
+                                )
+                                from core.execution import get_runner as _get_runner
+                                from core.execution import wrap_args as _wrap_args
 
                                 python_code = target_tool.get("code", "")
                                 if not python_code.strip():
                                     raise ValueError("Python tool has no code defined.")
 
-                                if not _shutil.which("docker"):
-                                    raise RuntimeError("Docker is not available. Cannot execute Python tool.")
-
-                                # Inject _args at the top of user's code
-                                args_json = json.dumps(tool_args)
-                                escaped = args_json.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-                                injected_code = (
-                                    f'import json\n_args = json.loads("""{escaped}""")\n\n'
-                                    + python_code
+                                # `{{global.key}}` inside an argument, rendered
+                                # the way the HTTP branch below renders one.
+                                # The globals themselves are deliberately NOT
+                                # handed to the sandbox: on a hosted deployment
+                                # a variable marked secret resolves to its real
+                                # value, and injecting the whole document would
+                                # hand every one of them to customer code as a
+                                # side effect of a template syntax.
+                                from core import templating as _templating
+                                _py_args = _templating.render_mapping(
+                                    dict(tool_args), {"global": _global_variables}
                                 )
 
-                                # The tenant's vault, read-only at /data. From the
-                                # blob store, not __file__ — the vault left
+                                # The tenant's vault, read-only at /data. From
+                                # the blob store, not __file__ — the vault left
                                 # backend/data in the tenant-scoped storage
-                                # change and this mount is .exists()-guarded, so
-                                # a stale path degrades silently. D8's CodeRunner
-                                # replaces this in Release 2.
+                                # change. A runner with no host filesystem to
+                                # share ignores it.
                                 from core.vault import _vault_root
-                                vault_root = _vault_root()
-                                docker_image = "sandbox-python:latest"
 
-                                tmp_dir = _tempfile.mkdtemp(prefix="pytool_")
-                                script_path = f"{tmp_dir}/script.py"
-                                try:
-                                    with open(script_path, "w", encoding="utf-8") as _f:
-                                        _f.write(injected_code)
+                                _result = await _get_runner().run(_ExecRequest(
+                                    code=_wrap_args(python_code, _py_args),
+                                    network=_Network.INTERNET,
+                                    timeout_s=30,
+                                    vault_path=_vault_root(),
+                                ))
 
-                                    docker_cmd = [
-                                        "docker", "run", "--rm",
-                                        "--memory", "512m",
-                                        "--cpus", "1.0",
-                                        "--pids-limit", "64",
-                                        "--read-only",
-                                        "--tmpfs", "/tmp:rw,size=256m",
-                                        "--tmpfs", "/root:rw,size=256m",
-                                        "-v", f"{script_path}:/sandbox/script.py:ro",
-                                    ]
-                                    if vault_root.exists():
-                                        docker_cmd += ["-v", f"{vault_root}:/data:ro"]
-                                    docker_cmd += [docker_image, "python", "/sandbox/script.py"]
-
-                                    proc = await _asyncio.create_subprocess_exec(
-                                        *docker_cmd,
-                                        stdout=_asyncio.subprocess.PIPE,
-                                        stderr=_asyncio.subprocess.PIPE,
-                                    )
+                                if _result.exit_code != 0:
+                                    raw_output = json.dumps({
+                                        "error": f"Python tool exited with code {_result.exit_code}",
+                                        "stderr": _result.stderr,
+                                        "stdout": _result.stdout,
+                                    })
+                                else:
+                                    # Try to parse stdout as JSON, otherwise wrap as string output
                                     try:
-                                        stdout_b, stderr_b = await _asyncio.wait_for(
-                                            proc.communicate(), timeout=35
-                                        )
-                                    except _asyncio.TimeoutError:
-                                        proc.kill()
-                                        await proc.wait()
-                                        raise RuntimeError("Python tool execution timed out after 30s")
-
-                                    stdout_text = stdout_b.decode("utf-8", errors="replace")[:20000]
-                                    stderr_text = stderr_b.decode("utf-8", errors="replace")[:5000]
-
-                                    if proc.returncode != 0:
-                                        raw_output = json.dumps({
-                                            "error": f"Python tool exited with code {proc.returncode}",
-                                            "stderr": stderr_text,
-                                            "stdout": stdout_text,
-                                        })
-                                    else:
-                                        # Try to parse stdout as JSON, otherwise wrap as string output
-                                        try:
-                                            parsed_out = json.loads(stdout_text.strip())
-                                            raw_output = json.dumps(parsed_out)
-                                        except Exception:
-                                            raw_output = json.dumps({"output": stdout_text})
-                                        if stderr_text:
-                                            print(f"DEBUG: Python tool stderr: {stderr_text[:200]}")
-
-                                finally:
-                                    _shutil.rmtree(tmp_dir, ignore_errors=True)
+                                        parsed_out = json.loads(_result.stdout.strip())
+                                        raw_output = json.dumps(parsed_out)
+                                    except Exception:
+                                        raw_output = json.dumps({"output": _result.stdout})
+                                    if _result.stderr:
+                                        print(f"DEBUG: Python tool stderr: {_result.stderr[:200]}")
 
                                 raw_output = maybe_vault(tool_name, raw_output)
                                 current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"

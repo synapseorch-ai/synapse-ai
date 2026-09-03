@@ -5,7 +5,7 @@ import json
 import os
 import asyncio
 import shutil
-import tempfile
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -381,65 +381,39 @@ async def get_python_packages():
 
 @router.post("/api/tools/python/test")
 async def test_python_tool(req: PythonTestRequest):
-    """Execute a Python tool snippet in the Docker sandbox and return stdout/stderr."""
+    """Execute a Python tool snippet through the runner and return stdout/stderr.
+
+    **The sixth `docker run` site**, and the one D8's count of five missed. It
+    matters more than its size: this is the Test button, so leaving it on Docker
+    while the run path went through `core.execution` would mean a tool that
+    passes its test and then behaves differently in a run — on a deployment
+    where the two runtimes are not even the same kind of thing.
+    """
+    from core.execution import ExecRequest, ExecUnsupported, Network, get_runner, wrap_args
+
     if not req.code or not req.code.strip():
         raise HTTPException(status_code=400, detail="No code provided")
 
-    # Check Docker is available
-    if not shutil.which("docker"):
-        raise HTTPException(status_code=503, detail="Docker is not installed or not in PATH")
-
-    # Inject _args into the code
-    args_json = json.dumps(req.args or {})
-    escaped = args_json.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-    injected_code = f'import json\n_args = json.loads("""' + escaped + '""")\n\n' + req.code
-
     timeout = min(int(req.timeout or 30), 60)
-    tmp_dir = tempfile.mkdtemp(prefix="pytool_test_")
-    script_path = os.path.join(tmp_dir, "script.py")
 
     try:
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(injected_code)
-
-        cmd = [
-            "docker", "run", "--rm",
-            "--memory", MEMORY_LIMIT,
-            "--cpus", CPU_LIMIT,
-            "--pids-limit", "64",
-            "--read-only",
-            "--tmpfs", "/tmp:rw,size=256m",
-            "--tmpfs", "/root:rw,size=256m",
-            "-v", f"{script_path}:/sandbox/script.py:ro",
-        ]
-        vault_root = _vault_root()
-        if os.path.isdir(vault_root):
-            cmd += ["-v", f"{vault_root}:/data:ro"]
-        cmd += [DOCKER_IMAGE, "python", "/sandbox/script.py"]
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout + 5)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return {"exit_code": -1, "stdout": "", "stderr": f"Execution timed out after {timeout}s"}
-
-        return {
-            "exit_code": proc.returncode,
-            "stdout": stdout_b.decode("utf-8", errors="replace")[:20000],
-            "stderr": stderr_b.decode("utf-8", errors="replace")[:5000],
-        }
-    except FileNotFoundError:
-        raise HTTPException(status_code=503, detail="Docker not found")
+        result = await get_runner().run(ExecRequest(
+            code=wrap_args(req.code, req.args or {}),
+            network=Network.INTERNET,
+            timeout_s=timeout,
+            memory_mb=int(MEMORY_LIMIT.rstrip("m")),
+            cpus=CPU_LIMIT,
+            vault_path=Path(_vault_root()),
+        ))
+    except ExecUnsupported as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Sandbox error: {e}")
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Sandbox error: {e}") from e
+
+    if result.timed_out:
+        return {"exit_code": -1, "stdout": "", "stderr": result.stderr}
+
+    return {"exit_code": result.exit_code, "stdout": result.stdout, "stderr": result.stderr}
 
 
 # --- External MCP Server Management ---

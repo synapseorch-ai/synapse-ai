@@ -105,14 +105,32 @@ def test_nothing_re_derives_the_old_vault_path(module_name):
 
 
 def test_sandbox_mounts_the_tenant_vault():
-    """Both Docker sandboxes mount whatever the blob store calls the vault."""
+    """Every sandbox call still hands the runner whatever the blob store calls
+    the vault, and the runner still mounts it read-only at `/data`.
+
+    This used to grep both call sites for the literal `-v …:/data:ro`. The mount
+    moved into `core.execution.docker_runner` when the five `docker run` sites
+    collapsed into one, so the assertion moved with it and split in two: the
+    call sites are checked for *passing the path*, the runner for *mounting it
+    read-only*. Neither half alone is the regression this guards against.
+    """
     import importlib
+
+    from core.execution import DockerRunner, ExecRequest, Network
 
     for module_name in ("core.orchestration.steps", "core.react_engine"):
         source = Path(
             inspect.getfile(importlib.import_module(module_name))
         ).read_text(encoding="utf-8")
-        assert "/data:ro" in source, f"{module_name} lost its read-only vault mount"
+        assert "vault_path=_vault_root()" in source, (
+            f"{module_name} stopped handing the runner the tenant vault"
+        )
+
+    here = Path(inspect.getfile(test_sandbox_mounts_the_tenant_vault)).parent
+    cmd = DockerRunner().build_command(
+        ExecRequest(code="", network=Network.NONE, vault_path=here), "/tmp/s.py"
+    )
+    assert f"-v {here}:/data:ro" in " ".join(cmd)
 
 
 def _worker_servers():

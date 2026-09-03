@@ -5,10 +5,7 @@ Each executor is an async generator that yields SSE-compatible events.
 import asyncio
 import datetime
 import json
-import os
 import re
-import subprocess
-import sys
 import time
 from typing import AsyncGenerator, TYPE_CHECKING
 
@@ -526,81 +523,45 @@ class ToolStepExecutor:
         raise RuntimeError(f"Tool '{tool_name}' not found in tool router")
 
     async def _execute_python_tool(self, tool: dict, tool_args: dict) -> str:
-        """Execute a custom Python tool in the Docker sandbox (sandbox-python:latest)."""
-        import shutil
-        import tempfile
+        """Execute a custom Python tool through the registered code runner.
+
+        The same body as `react_engine.run_agent_step`'s python branch, and it
+        stays that way on purpose: a tool called from a TOOL step and the same
+        tool called by an agent must behave identically. Both are now one call
+        to `core.execution`, which is what stopped them drifting.
+        """
+        from core import templating as _templating
+        from core import variables as _variables
+        from core.execution import ExecRequest, Network, get_runner, wrap_args
+        from core.vault import _vault_root
 
         python_code = tool.get("code", "")
         if not python_code.strip():
             raise ValueError("Python tool has no code defined.")
-        if not shutil.which("docker"):
-            raise RuntimeError("Docker is not available. Cannot execute Python tool.")
 
-        args_json = json.dumps(tool_args)
-        escaped = args_json.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-        injected_code = (
-            f'import json\n_args = json.loads("""{escaped}""")\n\n'
-            + python_code
+        # `{{global.key}}` inside an argument. The globals are not injected —
+        # see the agent-side branch for why.
+        rendered_args = _templating.render_mapping(
+            dict(tool_args), {"global": await _variables.load()}
         )
 
-        # The tenant's vault, mounted read-only at /data so tool code can read
-        # vaulted results. Derived from the blob store rather than __file__: the
-        # vault moved out of backend/data in the tenant-scoped storage change,
-        # and this mount is guarded by .exists() below, so a stale path degrades
-        # silently instead of failing. D8's CodeRunner replaces this whole
-        # bind-mount arrangement in Release 2.
-        from core.vault import _vault_root
-        vault_root = _vault_root()
-        docker_image = "sandbox-python:latest"
+        result = await get_runner().run(ExecRequest(
+            code=wrap_args(python_code, rendered_args),
+            network=Network.INTERNET,
+            timeout_s=30,
+            vault_path=_vault_root(),
+        ))
 
-        tmp_dir = tempfile.mkdtemp(prefix="pytool_")
-        script_path = f"{tmp_dir}/script.py"
+        if result.exit_code != 0:
+            return json.dumps({
+                "error": f"Python tool exited with code {result.exit_code}",
+                "stderr": result.stderr,
+                "stdout": result.stdout,
+            })
         try:
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(injected_code)
-
-            docker_cmd = [
-                "docker", "run", "--rm",
-                "--memory", "512m",
-                "--cpus", "1.0",
-                "--pids-limit", "64",
-                "--read-only",
-                "--tmpfs", "/tmp:rw,size=256m",
-                "--tmpfs", "/root:rw,size=256m",
-                "-v", f"{script_path}:/sandbox/script.py:ro",
-            ]
-            if vault_root.exists():
-                docker_cmd += ["-v", f"{vault_root}:/data:ro"]
-            docker_cmd += [docker_image, "python", "/sandbox/script.py"]
-
-            proc = await asyncio.create_subprocess_exec(
-                *docker_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=35)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                raise RuntimeError("Python tool execution timed out after 30s")
-
-            stdout_text = stdout_b.decode("utf-8", errors="replace")[:20000]
-            stderr_text = stderr_b.decode("utf-8", errors="replace")[:5000]
-
-            if proc.returncode != 0:
-                return json.dumps({
-                    "error": f"Python tool exited with code {proc.returncode}",
-                    "stderr": stderr_text,
-                    "stdout": stdout_text,
-                })
-            try:
-                parsed = json.loads(stdout_text.strip())
-                return json.dumps(parsed)
-            except Exception:
-                return json.dumps({"output": stdout_text})
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return json.dumps(json.loads(result.stdout.strip()))
+        except Exception:
+            return json.dumps({"output": result.stdout})
 
     async def _execute_http_tool(self, tool: dict, tool_args: dict) -> str:
         """Execute a custom HTTP tool with URL templating and method-aware arg routing.
@@ -1250,12 +1211,7 @@ class TransformStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Transform Code]\n{code}"}
 
         try:
-            from core.config import load_settings
-            runtime = (load_settings().get("transform_runtime") or "docker").strip().lower()
-            if runtime == "host":
-                result = await self._run_host(code, run.shared_state, timeout=step.timeout_seconds)
-            else:
-                result = await self._run_sandboxed(code, run.shared_state, timeout=step.timeout_seconds)
+            result = await self._run(code, run.shared_state, timeout=step.timeout_seconds)
 
             if step.output_key and result is not None:
                 run.shared_state[step.output_key] = result
@@ -1268,16 +1224,6 @@ class TransformStepExecutor:
         except Exception as e:
             yield {"type": "step_error", "orch_step_id": step.id, "error": f"Transform error: {e}"}
 
-    def _build_script(self, code: str, state: dict) -> str:
-        """Build the JSON-in/JSON-out script wrapper used by both runtimes."""
-        state_json = json.dumps(state, default=str)
-        escaped = state_json.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-        return (
-            f'import json\nstate = json.loads("""{escaped}""")\nresult = None\n\n'
-            + code
-            + '\n\nif result is not None:\n    print(json.dumps({"result": result}, default=str))\nelse:\n    print(json.dumps({"result": None}))\n'
-        )
-
     def _parse_script_output(self, stdout_text: str):
         """Parse the JSON output of the wrapped script. Falls back to plain text."""
         try:
@@ -1286,122 +1232,48 @@ class TransformStepExecutor:
         except json.JSONDecodeError:
             return stdout_text.strip() if stdout_text.strip() else None
 
-    async def _run_host(self, code: str, state: dict, timeout: int = 30):
-        """Run Python code directly on the host via subprocess (NO sandbox).
+    async def _run(self, code: str, state: dict, timeout: int = 30):
+        """Run the transform through a code runner and return `result`.
 
-        Used when transform_runtime == "host". Gives the script full access to
-        the host's Python env, GPU, filesystem, and network. Required for
-        torch/transformers workloads that can't run in the 512MB Docker sandbox.
+        `transform_runtime` picks the runner: `"host"` means the escape hatch
+        that runs the script as a subprocess of this process, anything else
+        means whatever the deployment registered — the Docker sandbox in the
+        shipped product. The setting keeps its old vocabulary (`"docker"` still
+        selects the registered runner) so an existing configuration is not
+        invalidated by the fact that the sandbox no longer has to be Docker.
 
-        Same JSON-in/JSON-out contract as the docker path. The script inherits
-        the backend process env (so CUDA_VISIBLE_DEVICES, HF_HOME, etc. flow
-        through naturally) and runs under the same Python interpreter as the
-        backend (sys.executable).
-
-        Timeout: caps at 30 minutes to bound runaway loads/inference. The docker
-        path's 60s cap is too low for model loading, so we deliberately lift it
-        here. Step-level timeout_seconds still applies.
+        A deployment that must not offer the host runtime pins the setting;
+        `core.execution.HostRunner`'s docstring says why it is a named runner
+        rather than a branch hidden in here.
         """
-        import sys
-        import shutil
-        import tempfile
-        from pathlib import Path
+        from core.config import load_settings
+        from core.execution import ExecRequest, HostRunner, Network, get_runner, wrap_transform
 
-        script_content = self._build_script(code, state)
-        effective_timeout = min(max(int(timeout or 30), 1), 1800)
+        runtime = (load_settings().get("transform_runtime") or "docker").strip().lower()
+        runner = HostRunner() if runtime == "host" else get_runner()
 
-        tmp_dir = tempfile.mkdtemp(prefix="transform_host_")
-        script_path = str(Path(tmp_dir) / "transform.py")
-        try:
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(script_content)
+        # The sandbox is capped at a minute because it is the shared path; the
+        # host runtime lifts that itself, because model loading is minutes and
+        # a caller only reaches it deliberately.
+        capped = int(timeout or 30) if runtime == "host" else min(int(timeout or 30), 60)
 
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, script_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=os.environ.copy(),
-            )
-            try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=effective_timeout + 5
-                )
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-                raise RuntimeError(f"Transform (host) timed out after {effective_timeout}s")
-
-            stdout_text = stdout_b.decode("utf-8", errors="replace")
-            stderr_text = stderr_b.decode("utf-8", errors="replace")
-
-            if proc.returncode != 0:
-                raise RuntimeError(f"Transform (host) failed (exit {proc.returncode}): {stderr_text[:500]}")
-
-            return self._parse_script_output(stdout_text)
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    async def _run_sandboxed(self, code: str, state: dict, timeout: int = 30):
-        """Run Python code in the Docker sandbox (sandbox-python:latest)."""
-        import shutil
-        import tempfile
-
-        if not shutil.which("docker"):
-            raise RuntimeError("Docker is not available. Cannot execute transform code in sandbox.")
-
-        script_content = self._build_script(code, state)
-
-        # See _execute_tool's mount above: the tenant's vault, not backend/data.
         from core.vault import _vault_root
-        vault_root = _vault_root()
-        docker_image = "sandbox-python:latest"
 
-        tmp_dir = tempfile.mkdtemp(prefix="transform_")
-        script_path = f"{tmp_dir}/transform.py"
-        try:
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(script_content)
+        result = await runner.run(ExecRequest(
+            code=wrap_transform(code, state),
+            network=Network.INTERNET,
+            timeout_s=capped,
+            vault_path=_vault_root(),
+            max_stdout=1_000_000,
+        ))
 
-            docker_cmd = [
-                "docker", "run", "--rm",
-                "--memory", "512m",
-                "--cpus", "1.0",
-                "--pids-limit", "64",
-                "--read-only",
-                "--tmpfs", "/tmp:rw,size=256m",
-                "--tmpfs", "/root:rw,size=256m",
-                "-v", f"{script_path}:/sandbox/transform.py:ro",
-            ]
-            if vault_root.exists():
-                docker_cmd += ["-v", f"{vault_root}:/data:ro"]
-            docker_cmd += [docker_image, "python", "/sandbox/transform.py"]
+        if result.timed_out:
+            raise RuntimeError(f"Transform timed out after {capped}s")
+        if result.exit_code != 0:
+            label = "Transform (host)" if runtime == "host" else "Transform"
+            raise RuntimeError(f"{label} failed (exit {result.exit_code}): {result.stderr[:500]}")
 
-            proc = await asyncio.create_subprocess_exec(
-                *docker_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=min(timeout, 60) + 5
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                raise RuntimeError(f"Transform timed out after {timeout}s")
-
-            stdout_text = stdout_b.decode("utf-8", errors="replace")
-            stderr_text = stderr_b.decode("utf-8", errors="replace")
-
-            if proc.returncode != 0:
-                raise RuntimeError(f"Transform failed (exit {proc.returncode}): {stderr_text[:500]}")
-
-            return self._parse_script_output(stdout_text)
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        return self._parse_script_output(result.stdout)
 
 
 class LLMStepExecutor:

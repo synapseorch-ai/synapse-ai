@@ -19,9 +19,6 @@ from mcp.types import Tool, TextContent
 
 import asyncio
 import json
-import os
-import shutil
-import tempfile
 import uuid
 from pathlib import Path
 from datetime import datetime, timezone
@@ -42,7 +39,6 @@ DEFAULT_TIMEOUT = 30               # seconds
 MAX_TIMEOUT = 120
 MEMORY_LIMIT = "512m"
 CPU_LIMIT = "1.0"
-DOCKER_IMAGE = "sandbox-python:latest"
 MAX_OUTPUT = 50_000                # chars
 
 # ── shared helpers ───────────────────────────────────────────────────────
@@ -597,50 +593,19 @@ def _handle_delete(args: dict) -> list[TextContent]:
 
 # ── python executor ──────────────────────────────────────────────────────
 
-def _build_docker_cmd(
-    script_path: str,
-    *,
-    timeout: int,
-    packages: list[str] | None = None,
-    allow_network: bool = False,
-) -> list[str]:
-    cmd = [
-        "docker", "run",
-        "--rm",
-        "--memory", MEMORY_LIMIT,
-        "--cpus", CPU_LIMIT,
-        "--pids-limit", "64",
-        "--read-only",
-        "--tmpfs", "/tmp:rw,size=512m",
-        "--tmpfs", "/root:rw,size=512m",
-    ]
-
-    cmd += ["-v", f"{script_path}:/sandbox/script.py:ro"]
-
-    vault_root = _vault_root()
-    if vault_root.exists():
-        cmd += ["-v", f"{vault_root}:/data:ro"]
-
-    cmd.append(DOCKER_IMAGE)
-
-    inner_parts: list[str] = []
-    if packages:
-        safe_pkgs = " ".join(
-            p for p in packages if all(c.isalnum() or c in "-_.[]=<>!" for c in p)
-        )
-        if safe_pkgs:
-            inner_parts.append(
-                f"pip install --quiet --disable-pip-version-check "
-                f"--root-user-action=ignore --no-warn-script-location "
-                f"{safe_pkgs}"
-            )
-
-    inner_parts.append("python /sandbox/script.py")
-    cmd += ["sh", "-c", " && ".join(inner_parts)]
-    return cmd
-
 
 async def _handle_execute(args: dict) -> list[TextContent]:
+    """Run the agent's code through the registered runner.
+
+    **`allow_network` now does something.** It was accepted here, passed to
+    `_build_docker_cmd(…, allow_network=…)`, and dropped on the floor — every
+    call ran on Docker's default bridge, including the ones that asked not to.
+    `core.execution.Network` is a required field on the request, so the same
+    mistake cannot be made silently again; `test_execution.py` asserts a
+    `Network.NONE` request actually fails to reach a URL.
+    """
+    from core.execution import ExecRequest, ExecUnsupported, Network, get_runner
+
     code: str = args.get("code", "")
     packages: list[str] | None = args.get("packages")
     timeout = min(int(args.get("timeout", DEFAULT_TIMEOUT)), MAX_TIMEOUT)
@@ -649,55 +614,38 @@ async def _handle_execute(args: dict) -> list[TextContent]:
     if not code.strip():
         return _err("No code provided")
 
+    # Installing packages needs pip to reach an index, so asking for packages is
+    # asking for network. Kept as it was, now that the flag has teeth.
     if packages and not allow_network:
         allow_network = True
 
-    tmp_dir = tempfile.mkdtemp(prefix="pysandbox_")
-    script_path = os.path.join(tmp_dir, "script.py")
-
     try:
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(code)
-
-        docker_cmd = _build_docker_cmd(
-            script_path,
-            timeout=timeout,
-            packages=packages,
-            allow_network=allow_network,
-        )
-
-        proc = await asyncio.create_subprocess_exec(
-            *docker_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout + 10
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return _err(f"Execution timed out after {timeout}s")
-
-        stdout = stdout_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT]
-        stderr = stderr_bytes.decode("utf-8", errors="replace")[:MAX_OUTPUT]
-
-        result: dict = {
-            "exit_code": proc.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
-
-        return _ok(result)
-
-    except FileNotFoundError:
-        return _err("Docker is not installed or not in PATH")
-    except Exception as e:
+        result = await get_runner().run(ExecRequest(
+            code=code,
+            network=Network.INTERNET if allow_network else Network.NONE,
+            timeout_s=timeout,
+            grace_s=10,
+            tmpfs_mb=512,
+            memory_mb=int(MEMORY_LIMIT.rstrip("m")),
+            cpus=CPU_LIMIT,
+            packages=tuple(packages or ()),
+            vault_path=_vault_root(),
+            max_stdout=MAX_OUTPUT,
+            max_stderr=MAX_OUTPUT,
+        ))
+    except ExecUnsupported as e:
+        return _err(str(e))
+    except Exception as e:  # noqa: BLE001 — reported to the agent, not raised at it
         return _err(f"Sandbox error: {e}")
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if result.timed_out:
+        return _err(f"Execution timed out after {timeout}s")
+
+    return _ok({
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    })
 
 
 # ── main ─────────────────────────────────────────────────────────────────
