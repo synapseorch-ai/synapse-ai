@@ -44,6 +44,19 @@ interface StepConfigPanelProps {
     orchestration?: Orchestration;
     /** The cloud passes false: its panel has no vault-mention wiring. */
     showVaultHints?: boolean;
+    /**
+     * Whether this workspace may run customer code. Cloud passes
+     * `plans.features.code_execution` (Team and Business); self-hosted leaves it
+     * at true, where the runtime is the local Docker sandbox and there is no
+     * plan to ask.
+     *
+     * A `transform` step runs Python, so it is gated exactly as a Python tool
+     * is. It is greyed rather than removed on purpose: a capability nobody on
+     * the entry tier can see is one nobody upgrades for — and a workflow copied
+     * in from a Team org would otherwise carry a step type this picker cannot
+     * even name.
+     */
+    canRunCode?: boolean;
 }
 
 const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end'];
@@ -53,7 +66,7 @@ const MAX_WIDTH = 640;
 
 export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
-    availableModels, orchestration, showVaultHints = true,
+    availableModels, orchestration, showVaultHints = true, canRunCode = true,
 }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => onUpdate({ ...step, ...patch });
     const otherSteps = allStepIds.filter((s) => s.id !== step.id);
@@ -166,7 +179,18 @@ export function StepConfigPanel({
                         aria-label="Step type"
                         value={step.type}
                         onChange={(t) => changeType(t as StepType)}
-                        options={STEP_TYPES.map((t) => ({ value: t, label: STEP_TYPE_META[t].label, hint: STEP_TYPE_META[t].blurb }))}
+                        options={STEP_TYPES.map((t) => ({
+                            value: t,
+                            label: STEP_TYPE_META[t].label,
+                            hint: t === 'transform' && !canRunCode
+                                ? 'Runs Python — available on Team and Business.'
+                                : STEP_TYPE_META[t].blurb,
+                            // Never disable the type this step already is: a
+                            // workflow that arrived with a transform must stay
+                            // openable and editable, not become a step whose own
+                            // type is unselectable in its own picker.
+                            disabled: t === 'transform' && !canRunCode && step.type !== 'transform',
+                        }))}
                     />
                 </Field>
                 {isEntry ? (
