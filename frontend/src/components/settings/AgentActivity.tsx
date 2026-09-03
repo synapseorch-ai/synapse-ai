@@ -12,7 +12,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
-    Loader2, ScrollText, Coins, Workflow, Clock, MessageSquare, X,
+    Loader2, ScrollText, Coins, Workflow, Clock, MessageSquare, Bot, X,
 } from 'lucide-react';
 
 export type ActivityTab = 'runs' | 'metrics' | 'usedby';
@@ -225,7 +225,7 @@ const Section = ({ icon: Icon, title, rows }: { icon: any; title: string; rows: 
     )
 );
 
-function UsedByTab({ agentId, channels }: { agentId: string; channels: any[] }) {
+function UsedByTab({ agentId, channels, agents }: { agentId: string; channels: any[]; agents: any[] }) {
     const [orchestrations, setOrchestrations] = useState<any[] | null>(null);
     const [schedules, setSchedules] = useState<any[] | null>(null);
 
@@ -249,11 +249,21 @@ function UsedByTab({ agentId, channels }: { agentId: string; channels: any[] }) 
 
     if (orchestrations === null || schedules === null) return <Spinner />;
 
-    const nothing = orchestrations.length === 0 && schedules.length === 0 && channels.length === 0;
+    // An agent that delegates to this one dangles just as badly as a step does.
+    const delegators = agents.filter(
+        (a: any) => a.id !== agentId && (a.delegate_agent_ids || []).includes(agentId),
+    );
+
+    const nothing =
+        orchestrations.length === 0 &&
+        schedules.length === 0 &&
+        channels.length === 0 &&
+        delegators.length === 0;
     if (nothing) {
         return (
             <Empty icon={Workflow}>
-                Nothing references this agent yet — no orchestration step, schedule or messaging channel.
+                Nothing references this agent yet — no orchestration step, schedule, messaging
+                channel or delegating agent.
             </Empty>
         );
     }
@@ -282,6 +292,15 @@ function UsedByTab({ agentId, channels }: { agentId: string; channels: any[] }) 
                 }))}
             />
             <Section
+                icon={Bot}
+                title="Delegating agents"
+                rows={delegators.map((a: any) => ({
+                    key: a.id,
+                    primary: a.name || a.id,
+                    secondary: 'may hand work to this agent',
+                }))}
+            />
+            <Section
                 icon={MessageSquare}
                 title="Messaging channels"
                 rows={channels.map((c: any) => ({
@@ -300,15 +319,17 @@ export const AgentActivity = ({
     agentId,
     tab,
     channels,
+    agents,
 }: {
     agentId: string;
     tab: ActivityTab;
     channels: any[];
+    agents: any[];
 }) => {
     if (!agentId) {
         return <Empty icon={ScrollText}>Save the agent first — there is nothing to show until it exists.</Empty>;
     }
     if (tab === 'runs') return <RunsTab agentId={agentId} />;
     if (tab === 'metrics') return <MetricsTab agentId={agentId} />;
-    return <UsedByTab agentId={agentId} channels={channels} />;
+    return <UsedByTab agentId={agentId} channels={channels} agents={agents} />;
 };

@@ -1036,6 +1036,7 @@ export const AgentsTab = ({
                                     agentId={draftAgent.id}
                                     tab={agentSubTab}
                                     channels={agentChannels}
+                                    agents={agents}
                                 />
                             )}
                         </>)}
