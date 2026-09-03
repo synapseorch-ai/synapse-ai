@@ -133,6 +133,13 @@ async def save_channel(channel: dict) -> dict:
         existing = data[idx]
         channel["created_at"] = existing.get("created_at", now)
         previous_agent_id = existing.get("agent_id")
+        # A save is a full replace, so a client that no longer *edits* the
+        # legacy scalar would delete it just by renaming the channel — and for
+        # a pre-join channel the scalar is the only record of who answers.
+        # Omitting a field is not asking to drop it; `set_assignments` is what
+        # retires the scalar, deliberately and once.
+        if previous_agent_id and "agent_id" not in channel:
+            channel["agent_id"] = previous_agent_id
         data[idx] = channel
     else:
         data.append(channel)

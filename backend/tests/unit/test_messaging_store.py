@@ -189,3 +189,29 @@ async def test_set_assignments_retires_the_legacy_scalar():
 
     await store.set_assignments(ch["id"], [])
     assert await store.get_agent_ids_for_channel(ch["id"]) == []
+
+
+async def test_editing_a_pre_join_channel_does_not_drop_its_agent():
+    """A save is a full replace, and the settings form no longer sends the scalar.
+
+    Renaming a channel that predates the join must not silently unassign it —
+    for such a channel the scalar is the only record of who answers.
+    """
+    from core.store import collections
+
+    await collections.save(
+        "messaging_channels",
+        [{"id": "chn_old", "name": "Old", "platform": "telegram", "agent_id": "agent_legacy"}],
+    )
+    await store.save_channel(
+        {"id": "chn_old", "name": "Renamed", "platform": "telegram", "credentials": {}}
+    )
+    assert await store.get_agent_ids_for_channel("chn_old") == ["agent_legacy"]
+
+    # Once the join has spoken, the scalar is gone and stays gone.
+    await store.set_assignments("chn_old", ["agent_new"])
+    await store.save_channel(
+        {"id": "chn_old", "name": "Renamed twice", "platform": "telegram", "credentials": {}}
+    )
+    assert (await store.get_channel("chn_old")).get("agent_id") is None
+    assert await store.get_agent_ids_for_channel("chn_old") == ["agent_new"]
