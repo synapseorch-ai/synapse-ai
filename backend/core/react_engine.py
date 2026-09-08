@@ -796,6 +796,9 @@ async def run_agent_step(
     resume_state: dict | None = None,     # prior interrupted attempt's loop state; continues mid-step
     progress_events: bool = False,        # yield _step_progress after each completed tool turn
     initial_tasks: list | None = None,    # the run's task list (seeds update_tasks; see core/task_list.py)
+    # ── per-run resolution cache (used by the orchestration engine) ───────────
+    preresolved=None,                     # core.orchestration.resolved.ResolvedAgent; skips the store reads
+    global_variables: dict | None = None, # the tenant's variables, when the caller already holds them
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -805,9 +808,13 @@ async def run_agent_step(
     if max_turns is None:
         max_turns = MAX_TURNS
 
-    # Resolve agent — Postgres first (worker mode), JSON fallback
+    # Resolve agent — Postgres first (worker mode), JSON fallback. An
+    # orchestration hands in what it resolved for the run: the same dict this
+    # would read, without reading it again for every step and delegate.
     if agent_override is not None:
         active_agent = agent_override
+    elif preresolved is not None:
+        active_agent = preresolved.agent
     else:
         from core.scale.context import resolve_agent as _ctx_resolve_agent
         resolved = await _ctx_resolve_agent(agent_id) if agent_id else None
@@ -819,8 +826,11 @@ async def run_agent_step(
     # `{{ global.key }}` in a system prompt — the tenant's variables document,
     # read once per call (core/variables.py; core/templating.py for the syntax).
     from core import templating as _templating
-    from core import variables as _variables
-    _global_variables = await _variables.load()
+    if global_variables is not None:
+        _global_variables = global_variables
+    else:
+        from core import variables as _variables
+        _global_variables = await _variables.load()
     agent_system_template = _templating.render(agent_system_template, {"global": _global_variables})
     agent_system_template = await _inject_repo_context(active_agent, agent_system_template)
     agent_system_template = await _inject_db_context(active_agent, agent_system_template)
@@ -849,7 +859,14 @@ async def run_agent_step(
         all_tools = list(tool_schema_map.values())
         ollama_tools = tools_override
         tools_json = json.dumps(tools_override)
+        custom_tools = None  # listed on first use, if a custom tool is ever called
         print(f"DEBUG RUN_AGENT: start agent_id={agent_id_for_session}, tools_override={len(tools_override)} tools", flush=True)
+    elif preresolved is not None and preresolved.has_tools:
+        # Aggregated once for the run; copies, because the task and skill
+        # tools are appended below and the next step must not inherit them.
+        all_tools, tool_schema_map, ollama_tools, tools_json = preresolved.tool_lists()
+        custom_tools = preresolved.custom_tools
+        print(f"DEBUG RUN_AGENT: start agent_id={agent_id_for_session}, preresolved tool_count={len(all_tools)}", flush=True)
     else:
         from core.scale.context import resolve_custom_tools as _ctx_resolve_tools
         custom_tools = await _ctx_resolve_tools()
@@ -1661,9 +1678,13 @@ async def run_agent_step(
                 # ===== CUSTOM TOOLS (Webhook + Python) =====
 
                 if tool_name not in server_module.tool_router:
-                    from core.scale.context import resolve_custom_tools as _ctx_resolve_tools2
-                    custom_tools_list = await _ctx_resolve_tools2()
-                    target_tool = next((t for t in custom_tools_list if t["name"] == tool_name), None)
+                    # The list from step start. It used to be re-read from the
+                    # store here on every non-MCP call — including every call
+                    # to a tool that does not exist.
+                    if custom_tools is None:
+                        from core.scale.context import resolve_custom_tools as _ctx_resolve_tools2
+                        custom_tools = await _ctx_resolve_tools2()
+                    target_tool = next((t for t in custom_tools if t["name"] == tool_name), None)
 
                     if target_tool:
                         tool_type = target_tool.get("tool_type", "http")

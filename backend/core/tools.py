@@ -100,6 +100,110 @@ def build_virtual_tools():
     return []
 
 
+_EMBED_TOOLS = frozenset({"search_codebase", "multi_repo_search", "find_similar_code",
+                          "list_indexed_files", "get_file_chunks"})
+
+
+def effective_allowed_tools(active_agent: dict) -> list[str]:
+    """The agent's tool allowlist with the type defaults added and the embedding
+    tools removed when embedding is off.
+
+    Always a new list. This used to be `active_agent["tools"]` itself with the
+    defaults appended in place, so every aggregation grew the agent's own list
+    by the default set — harmless the first time and wrong every time after.
+    """
+    allowed = list(active_agent.get("tools", ["all"]))
+
+    # Auto-inject default tools based on agent type.
+    # Agents with `skip_default_tools: true` opt out entirely — their tool list
+    # is exactly what they declared. Used by tightly scoped agents (e.g. builder
+    # savers) where extra tools add Gemini function-selection noise.
+    if not active_agent.get("skip_default_tools", False):
+        agent_type = active_agent.get("type", "conversational")
+        for category in ["all_types", agent_type]:
+            for tool_name in DEFAULT_TOOLS_BY_TYPE.get(category, set()):
+                if tool_name not in allowed:
+                    allowed.append(tool_name)
+
+    if not load_settings().get("embed_code", False):
+        allowed = [t for t in allowed if t not in _EMBED_TOOLS]
+    return allowed
+
+
+async def _session_tools_for(server_module, session_key: str):
+    """A session's advertised tools, from the per-module cache or one bounded
+    `list_tools()`. None when the session is unknown or does not answer."""
+    sessions = getattr(server_module, "agent_sessions", None) or {}
+    session = sessions.get(session_key)
+    cache = getattr(server_module, "_session_tools", None)
+    if cache is None:
+        cache = {}
+        try:
+            server_module._session_tools = cache
+        except (AttributeError, TypeError):
+            pass
+    if session_key in cache:
+        return cache[session_key]
+    if session is None:
+        return None
+    try:
+        with anyio.fail_after(MCP_LIST_TOOLS_TIMEOUT):
+            result = await session.list_tools()
+    except Exception as e:  # noqa: BLE001 — a session that does not answer has no tools
+        print(f"DEBUG: Skipping session '{session_key}' — list_tools failed: {e}", flush=True)
+        return None
+    cache[session_key] = result.tools
+    return result.tools
+
+
+async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_tools_list: list[dict]):
+    """One tool's declaration by name, or None.
+
+    The forced-tool step used to aggregate every server's tools — list, filter,
+    schema-map, serialise — to find the one it was told to call. The router
+    already knows which session answers a name, and that session's tool list is
+    cached; the rest of the sources are small lists. Same admission rules as
+    `aggregate_all_tools`, so a tool this returns is one the agent could call.
+    """
+    from core.tool_router import ToolRouter
+
+    allowed = effective_allowed_tools(active_agent)
+    router = getattr(server_module, "tool_router", None)
+    if not isinstance(router, ToolRouter):
+        router = ToolRouter(router or {})
+
+    key = router.resolve(name)
+    if key is not None:
+        session_key, actual = router[key]
+        for t in (await _session_tools_for(server_module, session_key)) or []:
+            if t.name != actual:
+                continue
+            opt_in = session_key in OPT_IN_SERVERS
+            if key in allowed or permits(allowed, name, opt_in=opt_in):
+                return VirtualTool(name, t.description, t.inputSchema)
+            return None
+
+    for vt in build_virtual_tools():
+        if vt.name == name:
+            return vt
+
+    group_ids = {entry[len("group:"):] for entry in allowed
+                 if isinstance(entry, str) and entry.startswith("group:")}
+    for ct in custom_tools_list or []:
+        if ct.get("name") != name:
+            continue
+        if permits(allowed, name) or (group_ids and ct.get("group") in group_ids):
+            return VirtualTool(ct["name"], ct.get("description", ""), ct.get("inputSchema") or {"type": "object"})
+        return None
+
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS
+    for bt in BUILDER_TOOL_SCHEMAS:
+        fn = bt["function"]
+        if fn["name"] == name and permits(allowed, name):
+            return VirtualTool(name, fn.get("description", ""), fn.get("parameters", {"type": "object"}))
+    return None
+
+
 async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
     """
     Aggregate all available tools: MCP tools + virtual tools + custom tools.
@@ -149,25 +253,7 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
         except (AttributeError, TypeError):
             pass  # a read-only stand-in still works, just uncached
 
-    allowed_tools = active_agent.get("tools", ["all"])
-
-    # Auto-inject default tools based on agent type.
-    # Agents with `skip_default_tools: true` opt out entirely — their tool list
-    # is exactly what they declared. Used by tightly scoped agents (e.g. builder
-    # savers) where extra tools add Gemini function-selection noise.
-    if not active_agent.get("skip_default_tools", False):
-        agent_type = active_agent.get("type", "conversational")
-        for category in ["all_types", agent_type]:
-            for tool_name in DEFAULT_TOOLS_BY_TYPE.get(category, set()):
-                if tool_name not in allowed_tools:
-                    allowed_tools.append(tool_name)
-
-    # Remove embedding tools if embed_code is disabled
-    settings = load_settings()
-    if not settings.get("embed_code", False):
-        _embed_tools = {"search_codebase", "multi_repo_search", "find_similar_code",
-                        "list_indexed_files", "get_file_chunks"}
-        allowed_tools = [t for t in allowed_tools if t not in _embed_tools]
+    allowed_tools = effective_allowed_tools(active_agent)
 
     # Standard MCP Tools
     for session_name, session in agent_sessions.items():

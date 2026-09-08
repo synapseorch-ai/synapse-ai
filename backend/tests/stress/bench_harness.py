@@ -102,8 +102,12 @@ class BenchRecorder:
                          counting("resolve_agent", ctx_mod.resolve_agent))
         self._mp.setattr(ctx_mod, "resolve_custom_tools",
                          counting("resolve_custom_tools", ctx_mod.resolve_custom_tools))
-        self._mp.setattr(re_mod, "aggregate_all_tools",
-                         counting("aggregate_all_tools", re_mod.aggregate_all_tools))
+        # Bound at import in react_engine and imported by name elsewhere: count
+        # both, or a caller that moves to the other binding reads as zero.
+        import core.tools as tools_mod
+        counted_aggregate = counting("aggregate_all_tools", tools_mod.aggregate_all_tools)
+        self._mp.setattr(re_mod, "aggregate_all_tools", counted_aggregate)
+        self._mp.setattr(tools_mod, "aggregate_all_tools", counted_aggregate)
         self._mp.setattr(vars_mod, "load", counting("variables.load", vars_mod.load))
 
         real_append = journal_mod.FileRunJournal.append

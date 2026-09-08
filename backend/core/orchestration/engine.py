@@ -63,6 +63,12 @@ class OrchestrationEngine:
         #: The tenant's `{{ global.* }}` values, loaded once per run/resume
         #: (core/variables.py); prompt templates render against it.
         self.global_variables: dict = {}
+        #: Agents (and their tool sets) resolved for this run, keyed by agent id
+        #: — see core/orchestration/resolved.py. Nothing in it changes while a
+        #: run is in flight, so it is never invalidated, only discarded with
+        #: the engine.
+        self._resolved: dict = {}
+        self._custom_tools: list | None = None
         self.current_transition = None  # set by _execute_loop before each step
 
     async def _load_global_variables(self) -> dict:
@@ -883,12 +889,16 @@ class OrchestrationEngine:
 
         enabled: list[str] = []
         for agent_id in agent_ids:
-            try:
-                agent = await _ctx_resolve_agent(agent_id)
-                if agent is None:
-                    agent = await _resolve_agent_by_id(agent_id)
-            except Exception:
-                agent = None
+            cached = self._resolved.get(agent_id)
+            if cached is not None:
+                agent = cached.agent
+            else:
+                try:
+                    agent = await _ctx_resolve_agent(agent_id)
+                    if agent is None:
+                        agent = await _resolve_agent_by_id(agent_id)
+                except Exception:
+                    agent = None
             if agent and agent.get("memory"):
                 enabled.append(agent_id)
         if not enabled:

@@ -43,7 +43,7 @@ class AgentStepExecutor:
     ) -> AsyncGenerator[dict, None]:
         from core.react_engine import run_agent_step
         from core.agent_logger import AgentLogger
-        from core.scale.context import resolve_agent
+        from .resolved import resolve_for_run
         print(f"DEBUG AGENT EXEC: agent_id={step.agent_id} step={step.id}", flush=True)
 
         from .context import build_origin_aware_context, snapshot_inputs
@@ -62,13 +62,20 @@ class AgentStepExecutor:
                "system_prompt_prefix": system_prompt_prefix}
 
         # ── Orchestrator-as-agent: delegate to a nested OrchestrationEngine ──
-        target_agent = await resolve_agent(step.agent_id) if step.agent_id else None
+        # Resolved once per run: the agent, the custom tools and the aggregated
+        # tool set are the same for every step and delegate that uses it. An
+        # orchestrator agent needs no tools, so it is resolved without them.
+        resolved = await resolve_for_run(engine, step.agent_id, tools=False)
+        target_agent = resolved.agent if resolved else None
         if target_agent and target_agent.get("type") == "orchestrator":
             async for ev in self._execute_nested_orchestration(
                 step, run, engine, transition, target_agent, prompt, inputs_snapshot
             ):
                 yield ev
             return
+
+        if resolved is not None:
+            resolved = await resolve_for_run(engine, step.agent_id, tools=True)
 
         agent_id = step.agent_id or "default"
         agent_name = engine.agent_names.get(agent_id, agent_id)
@@ -126,6 +133,8 @@ class AgentStepExecutor:
                 resume_state=resume_state,
                 progress_events=True,
                 initial_tasks=[dict(t) for t in (run.tasks or [])],
+                preresolved=resolved,
+                global_variables=getattr(engine, "global_variables", None),
             ):
                 if event.get("type") == "tasks_updated":
                     # Task state lives on the run, not in a tool's process
@@ -206,7 +215,7 @@ class AgentStepExecutor:
         Events:         all sub-events tagged with parent orch_step_id +
                         nested_run_id so the UI can attribute them.
         """
-        from core.routes.orchestrations import load_orchestrations
+        from core.scale.context import resolve_orchestration
         from core.models_orchestration import Orchestration
         from .engine import OrchestrationEngine, MAX_NESTED_DEPTH
 
@@ -223,8 +232,9 @@ class AgentStepExecutor:
                 f"(max {MAX_NESTED_DEPTH}). Possible recursive agent loop."
             )
 
-        orchs = await load_orchestrations()
-        sub_orch_data = next((o for o in orchs if o["id"] == sub_orch_id), None)
+        # By id, through the resource provider — the same path resume takes.
+        # This used to load every orchestration in the tenant and scan.
+        sub_orch_data = await resolve_orchestration(sub_orch_id)
         if not sub_orch_data:
             raise RuntimeError(
                 f"Sub-orchestration '{sub_orch_id}' (from agent "
@@ -331,8 +341,8 @@ class ToolStepExecutor:
         from core.llm_providers import generate_response as llm_generate, detect_mode_from_model
         from core.config import load_settings
         from core.react_engine import parse_tool_call
-        from core.tools import aggregate_all_tools
-        from core.scale.context import resolve_agent, resolve_custom_tools
+        from core.tools import resolve_one_tool
+        from .resolved import resolve_for_run, run_custom_tools
 
         if not step.forced_tool:
             yield {"type": "step_warning", "orch_step_id": step.id,
@@ -356,15 +366,14 @@ class ToolStepExecutor:
         model = _step_model if _step_model else settings.get("model", "mistral")
         mode = detect_mode_from_model(model)
 
-        # Load only the forced tool's schema — aggregate all tools then filter to one
-        active_agent = (await resolve_agent(step.agent_id) if step.agent_id else None) or {}
-        custom_tools = await resolve_custom_tools()
-        all_tools, _, _, _ = await aggregate_all_tools(
-            engine.server_module, active_agent, custom_tools
-        )
+        # The forced tool's own declaration. This used to aggregate every
+        # server's tools — list, filter, schema-map, serialise — to find one.
+        resolved = await resolve_for_run(engine, step.agent_id, tools=False) if step.agent_id else None
+        active_agent = (resolved.agent if resolved else None) or {}
+        custom_tools = resolved.custom_tools if resolved else await run_custom_tools(engine)
 
         tool_name = step.forced_tool
-        tool_obj = next((t for t in all_tools if t.name == tool_name), None)
+        tool_obj = await resolve_one_tool(engine.server_module, tool_name, active_agent, custom_tools)
         if not tool_obj:
             yield {"type": "step_error", "orch_step_id": step.id,
                    "error": f"Tool '{tool_name}' not found in available tools"}
