@@ -760,6 +760,19 @@ class EvaluatorStepExecutor:
                 run.shared_state[step.output_key] = label
 
 
+#: Step types with no shared resource behind them — no MCP session, no
+#: browser, no subprocess of the agent's — so branches made only of these can
+#: overlap. `agent` and `tool` are excluded: MCP sessions and the single
+#: Playwright instance are not concurrency-safe. `human` is excluded because
+#: a pause inside a concurrent branch has no resume story.
+CONCURRENT_SAFE_TYPES = frozenset({
+    StepType.LLM, StepType.TRANSFORM, StepType.PRINT, StepType.EXTRACT_JSON,
+    StepType.IF_ELSE, StepType.SWITCH, StepType.MERGE,
+})
+
+_BRANCH_DONE = object()
+
+
 class ParallelStepExecutor:
     """Run multiple branches.
 
@@ -770,10 +783,18 @@ class ParallelStepExecutor:
     A branch chain stops when a step has no ``next_step_id``, or its ``next_step_id``
     equals the parallel node's own convergence point (``step.next_step_id``).
 
-    NOTE: Branches run sequentially (not with asyncio.gather) because agents
-    share resources that are not concurrency-safe — notably MCP server
-    connections and single-instance tools like the Playwright browser.
-    True parallel execution would require per-branch tool isolation.
+    Branches made only of `CONCURRENT_SAFE_TYPES` run at the same time, each in
+    its own task; the rest run one after another, afterwards. The common
+    fan-out — summarise three documents with three `llm` steps — used to take
+    the sum of its branches because agents share resources that are not
+    concurrency-safe, and that constraint was applied to every branch whether
+    or not it touched one. `SYNAPSE_PARALLEL_BRANCHES=0` restores sequential.
+
+    The executor is an async generator and must stay single-task (the engine
+    holds a cancel scope across its yields — see core/orchestration/runner.py).
+    So concurrent branches do not yield; they push events onto a queue that
+    this generator drains. Each branch task has its own per-step timeout
+    scopes, which is fine: a scope is bound to the task that entered it.
     """
 
     async def execute(
@@ -828,99 +849,168 @@ class ParallelStepExecutor:
                 "completed_steps": sorted(completed_steps),
             }
             try:
+                # Serialised per run by SharedState.checkpoint's lock, so two
+                # branches finishing together cannot land out of order.
                 await SharedState(run).checkpoint()
             except Exception as ckpt_err:
                 print(f"WARNING: parallel-progress checkpoint failed: {ckpt_err}", flush=True)
 
-        # Run branches sequentially to avoid MCP/browser resource contention
-        for branch_index, branch_step_ids in enumerate(resolved_branches):
-            if branch_index in completed_branches:
-                print(f"DEBUG PARALLEL: ├─ branch {branch_index} already complete — skipping", flush=True)
-                continue
+        def _is_concurrent_safe(chain: list[str]) -> bool:
+            for sid in chain:
+                sub = engine.step_map.get(sid)
+                if sub is None or sub.type not in CONCURRENT_SAFE_TYPES:
+                    return False
+            return True
 
+        from core import config as _config
+        pending = [(i, chain) for i, chain in enumerate(resolved_branches) if i not in completed_branches]
+        for i, _ in [(i, c) for i, c in enumerate(resolved_branches) if i in completed_branches]:
+            print(f"DEBUG PARALLEL: ├─ branch {i} already complete — skipping", flush=True)
+        if _config.PARALLEL_BRANCHES_CONCURRENT:
+            concurrent = [(i, c) for i, c in pending if _is_concurrent_safe(c)]
+            sequential = [(i, c) for i, c in pending if not _is_concurrent_safe(c)]
+        else:
+            concurrent, sequential = [], pending
+
+        branch_kwargs = dict(
+            step=step, run=run, engine=engine, branch_count=len(resolved_branches),
+            completed_steps=completed_steps, completed_branches=completed_branches,
+            checkpoint_progress=_checkpoint_progress,
+        )
+
+        # ── Concurrent branches: one task each, events through a queue ──
+        if concurrent:
+            print(f"DEBUG PARALLEL: ├─ running {len(concurrent)} tool-free branch(es) concurrently", flush=True)
+            queue: asyncio.Queue = asyncio.Queue()
+
+            async def _pump(branch_index: int, chain: list[str]):
+                try:
+                    async for ev in self._iter_branch(branch_index, chain, **branch_kwargs):
+                        await queue.put(ev)
+                except Exception as e:  # noqa: BLE001 — one branch's failure is its own
+                    await queue.put({"type": "step_error", "orch_step_id": step.id,
+                                     "error": f"Branch {branch_index} failed: {type(e).__name__}: {str(e)[:300]}"})
+                finally:
+                    await queue.put(_BRANCH_DONE)
+
+            tasks = [asyncio.create_task(_pump(i, c)) for i, c in concurrent]
+            remaining = len(tasks)
+            try:
+                while remaining:
+                    ev = await queue.get()
+                    if ev is _BRANCH_DONE:
+                        remaining -= 1
+                        continue
+                    yield ev
+            finally:
+                # The engine's timeout or a cancel closes this generator; the
+                # branch tasks must not outlive it.
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+
+        # ── Sequential branches: agents and tools, one at a time as before ──
+        for branch_index, chain in sequential:
             # Checkpoint between branches — give MCP background tasks time
             await anyio.sleep(0)
-
-            print(f"DEBUG PARALLEL: ├─ branch {branch_index}/{len(resolved_branches)} steps={branch_step_ids}", flush=True)
-            yield {"type": "branch_start", "orch_step_id": step.id,
-                   "branch_index": branch_index, "branch_count": len(resolved_branches)}
-
-            for sid in branch_step_ids:
-                if sid in completed_steps:
-                    print(f"DEBUG PARALLEL:   ↷ sub-step '{sid}' already complete — skipping", flush=True)
-                    continue
-                sub_step = engine.step_map.get(sid)
-                if not sub_step:
-                    yield {"type": "step_warning", "orch_step_id": sid,
-                           "message": f"Step {sid} not found in branch {branch_index}"}
-                    continue
-                executor = engine.executors.get(sub_step.type)
-                if not executor:
-                    yield {"type": "step_error", "orch_step_id": sid,
-                           "error": f"No executor for {sub_step.type}"}
-                    continue
-
-                step_start = time.time()
-                sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
-                print(f"DEBUG PARALLEL:   ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s", flush=True)
-                yield {"type": "step_start", "orch_step_id": sub_step.id,
-                       "step_name": sub_step.name, "step_type": sub_step.type.value}
-
-                # Human events must be yielded OUTSIDE the fail_after scope —
-                # yielding inside suspends this generator with the scope
-                # active and breaks the engine's own scope exit (issue #356
-                # family). Same pattern as the loop executor.
-                pending_human_event = None
-                try:
-                    with anyio.fail_after(sub_timeout):
-                        async for event in executor.execute(sub_step, run, engine):
-                            if event.get("type") == "human_input_required":
-                                pending_human_event = event
-                                break
-                            yield event
-                except TimeoutError:
-                    duration = round(time.time() - step_start, 2)
-                    print(f"DEBUG PARALLEL: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s in branch {branch_index}", flush=True)
-                    run.step_history.append({
-                        "step_id": sub_step.id, "step_name": sub_step.name,
-                        "step_type": sub_step.type.value, "status": "failed",
-                        "error": f"Timed out after {sub_timeout}s",
-                        "started_at": _iso(step_start), "ended_at": _iso(time.time()),
-                        "duration_seconds": duration,
-                    })
-                    yield {"type": "step_error", "orch_step_id": sub_step.id,
-                           "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
-                    continue
-
-                if pending_human_event is not None:
+            async for ev in self._iter_branch(branch_index, chain, **branch_kwargs):
+                if ev.get("type") == "human_input_required":
                     # The engine resumes PAST the parallel node after human
                     # input — drop branch progress so a later legitimate
                     # re-entry starts fresh.
                     run.shared_state.pop(progress_key, None)
-                    yield pending_human_event
+                    yield ev
                     return
-
-                duration = round(time.time() - step_start, 2)
-                print(f"DEBUG PARALLEL:   ✓ sub-step '{sub_step.name}' done in {duration}s", flush=True)
-                run.step_history.append({
-                    "step_id": sub_step.id, "step_name": sub_step.name,
-                    "step_type": sub_step.type.value, "status": "completed",
-                    "started_at": _iso(step_start), "ended_at": _iso(time.time()),
-                    "duration_seconds": duration, "output_key": sub_step.output_key,
-                })
-                yield {"type": "step_complete", "orch_step_id": sub_step.id,
-                       "step_name": sub_step.name, "duration_seconds": duration}
-                # Sub-step done (its output is in shared_state) — checkpoint so
-                # a crash resumes at the next sub-step, not the whole branch.
-                completed_steps.add(sid)
-                await _checkpoint_progress()
-
-            completed_branches.add(branch_index)
-            await _checkpoint_progress()
+                yield ev
 
         run.shared_state.pop(progress_key, None)
         print(f"DEBUG PARALLEL: ✅ all {len(resolved_branches)} branches complete", flush=True)
         yield {"type": "parallel_complete", "orch_step_id": step.id, "branch_count": len(resolved_branches)}
+
+    async def _iter_branch(
+        self, branch_index: int, branch_step_ids: list[str], *, step, run, engine,
+        branch_count: int, completed_steps: set, completed_branches: set, checkpoint_progress,
+    ) -> AsyncGenerator[dict, None]:
+        """One branch, start to finish. Yields its events; a
+        `human_input_required` is yielded last and ends the branch."""
+        print(f"DEBUG PARALLEL: ├─ branch {branch_index}/{branch_count} steps={branch_step_ids}", flush=True)
+        yield {"type": "branch_start", "orch_step_id": step.id,
+               "branch_index": branch_index, "branch_count": branch_count}
+
+        for sid in branch_step_ids:
+            if sid in completed_steps:
+                print(f"DEBUG PARALLEL:   ↷ sub-step '{sid}' already complete — skipping", flush=True)
+                continue
+            sub_step = engine.step_map.get(sid)
+            if not sub_step:
+                yield {"type": "step_warning", "orch_step_id": sid,
+                       "message": f"Step {sid} not found in branch {branch_index}"}
+                continue
+            executor = engine.executors.get(sub_step.type)
+            if not executor:
+                yield {"type": "step_error", "orch_step_id": sid,
+                       "error": f"No executor for {sub_step.type}"}
+                continue
+
+            step_start = time.time()
+            sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
+            print(f"DEBUG PARALLEL:   ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s", flush=True)
+            yield {"type": "step_start", "orch_step_id": sub_step.id,
+                   "step_name": sub_step.name, "step_type": sub_step.type.value}
+
+            # Human events must be yielded OUTSIDE the fail_after scope —
+            # yielding inside suspends this generator with the scope
+            # active and breaks the engine's own scope exit (issue #356
+            # family). Same pattern as the loop executor.
+            pending_human_event = None
+            sub_gen = executor.execute(sub_step, run, engine)
+            try:
+                with anyio.fail_after(sub_timeout):
+                    async for event in sub_gen:
+                        if event.get("type") == "human_input_required":
+                            pending_human_event = event
+                            break
+                        yield event
+            except TimeoutError:
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await sub_gen.aclose()
+                    except Exception as close_err:  # noqa: BLE001
+                        print(f"WARNING: closing timed-out step '{sub_step.name}' failed: {close_err}", flush=True)
+                duration = round(time.time() - step_start, 2)
+                print(f"DEBUG PARALLEL: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s in branch {branch_index}", flush=True)
+                run.step_history.append({
+                    "step_id": sub_step.id, "step_name": sub_step.name,
+                    "step_type": sub_step.type.value, "status": "failed",
+                    "error": f"Timed out after {sub_timeout}s",
+                    "started_at": _iso(step_start), "ended_at": _iso(time.time()),
+                    "duration_seconds": duration,
+                })
+                yield {"type": "step_error", "orch_step_id": sub_step.id,
+                       "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
+                continue
+
+            if pending_human_event is not None:
+                yield pending_human_event
+                return
+
+            duration = round(time.time() - step_start, 2)
+            print(f"DEBUG PARALLEL:   ✓ sub-step '{sub_step.name}' done in {duration}s", flush=True)
+            run.step_history.append({
+                "step_id": sub_step.id, "step_name": sub_step.name,
+                "step_type": sub_step.type.value, "status": "completed",
+                "started_at": _iso(step_start), "ended_at": _iso(time.time()),
+                "duration_seconds": duration, "output_key": sub_step.output_key,
+            })
+            yield {"type": "step_complete", "orch_step_id": sub_step.id,
+                   "step_name": sub_step.name, "duration_seconds": duration}
+            # Sub-step done (its output is in shared_state) — checkpoint so
+            # a crash resumes at the next sub-step, not the whole branch.
+            completed_steps.add(sid)
+            await checkpoint_progress()
+
+        completed_branches.add(branch_index)
+        await checkpoint_progress()
 
 
 class MergeStepExecutor:

@@ -44,6 +44,11 @@ HTTP_TOOL_TIMEOUT        = _env_float("SYNAPSE_HTTP_TOOL_TIMEOUT", 30.0)
 ORCH_STEP_TIMEOUT        = _env_float("SYNAPSE_ORCH_STEP_TIMEOUT", 300.0)
 ORCH_GLOBAL_TIMEOUT_MIN  = _env_int("SYNAPSE_ORCH_GLOBAL_TIMEOUT_MINUTES", 30)
 ORCH_HUMAN_TIMEOUT       = _env_float("SYNAPSE_ORCH_HUMAN_TIMEOUT", 3600.0)
+# Parallel-step branches made only of tool-free steps (llm, transform, print,
+# extract_json, if_else, switch, merge) run concurrently. Branches with agent
+# or tool steps stay sequential: MCP sessions and the single browser are not
+# concurrency-safe. Set to 0 to run every branch sequentially, as before.
+PARALLEL_BRANCHES_CONCURRENT = os.getenv("SYNAPSE_PARALLEL_BRANCHES", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 # ── Settings provider ────────────────────────────────────────────────────────
