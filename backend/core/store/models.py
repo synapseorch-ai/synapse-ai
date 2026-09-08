@@ -187,6 +187,12 @@ class OrchestrationRunDB(Base):
     # The run's task list (core/task_list.py). Nullable because the column is
     # migration-added on existing installs; readers treat NULL as [].
     tasks = Column(JSONType, default=list)
+    # Mid-step progress per step id (the agent transcript checkpointed after
+    # every tool turn — up to 200 KB each). Its own column so a per-turn
+    # checkpoint updates this and nothing else; it used to live inside
+    # shared_state, where every turn rewrote the whole run. Nullable for the
+    # same reason as `tasks`; readers treat NULL as {}.
+    step_progress = Column(JSONType, default=dict)
     waiting_for_human = Column(Boolean, default=False)
     human_prompt = Column(Text)
     human_fields = Column(JSONType, default=list)

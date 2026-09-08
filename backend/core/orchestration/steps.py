@@ -98,14 +98,20 @@ class AgentStepExecutor:
         # transcript is considered poisoned and we fall back to a fresh
         # rerun (which still sees the prior attempt via _exec_memory).
         from core.orchestration.state import SharedState
-        progress_key = f"_step_progress_{step.id}"
+        legacy_key = f"_step_progress_{step.id}"
         resume_state = None
         resume_attempt = 1
-        saved_progress = run.shared_state.get(progress_key)
+        saved_progress = run.step_progress.get(step.id)
+        if saved_progress is None and legacy_key in run.shared_state:
+            # A run checkpointed before progress had its own column. Taken
+            # out of shared_state at once so the next full checkpoint drops
+            # it: with two copies, a second crash could read the stale one's
+            # attempt counter.
+            saved_progress = run.shared_state.pop(legacy_key)
         if isinstance(saved_progress, dict) and saved_progress.get("context_text"):
             prior_attempts = int(saved_progress.get("attempt") or 1)
             if prior_attempts >= 3:
-                run.shared_state.pop(progress_key, None)
+                run.step_progress.pop(step.id, None)
                 print(f"DEBUG AGENT EXEC: ⚠ discarding step progress for '{step.id}' "
                       f"after {prior_attempts} attempts — fresh rerun", flush=True)
             else:
@@ -143,14 +149,16 @@ class AgentStepExecutor:
                     # the journal (structural) and the live stream.
                     run.tasks = [dict(t) for t in (event.get("tasks") or [])]
                     try:
-                        await SharedState(run).checkpoint()
+                        await SharedState(run).checkpoint(columns=("tasks",))
                     except Exception as ckpt_err:
                         print(f"WARNING: task-list checkpoint failed: {ckpt_err}", flush=True)
                 if event.get("type") == "_step_progress":
                     # Turn-boundary transcript checkpoint: persist so a crash
                     # resumes mid-step. Swallowed here — never logged, never
-                    # forwarded to SSE/journal.
-                    run.shared_state[progress_key] = {
+                    # forwarded to SSE/journal. Only the progress column is
+                    # written: this fires every tool turn, and it used to
+                    # rewrite the whole run each time.
+                    run.step_progress[step.id] = {
                         "turn": event.get("turn"),
                         "context_text": event.get("context_text"),
                         "has_compacted": event.get("has_compacted"),
@@ -159,7 +167,7 @@ class AgentStepExecutor:
                         "attempt": resume_attempt,
                     }
                     try:
-                        await SharedState(run).checkpoint()
+                        await SharedState(run).checkpoint(columns=("step_progress",))
                     except Exception as ckpt_err:
                         print(f"WARNING: step-progress checkpoint failed: {ckpt_err}", flush=True)
                     continue
@@ -181,7 +189,7 @@ class AgentStepExecutor:
         # Clean completion leaves no transcript residue (deliberate
         # re-invocations — loops, evaluator retries — rely on _exec_memory,
         # not on step progress).
-        run.shared_state.pop(progress_key, None)
+        run.step_progress.pop(step.id, None)
 
         if step.output_key:
             run.shared_state[step.output_key] = final_response

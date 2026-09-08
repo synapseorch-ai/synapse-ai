@@ -100,3 +100,39 @@ async def test_a_migrated_install_can_order_by_the_new_column(tmp_path):
         assert [a["id"] for a in await resources.load_agents()] == ["a1", "a2", "a0"]
     finally:
         await reset_store()
+
+
+@pytest.mark.asyncio
+async def test_adds_step_progress_to_an_existing_runs_table(tmp_path):
+    """A runs table from before mid-step progress had its own column."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'runs.db'}"
+    engine = build_engine(url)
+
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "CREATE TABLE orchestration_runs ("
+            "  run_id VARCHAR(255) PRIMARY KEY,"
+            "  orchestration_id VARCHAR(255) NOT NULL,"
+            "  tenant_id VARCHAR(255) NOT NULL DEFAULT 'default',"
+            "  status VARCHAR(50) NOT NULL,"
+            "  shared_state JSON NOT NULL,"
+            "  step_history JSON NOT NULL,"
+            "  tasks JSON"
+            ")"
+        ))
+        await conn.execute(text(
+            "INSERT INTO orchestration_runs (run_id, orchestration_id, status, shared_state, step_history) "
+            "VALUES ('r1', 'o1', 'paused', '{}', '[]')"
+        ))
+
+    applied = await run_migrations(engine)
+    assert "orchestration_runs.step_progress" in applied
+
+    async with engine.begin() as conn:
+        columns = await conn.run_sync(
+            lambda c: {col["name"] for col in inspect(c).get_columns("orchestration_runs")}
+        )
+        assert "step_progress" in columns
+
+    assert await run_migrations(engine) == []  # idempotent
+    await engine.dispose()

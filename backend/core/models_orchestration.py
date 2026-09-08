@@ -158,6 +158,10 @@ class OrchestrationRun(BaseModel):
     # The run's task list (core/task_list.py): written through on every
     # accepted update_tasks call, shared across steps, survives a resume.
     tasks: list[dict[str, Any]] = []
+    # Mid-step progress by step id — an agent step's transcript after each
+    # completed tool turn, so a crash resumes mid-step. Kept apart from
+    # shared_state so the per-turn checkpoint writes only this.
+    step_progress: dict[str, dict[str, Any]] = {}
 
     # Human-in-the-loop
     waiting_for_human: bool = False

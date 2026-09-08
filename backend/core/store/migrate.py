@@ -49,6 +49,9 @@ _ADDITIONS: tuple[tuple[str, str, str, str | None], ...] = (
     # dialects accept; new installs get the model's JSONB variant on Postgres
     # via create_all, and readers treat the migration's NULLs as [].
     ("orchestration_runs", "tasks", "JSON", None),
+    # Mid-step agent progress, moved out of shared_state so a per-turn
+    # checkpoint is a one-column update (core/orchestration/state_store.py).
+    ("orchestration_runs", "step_progress", "JSON", None),
 )
 
 

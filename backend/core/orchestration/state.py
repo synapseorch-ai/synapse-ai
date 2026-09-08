@@ -27,7 +27,8 @@ other tenants' jobs; the old blocking `open()`/`write()` stalled all of them.
 """
 from __future__ import annotations
 
-from typing import Protocol
+import asyncio
+from typing import Protocol, Sequence
 
 from core.models_orchestration import OrchestrationRun
 from core.tenancy import get_tenant
@@ -55,6 +56,34 @@ class StateBackend(Protocol):
 
 
 _backend: StateBackend | None = None
+
+_TERMINAL = frozenset({"completed", "failed", "cancelled"})
+
+# One lock per live run. Keyed with the loop it was made on: a lock outlives
+# nothing here on purpose, but a run id reused on a later event loop (tests,
+# a resumed run in a new worker process) must not inherit a lock bound to a
+# loop that is gone.
+_checkpoint_locks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+
+
+def _lock_for(run_id: str) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    entry = _checkpoint_locks.get(run_id)
+    if entry is None or entry[0] is not loop:
+        entry = (loop, asyncio.Lock())
+        _checkpoint_locks[run_id] = entry
+    return entry[1]
+
+
+def _accepts_columns(backend: StateBackend) -> bool:
+    """Whether `backend.save` takes `columns`.
+
+    Declared by the backend (`supports_partial_save = True`) rather than read
+    off the signature of `save`: a signature check is defeated by any wrapper
+    with `*args, **kwargs` — a spy, a decorator, a tracing shim — and would
+    turn every checkpoint back into a full write without anything failing.
+    """
+    return bool(getattr(backend, "supports_partial_save", False))
 
 
 def set_state_backend(backend: StateBackend | None) -> None:
@@ -90,14 +119,30 @@ class SharedState:
     def update(self, data: dict):
         self.run.shared_state.update(data)
 
-    async def checkpoint(self) -> None:
-        """Persist the full run state.
+    async def checkpoint(self, columns: Sequence[str] | None = None) -> None:
+        """Persist the run — all of it, or only `columns`.
 
         Async because this runs on an event loop shared with other tenants'
         jobs. The previous synchronous write blocked every one of them for the
         duration of a `json.dumps` plus a disk write, on every step boundary.
+
+        `columns` is for the callers that changed one thing (an agent turn's
+        progress, the task list): the store backend updates just those. A
+        backend that predates the parameter — an embedder's own — gets the
+        full save it has always had; the protocol did not change under it.
+
+        One save at a time per run: concurrent branches of a parallel step
+        checkpoint independently, and two full writes racing would let the
+        earlier snapshot land last.
         """
-        await get_state_backend().save(self.run)
+        backend = get_state_backend()
+        async with _lock_for(self.run.run_id):
+            if columns and _accepts_columns(backend):
+                await backend.save(self.run, columns=tuple(columns))
+            else:
+                await backend.save(self.run)
+        if self.run.status in _TERMINAL:
+            _checkpoint_locks.pop(self.run.run_id, None)
 
     @classmethod
     async def restore(cls, run_id: str) -> "SharedState":

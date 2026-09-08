@@ -13,6 +13,7 @@ never be opened on their own.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Sequence
 
 from sqlalchemy import select
 
@@ -30,6 +31,7 @@ _MIRRORED = (
     "step_history",
     "current_step_id",
     "tasks",
+    "step_progress",
     "waiting_for_human",
     "human_prompt",
     "human_fields",
@@ -63,9 +65,47 @@ def _is_structural(run_id: str) -> bool:
 class StoreStateBackend:
     """Reads and writes `orchestration_runs` in the engine's store."""
 
-    async def save(self, run: OrchestrationRun) -> None:
+    #: `save` accepts `columns` — see `SharedState.checkpoint`. A backend
+    #: without this attribute gets full saves only.
+    supports_partial_save = True
+
+    async def save(self, run: OrchestrationRun, columns: Sequence[str] | None = None) -> None:
+        """Persist the run. With `columns`, update only those.
+
+        A full save serialises the whole run and upserts every mirrored
+        column. A per-turn progress checkpoint used to do exactly that —
+        rewriting shared_state, step_history and every execution-memory blob
+        to store one step's transcript — so `columns` exists for the callers
+        that change one thing. It is an UPDATE, never an insert: the first
+        write of a run is always full (the engine's initial checkpoint, the
+        worker's row pre-create), and a partial write finding no row falls
+        back to a full save rather than inserting a run with no
+        orchestration_id.
+        """
         from core.store import session, upsert
         from core.store.models import OrchestrationRunDB
+
+        if columns:
+            from sqlalchemy import update
+
+            subset = run.model_dump(mode="json", include=set(columns))
+            values = {c: subset.get(c) for c in columns if c in _MIRRORED}
+            for column in _TIMESTAMPS:
+                if column in values:
+                    values[column] = _to_datetime(values[column])
+            if values:
+                async with session() as s:
+                    result = await s.execute(
+                        update(OrchestrationRunDB)
+                        .where(
+                            OrchestrationRunDB.run_id == run.run_id,
+                            OrchestrationRunDB.tenant_id == get_tenant(),
+                        )
+                        .values(**values)
+                    )
+                    if result.rowcount:
+                        return
+            # No row yet (or nothing mirrored was named): the full path below.
 
         # mode="json" so arbitrary objects inside shared_state / step_history
         # are already primitives by the time the JSON column serialises them.
@@ -161,6 +201,7 @@ def _to_document(row) -> dict:
         "step_history": row.step_history or [],
         "current_step_id": row.current_step_id,
         "tasks": row.tasks or [],
+        "step_progress": row.step_progress or {},
         "waiting_for_human": bool(row.waiting_for_human),
         "human_prompt": row.human_prompt,
         "human_fields": row.human_fields or [],

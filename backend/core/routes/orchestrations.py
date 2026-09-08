@@ -349,13 +349,39 @@ async def run_orchestration(orch_id: str, request: Request):
     )
 
 
+#: State keys the engine keeps for itself — progress records, routing
+#: decisions, loop accumulators, execution memory. Named explicitly rather
+#: than "anything starting with _": a user's own state_schema key may start
+#: with an underscore, and that one is theirs to read back.
+_PRIVATE_STATE_PREFIXES = (
+    "_step_progress_", "_loop_progress_", "_parallel_progress_", "_exec_memory_",
+    "_routing_", "_loop_", "_if_decision_", "_switch_decision_",
+)
+
+
+def _public_run_view(run) -> dict:
+    """The run as the API shows it: engine bookkeeping stripped.
+
+    `step_progress` is up to 200 KB of agent transcript per step and
+    `_exec_memory_*` grows with every rerun; nothing outside the engine reads
+    either, and the frontend never renders shared_state at all.
+    """
+    doc = run.model_dump()
+    doc.pop("step_progress", None)
+    doc["shared_state"] = {
+        k: v for k, v in (doc.get("shared_state") or {}).items()
+        if not k.startswith(_PRIVATE_STATE_PREFIXES)
+    }
+    return doc
+
+
 @router.get("/api/orchestrations/runs/{run_id}")
 async def get_run_status(run_id: str):
     """Get the current state of a run from its checkpoint."""
     from core.orchestration.state import SharedState
     try:
         restored = await SharedState.restore(run_id)
-        return restored.run.model_dump()
+        return _public_run_view(restored.run)
     except FileNotFoundError:
         # Checkpoints are only written at step boundaries, so a run still inside
         # its first long-running step has no checkpoint yet. If it's a live

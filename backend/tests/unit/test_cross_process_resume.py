@@ -82,7 +82,42 @@ asyncio.run(main(sys.argv[1]))
 """
 
 
-def _spawn(run_id: str, db_url: str | None = None) -> subprocess.CompletedProcess:
+#: Resumes a FAILED run in another process with run_agent_step stubbed, and
+#: reports the resume_state the stub was handed — i.e. whether the mid-step
+#: transcript checkpointed by the parent process reached the child intact.
+_CHILD_FAILED = """
+import asyncio, json, sys, types
+
+
+async def main(run_id):
+    import core.react_engine as re_mod
+    from core.orchestration.engine import OrchestrationEngine
+    from core.orchestration.state import SharedState
+
+    seen = {}
+
+    async def resumed(**kwargs):
+        seen["resume_state"] = kwargs.get("resume_state")
+        yield {"type": "final", "response": "done after crossing"}
+
+    re_mod.run_agent_step = resumed
+    server = types.SimpleNamespace(agent_sessions={}, memory_store=None, tool_router={})
+    events = [ev async for ev in OrchestrationEngine.resume_failed(run_id, server)]
+    run = (await SharedState.restore(run_id)).run
+    print("RESULT" + json.dumps({
+        "types": [e.get("type") for e in events],
+        "resume_state": seen.get("resume_state"),
+        "status": run.status,
+        "step_progress": run.step_progress,
+        "shared_state": run.shared_state,
+    }))
+
+
+asyncio.run(main(sys.argv[1]))
+"""
+
+
+def _spawn(run_id: str, db_url: str | None = None, child: str = _CHILD) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(_BACKEND)
     for var in ("SYNAPSE_DB_URL", "SYNAPSE_BLOB_DIR", "SYNAPSE_SCRATCH_DIR", "SYNAPSE_STATE_DIR"):
@@ -91,7 +126,7 @@ def _spawn(run_id: str, db_url: str | None = None) -> subprocess.CompletedProces
         env["SYNAPSE_DB_URL"] = db_url
 
     return subprocess.run(
-        [sys.executable, "-c", _CHILD, run_id],
+        [sys.executable, "-c", child, run_id],
         env=env,
         capture_output=True,
         text=True,
@@ -99,8 +134,8 @@ def _spawn(run_id: str, db_url: str | None = None) -> subprocess.CompletedProces
     )
 
 
-def _in_another_process(run_id: str) -> dict:
-    result = _spawn(run_id)
+def _in_another_process(run_id: str, child: str = _CHILD) -> dict:
+    result = _spawn(run_id, child=child)
     assert result.returncode == 0, f"child failed:\n{result.stdout}\n{result.stderr}"
 
     marker = [line for line in result.stdout.splitlines() if line.startswith("RESULT")]
@@ -206,3 +241,40 @@ class TestAPausedRunIsPortable:
 
         with pytest.raises(FileNotFoundError):
             await SharedState.restore("run_that_does_not_exist")
+
+
+class TestMidStepResumeCrossesProcesses:
+    async def test_the_transcript_checkpointed_here_resumes_there(self, monkeypatch, seed_orchestration):
+        """The parent crashes after one tool turn; a different process resumes
+        the failed run and must be handed that turn's transcript — which now
+        lives in its own column, and must be there for the child to read."""
+        import types
+        import core.react_engine as re_mod
+        from core.models_orchestration import Orchestration
+        from core.orchestration.engine import OrchestrationEngine
+
+        orch = S.make_orchestration(
+            id="orch_cross_mid", entry_step_id="s1",
+            steps=[{"id": "s1", "name": "Agent", "type": "agent", "agent_id": "a1",
+                    "output_key": "result", "next_step_id": None, "max_turns": 5}],
+        )
+        await seed_orchestration(**orch)
+
+        async def crashing(**kwargs):
+            yield {"type": "_step_progress", "turn": 1, "context_text": "CTX-FROM-PARENT",
+                   "has_compacted": False, "browser_actions": [], "tools_used": []}
+            raise RuntimeError("parent died")
+
+        monkeypatch.setattr(re_mod, "run_agent_step", crashing)
+        server = types.SimpleNamespace(agent_sessions={}, memory_store=None, tool_router={})
+        engine = OrchestrationEngine(Orchestration.model_validate(orch), server)
+        events = [ev async for ev in engine.run("go", run_id="run_cross_mid")]
+        assert any(e.get("type") == "step_error" for e in events)
+
+        child = _in_another_process("run_cross_mid", child=_CHILD_FAILED)
+
+        assert child["resume_state"]["context_text"] == "CTX-FROM-PARENT"
+        assert child["status"] == "completed"
+        assert child["step_progress"] == {}                       # cleaned up after success
+        assert "_step_progress_s1" not in child["shared_state"]
+        assert child["shared_state"]["result"] == "done after crossing"
