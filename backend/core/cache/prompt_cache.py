@@ -10,68 +10,58 @@ Caching pricing is asymmetric and provider-specific:
              Reads ~0.25x base input. Minimum TTL: 5 min.
 - Bedrock:   Anthropic-on-Bedrock supports `cachePoint` content blocks in Converse.
 
+Every one of these is a PREFIX cache, checked in the order tools -> system ->
+messages. So the layout the engine sends is: a stable system prompt, then the
+append-only transcript as one text block per turn, then whatever changes every
+turn (date, turn budget, task list) as the final block. `core.tools` builds the
+first and last of those as two separate strings — they are never concatenated,
+so nothing in a user's prompt can move the boundary.
+
 Caching is gated by:
 1. global settings.prompt_cache_enabled
-2. system prompt length (Anthropic minimum ~1024 tokens for Sonnet/Opus,
-   ~2048 for Haiku; we use a conservative 4000-char floor).
+2. prefix length. Anthropic's minimum cacheable prefix is 512 tokens on Opus 5,
+   1024 on Opus 4.8 / Sonnet 5 / 4.6 / 4.5, 2048 on Opus 4.7 and 4096 on Opus
+   4.6 / 4.5 and Haiku 4.5. Under the minimum a marker is silently ignored and
+   nothing is charged, so the conservative 4000-char floor below costs nothing
+   when wrong — it only avoids decorating payloads that cannot be cached.
 
 When unsure or when a provider isn't supported, these helpers no-op so the
 caller's payload is unchanged.
 """
 from typing import Any
 
-# Anthropic charges for cache writes; only worth it when the prefix is meaningful.
-# 4000 chars ≈ 1000 tokens — under Anthropic's minimum, the cache_control marker
-# is silently ignored, so this floor avoids paying for ineligible writes.
+# 4000 chars ≈ 1000 tokens — around the floor for the models most runs use.
 MIN_CACHEABLE_CHARS = 4000
-
-# Separator emitted by core.tools.build_system_prompt between the stable section
-# (cacheable) and the volatile section (turn budget, current time, RAG context).
-# Splitting here keeps the cache prefix byte-stable across turns.
-VOLATILE_SEPARATOR = "\n---\n"
 
 
 def is_cacheable_system(system: str | None) -> bool:
     return bool(system) and len(system) >= MIN_CACHEABLE_CHARS
 
 
-def split_stable_volatile(system: str | None) -> tuple[str, str]:
-    """Return (stable_prefix, volatile_suffix). Empty suffix when no separator."""
-    if not system:
-        return "", ""
-    idx = system.find(VOLATILE_SEPARATOR)
-    if idx < 0:
-        return system, ""
-    return system[:idx], system[idx:]
+def is_cacheable_prefix(chars: int) -> bool:
+    """Whether a prefix of `chars` characters is worth a cache marker."""
+    return chars >= MIN_CACHEABLE_CHARS
 
 
 # ── Anthropic ────────────────────────────────────────────────────────────────
 
 def decorate_anthropic_kwargs(kwargs: dict, system: str | None) -> dict:
-    """Mutate `kwargs` so the system prompt + tool block become cache breakpoints.
+    """Mark the system prompt and the tools array as cache breakpoints.
 
-    Anthropic supports up to 4 cache_control markers per request; we use 2:
-      - end of stable section of system prompt (1 marker)
-      - end of tools array (1 marker)
-
-    The system prompt is split on the VOLATILE_SEPARATOR ("\\n---\\n"). The
-    stable prefix is marked as cacheable; the volatile suffix (turn budget,
-    current time, RAG context) goes into a second uncached text block so
-    cache reads stay valid across turns even when those values change.
+    Anthropic allows four `cache_control` markers per request. This uses two —
+    the whole system block and the last tool definition — and
+    `build_anthropic_user_content` uses a third on the conversation. The system
+    prompt is stable by construction (see `core.tools.build_system_prompt`), so
+    it is one block; there is no longer a volatile suffix to carve off.
     """
     if not is_cacheable_system(system):
         return kwargs
 
-    stable, volatile = split_stable_volatile(str(system))
-
-    blocks: list[dict] = [{
+    kwargs["system"] = [{
         "type": "text",
-        "text": stable,
+        "text": str(system),
         "cache_control": {"type": "ephemeral"},
     }]
-    if volatile:
-        blocks.append({"type": "text", "text": volatile})
-    kwargs["system"] = blocks
 
     # Mark the last tool definition so the whole tools array is part of the prefix.
     tools = kwargs.get("tools")
@@ -81,6 +71,32 @@ def decorate_anthropic_kwargs(kwargs: dict, system: str | None) -> dict:
         kwargs["tools"] = tools[:-1] + [last]
 
     return kwargs
+
+
+def build_anthropic_user_content(
+    prompt_blocks: list[str],
+    volatile_tail: str | None,
+    *,
+    prefix_chars: int,
+) -> list[dict]:
+    """The last user message as content blocks: one per transcript turn, the
+    cache marker on the last of them, then the volatile tail unmarked.
+
+    `prefix_chars` is everything that precedes the marker — system, tools and
+    the transcript itself — because the minimum is on the cumulative prefix,
+    not on the system prompt. A short agent prompt in front of a long
+    transcript is still worth caching.
+
+    Next turn the transcript has one more block and the marker moves with it;
+    Anthropic looks back ~20 block positions for the previous entry, which is
+    why the split is one block per TURN and not per tool observation.
+    """
+    content: list[dict] = [{"type": "text", "text": b} for b in prompt_blocks if b]
+    if content and is_cacheable_prefix(prefix_chars):
+        content[-1]["cache_control"] = {"type": "ephemeral"}
+    if volatile_tail:
+        content.append({"type": "text", "text": volatile_tail})
+    return content
 
 
 def extract_anthropic_cache_tokens(response) -> tuple[int, int]:

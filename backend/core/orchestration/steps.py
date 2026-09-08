@@ -647,12 +647,15 @@ class EvaluatorStepExecutor:
         if step.evaluator_prompt:
             evaluator_instructions = f"EVALUATOR INSTRUCTIONS:\n{step.evaluator_prompt}\n\n"
 
+        # Date/time goes last: every provider's prompt cache is a prefix cache,
+        # and a minute-granular timestamp in the first 200 chars defeats it for
+        # the whole message. The routing instruction stays adjacent to it.
         prompt = (
             f"{evaluator_instructions}"
-            f"{_datetime_context()}\n"
             f"Based on the context below, decide which route to take.\n\n"
             f"CONTEXT:\n{context_block}\n\n"
             f"AVAILABLE ROUTES:\n{routes_text}\n\n"
+            f"{_datetime_context()}\n"
             f"Respond with ONLY a JSON object: {{\"tool\": \"route_<label>\", \"arguments\": {{\"reasoning\": \"your reason\"}}}}\n"
             f"Valid labels: {labels}"
         )

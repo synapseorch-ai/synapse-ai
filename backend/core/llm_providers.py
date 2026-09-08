@@ -882,7 +882,8 @@ def _extract_anthropic_response(response) -> str:
     return "Error: Anthropic returned no usable content."
 
 
-async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
+                         prompt_blocks: list[str] | None = None, volatile_tail: str | None = None):
     """Call Anthropic using the official SDK with native tool calling.
 
     Args:
@@ -895,20 +896,44 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
         prompt_cache: When True (default), mark the system prompt + tools as a cache
                       breakpoint via cache_control. Adds ~25% to write cost but yields
                       ~90% off subsequent reads.
+        prompt_blocks: The last user message as one text block per transcript turn.
+                      When given, the last block carries a third cache marker and
+                      `volatile_tail` (per-turn text) follows it unmarked, so the
+                      transcript itself is a cache hit turn over turn. The joined
+                      text of blocks + tail is what `messages[-1]["content"]`
+                      already holds; this is the same text, structured.
 
     Returns:
         (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
         — `input_tokens` is the cache-miss prompt tokens only; cache reads/writes are
         separated so usage_tracker can apply the correct pricing tier.
     """
+    # The last user message as content blocks: transcript turns, the cache
+    # marker on the last of them, then the volatile tail. Built before the
+    # images so an image-bearing first turn prepends to the block list rather
+    # than stringifying it.
+    if prompt_blocks and messages and messages[-1].get("role") == "user":
+        from core.cache.prompt_cache import build_anthropic_user_content
+        tools_chars = len(str(tools)) if tools else 0
+        prefix_chars = len(str(system or "")) + tools_chars + sum(len(b) for b in prompt_blocks)
+        messages = list(messages)
+        messages[-1] = dict(messages[-1])
+        messages[-1]["content"] = build_anthropic_user_content(
+            prompt_blocks, volatile_tail,
+            prefix_chars=prefix_chars if prompt_cache else 0,
+        )
+
     # Inject images into the last user message
     if images:
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "user":
                 messages[i] = dict(messages[i])  # shallow copy
-                messages[i]["content"] = _build_anthropic_image_content(
-                    str(messages[i].get("content", "")), images
-                )
+                existing = messages[i].get("content", "")
+                if isinstance(existing, list):
+                    image_blocks = _build_anthropic_image_content("", images)
+                    messages[i]["content"] = [b for b in image_blocks if b.get("type") == "image"] + existing
+                else:
+                    messages[i]["content"] = _build_anthropic_image_content(str(existing), images)
                 break
     import anthropic
 
@@ -2293,6 +2318,12 @@ async def generate_response(
     cache_response_ttl: int = 3600,
     cache_response_step_id: str | None = None,
     cache_response_threshold: float = 0.95,
+    # Prompt-cache layout — see core.cache.prompt_cache. Additive: `prompt_msg`
+    # remains the full text every provider, the char counter and the response
+    # cache see; these are the same text structured for a provider that can
+    # mark a breakpoint inside the conversation. Only Anthropic reads them.
+    prompt_blocks: list[str] | None = None,
+    volatile_tail: str | None = None,
 ):
     """
     Unified LLM dispatch function. Routes to the appropriate provider
@@ -2392,6 +2423,8 @@ async def generate_response(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    prompt_blocks=prompt_blocks,
+                    volatile_tail=volatile_tail,
                 )
             elif current_model.startswith("gemini") or current_model.startswith("gemma") or current_model.startswith("lyria"):
                 result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_gemini(

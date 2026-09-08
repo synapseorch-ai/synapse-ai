@@ -306,20 +306,19 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
 
 
 def build_system_prompt(agent_system_template, tools_json, session_id, session_state_getter, memory_store, agent_id=None, turns_remaining=None, max_turns=None, inject_tools=True):
-    """
-    Construct the final system prompt with tool info, date/time, session context, 
-    and recent tool outputs injected.
-    
-    Args:
-        agent_system_template: The base system prompt (tools/datetime are appended automatically)
-        tools_json: String representation of available tools
-        session_id: Current session ID
-        session_state_getter: Function that returns session state dict for a session_id
-        memory_store: Memory store instance (or None)
-        agent_id: Optional agent ID for scoping memory queries
-    
-    Returns:
-        str: The fully constructed system prompt
+    """The STABLE system prompt: identical on every turn of a step.
+
+    Identity, reasoning protocol, tools (for providers without native tool
+    calling), capabilities, example, workspace context — nothing that changes
+    per turn. What used to follow a ``\n---\n`` separator (date/time, turn
+    budget, RAG context) is built by `build_volatile_tail` and sent at the end
+    of the user turn instead. Splitting one string on a separator was the
+    previous design; it broke the moment a linked DB or repo — or a user's own
+    markdown rule — put ``---`` inside the stable text, which is why the two
+    now never share a string.
+
+    `turns_remaining` and `max_turns` are accepted for callers that still pass
+    them and ignored; `memory_store` and `agent_id` were never read.
     """
     # Determine if code embedding is enabled (for conditional tool description)
     _embed_code = load_settings().get("embed_code", False)
@@ -336,12 +335,6 @@ def build_system_prompt(agent_system_template, tools_json, session_id, session_s
         " (the semantic outline). Use after finding a relevant file."
     ) if _embed_code else ""
 
-    # Get current date/time for context injection
-    now = datetime.datetime.now(zoneinfo.ZoneInfo("UTC"))
-    current_date = now.strftime("%B %d, %Y")
-    current_time = now.strftime("%I:%M %p")
-    timezone = "UTC"
-
     # ── Resolve Google Workspace email (used later in the stable section) ──
     # A plain setting, read off the synchronous snapshot. This function is sync
     # and on the per-turn path, and all it has ever wanted from the Google
@@ -355,54 +348,6 @@ def build_system_prompt(agent_system_template, tools_json, session_id, session_s
         google_email = load_settings().get(EMAIL_SETTING) or None
     except Exception as e:
         print(f"DEBUG: Error reading Google Workspace email: {e}")
-
-    # ── Resolve RAG context (volatile — appended after the separator) ──
-    rag_context_block = ""
-    try:
-        ss = session_state_getter(session_id)
-        last_report = ss.get("last_report_context")
-        if last_report and (time.time() - last_report.get("timestamp", 0) < 600):
-            rag_context_block = f"""
-### ACTIVE RAG CONTEXT (AUTOMATICALLY INJECTED)
-You have {last_report.get('row_count', 'some')} items of '{last_report.get('type', 'data')}' embedded in memory (generated {int(time.time() - last_report.get('timestamp', 0))}s ago).
-
-**HOW TO ANSWER QUESTIONS ABOUT THIS DATA:**
-1. **AGGREGATION QUESTIONS** (totals, averages, counts, min/max): If a SUMMARY with `numeric_aggregations` is in the tool output above, use those pre-computed values directly. They are accurate.
-2. **SPECIFIC LOOKUPS** (e.g., "email from John", "meeting tomorrow", "flight details"): Call `search_embedded_report` with a descriptive query. The full data is embedded in RAG memory.
-3. **PATTERN/TREND QUESTIONS** (e.g., "frequent topics", "common contacts"): Call `search_embedded_report` with the pattern description.
-4. **DO NOT RE-RUN TOOL FOR EXISTING DATA:** The data is already here. Only call tools if the user explicitly asks for NEW/DIFFERENT data (e.g., "refresh", "different date", "different query").
-"""
-            print(f"DEBUG: 💉 Injected RAG context into system prompt")
-    except Exception as e:
-        print(f"DEBUG: Error resolving RAG context: {e}")
-
-    # ── Resolve turn-budget block (volatile — appended after the separator) ──
-    turns_block = ""
-    if turns_remaining is not None and max_turns is not None:
-        if turns_remaining <= 0:
-            turns_block = f"""
-### ⚠️ TURN LIMIT REACHED — FINAL RESPONSE REQUIRED
-You have used all {max_turns} available turns. You MUST stop calling tools and provide your **final answer now** based on everything gathered so far.
-- Summarize what you did and what you found.
-- If the task is incomplete, clearly state what could not be completed and why.
-- Do NOT call any more tools.
-"""
-        elif turns_remaining == 1:
-            turns_block = f"""
-### ⚠️ LAST TURN — RESPOND NOW
-This is your **final turn** (Turn {max_turns}/{max_turns}). You MUST provide your final answer now. Do NOT call any more tools.
-- If you have enough information, give the complete answer.
-- If you don't have enough information, say so clearly and summarize what you were able to find.
-- Provide a brief summary of all steps taken so far.
-"""
-        else:
-            turns_block = f"""
-### TURN BUDGET
-You have **{turns_remaining} turn(s) remaining** out of {max_turns} total.
-- Plan your tool calls efficiently — prioritize the most impactful steps first.
-- If you cannot complete the task within the remaining turns, provide a partial answer and summarize what was accomplished so far.
-- On the last turn you MUST answer in plain text (no tool calls), even if the task is not fully complete.
-"""
 
     # ── Tools section (only for providers without native tool calling) ──
     if inject_tools:
@@ -514,21 +459,81 @@ A direct answer in plain markdown, citing the specific value(s) from the tool re
         + google_block
     )
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # VOLATILE SECTION — changes every turn (datetime, turn budget) or every
-    # ~10 minutes (RAG context). Placed after a separator so the cache prefix
-    # boundary is unambiguous.
-    # ──────────────────────────────────────────────────────────────────────────
-    volatile_section = "\n---\n"
+    return stable_section
+
+
+def build_volatile_tail(session_id, session_state_getter, turns_remaining=None, max_turns=None) -> str:
+    """Everything the model must see fresh each turn: current date/time, the
+    turn budget, and any active RAG context.
+
+    Sent at the END of the user turn rather than in the system prompt. Every
+    provider's prompt cache is a prefix cache — tools, then system, then the
+    conversation — so per-turn text anywhere before the transcript invalidates
+    the transcript's cache entry on every call. Placed last, it is the only
+    thing that misses.
+    """
+    now = datetime.datetime.now(zoneinfo.ZoneInfo("UTC"))
+    current_date = now.strftime("%B %d, %Y")
+    current_time = now.strftime("%I:%M %p")
+    timezone = "UTC"
+
+    # ── Resolve RAG context (volatile) ──
+    rag_context_block = ""
+    try:
+        ss = session_state_getter(session_id)
+        last_report = ss.get("last_report_context")
+        if last_report and (time.time() - last_report.get("timestamp", 0) < 600):
+            rag_context_block = f"""
+### ACTIVE RAG CONTEXT (AUTOMATICALLY INJECTED)
+You have {last_report.get('row_count', 'some')} items of '{last_report.get('type', 'data')}' embedded in memory (generated {int(time.time() - last_report.get('timestamp', 0))}s ago).
+
+**HOW TO ANSWER QUESTIONS ABOUT THIS DATA:**
+1. **AGGREGATION QUESTIONS** (totals, averages, counts, min/max): If a SUMMARY with `numeric_aggregations` is in the tool output above, use those pre-computed values directly. They are accurate.
+2. **SPECIFIC LOOKUPS** (e.g., "email from John", "meeting tomorrow", "flight details"): Call `search_embedded_report` with a descriptive query. The full data is embedded in RAG memory.
+3. **PATTERN/TREND QUESTIONS** (e.g., "frequent topics", "common contacts"): Call `search_embedded_report` with the pattern description.
+4. **DO NOT RE-RUN TOOL FOR EXISTING DATA:** The data is already here. Only call tools if the user explicitly asks for NEW/DIFFERENT data (e.g., "refresh", "different date", "different query").
+"""
+            print(f"DEBUG: 💉 Injected RAG context into system prompt")
+    except Exception as e:
+        print(f"DEBUG: Error resolving RAG context: {e}")
+
+    # ── Resolve turn-budget block (volatile) ──
+    turns_block = ""
+    if turns_remaining is not None and max_turns is not None:
+        if turns_remaining <= 0:
+            turns_block = f"""
+### ⚠️ TURN LIMIT REACHED — FINAL RESPONSE REQUIRED
+You have used all {max_turns} available turns. You MUST stop calling tools and provide your **final answer now** based on everything gathered so far.
+- Summarize what you did and what you found.
+- If the task is incomplete, clearly state what could not be completed and why.
+- Do NOT call any more tools.
+"""
+        elif turns_remaining == 1:
+            turns_block = f"""
+### ⚠️ LAST TURN — RESPOND NOW
+This is your **final turn** (Turn {max_turns}/{max_turns}). You MUST provide your final answer now. Do NOT call any more tools.
+- If you have enough information, give the complete answer.
+- If you don't have enough information, say so clearly and summarize what you were able to find.
+- Provide a brief summary of all steps taken so far.
+"""
+        else:
+            turns_block = f"""
+### TURN BUDGET
+You have **{turns_remaining} turn(s) remaining** out of {max_turns} total.
+- Plan your tool calls efficiently — prioritize the most impactful steps first.
+- If you cannot complete the task within the remaining turns, provide a partial answer and summarize what was accomplished so far.
+- On the last turn you MUST answer in plain text (no tool calls), even if the task is not fully complete.
+"""
+
+    tail = ""
     if rag_context_block:
-        volatile_section += rag_context_block
-    volatile_section += f"""
+        tail += rag_context_block
+    tail += f"""
 ### CURRENT DATE & TIME CONTEXT
 **Current Date:** {current_date}
 **Current Time:** {current_time}
 **Timezone:** {timezone}
 """
     if turns_block:
-        volatile_section += turns_block
-
-    return stable_section + volatile_section
+        tail += turns_block
+    return tail.strip("\n")

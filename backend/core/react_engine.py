@@ -21,7 +21,7 @@ from core.session import (
     _save_conversation_turn,
 )
 from core.llm_providers import generate_response as llm_generate_response
-from core.tools import aggregate_all_tools, build_system_prompt, DEFAULT_TOOLS_BY_TYPE
+from core.tools import aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 import anyio as _anyio
 import re as _re
 from datetime import timedelta
@@ -271,6 +271,45 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
 def parse_all_tool_calls(llm_output: str) -> list[dict]:
     """Extract ALL tool-call JSON objects from one LLM response, in order."""
     return _scan_tool_calls(llm_output, stop_on_non_tool_json=False)
+
+
+_TURN_ACTION_BOUNDARY = _re.compile(r"(?=\n\[Turn \d+ — Action\])")
+
+
+def _transcript_blocks(text: str) -> list[str]:
+    """The transcript as one block per turn: the request, then each
+    `[Turn N — Action]` with everything through the end of that turn.
+
+    A provider that can mark a cache breakpoint inside the conversation gets
+    these as separate content blocks; the marker sits on the last one, and the
+    next turn's request matches the previous entry because every earlier block
+    is byte-identical. The boundary is a pure lookahead, so
+    ``"".join(blocks) == text`` — the joined form is what every other provider
+    receives. Observations stay inside their turn's block: one LLM turn can
+    make many tool calls, and a block per observation could push a single turn
+    past the ~20-position lookback Anthropic uses to find the previous entry.
+    """
+    return [b for b in _TURN_ACTION_BOUNDARY.split(text) if b]
+
+
+def _render_browser_state(history: list[str], snapshot: tuple[str, str] | None) -> str:
+    """The browser action log and the latest page snapshot, for the volatile
+    tail of the user turn.
+
+    These used to be spliced into the middle of the transcript and re-appended
+    on every browser call — which rewrote the block carrying the cache marker,
+    so a browser-heavy step paid the cache write premium every turn and never
+    read. The transcript now only records that a snapshot was taken; the
+    snapshot itself lives here, where changing it costs nothing.
+    """
+    parts = []
+    if history:
+        parts.append("<<BROWSER_HISTORY>>\nPrevious browser actions (oldest→newest):\n"
+                     + "\n".join(history) + "\n<</BROWSER_HISTORY>>")
+    if snapshot:
+        tool_name, raw = snapshot
+        parts.append(f"<<BROWSER_STATE>>\nTool '{tool_name}' Output (current page state): {raw}\n<</BROWSER_STATE>>")
+    return "\n".join(parts)
 
 
 def parse_tool_call(llm_output: str) -> tuple[dict | None, str | None]:
@@ -989,22 +1028,10 @@ async def run_agent_step(
         print(f"DEBUG: 🧠 memory enabled for agent '{agent_id_for_session}' "
               f"({len(_memory_index_text.splitlines())} index lines)", flush=True)
 
-    system_prompt_text = build_system_prompt(
-        agent_system_template, tools_json, session_id,
-        _get_session_state, server_module.memory_store, agent_id=agent_id_for_session,
-        turns_remaining=max_turns, max_turns=max_turns,
-        inject_tools=inject_tools_in_prompt,
-    )
 
-    # Inject orchestration-awareness block when called from an orchestration step
-    if system_prompt_extra:
-        system_prompt_text = system_prompt_text + "\n\n" + system_prompt_extra
-    # Iteration banner: prepended so it can't be drowned out by a long agent
-    # system prompt. Only set on re-runs (execution_number > 1).
-    if system_prompt_prefix:
-        system_prompt_text = system_prompt_prefix + "\n\n" + system_prompt_text
-
-    async def generate_response(prompt_msg, sys_prompt, tools=None, history_messages=None, memory_context_text="", images_for_turn=None, tool_name_for_log=None):
+    async def generate_response(prompt_msg, sys_prompt, tools=None, history_messages=None, memory_context_text="",
+                                images_for_turn=None, tool_name_for_log=None,
+                                prompt_blocks=None, volatile_tail=None):
         return await llm_generate_response(
             prompt_msg=prompt_msg,
             sys_prompt=sys_prompt,
@@ -1020,6 +1047,8 @@ async def run_agent_step(
             run_id=run_id,
             tool_name=tool_name_for_log,
             images=images_for_turn,
+            prompt_blocks=prompt_blocks,
+            volatile_tail=volatile_tail,
         )
 
     # ReAct loop state
@@ -1051,6 +1080,7 @@ async def run_agent_step(
     # <<BROWSER_STATE>> block so the agent retains full action history even
     # though the DOM snapshot is replaced on each navigation/click.
     browser_action_history: list[str] = []
+    _browser_snapshot: tuple[str, str] | None = None  # (tool_name, page state) — rendered in the tail
     _has_compacted = False  # anti-thrash: only compact once per run
 
     # ── Mid-node resume: seed the loop from a prior interrupted attempt ──────
@@ -1103,44 +1133,52 @@ async def run_agent_step(
 
             yield {"type": "thinking", "message": "Analyzing your request..."}
 
-            # Rebuild system prompt each turn so turns_remaining is always accurate
             turns_remaining = max_turns - turn  # after this turn starts, turns_remaining decreases
+
+            # ── Prompt layout for prefix caching ─────────────────────────────
+            # Every provider caches by prefix, in the order tools → system →
+            # conversation. So the system prompt holds only what is constant
+            # for this step — the agent's prompt, the orchestration graph and
+            # the iteration banner — and everything that changes per turn goes
+            # in a tail block at the END of the user message, after the
+            # append-only transcript. The transcript then hits the cache turn
+            # over turn; only the tail is re-read.
             active_sys_prompt = build_system_prompt(
                 agent_system_template, tools_json, session_id,
                 _get_session_state, server_module.memory_store, agent_id=agent_id_for_session,
-                turns_remaining=turns_remaining, max_turns=max_turns,
                 inject_tools=inject_tools_in_prompt,
             )
-            # Re-inject orchestration context (system_prompt_extra) on every turn.
-            # This block is built once before the loop and must survive every
-            # rebuild of active_sys_prompt so the agent never loses orchestration
-            # step context, shared state, or turn-budget instructions.
             if system_prompt_extra:
                 active_sys_prompt = active_sys_prompt + "\n\n" + system_prompt_extra
-            # The run's task list rides the system prompt, rebuilt every turn so
-            # it is always current — turn 0 included, where the plain user
-            # message (not the accumulated context) is the prompt.
+            # Iteration banner: prepended so it can't be drowned out by a long
+            # agent system prompt. Constant within a step, so it costs nothing
+            # here; only set on re-runs (execution_number > 1).
+            if system_prompt_prefix:
+                active_sys_prompt = system_prompt_prefix + "\n\n" + active_sys_prompt
+
+            tail_parts: list[str] = []
+            # The run's task list, rebuilt every turn so it is always current.
             if _task_tool_enabled and _tasks:
-                active_sys_prompt = (
-                    active_sys_prompt
-                    + "\n\nCurrent task list for this run (keep statuses true with "
-                    + f"{TASK_TOOL_NAME} as you work):\n{render_tasks(_tasks)}"
+                tail_parts.append(
+                    "Current task list for this run (keep statuses true with "
+                    f"{TASK_TOOL_NAME} as you work):\n{render_tasks(_tasks)}"
                 )
             # The memory index is the one eager piece of a memory-enabled
             # agent's memory; it refreshes in place after remember/forget.
             if _memory_enabled:
-                active_sys_prompt = active_sys_prompt + "\n\n" + render_index_block(_memory_index_text)
-            if system_prompt_prefix:
-                active_sys_prompt = system_prompt_prefix + "\n\n" + active_sys_prompt
+                tail_parts.append(render_index_block(_memory_index_text))
+            if browser_action_history or _browser_snapshot:
+                tail_parts.append(_render_browser_state(browser_action_history, _browser_snapshot))
+            tail_parts.append(build_volatile_tail(session_id, _get_session_state, turns_remaining, max_turns))
+            volatile_tail = "\n\n".join(part for part in tail_parts if part)
 
-            # Determine prompt. A mid-step resume always continues from the
-            # seeded context (the original user message is already inside it).
-            if turn == 0 and not _resumed_mid_step:
-                active_prompt = user_message
-                active_history = recent_history_messages
-            else:
-                active_prompt = current_context_text
-                active_history = []
+            # The prompt is the transcript on every turn, the first included:
+            # turn 0 used to send the bare message and turn 1 the framed one,
+            # so the first block never matched its own successor. History rides
+            # along on turn 0 only; a mid-step resume continues from the seeded
+            # context (the original message is already inside it).
+            active_prompt = current_context_text
+            active_history = recent_history_messages if (turn == 0 and not _resumed_mid_step) else []
 
             # Auto-compact: summarise accumulated context when it exceeds the threshold.
             # Gated on turn > 0 (nothing to compact on the first turn) and
@@ -1174,12 +1212,16 @@ async def run_agent_step(
                     }
 
             # Safety guard: truncate if too long
-            total_prompt_chars = len(active_prompt) + len(active_sys_prompt) + len(memory_context)
-            print(f"DEBUG: 📊 Context size — prompt: {len(active_prompt)} | system: {len(active_sys_prompt)} | memory: {len(memory_context)} | total: {total_prompt_chars} chars")
+            total_prompt_chars = len(active_prompt) + len(volatile_tail) + len(active_sys_prompt) + len(memory_context)
+            print(f"DEBUG: 📊 Context size — prompt: {len(active_prompt)} | tail: {len(volatile_tail)} | system: {len(active_sys_prompt)} | memory: {len(memory_context)} | total: {total_prompt_chars} chars")
             if total_prompt_chars > MAX_PROMPT_CHARS:
                 overflow = total_prompt_chars - MAX_PROMPT_CHARS
                 active_prompt = active_prompt[: len(active_prompt) - overflow]
                 print(f"DEBUG: ⚠️ Truncated prompt by {overflow} chars")
+            # Blocks are derived from the (possibly truncated) transcript so
+            # the joined text, the blocks and the log all agree.
+            prompt_blocks = _transcript_blocks(active_prompt)
+            full_prompt = active_prompt + ("\n\n" + volatile_tail if volatile_tail else "")
 
             # Emit per-turn LLM call context to loggers before invoking the model
             yield {
@@ -1191,7 +1233,9 @@ async def run_agent_step(
                 "memory_chars": len(memory_context),
                 "history_turns": len(active_history),
                 "total_chars": total_prompt_chars,
-                "prompt": active_prompt,
+                "tail_chars": len(volatile_tail),
+                "transcript_blocks": len(prompt_blocks),
+                "prompt": full_prompt,
                 "system_prompt": active_sys_prompt,
             }
 
@@ -1200,11 +1244,12 @@ async def run_agent_step(
             _llm_start = time.time()
             try:
                 llm_output = await generate_response(
-                    active_prompt, active_sys_prompt,
+                    full_prompt, active_sys_prompt,
                     tools=ollama_tools, history_messages=active_history,
                     memory_context_text=memory_context,
                     images_for_turn=images if turn == 0 else None,  # images only on first turn
                     tool_name_for_log=last_tool_logged,
+                    prompt_blocks=prompt_blocks, volatile_tail=volatile_tail,
                 )
             except Exception as llm_err:
                 _llm_duration = round(time.time() - _llm_start, 1)
@@ -1843,42 +1888,23 @@ async def run_agent_step(
 
                     if _is_browser_tool(tool_name):
                         # Browser snapshots go stale on every navigation/click.
-                        # Keep a compact action history log + only the latest DOM snapshot.
-                        BROWSER_MARKER = "\n<<BROWSER_STATE>>\n"
-                        BROWSER_END = "\n<</BROWSER_STATE>>\n"
-                        BROWSER_HISTORY_MARKER = "\n<<BROWSER_HISTORY>>\n"
-                        BROWSER_HISTORY_END = "\n<</BROWSER_HISTORY>>\n"
-
-                        # Record a one-line summary of this browser action in the history log
+                        # A page snapshot is only useful this turn. It goes in the
+                        # volatile tail of the user message (see
+                        # _render_browser_state), and the transcript records only
+                        # that it happened — so earlier blocks never change and
+                        # the transcript stays a cache hit.
                         args_summary = ", ".join(f"{k}={str(v)[:80]}" for k, v in tool_args.items())
                         snapshot_preview = raw_output[:200].replace("\n", " ")
                         browser_action_history.append(
                             f"[Step {turn + 1}] {tool_name}({args_summary}) → {snapshot_preview}..."
                         )
-
-                        # Remove previous browser history block if present
-                        bhstart = current_context_text.find(BROWSER_HISTORY_MARKER)
-                        if bhstart != -1:
-                            bhend = current_context_text.find(BROWSER_HISTORY_END, bhstart)
-                            if bhend != -1:
-                                current_context_text = current_context_text[:bhstart] + current_context_text[bhend + len(BROWSER_HISTORY_END):]
-
-                        # Remove previous live browser snapshot block if present
-                        bstart = current_context_text.find(BROWSER_MARKER)
-                        if bstart != -1:
-                            bend = current_context_text.find(BROWSER_END, bstart)
-                            if bend != -1:
-                                current_context_text = current_context_text[:bstart] + current_context_text[bend + len(BROWSER_END):]
-
-                        # Append updated history log + latest snapshot
-                        history_text = "\n".join(browser_action_history)
+                        _browser_snapshot = (tool_name, raw_output)
                         current_context_text += (
-                            f"{BROWSER_HISTORY_MARKER}Previous browser actions (oldest→newest):\n"
-                            f"{history_text}"
-                            f"{BROWSER_HISTORY_END}"
+                            f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned a page snapshot "
+                            f"({len(raw_output)} chars). The current page state is under CURRENT BROWSER STATE "
+                            f"at the end of this message.\n"
                         )
-                        current_context_text += f"{BROWSER_MARKER}Tool '{tool_name}' Output (current page state): {raw_output}{BROWSER_END}"
-                        print(f"DEBUG: 📤 Tool Result ({tool_name}): [browser, {len(raw_output)} chars in context, history={len(browser_action_history)} actions]")
+                        print(f"DEBUG: 📤 Tool Result ({tool_name}): [browser, {len(raw_output)} chars in tail, history={len(browser_action_history)} actions]")
                     else:
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                         print(f"DEBUG: 📤 Tool Result ({tool_name}): {raw_output}")

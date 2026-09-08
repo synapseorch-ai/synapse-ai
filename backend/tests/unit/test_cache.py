@@ -66,8 +66,8 @@ def test_prompt_cache_anthropic_decoration_below_threshold():
 
 
 def test_prompt_cache_anthropic_decoration_above_threshold():
-    from core.cache.prompt_cache import decorate_anthropic_kwargs, VOLATILE_SEPARATOR
-    system = "X" * 5000 + VOLATILE_SEPARATOR + "current time: now"
+    from core.cache.prompt_cache import decorate_anthropic_kwargs
+    system = "X" * 5000
     tools = [
         {"name": "tool_a", "input_schema": {}},
         {"name": "tool_b", "input_schema": {}},
@@ -75,22 +75,50 @@ def test_prompt_cache_anthropic_decoration_above_threshold():
     kwargs = {"messages": [], "tools": tools}
     out = decorate_anthropic_kwargs(kwargs, system)
 
-    # System is a list of blocks; stable prefix has cache_control, volatile suffix does not.
-    assert isinstance(out["system"], list)
-    assert out["system"][0]["cache_control"] == {"type": "ephemeral"}
-    assert "current time" in out["system"][1]["text"]
-    assert "cache_control" not in out["system"][1]
+    # The whole system prompt is one cached block: it is stable by construction
+    # now, so there is no volatile suffix to leave unmarked.
+    assert out["system"] == [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
     # Tools: only the LAST tool gets cache_control (whole array becomes prefix).
     assert "cache_control" not in out["tools"][0]
     assert out["tools"][1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in tools[1]  # caller's list untouched
 
 
-def test_prompt_cache_split_no_separator():
-    from core.cache.prompt_cache import split_stable_volatile
-    stable, volatile = split_stable_volatile("just a flat prompt")
-    assert stable == "just a flat prompt"
-    assert volatile == ""
+def test_prompt_cache_markdown_rule_in_system_is_not_a_boundary():
+    """A linked DB, a linked repo, or a user's own `---` used to split the
+    system prompt at the first one, leaving everything after it uncached."""
+    from core.cache.prompt_cache import decorate_anthropic_kwargs
+    system = "A" * 3000 + "\n---\n" + "B" * 3000
+    out = decorate_anthropic_kwargs({"messages": []}, system)
+    assert len(out["system"]) == 1
+    assert out["system"][0]["text"] == system
+
+
+def test_prompt_cache_user_content_marks_last_transcript_block_only():
+    from core.cache.prompt_cache import build_anthropic_user_content
+    blocks = ["User Request: go\n", "\n[Turn 1 — Action]\n{...}\n", "\n[Turn 2 — Action]\n{...}\n"]
+    out = build_anthropic_user_content(blocks, "### TURN BUDGET\n3 left", prefix_chars=10_000)
+    assert [b["text"] for b in out] == blocks + ["### TURN BUDGET\n3 left"]
+    marked = [i for i, b in enumerate(out) if "cache_control" in b]
+    assert marked == [2]           # the last transcript block, never the tail
+
+
+def test_prompt_cache_user_content_gate_is_the_cumulative_prefix():
+    """A short agent prompt in front of a long transcript is still worth
+    caching; the floor applies to everything before the marker, not to the
+    system prompt alone."""
+    from core.cache.prompt_cache import build_anthropic_user_content
+    blocks = ["short", "\n[Turn 1 — Action]\n" + "x" * 5000]
+    assert "cache_control" in build_anthropic_user_content(blocks, None, prefix_chars=5_100)[-1]
+    assert "cache_control" not in build_anthropic_user_content(blocks, None, prefix_chars=100)[-1]
+
+
+def test_prompt_cache_user_content_without_tail_has_no_trailing_block():
+    from core.cache.prompt_cache import build_anthropic_user_content
+    out = build_anthropic_user_content(["a", "b"], None, prefix_chars=0)
+    assert [b["text"] for b in out] == ["a", "b"]
+    assert not any("cache_control" in b for b in out)
 
 
 def test_prompt_cache_extract_openai_cache_tokens():

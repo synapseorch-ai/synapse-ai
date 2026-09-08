@@ -445,6 +445,11 @@ async def get_usage_summary() -> dict:
                     "total_tokens": 0,
                     "context_chars": 0,
                     "estimated_cost": 0.0,
+                    # Prompt-cache reads per run are the one number that says
+                    # whether the engine's prompt layout is still cache-friendly.
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "estimated_savings": 0.0,
                     "models_used": set(),
                     "first_ts": r.get("timestamp"),
                     "last_ts": r.get("timestamp"),
@@ -457,6 +462,9 @@ async def get_usage_summary() -> dict:
             br["total_tokens"] += inp + out
             br["context_chars"] += ctx
             br["estimated_cost"] = round(br["estimated_cost"] + cost, 8)
+            br["cache_read_tokens"] += cache_r
+            br["cache_write_tokens"] += cache_w
+            br["estimated_savings"] = round(br["estimated_savings"] + savings, 8)
             br["models_used"].add(model)
             br["agents_used"].add(agent_id)
             br["last_ts"] = r.get("timestamp")
