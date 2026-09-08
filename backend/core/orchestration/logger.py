@@ -1,9 +1,18 @@
 """
 Plain-text debug logging for orchestration runs.
 Appends human-readable entries to a per-run .log file.
+
+Writes go through the journal's single writer thread (`core.orchestration
+.journal._executor`): one thread, so lines land in order; off the loop, so an
+open/write/close per line — this used to do all three, ~30 call sites per
+run — is not charged to the run that happens to be executing. `aclose` waits
+for the writer before publishing the finished log; `close` does the same for
+callers that cannot await.
 """
+import asyncio
 import json
 import time
+from concurrent.futures import Future
 from pathlib import Path
 
 #: Blob key prefix for finished logs. Tenant-scoped by the blob store itself —
@@ -86,6 +95,8 @@ class OrchestrationLogger:
         self.session_id = session_id
         self.path = _logs_dir() / f"{run_id}.log"
         self._start_time = time.time()
+        self._fh = None                 # writer-thread owned
+        self._pending: Future | None = None
 
         self._write(f"""
 {'='*80}
@@ -103,8 +114,26 @@ class OrchestrationLogger:
     # ── Core write ─────────────────────────────────────────────────
 
     def _write(self, text: str):
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(text)
+        from core.orchestration.journal import _executor
+
+        def guarded():
+            try:
+                if self._fh is None:
+                    self._fh = open(self.path, "a", encoding="utf-8")
+                self._fh.write(text)
+                self._fh.flush()
+            except Exception as e:  # noqa: BLE001 — never raise on the writer thread
+                print(f"WARNING: run log write failed for '{self.run_id}': {e}", flush=True)
+
+        self._pending = _executor().submit(guarded)
+
+    def _close_fh(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
 
     # ── Run lifecycle ──────────────────────────────────────────────
 
@@ -119,7 +148,24 @@ class OrchestrationLogger:
 {'='*80}
 """)
 
+    async def aclose(self) -> None:
+        """Wait for the writer, close the file, publish. For the engine."""
+        from core.orchestration.journal import _executor
+        if self._pending is not None:
+            await asyncio.get_running_loop().run_in_executor(_executor(), self._close_fh)
+            self._pending = None
+        self._publish()
+
     def close(self) -> None:
+        """`aclose` for a caller that cannot await: blocks until the writer has
+        landed every line, then publishes."""
+        from core.orchestration.journal import _executor
+        if self._pending is not None:
+            _executor().submit(self._close_fh).result()
+            self._pending = None
+        self._publish()
+
+    def _publish(self) -> None:
         """Publish the finished log to the blob store.
 
         One put() at the end rather than a write per line: put() replaces the

@@ -87,7 +87,13 @@ async def get_run_events(run_id: str, request: Request, after: int = 0, limit: i
     Standalone runs read the JSONL journal; V2/worker runs (no journal file)
     fall back to the Redis Stream the scale workers publish to.
     """
-    from core.orchestration.journal import FileRunJournal
+    from core.orchestration.journal import FileRunJournal, open_journal
+
+    # A run still being pumped may have lines queued for the writer thread;
+    # wait for them so the replay is complete up to the moment of the request.
+    live = open_journal(run_id)
+    if live is not None:
+        await live.drain()
 
     if FileRunJournal.exists(run_id) or run_id in _active_tasks:
         # Throwaway reader — only the pump registers journals (get_journal),
@@ -125,11 +131,14 @@ async def _stream_journal_sse(run_id: str, after_id: int):
     the stream when terminal and keeps it open when paused (the resume pump
     appends to the same journal/broker, so the tail just continues).
     """
-    from core.orchestration.journal import FileRunJournal, broker
+    from core.orchestration.journal import FileRunJournal, broker, open_journal
 
     journal = FileRunJournal(run_id)  # throwaway reader; pump owns the registry
     queue = broker.subscribe(run_id)
     try:
+        live = open_journal(run_id)
+        if live is not None:
+            await live.drain()  # subscribed already, so nothing falls between replay and tail
         last = after_id
         saw_terminal_end = False
         for entry in journal.read(after_id=last):

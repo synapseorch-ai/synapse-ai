@@ -18,7 +18,7 @@ import asyncio
 import inspect
 from typing import AsyncGenerator
 
-from core.orchestration.journal import broker, close_journal, get_journal
+from core.orchestration.journal import aclose_journal, broker, get_journal
 
 # Live in-process runs, keyed by run_id. The cancel endpoint cancels the task
 # to interrupt an in-progress await; the run-status endpoint consults it to
@@ -102,8 +102,11 @@ def spawn_engine_run(agen, run_id: str) -> tuple[asyncio.Task, asyncio.Queue]:
                 "type": "run_stream_end",
                 "paused": last_type == "human_input_required",
             })
-            close_journal(run_id)
+            # The run is over once its terminator is observed; closing the
+            # journal waits on the writer thread, and nothing that consults
+            # the registry should wait with it.
             _active_tasks.pop(run_id, None)
+            await aclose_journal(run_id)
             print(f"DEBUG SSE QUEUE: sentinel sent for '{run_id}', stream closing", flush=True)
             await queue.put(SENTINEL)
 

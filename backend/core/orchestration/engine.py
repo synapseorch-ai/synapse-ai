@@ -306,7 +306,7 @@ class OrchestrationEngine:
                                 if logger:
                                     logger.step_end(step.id, "paused")
                                     logger.run_end("paused")
-                                    logger.close()
+                                    await logger.aclose()
                                 # Break exits the async-for and then the
                                 # fail_after scope cleanly in this task.
                                 # The event is yielded below, outside the scope,
@@ -414,7 +414,7 @@ class OrchestrationEngine:
 
         if logger:
             logger.run_end(run.status)
-            logger.close()
+            await logger.aclose()
 
         final_output = self._build_final_response(run)
 
