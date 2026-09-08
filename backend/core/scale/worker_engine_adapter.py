@@ -22,6 +22,50 @@ from core.orchestration.engine import OrchestrationEngine
 from core.scale.pubsub import RunEventPublisher, is_cancelled, clear_cancellation
 
 
+import asyncio as _asyncio
+import contextlib as _contextlib
+import functools as _functools
+
+#: How often a running job looks for its cancel key. The engine also checks
+#: between steps; this is what reaches a step in progress.
+CANCEL_POLL_SECONDS = 2.0
+
+
+def _cancel_guarded(method):
+    """Run an engine-driving method under the cancel watcher.
+
+    A cancel used to be a Redis key the engine polled between steps, so a
+    run inside a twenty-minute agent step ignored it until the step returned.
+    The watcher cancels the task driving the engine — which is the ARQ job
+    task itself, since the adapter is awaited inline — the moment the key
+    appears. A cancel that is NOT ours (ARQ's own timeout or shutdown) is not
+    a request: it propagates, so the job is retried or abandoned as it always
+    was.
+
+    A decorator rather than an edit to each method: the two resume
+    implementations are compared at the source level by a test, and a wrapper
+    is transparent to `inspect.getsource`.
+    """
+    @_functools.wraps(method)
+    async def wrapper(self, *args, **kwargs):
+        try:
+            async with self._cancel_watch():
+                return await method(self, *args, **kwargs)
+        except _asyncio.CancelledError:
+            # We asked for this cancel, so we handle it — and the task must
+            # be told so: the outstanding cancellation count (3.11+) is what
+            # asyncio.timeout and the redis client's own read timeouts consult,
+            # and with it still raised every await in the handler below would
+            # be cancelled again.
+            task = _asyncio.current_task()
+            if task is not None and hasattr(task, "uncancel"):
+                task.uncancel()
+            if not await self._cancelled_by_request():
+                raise
+            return await self._finish_cancelled()
+    return wrapper
+
+
 class WorkerEngineAdapter:
     """Runs an OrchestrationEngine inside an ARQ worker job."""
 
@@ -45,6 +89,7 @@ class WorkerEngineAdapter:
         self._worker_id = worker_id
         self._job_id = job_id
 
+    @_cancel_guarded
     async def run(
         self,
         initial_input: str,
@@ -83,6 +128,7 @@ class WorkerEngineAdapter:
         await self._publisher.publish_done()
         return final_status
 
+    @_cancel_guarded
     async def resume(
         self,
         human_response: dict | str,
@@ -190,6 +236,7 @@ class WorkerEngineAdapter:
         await self._publisher.publish_done()
         return final_status
 
+    @_cancel_guarded
     async def resume_failed(self) -> str:
         """Resume a failed or cancelled run."""
         engine = self._build_engine()
@@ -213,6 +260,53 @@ class WorkerEngineAdapter:
         return final_status
 
     # ------------------------------------------------------------------
+
+    @_contextlib.asynccontextmanager
+    async def _cancel_watch(self):
+        """Poll for the cancel key and cancel the current task when it appears."""
+        driver = _asyncio.current_task()
+        stop = _asyncio.Event()
+
+        async def watch():
+            while not stop.is_set():
+                try:
+                    if await is_cancelled(self._redis, self._run_id):
+                        driver.cancel()
+                        return
+                except Exception:  # noqa: BLE001 — a Redis hiccup is not a cancel
+                    pass
+                with _contextlib.suppress(_asyncio.TimeoutError):
+                    await _asyncio.wait_for(stop.wait(), timeout=CANCEL_POLL_SECONDS)
+
+        watcher = _asyncio.create_task(watch())
+        try:
+            yield
+        finally:
+            stop.set()
+            watcher.cancel()
+            with _contextlib.suppress(BaseException):
+                await watcher
+
+    async def _cancelled_by_request(self) -> bool:
+        try:
+            return await is_cancelled(self._redis, self._run_id)
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _finish_cancelled(self) -> str:
+        """Record and announce a requested cancel the way the in-process pump does."""
+        try:
+            await self._publisher.publish({"type": "orchestration_error", "error": "Cancelled"})
+        except Exception:  # noqa: BLE001
+            pass
+        # keep_position: a cancelled run resumes from the step it was in,
+        # and its mid-step progress is already in its column.
+        await self._sync_final_state("cancelled", keep_position=True)
+        try:
+            await self._publisher.publish_done()
+        except Exception:  # noqa: BLE001
+            pass
+        return "cancelled"
 
     def _build_engine(self) -> OrchestrationEngine:
         redis = self._redis
@@ -248,8 +342,12 @@ class WorkerEngineAdapter:
         except Exception as e:
             print(f"[worker_engine_adapter] _sync_paused_state error: {e}", flush=True)
 
-    async def _sync_final_state(self, status: str = "completed") -> None:
-        """Persist the final run status, ended_at, worker attribution, and cost/tokens to Postgres."""
+    async def _sync_final_state(self, status: str = "completed", *, keep_position: bool = False) -> None:
+        """Persist the final run status, ended_at, worker attribution, and cost/tokens to Postgres.
+
+        `keep_position` leaves current_step_id alone — a cancelled run is
+        resumable from where it stopped, a finished one has nowhere to go.
+        """
         from datetime import datetime, timezone
         try:
             async with self._session_factory() as session:
@@ -259,8 +357,9 @@ class WorkerEngineAdapter:
                     "status": status,
                     "ended_at": datetime.now(timezone.utc),
                     "waiting_for_human": False,
-                    "current_step_id": None,
                 }
+                if not keep_position:
+                    values["current_step_id"] = None
                 if self._worker_id:
                     values["worker_id"] = self._worker_id
                     values["job_id"] = self._job_id

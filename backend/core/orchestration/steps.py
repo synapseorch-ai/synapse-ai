@@ -145,6 +145,7 @@ class AgentStepExecutor:
                 initial_tasks=[dict(t) for t in (run.tasks or [])],
                 preresolved=resolved,
                 global_variables=getattr(engine, "global_variables", None),
+                should_stop=getattr(engine, "cancel_hook", None),
             ):
                 if event.get("type") == "tasks_updated":
                     # Task state lives on the run, not in a tool's process

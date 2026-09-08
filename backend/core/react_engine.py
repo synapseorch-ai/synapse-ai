@@ -799,6 +799,7 @@ async def run_agent_step(
     # ── per-run resolution cache (used by the orchestration engine) ───────────
     preresolved=None,                     # core.orchestration.resolved.ResolvedAgent; skips the store reads
     global_variables: dict | None = None, # the tenant's variables, when the caller already holds them
+    should_stop=None,                     # async () -> bool; checked between turns, a True ends the step as cancelled
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1147,6 +1148,15 @@ async def run_agent_step(
     async with httpx.AsyncClient() as client:
         for turn in range(start_turn, max_turns):
             print(f"\n{'#'*60}\n### TURN {turn + 1}/{max_turns} ###\n{'#'*60}\n")
+
+            # A cooperative cancel point between turns. The orchestration
+            # engine only consults its cancel hook between steps; a step of
+            # fifteen tool turns is a long time to wait for one. Raised as a
+            # cancellation, not returned as a final response, so nothing
+            # records the step as completed.
+            if should_stop is not None and await should_stop():
+                print(f"DEBUG RUN_AGENT: 🛑 cancelled by request before turn {turn + 1}", flush=True)
+                raise asyncio.CancelledError("cancelled by request")
 
             yield {"type": "thinking", "message": "Analyzing your request..."}
 
