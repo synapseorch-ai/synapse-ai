@@ -75,6 +75,14 @@ class TestAgentRunLogs:
         quiet = _log("agent_quiet", "Quiet")
         for _ in range(5):
             _log("agent_noise", "Noise")
+        # The listing orders by file mtime, and Linux stamps files with
+        # coarse-grained time (milliseconds), so six logs written back to back
+        # can tie — and a tie puts the "oldest" wherever directory order does.
+        # Pin it instead of trusting the clock.
+        import os, time
+        from core.agent_logger import _logs_dir
+        old = time.time() - 60
+        os.utime(_logs_dir() / f"{quiet}.log", (old, old))
 
         # A page smaller than the noise, and the quiet run is the oldest of the
         # lot: filtering after the slice would never reach it.
