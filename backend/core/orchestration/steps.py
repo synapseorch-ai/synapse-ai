@@ -18,6 +18,10 @@ if TYPE_CHECKING:
     from .engine import OrchestrationEngine
 
 
+def _iso(ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
 def _datetime_context() -> str:
     """Return a markdown block with the current date, time, and timezone."""
     now = datetime.datetime.now().astimezone()
@@ -880,6 +884,8 @@ class ParallelStepExecutor:
                         "step_id": sub_step.id, "step_name": sub_step.name,
                         "step_type": sub_step.type.value, "status": "failed",
                         "error": f"Timed out after {sub_timeout}s",
+                        "started_at": _iso(step_start), "ended_at": _iso(time.time()),
+                        "duration_seconds": duration,
                     })
                     yield {"type": "step_error", "orch_step_id": sub_step.id,
                            "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
@@ -898,6 +904,7 @@ class ParallelStepExecutor:
                 run.step_history.append({
                     "step_id": sub_step.id, "step_name": sub_step.name,
                     "step_type": sub_step.type.value, "status": "completed",
+                    "started_at": _iso(step_start), "ended_at": _iso(time.time()),
                     "duration_seconds": duration, "output_key": sub_step.output_key,
                 })
                 yield {"type": "step_complete", "orch_step_id": sub_step.id,
@@ -1172,6 +1179,8 @@ class LoopStepExecutor:
                             "step_id": sub_step.id, "step_name": sub_step.name,
                             "step_type": sub_step.type.value, "status": "failed",
                             "error": f"Timed out after {sub_timeout}s",
+                            "started_at": _iso(step_start), "ended_at": _iso(time.time()),
+                            "duration_seconds": round(time.time() - step_start, 2),
                         })
                         yield {"type": "step_error", "orch_step_id": sub_step.id,
                                "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
@@ -1190,6 +1199,7 @@ class LoopStepExecutor:
                         "step_id": sub_step.id, "step_name": sub_step.name,
                         "step_type": sub_step.type.value,
                         "status": "failed" if failed else "completed",
+                        "started_at": _iso(step_start), "ended_at": _iso(time.time()),
                         "duration_seconds": duration, "output_key": sub_step.output_key,
                     })
                     if not failed:
