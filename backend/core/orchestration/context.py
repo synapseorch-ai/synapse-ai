@@ -231,6 +231,17 @@ def snapshot_inputs(
     return snap
 
 
+#: How many past executions of a step are kept. The only reader renders the
+#: revision history on a rerun, and a loop or evaluator cycle is bounded well
+#: under this; beyond it the entries were ballast in every checkpoint.
+EXEC_MEMORY_MAX_ENTRIES = 10
+
+#: The stored final output per execution. The renderer shows at most 800
+#: characters of it (`_render_full_history`); the previous output in full is
+#: read from shared_state, not from here.
+EXEC_MEMORY_MAX_OUTPUT_CHARS = 2000
+
+
 def store_execution_memory(
     run: "OrchestrationRun",
     step: "StepConfig",
@@ -244,11 +255,24 @@ def store_execution_memory(
     `transition` records what triggered this execution (evaluator decision, loop
     iteration, etc) — used by full-history rendering to show per-turn provenance.
     `inputs_snapshot` records the inputs the agent saw on this turn.
+
+    Bounded: the last `EXEC_MEMORY_MAX_ENTRIES` executions, each with its
+    final output capped. This grew without limit — every rerun appended a
+    full untruncated output — and every one of those bytes rode along in
+    every checkpoint and both terminal events for the rest of the run.
     """
     key = f"_exec_memory_{step.id}"
     history = run.shared_state.get(key)
     if not isinstance(history, list):
         history = []
+    # `execution` numbers continue from what was recorded, not from what is
+    # kept: a dropped entry is still an execution that happened.
+    next_execution = (history[-1].get("execution", len(history)) + 1) if history else 1
+
+    final_output = trace.get("final_output")
+    if isinstance(final_output, str) and len(final_output) > EXEC_MEMORY_MAX_OUTPUT_CHARS:
+        from .summarizer import smart_truncate
+        trace = {**trace, "final_output": smart_truncate(final_output, EXEC_MEMORY_MAX_OUTPUT_CHARS)}
 
     origin = None
     if transition is not None:
@@ -262,14 +286,14 @@ def store_execution_memory(
         }
 
     history.append({
-        "execution": len(history) + 1,
+        "execution": next_execution,
         "agent": agent_name,
         "origin": origin,
         "inputs": inputs_snapshot or {},
         "trace": trace,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
-    run.shared_state[key] = history
+    run.shared_state[key] = history[-EXEC_MEMORY_MAX_ENTRIES:]
 
 
 def get_execution_memory(run: "OrchestrationRun", step_id: str) -> list[dict]:
