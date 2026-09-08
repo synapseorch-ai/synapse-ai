@@ -182,7 +182,9 @@ export function cloneStep(step: StepConfig): StepConfig {
 /** Fields that only mean something for one type — the type-change guard asks about these. */
 const TYPE_SPECIFIC_FIELDS: (keyof StepConfig)[] = [
     'agent_id', 'prompt_template', 'route_map', 'route_descriptions', 'evaluator_prompt',
-    'parallel_branches', 'merge_strategy', 'loop_count', 'loop_step_ids', 'forced_tool',
+    'parallel_branches', 'merge_strategy', 'loop_count', 'loop_step_ids',
+    'loop_over', 'loop_item_key', 'loop_index_key', 'loop_while_condition',
+    'loop_break_condition', 'loop_max_iterations', 'forced_tool',
     'transform_code', 'print_content', 'if_condition', 'if_true_step_id', 'if_false_step_id',
     'switch_expression', 'switch_cases', 'switch_default_step_id',
     'human_prompt', 'human_fields', 'human_channel_id',

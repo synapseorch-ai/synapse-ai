@@ -300,10 +300,15 @@ class OrchestrationLogger:
             self._write(f"  └─ BRANCH END\n")
 
         elif etype == "loop_iteration":
-            self._write(f"  🔄 LOOP ITERATION {event.get('iteration', 0)}/{event.get('total', 0)}\n")
+            # A while-loop has no total to count towards.
+            total = event.get("total")
+            of_total = f"/{total}" if total is not None else ""
+            self._write(f"  🔄 LOOP ITERATION {event.get('iteration', 0)}{of_total}\n")
 
         elif etype == "loop_complete":
-            self._write(f"  🔄 LOOP COMPLETE ({event.get('iterations_completed', 0)} iterations)\n")
+            reason = event.get("stopped_reason")
+            why = f", stopped: {reason}" if reason else ""
+            self._write(f"  🔄 LOOP COMPLETE ({event.get('iterations_completed', 0)} iterations{why})\n")
 
         elif etype == "merge_complete":
             self._write(f"  🔗 MERGE COMPLETE: {event.get('input_count', 0)} inputs, strategy='{event.get('strategy', 'list')}'\n")

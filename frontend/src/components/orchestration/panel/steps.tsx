@@ -393,16 +393,118 @@ function MergeSection({ step, update }: StepSectionProps) {
     );
 }
 
+type LoopMode = 'count' | 'foreach' | 'while';
+
+function loopMode(step: StepConfig): LoopMode {
+    if (step.loop_over) return 'foreach';
+    if (step.loop_while_condition) return 'while';
+    return 'count';
+}
+
 function LoopSection({ step, update, otherSteps }: StepSectionProps) {
+    const mode = loopMode(step);
+    // Switching mode clears the other modes' fields, so the engine's precedence
+    // (collection, then condition, then count) can never be a surprise.
+    const setMode = (next: LoopMode) => {
+        if (next === mode) return;
+        update({
+            loop_over: next === 'foreach' ? (step.loop_over || 'state.items') : undefined,
+            loop_while_condition: next === 'while' ? (step.loop_while_condition || '') : undefined,
+            loop_count: next === 'count' ? (step.loop_count ?? 3) : step.loop_count,
+        });
+    };
+
     return (
         <div className="space-y-3">
-            <Field label="Loop count">
+            <Field label="Repeat">
+                <Select
+                    size="sm"
+                    aria-label="Loop mode"
+                    value={mode}
+                    onChange={(v) => setMode(v as LoopMode)}
+                    options={[
+                        { value: 'count', label: 'A fixed number of times', hint: 'Runs the body N times' },
+                        { value: 'foreach', label: 'Once per item', hint: 'Iterates a list from state' },
+                        { value: 'while', label: 'While a condition holds', hint: 'Re-checked each iteration' },
+                    ]}
+                />
+            </Field>
+
+            {mode === 'count' && (
+                <Field label="Loop count">
+                    <Input
+                        size="sm"
+                        type="number"
+                        min={1}
+                        value={step.loop_count ?? 3}
+                        onChange={(e) => update({ loop_count: parseInt(e.target.value) || 3 })}
+                    />
+                </Field>
+            )}
+
+            {mode === 'foreach' && (
+                <>
+                    <Field label="Collection" hint="An expression over state, e.g. state.items">
+                        <LocalInput
+                            size="sm"
+                            aria-label="Collection expression"
+                            placeholder="state.items"
+                            value={step.loop_over || ''}
+                            onCommit={(v) => update({ loop_over: v })}
+                        />
+                    </Field>
+                    <div className="grid grid-cols-2 gap-2">
+                        <Field label="Item key" hint="Each item lands here">
+                            <LocalInput
+                                size="sm"
+                                aria-label="Item key"
+                                placeholder="loop_item"
+                                value={step.loop_item_key || ''}
+                                onCommit={(v) => update({ loop_item_key: v || undefined })}
+                            />
+                        </Field>
+                        <Field label="Index key" hint="0-based position">
+                            <LocalInput
+                                size="sm"
+                                aria-label="Index key"
+                                placeholder="loop_index"
+                                value={step.loop_index_key || ''}
+                                onCommit={(v) => update({ loop_index_key: v || undefined })}
+                            />
+                        </Field>
+                    </div>
+                </>
+            )}
+
+            {mode === 'while' && (
+                <Field label="While condition" hint="Checked before each iteration, e.g. (state.n or 0) < 5">
+                    <LocalInput
+                        size="sm"
+                        aria-label="While condition"
+                        placeholder="(state.n or 0) < 5"
+                        value={step.loop_while_condition || ''}
+                        onCommit={(v) => update({ loop_while_condition: v })}
+                    />
+                </Field>
+            )}
+
+            <Field label="Stop early when" hint="Optional. Checked after each iteration.">
+                <LocalInput
+                    size="sm"
+                    aria-label="Break condition"
+                    placeholder="state.status == 'done'"
+                    value={step.loop_break_condition || ''}
+                    onCommit={(v) => update({ loop_break_condition: v || undefined })}
+                />
+            </Field>
+
+            <Field label="Max iterations" hint="Hard ceiling, whichever mode is used">
                 <Input
                     size="sm"
                     type="number"
                     min={1}
-                    value={step.loop_count ?? 3}
-                    onChange={(e) => update({ loop_count: parseInt(e.target.value) || 3 })}
+                    value={step.loop_max_iterations ?? 50}
+                    onChange={(e) => update({ loop_max_iterations: parseInt(e.target.value) || 50 })}
                 />
             </Field>
             <div className="space-y-1.5">

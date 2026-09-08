@@ -55,6 +55,17 @@ class StepConfig(BaseModel):
     # LOOP -- run body steps N times, then follow next_step_id (done path)
     loop_count: int = 3
     loop_step_ids: list[str] = []  # ordered steps in loop body
+    # LOOP (for-each) -- expression over shared state yielding a list. When set
+    # it drives the iteration count instead of loop_count.
+    loop_over: str | None = None          # e.g. "state.items"
+    loop_item_key: str = "loop_item"      # per-iteration item written here
+    loop_index_key: str = "loop_index"    # per-iteration 0-based index written here
+    # LOOP (while) -- expression re-evaluated before each iteration
+    loop_while_condition: str | None = None
+    # LOOP (break) -- expression evaluated after each iteration; True stops the loop
+    loop_break_condition: str | None = None
+    # Hard ceiling for for-each/while, and the cap loop_count is clamped to
+    loop_max_iterations: int = 50
 
     # TRANSFORM -- Python code to run on shared state
     transform_code: str | None = None

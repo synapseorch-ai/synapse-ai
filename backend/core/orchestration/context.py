@@ -133,18 +133,12 @@ def build_transition_context(
                 human_response_key=human_key,
             )
 
-        elif prev_step and prev_step.type == StepType.LOOP:
-            # Inside a loop body — get iteration metadata from shared_state
-            iteration = run.shared_state.get("_loop_current_iteration")
-            total = run.shared_state.get("_loop_total")
-            return TransitionContext(
-                origin_type="loop",
-                execution_number=execution_number,
-                from_step_id=from_step_id,
-                from_step_name=from_step_name,
-                loop_iteration=iteration,
-                loop_total=total,
-            )
+        # NOTE: there is deliberately no `prev_step.type == StepType.LOOP` branch
+        # here. A body step's loop context is built by LoopStepExecutor, which is
+        # what actually knows the iteration. The only step whose *previous*
+        # completed step is the loop node is the one after it on the done path —
+        # which is a linear transition, not a loop one. This used to key off that
+        # and told the post-loop step it was "inside a loop, iteration None of None".
 
         # Default: linear flow from previous step
         if prev_step and prev_step.agent_id:

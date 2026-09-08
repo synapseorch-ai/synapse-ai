@@ -16,6 +16,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 
+import anyio
 import pytest
 
 from core.execution import (
@@ -221,6 +222,25 @@ class TestTheHostRunnerIsRealAndSeparate:
     async def test_it_is_not_what_get_runner_returns_by_default(self):
         """A deployment has to opt in to the unsandboxed runtime, never inherit it."""
         assert not isinstance(get_runner(), HostRunner)
+
+    async def test_a_cancelled_run_does_not_orphan_its_child(self):
+        """Only the runner's *own* timeout used to kill the child. A caller that
+        gives up first — which is what a step-level timeout does — left the
+        process running, and this runtime exists for work heavy enough to hold a
+        GPU."""
+        started = subprocess.run(["pgrep", "-fc", "synapse_exec_host_"],
+                                 capture_output=True, text=True)
+        before = int(started.stdout.strip() or 0)
+
+        with anyio.move_on_after(1):
+            await HostRunner().run(ExecRequest(
+                code="import time; time.sleep(30)",
+                network=Network.INTERNET, timeout_s=60))
+
+        await anyio.sleep(0.5)
+        after = subprocess.run(["pgrep", "-fc", "synapse_exec_host_"],
+                               capture_output=True, text=True)
+        assert int(after.stdout.strip() or 0) <= before
 
 
 class TestExecResult:

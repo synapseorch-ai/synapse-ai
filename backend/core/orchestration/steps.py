@@ -942,147 +942,314 @@ class MergeStepExecutor:
 
 
 class LoopStepExecutor:
-    """Run body steps N times sequentially, accumulating results."""
+    """Run a body of steps repeatedly, accumulating each iteration's results.
+
+    Three modes, resolved in this order so an existing fixed-count loop keeps
+    behaving exactly as it did:
+
+      for-each  ``loop_over`` — an expression yielding a list. Each item is
+                written to ``loop_item_key`` and its 0-based position to
+                ``loop_index_key`` before the body runs.
+      while     ``loop_while_condition`` — re-evaluated before every iteration.
+      count     ``loop_count`` — the original behaviour.
+
+    ``loop_break_condition`` stops any of the three after the iteration in
+    which it becomes true, and ``loop_max_iterations`` caps all of them.
+
+    Only body steps that actually *completed* contribute to the accumulators.
+    A step that errored or timed out contributes nothing rather than having
+    whatever its output key happened to already hold recorded as this
+    iteration's result.
+    """
 
     async def execute(
         self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
     ) -> AsyncGenerator[dict, None]:
-        loop_count = max(1, step.loop_count)
         body_ids = step.loop_step_ids
-        print(f"DEBUG LOOP: ▶ step='{step.id}' body_ids={body_ids} loop_count={loop_count}", flush=True)
-
         if not body_ids:
             yield {"type": "step_warning", "orch_step_id": step.id, "message": "No loop body steps defined"}
             return
 
-        # ── Mid-node crash recovery: skip iterations that already completed ──
-        # Each finished iteration checkpoints its count below; the accumulated
-        # _loop_* results ride along in shared_state, so a resumed run picks up
-        # exactly where the crash cut it off.
         from core.orchestration.state import SharedState
+        from core.orchestration.context import TransitionContext
+        from .engine import MAX_NESTED_DEPTH
+
+        depth = getattr(engine, "_loop_depth", 0)
+        if depth >= MAX_NESTED_DEPTH:
+            yield {"type": "step_error", "orch_step_id": step.id,
+                   "error": f"Loop nesting exceeded {MAX_NESTED_DEPTH} levels at "
+                            f"'{step.name}'. A loop whose body reaches itself never ends."}
+            return
+
         progress_key = f"_loop_progress_{step.id}"
-        completed_iterations = 0
-        saved = run.shared_state.get(progress_key)
-        if isinstance(saved, dict):
-            completed_iterations = min(int(saved.get("completed_iterations") or 0), loop_count)
+        cap = max(1, step.loop_max_iterations)
+
+        # Saved before the first iteration and restored on every exit, so a
+        # nested loop unwinds without clobbering its parent's markers.
+        prev_transition = getattr(engine, "current_transition", None)
+        _ABSENT = object()
+        prev_iter = run.shared_state.get("_loop_current_iteration", _ABSENT)
+        prev_total = run.shared_state.get("_loop_total", _ABSENT)
+
+        def _restore():
+            engine._loop_depth = depth
+            engine.current_transition = prev_transition
+            for key, was in (("_loop_current_iteration", prev_iter), ("_loop_total", prev_total)):
+                if was is _ABSENT:
+                    run.shared_state.pop(key, None)
+                else:
+                    run.shared_state[key] = was
+
+        engine._loop_depth = depth + 1
+        try:
+            # ── Mid-node crash recovery: skip iterations that already completed ──
+            # Each finished iteration checkpoints its count below; the accumulated
+            # _loop_* results ride along in shared_state, so a resumed run picks up
+            # exactly where the crash cut it off.
+            saved = run.shared_state.get(progress_key)
+            saved = saved if isinstance(saved, dict) else {}
+            completed_iterations = max(0, int(saved.get("completed_iterations") or 0))
+
+            # ── Mode resolution ──
+            items: list | None = None
+            if step.loop_over:
+                mode = "foreach"
+                # The resolved collection is snapshotted into the progress record
+                # so a resumed run iterates the same items even if a body step
+                # has since rewritten the source key.
+                items = saved.get("items")
+                if items is None:
+                    resolved, err = _eval_state_expr(step.loop_over, run.shared_state)
+                    if err:
+                        yield {"type": "step_warning", "orch_step_id": step.id,
+                               "message": f"loop_over '{step.loop_over}' failed to evaluate: {err}"}
+                        resolved = []
+                    if isinstance(resolved, (list, tuple)):
+                        items = list(resolved)
+                    else:
+                        yield {"type": "step_warning", "orch_step_id": step.id,
+                               "message": f"loop_over '{step.loop_over}' is "
+                                          f"{type(resolved).__name__}, not a list — zero iterations"}
+                        items = []
+                total = min(len(items), cap)
+            elif step.loop_while_condition:
+                mode = "while"
+                total = None
+            else:
+                mode = "count"
+                total = min(max(1, step.loop_count), cap)
+
+            print(f"DEBUG LOOP: ▶ step='{step.id}' mode={mode} body_ids={body_ids} total={total}", flush=True)
             if completed_iterations:
-                print(f"DEBUG LOOP: ⏯ resuming from iteration {completed_iterations + 1}/{loop_count}", flush=True)
+                print(f"DEBUG LOOP: ⏯ resuming from iteration {completed_iterations + 1}", flush=True)
 
-        for iteration in range(completed_iterations + 1, loop_count + 1):
-            yield {
-                "type": "loop_iteration", "orch_step_id": step.id,
-                "iteration": iteration, "total": loop_count,
-            }
+            iteration = completed_iterations
+            iterations_run = completed_iterations
+            stopped_reason = "count" if mode == "count" else "collection_exhausted"
 
-            for sid in body_ids:
-                sub_step = engine.step_map.get(sid)
-                if not sub_step:
+            while True:
+                if total is not None and iteration >= total:
+                    stopped_reason = "count" if mode == "count" else "collection_exhausted"
+                    break
+                if iteration >= cap:
+                    stopped_reason = "max_iterations"
                     yield {"type": "step_warning", "orch_step_id": step.id,
-                           "message": f"Loop body step {sid} not found"}
-                    continue
+                           "message": f"Loop hit its {cap}-iteration ceiling"}
+                    break
+                if mode == "while":
+                    keep_going, err = _eval_state_expr(
+                        step.loop_while_condition, run.shared_state, default=False)
+                    if err:
+                        yield {"type": "step_warning", "orch_step_id": step.id,
+                               "message": f"loop_while_condition failed to evaluate "
+                                          f"(stopping): {err}"}
+                        stopped_reason = "condition_error"
+                        break
+                    if not keep_going:
+                        stopped_reason = "condition_false"
+                        break
 
-                executor = engine.executors.get(sub_step.type)
-                if not executor:
-                    yield {"type": "step_error", "orch_step_id": sid,
-                           "error": f"No executor for {sub_step.type}"}
-                    continue
+                iteration += 1
 
-                step_start = time.time()
-                sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
-                yield {"type": "step_start", "orch_step_id": sub_step.id,
-                       "step_name": sub_step.name, "step_type": sub_step.type.value}
+                if mode == "foreach":
+                    run.shared_state[step.loop_item_key] = items[iteration - 1]
+                    run.shared_state[step.loop_index_key] = iteration - 1
+                # The keys context.build_prompt reads to tell a body agent where
+                # it is. Popped again by _restore() so they never reach final state.
+                run.shared_state["_loop_current_iteration"] = iteration
+                run.shared_state["_loop_total"] = total
 
-                # Human input within a loop body pauses the whole run. The
-                # event must be yielded OUTSIDE the fail_after scope: yielding
-                # inside it suspends this generator with the scope active, and
-                # the engine exiting its own step-timeout scope then blows up
-                # with "exit cancel scope that isn't the current" (issue #356
-                # family). Same pattern as the engine's own human-pause path.
-                pending_human_event = None
-                try:
-                    with anyio.fail_after(sub_timeout):
-                        async for event in executor.execute(sub_step, run, engine):
-                            if event.get("type") == "human_input_required":
-                                pending_human_event = event
-                                break
-                            yield event
-                except TimeoutError:
+                yield {
+                    "type": "loop_iteration", "orch_step_id": step.id,
+                    "iteration": iteration, "total": total,
+                }
+
+                completed_this_iteration: set[str] = set()
+
+                for sid in body_ids:
+                    sub_step = engine.step_map.get(sid)
+                    if not sub_step:
+                        yield {"type": "step_warning", "orch_step_id": step.id,
+                               "message": f"Loop body step {sid} not found"}
+                        continue
+
+                    executor = engine.executors.get(sub_step.type)
+                    if not executor:
+                        yield {"type": "step_error", "orch_step_id": sid,
+                               "error": f"No executor for {sub_step.type}"}
+                        continue
+
+                    # The engine only builds a TransitionContext for the steps it
+                    # drives itself, so without this a body step would read the
+                    # LOOP node's context and believe it was invoked linearly, once.
+                    engine.current_transition = TransitionContext(
+                        origin_type="loop",
+                        execution_number=sum(
+                            1 for h in run.step_history if h["step_id"] == sid) + 1,
+                        from_step_id=step.id,
+                        from_step_name=step.name,
+                        loop_iteration=iteration,
+                        loop_total=total,
+                    )
+
+                    step_start = time.time()
+                    sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
+                    yield {"type": "step_start", "orch_step_id": sub_step.id,
+                           "step_name": sub_step.name, "step_type": sub_step.type.value}
+
+                    # Human input within a loop body pauses the whole run. The
+                    # event must be yielded OUTSIDE the fail_after scope: yielding
+                    # inside it suspends this generator with the scope active, and
+                    # the engine exiting its own step-timeout scope then blows up
+                    # with "exit cancel scope that isn't the current" (issue #356
+                    # family). Same pattern as the engine's own human-pause path.
+                    pending_human_event = None
+                    failed = False
+                    # Held so it can be closed explicitly below. A body step that
+                    # times out leaves its executor suspended mid-await, and an
+                    # abandoned async generator is only finalised whenever the GC
+                    # gets to it — which for a transform means its subprocess
+                    # transport is reaped on some later, unrelated event loop.
+                    sub_gen = executor.execute(sub_step, run, engine)
+                    try:
+                        with anyio.fail_after(sub_timeout):
+                            async for event in sub_gen:
+                                if event.get("type") == "human_input_required":
+                                    pending_human_event = event
+                                    break
+                                if event.get("type") == "step_error":
+                                    failed = True
+                                yield event
+                    except TimeoutError:
+                        with anyio.CancelScope(shield=True):
+                            try:
+                                await sub_gen.aclose()
+                            except Exception as close_err:
+                                print(f"WARNING: closing timed-out step "
+                                      f"'{sub_step.name}' failed: {close_err}", flush=True)
+                        print(f"DEBUG LOOP: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s (iteration {iteration})", flush=True)
+                        run.step_history.append({
+                            "step_id": sub_step.id, "step_name": sub_step.name,
+                            "step_type": sub_step.type.value, "status": "failed",
+                            "error": f"Timed out after {sub_timeout}s",
+                        })
+                        yield {"type": "step_error", "orch_step_id": sub_step.id,
+                               "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
+                        continue
+
+                    if pending_human_event is not None:
+                        # The engine resumes PAST the loop after human input, so
+                        # drop the iteration progress: a later legitimate re-entry
+                        # must start fresh, not skip iterations.
+                        run.shared_state.pop(progress_key, None)
+                        yield pending_human_event
+                        return
+
                     duration = round(time.time() - step_start, 2)
-                    print(f"DEBUG LOOP: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s (iteration {iteration})", flush=True)
                     run.step_history.append({
                         "step_id": sub_step.id, "step_name": sub_step.name,
-                        "step_type": sub_step.type.value, "status": "failed",
-                        "error": f"Timed out after {sub_timeout}s",
+                        "step_type": sub_step.type.value,
+                        "status": "failed" if failed else "completed",
+                        "duration_seconds": duration, "output_key": sub_step.output_key,
                     })
-                    yield {"type": "step_error", "orch_step_id": sub_step.id,
-                           "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
-                    continue
+                    if not failed:
+                        completed_this_iteration.add(sid)
+                    yield {"type": "step_complete", "orch_step_id": sub_step.id,
+                           "step_name": sub_step.name, "duration_seconds": duration}
 
-                if pending_human_event is not None:
-                    # The engine resumes PAST the loop after human input, so
-                    # drop the iteration progress: a later legitimate re-entry
-                    # must start fresh, not skip iterations.
-                    run.shared_state.pop(progress_key, None)
-                    yield pending_human_event
-                    return
+                # After each iteration, accumulate results — but only from body
+                # steps that actually completed. A step that errored leaves its
+                # previous value sitting in shared_state, and recording that as
+                # this iteration's result invents a success that never happened.
+                for sid in body_ids:
+                    sub_step = engine.step_map.get(sid)
+                    if not sub_step or not sub_step.output_key:
+                        continue
+                    if sid not in completed_this_iteration:
+                        continue
+                    if sub_step.output_key not in run.shared_state:
+                        continue
 
-                duration = round(time.time() - step_start, 2)
-                run.step_history.append({
-                    "step_id": sub_step.id, "step_name": sub_step.name,
-                    "step_type": sub_step.type.value, "status": "completed",
-                    "duration_seconds": duration, "output_key": sub_step.output_key,
-                })
-                yield {"type": "step_complete", "orch_step_id": sub_step.id,
-                       "step_name": sub_step.name, "duration_seconds": duration}
+                    acc_key = f"_loop_{sub_step.output_key}"
+                    agent_name = engine.agent_names.get(sub_step.agent_id, sub_step.name) if sub_step.agent_id else sub_step.name
+                    if acc_key not in run.shared_state:
+                        run.shared_state[acc_key] = []
+                    run.shared_state[acc_key].append({
+                        "iteration": iteration,
+                        "agent": agent_name,
+                        "result": run.shared_state[sub_step.output_key],
+                    })
 
-            # After each iteration, accumulate results from body steps
+                iterations_run = iteration
+
+                # Iteration finished — checkpoint so a crash resumes at the next one.
+                progress = {"completed_iterations": iteration}
+                if mode == "foreach":
+                    progress["items"] = items
+                run.shared_state[progress_key] = progress
+                try:
+                    await SharedState(run).checkpoint()
+                except Exception as ckpt_err:
+                    print(f"WARNING: loop-progress checkpoint failed: {ckpt_err}", flush=True)
+
+                if step.loop_break_condition:
+                    should_break, err = _eval_state_expr(
+                        step.loop_break_condition, run.shared_state, default=False)
+                    if err:
+                        yield {"type": "step_warning", "orch_step_id": step.id,
+                               "message": f"loop_break_condition failed to evaluate "
+                                          f"(ignored): {err}"}
+                    elif should_break:
+                        stopped_reason = "break"
+                        break
+
+            run.shared_state.pop(progress_key, None)
+
+            # After all iterations, promote accumulated results to output keys
+            promoted: dict[str, str] = {}  # step name -> output key it produced
             for sid in body_ids:
                 sub_step = engine.step_map.get(sid)
                 if not sub_step or not sub_step.output_key:
                     continue
-                if sub_step.output_key not in run.shared_state:
-                    continue
-
                 acc_key = f"_loop_{sub_step.output_key}"
-                agent_name = engine.agent_names.get(sub_step.agent_id, sub_step.name) if sub_step.agent_id else sub_step.name
-                if acc_key not in run.shared_state:
-                    run.shared_state[acc_key] = []
-                run.shared_state[acc_key].append({
-                    "iteration": iteration,
-                    "agent": agent_name,
-                    "result": run.shared_state[sub_step.output_key],
-                })
+                if acc_key in run.shared_state:
+                    run.shared_state[sub_step.output_key] = run.shared_state.pop(acc_key)
+                    promoted[sub_step.name] = sub_step.output_key
 
-            # Iteration finished — checkpoint so a crash resumes at the next one.
-            run.shared_state[progress_key] = {"completed_iterations": iteration}
-            try:
-                await SharedState(run).checkpoint()
-            except Exception as ckpt_err:
-                print(f"WARNING: loop-progress checkpoint failed: {ckpt_err}", flush=True)
+            # Store loop's own output if configured — only body steps that
+            # actually produced something across the run. A step that failed
+            # every iteration has whatever its key held beforehand still sitting
+            # in state, and that value is not this loop's output.
+            if step.output_key:
+                run.shared_state[step.output_key] = {
+                    name: run.shared_state[key] for name, key in promoted.items()
+                }
 
-        run.shared_state.pop(progress_key, None)
-
-        # After all iterations, promote accumulated results to output keys
-        for sid in body_ids:
-            sub_step = engine.step_map.get(sid)
-            if not sub_step or not sub_step.output_key:
-                continue
-            acc_key = f"_loop_{sub_step.output_key}"
-            if acc_key in run.shared_state:
-                run.shared_state[sub_step.output_key] = run.shared_state.pop(acc_key)
-
-        # Store loop's own output if configured
-        if step.output_key:
-            # Collect all body outputs as summary
-            summary = {}
-            for sid in body_ids:
-                sub_step = engine.step_map.get(sid)
-                if sub_step and sub_step.output_key and sub_step.output_key in run.shared_state:
-                    summary[sub_step.name] = run.shared_state[sub_step.output_key]
-            run.shared_state[step.output_key] = summary
-
-        yield {"type": "loop_complete", "orch_step_id": step.id,
-               "iterations_completed": loop_count}
+            yield {"type": "loop_complete", "orch_step_id": step.id,
+                   "iterations_completed": iterations_run,
+                   "stopped_reason": stopped_reason}
+        finally:
+            _restore()
 
 
 class HumanStepExecutor:
@@ -1489,7 +1656,7 @@ class _DotNavigableState:
         return len(data)
 
 
-# Restricted namespace for safe eval in IF/Else and Switch steps
+# Restricted namespace for safe eval in IF/Else, Switch and Loop steps
 _SAFE_EVAL_BUILTINS = {
     '__builtins__': {},
     'None': None, 'True': True, 'False': False,
@@ -1497,6 +1664,21 @@ _SAFE_EVAL_BUILTINS = {
     'bool': bool, 'list': list, 'dict': dict, 'abs': abs,
     'min': min, 'max': max, 'round': round,
 }
+
+
+def _eval_state_expr(expr: str, state: dict, default=None):
+    """Evaluate `expr` against shared state in the restricted namespace.
+
+    Returns ``(value, error_message)``; on failure the value is `default` and
+    the caller decides whether that is a warning or a hard stop. IF/Else,
+    Switch and Loop all speak this one dialect so an author learns
+    `state.foo.bar` once.
+    """
+    ns = {**_SAFE_EVAL_BUILTINS, 'state': _DotNavigableState(state)}
+    try:
+        return eval(expr, ns), None
+    except Exception as e:
+        return default, str(e)
 
 
 class IfElseStepExecutor:
@@ -1516,16 +1698,12 @@ class IfElseStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[IF/Else Condition] {condition}"}
 
-        state_wrapper = _DotNavigableState(run.shared_state)
-        eval_ns = {**_SAFE_EVAL_BUILTINS, 'state': state_wrapper}
-
-        try:
-            result = bool(eval(condition, eval_ns))
-        except Exception as e:
-            print(f"DEBUG IF_ELSE: ⚠ Condition eval failed: {e}", flush=True)
-            result = False
+        raw, err = _eval_state_expr(condition, run.shared_state, default=False)
+        result = bool(raw)
+        if err:
+            print(f"DEBUG IF_ELSE: ⚠ Condition eval failed: {err}", flush=True)
             yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": f"Condition eval error (treating as False): {e}"}
+                   "message": f"Condition eval error (treating as False): {err}"}
 
         decision = "true" if result else "false"
         run.shared_state[f"_if_decision_{step.id}"] = decision

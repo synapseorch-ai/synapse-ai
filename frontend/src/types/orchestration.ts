@@ -29,6 +29,15 @@ export interface StepConfig {
     // LOOP
     loop_count?: number;
     loop_step_ids?: string[];
+    /** Expression yielding a list, e.g. `state.items`. Set = for-each mode. */
+    loop_over?: string;
+    loop_item_key?: string;
+    loop_index_key?: string;
+    /** Re-checked before each iteration. Set (without loop_over) = while mode. */
+    loop_while_condition?: string;
+    /** Checked after each iteration; true stops the loop. */
+    loop_break_condition?: string;
+    loop_max_iterations?: number;
 
     // TOOL — forced single tool call
     forced_tool?: string;

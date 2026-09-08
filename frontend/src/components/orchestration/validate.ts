@@ -107,6 +107,36 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
                     if (!id) add(s.id, warning('Loop body has an unassigned slot'));
                     else if (!ids.has(id)) add(s.id, error('Loop body references a step that no longer exists'));
                 }
+                if (body.includes(s.id)) add(s.id, error('Loop body contains the loop itself — it would never end'));
+
+                const cap = s.loop_max_iterations ?? 50;
+                if (cap < 1) add(s.id, error('Max iterations must be at least 1'));
+                if (!s.loop_over && !s.loop_while_condition) {
+                    const count = s.loop_count ?? 3;
+                    if (count < 1) add(s.id, error('Iteration count must be at least 1'));
+                    else if (count > cap) add(s.id, warning(`Iteration count (${count}) is above the ${cap}-iteration cap and will be clamped`));
+                }
+                if (s.loop_over && s.loop_while_condition) {
+                    add(s.id, warning('Both a collection and a while condition are set — the collection wins'));
+                }
+
+                const bodySet = new Set(body);
+                for (const id of body) {
+                    const b = orch.steps.find((x) => x.id === id);
+                    if (!b) continue;
+                    // The loop runs its body as an ordered list; _resolve_next never
+                    // runs for these, so a branch decided in here goes nowhere.
+                    if (b.type === 'if_else' || b.type === 'switch' || b.type === 'evaluator') {
+                        add(s.id, warning(`“${b.name}” routes, but routing inside a loop body is ignored — put the branch after the loop`));
+                    }
+                    if (b.type === 'human') {
+                        add(s.id, warning(`“${b.name}” pauses for input, and answering it resumes past the loop — the remaining iterations are dropped`));
+                    }
+                    // A parallel branch auto-follows next_step_id; a loop body does not.
+                    if (b.next_step_id && !bodySet.has(b.next_step_id) && b.next_step_id !== s.next_step_id) {
+                        add(s.id, warning(`“${b.name}” points on to a step outside the loop body, which the loop will not run`));
+                    }
+                }
                 break;
             }
             case 'parallel': {

@@ -590,7 +590,13 @@ BUILDER_TOOL_SCHEMAS = [
                         "type": "array", "items": {"type": "string"},
                         "description": "Step IDs in loop body (loop steps)",
                     },
-                    "loop_count": {"type": "integer", "description": "Number of loop iterations"},
+                    "loop_count": {"type": "integer", "description": "Number of loop iterations (fixed-count loops)"},
+                    "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count."},
+                    "loop_item_key": {"type": "string", "description": "State key each for-each item is written to (default `loop_item`)"},
+                    "loop_index_key": {"type": "string", "description": "State key each for-each 0-based index is written to (default `loop_index`)"},
+                    "loop_while_condition": {"type": "string", "description": "Python condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps)"},
+                    "loop_break_condition": {"type": "string", "description": "Python condition evaluated after each iteration; True stops the loop (loop steps)"},
+                    "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
                     "transform_code": {"type": "string", "description": "Python code: reads `state`, assigns `result` (transform steps)"},
                     # ── New deterministic step fields ──────────────────────────
                     "print_content": {
@@ -684,6 +690,12 @@ BUILDER_TOOL_SCHEMAS = [
                                 "merge_strategy": {"type": "string", "enum": ["concat", "list", "dict"]},
                                 "loop_step_ids": {"type": "array", "items": {"type": "string"}},
                                 "loop_count": {"type": "integer"},
+                                "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count."},
+                                "loop_item_key": {"type": "string", "description": "State key each for-each item is written to (default `loop_item`)"},
+                                "loop_index_key": {"type": "string", "description": "State key each for-each 0-based index is written to (default `loop_index`)"},
+                                "loop_while_condition": {"type": "string", "description": "Python condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps)"},
+                                "loop_break_condition": {"type": "string", "description": "Python condition evaluated after each iteration; True stops the loop (loop steps)"},
+                                "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
                                 "transform_code": {"type": "string"},
                                 "print_content": {"type": "string", "description": "Markdown/text for print steps. Supports {state.key} interpolation."},
                                 "if_condition": {"type": "string", "description": "Python condition for if_else steps (e.g. `state.flag == True`)"},
@@ -1360,6 +1372,53 @@ def _validate_orchestration(orch: dict) -> dict:
             issues.append(f"Extract JSON step '{sid}' has no output_key — extracted JSON will not be stored.")
         if stype == "print" and not s.get("print_content"):
             issues.append(f"Print step '{sid}' has no print_content.")
+        if stype == "loop":
+            body = s.get("loop_step_ids") or []
+            if sid in body:
+                issues.append(
+                    f"Loop step '{sid}' lists itself in loop_step_ids — it would "
+                    f"re-enter itself forever."
+                )
+            cap = s.get("loop_max_iterations", 50)
+            if not isinstance(cap, int) or cap < 1:
+                issues.append(f"Loop step '{sid}' loop_max_iterations must be a positive integer.")
+            elif not s.get("loop_over") and not s.get("loop_while_condition"):
+                count = s.get("loop_count", 3)
+                if not isinstance(count, int) or count < 1:
+                    issues.append(f"Loop step '{sid}' loop_count must be a positive integer.")
+                elif count > cap:
+                    issues.append(
+                        f"Loop step '{sid}' loop_count ({count}) exceeds its "
+                        f"loop_max_iterations ({cap}) and would be clamped."
+                    )
+            for bsid in body:
+                bstep = by_id.get(bsid)
+                if not bstep:
+                    continue
+                # The loop runs its body as an ordered list; routing decisions
+                # made inside it are evaluated and then discarded, because
+                # _resolve_next only runs for steps the engine itself drives.
+                if bstep.get("type") in ("if_else", "switch", "evaluator"):
+                    issues.append(
+                        f"Loop step '{sid}' body contains '{bsid}' of type "
+                        f"'{bstep.get('type')}' — its routing is ignored inside a "
+                        f"loop body. Put the branch after the loop."
+                    )
+                if bstep.get("type") == "human":
+                    issues.append(
+                        f"Loop step '{sid}' body contains human step '{bsid}' — "
+                        f"answering it resumes past the loop, dropping the "
+                        f"remaining iterations. Put the approval outside the loop."
+                    )
+                # A parallel branch auto-follows next_step_id; a loop body does
+                # not, so a chain wired this way silently runs only its head.
+                nxt = bstep.get("next_step_id")
+                if nxt and nxt not in body and nxt != s.get("next_step_id"):
+                    issues.append(
+                        f"Loop body step '{bsid}' has next_step_id '{nxt}', which is "
+                        f"neither in the loop body nor the loop's done path. A loop "
+                        f"body runs only the steps listed in loop_step_ids."
+                    )
 
     # Writer-membership check: every input_key must be `user_input` /
     # `user_query` (engine-seeded) or the `output_key` of some step. Branch
@@ -1551,6 +1610,7 @@ def _fill_step_defaults(steps: list) -> list:
         s.setdefault("merge_strategy", "list")
         s.setdefault("loop_count", 3)
         s.setdefault("loop_step_ids", [])
+        s.setdefault("loop_max_iterations", 50)
         s.setdefault("transform_code", None)
         s.setdefault("human_prompt", None)
         s.setdefault("human_fields", [])

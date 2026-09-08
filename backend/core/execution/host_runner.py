@@ -31,6 +31,21 @@ from .types import ExecRequest, ExecResult
 MAX_TIMEOUT = 1800
 
 
+async def _kill(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL the child and reap it, shielded so a cancellation in flight
+    cannot leave the wait half-done."""
+    if proc.returncode is not None:
+        return
+    try:
+        proc.kill()
+    except Exception:  # noqa: BLE001 — the process is already gone
+        return
+    try:
+        await asyncio.shield(proc.wait())
+    except Exception:  # noqa: BLE001 — reaping is best-effort; it is already dead
+        pass
+
+
 class HostRunner:
     """`sys.executable script.py`, with this process's environment."""
 
@@ -53,17 +68,21 @@ class HostRunner:
                     proc.communicate(), timeout=timeout + request.grace_s
                 )
             except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:  # noqa: BLE001 — the process is already gone
-                    pass
+                await _kill(proc)
                 return ExecResult(
                     exit_code=124,
                     stdout="",
                     stderr=f"Transform (host) timed out after {timeout}s",
                     timed_out=True,
                 )
+            except BaseException:
+                # The caller gave up rather than us — a step-level timeout
+                # cancels this coroutine mid-await. Only our own timeout used to
+                # kill the child, so an externally cancelled transform left the
+                # process running: this runner exists for model loading, so an
+                # orphan can hold a GPU until someone notices.
+                await _kill(proc)
+                raise
 
             # No output cap here, unlike the sandbox: the caller asked for the
             # host runtime precisely because it is producing something large.

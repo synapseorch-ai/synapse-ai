@@ -145,7 +145,7 @@ class OrchestrationEngine:
 
     async def _execute_loop(self, run: OrchestrationRun, state: SharedState) -> AsyncGenerator[dict, None]:
         """Core execution loop — shared between run() and resume()."""
-        total_turns = len(run.step_history)
+        total_turns = self._engine_turns(run)
         logger = getattr(self, "logger", None)
         loop_start_time = time.time()
         timeout_seconds = (self.orch.timeout_minutes or ORCH_GLOBAL_TIMEOUT_MIN) * 60
@@ -203,6 +203,14 @@ class OrchestrationEngine:
 
             step_start_time = time.time()
             step_timeout = step.timeout_seconds or ORCH_STEP_TIMEOUT  # default 5 min
+
+            # A container node's budget has to cover every step it runs inside
+            # itself, and each of those already gets its own fail_after. Charging
+            # the container one step's worth means a 3x loop over one agent step
+            # is given 300s to do 900s of work, and the run dies mid-iteration.
+            # The global timeout checked above is the real ceiling for these.
+            if step.type in (StepType.LOOP, StepType.PARALLEL):
+                step_timeout = max(1.0, timeout_seconds - (time.time() - loop_start_time))
 
             # Build and store TransitionContext so executors can access it
             from .context import build_transition_context
@@ -549,8 +557,13 @@ class OrchestrationEngine:
         if current_step:
             # Before _resolve_next, so the loop guard counts this iteration.
             engine._complete_human_step(run, current_step)
-            next_id, _ = engine._resolve_next(current_step, run)
+            next_id, resume_event = engine._resolve_next(current_step, run)
             run.current_step_id = next_id
+            # Usually a routing/loop_limit_reached event. Dropping it meant a run
+            # that hit its iteration cap on the step right after a human pause
+            # said nothing about why it moved on.
+            if resume_event:
+                yield resume_event
             print(f"[engine.resume] ➡  _resolve_next({run.current_step_id!r} was HUMAN) → next_step_id={next_id!r}", flush=True)
         else:
             print(f"[engine.resume] ⚠️  current_step not found in step_map — current_step_id stays as {run.current_step_id!r}, loop will likely fail immediately", flush=True)
@@ -775,6 +788,29 @@ class OrchestrationEngine:
             return self._apply_loop_guard(next_id, run)
 
         return next_id, None
+
+    def _engine_turns(self, run: OrchestrationRun) -> int:
+        """How many turns this run has already spent against `max_total_turns`.
+
+        Only steps the engine drives itself count. A loop or parallel node
+        appends every body step it runs to `step_history` for the timeline,
+        but the run charged the container as one turn while it was live —
+        seeding the counter from the raw history length meant a for-each over
+        150 items paused at a human step, then died on resume with
+        "Global turn limit (100) exceeded" before running anything.
+
+        The guard exists to stop graph cycles, and a body step's repetition is
+        already bounded by its container, so leaving it out is the right count
+        rather than a loosening of it. A step that is both a container child
+        and reachable at top level is still excluded here; the validator warns
+        about that wiring.
+        """
+        nested: set[str] = set()
+        for s in self.orch.steps:
+            nested.update(s.loop_step_ids or [])
+            for branch in s.parallel_branches or []:
+                nested.update(branch)
+        return sum(1 for h in run.step_history if h.get("step_id") not in nested)
 
     def _apply_loop_guard(self, next_id: str, run: OrchestrationRun) -> tuple[str | None, dict | None]:
         """Check if the target step has exceeded its max_iterations."""

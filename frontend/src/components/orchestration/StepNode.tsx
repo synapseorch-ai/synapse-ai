@@ -54,7 +54,10 @@ function summaryFor(step: StepConfig, agentName?: string): string | null {
             return `${n} branch${n !== 1 ? 'es' : ''}`;
         }
         case 'merge': return step.merge_strategy || 'list';
-        case 'loop': return `${step.loop_count || 3}× iterations`;
+        case 'loop':
+            if (step.loop_over) return `for each ${clip(step.loop_over, 24)}`;
+            if (step.loop_while_condition) return `while ${clip(step.loop_while_condition, 24)}`;
+            return `${step.loop_count || 3}× iterations`;
         case 'human': return step.human_prompt ? clip(step.human_prompt) : 'Awaiting input…';
         case 'end': return 'Terminates flow';
         case 'extract_json':
