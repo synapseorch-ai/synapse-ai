@@ -26,6 +26,10 @@ import asyncio as _asyncio
 import contextlib as _contextlib
 import functools as _functools
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 #: How often a running job looks for its cancel key. The engine also checks
 #: between steps; this is what reaches a step in progress.
 CANCEL_POLL_SECONDS = 2.0
@@ -146,14 +150,14 @@ class WorkerEngineAdapter:
         # Restore in-progress run state. This reads the store, so the process
         # resuming need not be the one that paused — which is what lets a
         # single shared fleet drain one queue.
-        print(f"[adapter.resume] ▶ restoring JSON checkpoint run_id={self._run_id}", flush=True)
+        _log.debug(f"[adapter.resume] ▶ restoring JSON checkpoint run_id={self._run_id}")
         restored = await SharedState.restore(self._run_id)
         run = restored.run
-        print(f"[adapter.resume] 📋 restored: status={run.status} current_step_id={run.current_step_id!r} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}", flush=True)
+        _log.debug(f"[adapter.resume] 📋 restored: status={run.status} current_step_id={run.current_step_id!r} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}")
 
         # Build engine using self._orch (Postgres-loaded) so step_map is always populated.
         engine = self._build_engine()
-        print(f"[adapter.resume] 🗺  step_map keys: {list(engine.step_map.keys())}", flush=True)
+        _log.debug(f"[adapter.resume] 🗺  step_map keys: {list(engine.step_map.keys())}")
 
         engine.logger = OrchestrationLogger(
             run_id=self._run_id,
@@ -167,11 +171,11 @@ class WorkerEngineAdapter:
 
         # Nested-orchestration pause: delegate to the classmethod's nested handler.
         if run.nested_run_id:
-            print(f"[adapter.resume] 🔗 nested run — delegating to _resume_nested_orch nested_run_id={run.nested_run_id}", flush=True)
+            _log.debug(f"[adapter.resume] 🔗 nested run — delegating to _resume_nested_orch nested_run_id={run.nested_run_id}")
             event_count = 0
             async for event in OrchestrationEngine._resume_nested_orch(run, engine, human_response, self._server_module):
                 event_count += 1
-                print(f"[adapter.resume] 📨 nested event #{event_count} type={event.get('type', '?')}", flush=True)
+                _log.debug(f"[adapter.resume] 📨 nested event #{event_count} type={event.get('type', '?')}")
                 await self._publisher.publish(event)
                 if event.get("type") == "orchestration_complete":
                     final_status = event.get("status", "completed")
@@ -185,7 +189,7 @@ class WorkerEngineAdapter:
 
         # Normal path: human step is directly in this orchestration.
         current_step = engine.step_map.get(run.current_step_id)
-        print(f"[adapter.resume] 🔍 current_step lookup: id={run.current_step_id!r} found={current_step is not None} type={current_step.type.value if current_step else 'N/A'}", flush=True)
+        _log.debug(f"[adapter.resume] 🔍 current_step lookup: id={run.current_step_id!r} found={current_step is not None} type={current_step.type.value if current_step else 'N/A'}")
 
         output_key = (current_step.output_key if current_step else None) or "human_response"
         run.shared_state[output_key] = human_response
@@ -208,30 +212,30 @@ class WorkerEngineAdapter:
             engine._complete_human_step(run, current_step)
             next_id, _ = engine._resolve_next(current_step, run)
             run.current_step_id = next_id
-            print(f"[adapter.resume] ➡  _resolve_next → next_step_id={next_id!r}", flush=True)
+            _log.debug(f"[adapter.resume] ➡  _resolve_next → next_step_id={next_id!r}")
         else:
-            print(f"[adapter.resume] ⚠️  current_step not in step_map — step_id={run.current_step_id!r} will fail in _execute_loop", flush=True)
+            _log.debug(f"[adapter.resume] ⚠️  current_step not in step_map — step_id={run.current_step_id!r} will fail in _execute_loop")
 
-        print(f"[adapter.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}", flush=True)
+        _log.debug(f"[adapter.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}")
         state = SharedState(run)
         event_count = 0
         async for event in engine._execute_loop(run, state):
             event_count += 1
             etype = event.get("type", "unknown")
-            print(f"[adapter.resume] 📨 event #{event_count} type={etype} step={event.get('orch_step_id', '')} status={event.get('status', '')}", flush=True)
+            _log.debug(f"[adapter.resume] 📨 event #{event_count} type={etype} step={event.get('orch_step_id', '')} status={event.get('status', '')}")
             await self._publisher.publish(event)
 
             if event.get("type") == "orchestration_complete":
                 final_status = event.get("status", "completed")
-                print(f"[adapter.resume] 🏁 orchestration_complete → final_status={final_status}", flush=True)
+                _log.debug(f"[adapter.resume] 🏁 orchestration_complete → final_status={final_status}")
 
             if event.get("type") == "human_input_required":
-                print(f"[adapter.resume] ⏸ another human step — pausing again", flush=True)
+                _log.debug(f"[adapter.resume] ⏸ another human step — pausing again")
                 await self._sync_paused_state(event)
                 await self._publisher.publish_paused()
                 return "paused"
 
-        print(f"[adapter.resume] ✅ loop done after {event_count} events, calling _sync_final_state(status={final_status})", flush=True)
+        _log.debug(f"[adapter.resume] ✅ loop done after {event_count} events, calling _sync_final_state(status={final_status})")
         await self._sync_final_state(final_status)
         await self._publisher.publish_done()
         return final_status
@@ -340,7 +344,7 @@ class WorkerEngineAdapter:
                 )
                 await session.commit()
         except Exception as e:
-            print(f"[worker_engine_adapter] _sync_paused_state error: {e}", flush=True)
+            _log.debug(f"[worker_engine_adapter] _sync_paused_state error: {e}")
 
     async def _sync_final_state(self, status: str = "completed", *, keep_position: bool = False) -> None:
         """Persist the final run status, ended_at, worker attribution, and cost/tokens to Postgres.
@@ -375,7 +379,7 @@ class WorkerEngineAdapter:
                     values["cache_hit_count"] = sum(1 for r in usage_records if r.get("response_cache_hit"))
                     values["estimated_savings_usd"] = round(sum(r.get("estimated_savings", 0.0) for r in usage_records), 8)
                 except Exception as e:
-                    print(f"[worker_engine_adapter] cost aggregation error: {e}", flush=True)
+                    _log.debug(f"[worker_engine_adapter] cost aggregation error: {e}")
 
                 await session.execute(
                     update(OrchestrationRunDB)
@@ -384,7 +388,7 @@ class WorkerEngineAdapter:
                 )
                 await session.commit()
         except Exception as e:
-            print(f"[worker_engine_adapter] _sync_final_state error: {e}", flush=True)
+            _log.debug(f"[worker_engine_adapter] _sync_final_state error: {e}")
 
         # Clear any stale cancel signal
         try:

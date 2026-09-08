@@ -22,6 +22,10 @@ from core.scale import mcp_pool
 from core.scale.config import QUEUE_NAME, get_scale_config
 from core.tenancy import get_tenant, tenant_scope
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Shared worker context (populated in on_startup, used in job functions)
@@ -187,7 +191,7 @@ async def run_orchestration_job(
 
     except Exception as exc:
         tb = traceback.format_exc()
-        print(f"[worker] run_orchestration_job ERROR {run_id}: {exc}\n{tb}", flush=True)
+        _log.debug(f"[worker] run_orchestration_job ERROR {run_id}: {exc}\n{tb}")
 
         # Update run status in Postgres to failed
         try:
@@ -271,7 +275,7 @@ async def resume_orchestration_job(
         # is this tenant's, not whoever's was current at worker startup.
         server_module = await mcp_pool.acquire()
         leased = True
-        print(f"[resume] ▶ job picked up run_id={run_id} human_response_keys={list(human_response.keys()) if isinstance(human_response, dict) else type(human_response).__name__}", flush=True)
+        _log.debug(f"[resume] ▶ job picked up run_id={run_id} human_response_keys={list(human_response.keys()) if isinstance(human_response, dict) else type(human_response).__name__}")
 
         # Load run to find orchestration_id
         async with session_factory() as session:
@@ -284,10 +288,10 @@ async def resume_orchestration_job(
             if not row:
                 raise ValueError(f"Run {run_id} not found in Postgres")
             orch_id = row.orchestration_id
-            print(f"[resume] 📋 loaded run from DB: orch_id={orch_id} status={row.status} current_step_id={row.current_step_id} waiting_for_human={row.waiting_for_human}", flush=True)
+            _log.debug(f"[resume] 📋 loaded run from DB: orch_id={orch_id} status={row.status} current_step_id={row.current_step_id} waiting_for_human={row.waiting_for_human}")
 
         orch = await _load_orchestration(session_factory, orch_id)
-        print(f"[resume] 📦 orchestration loaded from Postgres: id={orch.id} name={orch.name} steps={len(orch.steps)}", flush=True)
+        _log.debug(f"[resume] 📦 orchestration loaded from Postgres: id={orch.id} name={orch.name} steps={len(orch.steps)}")
 
         from core.scale.pubsub import RunEventPublisher
         publisher = RunEventPublisher(redis, run_id, ttl=cfg.pubsub_event_ttl)
@@ -307,7 +311,7 @@ async def resume_orchestration_job(
                 )
             )
             await session.commit()
-        print(f"[resume] ✅ DB status set to 'running', waiting_for_human=False", flush=True)
+        _log.debug(f"[resume] ✅ DB status set to 'running', waiting_for_human=False")
 
         await publisher.publish({"type": "worker_picked_up", "worker_id": _worker_id, "run_id": run_id})
 
@@ -322,9 +326,9 @@ async def resume_orchestration_job(
             worker_id=_worker_id,
             job_id=ctx.get("job_id", ""),
         )
-        print(f"[resume] 🔄 calling adapter.resume() ...", flush=True)
+        _log.debug(f"[resume] 🔄 calling adapter.resume() ...")
         final_status = await adapter.resume(human_response=human_response)
-        print(f"[resume] 🏁 adapter.resume() returned final_status={final_status}", flush=True)
+        _log.debug(f"[resume] 🏁 adapter.resume() returned final_status={final_status}")
 
         if webhook_url and final_status != "paused":
             await _deliver_webhook_for_run(
@@ -337,7 +341,7 @@ async def resume_orchestration_job(
         return {"status": final_status, "run_id": run_id}
 
     except Exception as exc:
-        print(f"[worker] resume_orchestration_job ERROR {run_id}: {exc}", flush=True)
+        _log.debug(f"[worker] resume_orchestration_job ERROR {run_id}: {exc}")
 
         # Mirror run_orchestration_job: mark failed in Postgres so it doesn't stay "paused"
         try:
@@ -425,7 +429,7 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
         return {"status": final_status, "run_id": run_id}
 
     except Exception as exc:
-        print(f"[worker] resume_failed_job ERROR {run_id}: {exc}", flush=True)
+        _log.debug(f"[worker] resume_failed_job ERROR {run_id}: {exc}")
         raise
 
     finally:
@@ -553,7 +557,7 @@ async def run_agent_chat_job(
 
     except Exception as exc:
         tb = traceback.format_exc()
-        print(f"[worker] run_agent_chat_job ERROR {session_id}: {exc}\n{tb}", flush=True)
+        _log.debug(f"[worker] run_agent_chat_job ERROR {session_id}: {exc}\n{tb}")
 
         # Say so on the stream before failing.
         #
@@ -602,7 +606,7 @@ async def worker_startup(ctx: dict) -> None:
     _worker_id = os.getenv("WORKER_ID", f"worker-{socket.gethostname()}-{uuid.uuid4().hex[:8]}")
     _worker_address = f"http://{socket.gethostname()}:{os.getenv('WORKER_HEALTH_PORT', '9000')}"
 
-    print(f"[worker] starting up as {_worker_id} @ {_worker_address}", flush=True)
+    _log.debug(f"[worker] starting up as {_worker_id} @ {_worker_address}")
 
     # Build the store's engine and session factory
     from core.store import build_engine, build_session_factory, init_db, set_store
@@ -678,7 +682,7 @@ async def worker_startup(ctx: dict) -> None:
     ctx["heartbeat_task"] = heartbeat_task
     ctx["worker_id"] = _worker_id
 
-    print(f"[worker] startup complete. MCP disabled: {server_module.mcp_disabled}", flush=True)
+    _log.debug(f"[worker] startup complete. MCP disabled: {server_module.mcp_disabled}")
 
 
 async def worker_shutdown(ctx: dict) -> None:
@@ -709,7 +713,7 @@ async def worker_shutdown(ctx: dict) -> None:
     if pg_engine:
         await pg_engine.dispose()
 
-    print(f"[worker] shutdown complete", flush=True)
+    _log.debug(f"[worker] shutdown complete")
 
 
 # ---------------------------------------------------------------------------
@@ -861,7 +865,7 @@ async def _deliver_webhook_for_run(
             secret=webhook_secret,
         )
     except Exception as e:
-        print(f"[worker] webhook delivery failed for {run_id}: {e}", flush=True)
+        _log.debug(f"[worker] webhook delivery failed for {run_id}: {e}")
 
 
 async def _write_dlq(
@@ -896,4 +900,4 @@ async def _write_dlq(
             )
             await session.commit()
     except Exception as e:
-        print(f"[worker] failed to write DLQ: {e}", flush=True)
+        _log.debug(f"[worker] failed to write DLQ: {e}")

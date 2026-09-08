@@ -69,6 +69,8 @@ def main():
     time.sleep(0.5)
 
     # Run the ARQ worker (blocks until SIGTERM / SIGINT)
+    from core.log import configure as _configure_logging
+    _configure_logging()
     from arq import run_worker
     from core.scale.worker import WorkerSettings
 

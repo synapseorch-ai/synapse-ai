@@ -43,6 +43,10 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAu
 from core.config import MCP_SESSION_READ_TIMEOUT, load_settings
 import core.mcp_oauth_state as oauth_state
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 _SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
@@ -322,7 +326,7 @@ async def _open_http_session(
         return read, write
     except BaseException as e:
         err_http = e
-        print(f"[MCP] Streamable HTTP failed for {url}: {type(e).__name__}: {e}. Trying SSE…")
+        _log.debug(f"[MCP] Streamable HTTP failed for {url}: {type(e).__name__}: {e}. Trying SSE…")
 
     # ── SSE fallback ───────────────────────────────────────────────────────────
     # Pass only the headers we explicitly set (auth bearer etc.), NOT httpx
@@ -364,7 +368,7 @@ class MCPClientManager:
         try:
             self.servers_config = await load_mcp_servers()
         except Exception as e:
-            print(f"Error loading MCP servers config: {e}")
+            _log.info(f"Error loading MCP servers config: {e}")
             self.servers_config = []
         return self.servers_config
 
@@ -396,10 +400,10 @@ class MCPClientManager:
                 _server.tool_router.register(
                     name, tool.name, session_key=agent_key, alias=False
                 )
-            print(f"[MCP] Registered {len(tools.tools)} tools for '{name}': "
+            _log.debug(f"[MCP] Registered {len(tools.tools)} tools for '{name}': "
                   f"{[t.name for t in tools.tools]}")
         except Exception as e:
-            print(f"[MCP] Tool registration failed for '{name}': {e}")
+            _log.debug(f"[MCP] Tool registration failed for '{name}': {e}")
 
     # ── Stdio connection ───────────────────────────────────────────────────────
 
@@ -410,7 +414,7 @@ class MCPClientManager:
         env_vars = config.get("env", {})
 
         if not command:
-            print(f"Skipping '{name}': no command")
+            _log.info(f"Skipping '{name}': no command")
             return None
 
         # Gate at the sink, not only at the callers. Spawning a stdio server is
@@ -420,21 +424,21 @@ class MCPClientManager:
         # bundle's MCP configs to disk and called this method directly, skipping
         # the add_server/reconnect_server/connect_all gates entirely.
         if not stdio_mcp_allowed():
-            print(f"[MCP] Refusing to spawn stdio server '{name}': "
+            _log.debug(f"[MCP] Refusing to spawn stdio server '{name}': "
                   f"stdio MCP servers are disabled on this deployment.")
             await self._set_status(name, "disconnected")
             return None
         try:
             check_stdio_command_allowed(command)
         except ValueError as e:
-            print(f"[MCP] Refusing to spawn stdio server '{name}': {e}")
+            _log.debug(f"[MCP] Refusing to spawn stdio server '{name}': {e}")
             await self._set_status(name, "disconnected")
             return None
 
         env = os.environ.copy()
         env.update(env_vars)
 
-        print(f"Connecting to stdio MCP server '{name}' ({command} {args})...")
+        _log.info(f"Connecting to stdio MCP server '{name}' ({command} {args})...")
         inner_stack = AsyncExitStack()
         try:
             params = StdioServerParameters(command=command, args=args, env=env)
@@ -445,10 +449,10 @@ class MCPClientManager:
             await session.initialize()
             await self.exit_stack.enter_async_context(inner_stack)
             self.sessions[name] = session
-            print(f"Connected to stdio MCP server '{name}'.")
+            _log.info(f"Connected to stdio MCP server '{name}'.")
             return session
         except BaseException as e:
-            print(f"Failed stdio connect '{name}': {e}")
+            _log.info(f"Failed stdio connect '{name}': {e}")
             try:
                 await inner_stack.aclose()
             except BaseException:
@@ -464,7 +468,7 @@ class MCPClientManager:
         token = config.get("token", "")
 
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        print(f"Connecting to remote MCP server '{name}' ({url})...")
+        _log.info(f"Connecting to remote MCP server '{name}' ({url})...")
         inner_stack = AsyncExitStack()
         try:
             http_client = await inner_stack.enter_async_context(
@@ -477,10 +481,10 @@ class MCPClientManager:
             await session.initialize()
             await self.exit_stack.enter_async_context(inner_stack)
             self.sessions[name] = session
-            print(f"Connected to remote MCP server '{name}'.")
+            _log.info(f"Connected to remote MCP server '{name}'.")
             return session
         except BaseException as e:
-            print(f"Failed remote connect '{name}': {e}")
+            _log.info(f"Failed remote connect '{name}': {e}")
             try:
                 await inner_stack.aclose()
             except BaseException:
@@ -548,13 +552,13 @@ class MCPClientManager:
                 if endpoint:
                     await StoreTokenStorage(name).set_token_endpoint(str(endpoint))
             except Exception as e:
-                print(f"[MCP] Could not record the token endpoint for '{name}': {e}")
+                _log.debug(f"[MCP] Could not record the token endpoint for '{name}': {e}")
 
             await self._set_status(name, "connected")
             await self._auto_register(name)    # ← register tools into agent_sessions
-            print(f"OAuth complete — connected to '{name}'.")
+            _log.info(f"OAuth complete — connected to '{name}'.")
         except Exception as e:
-            print(f"OAuth connection failed for '{name}': {e}")
+            _log.info(f"OAuth connection failed for '{name}': {e}")
             await self._set_status(name, "disconnected")
             if not auth_url_future.done():
                 auth_url_future.set_exception(e)
@@ -609,7 +613,7 @@ class MCPClientManager:
             if endpoint:
                 await storage.set_token_endpoint(endpoint)
         if not endpoint:
-            print(f"[MCP] No token endpoint known for '{name}' — cannot refresh.")
+            _log.debug(f"[MCP] No token endpoint known for '{name}' — cannot refresh.")
             return False
 
         cfg = {
@@ -631,7 +635,7 @@ class MCPClientManager:
         if not renewed.refresh_token:
             renewed.refresh_token = tokens.refresh_token
         await storage.set_tokens(renewed)
-        print(f"[MCP] Renewed the access token for '{name}'.")
+        _log.debug(f"[MCP] Renewed the access token for '{name}'.")
         return True
 
     # ── Remote reconnect: use cached tokens (startup / manual retry) ───────────
@@ -662,11 +666,11 @@ class MCPClientManager:
             except Exception as e:
                 # A renewal that blew up must not cost us the connect attempt
                 # the old token might still satisfy.
-                print(f"[MCP] Token renewal for '{name}' failed: {e}")
+                _log.debug(f"[MCP] Token renewal for '{name}' failed: {e}")
 
             # ── OAuth path: try cached tokens, allow silent refresh ────────────
             async def noop_redirect(auth_url: str) -> None:
-                print(f"[MCP] Token refresh failed for '{name}' — re-auth needed.")
+                _log.debug(f"[MCP] Token refresh failed for '{name}' — re-auth needed.")
 
             async def noop_callback() -> tuple[str, Optional[str]]:
                 raise RuntimeError("Interactive OAuth not available at startup")
@@ -688,17 +692,17 @@ class MCPClientManager:
                 await session.initialize()
                 await self.exit_stack.enter_async_context(inner_stack)
                 self.sessions[name] = session
-                print(f"[MCP] Reconnected '{name}' with cached OAuth tokens.")
+                _log.debug(f"[MCP] Reconnected '{name}' with cached OAuth tokens.")
                 return session
             except BaseException as e:
-                print(f"[MCP] Cached OAuth reconnect failed for '{name}': {e}. Falling back to direct connect.")
+                _log.debug(f"[MCP] Cached OAuth reconnect failed for '{name}': {e}. Falling back to direct connect.")
                 try:
                     await inner_stack.aclose()
                 except BaseException:
                     pass
 
         # ── Direct path: no token, no OAuth — server may not need auth ───────
-        print(f"[MCP] Attempting direct (no-auth) connection to '{name}' ({url})...")
+        _log.debug(f"[MCP] Attempting direct (no-auth) connection to '{name}' ({url})...")
         inner_stack = AsyncExitStack()
         try:
             http_client = await inner_stack.enter_async_context(
@@ -711,10 +715,10 @@ class MCPClientManager:
             await session.initialize()
             await self.exit_stack.enter_async_context(inner_stack)
             self.sessions[name] = session
-            print(f"[MCP] Connected '{name}' via direct (no-auth) connection.")
+            _log.debug(f"[MCP] Connected '{name}' via direct (no-auth) connection.")
             return session
         except BaseException as e:
-            print(f"[MCP] Direct connect also failed for '{name}': {e}")
+            _log.debug(f"[MCP] Direct connect also failed for '{name}': {e}")
             try:
                 await inner_stack.aclose()
             except BaseException:
@@ -737,7 +741,7 @@ class MCPClientManager:
                 # disabled — otherwise a saved (possibly malicious) config would
                 # execute on every boot. See GHSA-3j67-x3j8-r32x.
                 if not stdio_mcp_allowed():
-                    print(f"[MCP] Skipping stdio server '{name}': stdio MCP disabled on this deployment.")
+                    _log.debug(f"[MCP] Skipping stdio server '{name}': stdio MCP disabled on this deployment.")
                     await self._set_status(name, "disabled")
                     continue
                 session = await self.connect_stdio_server(config)

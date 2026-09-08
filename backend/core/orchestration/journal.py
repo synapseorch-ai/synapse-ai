@@ -38,6 +38,10 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 _writer: ThreadPoolExecutor | None = None
 
 
@@ -223,7 +227,7 @@ class FileRunJournal:
             try:
                 fn(*args)
             except Exception as e:  # noqa: BLE001 — never raise on the writer thread
-                print(f"WARNING: journal write failed for '{self.run_id}': {e}", flush=True)
+                _log.warning(f"journal write failed for '{self.run_id}': {e}")
         self._pending = _executor().submit(guarded)
         return self._pending
 

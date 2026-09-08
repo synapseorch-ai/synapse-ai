@@ -14,6 +14,10 @@ import anyio
 from core.config import HTTP_TOOL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT, ORCH_STEP_TIMEOUT
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 if TYPE_CHECKING:
     from .engine import OrchestrationEngine
 
@@ -48,7 +52,7 @@ class AgentStepExecutor:
         from core.react_engine import run_agent_step
         from core.agent_logger import AgentLogger
         from .resolved import resolve_for_run
-        print(f"DEBUG AGENT EXEC: agent_id={step.agent_id} step={step.id}", flush=True)
+        _log.debug(f"AGENT EXEC: agent_id={step.agent_id} step={step.id}")
 
         from .context import build_origin_aware_context, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
@@ -116,13 +120,13 @@ class AgentStepExecutor:
             prior_attempts = int(saved_progress.get("attempt") or 1)
             if prior_attempts >= 3:
                 run.step_progress.pop(step.id, None)
-                print(f"DEBUG AGENT EXEC: ⚠ discarding step progress for '{step.id}' "
-                      f"after {prior_attempts} attempts — fresh rerun", flush=True)
+                _log.debug(f"AGENT EXEC: ⚠ discarding step progress for '{step.id}' "
+                      f"after {prior_attempts} attempts — fresh rerun")
             else:
                 resume_state = saved_progress
                 resume_attempt = prior_attempts + 1
-                print(f"DEBUG AGENT EXEC: ⏯ resuming step '{step.id}' mid-node "
-                      f"(attempt {resume_attempt}, turn {saved_progress.get('turn')})", flush=True)
+                _log.debug(f"AGENT EXEC: ⏯ resuming step '{step.id}' mid-node "
+                      f"(attempt {resume_attempt}, turn {saved_progress.get('turn')})")
 
         final_response = None
         _log_status = "completed"
@@ -156,7 +160,7 @@ class AgentStepExecutor:
                     try:
                         await SharedState(run).checkpoint(columns=("tasks",))
                     except Exception as ckpt_err:
-                        print(f"WARNING: task-list checkpoint failed: {ckpt_err}", flush=True)
+                        _log.warning(f"task-list checkpoint failed: {ckpt_err}")
                 if event.get("type") == "_step_progress":
                     # Turn-boundary transcript checkpoint: persist so a crash
                     # resumes mid-step. Swallowed here — never logged, never
@@ -174,7 +178,7 @@ class AgentStepExecutor:
                     try:
                         await SharedState(run).checkpoint(columns=("step_progress",))
                     except Exception as ckpt_err:
-                        print(f"WARNING: step-progress checkpoint failed: {ckpt_err}", flush=True)
+                        _log.warning(f"step-progress checkpoint failed: {ckpt_err}")
                     continue
                 execution_events.append(event)
                 agent_log.log_event(event)
@@ -418,7 +422,7 @@ class ToolStepExecutor:
             if last_error:
                 turn_prompt += f"\n\nPrevious attempt failed: {last_error}\nPlease try again with correct arguments."
 
-            print(f"DEBUG TOOL STEP: turn {turn + 1}/{max_turns} model={model} tool={tool_name}", flush=True)
+            _log.debug(f"TOOL STEP: turn {turn + 1}/{max_turns} model={model} tool={tool_name}")
             try:
                 tool_sys_prompt = "You are a tool-calling assistant. Output ONLY valid JSON."
                 if system_prompt_prefix:
@@ -447,7 +451,7 @@ class ToolStepExecutor:
             tool_call, json_error = parse_tool_call(response)
             if not tool_call:
                 last_error = json_error or "LLM did not return a valid tool call JSON"
-                print(f"DEBUG TOOL STEP: ⚠ parse failed turn={turn + 1}: {last_error}", flush=True)
+                _log.debug(f"TOOL STEP: ⚠ parse failed turn={turn + 1}: {last_error}")
                 continue
 
             called_tool = tool_call.get("tool", "")
@@ -462,8 +466,8 @@ class ToolStepExecutor:
                 "tool_name": called_tool,
                 "args": tool_args,
             }
-            print(f"DEBUG TOOL STEP: 🔧 Tool Call: {called_tool}", flush=True)
-            print(f"DEBUG TOOL STEP: 📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}", flush=True)
+            _log.debug(f"TOOL STEP: 🔧 Tool Call: {called_tool}")
+            _log.debug(f"TOOL STEP: 📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}")
 
             try:
                 result = await self._execute_tool(called_tool, tool_args, engine)
@@ -478,12 +482,12 @@ class ToolStepExecutor:
                     "tool_name": called_tool,
                     "preview": preview,
                 }
-                print(f"DEBUG TOOL STEP: 📤 Tool Result ({called_tool}): {preview}", flush=True)
-                print(f"DEBUG TOOL STEP: ✅ tool '{called_tool}' succeeded", flush=True)
+                _log.debug(f"TOOL STEP: 📤 Tool Result ({called_tool}): {preview}")
+                _log.debug(f"TOOL STEP: ✅ tool '{called_tool}' succeeded")
                 break
             except Exception as e:
                 last_error = str(e)
-                print(f"DEBUG TOOL STEP: ❌ tool execution failed turn={turn + 1}: {last_error}", flush=True)
+                _log.debug(f"TOOL STEP: ❌ tool execution failed turn={turn + 1}: {last_error}")
 
         yield {
             "type": "final",
@@ -712,7 +716,7 @@ class EvaluatorStepExecutor:
                 cache_response_step_id=step.id,
                 cache_response_threshold=step.cache_response_threshold,
             )
-            print(f"DEBUG: 🔀 Evaluator LLM response: {response}")
+            _log.debug(f"🔀 Evaluator LLM response: {response}")
 
             # Emit evaluator LLM response for the logger
             yield {"type": "_log_evaluator", "orch_step_id": step.id, "prompt": prompt, "llm_response": response}
@@ -731,15 +735,15 @@ class EvaluatorStepExecutor:
             # LLM errors must propagate to stop orchestration
             from core.llm_providers import LLMError
             if isinstance(e, LLMError):
-                print(f"DEBUG: ❌ Evaluator LLM failed — stopping orchestration: {e}", flush=True)
+                _log.warning(f"❌ Evaluator LLM failed — stopping orchestration: {e}")
                 raise
-            print(f"DEBUG: Evaluator routing call failed: {e}")
+            _log.debug(f"Evaluator routing call failed: {e}")
 
         # Fallback: pick the first route
         if not routing_decision:
             fallback_label = labels[0] if labels else None
             if fallback_label:
-                print(f"DEBUG: Evaluator falling back to first route: {fallback_label}")
+                _log.debug(f"Evaluator falling back to first route: {fallback_label}")
                 routing_decision = {
                     "type": "routing_decision",
                     "tool_name": f"route_{fallback_label}",
@@ -747,7 +751,7 @@ class EvaluatorStepExecutor:
                 }
 
         if routing_decision:
-            print(f"routing decision")
+            _log.info(f"routing decision")
             yield {**routing_decision, "orch_step_id": step.id}
             tool_name = routing_decision.get("tool_name", "")
             label = tool_name.replace("route_", "", 1) if tool_name.startswith("route_") else tool_name
@@ -801,7 +805,7 @@ class ParallelStepExecutor:
         self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
     ) -> AsyncGenerator[dict, None]:
         branches = step.parallel_branches
-        print(f"DEBUG PARALLEL: ▶ step='{step.id}' branches={len(branches)} convergence='{step.next_step_id}'", flush=True)
+        _log.debug(f"PARALLEL: ▶ step='{step.id}' branches={len(branches)} convergence='{step.next_step_id}'")
         if not branches:
             yield {"type": "step_warning", "orch_step_id": step.id, "message": "No branches defined"}
             return
@@ -840,8 +844,8 @@ class ParallelStepExecutor:
         completed_branches: set[int] = set(saved.get("completed_branches") or [])
         completed_steps: set[str] = set(saved.get("completed_steps") or [])
         if completed_branches or completed_steps:
-            print(f"DEBUG PARALLEL: ⏯ resuming — branches done={sorted(completed_branches)} "
-                  f"sub-steps done={sorted(completed_steps)}", flush=True)
+            _log.debug(f"PARALLEL: ⏯ resuming — branches done={sorted(completed_branches)} "
+                  f"sub-steps done={sorted(completed_steps)}")
 
         async def _checkpoint_progress():
             run.shared_state[progress_key] = {
@@ -853,7 +857,7 @@ class ParallelStepExecutor:
                 # branches finishing together cannot land out of order.
                 await SharedState(run).checkpoint()
             except Exception as ckpt_err:
-                print(f"WARNING: parallel-progress checkpoint failed: {ckpt_err}", flush=True)
+                _log.warning(f"parallel-progress checkpoint failed: {ckpt_err}")
 
         def _is_concurrent_safe(chain: list[str]) -> bool:
             for sid in chain:
@@ -865,7 +869,7 @@ class ParallelStepExecutor:
         from core import config as _config
         pending = [(i, chain) for i, chain in enumerate(resolved_branches) if i not in completed_branches]
         for i, _ in [(i, c) for i, c in enumerate(resolved_branches) if i in completed_branches]:
-            print(f"DEBUG PARALLEL: ├─ branch {i} already complete — skipping", flush=True)
+            _log.debug(f"PARALLEL: ├─ branch {i} already complete — skipping")
         if _config.PARALLEL_BRANCHES_CONCURRENT:
             concurrent = [(i, c) for i, c in pending if _is_concurrent_safe(c)]
             sequential = [(i, c) for i, c in pending if not _is_concurrent_safe(c)]
@@ -880,7 +884,7 @@ class ParallelStepExecutor:
 
         # ── Concurrent branches: one task each, events through a queue ──
         if concurrent:
-            print(f"DEBUG PARALLEL: ├─ running {len(concurrent)} tool-free branch(es) concurrently", flush=True)
+            _log.debug(f"PARALLEL: ├─ running {len(concurrent)} tool-free branch(es) concurrently")
             queue: asyncio.Queue = asyncio.Queue()
 
             async def _pump(branch_index: int, chain: list[str]):
@@ -924,7 +928,7 @@ class ParallelStepExecutor:
                 yield ev
 
         run.shared_state.pop(progress_key, None)
-        print(f"DEBUG PARALLEL: ✅ all {len(resolved_branches)} branches complete", flush=True)
+        _log.debug(f"PARALLEL: ✅ all {len(resolved_branches)} branches complete")
         yield {"type": "parallel_complete", "orch_step_id": step.id, "branch_count": len(resolved_branches)}
 
     async def _iter_branch(
@@ -933,13 +937,13 @@ class ParallelStepExecutor:
     ) -> AsyncGenerator[dict, None]:
         """One branch, start to finish. Yields its events; a
         `human_input_required` is yielded last and ends the branch."""
-        print(f"DEBUG PARALLEL: ├─ branch {branch_index}/{branch_count} steps={branch_step_ids}", flush=True)
+        _log.debug(f"PARALLEL: ├─ branch {branch_index}/{branch_count} steps={branch_step_ids}")
         yield {"type": "branch_start", "orch_step_id": step.id,
                "branch_index": branch_index, "branch_count": branch_count}
 
         for sid in branch_step_ids:
             if sid in completed_steps:
-                print(f"DEBUG PARALLEL:   ↷ sub-step '{sid}' already complete — skipping", flush=True)
+                _log.debug(f"PARALLEL: ↷ sub-step '{sid}' already complete — skipping")
                 continue
             sub_step = engine.step_map.get(sid)
             if not sub_step:
@@ -954,7 +958,7 @@ class ParallelStepExecutor:
 
             step_start = time.time()
             sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
-            print(f"DEBUG PARALLEL:   ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s", flush=True)
+            _log.debug(f"PARALLEL: ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s")
             yield {"type": "step_start", "orch_step_id": sub_step.id,
                    "step_name": sub_step.name, "step_type": sub_step.type.value}
 
@@ -976,9 +980,9 @@ class ParallelStepExecutor:
                     try:
                         await sub_gen.aclose()
                     except Exception as close_err:  # noqa: BLE001
-                        print(f"WARNING: closing timed-out step '{sub_step.name}' failed: {close_err}", flush=True)
+                        _log.warning(f"closing timed-out step '{sub_step.name}' failed: {close_err}")
                 duration = round(time.time() - step_start, 2)
-                print(f"DEBUG PARALLEL: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s in branch {branch_index}", flush=True)
+                _log.debug(f"PARALLEL: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s in branch {branch_index}")
                 run.step_history.append({
                     "step_id": sub_step.id, "step_name": sub_step.name,
                     "step_type": sub_step.type.value, "status": "failed",
@@ -995,7 +999,7 @@ class ParallelStepExecutor:
                 return
 
             duration = round(time.time() - step_start, 2)
-            print(f"DEBUG PARALLEL:   ✓ sub-step '{sub_step.name}' done in {duration}s", flush=True)
+            _log.debug(f"PARALLEL: ✓ sub-step '{sub_step.name}' done in {duration}s")
             run.step_history.append({
                 "step_id": sub_step.id, "step_name": sub_step.name,
                 "step_type": sub_step.type.value, "status": "completed",
@@ -1157,9 +1161,9 @@ class LoopStepExecutor:
                 mode = "count"
                 total = min(max(1, step.loop_count), cap)
 
-            print(f"DEBUG LOOP: ▶ step='{step.id}' mode={mode} body_ids={body_ids} total={total}", flush=True)
+            _log.debug(f"LOOP: ▶ step='{step.id}' mode={mode} body_ids={body_ids} total={total}")
             if completed_iterations:
-                print(f"DEBUG LOOP: ⏯ resuming from iteration {completed_iterations + 1}", flush=True)
+                _log.debug(f"LOOP: ⏯ resuming from iteration {completed_iterations + 1}")
 
             iteration = completed_iterations
             iterations_run = completed_iterations
@@ -1263,9 +1267,9 @@ class LoopStepExecutor:
                             try:
                                 await sub_gen.aclose()
                             except Exception as close_err:
-                                print(f"WARNING: closing timed-out step "
-                                      f"'{sub_step.name}' failed: {close_err}", flush=True)
-                        print(f"DEBUG LOOP: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s (iteration {iteration})", flush=True)
+                                _log.warning(f"closing timed-out step "
+                                      f"'{sub_step.name}' failed: {close_err}")
+                        _log.debug(f"LOOP: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s (iteration {iteration})")
                         run.step_history.append({
                             "step_id": sub_step.id, "step_name": sub_step.name,
                             "step_type": sub_step.type.value, "status": "failed",
@@ -1331,7 +1335,7 @@ class LoopStepExecutor:
                 try:
                     await SharedState(run).checkpoint()
                 except Exception as ckpt_err:
-                    print(f"WARNING: loop-progress checkpoint failed: {ckpt_err}", flush=True)
+                    _log.warning(f"loop-progress checkpoint failed: {ckpt_err}")
 
                 if step.loop_break_condition:
                     should_break, err = _eval_state_expr(
@@ -1822,13 +1826,13 @@ class IfElseStepExecutor:
         raw, err = _eval_state_expr(condition, run.shared_state, default=False)
         result = bool(raw)
         if err:
-            print(f"DEBUG IF_ELSE: ⚠ Condition eval failed: {err}", flush=True)
+            _log.debug(f"IF_ELSE: ⚠ Condition eval failed: {err}")
             yield {"type": "step_warning", "orch_step_id": step.id,
                    "message": f"Condition eval error (treating as False): {err}"}
 
         decision = "true" if result else "false"
         run.shared_state[f"_if_decision_{step.id}"] = decision
-        print(f"DEBUG IF_ELSE: condition='{condition}' → {decision}", flush=True)
+        _log.debug(f"IF_ELSE: condition='{condition}' → {decision}")
 
         if step.output_key:
             run.shared_state[step.output_key] = result
@@ -1865,7 +1869,7 @@ class SwitchStepExecutor:
         try:
             value = eval(expression, eval_ns)
         except Exception as e:
-            print(f"DEBUG SWITCH: ⚠ Expression eval failed: {e}", flush=True)
+            _log.debug(f"SWITCH: ⚠ Expression eval failed: {e}")
             value = None
             yield {"type": "step_warning", "orch_step_id": step.id,
                    "message": f"Expression eval error: {e}"}
@@ -1874,7 +1878,7 @@ class SwitchStepExecutor:
         value_str = str(value) if value is not None else "None"
         matched_case = value_str if value_str in (step.switch_cases or {}) else None
         run.shared_state[f"_switch_decision_{step.id}"] = matched_case
-        print(f"DEBUG SWITCH: expression='{expression}' → '{value_str}', matched_case={matched_case}", flush=True)
+        _log.debug(f"SWITCH: expression='{expression}' → '{value_str}', matched_case={matched_case}")
 
         if step.output_key:
             run.shared_state[step.output_key] = value

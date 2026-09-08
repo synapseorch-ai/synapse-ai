@@ -15,6 +15,10 @@ import time
 from concurrent.futures import Future
 from pathlib import Path
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 #: Blob key prefix for finished logs. Tenant-scoped by the blob store itself —
 #: this used to be a flat `logs/orchestration/` prefix on a shared bucket, so
 #: two tenants with the same run_id overwrote each other and list_logs()
@@ -123,7 +127,7 @@ class OrchestrationLogger:
                 self._fh.write(text)
                 self._fh.flush()
             except Exception as e:  # noqa: BLE001 — never raise on the writer thread
-                print(f"WARNING: run log write failed for '{self.run_id}': {e}", flush=True)
+                _log.warning(f"run log write failed for '{self.run_id}': {e}")
 
         self._pending = _executor().submit(guarded)
 

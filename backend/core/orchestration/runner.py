@@ -20,6 +20,10 @@ from typing import AsyncGenerator
 
 from core.orchestration.journal import aclose_journal, broker, get_journal
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 # Live in-process runs, keyed by run_id. The cancel endpoint cancels the task
 # to interrupt an in-progress await; the run-status endpoint consults it to
 # report a run that is still inside its first step (no checkpoint yet).
@@ -46,7 +50,7 @@ async def _observe(run_id: str, event: dict):
     try:
         entry_id = get_journal(run_id).append(event)
     except Exception as e:
-        print(f"WARNING: journal append failed for '{run_id}': {e}", flush=True)
+        _log.warning(f"journal append failed for '{run_id}': {e}")
     try:
         broker.publish(run_id, {"id": entry_id, "event": event})
     except Exception:
@@ -107,7 +111,7 @@ def spawn_engine_run(agen, run_id: str) -> tuple[asyncio.Task, asyncio.Queue]:
             # the registry should wait with it.
             _active_tasks.pop(run_id, None)
             await aclose_journal(run_id)
-            print(f"DEBUG SSE QUEUE: sentinel sent for '{run_id}', stream closing", flush=True)
+            _log.debug(f"SSE QUEUE: sentinel sent for '{run_id}', stream closing")
             await queue.put(SENTINEL)
 
     task = asyncio.create_task(_pump())

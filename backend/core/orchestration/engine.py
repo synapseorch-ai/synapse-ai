@@ -15,6 +15,10 @@ from .state import SharedState
 from .steps import STEP_EXECUTORS
 from .logger import OrchestrationLogger
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 
 def _seconds_since(iso_timestamp: str | None) -> float | None:
     """Wall-clock seconds since an ISO-8601 Z timestamp, or None if unparseable.
@@ -177,7 +181,7 @@ class OrchestrationEngine:
                 _is_cancelled = True
             if _is_cancelled:
                 run.status = "cancelled"
-                print(f"DEBUG ENGINE: 🛑 run '{run.run_id}' cancelled by request", flush=True)
+                _log.debug(f"ENGINE: 🛑 run '{run.run_id}' cancelled by request")
                 break
 
             # Global timeout guard
@@ -188,7 +192,7 @@ class OrchestrationEngine:
                 break
 
             step = self.step_map.get(run.current_step_id)
-            print(f"DEBUG ENGINE: ▶ step='{run.current_step_id}' type={step.type if step else None} status={run.status}", flush=True)
+            _log.debug(f"ENGINE: ▶ step='{run.current_step_id}' type={step.type if step else None} status={run.status}")
             if not step:
                 run.status = "failed"
                 yield {"type": "orchestration_error", "error": f"Step '{run.current_step_id}' not found"}
@@ -379,11 +383,11 @@ class OrchestrationEngine:
                         logger.log_event(extra_event)
                     yield extra_event
                 run.current_step_id = next_step_id
-                print(f"DEBUG ENGINE: 💾 checkpointed → next='{run.current_step_id}'", flush=True)
+                _log.debug(f"ENGINE: 💾 checkpointed → next='{run.current_step_id}'")
                 await state.checkpoint()
 
             except Exception as e:
-                import traceback; print(f"DEBUG ENGINE: ❌ EXCEPTION in step '{step.id}': {e}\n{traceback.format_exc()}", flush=True)
+                import traceback; _log.debug(f"ENGINE: ❌ EXCEPTION in step '{step.id}': {e}\n{traceback.format_exc()}")
                 # The stream gets a sanitised message — that choice was
                 # deliberate, an exception's text can carry anything. The run
                 # record gets the real one, bounded: an operator reading a
@@ -410,7 +414,7 @@ class OrchestrationEngine:
                 try:
                     await state.checkpoint()
                 except Exception as ckpt_err:
-                    print(f"WARNING: failure checkpoint failed: {ckpt_err}", flush=True)
+                    _log.warning(f"failure checkpoint failed: {ckpt_err}")
                 break
 
         # Finalize
@@ -425,7 +429,7 @@ class OrchestrationEngine:
         try:
             await self._write_memory_summaries(run)
         except Exception as exc:
-            print(f"WARNING: run memory summaries failed: {exc}", flush=True)
+            _log.warning(f"run memory summaries failed: {exc}")
 
         if logger:
             logger.run_end(run.status)
@@ -524,23 +528,23 @@ class OrchestrationEngine:
         """Resume a paused orchestration after human input."""
         from .state import SharedState as SS
 
-        print(f"[engine.resume] ▶ restoring state from JSON checkpoint for run_id={run_id}", flush=True)
+        _log.debug(f"[engine.resume] ▶ restoring state from JSON checkpoint for run_id={run_id}")
         restored = await SS.restore(run_id)
         run = restored.run
-        print(f"[engine.resume] 📋 restored run: orch_id={run.orchestration_id} status={run.status} current_step_id={run.current_step_id} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}", flush=True)
+        _log.debug(f"[engine.resume] 📋 restored run: orch_id={run.orchestration_id} status={run.status} current_step_id={run.current_step_id} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}")
 
         # Load the orchestration definition
         from core.scale.context import resolve_orchestration
         orch_data = await resolve_orchestration(run.orchestration_id)
         if not orch_data:
-            print(f"[engine.resume] ❌ orchestration '{run.orchestration_id}' NOT FOUND in the store", flush=True)
+            _log.debug(f"[engine.resume] ❌ orchestration '{run.orchestration_id}' NOT FOUND in the store")
             yield {"type": "orchestration_error", "error": f"Orchestration '{run.orchestration_id}' not found"}
             return
 
         orch = Orchestration.model_validate(orch_data)
         engine = cls(orch, server_module)
         engine.global_variables = await engine._load_global_variables()
-        print(f"[engine.resume] 🗺  step_map keys: {list(engine.step_map.keys())}", flush=True)
+        _log.debug(f"[engine.resume] 🗺  step_map keys: {list(engine.step_map.keys())}")
 
         # Create logger — appends to existing log file if present
         engine.logger = OrchestrationLogger(
@@ -554,7 +558,7 @@ class OrchestrationEngine:
         # If the parent was paused because a NESTED orchestration hit a human step,
         # resume the sub-run and let it complete before continuing the parent.
         if run.nested_run_id:
-            print(f"[engine.resume] 🔗 nested run detected: nested_run_id={run.nested_run_id}, delegating to _resume_nested_orch", flush=True)
+            _log.debug(f"[engine.resume] 🔗 nested run detected: nested_run_id={run.nested_run_id}, delegating to _resume_nested_orch")
             async for event in cls._resume_nested_orch(run, engine, human_response, server_module):
                 yield event
             return
@@ -562,7 +566,7 @@ class OrchestrationEngine:
         # Normal path: human step is directly in this orchestration.
         # Move to next step after the HUMAN step
         current_step = engine.step_map.get(run.current_step_id)
-        print(f"[engine.resume] 🔍 current_step lookup: current_step_id={run.current_step_id!r} → found={current_step is not None} type={current_step.type.value if current_step else 'N/A'}", flush=True)
+        _log.debug(f"[engine.resume] 🔍 current_step lookup: current_step_id={run.current_step_id!r} → found={current_step is not None} type={current_step.type.value if current_step else 'N/A'}")
 
         # Write human response to shared state under the step's configured output_key.
         # Falling back to "human_response" preserves backward-compat for steps with no output_key.
@@ -585,11 +589,11 @@ class OrchestrationEngine:
             # said nothing about why it moved on.
             if resume_event:
                 yield resume_event
-            print(f"[engine.resume] ➡  _resolve_next({run.current_step_id!r} was HUMAN) → next_step_id={next_id!r}", flush=True)
+            _log.debug(f"[engine.resume] ➡  _resolve_next({run.current_step_id!r} was HUMAN) → next_step_id={next_id!r}")
         else:
-            print(f"[engine.resume] ⚠️  current_step not found in step_map — current_step_id stays as {run.current_step_id!r}, loop will likely fail immediately", flush=True)
+            _log.debug(f"[engine.resume] ⚠️  current_step not found in step_map — current_step_id stays as {run.current_step_id!r}, loop will likely fail immediately")
 
-        print(f"[engine.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}", flush=True)
+        _log.debug(f"[engine.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}")
         engine.agent_names = await engine._load_agent_names()
         state = SharedState(run)
         # Persist "running" + the cleared human flag before the first step, so
@@ -597,7 +601,7 @@ class OrchestrationEngine:
         await state.checkpoint()
         async for event in engine._execute_loop(run, state):
             yield event
-        print(f"[engine.resume] 🏁 _execute_loop finished, run.status={run.status} run.current_step_id={run.current_step_id!r}", flush=True)
+        _log.debug(f"[engine.resume] 🏁 _execute_loop finished, run.status={run.status} run.current_step_id={run.current_step_id!r}")
 
     @classmethod
     async def _resume_nested_orch(
@@ -944,7 +948,7 @@ class OrchestrationEngine:
                     agent_id, run.session_id or run.run_id, summary, run_id=run.run_id,
                 )
             except Exception as exc:
-                print(f"WARNING: memory summary for '{agent_id}' failed: {exc}", flush=True)
+                _log.warning(f"memory summary for '{agent_id}' failed: {exc}")
 
     def _build_final_response(self, run: OrchestrationRun) -> str:
         """Build a human-readable summary from the run."""

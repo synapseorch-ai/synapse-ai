@@ -26,6 +26,10 @@ import anyio as _anyio
 import re as _re
 from datetime import timedelta
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 MAX_TURNS = 30
 
 
@@ -248,19 +252,17 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
         if _is_tool_call(obj):
             if pos > 0 and not tool_calls:
                 preamble = cleaned[:min(pos, 120)].replace("\n", " ")
-                print(
+                _log.debug(
                     f"DEBUG _scan_tool_calls: ⚠️  JSON tool call found after "
                     f"{pos} chars of preamble: «{preamble}…»",
-                    flush=True,
                 )
             tool_calls.append(obj)
             if stop_on_non_tool_json:
                 return [tool_calls[0]]
         elif isinstance(obj, dict) and stop_on_non_tool_json:
-            print(
+            _log.debug(
                 f"DEBUG _scan_tool_calls: ✅ non-tool JSON at pos={pos}, "
                 f"keys={list(obj.keys())[:5]} → halting scan",
-                flush=True,
             )
             return tool_calls
         # else: not a dict or non-tool dict in all-calls mode → keep scanning
@@ -482,7 +484,7 @@ async def _inject_db_context(agent_data, system_template):
 
         return system_template + db_context
     except Exception as e:
-        print(f"DEBUG: Failed to load db context: {e}")
+        _log.debug(f"Failed to load db context: {e}")
         return system_template
 
 
@@ -522,7 +524,7 @@ async def _inject_repo_context(agent_data, system_template):
         )
         return system_template + repo_context
     except Exception as e:
-        print(f"DEBUG: Failed to load repo context: {e}")
+        _log.debug(f"Failed to load repo context: {e}")
         return system_template
 
 
@@ -558,7 +560,7 @@ async def _build_delegate_context(
         eligible[aid] = a
 
     if not eligible:
-        print(f"DEBUG: ⚠ Delegate agent '{own_id}' has no eligible sub-agents", flush=True)
+        _log.warning(f"⚠ Delegate agent '{own_id}' has no eligible sub-agents")
         return {}
 
     # Build agent descriptions for the tool's description
@@ -605,7 +607,7 @@ async def _build_delegate_context(
         },
     })
 
-    print(f"DEBUG: 🤝 Delegate agent '{own_id}' can route to {len(eligible)} agents: {list(eligible.keys())}", flush=True)
+    _log.debug(f"🤝 Delegate agent '{own_id}' can route to {len(eligible)} agents: {list(eligible.keys())}")
     return eligible
 
 
@@ -736,9 +738,9 @@ async def _run_spawn_subtask_batch(
                     sub_final = sub_event.get("response", "")
         except Exception as exc:
             sub_final = f"Subtask error: {exc}"
-            print(f"DEBUG: ❌ spawn_subtask '{name}' failed: {exc}", flush=True)
+            _log.warning(f"❌ spawn_subtask '{name}' failed: {exc}")
 
-        print(f"DEBUG: ✅ spawn_subtask '{name}' completed ({len(sub_final)} chars)", flush=True)
+        _log.debug(f"✅ spawn_subtask '{name}' completed ({len(sub_final)} chars)")
         return (name, sub_final)
 
     return list(await asyncio.gather(*[_run_one(args) for args in subtask_calls]))
@@ -861,21 +863,21 @@ async def run_agent_step(
         ollama_tools = tools_override
         tools_json = json.dumps(tools_override)
         custom_tools = None  # listed on first use, if a custom tool is ever called
-        print(f"DEBUG RUN_AGENT: start agent_id={agent_id_for_session}, tools_override={len(tools_override)} tools", flush=True)
+        _log.debug(f"RUN_AGENT: start agent_id={agent_id_for_session}, tools_override={len(tools_override)} tools")
     elif preresolved is not None and preresolved.has_tools:
         # Aggregated once for the run; copies, because the task and skill
         # tools are appended below and the next step must not inherit them.
         all_tools, tool_schema_map, ollama_tools, tools_json = preresolved.tool_lists()
         custom_tools = preresolved.custom_tools
-        print(f"DEBUG RUN_AGENT: start agent_id={agent_id_for_session}, preresolved tool_count={len(all_tools)}", flush=True)
+        _log.debug(f"RUN_AGENT: start agent_id={agent_id_for_session}, preresolved tool_count={len(all_tools)}")
     else:
         from core.scale.context import resolve_custom_tools as _ctx_resolve_tools
         custom_tools = await _ctx_resolve_tools()
-        print(f"DEBUG RUN_AGENT: start agent_id={agent_id_for_session}, sessions={list(server_module.agent_sessions.keys())}", flush=True)
+        _log.debug(f"RUN_AGENT: start agent_id={agent_id_for_session}, sessions={list(server_module.agent_sessions.keys())}")
         all_tools, tool_schema_map, ollama_tools, tools_json = await aggregate_all_tools(
             server_module, active_agent, custom_tools
         )
-        print(f"DEBUG RUN_AGENT: aggregate_all_tools done, tool_count={len(all_tools)}", flush=True)
+        _log.debug(f"RUN_AGENT: aggregate_all_tools done, tool_count={len(all_tools)}")
     allowed_tools = narrow_allowed_tools(allowed_tools_override, active_agent.get("tools", ["all"]))
     agent_type = active_agent.get("type", "conversational")
 
@@ -931,8 +933,8 @@ async def run_agent_step(
                  "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
                 for t in all_tools
             ])
-            print(f"DEBUG: 🤖 spawn_subtask injected for agent '{agent_id_for_session}' "
-                  f"with {len(_spawn_subtask_available_tools)} delegatable tools", flush=True)
+            _log.debug(f"🤖 spawn_subtask injected for agent '{agent_id_for_session}' "
+                  f"with {len(_spawn_subtask_available_tools)} delegatable tools")
 
     # ── UPDATE_TASKS: native task list, declared to every agent ──
     # The engine owns it (no MCP, no subprocess): calls are intercepted in the
@@ -1009,8 +1011,8 @@ async def run_agent_step(
                  "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
                 for t in all_tools
             ])
-            print(f"DEBUG: 📚 skills injected for agent '{agent_id_for_session}': "
-                  f"{', '.join(_skill_names)}", flush=True)
+            _log.debug(f"📚 skills injected for agent '{agent_id_for_session}': "
+                  f"{', '.join(_skill_names)}")
 
     # ── MEMORY: the index is eager, everything else is behind the tools ──
     # (Design settled 2026-09-01: eager index only, search on demand, caps
@@ -1025,7 +1027,7 @@ async def run_agent_step(
         try:
             _memory_index_text = _agent_memory.read_index(agent_id_for_session)
         except Exception as _mem_exc:
-            print(f"WARNING: memory index read failed: {_mem_exc}", flush=True)
+            _log.warning(f"memory index read failed: {_mem_exc}")
         _mem_shadow = set(MEMORY_TOOL_NAMES)
         all_tools = [t for t in all_tools if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) not in _mem_shadow]
         ollama_tools = [t for t in ollama_tools if t.get("function", {}).get("name") not in _mem_shadow]
@@ -1043,8 +1045,8 @@ async def run_agent_step(
              "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
             for t in all_tools
         ])
-        print(f"DEBUG: 🧠 memory enabled for agent '{agent_id_for_session}' "
-              f"({len(_memory_index_text.splitlines())} index lines)", flush=True)
+        _log.debug(f"🧠 memory enabled for agent '{agent_id_for_session}' "
+              f"({len(_memory_index_text.splitlines())} index lines)")
 
 
     async def generate_response(prompt_msg, sys_prompt, tools=None, history_messages=None, memory_context_text="",
@@ -1118,7 +1120,7 @@ async def run_agent_step(
         tools_used_summary = list(resume_state.get("tools_used") or [])
         start_turn = min(int(resume_state.get("turn") or 0), max(0, max_turns - 1))
         _resumed_mid_step = True
-        print(f"DEBUG RUN_AGENT: ⏯ resuming mid-step from turn {start_turn + 1}/{max_turns}", flush=True)
+        _log.debug(f"RUN_AGENT: ⏯ resuming mid-step from turn {start_turn + 1}/{max_turns}")
 
 
     # Build type-aware set of always-allowed tools
@@ -1147,7 +1149,7 @@ async def run_agent_step(
 
     async with httpx.AsyncClient() as client:
         for turn in range(start_turn, max_turns):
-            print(f"\n{'#'*60}\n### TURN {turn + 1}/{max_turns} ###\n{'#'*60}\n")
+            _log.info(f"\n{'#'*60}\n### TURN {turn + 1}/{max_turns} ###\n{'#'*60}\n")
 
             # A cooperative cancel point between turns. The orchestration
             # engine only consults its cancel hook between steps; a step of
@@ -1155,7 +1157,7 @@ async def run_agent_step(
             # cancellation, not returned as a final response, so nothing
             # records the step as completed.
             if should_stop is not None and await should_stop():
-                print(f"DEBUG RUN_AGENT: 🛑 cancelled by request before turn {turn + 1}", flush=True)
+                _log.debug(f"RUN_AGENT: 🛑 cancelled by request before turn {turn + 1}")
                 raise asyncio.CancelledError("cancelled by request")
 
             yield {"type": "thinking", "message": "Analyzing your request..."}
@@ -1240,11 +1242,11 @@ async def run_agent_step(
 
             # Safety guard: truncate if too long
             total_prompt_chars = len(active_prompt) + len(volatile_tail) + len(active_sys_prompt) + len(memory_context)
-            print(f"DEBUG: 📊 Context size — prompt: {len(active_prompt)} | tail: {len(volatile_tail)} | system: {len(active_sys_prompt)} | memory: {len(memory_context)} | total: {total_prompt_chars} chars")
+            _log.debug(f"📊 Context size — prompt: {len(active_prompt)} | tail: {len(volatile_tail)} | system: {len(active_sys_prompt)} | memory: {len(memory_context)} | total: {total_prompt_chars} chars")
             if total_prompt_chars > MAX_PROMPT_CHARS:
                 overflow = total_prompt_chars - MAX_PROMPT_CHARS
                 active_prompt = active_prompt[: len(active_prompt) - overflow]
-                print(f"DEBUG: ⚠️ Truncated prompt by {overflow} chars")
+                _log.warning(f"⚠️ Truncated prompt by {overflow} chars")
             # Blocks are derived from the (possibly truncated) transcript so
             # the joined text, the blocks and the log all agree.
             prompt_blocks = _transcript_blocks(active_prompt)
@@ -1267,7 +1269,7 @@ async def run_agent_step(
             }
 
             # Ask LLM
-            print(f"DEBUG: 🔄 Calling LLM...", flush=True)
+            _log.debug(f"🔄 Calling LLM...")
             _llm_start = time.time()
             try:
                 llm_output = await generate_response(
@@ -1281,12 +1283,12 @@ async def run_agent_step(
             except Exception as llm_err:
                 _llm_duration = round(time.time() - _llm_start, 1)
                 error_msg = f"LLM Error ({_llm_duration}s): {llm_err}"
-                print(f"DEBUG: ❌ {error_msg}", flush=True)
+                _log.warning(f"❌ {error_msg}")
                 final_response = str(llm_err)
                 yield {"type": "error", "message": str(llm_err)}
                 break
             _llm_duration = round(time.time() - _llm_start, 1)
-            print(f"DEBUG: 🤖 LLM Response ({_llm_duration}s): {llm_output[:500]}{'...(truncated)' if len(llm_output) > 500 else ''}")
+            _log.debug(f"🤖 LLM Response ({_llm_duration}s): {llm_output[:500]}{'...(truncated)' if len(llm_output) > 500 else ''}")
 
             # ── Project [REASONING] blocks into a dedicated event ────────────
             # The LLM emits its private chain-of-thought wrapped in
@@ -1331,7 +1333,7 @@ async def run_agent_step(
                         f"Finish them and mark them completed via {TASK_TOOL_NAME}, or mark them "
                         "cancelled if they no longer apply. Then give your final response.\n"
                     )
-                    print(f"DEBUG: 📋 final deferred — {len(_open)} open task(s), nudge {_task_nudges}/2", flush=True)
+                    _log.debug(f"📋 final deferred — {len(_open)} open task(s), nudge {_task_nudges}/2")
                     yield {"type": "status",
                            "message": f"Final response deferred — {len(_open)} open task{'s' if len(_open) != 1 else ''} remain"}
                     continue
@@ -1407,14 +1409,13 @@ async def run_agent_step(
                                 break
                         tool_args = dict(tool_args)  # don't mutate original
                         tool_args["filename"] = _vault_prefix + _snap_fname
-                        print(
-                            f"DEBUG: 📸 browser_snapshot filename normalised → {tool_args['filename']}",
-                            flush=True,
+                        _log.debug(
+                            f"📸 browser_snapshot filename normalised → {tool_args['filename']}",
                         )
 
                 yield {"type": "tool_execution", "tool_name": tool_name, "args": tool_args}
-                print(f"DEBUG: 🔧 Tool Call: {tool_name}")
-                print(f"DEBUG: 📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}")
+                _log.debug(f"🔧 Tool Call: {tool_name}")
+                _log.debug(f"📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}")
 
                 # ── UPDATE_TASKS: native task list, handled in-engine ─────────────
                 if tool_name == TASK_TOOL_NAME and _task_tool_enabled:
@@ -1446,7 +1447,7 @@ async def run_agent_step(
                     tools_used_summary.append(f"{TASK_TOOL_NAME}: {_summary}")
                     yield {"type": "tasks_updated", "tasks": [dict(t) for t in _tasks], "turn": turn + 1}
                     yield {"type": "tool_result", "tool_name": TASK_TOOL_NAME, "preview": _board[:500]}
-                    print(f"DEBUG: 📋 Task list updated — {_summary}", flush=True)
+                    _log.debug(f"📋 Task list updated — {_summary}")
                     continue
 
                 # ── LOAD_SKILL: a skill's body enters the context on demand ───────
@@ -1481,7 +1482,7 @@ async def run_agent_step(
                     yield {"type": "skill_loaded", "skill": _sk_name, "turn": turn + 1}
                     yield {"type": "tool_result", "tool_name": SKILL_TOOL_NAME,
                            "preview": f"Loaded skill '{_sk_name}' ({len(_sk_body)} chars)"}
-                    print(f"DEBUG: 📚 skill loaded: {_sk_name} ({len(_sk_body)} chars)", flush=True)
+                    _log.debug(f"📚 skill loaded: {_sk_name} ({len(_sk_body)} chars)")
                     continue
 
                 # ── MEMORY tools: handled in-engine (see core/agent_memory.py) ────
@@ -1536,7 +1537,7 @@ async def run_agent_step(
                         current_context_text += f"\nSystem: {_mem_preview}.\n"
                     tools_used_summary.append(f"{tool_name}: {_mem_preview}")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": _mem_preview}
-                    print(f"DEBUG: 🧠 {tool_name}: {_mem_preview}", flush=True)
+                    _log.debug(f"🧠 {tool_name}: {_mem_preview}")
                     continue
 
                 # Execution guard
@@ -1565,7 +1566,7 @@ async def run_agent_step(
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned (cached):\n{raw_output}\n"
                         tools_used_summary.append(f"{tool_name}: {raw_output}")
                         preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
-                        print(f"DEBUG: ⚡ tool_cache hit ({tool_name})")
+                        _log.debug(f"⚡ tool_cache hit ({tool_name})")
                         yield {"type": "tool_cache_hit", "tool_name": tool_name, "preview": preview}
                         yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                         if post_tool_hook is not None:
@@ -1583,7 +1584,7 @@ async def run_agent_step(
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                         tools_used_summary.append(f"{tool_name}: {raw_output}")
                         preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
-                        print(f"DEBUG: 🔧 Executor result ({tool_name}): {preview}")
+                        _log.debug(f"🔧 Executor result ({tool_name}): {preview}")
                         yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                         if post_tool_hook is not None:
                             async for _extra in post_tool_hook(tool_name, raw_output):
@@ -1627,7 +1628,7 @@ async def run_agent_step(
                         continue
 
                     agent_name = target_agent.get("name", target_agent_id)
-                    print(f"DEBUG: 🤝 Delegate → agent '{agent_name}' ({target_agent_id})", flush=True)
+                    _log.debug(f"🤝 Delegate → agent '{agent_name}' ({target_agent_id})")
                     yield {"type": "thinking", "message": f"Delegating to {agent_name}..."}
 
                     # Run the sub-agent's full ReAct loop
@@ -1654,13 +1655,13 @@ async def run_agent_step(
                             yield {**sub_event, "delegate_from": agent_id_for_session, "delegate_agent_name": agent_name}
                     except Exception as e:
                         sub_final = f"Error: Sub-agent '{agent_name}' failed: {e}"
-                        print(f"DEBUG: ❌ Delegate sub-agent failed: {e}", flush=True)
+                        _log.warning(f"❌ Delegate sub-agent failed: {e}")
 
                     raw_output = maybe_vault(tool_name, sub_final)
                     current_context_text += f"\n[Turn {turn + 1} — Observation] Agent '{agent_name}' response:\n{raw_output}\n"
                     tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
-                    print(f"DEBUG: 🤝 Delegate result from '{agent_name}': {preview}")
+                    _log.debug(f"🤝 Delegate result from '{agent_name}': {preview}")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                     continue
 
@@ -1676,7 +1677,7 @@ async def run_agent_step(
                     current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                     tools_used_summary.append(f"{tool_name}: {raw_output}")
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
-                    print(f"DEBUG: 🏗 Builder tool ({tool_name}): {preview}")
+                    _log.debug(f"🏗 Builder tool ({tool_name}): {preview}")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                     if _tool_cache.is_cacheable(tool_name) and not raw_output.startswith('{"error"'):
                         _tool_cache.set(tool_name, tool_args, raw_output, session_id=session_id)
@@ -1754,12 +1755,12 @@ async def run_agent_step(
                                     except Exception:
                                         raw_output = json.dumps({"output": _result.stdout})
                                     if _result.stderr:
-                                        print(f"DEBUG: Python tool stderr: {_result.stderr[:200]}")
+                                        _log.debug(f"Python tool stderr: {_result.stderr[:200]}")
 
                                 raw_output = maybe_vault(tool_name, raw_output)
                                 current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                                 tools_used_summary.append(f"{tool_name}: {raw_output}")
-                                print(f"DEBUG: 🐍 Python Tool Result ({tool_name}): {raw_output}")
+                                _log.debug(f"🐍 Python Tool Result ({tool_name}): {raw_output}")
                                 preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
                                 yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                                 last_intent = "custom_tool"
@@ -1791,7 +1792,7 @@ async def run_agent_step(
 
                             current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                             tools_used_summary.append(f"{tool_name}: {raw_output}")
-                            print(f"DEBUG: 📤 Tool Result ({tool_name}): {raw_output}")
+                            _log.debug(f"📤 Tool Result ({tool_name}): {raw_output}")
                             preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
                             yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
 
@@ -1807,7 +1808,7 @@ async def run_agent_step(
                     names_str = ", ".join(available_tool_names[:30])
                     if len(available_tool_names) > 30:
                         names_str += f" ... ({len(available_tool_names)} total)"
-                    print(f"DEBUG: ❓ Tool '{tool_name}' not found in any registered source (hallucinated or unregistered)", flush=True)
+                    _log.debug(f"❓ Tool '{tool_name}' not found in any registered source (hallucinated or unregistered)")
                     current_context_text += (
                         f"\nSystem: Tool '{tool_name}' does not exist and cannot be called. "
                         f"Do not attempt to call it again. "
@@ -1826,7 +1827,7 @@ async def run_agent_step(
                 # agent was not given never reaches a connection.
                 _db_refusal = _check_db_allowlist(active_agent, agent_name, tool_args)
                 if _db_refusal:
-                    print(f"DEBUG: 🚫 db allowlist refused '{tool_name}': {_db_refusal}", flush=True)
+                    _log.debug(f"🚫 db allowlist refused '{tool_name}': {_db_refusal}")
                     current_context_text += f"\nSystem: {_db_refusal}\n"
                     yield {
                         "type": "tool_result",
@@ -1847,7 +1848,7 @@ async def run_agent_step(
                     await _anyio.sleep(0)
 
                     _mcp_t0 = time.time()
-                    print(f"DEBUG MCP: ▶ session='{agent_name}' tool='{tool_name}' — ping starting", flush=True)
+                    _log.debug(f"MCP: ▶ session='{agent_name}' tool='{tool_name}' — ping starting")
 
                     # Health check: ping the session before committing to a blocking
                     # call_tool().
@@ -1856,7 +1857,7 @@ async def run_agent_step(
                             await session.send_ping()
                     except (TimeoutError, Exception) as _ping_err:
                         _ping_msg = f"MCP session '{agent_name}' unresponsive (ping: {_ping_err}). Skipping '{tool_name}'."
-                        print(f"DEBUG MCP: ⚠️ {_ping_msg} [{round(time.time()-_mcp_t0,2)}s]", flush=True)
+                        _log.warning(f"MCP: ⚠️ {_ping_msg} [{round(time.time()-_mcp_t0,2)}s]")
                         current_context_text += f"\nSystem: Error — {_ping_msg}\n"
                         try:
                             _mcp_srv_name = agent_name.removeprefix("ext_mcp_")
@@ -1866,7 +1867,7 @@ async def run_agent_step(
                         yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: session unresponsive"}
                         continue
 
-                    print(f"DEBUG MCP: ✓ ping OK [{round(time.time()-_mcp_t0,2)}s] — call_tool starting", flush=True)
+                    _log.debug(f"MCP: ✓ ping OK [{round(time.time()-_mcp_t0,2)}s] — call_tool starting")
 
                     _timeout = timedelta(seconds=MCP_TOOL_CALL_TIMEOUT)
 
@@ -1879,7 +1880,7 @@ async def run_agent_step(
                         result = await session.call_tool(actual_tool_name, tool_args, read_timeout_seconds=_timeout)
                         raw_output = result.content[0].text
 
-                    print(f"DEBUG MCP: ✓ call_tool OK [{round(time.time()-_mcp_t0,2)}s] tool='{tool_name}'", flush=True)
+                    _log.debug(f"MCP: ✓ call_tool OK [{round(time.time()-_mcp_t0,2)}s] tool='{tool_name}'")
 
                     # Vault large outputs before any further processing
                     raw_output = maybe_vault(tool_name, raw_output)
@@ -1935,10 +1936,10 @@ async def run_agent_step(
                             f"({len(raw_output)} chars). The current page state is under CURRENT BROWSER STATE "
                             f"at the end of this message.\n"
                         )
-                        print(f"DEBUG: 📤 Tool Result ({tool_name}): [browser, {len(raw_output)} chars in tail, history={len(browser_action_history)} actions]")
+                        _log.debug(f"📤 Tool Result ({tool_name}): [browser, {len(raw_output)} chars in tail, history={len(browser_action_history)} actions]")
                     else:
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
-                        print(f"DEBUG: 📤 Tool Result ({tool_name}): {raw_output}")
+                        _log.debug(f"📤 Tool Result ({tool_name}): {raw_output}")
 
                     # MCP tool results are no longer embedded in ChromaDB
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
@@ -1951,7 +1952,7 @@ async def run_agent_step(
                     tools_used_summary.append(f"{tool_name}: {raw_output}")
                 except Exception as e:
                     error_msg = str(e)
-                    print(f"DEBUG: ❌ Tool '{tool_name}' failed: {error_msg}", flush=True)
+                    _log.warning(f"❌ Tool '{tool_name}' failed: {error_msg}")
                     current_context_text += f"\nSystem: Error executing tool {tool_name}: {error_msg}\n"
                     try:
                         if agent_name and agent_name.startswith("ext_mcp_"):
@@ -1991,7 +1992,7 @@ async def run_agent_step(
                 ) + ")"
             _agent_memory.append_session_note(agent_id_for_session, session_id, _trace)
         except Exception as _mem_exc:
-            print(f"WARNING: session memory note failed: {_mem_exc}", flush=True)
+            _log.warning(f"session memory note failed: {_mem_exc}")
 
     # Persist conversation turn to JSON session file (skip for orchestrator agents)
     if not is_orchestrator:
@@ -2004,7 +2005,7 @@ async def run_agent_step(
                 tools=tools_used_summary,
             )
         except Exception as mem_err:
-            print(f"WARNING: Session save failed (non-fatal): {mem_err}")
+            _log.warning(f"Session save failed (non-fatal): {mem_err}")
 
     yield {"type": "final", "response": final_response, "intent": last_intent, "data": last_data, "tool_name": tool_name}
 

@@ -15,6 +15,10 @@ from pathlib import Path
 
 from core.usage_tracker import log_compaction_event
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 
 def _archive_dir() -> Path:
     """Compaction archives live inside the current tenant's vault.
@@ -101,13 +105,12 @@ async def maybe_compact(
     if total_chars <= threshold:
         return current_context_text, recent_history_messages, None, None
 
-    print(
-        f"\nDEBUG: 📏 Compaction check — "
+    _log.debug(
+        f"\n📏 Compaction check — "
         f"context {total_chars:,} chars (~{total_chars // 4:,} tokens est.) "
         f"exceeds threshold {threshold:,} chars (~{threshold // 4:,} tokens est.). "
         f"history={history_chars:,} tool_ctx={len(current_context_text):,}. "
         f"Attempting Stage-1 trim…",
-        flush=True,
     )
 
     # ── Stage 1: drop oldest tool outputs (cheap — no LLM call, no archive) ──────
@@ -136,15 +139,14 @@ async def maybe_compact(
                 "reduction_pct": stage1_savings_pct,
             }
         elif stage1_total <= threshold:
-            print(
-                f"DEBUG: ⏭  Stage-1 would save only {stage1_savings_pct}% "
+            _log.debug(
+                f"⏭  Stage-1 would save only {stage1_savings_pct}% "
                 f"(< {MIN_STAGE1_SAVINGS_PCT}% min) — falling through to Stage-2 LLM summarisation.",
-                flush=True,
             )
 
     # ── Stage 2: LLM summarisation (Stage 1 was not enough) ──────────────────────
-    print(
-        f"DEBUG: 🗜️  Stage-1 insufficient — proceeding to LLM summarisation "
+    _log.debug(
+        f"🗜️  Stage-1 insufficient — proceeding to LLM summarisation "
         f"({total_chars:,} chars, threshold {threshold:,})"
     )
 
@@ -153,9 +155,9 @@ async def maybe_compact(
     archive_path = _make_archive_path(session_id)
     try:
         archive_path.write_text(context_block, encoding="utf-8")
-        print(f"DEBUG: 🗄️  Compaction archive saved → {archive_path}")
+        _log.debug(f"🗄️  Compaction archive saved → {archive_path}")
     except Exception as exc:
-        print(f"DEBUG: ⚠️  Could not write compaction archive: {exc}")
+        _log.warning(f"⚠️  Could not write compaction archive: {exc}")
         archive_path = None
 
     try:
@@ -204,7 +206,7 @@ async def maybe_compact(
         return compacted, [], str(archive_path) if archive_path else None, compact_stats
 
     except Exception as exc:
-        print(f"DEBUG: ⚠️  Compaction LLM call failed ({exc}), continuing without compaction")
+        _log.warning(f"⚠️  Compaction LLM call failed ({exc}), continuing without compaction")
         return current_context_text, recent_history_messages, None, None
 
 
@@ -213,12 +215,11 @@ def _log_compaction(stage: str, before: int, after: int, archive: str | None = N
     pct = round(saved / before * 100) if before > 0 else 0
     sep = "─" * 52
     archive_line = f"\n  Archive  : {archive}" if archive else ""
-    print(
-        f"\nDEBUG: {sep}\n"
+    _log.debug(
+        f"\n{sep}\n"
         f"DEBUG: 🗜️  COMPACTION — {stage}\n"
         f"DEBUG:   Before   : {before:>12,} chars  (~{before // 4:,} tokens est.)\n"
         f"DEBUG:   After    : {after:>12,} chars  (~{after // 4:,} tokens est.)\n"
         f"DEBUG:   Saved    : {saved:>12,} chars  (-{pct}%){archive_line}\n"
         f"DEBUG: {sep}\n",
-        flush=True,
     )

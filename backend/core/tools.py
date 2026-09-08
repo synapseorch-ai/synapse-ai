@@ -12,6 +12,10 @@ import anyio
 from core.config import load_settings, MCP_LIST_TOOLS_TIMEOUT
 from core.tool_router import SEP, ToolRouter
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 
 # Tools auto-injected per agent type. These bypass the agent's tools[] array.
 # "all_types" applies to every agent regardless of type.
@@ -150,7 +154,7 @@ async def _session_tools_for(server_module, session_key: str):
         with anyio.fail_after(MCP_LIST_TOOLS_TIMEOUT):
             result = await session.list_tools()
     except Exception as e:  # noqa: BLE001 — a session that does not answer has no tools
-        print(f"DEBUG: Skipping session '{session_key}' — list_tools failed: {e}", flush=True)
+        _log.debug(f"Skipping session '{session_key}' — list_tools failed: {e}")
         return None
     cache[session_key] = result.tools
     return result.tools
@@ -260,23 +264,23 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
         # Use cached tools from previous successful call — avoids hanging on flaky sessions
         if session_name in session_tools_cache:
             session_tools = session_tools_cache[session_name]
-            print(f"DEBUG: 📦 Using cached tools for '{session_name}' ({len(session_tools)} tools)", flush=True)
+            _log.debug(f"📦 Using cached tools for '{session_name}' ({len(session_tools)} tools)")
         else:
             try:
                 # Bounded list_tools() — timeout (default 15s, override via
                 # SYNAPSE_MCP_LIST_TOOLS_TIMEOUT) prevents a single flaky
                 # session from blocking all subsequent tool aggregation.
-                print(f"DEBUG: 🔄 Fetching tools for '{session_name}'...", flush=True)
+                _log.debug(f"🔄 Fetching tools for '{session_name}'...")
                 with anyio.fail_after(MCP_LIST_TOOLS_TIMEOUT):
                     result = await session.list_tools()
                 session_tools = result.tools
                 session_tools_cache[session_name] = session_tools
-                print(f"DEBUG: ✅ Fetched+cached tools for '{session_name}' ({len(session_tools)} tools)", flush=True)
+                _log.debug(f"✅ Fetched+cached tools for '{session_name}' ({len(session_tools)} tools)")
             except TimeoutError:
-                print(f"DEBUG: ⏱ Skipping session '{session_name}' — list_tools timed out after 15s", flush=True)
+                _log.debug(f"⏱ Skipping session '{session_name}' — list_tools timed out after 15s")
                 continue
             except Exception as e:
-                print(f"DEBUG: Skipping session '{session_name}' — list_tools failed: {e}", flush=True)
+                _log.debug(f"Skipping session '{session_name}' — list_tools failed: {e}")
                 continue
 
         is_external = session_name.startswith("ext_mcp_")
@@ -359,7 +363,7 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
     deduped = []
     for t in all_tools:
         if t.name in seen_names:
-            print(f"DEBUG: ⚠️ Skipping duplicate tool declaration '{t.name}'", flush=True)
+            _log.warning(f"⚠️ Skipping duplicate tool declaration '{t.name}'")
             continue
         seen_names.add(t.name)
         deduped.append(t)
@@ -386,7 +390,7 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
 
     # Debug: Log exactly which tools will be visible to the LLM
     tool_names_for_llm = [t.name for t in all_tools]
-    print(f"DEBUG: 🔧 Tools sent to LLM ({len(tool_names_for_llm)}): {tool_names_for_llm}")
+    _log.debug(f"🔧 Tools sent to LLM ({len(tool_names_for_llm)}): {tool_names_for_llm}")
 
     return all_tools, tool_schema_map, ollama_tools, tools_json
 
@@ -433,7 +437,7 @@ def build_system_prompt(agent_system_template, tools_json, session_id, session_s
 
         google_email = load_settings().get(EMAIL_SETTING) or None
     except Exception as e:
-        print(f"DEBUG: Error reading Google Workspace email: {e}")
+        _log.debug(f"Error reading Google Workspace email: {e}")
 
     # ── Tools section (only for providers without native tool calling) ──
     if inject_tools:
@@ -579,9 +583,9 @@ You have {last_report.get('row_count', 'some')} items of '{last_report.get('type
 3. **PATTERN/TREND QUESTIONS** (e.g., "frequent topics", "common contacts"): Call `search_embedded_report` with the pattern description.
 4. **DO NOT RE-RUN TOOL FOR EXISTING DATA:** The data is already here. Only call tools if the user explicitly asks for NEW/DIFFERENT data (e.g., "refresh", "different date", "different query").
 """
-            print(f"DEBUG: 💉 Injected RAG context into system prompt")
+            _log.debug(f"💉 Injected RAG context into system prompt")
     except Exception as e:
-        print(f"DEBUG: Error resolving RAG context: {e}")
+        _log.debug(f"Error resolving RAG context: {e}")
 
     # ── Resolve turn-budget block (volatile) ──
     turns_block = ""

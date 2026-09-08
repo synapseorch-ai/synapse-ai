@@ -29,6 +29,10 @@ from pathlib import Path
 
 from core.tool_router import ToolRouter
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 #: How long one remote MCP server may take to hand back a usable transport.
 #:
 #: Bounds the handshake, which nothing else does — `ClientSession`'s
@@ -117,14 +121,13 @@ class WorkerServerModule:
             try:
                 pulled = vault.hydrate()
                 if pulled:
-                    print(
+                    _log.debug(
                         f"[worker_server_module] materialised {pulled} vault file(s)",
-                        flush=True,
                     )
             except Exception as exc:
                 # A cold working copy degrades the vault; it must not stop the
                 # tenant's session set from being built.
-                print(f"[worker_server_module] vault hydration failed: {exc}", flush=True)
+                _log.debug(f"[worker_server_module] vault hydration failed: {exc}")
 
         if shared is not None:
             instance.agent_sessions.update(shared.agent_sessions)
@@ -191,10 +194,9 @@ class WorkerServerModule:
 
             handle = await _start_server(server_name, connect)
             if handle.error is not None:
-                print(
+                _log.debug(
                     f"[worker_server_module] Skipping MCP server '{server_name}': "
                     f"{_reason(handle.error)}",
-                    flush=True,
                 )
                 instance.mcp_disabled.append(server_name)
                 continue
@@ -210,10 +212,9 @@ class WorkerServerModule:
                 # inherits the answer instead of re-listing eight servers.
                 tools_result = await handle.session.list_tools()
             except Exception as e:
-                print(
+                _log.debug(
                     f"[worker_server_module] Skipping MCP server '{server_name}': "
                     f"connected but would not list tools ({e})",
-                    flush=True,
                 )
                 handle.closing.set()
                 instance.mcp_disabled.append(server_name)
@@ -309,10 +310,9 @@ class WorkerServerModule:
                 fresh = await refresh_and_persist(cfg)
                 if fresh:
                     renewed = True
-                    print(
+                    _log.debug(
                         f"[worker_server_module] Refreshed the token for "
                         f"'{server_name}'; retrying",
-                        flush=True,
                     )
                     params["headers"] = {
                         **params.get("headers", {}),
@@ -337,11 +337,10 @@ class WorkerServerModule:
                 needs_auth = is_oauth and not renewed and (
                     refresh_refused or not can_refresh(cfg)
                 )
-                print(
+                _log.info(
                     f"[worker_server_module] Skipping user MCP '{server_name}': "
                     f"{_reason(handle.error)}"
                     + ("  (re-authorisation needed)" if needs_auth else ""),
-                    flush=True,
                 )
                 instance.mcp_disabled.append(server_name)
                 if needs_auth:
@@ -362,10 +361,9 @@ class WorkerServerModule:
             try:
                 tools_result = await handle.session.list_tools()
             except Exception as e:
-                print(
+                _log.debug(
                     f"[worker_server_module] Skipping user MCP '{server_name}': "
                     f"connected but would not list tools ({e})",
-                    flush=True,
                 )
                 handle.closing.set()
                 instance.mcp_disabled.append(server_name)
@@ -384,7 +382,7 @@ class WorkerServerModule:
             # after the person has already fixed it. `report_mcp_status` skips
             # a write when nothing moved, so the common case costs a read.
             await report_mcp_status(server_name, "connected")
-            print(f"[worker_server_module] Connected user MCP '{server_name}'", flush=True)
+            _log.debug(f"[worker_server_module] Connected user MCP '{server_name}'")
 
     def _attach_memory_store(self) -> None:
         """Long-term memory, when this deployment can hold one safely.
@@ -497,7 +495,7 @@ def _get_native_mcp_servers(
         if script.exists():
             servers[name] = StdioServerParameters(command=sys.executable, args=[str(script)], env=env)
         else:
-            print(f"[worker_server_module] Tool script not found, skipping '{name}': {script}", flush=True)
+            _log.debug(f"[worker_server_module] Tool script not found, skipping '{name}': {script}")
 
     if scope in ("shared", "all"):
         # Python-native tools (subset safe for headless worker processes) that
@@ -588,15 +586,14 @@ def _build_stdio_mcp_params(cfg: dict):
         return None
 
     if not stdio_mcp_allowed():
-        print(f"[worker] Refusing to spawn stdio MCP server "
-              f"'{cfg.get('name', '?')}': stdio MCP is disabled on this deployment.",
-              flush=True)
+        _log.debug(f"[worker] Refusing to spawn stdio MCP server "
+              f"'{cfg.get('name', '?')}': stdio MCP is disabled on this deployment.")
         return None
     try:
         check_stdio_command_allowed(command)
     except ValueError as e:
-        print(f"[worker] Refusing to spawn stdio MCP server "
-              f"'{cfg.get('name', '?')}': {e}", flush=True)
+        _log.debug(f"[worker] Refusing to spawn stdio MCP server "
+              f"'{cfg.get('name', '?')}': {e}")
         return None
 
     args_raw = cfg.get("args", [])

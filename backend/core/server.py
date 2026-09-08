@@ -799,6 +799,12 @@ async def lifespan(app: FastAPI):
             except BaseException as e:
                 print(f"Warning: Error during shutdown cleanup: {e}")
 
+# One call per process: the engine's runtime modules log through the `core`
+# tree (core/log.py). SYNAPSE_LOG_LEVEL=DEBUG turns the step-by-step
+# narration back on.
+from core.log import configure as _configure_logging
+_configure_logging()
+
 app = FastAPI(lifespan=lifespan)
 
 _frontend_port = os.getenv("SYNAPSE_FRONTEND_PORT", "3000")

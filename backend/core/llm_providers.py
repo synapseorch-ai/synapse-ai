@@ -25,6 +25,10 @@ from botocore.config import Config
 
 from core.config import LLM_REQUEST_TIMEOUT
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 # No process-level AWS_BEARER_TOKEN_BEDROCK. It used to be set here and never
 # cleared, so one tenant's Bedrock key stayed in the environment of a worker
 # that then ran another tenant's job — visible in /proc/<pid>/environ and
@@ -565,7 +569,7 @@ async def call_cli_provider(
 
             stdin_source = open(temp_input_file.name, "rb")
 
-        print(f"DEBUG: 🖥️  CLI provider '{cli_model}' — spawning subprocess: {' '.join(str(a) for a in cmd)}", flush=True)
+        _log.debug(f"🖥️  CLI provider '{cli_model}' — spawning subprocess: {' '.join(str(a) for a in cmd)}")
 
         process = await asyncio.create_subprocess_exec(
             executable,
@@ -612,7 +616,7 @@ async def call_cli_provider(
                     f"Run the CLI in your terminal to re-authenticate.\n"
                     f"Details: {stderr_text[:400]}"
                 )
-            print(f"DEBUG: 🖥️  CLI stderr: {stderr_text[:300]}", flush=True)
+            _log.debug(f"🖥️  CLI stderr: {stderr_text[:300]}")
 
         # codex exec writes just the final agent message to the -o file; use that
         # to avoid parsing the TUI header/footer noise from stdout.
@@ -682,7 +686,7 @@ async def call_cli_provider(
                 f"stderr: {stderr_text[-600:]}"
             )
 
-        print(f"DEBUG: ✅ CLI '{cli_model}' response ({len(clean)} chars)", flush=True)
+        _log.debug(f"✅ CLI '{cli_model}' response ({len(clean)} chars)")
 
         input_est = usage_tracker.estimate_tokens_from_text(full_prompt)
         output_est = usage_tracker.estimate_tokens_from_text(clean)
@@ -742,7 +746,7 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 OpenAI call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
+            _log.debug(f"🔄 OpenAI call start (attempt {attempt}/{MAX_RETRIES})")
             async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
                 resp = await client.post(
                     "https://api.openai.com/v1/chat/completions",
@@ -751,7 +755,7 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                print(f"DEBUG: ⏳ OpenAI {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+                _log.debug(f"⏳ OpenAI {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
@@ -773,30 +777,30 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
             text = _openai_compat_extract(msg)
             if msg.get("tool_calls"):
                 return text, input_tokens, output_tokens, cache_read, cache_write
-            print(f"DEBUG: ✅ OpenAI call complete (attempt {attempt})", flush=True)
+            _log.debug(f"✅ OpenAI call complete (attempt {attempt})")
             return text, input_tokens, output_tokens, cache_read, cache_write
         except httpx.TimeoutException:
             last_error = f"Request timed out ({OPENAI_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ OpenAI timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            _log.debug(f"⏱️ OpenAI timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
             last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
-            print(f"DEBUG: ❌ OpenAI HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"❌ OpenAI HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
                 continue
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ OpenAI error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ OpenAI error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
     error_msg = f"OpenAI LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
+    _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
 def _convert_tools_for_anthropic(ollama_tools: list[dict] | None) -> list[dict] | None:
@@ -983,9 +987,9 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 Anthropic call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
+            _log.debug(f"🔄 Anthropic call start (attempt {attempt}/{MAX_RETRIES})")
             response = await client.messages.create(**kwargs)
-            print(f"DEBUG: ✅ Anthropic call complete (attempt {attempt})", flush=True)
+            _log.debug(f"✅ Anthropic call complete (attempt {attempt})")
             # Extract actual token usage from the SDK response object
             input_tokens = getattr(getattr(response, 'usage', None), 'input_tokens', 0) or 0
             output_tokens = getattr(getattr(response, 'usage', None), 'output_tokens', 0) or 0
@@ -994,29 +998,29 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
             return _extract_anthropic_response(response), input_tokens, output_tokens, cache_read, cache_write
         except anthropic.APITimeoutError:
             last_error = f"Request timed out ({ANTHROPIC_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ Anthropic timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            _log.debug(f"⏱️ Anthropic timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
         except anthropic.APIStatusError as e:
             last_error = f"API error {e.status_code}: {str(e)[:200]}"
-            print(f"DEBUG: ❌ Anthropic API error {e.status_code} on attempt {attempt}/{MAX_RETRIES}: {str(e)[:500]}", flush=True)
+            _log.warning(f"❌ Anthropic API error {e.status_code} on attempt {attempt}/{MAX_RETRIES}: {str(e)[:500]}")
             # Retry on transient/rate-limit errors (429 rate limit, 499 client disconnect, 5xx server errors, 529 overloaded)
             if attempt < MAX_RETRIES and e.status_code in (429, 499, 500, 502, 503, 529):
-                print(f"DEBUG: ⏳ Retrying in {backoff}s...", flush=True)
+                _log.debug(f"⏳ Retrying in {backoff}s...")
                 await asyncio.sleep(backoff)
                 continue
             # Non-retryable error (400, 401, 403, etc.) or last attempt
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ Anthropic error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ Anthropic error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
     error_msg = f"Claude LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
+    _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
 def _convert_tools_for_gemini(ollama_tools: list[dict] | None):
@@ -1055,10 +1059,9 @@ def _convert_tools_for_gemini(ollama_tools: list[dict] | None):
                 parameters=cleaned_params,
             ))
         except Exception as e:
-            print(
-                f"DEBUG: ⚠️ Gemini: dropping tool {name!r} — its schema could not be "
+            _log.warning(
+                f"⚠️ Gemini: dropping tool {name!r} — its schema could not be "
                 f"converted: {str(e)[:300]}",
-                flush=True,
             )
             continue
 
@@ -1421,7 +1424,7 @@ def _extract_gemini_response(response) -> str:
     if function_calls:
         if len(function_calls) > 1:
             names = [fc["tool"] for fc in function_calls]
-            print(f"DEBUG: ⚠️ Gemini returned {len(function_calls)} function calls: {names}. Using first: {names[0]}")
+            _log.warning(f"⚠️ Gemini returned {len(function_calls)} function calls: {names}. Using first: {names[0]}")
         call_json = json.dumps(function_calls[0])
         reasoning = "\n".join(t for t in text_parts if t and t.strip()).strip()
         if reasoning:
@@ -1473,14 +1476,14 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
         config.tools = gemini_tools
 
     async def _call(cfg, attempt_label=""):
-        print(f"DEBUG: 🔄 Gemini _call start ({attempt_label})", flush=True)
+        _log.debug(f"🔄 Gemini _call start ({attempt_label})")
         result = await asyncio.to_thread(
             _gemini_client.models.generate_content,
             model=model,
             contents=contents,
             config=cfg,
         )
-        print(f"DEBUG: ✅ Gemini _call complete ({attempt_label})", flush=True)
+        _log.debug(f"✅ Gemini _call complete ({attempt_label})")
         return result
 
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]  # seconds between retries
@@ -1493,7 +1496,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
 
             # If MALFORMED_FUNCTION_CALL, retry once without tools (forces text response)
             if "MALFORMED_FUNCTION_CALL" in result and gemini_tools:
-                print("DEBUG: Gemini MALFORMED_FUNCTION_CALL — retrying without tools")
+                _log.debug("Gemini MALFORMED_FUNCTION_CALL — retrying without tools")
                 config_no_tools = types.GenerateContentConfig(
                     system_instruction=system,
                 )
@@ -1526,15 +1529,15 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
         #         continue
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ Unexpected {type(e).__name__}: {vars(e) if hasattr(e, '__dict__') else e}", flush=True)
-            print(f"DEBUG: ⚠️ Gemini error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ Unexpected {type(e).__name__}: {vars(e) if hasattr(e, '__dict__') else e}")
+            _log.warning(f"⚠️ Gemini error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
-                print(f"DEBUG: ⏳ Retrying in {backoff}s...", flush=True)
+                _log.debug(f"⏳ Retrying in {backoff}s...")
                 await asyncio.sleep(backoff)
                 continue
 
     error_msg = f"Gemini LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
+    _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
 async def call_grok(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
@@ -1572,7 +1575,7 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 Grok call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
+            _log.debug(f"🔄 Grok call start (attempt {attempt}/{MAX_RETRIES})")
             async with httpx.AsyncClient(timeout=GROK_TIMEOUT) as client:
                 resp = await client.post(
                     "https://api.x.ai/v1/chat/completions",
@@ -1581,7 +1584,7 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                print(f"DEBUG: ⏳ Grok {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+                _log.debug(f"⏳ Grok {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
@@ -1599,30 +1602,30 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
             text = _openai_compat_extract(msg)
             if msg.get("tool_calls"):
                 return text, input_tokens, output_tokens, cache_read, cache_write
-            print(f"DEBUG: ✅ Grok call complete (attempt {attempt})", flush=True)
+            _log.debug(f"✅ Grok call complete (attempt {attempt})")
             return text, input_tokens, output_tokens, cache_read, cache_write
         except httpx.TimeoutException:
             last_error = f"Request timed out ({GROK_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ Grok timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            _log.debug(f"⏱️ Grok timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
             last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
-            print(f"DEBUG: ❌ Grok HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"❌ Grok HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
                 continue
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ Grok error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ Grok error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
     error_msg = f"Grok LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
+    _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
 
@@ -1638,7 +1641,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
     """
     # DeepSeek does not support vision — drop images with a warning
     if images:
-        print(f"DEBUG: ⚠️ DeepSeek does not support images. {len(images)} image(s) will be dropped.", flush=True)
+        _log.warning(f"⚠️ DeepSeek does not support images. {len(images)} image(s) will be dropped.")
     DEEPSEEK_TIMEOUT = LLM_REQUEST_TIMEOUT
     MAX_RETRIES = 5
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]
@@ -1659,7 +1662,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 DeepSeek call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
+            _log.debug(f"🔄 DeepSeek call start (attempt {attempt}/{MAX_RETRIES})")
             async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
                 resp = await client.post(
                     "https://api.deepseek.com/v1/chat/completions",
@@ -1668,7 +1671,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                print(f"DEBUG: ⏳ DeepSeek {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+                _log.debug(f"⏳ DeepSeek {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
@@ -1686,30 +1689,30 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
             text = _openai_compat_extract(msg)
             if msg.get("tool_calls"):
                 return text, input_tokens, output_tokens, cache_read, cache_write
-            print(f"DEBUG: ✅ DeepSeek call complete (attempt {attempt})", flush=True)
+            _log.debug(f"✅ DeepSeek call complete (attempt {attempt})")
             return text, input_tokens, output_tokens, cache_read, cache_write
         except httpx.TimeoutException:
             last_error = f"Request timed out ({DEEPSEEK_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ DeepSeek timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            _log.debug(f"⏱️ DeepSeek timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
         except httpx.HTTPStatusError as e:
             last_error = f"HTTP {e.response.status_code}: {str(e)[:200]}"
-            print(f"DEBUG: ❌ DeepSeek HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"❌ DeepSeek HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
                 continue
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ DeepSeek error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ DeepSeek error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
     error_msg = f"DeepSeek LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
+    _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
 
@@ -1781,7 +1784,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 resp = await client.post(endpoint, headers=headers, json=payload)
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                print(f"DEBUG: ⏳ V1-compatible {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+                _log.debug(f"⏳ V1-compatible {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
@@ -1799,11 +1802,11 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             text = _openai_compat_extract(msg)
             if msg.get("tool_calls"):
                 return text, input_tokens, output_tokens, cache_read, cache_write
-            print(f"DEBUG: ✅ V1-compatible call complete (attempt {attempt})", flush=True)
+            _log.debug(f"✅ V1-compatible call complete (attempt {attempt})")
             return text, input_tokens, output_tokens, cache_read, cache_write
         except httpx.TimeoutException:
             last_error = f"Request timed out ({V1_TIMEOUT}s)"
-            print(f"DEBUG: ⏱️ V1-compatible timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...", flush=True)
+            _log.debug(f"⏱️ V1-compatible timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
@@ -1811,20 +1814,20 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             # The body, not str(e): a gateway's refusal carries its reason (and
             # figures) in the response body, and the URL alone explains nothing.
             last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
-            print(f"DEBUG: ❌ V1-compatible HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"❌ V1-compatible HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
                 continue
             break
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ V1-compatible error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ V1-compatible error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
     error_msg = f"V1-compatible LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
+    _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
 
@@ -2025,7 +2028,7 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
-            print(f"DEBUG: 🔄 Bedrock call start (attempt {attempt}/{MAX_RETRIES})", flush=True)
+            _log.debug(f"🔄 Bedrock call start (attempt {attempt}/{MAX_RETRIES})")
             if hasattr(bedrock, "converse") or bedrock_api_key:
                 try:
                     if bedrock_api_key:
@@ -2046,7 +2049,7 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                     # Bedrock inputTokens may include cache hits; subtract for consistent billing math.
                     if cache_read:
                         inp = max(0, inp - cache_read)
-                    print(f"DEBUG: ✅ Bedrock (converse) complete (attempt {attempt})", flush=True)
+                    _log.debug(f"✅ Bedrock (converse) complete (attempt {attempt})")
                     return text, inp, out, cache_read, cache_write
                 except Exception as converse_err:
                     msg_str = str(converse_err)
@@ -2062,33 +2065,33 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                             f"Bedrock authentication failed: {converse_err}. "
                             "Check your API key or IAM credentials in Settings."
                         )
-                    print(f"DEBUG: Bedrock converse failed (attempt {attempt}), falling back to invoke_model: {converse_err}")
+                    _log.debug(f"Bedrock converse failed (attempt {attempt}), falling back to invoke_model: {converse_err}")
                     # Fall through to InvokeModel (for older models not on Converse API)
                     resp = await _invoke_model_call()
                     response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
                     content = response_body.get("content") or []
                     text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
-                    print(f"DEBUG: ✅ Bedrock (invoke_model) complete (attempt {attempt})", flush=True)
+                    _log.debug(f"✅ Bedrock (invoke_model) complete (attempt {attempt})")
                     return text, 0, 0, 0, 0
             else:
                 resp = await _invoke_model_call()
                 response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
                 content = response_body.get("content") or []
                 text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
-                print(f"DEBUG: ✅ Bedrock (invoke_model) complete (attempt {attempt})", flush=True)
+                _log.debug(f"✅ Bedrock (invoke_model) complete (attempt {attempt})")
                 return text, 0, 0, 0, 0
         except LLMError:
             raise  # Non-retryable (config error)
         except Exception as e:
             last_error = str(e)
-            print(f"DEBUG: ⚠️ Bedrock error on attempt {attempt}/{MAX_RETRIES}: {e}", flush=True)
+            _log.warning(f"⚠️ Bedrock error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
-                print(f"DEBUG: ⏳ Retrying Bedrock in {backoff}s...", flush=True)
+                _log.debug(f"⏳ Retrying Bedrock in {backoff}s...")
                 await asyncio.sleep(backoff)
                 continue
 
     error_msg = f"Bedrock LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    print(f"DEBUG: ❌ {error_msg}", flush=True)
+    _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
 
@@ -2144,7 +2147,7 @@ def _load_hf_model(model_id: str, hf_token: str | None = None):
         if hf_token:
             load_kwargs["token"] = hf_token
 
-        print(f"DEBUG: 🤗 Loading HF model '{model_id}' on {device} — first call pays 20-60s load cost...", flush=True)
+        _log.debug(f"🤗 Loading HF model '{model_id}' on {device} — first call pays 20-60s load cost...")
 
         tok_kwargs: dict = {"token": hf_token} if hf_token else {}
         tokenizer = AutoTokenizer.from_pretrained(model_id, **tok_kwargs)
@@ -2156,7 +2159,7 @@ def _load_hf_model(model_id: str, hf_token: str | None = None):
         model.eval()
 
         _hf_model_cache[model_id] = (tokenizer, model)
-        print(f"DEBUG: ✅ HF model '{model_id}' loaded and cached.", flush=True)
+        _log.debug(f"✅ HF model '{model_id}' loaded and cached.")
         return tokenizer, model
 
 
@@ -2189,16 +2192,14 @@ async def call_huggingface(
         raise LLMError("HuggingFace provider: empty model name after 'hf.' prefix.")
 
     if tools:
-        print(
-            f"DEBUG: ⚠️ HF provider received {len(tools)} tool(s) but does not support "
+        _log.warning(
+            f"⚠️ HF provider received {len(tools)} tool(s) but does not support "
             f"native tool calling. Inject tool descriptions into the system prompt if needed.",
-            flush=True,
         )
     if images:
-        print(
-            f"DEBUG: ⚠️ HF provider received {len(images)} image(s) but vision is not "
+        _log.warning(
+            f"⚠️ HF provider received {len(images)} image(s) but vision is not "
             f"supported in this MVP — they will be dropped.",
-            flush=True,
         )
 
     hf_token = (settings.get("huggingface_token") or "").strip() or None
@@ -2222,7 +2223,7 @@ async def call_huggingface(
                 return_tensors="pt",
             )
         except Exception as e:
-            print(f"DEBUG: ⚠️ HF chat template unavailable ({e}); using transcript fallback.", flush=True)
+            _log.warning(f"⚠️ HF chat template unavailable ({e}); using transcript fallback.")
             transcript_parts: list[str] = []
             if system and system.strip():
                 transcript_parts.append(f"System: {system.strip()}")
@@ -2250,9 +2251,9 @@ async def call_huggingface(
         return text, prompt_token_count, output_token_count
 
     try:
-        print(f"DEBUG: 🔄 HF call start (model={model_id})", flush=True)
+        _log.debug(f"🔄 HF call start (model={model_id})")
         text, input_tokens, output_tokens = await asyncio.to_thread(_run)
-        print(f"DEBUG: ✅ HF call complete (model={model_id}, out_tokens={output_tokens})", flush=True)
+        _log.debug(f"✅ HF call complete (model={model_id}, out_tokens={output_tokens})")
         return text, input_tokens, output_tokens, 0, 0
     except LLMError:
         raise
@@ -2376,7 +2377,7 @@ async def generate_response(
                 threshold=cache_response_threshold,
             )
         if _hit is not None:
-            print(f"DEBUG: ⚡ response_cache hit ({current_model}) — skipping LLM call", flush=True)
+            _log.debug(f"⚡ response_cache hit ({current_model}) — skipping LLM call")
             try:
                 provider = detect_provider_from_model(current_model)
                 await usage_tracker.log_usage(
@@ -2394,7 +2395,7 @@ async def generate_response(
                     response_cache_hit=True,
                 )
             except Exception as _track_err:
-                print(f"DEBUG usage_tracker: log_usage (cache hit) failed: {_track_err}", flush=True)
+                _log.warning(f"usage_tracker: log_usage (cache hit) failed: {_track_err}")
             return _hit.get("text", "")
 
     if mode in ["cloud", "bedrock"]:
@@ -2580,7 +2581,7 @@ async def generate_response(
             try:
                 # Try specific Ollama Tool Call format if tools are provided
                 if tools:
-                    print(f"DEBUG: Calling Ollama /api/chat with tools...", flush=True)
+                    _log.debug(f"Calling Ollama /api/chat with tools...")
 
                     # Construct full message history
                     # 1. System Prompt
@@ -2618,7 +2619,7 @@ async def generate_response(
                         # call as a [REASONING] preamble (some Ollama models emit
                         # both — qwen3, deepseek-r1 routinely do).
                         tc = msg["tool_calls"][0]
-                        print(f"DEBUG: Native Tool Call received: {tc['function']['name']}", flush=True)
+                        _log.debug(f"Native Tool Call received: {tc['function']['name']}")
                         call_json = json.dumps({
                             "tool": tc["function"]["name"],
                             "arguments": tc["function"]["arguments"]
@@ -2637,7 +2638,7 @@ async def generate_response(
 
                 else:
                     # Fallback to generate if no tools or tools failed (Old behavior)
-                    print(f"DEBUG: Calling Ollama /api/generate (Legacy Mode)...", flush=True)
+                    _log.debug(f"Calling Ollama /api/generate (Legacy Mode)...")
 
                     prompt_for_generate = prompt_msg
                     if history_messages:
@@ -2683,7 +2684,7 @@ async def generate_response(
             cache_write_tokens=cache_write_tokens,
         )
     except Exception as _track_err:
-        print(f"DEBUG usage_tracker: log_usage failed (non-fatal): {_track_err}", flush=True)
+        _log.warning(f"usage_tracker: log_usage failed (non-fatal): {_track_err}")
 
     # ── Populate response cache on successful call ───────────────────────────
     if cache_response and result_text and not str(result_text).startswith("Error"):
@@ -2711,7 +2712,7 @@ async def generate_response(
                     ttl_seconds=cache_response_ttl,
                 )
         except Exception as _cache_err:
-            print(f"DEBUG response_cache: set failed (non-fatal): {_cache_err}", flush=True)
+            _log.warning(f"response_cache: set failed (non-fatal): {_cache_err}")
 
     return result_text
 
@@ -2746,7 +2747,7 @@ async def embed_batch(texts: list[str], model: str, settings: dict) -> list[list
     elif provider == "ollama":
         return await _embed_ollama(texts, model)
     else:
-        print(f"DEBUG: Unknown provider '{provider}' for embedding model '{model}'")
+        _log.debug(f"Unknown provider '{provider}' for embedding model '{model}'")
         return [[0.0] * 768 for _ in range(len(texts))]
 
 
@@ -2765,7 +2766,7 @@ async def _embed_openai(texts: list[str], model: str, api_key: str) -> list[list
             # OpenAI returns embeddings in the same order as input
             return [item["embedding"] for item in data["data"]]
     except Exception as e:
-        print(f"ERROR: OpenAI embedding failed: {e}")
+        _log.error(f"OpenAI embedding failed: {e}")
         return [[0.0] * 1536 for _ in range(len(texts))]
 
 
@@ -2815,7 +2816,7 @@ async def _embed_gemini(
             return [[0.0] * output_dim for _ in range(len(texts))]
         return [list(em.values) for em in result.embeddings]
     except Exception as e:
-        print(f"ERROR: Gemini embedding failed: {e}")
+        _log.error(f"Gemini embedding failed: {e}")
         return [[0.0] * output_dim for _ in range(len(texts))]
 
 
@@ -2869,14 +2870,14 @@ async def _embed_bedrock(texts: list[str], model: str, settings: dict) -> list[l
         except Exception as e:
             err_str = str(e)
             if "unknown model" in err_str.lower() or "resourcenotfound" in err_str.lower():
-                print(
-                    f"ERROR: Bedrock embedding — model '{real_model_id}' not found in "
+                _log.error(
+                    f"Bedrock embedding — model '{real_model_id}' not found in "
                     f"region '{region}'. Ensure the model is enabled in the AWS console "
                     f"and, if it requires on-demand throughput via an inference profile, "
                     f"set 'Bedrock Inference Profile' in Settings.\nOriginal error: {e}"
                 )
             else:
-                print(f"ERROR: Bedrock embedding failed for '{real_model_id}': {e}")
+                _log.error(f"Bedrock embedding failed for '{real_model_id}': {e}")
             embeddings.append([])
 
     return embeddings
@@ -2900,5 +2901,5 @@ async def _embed_ollama(texts: list[str], model: str) -> list[list[float]]:
             data = resp.json()
             return data.get("embeddings", [])
     except Exception as e:
-        print(f"ERROR: Ollama embedding failed: {e}")
+        _log.error(f"Ollama embedding failed: {e}")
         return [[0.0] * 768 for _ in range(len(texts))]
