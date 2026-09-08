@@ -384,18 +384,33 @@ class OrchestrationEngine:
 
             except Exception as e:
                 import traceback; print(f"DEBUG ENGINE: ❌ EXCEPTION in step '{step.id}': {e}\n{traceback.format_exc()}", flush=True)
+                # The stream gets a sanitised message — that choice was
+                # deliberate, an exception's text can carry anything. The run
+                # record gets the real one, bounded: an operator reading a
+                # failed run's history should not have to grep worker stdout
+                # to learn whether it was a 401 or a KeyError.
                 safe_error = "An internal error occurred while executing this step."
+                real_error = f"{type(e).__name__}: {str(e)[:300]}"
                 run.step_history.append({
                     "step_id": step.id,
                     "step_name": step.name,
                     "step_type": step.type.value,
                     "status": "failed",
-                    "error": safe_error,
+                    "error": real_error,
+                    "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(step_start_time)),
+                    "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "duration_seconds": round(time.time() - step_start_time, 2),
                 })
                 run.status = "failed"
                 if logger:
-                    logger.step_end(step.id, "failed", safe_error)
+                    logger.step_end(step.id, "failed", real_error)
                 yield {"type": "step_error", "orch_step_id": step.id, "error": safe_error}
+                # Persist the failure here: between this and the finalize
+                # checkpoint is exactly where a second crash would lose it.
+                try:
+                    await state.checkpoint()
+                except Exception as ckpt_err:
+                    print(f"WARNING: failure checkpoint failed: {ckpt_err}", flush=True)
                 break
 
         # Finalize
