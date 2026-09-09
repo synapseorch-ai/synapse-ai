@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, ImageIcon, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain} from 'lucide-react';
+import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, ImageIcon, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Square, Pencil, RotateCcw} from 'lucide-react';
 
 import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';
@@ -522,6 +522,21 @@ export default function Home() {
   // Persists across SSE calls: true once orchestration_complete is received
   const orchestrationCompletedRef = useRef(false);
 
+  // How the last turn ended, when it did not end with an answer. Drives the
+  // retry bar: a turn that broke is the one case where the person is left with
+  // nothing to do and no way to try again, which until now meant retyping.
+  const [turnOutcome, setTurnOutcome] = useState<null | { kind: 'failed' | 'cancelled'; message?: string }>(null);
+  // What to send if they do. Held in a ref rather than state because the retry
+  // reads it from inside a handler, not during a render.
+  const lastSentRef = useRef<{ content: string; images?: string[] } | null>(null);
+  // Whether this turn actually produced an answer. A stream can end without
+  // one — a proxy timing out mid-turn, a worker recycled — and that used to
+  // look exactly like a finished conversation: the transcript simply stopped.
+  const turnAnsweredRef = useRef(false);
+  // Index of the user message being rewritten, or null. Editing one drops it
+  // and everything after it — a conversation cannot fork.
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -545,6 +560,9 @@ export default function Home() {
     if (!isLoading) return true;
     const ok = window.confirm('An agent is still processing. Navigating away will cancel it. Continue?');
     if (!ok) return false;
+    // The confirm has promised this cancels it. Until there was a cancel
+    // endpoint that was not true — the turn ran on, unwatched.
+    signalStop(sessionId);
     sseAbortRef.current?.abort();
     sseAbortRef.current = null;
     setIsLoading(false);
@@ -669,12 +687,29 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * Tell the backend to stop, without waiting to hear back.
+   *
+   * For the places that abandon a turn as a side effect — starting a new chat,
+   * navigating away — where the person is not waiting on the answer and the
+   * caller cannot be async. Aborting the fetch only ever stopped this browser
+   * listening; the turn went on running, and on a metered deployment went on
+   * being paid for.
+   */
+  const signalStop = (sid: string) => {
+    void fetch(`/api/chat/${encodeURIComponent(sid)}/cancel`, { method: 'POST' })
+      .catch(() => { /* best effort: the abort still ends it here */ });
+  };
+
   const handleNewChat = () => {
+    if (isLoading) signalStop(sessionId);
     sseAbortRef.current?.abort();
     sseAbortRef.current = null;
     setIsLoading(false);
     setIsThinking(false);
     setStreamingActivity(null);
+    setTurnOutcome(null);
+    setEditingIndex(null);
     setSessionId(generateSessionId());
     setMessages([]);
   };
@@ -767,9 +802,95 @@ export default function Home() {
     setInput('');
     setAttachedImages([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
+
+    // Rewriting a question replaces it and drops everything after it. A
+    // conversation cannot fork: the turns below were answers to the question
+    // as it was asked, and keeping them would leave the model reading replies
+    // to something nobody said.
+    if (editingIndex !== null) {
+      const original = messages[editingIndex];
+      const isLastTurn = editingIndex === messages.length - 2;
+      if (isLastTurn && original) await popStoredTurn(original.content);
+      setMessages(prev => [
+        ...prev.slice(0, editingIndex),
+        { role: 'user', content: userMessage, images: imagesToSend.length > 0 ? imagesToSend : undefined },
+      ]);
+      setEditingIndex(null);
+      await processMessage(userMessage, imagesToSend);
+      return;
+    }
+
     setMessages(prev => [...prev, { role: 'user', content: userMessage, images: imagesToSend.length > 0 ? imagesToSend : undefined }]);
 
     await processMessage(userMessage, imagesToSend);
+  };
+
+  /**
+   * Stop the turn that is running.
+   *
+   * Two calls, because they do different jobs. The POST tells the backend to
+   * stop working — without it a stopped turn goes on spending tokens against a
+   * socket nobody is reading. The abort tells this browser to stop listening,
+   * which is what makes the screen respond at once instead of when the server
+   * gets around to it.
+   *
+   * `'stop'` as the abort reason matters: the catch in `processMessageSSE`
+   * resolves on it rather than rejecting, so stopping does not fall through to
+   * the HTTP path and quietly run the whole turn again.
+   */
+  const handleStop = async () => {
+    if (!isLoading) return;
+    setTurnOutcome({ kind: 'cancelled' });
+    try {
+      await fetch(`/api/chat/${encodeURIComponent(sessionId)}/cancel`, { method: 'POST' });
+    } catch (e) {
+      // The backend may be unreachable; the abort below still ends it here.
+      console.error('Failed to reach the cancel endpoint', e);
+    }
+    sseAbortRef.current?.abort('stop');
+    sseAbortRef.current = null;
+  };
+
+  /**
+   * Take the last turn off the stored history, if it is the one we mean.
+   *
+   * Guarded, and the guard is load-bearing: a turn that *failed* was never
+   * persisted, so the last stored turn is the previous, successful one.
+   * Popping unconditionally would delete that.
+   */
+  const popStoredTurn = async (expectUser: string) => {
+    try {
+      await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/last-turn/pop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: currentAgentId, expect_user: expectUser }),
+      });
+    } catch (e) {
+      console.error('Failed to take the last turn back', e);
+    }
+  };
+
+  /** Run the last question again, in place of the answer that did not arrive. */
+  const handleRetry = async () => {
+    const payload = lastSentRef.current;
+    if (!payload || isLoading) return;
+    await popStoredTurn(payload.content);
+    // Drop whatever the broken turn left in the transcript, back to and
+    // excluding the question itself — that stays, and is asked again.
+    setMessages(prev => {
+      const idx = prev.findLastIndex(m => m.role === 'user');
+      return idx === -1 ? prev : prev.slice(0, idx + 1);
+    });
+    await processMessage(payload.content, payload.images);
+  };
+
+  /** Put a question back in the composer to be rewritten. */
+  const handleEditMessage = (index: number) => {
+    const message = messages[index];
+    if (!message || message.role !== 'user' || isLoading) return;
+    setEditingIndex(index);
+    setInput(message.content === '[Images attached]' ? '' : message.content);
+    textareaRef.current?.focus();
   };
 
   const handleCollectDataSubmit = async (values: Record<string, any>) => {
@@ -798,6 +919,9 @@ export default function Home() {
 
   // Refactor duplicate fetch logic into helper
   const processMessage = async (content: string, images?: string[]) => {
+    lastSentRef.current = { content, images };
+    turnAnsweredRef.current = false;
+    setTurnOutcome(null);
     setIsLoading(true);
     setStreamingActivity(null);
     setIsThinking(false);
@@ -810,10 +934,30 @@ export default function Home() {
     try {
       await processMessageSSE(content, images);
     } catch (sseError) {
-      console.error('[SSE] SSE failed, falling back to HTTP:', sseError);
-      // Fallback to HTTP
-      await processMessageHTTP(content, images);
+      // The fallback is for a *transport* failure — a dead socket, a stalled
+      // stream, a proxy that gave up. An `error` event is the engine telling
+      // us the turn failed, and re-running it over HTTP does not fix that: it
+      // pays for the whole turn a second time to arrive at the same answer.
+      // Now that Retry exists, the person decides whether to spend that.
+      if ((sseError as { engineError?: boolean })?.engineError) {
+        console.error('[SSE] the turn failed:', sseError);
+        setTurnOutcome({ kind: 'failed', message: (sseError as Error).message });
+      } else {
+        console.error('[SSE] SSE failed, falling back to HTTP:', sseError);
+        await processMessageHTTP(content, images);
+      }
     } finally {
+      // A turn that produced nothing and said nothing about why. The functional
+      // setter is deliberate: an outcome already recorded — a stop, an engine
+      // error — is the more specific answer and must not be overwritten by
+      // this catch-all, and reading the state directly here would read the
+      // value from before this turn started.
+      if (!turnAnsweredRef.current) {
+        setTurnOutcome(prev => prev ?? {
+          kind: 'failed',
+          message: 'The connection to this turn ended before it finished.',
+        });
+      }
       setIsLoading(false);
       setStreamingActivity(null);
       setIsThinking(false);
@@ -915,6 +1059,7 @@ export default function Home() {
         break;
 
       case 'response': {
+        turnAnsweredRef.current = true;
         const capturedThoughts = [...pendingThoughtsRef.current];
         const capturedReasoning = [...pendingReasoningRef.current];
         setMessages(prev => [...prev, {
@@ -1100,8 +1245,17 @@ export default function Home() {
       case 'done':
         return { done: true };
 
-      case 'error':
-        return { done: false, error: new Error(data.message as string) };
+      case 'error': {
+        const err = new Error(data.message as string) as Error & { engineError?: boolean };
+        err.engineError = true;
+        return { done: false, error: err };
+      }
+
+      case 'cancelled':
+        // The turn was stopped — by this browser or another one on the same
+        // session. Either way it ended on purpose, so it is not an error.
+        setTurnOutcome({ kind: 'cancelled' });
+        return { done: false };
     }
     return { done: false };
   };
@@ -1270,6 +1424,7 @@ export default function Home() {
         body: JSON.stringify({ message: content, session_id: sessionId, agent_id: currentAgentId, images: images || [] }),
       });
       const data = await res.json();
+      turnAnsweredRef.current = true;
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: data.response,
@@ -1277,7 +1432,11 @@ export default function Home() {
         data: data.data
       }]);
     } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: "Error communicating with agent." }]);
+      // Left unanswered on purpose: the retry bar is the affordance now. A
+      // bubble reading "Error communicating with agent." is a dead end wearing
+      // the costume of a reply, and it lands in the history the model reads
+      // next turn as something the agent said.
+      console.error('HTTP fallback failed', err);
     }
   };
 
@@ -1371,7 +1530,29 @@ export default function Home() {
         )}>
           {msg.role === 'user' ? (
             /* ── User bubble ── */
-            <div className="p-4 bg-zinc-900 border border-zinc-800 text-zinc-100 text-[15px] leading-7 relative font-sans self-end max-w-[80%] rounded-md">
+            <div className="group p-4 bg-zinc-900 border border-zinc-800 text-zinc-100 text-[15px] leading-7 relative font-sans self-end max-w-[80%] rounded-md">
+              {/* Rewrite this question.
+
+                  Kept out of the hover-only pattern that hides the image
+                  remove button: this one is focusable, so it can be reached
+                  without a pointer. It only shows on the *last* question —
+                  editing an earlier one would drop every answer after it,
+                  which is a bigger action than a pencil implies. */}
+              {!isLoading && idx === messages.length - 2 && (
+                <button
+                  type="button"
+                  onClick={() => handleEditMessage(idx)}
+                  aria-label="Edit this message and send it again"
+                  title="Edit and send again"
+                  className={cn(
+                    "absolute -left-9 top-3 p-1.5 rounded-md text-zinc-600 transition-all",
+                    "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                    "hover:text-zinc-300 hover:bg-zinc-800",
+                  )}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              )}
               <div className="prose prose-invert max-w-none text-zinc-100 font-normal">
                 {renderTextContent(msg.content)}
               </div>
@@ -1693,6 +1874,67 @@ export default function Home() {
         {/* Input Area */}
         <div className="absolute bottom-0 left-0 right-0 px-3 pb-3 pt-6 md:p-6 bg-gradient-to-t from-bg via-bg to-transparent">
           <div className="w-full md:max-w-5xl mx-auto">
+            {/* The turn ended without an answer.
+
+                Until now this was the end of the road: the transcript simply
+                stopped, and trying again meant retyping the question. The bar
+                says which of the two things happened, because they read very
+                differently — one is the product failing, the other is the
+                person deciding. */}
+            {turnOutcome && !isLoading && (
+              <div className={cn(
+                "flex items-center gap-3 mb-3 px-3 py-2.5 border text-xs rounded-md",
+                turnOutcome.kind === 'failed'
+                  ? "border-red-900/50 bg-red-950/20 text-red-300"
+                  : "border-zinc-800 bg-zinc-950/80 text-zinc-400",
+              )}>
+                {turnOutcome.kind === 'failed'
+                  ? <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                  : <Square className="h-3 w-3 shrink-0 fill-current" />}
+                <span className="min-w-0 flex-1 truncate font-sans">
+                  {turnOutcome.kind === 'failed'
+                    ? (turnOutcome.message || 'That turn failed before it finished.')
+                    : 'Stopped.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  className={cn(
+                    "shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-colors",
+                    "border-border-strong text-text hover:bg-row-hover hover:border-accent",
+                  )}
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  Try again
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTurnOutcome(null)}
+                  aria-label="Dismiss"
+                  className="shrink-0 p-1 rounded-md text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            )}
+
+            {/* Rewriting a question, rather than asking a new one. */}
+            {editingIndex !== null && (
+              <div className="flex items-center gap-3 mb-3 px-3 py-2.5 border border-accent/40 bg-accent/5 text-xs text-text rounded-md">
+                <Pencil className="h-3.5 w-3.5 shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 font-sans">
+                  Editing your message. Sending replaces it and drops the replies below it.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setEditingIndex(null); setInput(''); }}
+                  className="shrink-0 px-2.5 py-1 rounded-md border border-border-strong text-text-muted hover:bg-row-hover hover:text-text transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+
             {/* Image Preview Strip */}
             {attachedImages.length > 0 && (
               <div className="flex items-center gap-3 mb-3 p-3 border border-zinc-800/80 bg-zinc-950/90 backdrop-blur-md overflow-x-auto shadow-2xl rounded-md">
@@ -1751,9 +1993,16 @@ export default function Home() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
+                    // Typing ahead is allowed; sending a second turn on top of
+                    // a running one is not — `handleSubmit` returns early, and
+                    // the draft is kept rather than swallowed.
                     if (input.trim() || attachedImages.length > 0) {
                       handleSubmit(e as unknown as React.FormEvent);
                     }
+                  }
+                  if (e.key === 'Escape' && editingIndex !== null) {
+                    setEditingIndex(null);
+                    setInput('');
                   }
                 }}
                 onPaste={(e) => {
@@ -1773,9 +2022,8 @@ export default function Home() {
                     reader.readAsDataURL(file);
                   });
                 }}
-                placeholder={isLoading ? "Agent is processing…" : "Enter command…"}
+                placeholder={isLoading ? "Agent is working — type your next message…" : "Enter command…"}
                 title="Shift+Enter for a new line"
-                disabled={isLoading}
                 // The <form> above owns the focus ring for this control.
                 data-no-focus-ring
                 className="flex-1 bg-transparent py-3 pr-2 text-[15px] focus:outline-none font-mono text-zinc-100 placeholder:text-zinc-500 resize-none min-h-[44px] max-h-[200px] leading-relaxed"
@@ -1812,14 +2060,31 @@ export default function Home() {
               >
                 <ImageIcon className="h-[18px] w-[18px]" />
               </button>
-              <button
-                type="submit"
-                disabled={isLoading || (!input.trim() && attachedImages.length === 0)}
-                className="px-4 py-2 bg-accent text-accent-fg font-semibold text-[11px] uppercase tracking-wider border border-transparent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all self-end mb-1 shrink-0 flex items-center justify-center rounded-md"
-              >
-                <span className="hidden md:inline">Execute</span>
-                <Send className="h-4 w-4 md:hidden" />
-              </button>
+              {/* The one button, in whichever job the moment calls for.
+
+                  Two buttons would mean one of them is always dead, and the
+                  live one moves — so Stop lands where the eye already is,
+                  which is where Execute was a second ago. */}
+              {isLoading ? (
+                <button
+                  type="button"
+                  onClick={handleStop}
+                  title="Stop the agent"
+                  className="px-4 py-2 bg-surface-2 text-text font-semibold text-[11px] uppercase tracking-wider border border-border-strong hover:bg-row-hover hover:border-accent transition-all self-end mb-1 shrink-0 flex items-center gap-1.5 justify-center rounded-md"
+                >
+                  <Square className="h-3 w-3 fill-current" />
+                  <span className="hidden md:inline">Stop</span>
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!input.trim() && attachedImages.length === 0}
+                  className="px-4 py-2 bg-accent text-accent-fg font-semibold text-[11px] uppercase tracking-wider border border-transparent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all self-end mb-1 shrink-0 flex items-center justify-center rounded-md"
+                >
+                  <span className="hidden md:inline">{editingIndex !== null ? 'Resend' : 'Execute'}</span>
+                  <Send className="h-4 w-4 md:hidden" />
+                </button>
+              )}
             </form>
             <div className="text-center mt-2">
               <p className="text-xs text-zinc-500 uppercase tracking-widest font-mono">

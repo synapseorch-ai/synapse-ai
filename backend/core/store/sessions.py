@@ -107,7 +107,8 @@ async def append_turn(session_id: str, agent_id: str, messages: list[dict]) -> N
             row.last_message_at = datetime.now(timezone.utc)
 
 
-async def pop_last_turn(session_id: str, agent_id: str) -> dict | None:
+async def pop_last_turn(session_id: str, agent_id: str,
+                        expect_user: str | None = None) -> dict | None:
     """Take the last user/assistant pair back off a session.
 
     What Retry and edit-and-resend both need, and the reason it is a *pair*:
@@ -116,10 +117,18 @@ async def pop_last_turn(session_id: str, agent_id: str) -> dict | None:
     untidy — it truncates every turn after it out of the history the model
     sees. Removing one half is worse than removing none.
 
+    `expect_user` is the guard, and it is not optional in practice. **A turn
+    that fails persists nothing** — `_save_conversation_turn` runs after the
+    loop, not in a `finally` — so the last stored turn after a failure is the
+    previous, successful one. A Retry that popped unconditionally would delete
+    the wrong conversation turn, which is the same class of bug as a failed
+    turn wiping its own history. Pass what you believe the last question was
+    and nothing is removed unless it matches.
+
     Returns the removed turn (`{"user": ..., "assistant": ...}`) so a caller can
     put the text back in the composer, or None when there was nothing to remove
-    — an empty session, or a tail that does not pair, which is left alone
-    rather than guessed at.
+    — an empty session, a tail that does not pair (left alone rather than
+    guessed at), or a tail that is not the turn the caller meant.
     """
     from core.store import session
 
@@ -132,6 +141,8 @@ async def pop_last_turn(session_id: str, agent_id: str) -> dict | None:
             return None
         user, assistant = messages[-2], messages[-1]
         if user.get("role") != "user" or assistant.get("role") != "assistant":
+            return None
+        if expect_user is not None and user.get("content", "") != expect_user:
             return None
         # Reassigned, not mutated: SQLAlchemy does not track in-place changes to
         # a JSON column, so `row.messages.pop()` would be a write that silently

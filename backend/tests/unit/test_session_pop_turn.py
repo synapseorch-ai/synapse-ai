@@ -71,3 +71,34 @@ class TestPoppingATurn:
         await store.pop_last_turn("s1", "default")
         row = await store.get("other", "default")
         assert len(row["messages"]) == 2
+
+
+class TestTheGuard:
+    """A turn that fails persists nothing.
+
+    `_save_conversation_turn` runs after the loop, not in a `finally`, so after
+    a failure the last stored turn is the *previous*, successful one. An
+    unguarded Retry would delete that — the same shape of bug as a failed turn
+    wiping its own history, and just as invisible.
+    """
+
+    async def test_it_refuses_when_the_tail_is_not_the_turn_you_meant(self, a_session):
+        removed = await store.pop_last_turn("s1", "default", expect_user="a question never asked")
+        assert removed is None
+        row = await store.get("s1", "default")
+        assert len(row["messages"]) == 4, "it deleted a turn the caller did not mean"
+
+    async def test_it_removes_when_the_tail_matches(self, a_session):
+        removed = await store.pop_last_turn("s1", "default", expect_user="two")
+        assert removed == {"user": "two", "assistant": "answer two"}
+        row = await store.get("s1", "default")
+        assert len(row["messages"]) == 2
+
+    async def test_retrying_a_failed_turn_leaves_history_alone(self, a_session):
+        """The whole point, end to end: the failed turn was never written, so
+        the guard finds "two" where it expected "three" and removes nothing."""
+        removed = await store.pop_last_turn("s1", "default", expect_user="three")
+        assert removed is None
+        row = await store.get("s1", "default")
+        assert [m["content"] for m in row["messages"]] == [
+            "one", "answer one", "two", "answer two"]
