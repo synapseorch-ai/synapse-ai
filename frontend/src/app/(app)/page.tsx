@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { useRegisterNavGuard } from '@/components/app/NavGuard';
+import { Spinner } from '@/components/ui';
 
 import { renderTextContent, cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
@@ -1650,13 +1651,10 @@ export default function Home() {
                 {/* Loading Indicator */}
                 {isLoading && (
                   <div className="flex gap-4 max-w-3xl items-start">
-                    {/* Spinning Bot Icon with Ring */}
-                    <div className="relative h-8 w-8 shrink-0 mt-0.5">
-                      <div className="absolute inset-0 border-2 border-transparent border-t-accent border-r-accent/50 rounded-full animate-spin"></div>
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <Bot className="h-4 w-4 text-accent" />
-                      </div>
-                    </div>
+                    {/* The mark is the avatar while the agent is working: one
+                        symbol carrying the motion, at the size the robot tile
+                        used to be, rather than a bot inside a spinning ring. */}
+                    <Spinner size={32} className="mt-0.5 shrink-0 text-accent" label="Working" />
 
                     <div className="flex flex-col gap-1">
                       <div className="flex items-baseline gap-0.5">
