@@ -116,9 +116,16 @@ class AgentStepExecutor:
             # it: with two copies, a second crash could read the stale one's
             # attempt counter.
             saved_progress = run.shared_state.pop(legacy_key)
-        if isinstance(saved_progress, dict) and saved_progress.get("context_text"):
+        # A transcript to continue from, or an approval decision to apply —
+        # a step that paused on its very first tool call has the second and
+        # not the first, and dropping it would ask the same question forever.
+        _has_transcript = isinstance(saved_progress, dict) and bool(saved_progress.get("context_text"))
+        _has_verdict = isinstance(saved_progress, dict) and bool(
+            saved_progress.get("approved_calls") or saved_progress.get("denied_calls")
+        )
+        if _has_transcript or _has_verdict:
             prior_attempts = int(saved_progress.get("attempt") or 1)
-            if prior_attempts >= 3:
+            if _has_transcript and prior_attempts >= 3:
                 run.step_progress.pop(step.id, None)
                 _log.debug(f"AGENT EXEC: ⚠ discarding step progress for '{step.id}' "
                       f"after {prior_attempts} attempts — fresh rerun")
@@ -161,6 +168,26 @@ class AgentStepExecutor:
                         await SharedState(run).checkpoint(columns=("tasks",))
                     except Exception as ckpt_err:
                         _log.warning(f"task-list checkpoint failed: {ckpt_err}")
+                if event.get("type") == "human_input_required" and event.get("kind") == "tool_approval":
+                    # A tool call is waiting on a person. Record it on the run
+                    # so the resume can turn their answer into an approval the
+                    # loop understands, then let the engine pause as it does
+                    # for any human input.
+                    progress = dict(run.step_progress.get(step.id) or {})
+                    progress["pending_approval"] = {
+                        "approval_id": event.get("approval_id"),
+                        "tool_name": event.get("tool_name"),
+                        "tool_args": event.get("tool_args") or {},
+                        "category": event.get("category"),
+                    }
+                    run.step_progress[step.id] = progress
+                    try:
+                        await SharedState(run).checkpoint(columns=("step_progress",))
+                    except Exception as ckpt_err:
+                        _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
+                    yield {**event, "orch_step_id": step.id, "step_name": step.name}
+                    return
+
                 if event.get("type") == "_step_progress":
                     # Turn-boundary transcript checkpoint: persist so a crash
                     # resumes mid-step. Swallowed here — never logged, never

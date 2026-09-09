@@ -69,12 +69,17 @@ class VirtualTool:
     dropped the moment a tool was wrapped, so the engine could not tell a file
     read from a database write.
     """
-    def __init__(self, name, description, inputSchema, annotations=None, title=None):
+    def __init__(self, name, description, inputSchema, annotations=None, title=None,
+                 trusted: bool = True):
         self.name = name
         self.description = description
         self.inputSchema = inputSchema
         self.annotations = annotations
         self.title = title
+        #: False for a third-party MCP server. Its hints are a claim, not a
+        #: boundary (see core/tool_policy.py) — believed when they restrict,
+        #: not when they reassure.
+        self.trusted = trusted
 
 
 @dataclass(frozen=True)
@@ -387,7 +392,8 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
                 name = key or f"{session_name[len('ext_mcp_'):]}{SEP}{t.name}"
                 if permits(allowed_tools, name, opt_in=opt_in):
                     all_tools.append(VirtualTool(name, t.description, t.inputSchema,
-                                                 getattr(t, "annotations", None)))
+                                                 getattr(t, "annotations", None),
+                                                 trusted=False))
                 continue
 
             # A native tool an agent asked for *by its namespaced key*. This is

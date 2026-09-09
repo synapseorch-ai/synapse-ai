@@ -591,6 +591,16 @@ class OrchestrationEngine:
                 yield event
             return
 
+        # A tool call inside an agent step, not a human step: the answer is an
+        # approval for that call, and the step has to be re-entered rather than
+        # stepped past — its work is unfinished, and the transcript that got it
+        # this far is in its progress record.
+        _pending = (run.step_progress.get(run.current_step_id) or {}).get("pending_approval")
+        if _pending:
+            async for event in cls._resume_tool_approval(run, engine, human_response, _pending):
+                yield event
+            return
+
         # Normal path: human step is directly in this orchestration.
         # Move to next step after the HUMAN step
         current_step = engine.step_map.get(run.current_step_id)
@@ -630,6 +640,75 @@ class OrchestrationEngine:
         async for event in engine._execute_loop(run, state):
             yield event
         _log.debug(f"[engine.resume] 🏁 _execute_loop finished, run.status={run.status} run.current_step_id={run.current_step_id!r}")
+
+    @staticmethod
+    def _approved(human_response) -> tuple[bool, str]:
+        """Read a yes or a no out of whatever the answer arrived as.
+
+        The approval card sends `{"approve": bool}`. A messaging channel or a
+        chat reply sends prose. An unreadable answer is a refusal: the whole
+        point of the pause is that nobody wanted this to run unattended.
+        """
+        if isinstance(human_response, dict):
+            for key in ("approve", "approved", "confirm", "response"):
+                if key in human_response:
+                    value = human_response[key]
+                    if isinstance(value, bool):
+                        return value, str(human_response.get("reason") or "")
+                    text = str(value)
+                    break
+            else:
+                text = str(human_response)
+        else:
+            text = str(human_response)
+        cleaned = text.strip().lower()
+        yes = cleaned in ("y", "yes", "true", "1", "ok", "okay", "approve", "approved", "allow", "go")
+        return yes, "" if yes else (text.strip() or "the user declined")
+
+    @classmethod
+    async def _resume_tool_approval(cls, run, engine, human_response, pending):
+        """Continue an agent step that stopped to ask about one tool call."""
+        step = engine.step_map.get(run.current_step_id)
+        approved, reason = cls._approved(human_response)
+        approval_id = pending.get("approval_id")
+        _log.debug(f"[engine.resume] 🔐 tool approval for '{pending.get('tool_name')}' → "
+                   f"{'approved' if approved else 'refused'}")
+
+        progress = dict(run.step_progress.get(run.current_step_id) or {})
+        progress.pop("pending_approval", None)
+        # The call itself, so the step can act on the answer without asking the
+        # model to make the same choice again — it might not, and then an
+        # approval a person gave would quietly do nothing.
+        progress["pending_call"] = {
+            "approval_id": approval_id,
+            "tool": pending.get("tool_name"),
+            "arguments": pending.get("tool_args") or {},
+            "approved": approved,
+            "reason": reason,
+        }
+        bucket = "approved_calls" if approved else "denied_calls"
+        progress[bucket] = sorted(set(progress.get(bucket) or []) | {approval_id})
+        if not approved and reason:
+            progress["denied_reasons"] = {**(progress.get("denied_reasons") or {}), approval_id: reason}
+        run.step_progress[run.current_step_id] = progress
+
+        run.waiting_for_human = False
+        run.status = "running"
+        # The step is unfinished, so its history entry is reopened rather than
+        # closed: it did not complete when it paused.
+        for entry in reversed(run.step_history):
+            if entry.get("step_id") == run.current_step_id and entry.get("status") == "paused":
+                entry["status"] = "running"
+                break
+
+        yield {"type": "tool_approval_resolved", "orch_step_id": run.current_step_id,
+               "tool_name": pending.get("tool_name"), "approved": approved,
+               "step_name": step.name if step else ""}
+
+        state = SharedState(run)
+        await state.checkpoint()
+        async for event in engine._execute_loop(run, state):
+            yield event
 
     @classmethod
     async def _resume_nested_orch(

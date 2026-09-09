@@ -22,6 +22,7 @@ from core.session import (
 )
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.tools import aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
+from core import tool_policy as _tool_policy
 import anyio as _anyio
 import re as _re
 from datetime import timedelta
@@ -283,6 +284,28 @@ def looks_like_a_tool_call(text: str) -> bool:
     a false negative ships JSON to a person.
     """
     return bool(_TOOL_SHAPE_RE.search(strip_reasoning(text or "")))
+
+
+class _UndeclaredTool:
+    """Stands in for a call whose declaration we cannot find — a hallucinated
+    name, or one that vanished between turns. It declares nothing, so the
+    policy's `undeclared` rule decides."""
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        self.name = name
+        
+    annotations = None
+    trusted = True
+
+
+def _approval_id(tool_name: str, tool_args: dict) -> str:
+    """Identifies one call across a pause. Name plus arguments, so approving
+    a `run_bash` of `ls` does not also approve the next one of `rm`."""
+    import hashlib as _h
+    payload = json.dumps({"tool": tool_name, "arguments": tool_args or {}},
+                         sort_keys=True, default=str)
+    return _h.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def parse_all_tool_calls(llm_output: str) -> list[dict]:
@@ -1131,6 +1154,26 @@ async def run_agent_step(
     COMPACT_COOLDOWN_TURNS = 3
     _truncation_retries = 0  # consecutive responses cut off at the output limit
     _parse_retries = 0        # consecutive responses that looked like a tool call and were not
+    # Approvals carried across a pause: a call the user allowed runs once, a
+    # call they refused becomes a refusal the model reads.
+    _approved_calls: set[str] = set(resume_state.get("approved_calls") or []) if resume_state else set()
+    _denied_calls: set[str] = set(resume_state.get("denied_calls") or []) if resume_state else set()
+    _denied_reasons: dict[str, str] = dict((resume_state or {}).get("denied_reasons") or {})
+    # A call a person just ruled on. An approved one is replayed as this turn's
+    # action rather than re-requested — the model asked once, a human answered,
+    # and asking the model again could produce a different call or none at all.
+    _pending_call = (resume_state or {}).get("pending_call") or None
+    _replay_call: dict | None = None
+    if _pending_call:
+        if _pending_call.get("approved"):
+            _replay_call = {"tool": _pending_call.get("tool"),
+                            "arguments": _pending_call.get("arguments") or {}}
+        else:
+            _refusal = _pending_call.get("reason") or "the user declined"
+            _refusal_text = (f"\nSystem: the user refused the call to "
+                             f"'{_pending_call.get('tool')}': {_refusal}. "
+                             "Do not call it again for this task; continue without it or "
+                             "explain what you cannot do.\n")
 
     # ── Mid-node resume: seed the loop from a prior interrupted attempt ──────
     # The orchestration executor checkpoints a _step_progress snapshot after
@@ -1139,6 +1182,7 @@ async def run_agent_step(
     # call (side effects included).
     start_turn = 0
     _resumed_mid_step = False
+    _pending_refusal = locals().get("_refusal_text")
     if resume_state and resume_state.get("context_text"):
         current_context_text = resume_state["context_text"] + (
             "\n[System: this task was interrupted and has been resumed. Continue from the "
@@ -1153,6 +1197,8 @@ async def run_agent_step(
         tools_used_summary = list(resume_state.get("tools_used") or [])
         start_turn = min(int(resume_state.get("turn") or 0), max(0, max_turns - 1))
         _resumed_mid_step = True
+    if _pending_refusal:
+        current_context_text += _pending_refusal
         _log.debug(f"RUN_AGENT: ⏯ resuming mid-step from turn {start_turn + 1}/{max_turns}")
 
 
@@ -1173,6 +1219,8 @@ async def run_agent_step(
     MAX_PROMPT_CHARS = 400000
     MAX_TRUNCATION_RETRIES = 2
     MAX_PARSE_RETRIES = 1
+
+    _policy = _tool_policy.resolve_policy(active_agent, current_settings)
 
     # Browser tools produce DOM snapshots that are only useful for the current turn.
     # Previous snapshots become stale the moment the page changes, so we skip
@@ -1323,25 +1371,41 @@ async def run_agent_step(
             }
 
             # Ask LLM
-            _log.debug(f"🔄 Calling LLM...")
-            _llm_start = time.time()
-            try:
-                _llm_result = await generate_response(
-                    full_prompt, active_sys_prompt,
-                    tools=ollama_tools, history_messages=active_history,
-                    memory_context_text=memory_context,
-                    images_for_turn=images if turn == 0 else None,  # images only on first turn
-                    tool_name_for_log=last_tool_logged,
-                    prompt_blocks=prompt_blocks, volatile_tail=volatile_tail,
-                )
-            except Exception as llm_err:
+            if _replay_call is not None:
+                # An action a person already approved, put back as this turn's
+                # output. No LLM call: the model made this choice before the
+                # pause and a human answered *that call*. Asking the model
+                # again could produce a different one, or none at all — and an
+                # approval someone gave would quietly do nothing. It flows
+                # through the same parse and dispatch as any other turn, gate
+                # included, which is where the approval is spent.
+                _replayed, _replay_call = _replay_call, None
+                _approved_calls.add(_approval_id(_replayed["tool"], _replayed["arguments"]))
+                _log.debug(f"▶ replaying approved call '{_replayed['tool']}'")
+                _llm_result = LLMResult(json.dumps(_replayed))
+                _llm_duration = 0.0
+                yield {"type": "tool_approval_replay", "tool_name": _replayed["tool"],
+                       "turn": turn + 1}
+            else:
+                _log.debug(f"🔄 Calling LLM...")
+                _llm_start = time.time()
+                try:
+                    _llm_result = await generate_response(
+                        full_prompt, active_sys_prompt,
+                        tools=ollama_tools, history_messages=active_history,
+                        memory_context_text=memory_context,
+                        images_for_turn=images if turn == 0 else None,  # images only on first turn
+                        tool_name_for_log=last_tool_logged,
+                        prompt_blocks=prompt_blocks, volatile_tail=volatile_tail,
+                    )
+                except Exception as llm_err:
+                    _llm_duration = round(time.time() - _llm_start, 1)
+                    error_msg = f"LLM Error ({_llm_duration}s): {llm_err}"
+                    _log.warning(f"❌ {error_msg}")
+                    final_response = str(llm_err)
+                    yield {"type": "error", "message": str(llm_err)}
+                    break
                 _llm_duration = round(time.time() - _llm_start, 1)
-                error_msg = f"LLM Error ({_llm_duration}s): {llm_err}"
-                _log.warning(f"❌ {error_msg}")
-                final_response = str(llm_err)
-                yield {"type": "error", "message": str(llm_err)}
-                break
-            _llm_duration = round(time.time() - _llm_start, 1)
             llm_output = _llm_result.text
             _log.debug(f"🤖 LLM Response ({_llm_duration}s): {llm_output[:500]}{'...(truncated)' if len(llm_output) > 500 else ''}")
 
@@ -1649,6 +1713,54 @@ async def run_agent_step(
                     current_context_text += f"\nSystem: {block_msg}\n"
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": "Blocked: Tool not available for this agent"}
                     continue
+
+                # ── Tool policy: what this call does, not just its name ─────
+                # The allowlist above asks whether the agent may hold the tool.
+                # This asks whether this call may run: a declared-destructive
+                # tool can be refused outright, or held for a person, without
+                # taking the tool away from the agent entirely.
+                _decision, _category = _tool_policy.decide(
+                    _declared_tool if _declared_tool is not None else _UndeclaredTool(tool_name),
+                    _policy,
+                )
+                _approval_key = _approval_id(tool_name, tool_args)
+                if _decision != "allow" and _approval_key in _denied_calls:
+                    _denied_calls.discard(_approval_key)
+                    refusal = (f"Tool '{tool_name}' was refused by the user"
+                               + (f": {_denied_reasons.pop(_approval_key)}" if _approval_key in _denied_reasons else "."))
+                    current_context_text += f"\nSystem: {refusal} Do not call it again for this task.\n"
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": "Refused by the user"}
+                    continue
+                if _decision != "allow" and _approval_key in _approved_calls:
+                    # Approved before the pause; spend the approval and run it.
+                    _approved_calls.discard(_approval_key)
+                elif _decision == "deny":
+                    block_msg = (f"Tool '{tool_name}' is blocked by this agent's tool policy because "
+                                 f"{_tool_policy.explain(_category)}.")
+                    current_context_text += f"\nSystem: {block_msg}\n"
+                    yield {"type": "tool_result", "tool_name": tool_name,
+                           "preview": f"Blocked by policy ({_category})"}
+                    continue
+                elif _decision == "confirm":
+                    # Hand the decision to a person and end this step. The run
+                    # is resumed at this same step with the answer; the call
+                    # has not run, and nothing after it in this turn has either.
+                    _log.warning(f"⏸ '{tool_name}' needs approval ({_category})")
+                    yield {
+                        "type": "human_input_required",
+                        "kind": "tool_approval",
+                        "prompt": (f"The agent wants to run **{tool_name}**, which "
+                                   f"{_tool_policy.explain(_category)}. Allow it?"),
+                        "tool_name": tool_name,
+                        "tool_args": tool_args,
+                        "category": _category,
+                        "approval_id": _approval_key,
+                        "fields": [
+                            {"name": "approve", "type": "boolean", "label": f"Run {tool_name}?"},
+                            {"name": "reason", "type": "text", "label": "Reason (optional)"},
+                        ],
+                    }
+                    return
 
                 if tool_name == "query_past_conversations":
                     # Tool has been removed — inform the LLM
@@ -2081,6 +2193,9 @@ async def run_agent_step(
                     "type": "_step_progress",
                     "turn": turn + 1,
                     "context_text": current_context_text[-200_000:],
+                    "approved_calls": sorted(_approved_calls),
+                    "denied_calls": sorted(_denied_calls),
+                    "denied_reasons": dict(_denied_reasons),
                     "has_compacted": _last_compact_turn is not None,   # older readers
                     "last_compact_turn": _last_compact_turn,
                     "browser_actions": browser_action_history[-50:],
