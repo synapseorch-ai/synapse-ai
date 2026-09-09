@@ -491,7 +491,88 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
     return all_tools, tool_schema_map, ollama_tools, tools_json
 
 
-def build_system_prompt(agent_system_template, tools_json, session_id, session_state_getter, memory_store, agent_id=None, turns_remaining=None, max_turns=None, inject_tools=True):
+#: The Reason-Act contract, in two versions.
+#:
+#: `[REASONING]` markers exist because most models have no other way to show
+#: their thinking: the convention gives the engine something to strip out of the
+#: answer and put in the thinking panel. A model with a native reasoning channel
+#: already has that, and telling it to *also* write markers is actively worse —
+#: it thinks twice, once for real and once for the transcript, and the panel
+#: shows both. So the requirement is dropped for those models, while the action
+#: format they still need is kept.
+#:
+#: This sits inside the prompt-cache prefix, so the choice has to be stable for
+#: the life of a run. It is: the model and the agent's effort are both fixed
+#: before the first turn.
+_MARKER_PROTOCOL = """
+
+### REASONING & ACTION FORMAT
+You operate in a Reason–Act loop. Each turn produces ONE of:
+  (a) A tool call **preceded by a `[REASONING]...[/REASONING]` block** explaining why you are making that specific call. The reasoning block is REQUIRED before every tool call — it is what the user sees as your "thinking" panel, and it is what lets you (next turn) recover the intent behind the call.
+  (b) A final response in plain markdown for the user (no `[REASONING]` block, no JSON).
+
+The `[REASONING]` block is private scratch space — it is stripped from your final response and from the context you see next turn, but it is surfaced live to the user as a "thinking" panel and recorded in the run log.
+
+What to put in `[REASONING]`:
+- WHY you are calling this tool right now (what you concluded from the previous observation).
+- WHAT you expect the tool to return.
+- HOW the result will move you toward the user's goal.
+2–4 sentences is plenty. Do not restate the user's question; do not narrate obvious facts.
+
+Example tool-calling turn:
+[REASONING]
+The previous result gave a high-level overview but not the specific field the user asked for. I need to drill into the most relevant source from those results — that should yield the exact value, after which I can answer directly.
+[/REASONING]
+{"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
+
+Example final-response turn (after gathering enough info):
+Here is the requested information, with the key points the user asked about and any caveats worth flagging.
+
+**If your tool calls are made through a native function-calling interface** — a
+structured call rather than JSON you write into your reply — you cannot wrap it
+in `[REASONING]` markers, and you do not need to. Put the same two or three
+sentences in the **text of the same reply, alongside the call**. The markers are
+optional there; the sentences are not. A reply that is a bare function call with
+no text leaves the user watching a spinner with nothing to read, which is the
+one outcome this section exists to prevent.
+
+Rules:
+- Emit a `[REASONING]` block before EVERY tool call. Skipping it produces an empty "thinking" panel for the user.
+- Never wrap a final response in `[REASONING]` blocks.
+- Never put commentary between the closing `[/REASONING]` and the JSON tool call.
+- One tool call per turn unless you genuinely need multiple independent calls (then emit them sequentially in one response, no prose between).
+- Say WHY, not WHAT. "Searching DuckDuckGo for India GDP 2025" restates the call the user can already see; "the official statistics office release is the primary source, so I will find it before quoting a figure" is the part only you know.
+- Never describe your tool call in prose *instead of* making it, and never repeat the call's JSON back as commentary — the user sees the call itself.
+"""
+
+_NATIVE_PROTOCOL = """
+
+### ACTION FORMAT
+You operate in a Reason-Act loop. Each turn produces ONE of:
+  (a) A tool call, written as JSON: {"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
+  (b) A final response in plain markdown for the user (no JSON).
+
+**Your thinking is captured for you.** This model reasons on its own channel,
+and what you think there is shown to the user live, as a "thinking" panel, and
+recorded in the run log. So do not write `[REASONING]` markers — they would put
+a second, worse copy of your reasoning next to the real one. Think as much as
+the question deserves, then act.
+
+Rules:
+- One tool call per turn unless you genuinely need multiple independent calls (then emit them sequentially in one response, no prose between).
+- Never describe your tool call in prose *instead of* making it, and never repeat the call's JSON back as commentary — the user sees the call itself.
+- Say WHY, not WHAT, when you do explain yourself. "Searching DuckDuckGo for India GDP 2025" restates the call the user can already see; "the official statistics office release is the primary source, so I will find it before quoting a figure" is the part only you know.
+"""
+
+
+def _reasoning_protocol(native: bool) -> str:
+    """The reasoning half of the system prompt, for this model's abilities."""
+    return _NATIVE_PROTOCOL if native else _MARKER_PROTOCOL
+
+
+def build_system_prompt(agent_system_template, tools_json, session_id, session_state_getter,
+                        memory_store, agent_id=None, turns_remaining=None, max_turns=None,
+                        inject_tools=True, native_reasoning=False):
     """The STABLE system prompt: identical on every turn of a step.
 
     Identity, reasoning protocol, tools (for providers without native tool
@@ -577,46 +658,7 @@ If you do not need to use a tool, reply in plain text.
     # ──────────────────────────────────────────────────────────────────────────
     stable_section = (
         agent_system_template.strip()
-        + """
-
-### REASONING & ACTION FORMAT
-You operate in a Reason–Act loop. Each turn produces ONE of:
-  (a) A tool call **preceded by a `[REASONING]...[/REASONING]` block** explaining why you are making that specific call. The reasoning block is REQUIRED before every tool call — it is what the user sees as your "thinking" panel, and it is what lets you (next turn) recover the intent behind the call.
-  (b) A final response in plain markdown for the user (no `[REASONING]` block, no JSON).
-
-The `[REASONING]` block is private scratch space — it is stripped from your final response and from the context you see next turn, but it is surfaced live to the user as a "thinking" panel and recorded in the run log.
-
-What to put in `[REASONING]`:
-- WHY you are calling this tool right now (what you concluded from the previous observation).
-- WHAT you expect the tool to return.
-- HOW the result will move you toward the user's goal.
-2–4 sentences is plenty. Do not restate the user's question; do not narrate obvious facts.
-
-Example tool-calling turn:
-[REASONING]
-The previous result gave a high-level overview but not the specific field the user asked for. I need to drill into the most relevant source from those results — that should yield the exact value, after which I can answer directly.
-[/REASONING]
-{"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
-
-Example final-response turn (after gathering enough info):
-Here is the requested information, with the key points the user asked about and any caveats worth flagging.
-
-**If your tool calls are made through a native function-calling interface** — a
-structured call rather than JSON you write into your reply — you cannot wrap it
-in `[REASONING]` markers, and you do not need to. Put the same two or three
-sentences in the **text of the same reply, alongside the call**. The markers are
-optional there; the sentences are not. A reply that is a bare function call with
-no text leaves the user watching a spinner with nothing to read, which is the
-one outcome this section exists to prevent.
-
-Rules:
-- Emit a `[REASONING]` block before EVERY tool call. Skipping it produces an empty "thinking" panel for the user.
-- Never wrap a final response in `[REASONING]` blocks.
-- Never put commentary between the closing `[/REASONING]` and the JSON tool call.
-- One tool call per turn unless you genuinely need multiple independent calls (then emit them sequentially in one response, no prose between).
-- Say WHY, not WHAT. "Searching DuckDuckGo for India GDP 2025" restates the call the user can already see; "the official statistics office release is the primary source, so I will find it before quoting a figure" is the part only you know.
-- Never describe your tool call in prose *instead of* making it, and never repeat the call's JSON back as commentary — the user sees the call itself.
-"""
+        + _reasoning_protocol(native_reasoning)
         + tools_section
         + """
 **VAULT (LARGE OUTPUT HANDLING):**

@@ -54,6 +54,10 @@ class Agent(BaseModel):
     model: str | None = None  # per-agent model override (None = use default)
     provider: str | None = None  # auto-detected from model name
     max_turns: int | None = None  # per-agent turn limit override (None = use global default of 30)
+    # "off" | "low" | "medium" | "high"; None = inherit the workspace setting.
+    # Only reaches models with a native reasoning channel (see core/reasoning.py);
+    # everything else keeps the [REASONING] prompt convention and ignores it.
+    reasoning_effort: str | None = None
     delegate_agent_ids: list[str] = []  # for delegate-type agents; empty = allow all
 
 class Repo(BaseModel):
@@ -77,6 +81,7 @@ class Settings(BaseModel):
     agent_name: str
     model: str = "mistral" # Default model (Ollama or Cloud)
     builder_model: str = ""  # Model for the AI builder; empty = use `model`
+    reasoning_effort: str = "medium"  # workspace default; agents may override
     mode: str = "local" # "local" | "cloud" | "bedrock"
     openai_key: str = ""
     anthropic_key: str = ""

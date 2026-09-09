@@ -120,9 +120,53 @@ class TestAnthropicBody:
             SimpleNamespace(type="tool_use", text=None, name="lookup", input={"q": "x"}),
         ]
         monkeypatch.setattr(anthropic, "AsyncAnthropic", self._fake_anthropic(blocks))
-        text, *_ = await llm.call_anthropic("claude-x", [{"role": "user", "content": "q"}], "sys", "key")
-        assert '"tool": "lookup"' in text
-        assert "REASONING" in text  # preceding text preserved as reasoning
+        result = await llm.call_anthropic("claude-x", [{"role": "user", "content": "q"}], "sys", "key")
+        assert '"tool": "lookup"' in result.text
+        # Narration beside a call is still kept — but as its own field now,
+        # not spliced back into the text behind `[REASONING]` markers. The
+        # answer must not carry it: `text` is what the loop parses for calls.
+        assert result.reasoning == "let me think"
+        assert "let me think" not in result.text
+
+    async def test_thinking_block_becomes_reasoning(self, monkeypatch):
+        """Extended thinking reaches `reasoning`, and never the answer."""
+        import anthropic
+        blocks = [
+            SimpleNamespace(type="thinking", thinking="the real scratchpad", text=None, name=None, input=None),
+            SimpleNamespace(type="text", text="the answer", name=None, input=None),
+        ]
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", self._fake_anthropic(blocks))
+        result = await llm.call_anthropic("claude-x", [{"role": "user", "content": "q"}], "sys", "key")
+        assert result.text == "the answer"
+        assert result.reasoning == "the real scratchpad"
+
+    async def test_thinking_is_sent_when_planned(self, monkeypatch):
+        """The budget reaches the wire, under a cap raised to fit it."""
+        import anthropic
+        from core import reasoning as reasoning_policy
+        captured = {}
+
+        class _Client:
+            def __init__(self, **kw): pass
+            class messages:
+                pass
+        fake = self._fake_anthropic([SimpleNamespace(type="text", text="ok", name=None, input=None)])
+
+        class _Capturing(fake):
+            def __init__(self, **kw):
+                super().__init__(**kw)
+                inner = self.messages.create
+                async def create(**kwargs):
+                    captured.update(kwargs)
+                    return await inner(**kwargs)
+                self.messages.create = create
+
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", _Capturing)
+        plan = reasoning_policy.plan_for("claude-sonnet-4-6", "high", 8192)
+        await llm.call_anthropic("claude-sonnet-4-6", [{"role": "user", "content": "q"}],
+                                 "sys", "key", max_tokens=plan.max_output_tokens, reasoning=plan)
+        assert captured["thinking"] == {"type": "enabled", "budget_tokens": plan.budget}
+        assert captured["max_tokens"] > plan.budget
 
     async def test_non_retryable_api_error_raises_llmerror(self, monkeypatch):
         import anthropic

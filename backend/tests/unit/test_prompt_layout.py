@@ -201,7 +201,8 @@ class TestOtherProvidersAreUntouched:
         import core.llm_providers as lp
         seen = {}
 
-        async def fake_openai(model, messages, key, tools=None, images=None, prompt_cache=True):
+        async def fake_openai(model, messages, key, tools=None, images=None, prompt_cache=True,
+                              reasoning=None):
             seen["messages"] = messages
             return LLMResult("ok", 1, 1, 0, 0)
 

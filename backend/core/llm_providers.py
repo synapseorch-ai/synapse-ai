@@ -162,6 +162,44 @@ def _normalise_stop_reason(raw) -> str | None:
     return _STOP_REASONS.get(name) or _STOP_REASONS.get(name.strip().lower())
 
 
+def _apply_openai_reasoning(payload: dict, reasoning) -> dict:
+    """Put `reasoning_effort` on an OpenAI-shaped payload, if there is one.
+
+    Every OpenAI-compatible endpoint spells this the same way, so one helper
+    serves openai, grok, deepseek, the v1-compatible providers and our gateway.
+    """
+    if reasoning is not None:
+        payload["reasoning_effort"] = reasoning.openai_effort
+    return payload
+
+
+def _retry_without_reasoning(payload: dict, resp) -> bool:
+    """Drop `reasoning_effort` after a 400 that complained about it.
+
+    "OpenAI-compatible" is a claim about a URL shape, not a guarantee about a
+    parameter list — and the same is true of a model behind that URL: a proxy
+    may accept the field for one model and refuse it for the next. There is no
+    capability endpoint to consult, so the refusal is the discovery. Drop the
+    field and try once more, rather than failing a turn over a knob the person
+    only expressed a preference with.
+
+    Narrow on purpose: only a 400, only when we actually sent the field, and
+    only when the body names it. A 400 about anything else must still surface
+    as the error it is.
+    """
+    if "reasoning_effort" not in payload:
+        return False
+    try:
+        body = resp.text or ""
+    except Exception:  # noqa: BLE001 — a body we cannot read is not a verdict
+        return False
+    if "reasoning" not in body.lower():
+        return False
+    payload.pop("reasoning_effort", None)
+    _log.debug("provider refused reasoning_effort — retrying without it")
+    return True
+
+
 class LLMResult(NamedTuple):
     """One provider call's outcome.
 
@@ -172,6 +210,14 @@ class LLMResult(NamedTuple):
     finished one, and the loop treated it as the agent's final answer — and
     `tool_calls`, which is populated but not yet read (the loop still parses
     them out of the text; see the plan's Phase C).
+
+    `reasoning` is the model's own thinking, from the provider's own channel —
+    not the `[REASONING]` markers the system prompt asks for. Those still work
+    and are still parsed, for the models that have nothing better; see
+    `core.reasoning` for which models do. Carrying it as a field rather than
+    splicing it back into `text` is the point: the marker round-trip meant the
+    loop had to find the thinking again in a string it had just built, and on a
+    model that ignored the convention there was nothing to find.
     """
     text: str
     input_tokens: int = 0
@@ -180,6 +226,7 @@ class LLMResult(NamedTuple):
     cache_write_tokens: int = 0
     stop_reason: str | None = None
     tool_calls: tuple = ()
+    reasoning: str = ""
 
 
 class LLMError(Exception):
@@ -767,7 +814,8 @@ async def call_cli_provider(
 
 # ────────────────────────────────────────────────────────────────────────────────
 
-async def call_openai(model, messages, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def call_openai(model, messages, api_key, tools=None, images=None, prompt_cache: bool = True,
+                      reasoning=None):
     """Call OpenAI with 5-attempt exponential backoff retry loop.
 
     OpenAI prompt caching is automatic for stable prefixes ≥1024 tokens; we
@@ -792,6 +840,7 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]
 
     payload: dict = {"model": model, "messages": messages}
+    _apply_openai_reasoning(payload, reasoning)
     if tools:
         # OpenAI uses the same format as our internal Ollama tool spec
         payload["tools"] = tools
@@ -814,6 +863,8 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
+            if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
+                continue
             resp.raise_for_status()
             data = resp.json()
             # Extract actual token usage from the API response
@@ -829,10 +880,10 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
             # Handle tool_calls response
             choice = data["choices"][0]
             msg = choice.get("message", {})
-            text = _openai_compat_extract(msg)
+            text, _reasoning = _openai_compat_extract(msg)
             _log.debug(f"✅ OpenAI call complete (attempt {attempt})")
             return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(choice.get("finish_reason")))
+                             _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
         except httpx.TimeoutException:
             last_error = f"Request timed out ({OPENAI_TIMEOUT}s)"
             _log.debug(f"⏱️ OpenAI timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -884,15 +935,22 @@ def _convert_tools_for_anthropic(ollama_tools: list[dict] | None) -> list[dict] 
     return tools if tools else None
 
 
-def _openai_compat_extract(msg: dict) -> str:
-    """Normalize an OpenAI-compatible chat-completion message into the
-    `{"tool": ..., "arguments": ...}` shape (or plain text).
+def _openai_compat_extract(msg: dict) -> tuple[str, str]:
+    """Normalize an OpenAI-compatible chat-completion message into
+    `({"tool": ..., "arguments": ...}` shape or plain text, reasoning)`.
 
-    When the model emits BOTH content text and tool_calls in the same response
-    (newer reasoning models, some Claude-compat APIs), the text is preserved as
-    a `[REASONING]...[/REASONING]` preamble so the ReAct loop can project it
-    into the llm_reasoning event for the UI and orchestration log.
+    **`reasoning_content` was being dropped, and it is the interesting half.**
+    Every reasoning model behind an OpenAI-compatible endpoint — DeepSeek-R1,
+    anything on vLLM, gpt-oss through our own gateway — returns its thinking in
+    a sibling field to `content`, unprompted. This function read `content` and
+    nothing else, so on those models the thinking panel was empty while the
+    model was demonstrably thinking. Some endpoints spell it `reasoning`
+    instead, so both are read.
+
+    Narration beside a tool call is still treated as reasoning, as before, and
+    appended after the real thinking when a model sends both.
     """
+    reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
     tool_calls = msg.get("tool_calls") or []
     if tool_calls:
         # Every call, as consecutive JSON objects: the ReAct loop parses all of
@@ -902,51 +960,68 @@ def _openai_compat_extract(msg: dict) -> str:
             "tool": tc["function"]["name"],
             "arguments": json.loads(tc["function"].get("arguments") or "{}"),
         }) for tc in tool_calls)
-        reasoning = (msg.get("content") or "").strip()
-        if reasoning:
-            return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
-        return call_json
-    return msg.get("content", "") or ""
+        narration = (msg.get("content") or "").strip()
+        if narration:
+            reasoning = f"{reasoning}\n\n{narration}".strip() if reasoning else narration
+        return call_json, reasoning
+    return (msg.get("content", "") or ""), reasoning
 
 
-def _extract_anthropic_response(response) -> str:
-    """Extract text and/or tool call from an Anthropic SDK response.
+def _extract_anthropic_response(response) -> tuple[str, str]:
+    """Split an Anthropic SDK response into (text, reasoning).
 
-    When the model emits a text block before a tool_use block (Claude does this
-    routinely), preserve the text as a [REASONING]...[/REASONING] preamble so
-    the downstream ReAct loop can project it into the llm_reasoning event.
-    Without this, native tool calling silently drops the model's pre-call
-    reasoning.
+    Two sources of reasoning, and they are not the same thing. A `thinking`
+    block is extended thinking — the model's real scratchpad, returned because
+    the request asked for it. A `text` block sitting before a `tool_use` block
+    is Claude narrating its call, which it does routinely with or without
+    extended thinking enabled.
+
+    Both belong in the thinking panel, and when both are present the real
+    thinking comes first. `redacted_thinking` is deliberately skipped rather
+    than shown: it is an encrypted blob, not prose, and rendering it would put
+    a wall of base64 where an explanation should be.
     """
     if not response.content:
-        return "Error: Empty Anthropic response."
+        return "Error: Empty Anthropic response.", ""
 
+    thinking_parts: list[str] = []
     text_parts: list[str] = []
     tool_use_calls: list[dict] = []
     for block in response.content:
         if block.type == "tool_use":
             tool_use_calls.append({"tool": block.name, "arguments": block.input or {}})
+        elif block.type == "thinking":
+            thought = getattr(block, "thinking", "")
+            if thought:
+                thinking_parts.append(thought)
         elif block.type == "text" and block.text:
             text_parts.append(block.text)
+
+    reasoning = "\n".join(t for t in thinking_parts if t and t.strip()).strip()
+    answer = "\n".join(t for t in text_parts if t and t.strip()).strip()
 
     if tool_use_calls:
         # Every call, as consecutive JSON objects — the loop executes them in
         # order. Only the first tool_use block used to survive.
         call_json = "\n".join(json.dumps(c) for c in tool_use_calls)
-        reasoning = "\n".join(t for t in text_parts if t and t.strip()).strip()
-        if reasoning:
-            return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
-        return call_json
+        if answer:
+            # Narration beside a call is reasoning, and it reads after the real
+            # thinking rather than replacing it.
+            reasoning = f"{reasoning}\n\n{answer}".strip() if reasoning else answer
+        return call_json, reasoning
 
-    if text_parts:
-        return "\n".join(text_parts)
+    if answer:
+        return answer, reasoning
 
-    return "Error: Anthropic returned no usable content."
+    if reasoning:
+        return "Error: Anthropic returned only reasoning — raise the response cap or lower the reasoning effort.", reasoning
+
+    return "Error: Anthropic returned no usable content.", ""
 
 
 async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
                          prompt_blocks: list[str] | None = None, volatile_tail: str | None = None,
-                         max_tokens: int | None = None):
+                         max_tokens: int | None = None, reasoning=None):
     """Call Anthropic using the official SDK with native tool calling.
 
     Args:
@@ -1029,6 +1104,11 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
         kwargs["system"] = str(system).strip()
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
+    if reasoning is not None:
+        # `max_tokens` above already carries the raised cap from
+        # `core.reasoning.plan_for`, which is what keeps this valid: the API
+        # refuses a budget that is not strictly below it.
+        kwargs["thinking"] = {"type": "enabled", "budget_tokens": reasoning.budget}
 
     # Decorate with prompt cache markers when enabled and the prefix is large enough.
     if prompt_cache:
@@ -1054,9 +1134,11 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
             output_tokens = getattr(getattr(response, 'usage', None), 'output_tokens', 0) or 0
             from core.cache.prompt_cache import extract_anthropic_cache_tokens
             cache_read, cache_write = extract_anthropic_cache_tokens(response)
-            return LLMResult(_extract_anthropic_response(response), input_tokens, output_tokens,
+            _text, _reasoning = _extract_anthropic_response(response)
+            return LLMResult(_text, input_tokens, output_tokens,
                              cache_read, cache_write,
-                             _normalise_stop_reason(getattr(response, "stop_reason", None)))
+                             _normalise_stop_reason(getattr(response, "stop_reason", None)),
+                             (), _reasoning)
         except anthropic.APITimeoutError:
             last_error = f"Request timed out ({ANTHROPIC_TIMEOUT}s)"
             _log.debug(f"⏱️ Anthropic timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -1450,28 +1532,40 @@ def _convert_messages_for_gemini(messages: list[dict], images: list[str] | None 
     return contents
 
 
-def _extract_gemini_response(response) -> str:
-    """Extract text and/or function call from a Gemini response.
+def _extract_gemini_response(response) -> tuple[str, str]:
+    """Split a Gemini response into (text, reasoning).
 
-    When the model emits BOTH text and a function_call in the same response,
-    the text is preserved as a [REASONING]...[/REASONING] preamble so the
-    downstream ReAct loop can project it into the llm_reasoning event for the
-    chat UI and orchestration log. Without this, native function calling
-    silently drops the model's pre-call reasoning.
+    Gemini marks a thought part with `thought=True` — but only when the request
+    asked for thoughts (`include_thoughts`), which is what `call_gemini` now
+    does. When that flag is present the split is exact, and this is the whole
+    reason Gemini's thinking used to read so badly:
+
+    **Everything used to be a guess based on position.** Text alongside a
+    function call was assumed to be reasoning and wrapped in `[REASONING]`;
+    text on its own was assumed to be the answer. Both assumptions are wrong
+    half the time. A model that explained itself before answering had the
+    explanation shown as the answer, and a model that wrote its answer next to
+    a tool call had the answer filed away as thinking and dropped.
+
+    With no thought parts — an older model, or thoughts turned off — the
+    fallback is the old positional rule, so nothing regresses. What it no
+    longer does is *invent* `[REASONING]` markers: the reasoning comes back as
+    its own return value, and `core.react_engine` puts it on the event.
     """
     if not response.candidates:
-        return "Error: No response candidates from Gemini."
+        return "Error: No response candidates from Gemini.", ""
 
     candidate = response.candidates[0]
 
     if candidate.finish_reason and candidate.finish_reason.name == "SAFETY":
-        return "Error: Response blocked by Gemini safety filters."
+        return "Error: Response blocked by Gemini safety filters.", ""
 
     if not candidate.content or not candidate.content.parts:
         reason = candidate.finish_reason.name if candidate.finish_reason else "UNKNOWN"
-        return f"Error: Empty Gemini response. Finish Reason: {reason}"
+        return f"Error: Empty Gemini response. Finish Reason: {reason}", ""
 
-    # Walk parts in order, collecting text (reasoning) and function calls.
+    # Walk parts in order, keeping thoughts, answer text and calls apart.
+    thought_parts: list[str] = []
     text_parts: list[str] = []
     function_calls: list[dict] = []
     for p in candidate.content.parts:
@@ -1480,26 +1574,42 @@ def _extract_gemini_response(response) -> str:
             args = dict(fc.args) if fc.args else {}
             function_calls.append({"tool": fc.name, "arguments": args})
         elif p.text:
-            text_parts.append(p.text)
+            # `getattr`, not `p.thought`: the attribute is absent on an older
+            # SDK's Part and on anything shim-shaped, and an AttributeError
+            # here is not a small failure — it is raised inside the retry loop,
+            # so it costs five attempts with backoff before surfacing as
+            # "Gemini is down".
+            (thought_parts if getattr(p, "thought", None) else text_parts).append(p.text)
+
+    reasoning = "\n".join(t for t in thought_parts if t and t.strip()).strip()
+    answer = "\n".join(t for t in text_parts if t and t.strip()).strip()
 
     if function_calls:
         # Every call, in order; this used to keep the first and log the rest.
         call_json = "\n".join(json.dumps(fc) for fc in function_calls)
-        reasoning = "\n".join(t for t in text_parts if t and t.strip()).strip()
-        if reasoning:
-            return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
-        return call_json
+        if not reasoning and answer:
+            # No thought parts came back, so fall back to the positional rule:
+            # prose sitting beside a call is the model explaining the call.
+            reasoning, answer = answer, ""
+        return call_json, reasoning
 
-    if text_parts:
-        return "\n".join(text_parts)
+    if answer:
+        return answer, reasoning
 
-    return "Error: Gemini returned no usable content."
+    # Thoughts but no answer. The model spent its whole budget thinking, which
+    # is a real outcome at a low cap — say so rather than returning nothing,
+    # because an empty string reads to the loop as a finished final response.
+    if reasoning:
+        return "Error: Gemini returned only reasoning — raise the response cap or lower the reasoning effort.", reasoning
+
+    return "Error: Gemini returned no usable content.", ""
 
 # Global singleton Gemini client — reuses connection pool, prevents socket exhaustion
 _gemini_client = None
 
 
-async def call_gemini(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def call_gemini(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
+                     max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS, reasoning=None):
     """Call Gemini using the google-genai SDK with native function calling.
 
     Gemini implicit caching (Gemini 2.5 and newer) auto-applies on the server
@@ -1507,8 +1617,15 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     `usage_metadata.cached_content_token_count`. We do not (yet) use the
     explicit `cached_content` API since it requires lifecycle management.
 
-    Returns:
-        (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    `max_tokens` arrives here for the first time. Every other provider was
+    given the tenant's `max_output_tokens` when the four hardcoded 4096s were
+    replaced; Gemini was skipped because it had no hardcoded cap to replace —
+    which left it as the one provider still generating without a bound.
+
+    `reasoning` is a `core.reasoning.ReasoningPlan` or None. Gemini changed
+    knobs between generations: 2.5 takes a token budget, 3.x takes a named
+    level. Sending the wrong one is not an error, it is silence, so the
+    generation is chosen from the model name rather than tried and caught.
     """
     _ = prompt_cache  # reserved for future explicit cached_content support
     global _gemini_client
@@ -1528,11 +1645,33 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     contents = _convert_messages_for_gemini(messages, images=images)
     gemini_tools = _convert_tools_for_gemini(tools)
 
-    config = types.GenerateContentConfig(
-        system_instruction=system,
-    )
-    if gemini_tools:
-        config.tools = gemini_tools
+    def _build_config(with_tools: bool):
+        """One builder for both configs.
+
+        The MALFORMED_FUNCTION_CALL retry below used to construct a second
+        `GenerateContentConfig` by hand, carrying only `system_instruction` —
+        so the retry silently ran without whatever the first config had set.
+        That was survivable when there was nothing else to set. With a response
+        cap and a thinking budget on it, a retry that drops them is a different
+        call answering a different question.
+        """
+        cfg = types.GenerateContentConfig(
+            system_instruction=system,
+            max_output_tokens=max_tokens,
+        )
+        if with_tools and gemini_tools:
+            cfg.tools = gemini_tools
+        if reasoning is not None:
+            # Built in one constructor call rather than assigned field by
+            # field: pydantic validates constructor arguments and does not
+            # validate assignments, so `thinking_level = "HIHG"` would sail
+            # through as a plain string and reach the wire unchecked.
+            knob = ({"thinking_level": reasoning.level} if model.startswith("gemini-3")
+                    else {"thinking_budget": reasoning.budget})
+            cfg.thinking_config = types.ThinkingConfig(include_thoughts=True, **knob)
+        return cfg
+
+    config = _build_config(with_tools=True)
 
     async def _call(cfg, attempt_label=""):
         _log.debug(f"🔄 Gemini _call start ({attempt_label})")
@@ -1551,16 +1690,13 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
             response = await _call(config, f"attempt {attempt}")
-            result = _extract_gemini_response(response)
+            result, reasoning_text = _extract_gemini_response(response)
 
             # If MALFORMED_FUNCTION_CALL, retry once without tools (forces text response)
             if "MALFORMED_FUNCTION_CALL" in result and gemini_tools:
                 _log.debug("Gemini MALFORMED_FUNCTION_CALL — retrying without tools")
-                config_no_tools = types.GenerateContentConfig(
-                    system_instruction=system,
-                )
-                response = await _call(config_no_tools, "no-tools retry")
-                result = _extract_gemini_response(response)
+                response = await _call(_build_config(with_tools=False), "no-tools retry")
+                result, reasoning_text = _extract_gemini_response(response)
 
             # Extract actual token usage from Gemini response metadata
             input_tokens = 0
@@ -1572,6 +1708,10 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
                 if um:
                     input_tokens = getattr(um, 'prompt_token_count', 0) or 0
                     output_tokens = getattr(um, 'candidates_token_count', 0) or 0
+                    # Thinking is billed as output and is reported separately —
+                    # so leaving it out did not merely under-report the count,
+                    # it under-charged the call. At `high` that is most of it.
+                    output_tokens += int(getattr(um, 'thoughts_token_count', 0) or 0)
                     cache_read = int(getattr(um, 'cached_content_token_count', 0) or 0)
                     # Gemini's prompt_token_count is INCLUSIVE of cached tokens.
                     if cache_read:
@@ -1584,7 +1724,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
             except (AttributeError, IndexError, TypeError):
                 pass
             return LLMResult(result, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(_finish))
+                             _normalise_stop_reason(_finish), (), reasoning_text)
 
         # except asyncio.TimeoutError:
         #     last_error = f"Request timed out ({GEMINI_TIMEOUT}s)"
@@ -1606,7 +1746,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     raise LLMError(error_msg)
 
 async def call_grok(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
-                    max_tokens: int | None = None):
+                    max_tokens: int | None = None, reasoning=None):
     """Call xAI Grok via its OpenAI-compatible API with 5-attempt exponential backoff.
 
     Returns:
@@ -1634,6 +1774,7 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
 
     payload: dict = {"model": model, "messages": full_messages,
                      "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS}
+    _apply_openai_reasoning(payload, reasoning)
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -1655,6 +1796,8 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
+            if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
+                continue
             resp.raise_for_status()
             data = resp.json()
             usage = data.get("usage", {})
@@ -1666,10 +1809,10 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 input_tokens = max(0, input_tokens - cache_read)
             choice = data["choices"][0]
             msg = choice.get("message", {})
-            text = _openai_compat_extract(msg)
+            text, _reasoning = _openai_compat_extract(msg)
             _log.debug(f"✅ Grok call complete (attempt {attempt})")
             return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(choice.get("finish_reason")))
+                             _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
         except httpx.TimeoutException:
             last_error = f"Request timed out ({GROK_TIMEOUT}s)"
             _log.debug(f"⏱️ Grok timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -1696,7 +1839,7 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
 
 
 async def call_deepseek(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
-                        max_tokens: int | None = None):
+                        max_tokens: int | None = None, reasoning=None):
     """Call DeepSeek via its OpenAI-compatible API with 5-attempt exponential backoff.
 
     DeepSeek prompt caching is automatic server-side. It surfaces hit/miss as
@@ -1721,6 +1864,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
 
     payload: dict = {"model": model, "messages": full_messages,
                      "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS}
+    _apply_openai_reasoning(payload, reasoning)
     # DeepSeek-Reasoner does not support function calling
     if tools and "reasoner" not in model.lower():
         payload["tools"] = tools
@@ -1743,6 +1887,8 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
+            if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
+                continue
             resp.raise_for_status()
             data = resp.json()
             usage = data.get("usage", {})
@@ -1754,10 +1900,10 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
             # so input_tokens here is the MISS count already; do NOT subtract again.
             choice = data["choices"][0]
             msg = choice.get("message", {})
-            text = _openai_compat_extract(msg)
+            text, _reasoning = _openai_compat_extract(msg)
             _log.debug(f"✅ DeepSeek call complete (attempt {attempt})")
             return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(choice.get("finish_reason")))
+                             _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
         except httpx.TimeoutException:
             last_error = f"Request timed out ({DEEPSEEK_TIMEOUT}s)"
             _log.debug(f"⏱️ DeepSeek timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -1791,7 +1937,8 @@ def _normalize_v1_base_url(base_url: str) -> str:
     return url
 
 
-async def call_v1_compatible(model, messages, system, base_url, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def call_v1_compatible(model, messages, system, base_url, api_key, tools=None, images=None, prompt_cache: bool = True,
+                             reasoning=None):
     """Call any OpenAI v1-compatible endpoint with 5-attempt exponential backoff.
 
     Used for both cloud OpenAI-compatible providers (OpenRouter, Together, etc.)
@@ -1834,6 +1981,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 break
 
     payload: dict = {"model": model, "messages": full_messages}
+    _apply_openai_reasoning(payload, reasoning)
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -1855,6 +2003,8 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
+            if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
+                continue
             resp.raise_for_status()
             data = resp.json()
             usage = data.get("usage", {})
@@ -1866,10 +2016,10 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 input_tokens = max(0, input_tokens - cache_read)
             choice = data["choices"][0]
             msg = choice.get("message", {})
-            text = _openai_compat_extract(msg)
+            text, _reasoning = _openai_compat_extract(msg)
             _log.debug(f"✅ V1-compatible call complete (attempt {attempt})")
             return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(choice.get("finish_reason")))
+                             _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
         except httpx.TimeoutException:
             last_error = f"Request timed out ({V1_TIMEOUT}s)"
             _log.debug(f"⏱️ V1-compatible timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -1897,7 +2047,8 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
     raise LLMError(error_msg)
 
 
-async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True):
+async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True,
+                             reasoning=None):
     """Call the configured model gateway (synapse.* models).
 
     A first-class provider like `call_openai`, except the endpoint belongs to
@@ -1923,6 +2074,7 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
             tools=tools,
             images=images,
             prompt_cache=prompt_cache,
+            reasoning=reasoning,
         )
     except LLMError as e:
         if "HTTP 402" not in str(e):
@@ -1936,6 +2088,7 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
 async def _bedrock_converse_direct(
     region: str, api_key: str, model_id: str,
     messages: list, system_blocks: list, max_tokens: int,
+    additional: dict | None = None,
 ) -> dict:
     """Call Bedrock Converse via boto3 with UNSIGNED auth + before-send bearer injection.
 
@@ -1974,6 +2127,7 @@ async def _bedrock_converse_direct(
                 messages=messages,
                 system=system_blocks,
                 inferenceConfig={'maxTokens': max_tokens},
+                **({'additionalModelRequestFields': additional} if additional else {}),
             )
         except botocore.exceptions.ClientError as e:
             status = e.response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0)
@@ -1983,7 +2137,54 @@ async def _bedrock_converse_direct(
     return await asyncio.to_thread(_run)
 
 
-async def call_bedrock(model_id, messages, system, region, settings, images=None, prompt_cache: bool = True):
+_THINK_TAG_RE = re.compile(r"<think>(.*?)</think>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def _split_think_tags(text: str) -> tuple[str, str]:
+    """Pull `<think>...</think>` out of a reply into (text, reasoning).
+
+    Local reasoning models — qwen3, deepseek-r1, anything served raw by Ollama
+    or llama.cpp — write their thinking inline in these tags. Nothing parsed
+    them, so the tags and everything in them were shown to the person as the
+    agent's answer. Ollama's own `thinking` field is preferred where the server
+    is new enough to send it; this is the fallback for where it is not, and for
+    an OpenAI-compatible endpoint in front of the same model.
+    """
+    if not text or "<think>" not in text.lower():
+        return text, ""
+    thoughts = [m.strip() for m in _THINK_TAG_RE.findall(text) if m.strip()]
+    return _THINK_TAG_RE.sub("", text).strip(), "\n".join(thoughts).strip()
+
+
+def _extract_bedrock_content(message: dict) -> tuple[str, str]:
+    """Split a Converse output message into (text, reasoning).
+
+    This used to be `content[0].get("text", "")` — the first block, assumed to
+    be the answer. With reasoning enabled that assumption inverts: the first
+    block is `reasoningContent` and the answer is the second, so taking the
+    first would have returned the thinking as the reply and dropped the reply.
+    Walking the list costs nothing and is correct either way.
+    """
+    blocks = message.get("content") or []
+    if not isinstance(blocks, list):
+        return "", ""
+    text_parts, thought_parts = [], []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("text"):
+            text_parts.append(block["text"])
+        elif "reasoningContent" in block:
+            # `reasoningText.text` is the prose; a `redactedContent` sibling is
+            # an encrypted blob with nothing to show a person.
+            thought = ((block.get("reasoningContent") or {}).get("reasoningText") or {}).get("text")
+            if thought:
+                thought_parts.append(thought)
+    return "\n".join(text_parts).strip(), "\n".join(thought_parts).strip()
+
+
+async def call_bedrock(model_id, messages, system, region, settings, images=None, prompt_cache: bool = True,
+                       max_tokens: int | None = None, reasoning=None):
     """Call AWS Bedrock with 5-attempt exponential backoff retry loop.
 
     Prefers the Converse API (standardized); falls back to InvokeModel for older models.
@@ -2011,7 +2212,21 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
     bedrock = _make_aws_client("bedrock-runtime", region, settings)
     bedrock_api_key = _normalize_bedrock_api_key(settings)
     effective_region = (region or settings.get("aws_region") or "us-east-1").strip()
-    max_tokens = int(settings.get("bedrock_max_tokens") or 4096)
+    # `bedrock_max_tokens` stays the explicit per-tenant override; what changed
+    # is the floor under it. Bedrock kept a 4096 default of its own when the
+    # other providers moved to `max_output_tokens`, so a Bedrock model was
+    # still truncating at half the cap every other provider had.
+    max_tokens = int(settings.get("bedrock_max_tokens") or max_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
+
+    # Reasoning travels outside the Converse schema, in the passthrough field
+    # each model family defines for itself.
+    _additional: dict = {}
+    if reasoning is not None:
+        max_tokens = max(max_tokens, reasoning.max_output_tokens)
+        _additional["reasoning_config"] = {
+            "type": "enabled",
+            "budget_tokens": reasoning.budget,
+        }
 
     # Normalize messages to Bedrock Converse content-block format
     normalized_messages = []
@@ -2065,6 +2280,7 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                 messages=normalized_messages,
                 system=system_blocks,
                 inferenceConfig={"maxTokens": max_tokens},
+                **({"additionalModelRequestFields": _additional} if _additional else {}),
             )
         return await asyncio.to_thread(_run)
 
@@ -2101,12 +2317,12 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                         resp = await _bedrock_converse_direct(
                             effective_region, bedrock_api_key, invocation_model_id,
                             normalized_messages, system_blocks, max_tokens,
+                            _additional or None,
                         )
                     else:
                         resp = await _converse_call()
                     msg = (((resp or {}).get("output") or {}).get("message") or {})
-                    content = msg.get("content") or []
-                    text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
+                    text, _reasoning = _extract_bedrock_content(msg)
                     usage = (resp or {}).get("usage") or {}
                     inp = int(usage.get("inputTokens") or 0)
                     out = int(usage.get("outputTokens") or 0)
@@ -2117,7 +2333,8 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                         inp = max(0, inp - cache_read)
                     _log.debug(f"✅ Bedrock (converse) complete (attempt {attempt})")
                     return LLMResult(text, inp, out, cache_read, cache_write,
-                                     _normalise_stop_reason((resp or {}).get("stopReason")))
+                                     _normalise_stop_reason((resp or {}).get("stopReason")),
+                                     (), _reasoning)
                 except Exception as converse_err:
                     msg_str = str(converse_err)
                     if "on-demand throughput" in msg_str:
@@ -2392,6 +2609,11 @@ async def generate_response_ex(
     # mark a breakpoint inside the conversation. Only Anthropic reads them.
     prompt_blocks: list[str] | None = None,
     volatile_tail: str | None = None,
+    # Reasoning effort — "off" | "low" | "medium" | "high", or None to take the
+    # workspace default. Resolved against `core.reasoning`, which decides
+    # whether this model has a native channel at all; a model that has none
+    # keeps the `[REASONING]` prompt convention and ignores this entirely.
+    reasoning_effort: str | None = None,
 ):
     """
     Unified LLM dispatch. Routes to the provider for `mode`/`current_model`,
@@ -2427,7 +2649,19 @@ async def generate_response_ex(
     cache_write_tokens = 0
     stop_reason = None
     _tool_calls: tuple = ()
+    _reasoning = ""
     _max_out = int(current_settings.get("max_output_tokens") or DEFAULT_MAX_OUTPUT_TOKENS)
+
+    # One plan for this call, built before dispatch so every branch below asks
+    # the same question of the same table. None means "send nothing" — either
+    # the model has no reasoning channel, or the person turned it off; both
+    # read the same way to a provider adapter.
+    from core import reasoning as _reasoning_policy
+    _reasoning_plan = _reasoning_policy.plan_for(current_model, reasoning_effort, _max_out)
+    if _reasoning_plan is not None:
+        # A budget that does not fit under the response cap is refused by
+        # Anthropic and Bedrock outright, so the plan may have raised it.
+        _max_out = _reasoning_plan.max_output_tokens
 
     # ── Response cache (opt-in per call) ─────────────────────────────────────
     # Built BEFORE dispatch so a hit short-circuits the entire LLM round-trip.
@@ -2480,16 +2714,17 @@ async def generate_response_ex(
             messages.append({"role": "user", "content": prompt_msg})
 
             if current_model.startswith("gpt"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_openai(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_openai(
                     current_model,
                     [{"role": "system", "content": augmented_system}] + messages,
                     current_settings.get("openai_key"),
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    reasoning=_reasoning_plan,
                 )
             elif current_model.startswith("claude"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_anthropic(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_anthropic(
                     current_model,
                     messages,
                     augmented_system,
@@ -2497,12 +2732,13 @@ async def generate_response_ex(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    reasoning=_reasoning_plan,
                     max_tokens=_max_out,
                     prompt_blocks=prompt_blocks,
                     volatile_tail=volatile_tail,
                 )
             elif current_model.startswith("gemini") or current_model.startswith("gemma") or current_model.startswith("lyria"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_gemini(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_gemini(
                     current_model,
                     messages,
                     augmented_system,
@@ -2510,9 +2746,11 @@ async def generate_response_ex(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    reasoning=_reasoning_plan,
+                    max_tokens=_max_out,
                 )
             elif current_model.startswith("bedrock"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_bedrock(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_bedrock(
                     current_model,
                     messages,
                     augmented_system,
@@ -2520,6 +2758,8 @@ async def generate_response_ex(
                     current_settings,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    reasoning=_reasoning_plan,
+                    max_tokens=_max_out,
                 )
                 # Bedrock's invoke_model fallback path returns zero tokens; estimate from text.
                 if input_tokens == 0 and output_tokens == 0:
@@ -2528,7 +2768,7 @@ async def generate_response_ex(
                     )
                     output_tokens = usage_tracker.estimate_tokens_from_text(result_text)
             elif current_model.startswith("grok"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_grok(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_grok(
                     current_model,
                     messages,
                     augmented_system,
@@ -2536,10 +2776,11 @@ async def generate_response_ex(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    reasoning=_reasoning_plan,
                     max_tokens=_max_out,
                 )
             elif current_model.startswith("deepseek"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_deepseek(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_deepseek(
                     current_model,
                     messages,
                     augmented_system,
@@ -2547,10 +2788,11 @@ async def generate_response_ex(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    reasoning=_reasoning_plan,
                     max_tokens=_max_out,
                 )
             elif current_model.startswith("synapse."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_model_gateway(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_model_gateway(
                     current_model,
                     messages,
                     augmented_system,
@@ -2558,9 +2800,10 @@ async def generate_response_ex(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    reasoning=_reasoning_plan,
                 )
             elif current_model.startswith("oaic."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_v1_compatible(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_v1_compatible(
                     current_model[len("oaic."):],
                     messages,
                     augmented_system,
@@ -2569,9 +2812,10 @@ async def generate_response_ex(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    reasoning=_reasoning_plan,
                 )
             elif current_model.startswith("locv1."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_v1_compatible(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_v1_compatible(
                     current_model[len("locv1."):],
                     messages,
                     augmented_system,
@@ -2580,6 +2824,7 @@ async def generate_response_ex(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    reasoning=_reasoning_plan,
                 )
             else:
                 return LLMResult("Error: Unknown cloud model selected.")
@@ -2636,7 +2881,7 @@ async def generate_response_ex(
                 messages_for_hf.extend(history_messages)
             messages_for_hf.append({"role": "user", "content": prompt_msg})
 
-            result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_huggingface(
+            result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_huggingface(
                 current_model,
                 messages_for_hf,
                 augmented_system,
@@ -2674,14 +2919,21 @@ async def generate_response_ex(
                         user_msg["images"] = [_parse_data_uri(img)[1] for img in images[:5]]
                     messages.append(user_msg)
 
+                    _chat_body: dict = {
+                        "model": _ollama_model,
+                        "messages": messages,
+                        "tools": tools,
+                        "stream": False,
+                    }
+                    if _reasoning_plan is not None:
+                        # Ollama 0.9+ takes a bare boolean here and answers in a
+                        # `thinking` field. An older server ignores the key
+                        # rather than refusing it, and the `<think>` fallback
+                        # below covers that case, so this is safe to send blind.
+                        _chat_body["think"] = _reasoning_plan.enabled
                     response = await client.post(
                         f"{_ollama_base_url()}/api/chat",
-                        json={
-                            "model": _ollama_model,
-                            "messages": messages,
-                            "tools": tools,
-                            "stream": False
-                        },
+                        json=_chat_body,
                         timeout=180.0
                     )
                     response.raise_for_status()
@@ -2699,13 +2951,17 @@ async def generate_response_ex(
                             "tool": tc["function"]["name"],
                             "arguments": tc["function"]["arguments"]
                         }) for tc in msg["tool_calls"])
-                        reasoning = (msg.get("content") or "").strip()
-                        if reasoning:
-                            result_text = f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
-                        else:
-                            result_text = call_json
+                        narration, _narration_thoughts = _split_think_tags(
+                            (msg.get("content") or "").strip())
+                        result_text = call_json
+                        _reasoning = "\n\n".join(
+                            t for t in (msg.get("thinking") or "", _narration_thoughts, narration)
+                            if t and t.strip()).strip()
                     else:
-                        result_text = msg.get("content", "")
+                        result_text, _inline_thoughts = _split_think_tags(msg.get("content", ""))
+                        _reasoning = "\n\n".join(
+                            t for t in (msg.get("thinking") or "", _inline_thoughts)
+                            if t and t.strip()).strip()
 
                     stop_reason = _normalise_stop_reason(data.get("done_reason"))
 
@@ -2735,7 +2991,7 @@ async def generate_response_ex(
                     )
                     response.raise_for_status()
                     data = response.json()
-                    result_text = data.get("response", "")
+                    result_text, _reasoning = _split_think_tags(data.get("response", ""))
                     input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_for_generate)
                     output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
 
@@ -2792,7 +3048,8 @@ async def generate_response_ex(
             _log.warning(f"response_cache: set failed (non-fatal): {_cache_err}")
 
     return LLMResult(result_text, input_tokens, output_tokens,
-                     cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls)
+                     cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls,
+                     _reasoning)
 
 
 async def generate_response(*args, **kwargs) -> str:

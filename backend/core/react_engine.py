@@ -885,6 +885,17 @@ async def run_agent_step(
     # Precedence: per-step model (from orchestration) > per-agent model > global default
     step_model = model_override.strip() if (model_override and model_override.strip().lower() not in ("", "default")) else None
     current_model = step_model or agent_model or current_settings.get("model", "mistral")
+    # Reasoning effort follows the same precedence as the model: the agent's own
+    # setting, then the workspace default. It is deliberately not a per-step
+    # override — a step picks a *model*, and how hard that model thinks is a
+    # property of the agent doing the work, not of the box it sits in.
+    reasoning_effort = active_agent.get("reasoning_effort") or current_settings.get("reasoning_effort")
+    # Whether this turn's model will think on its own channel. Decides which
+    # half of the Reason-Act protocol the system prompt teaches, so it is
+    # computed once here rather than per turn: it sits in the prompt-cache
+    # prefix, and a value that moved between turns would cost every cache hit.
+    from core.reasoning import plan_for as _plan_for
+    _native_reasoning = _plan_for(current_model, reasoning_effort, 0) is not None
     # Auto-detect mode from model name instead of relying on global mode
     from core.llm_providers import detect_mode_from_model
     mode = detect_mode_from_model(current_model)
@@ -1101,6 +1112,7 @@ async def run_agent_step(
             sys_prompt=sys_prompt,
             mode=mode,
             current_model=current_model,
+            reasoning_effort=reasoning_effort,
             current_settings=current_settings,
             tools=tools,
             history_messages=history_messages,
@@ -1259,6 +1271,7 @@ async def run_agent_step(
                 agent_system_template, tools_json, session_id,
                 _get_session_state, server_module.memory_store, agent_id=agent_id_for_session,
                 inject_tools=inject_tools_in_prompt,
+                native_reasoning=_native_reasoning,
             )
             if system_prompt_extra:
                 active_sys_prompt = active_sys_prompt + "\n\n" + system_prompt_extra
@@ -1447,6 +1460,17 @@ async def run_agent_step(
             #     [REASONING] markers; the projection is purely server-side)
             reasoning_blocks = extract_reasoning(llm_output)
             action_text = strip_reasoning(llm_output)
+
+            # A model with a real reasoning channel answered on it, and that
+            # answer is better than anything the markers can carry: it is the
+            # model's own thinking rather than its account of its thinking, and
+            # it arrives whether or not the model felt like following a
+            # convention. Both are shown when both exist — a provider can send
+            # native thoughts while the model also narrates in markers — with
+            # the native half first.
+            native_reasoning = (_llm_result.reasoning or "").strip()
+            if native_reasoning:
+                reasoning_blocks = [native_reasoning, *reasoning_blocks]
 
             if reasoning_blocks:
                 yield {
