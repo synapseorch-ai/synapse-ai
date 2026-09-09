@@ -13,6 +13,9 @@
 import { useEffect } from 'react';
 
 import { TooltipProvider, usePersisted } from '@/components/ui';
+import { BuilderLauncher } from '@/components/app/BuilderLauncher';
+import { BuilderPanel } from '@/components/app/BuilderPanel';
+import { BuilderProvider } from '@/components/app/BuilderProvider';
 import { AppRail } from '@/components/app/AppRail';
 import { NavGuardProvider } from '@/components/app/NavGuard';
 
@@ -50,6 +53,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 open-delay timer, so tooltips start behaving differently
                 depending on which subtree they happen to be in. */}
             <TooltipProvider>
+            {/* The AI builder is mounted once, here, rather than by a screen:
+                it is reachable from every screen and its conversation has to
+                survive navigating between them. */}
+            <BuilderProvider>
             <div className="flex h-screen overflow-hidden bg-bg font-sans text-text">
                 <AppRail theme={theme} onToggleTheme={toggleTheme} />
                 {/* The only <main> in the app. Pages render a plain flex column
@@ -57,6 +64,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     scrollbars. */}
                 <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
             </div>
+            <BuilderLauncher />
+            <BuilderPanel />
+            </BuilderProvider>
             </TooltipProvider>
         </NavGuardProvider>
     );

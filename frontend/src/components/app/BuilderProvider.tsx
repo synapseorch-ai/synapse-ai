@@ -1,0 +1,260 @@
+'use client';
+/**
+ * The AI builder, available from every screen.
+ *
+ * It used to be mounted inside the orchestration editor, which meant it could
+ * only be reached from one screen and its conversation was destroyed by
+ * navigating away. It lives in the app shell now, so the state is here.
+ */
+import {
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from 'react';
+
+import {
+    applyBuilderEvent,
+    emptyBuilderState,
+    type BuilderMessage,
+    type BuilderState,
+    type SavedResource,
+} from '@/lib/builderEvents';
+import { readWithStallTimeout } from '@/lib/sse';
+
+/**
+ * Announced when the builder writes something, so the list screens refetch
+ * instead of waiting for a reload. Same shape as `NOTIFICATION_EVENT`.
+ */
+export const RESOURCE_SAVED_EVENT = 'synapse-resource-saved';
+
+const WELCOME: BuilderMessage = {
+    role: 'assistant',
+    kind: 'text',
+    key: 'welcome',
+    content:
+        "I build things in this workspace — agents, orchestrations, tools, skills and schedules. " +
+        "Tell me what you want to happen and I'll ask what I need, show you a plan, and build it once you approve.\n\n" +
+        '- *"Every weekday at 8, summarise yesterday\'s support tickets and post it to Slack"*\n' +
+        '- *"Add a tool that files a ticket in our issue tracker"*\n' +
+        '- *"Change the research workflow to ask me before it sends anything"*',
+};
+
+interface OpenOptions {
+    currentOrchestrationId?: string | null;
+}
+
+interface BuilderContextValue {
+    isOpen: boolean;
+    open: (options?: OpenOptions) => void;
+    close: () => void;
+    state: BuilderState;
+    streaming: boolean;
+    send: (text: string) => Promise<void>;
+    newConversation: () => void;
+    models: string[];
+    builderModel: string;
+    sessionModel: string;
+    setSessionModel: (model: string) => void;
+    saveBuilderModel: (model: string) => Promise<void>;
+}
+
+const BuilderContext = createContext<BuilderContextValue | null>(null);
+
+export function useBuilder(): BuilderContextValue {
+    const ctx = useContext(BuilderContext);
+    if (!ctx) throw new Error('useBuilder must be used inside <BuilderProvider>');
+    return ctx;
+}
+
+export function BuilderProvider({ children }: { children: React.ReactNode }) {
+    const [isOpen, setIsOpen] = useState(false);
+    const [state, setState] = useState<BuilderState>(() => emptyBuilderState([WELCOME]));
+    const [streaming, setStreaming] = useState(false);
+    const [models, setModels] = useState<string[]>([]);
+    const [builderModel, setBuilderModel] = useState('');
+    const [sessionModel, setSessionModel] = useState('');
+
+    // The orchestration the user had open when they asked, so "add a step to
+    // this one" means this one. Held in a ref: it is read when a message is
+    // sent, and changing it should not re-render the panel.
+    const currentOrchestrationId = useRef<string | null>(null);
+    const clientSessionId = useRef<string>(
+        typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    );
+    const abortRef = useRef<AbortController | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const [modelsRes, settingsRes] = await Promise.all([
+                    fetch('/api/models'),
+                    fetch('/api/settings'),
+                ]);
+                if (cancelled) return;
+                if (modelsRes.ok) {
+                    const data = await modelsRes.json();
+                    setModels(Array.isArray(data.all_available) ? data.all_available : []);
+                }
+                if (settingsRes.ok) {
+                    const data = await settingsRes.json();
+                    setBuilderModel(data.builder_model || '');
+                }
+            } catch {
+                /* the picker falls back to the workspace default */
+            }
+        })();
+        return () => { cancelled = true; };
+    }, []);
+
+    const open = useCallback((options?: OpenOptions) => {
+        if (options && 'currentOrchestrationId' in options) {
+            currentOrchestrationId.current = options.currentOrchestrationId ?? null;
+        }
+        setIsOpen(true);
+    }, []);
+
+    const close = useCallback(() => setIsOpen(false), []);
+
+    const newConversation = useCallback(() => {
+        abortRef.current?.abort();
+        clientSessionId.current =
+            typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+        setState(emptyBuilderState([WELCOME]));
+        setStreaming(false);
+    }, []);
+
+    const announce = useCallback((saved: SavedResource) => {
+        window.dispatchEvent(new CustomEvent(RESOURCE_SAVED_EVENT, { detail: saved }));
+    }, []);
+
+    const consume = useCallback(
+        async (response: Response) => {
+            const reader = response.body?.getReader();
+            if (!reader) return;
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let seq = 0;
+
+            for (;;) {
+                const { done, value } = await readWithStallTimeout(reader, abortRef.current!);
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() ?? '';
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    let event: unknown;
+                    try {
+                        event = JSON.parse(line.slice(6));
+                    } catch {
+                        continue; // a heartbeat or a half-written frame
+                    }
+                    seq += 1;
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    const parsed = event as any;
+                    setState((prev) => applyBuilderEvent(prev, parsed, seq));
+                    if (parsed?.type === 'resource_saved') announce(parsed as SavedResource);
+                }
+            }
+        },
+        [announce],
+    );
+
+    const send = useCallback(
+        async (text: string) => {
+            if (!text.trim() || streaming) return;
+            const pending = state.pending;
+
+            setState((prev) => ({
+                ...prev,
+                pending: null,
+                done: false,
+                error: null,
+                messages: [
+                    ...prev.messages,
+                    { role: 'user', content: text, kind: 'text', key: `user-${prev.messages.length}` },
+                ],
+            }));
+            setStreaming(true);
+
+            const controller = new AbortController();
+            abortRef.current = controller;
+            try {
+                // Answering an open question resumes the paused run; anything
+                // else starts a new one.
+                const response = pending
+                    ? await fetch('/api/builder/resume', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          signal: controller.signal,
+                          body: JSON.stringify({
+                              run_id: pending.runId,
+                              response: { [pending.field]: text },
+                          }),
+                      })
+                    : await fetch('/api/builder/chat', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          signal: controller.signal,
+                          body: JSON.stringify({
+                              message: text,
+                              history: state.messages
+                                  .filter((m) => m.kind === 'text' && m.key !== 'welcome')
+                                  .map((m) => ({ role: m.role, content: m.content })),
+                              can_create_agents: true,
+                              model: sessionModel || undefined,
+                              current_orchestration_id: currentOrchestrationId.current,
+                              client_session_id: clientSessionId.current,
+                          }),
+                      });
+
+                if (!response.ok) throw new Error(`The builder could not be reached (${response.status}).`);
+                await consume(response);
+            } catch (error) {
+                if ((error as Error)?.name !== 'AbortError') {
+                    const message = (error as Error)?.message ?? 'Something went wrong.';
+                    setState((prev) => ({
+                        ...prev,
+                        error: message,
+                        messages: [
+                            ...prev.messages,
+                            { role: 'assistant', content: `**${message}**`, kind: 'text', key: `error-${prev.messages.length}` },
+                        ],
+                    }));
+                }
+            } finally {
+                setStreaming(false);
+                abortRef.current = null;
+            }
+        },
+        [consume, sessionModel, state.messages, state.pending, streaming],
+    );
+
+    const saveBuilderModel = useCallback(async (model: string) => {
+        const current = await (await fetch('/api/settings')).json();
+        await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // `agent_name` has no default in the settings model, so a payload
+            // without it is refused — this endpoint is not a true patch.
+            body: JSON.stringify({ agent_name: current.agent_name, builder_model: model }),
+        });
+        setBuilderModel(model);
+    }, []);
+
+    const value = useMemo(
+        () => ({
+            isOpen, open, close, state, streaming, send, newConversation,
+            models, builderModel, sessionModel, setSessionModel, saveBuilderModel,
+        }),
+        [isOpen, open, close, state, streaming, send, newConversation,
+         models, builderModel, sessionModel, saveBuilderModel],
+    );
+
+    return <BuilderContext.Provider value={value}>{children}</BuilderContext.Provider>;
+}

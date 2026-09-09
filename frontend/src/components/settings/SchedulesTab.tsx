@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 import { useState, useEffect, useCallback } from 'react';
+import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
 import {
     Clock, Plus, Trash2, Edit2, Play, RefreshCw,
     ChevronDown, ChevronUp, CheckCircle, AlertCircle,
@@ -187,7 +188,13 @@ export const SchedulesTab = () => {
         }
     }, []);
 
-    useEffect(() => { fetchAll(); }, [fetchAll]);
+    useEffect(() => {
+        fetchAll();
+        // The AI builder reaches this from any screen now, so the
+        // list refreshes on the event rather than on a reload.
+        window.addEventListener(RESOURCE_SAVED_EVENT, fetchAll);
+        return () => window.removeEventListener(RESOURCE_SAVED_EVENT, fetchAll);
+    }, [fetchAll]);
 
     // -- Form helpers ---------------------------------------------------
 

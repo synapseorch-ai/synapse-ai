@@ -28,7 +28,6 @@ import { useSettingsData } from "./hooks/useSettingsData";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /** The native builder agent is infrastructure, not one of the user's agents. */
-const BUILDER_AGENT_PREFIX = "agent_native_builder";
 
 export function AgentsScreen() {
     const dispatch = useDispatch<AppDispatch>();
@@ -61,7 +60,7 @@ export function AgentsScreen() {
     return (
         <>
             <AgentsTab
-                agents={agents.filter((a: any) => !a.id.startsWith(BUILDER_AGENT_PREFIX))}
+                agents={agents}
                 selectedAgentId={selectedAgentId}
                 setSelectedAgentId={setSelectedAgentId}
                 draftAgent={draftAgent}

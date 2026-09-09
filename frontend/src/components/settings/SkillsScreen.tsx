@@ -13,6 +13,7 @@
  * until the agent calls load_skill.
  */
 import { useCallback, useEffect, useState } from "react";
+import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
 import { Download, Eye, EyeOff, HardDrive, Library, Pencil, Plus, Trash } from "lucide-react";
 
 import {
@@ -66,7 +67,13 @@ export function SkillsScreen() {
         }
     }, []);
 
-    useEffect(() => { refresh(); }, [refresh]);
+    useEffect(() => {
+        refresh();
+        // The AI builder reaches this from any screen now, so the
+        // list refreshes on the event rather than on a reload.
+        window.addEventListener(RESOURCE_SAVED_EVENT, refresh);
+        return () => window.removeEventListener(RESOURCE_SAVED_EVENT, refresh);
+    }, [refresh]);
 
     useEffect(() => {
         fetch("/api/skills-cli")

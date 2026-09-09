@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { Plus, Save, Play, Trash, Square, Loader2, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX } from 'lucide-react';
 import { Button, Combobox, Hint, IconButton, Modal, SearchInput } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
-import { BuilderPanel } from '../orchestration/BuilderPanel';
+import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
 import { validateOrchestration } from '../orchestration/validate';
 import { useBuilderShortcuts, useDraftHistory } from '../orchestration/use-draft-history';
@@ -91,6 +91,60 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     // The draft with undo/redo, dirty tracking and the unload guard.
     // `setDraft` records history (edits); `replaceDraft` resets it (navigation).
     const { draft, setDraft, replaceDraft, markSaved, undo, redo, canUndo, canRedo, dirty } = useDraftHistory();
+
+    // The builder runs from the app shell now and can be talked to from any
+    // screen, so this one learns about a save the way every other list does:
+    // from the event, not from a callback it owned.
+    const loadSavedOrchestration = useCallback(async (orch: any) => {
+        setOrchestrations((prev) => {
+            const idx = prev.findIndex((o) => o.id === orch.id);
+            return idx >= 0 ? prev.map((o) => (o.id === orch.id ? orch : o)) : [...prev, orch];
+        });
+        replaceDraft(orch, { saved: true });
+        setSelectedOrchId(orch.id);
+        // Re-read for the canonical version, with every step resolved.
+        try {
+            const res = await fetch('/api/orchestrations');
+            if (!res.ok) return;
+            const all = await res.json();
+            const freshList = Array.isArray(all) ? all : [];
+            setOrchestrations(freshList);
+            const fresh = freshList.find((o: any) => o.id === orch.id);
+            if (fresh) replaceDraft(fresh, { saved: true });
+        } catch { /* the event's copy stands */ }
+    }, [replaceDraft]);
+
+    useEffect(() => {
+        const onSaved = (event: Event) => {
+            const saved = (event as CustomEvent).detail;
+            if (saved?.kind === 'agent' && saved.resource) {
+                setAgents((prev) => {
+                    const idx = prev.findIndex((a) => a.id === saved.resource.id);
+                    return idx >= 0
+                        ? prev.map((a) => (a.id === saved.resource.id ? saved.resource : a))
+                        : [...prev, saved.resource];
+                });
+                return;
+            }
+            if (saved?.kind !== 'orchestration') return;
+            if (saved.action === 'deleted') {
+                setOrchestrations((prev) => prev.filter((o) => o.id !== saved.id));
+                return;
+            }
+            if (!saved.resource) return;
+            // Loading over unsaved work is the user's call, not ours. This used
+            // to replace the draft silently, and the builder can now be talked
+            // to from any screen, so the collision is reachable in a way it
+            // was not when the panel lived inside this editor.
+            if (dirty && saved.id === selectedOrchId) {
+                setBuilderSavedOrch(saved.resource);
+                return;
+            }
+            void loadSavedOrchestration(saved.resource);
+        };
+        window.addEventListener(RESOURCE_SAVED_EVENT, onSaved);
+        return () => window.removeEventListener(RESOURCE_SAVED_EVENT, onSaved);
+    }, [dirty, selectedOrchId, loadSavedOrchestration]);
     const [agents, setAgents] = useState<any[]>([]);
     const [availableModels, setAvailableModels] = useState<string[]>([]);
     const [saving, setSaving] = useState(false);
@@ -129,8 +183,10 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     const pendingStepResultRef = useRef<Map<string, { step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string }>>(new Map());
     const [responseModal, setResponseModal] = useState<{ step_name: string; step_type?: string; content: string } | null>(null);
     const [confirmDeleteOrchId, setConfirmDeleteOrchId] = useState<string | null>(null);
-    const [builderOpen, setBuilderOpen] = useState(false);
-    const [builderSessionKey, setBuilderSessionKey] = useState(0);
+    const { open: openBuilder } = useBuilder();
+    // Set when the builder saved the orchestration being edited while the draft
+    // had unsaved changes — the user chooses which version survives.
+    const [builderSavedOrch, setBuilderSavedOrch] = useState<any | null>(null);
 
     // --- Active runs (for reconnect banner) ---
     type RunSummary = {
@@ -158,7 +214,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
     // --- Fetch orchestrations + agents ---
     useEffect(() => {
         fetch('/api/orchestrations').then(r => r.json()).then(data => {
-            setOrchestrations(Array.isArray(data) ? data.filter((o: any) => o.id !== 'orch_native_builder') : []);
+            setOrchestrations(Array.isArray(data) ? data : []);
         }).catch(() => {});
 
         fetch('/api/agents').then(r => r.json()).then(data => {
@@ -1267,11 +1323,13 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                         <Plus size={14} /> New
                     </button>
                     <button
-                        onClick={() => { 
-                            if (!selectedOrchId) createNew(); 
-                            setBuilderOpen(true); 
-                            setBuilderSessionKey(k => k + 1); 
-                        }}
+                        onClick={() => openBuilder({
+                            // Only a real saved id — not the temp draft one.
+                            currentOrchestrationId:
+                                selectedOrchId && orchestrations.some(o => o.id === selectedOrchId)
+                                    ? selectedOrchId
+                                    : null,
+                        })}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent hover:bg-accent-hover text-accent-fg transition-colors"
                     >
                         <Sparkles size={13} /> Build with AI
@@ -1575,55 +1633,19 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                 onClose={() => setConfirmDeleteOrchId(null)}
             />
 
-            <BuilderPanel
-                isOpen={builderOpen}
-                onClose={() => setBuilderOpen(false)}
-                agents={agents}
-                availableModels={availableModels}
-                currentOrchestrationId={
-                    // Only pass a real saved orchestration ID — not the temp frontend draft ID
-                    selectedOrchId && orchestrations.some(o => o.id === selectedOrchId)
-                        ? selectedOrchId
-                        : null
-                }
-                sessionKey={builderSessionKey}
-                onOrchestrationSaved={async (orch) => {
-                    // Immediately update with the event data so user sees it
-                    setOrchestrations((prev) => {
-                        const idx = prev.findIndex((o) => o.id === orch.id);
-                        return idx >= 0
-                            ? prev.map((o) => (o.id === orch.id ? orch : o))
-                            : [...prev, orch];
-                    });
-                    replaceDraft(orch, { saved: true });
-                    setSelectedOrchId(orch.id);
-
-                    // Re-fetch the full orchestration from backend to get the
-                    // canonical version with all steps properly resolved
-                    try {
-                        const res = await fetch('/api/orchestrations');
-                        if (res.ok) {
-                            const all = await res.json();
-                            const freshList = Array.isArray(all)
-                                ? all.filter((o: any) => o.id !== 'orch_native_builder')
-                                : [];
-                            setOrchestrations(freshList);
-                            const fresh = freshList.find((o: any) => o.id === orch.id);
-                            if (fresh) {
-                                replaceDraft(fresh, { saved: true });
-                            }
-                        }
-                    } catch { /* use event data as fallback */ }
+            <ConfirmationModal
+                isOpen={builderSavedOrch !== null}
+                title="The builder changed this orchestration"
+                message="You have unsaved edits open. Load the builder's version and lose them, or keep editing yours?"
+                confirmText="Load the builder's version"
+                onConfirm={() => {
+                    const orch = builderSavedOrch;
+                    setBuilderSavedOrch(null);
+                    if (orch) void loadSavedOrchestration(orch);
                 }}
-                onAgentSaved={(agent) => {
-                    setAgents((prev) => {
-                        const idx = prev.findIndex((a) => a.id === agent.id);
-                        return idx >= 0
-                            ? prev.map((a) => (a.id === agent.id ? agent : a))
-                            : [...prev, agent];
-                    });
-                }}
+                onClose={() => setBuilderSavedOrch(null)}
             />
+
         </div>
     );
 }

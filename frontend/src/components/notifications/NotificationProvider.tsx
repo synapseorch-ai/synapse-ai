@@ -179,8 +179,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             setBrowserNotificationsEnabled, openRun,
         }}>
             {children}
-            {/* Toast host — app-wide, stacked bottom-right */}
-            <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-2 items-end pointer-events-none">
+            {/* Toast host — app-wide, stacked bottom-right, clearing the AI
+                builder's launcher below it. Two things cannot own that corner,
+                and the launcher is the one the user goes looking for. */}
+            <div className="fixed bottom-20 right-6 z-[9999] flex flex-col gap-2 items-end pointer-events-none">
                 {toasts.map(t => (
                     <div
                         key={t.key}

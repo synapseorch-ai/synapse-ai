@@ -15,6 +15,7 @@
 import { useEffect } from "react";
 import { useDispatch, useSelector } from "react-redux";
 
+import { RESOURCE_SAVED_EVENT } from "@/components/app/BuilderProvider";
 import type { AppDispatch, RootState } from "@/store";
 import { fetchAllSettingsData } from "@/store/settingsSlice";
 
@@ -25,6 +26,16 @@ export function useSettingsData() {
     useEffect(() => {
         if (!settings.initialized) dispatch(fetchAllSettingsData());
     }, [settings.initialized, dispatch]);
+
+    // The guard above means these lists are fetched once and never again, which
+    // was fine while the only way to change them was a form on the same screen.
+    // The AI builder writes agents, tools and MCP servers from anywhere, so a
+    // save has to invalidate them.
+    useEffect(() => {
+        const refetch = () => { dispatch(fetchAllSettingsData()); };
+        window.addEventListener(RESOURCE_SAVED_EVENT, refetch);
+        return () => window.removeEventListener(RESOURCE_SAVED_EVENT, refetch);
+    }, [dispatch]);
 
     return settings;
 }

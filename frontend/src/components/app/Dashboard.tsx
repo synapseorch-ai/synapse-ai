@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 
 import { Card, CardBody, EmptyState, Stat, StatusBadge, TextLink } from '@/components/ui';
+import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
 import { NOTIFICATION_EVENT } from '@/components/notifications/NotificationProvider';
 
 type Run = {
@@ -79,10 +80,14 @@ export function Dashboard() {
         const onVisible = () => { if (document.visibilityState === 'visible') refreshRuns(); };
         document.addEventListener('visibilitychange', onVisible);
         window.addEventListener(NOTIFICATION_EVENT, refreshRuns);
+        // The AI builder can add an agent or an orchestration from any screen,
+        // and these are counts of exactly those.
+        window.addEventListener(RESOURCE_SAVED_EVENT, refreshRuns);
         return () => {
             clearInterval(interval);
             document.removeEventListener('visibilitychange', onVisible);
             window.removeEventListener(NOTIFICATION_EVENT, refreshRuns);
+            window.removeEventListener(RESOURCE_SAVED_EVENT, refreshRuns);
         };
     }, [refreshRuns]);
 
@@ -98,7 +103,7 @@ export function Dashboard() {
             setOrchNames(Object.fromEntries(list(orch).map((o: any) => [o.id, o.name])));
             setCounts({
                 orchestrations: list(orch).length,
-                agents: list(agents).filter((a: any) => !String(a.id ?? '').startsWith('agent_native_builder')).length,
+                agents: list(agents).length,
                 schedules: sched.length,
                 schedulesOn: sched.filter((s: any) => s.enabled !== false).length,
                 mcp: list(mcp).length,
