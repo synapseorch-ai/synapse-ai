@@ -107,6 +107,40 @@ async def append_turn(session_id: str, agent_id: str, messages: list[dict]) -> N
             row.last_message_at = datetime.now(timezone.utc)
 
 
+async def pop_last_turn(session_id: str, agent_id: str) -> dict | None:
+    """Take the last user/assistant pair back off a session.
+
+    What Retry and edit-and-resend both need, and the reason it is a *pair*:
+    `core.session._turns` walks the list two at a time and stops at the first
+    entry that does not pair, so a dangling user message does not merely look
+    untidy — it truncates every turn after it out of the history the model
+    sees. Removing one half is worse than removing none.
+
+    Returns the removed turn (`{"user": ..., "assistant": ...}`) so a caller can
+    put the text back in the composer, or None when there was nothing to remove
+    — an empty session, or a tail that does not pair, which is left alone
+    rather than guessed at.
+    """
+    from core.store import session
+
+    async with session() as s:
+        row = await _row(s, session_id, agent_id)
+        if row is None:
+            return None
+        messages = list(row.messages or [])
+        if len(messages) < 2:
+            return None
+        user, assistant = messages[-2], messages[-1]
+        if user.get("role") != "user" or assistant.get("role") != "assistant":
+            return None
+        # Reassigned, not mutated: SQLAlchemy does not track in-place changes to
+        # a JSON column, so `row.messages.pop()` would be a write that silently
+        # does nothing. Same rule as `append_turn` above.
+        row.messages = messages[:-2]
+        row.last_message_at = datetime.now(timezone.utc)
+        return {"user": user.get("content", ""), "assistant": assistant.get("content", "")}
+
+
 async def set_cli_session_id(session_id: str, agent_id: str, provider_key: str, cli_id: str) -> None:
     from core.store import session
     from core.store.models import ChatSessionDB

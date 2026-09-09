@@ -101,6 +101,19 @@ async def _save_conversation_turn(
     )
 
 
+async def pop_last_conversation_turn(session_id: str, agent_id: str | None = None) -> dict | None:
+    """Take the last turn back, so it can be run again.
+
+    The facade half of `store.pop_last_turn`; see there for why it is a pair
+    and not a message. Retry uses it to drop the answer that failed before
+    resending, and edit-and-resend to drop both halves before sending the
+    rewritten question.
+    """
+    from core.store import sessions as store
+
+    return await store.pop_last_turn(session_id, _agent(agent_id))
+
+
 async def get_cli_session_id(session_id: str, agent_id: str | None, provider_key: str) -> str | None:
     """Return the stored CLI session ID for the given provider, or None."""
     from core.store import sessions as store
