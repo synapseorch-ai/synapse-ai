@@ -187,8 +187,8 @@
   --border: #d4d4d8;
   --border-strong: #a1a1aa;
   --text: #09090b;
-  --text-muted: #52525b;
-  --text-faint: #71717a;
+  --text-muted: #27272a;    /* zinc-800: body copy reads near-black, as Apple and Microsoft set theirs */
+  --text-faint: #52525b;    /* zinc-600 */
 
   --accent: #2e656b;
   --accent-hover: #235258;
