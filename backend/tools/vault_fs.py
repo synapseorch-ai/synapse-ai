@@ -123,6 +123,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="list_files",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "List files in the vault. Returns keys you can pass to read_file, "
                 "read_json or search_files. Use a prefix to narrow the listing."
@@ -140,6 +141,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="read_file",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Read a line range from a vault file (1-indexed, inclusive). "
                 "Prefer a range over reading a whole file — vault files are tool "
@@ -157,6 +159,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="search_files",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Search the text of vault files for a string, returning matching "
                 "lines with surrounding context. Narrow with a prefix when you can."
@@ -173,6 +176,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="read_json",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Read a slice of a JSON vault file. An array root returns items "
                 "[offset:offset+limit]; an object root returns that slice of its keys."

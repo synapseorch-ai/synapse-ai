@@ -104,6 +104,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="read_file_by_lines",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Read a specific line range from any file (1-indexed, inclusive). "
                 "Use this to read slices of large vault files instead of loading the whole file. "
@@ -132,6 +133,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="grep_file",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Search a file for lines matching a query string and return matches with surrounding context. "
                 "Use on large vault files when you know what value or key to look for. "

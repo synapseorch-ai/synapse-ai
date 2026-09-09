@@ -211,6 +211,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="scrape_url",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description=(
                 "Scrape a URL and return its content as clean markdown. "
                 "Handles JavaScript-rendered pages, anti-bot protections, and dynamic content. "
@@ -262,6 +263,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="scrape_structured",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description=(
                 "Extract structured data from a URL using CSS selectors. "
                 "Define a schema with a baseSelector (the repeating container element) and fields to extract from each. "
@@ -327,6 +329,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="crawl_multiple",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description=(
                 "Scrape multiple URLs in parallel and return markdown content for each. "
                 "All requests run concurrently for maximum efficiency. "
@@ -365,6 +368,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="extract_links",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description=(
                 "Extract and analyze all hyperlinks from a webpage. "
                 "Returns internal and external links with anchor text and a relevance score. "
@@ -397,6 +401,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="screenshot_url",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description=(
                 "Take a screenshot of a webpage and return it as a base64-encoded PNG. "
                 "Supports full-page capture and optional save-to-disk. "
@@ -433,6 +438,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="scrape_with_session",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description=(
                 "Execute a multi-step scraping workflow using a persistent browser session. "
                 "Browser cookies, localStorage, and authentication state are preserved across all steps. "
@@ -485,6 +491,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="search_page",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description=(
                 "Scrape a dynamic or infinite-scroll page by executing multiple scroll cycles. "
                 "After each scroll the page is allowed to load new content. "

@@ -17,6 +17,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="parse_pdf",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description="Parse a PDF file from a URL. Extracts text and tables, formatting tables as Markdown.",
             inputSchema={
                 "type": "object",

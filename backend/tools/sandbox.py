@@ -15,7 +15,7 @@ the path carries the tenant, and one process serves many.
 """
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.types import ToolAnnotations, Tool, TextContent
 
 import asyncio
 import json
@@ -175,6 +175,7 @@ async def list_tools() -> list[Tool]:
         # -- Vault tools --
         Tool(
             name="vault_create",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True),
             description=(
                 "Create a new file in the shared vault workspace. "
                 "Returns the absolute path for passing to other tools or the Python sandbox. "
@@ -207,6 +208,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_read",
+            annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description="Read a file from the vault by its path.",
             inputSchema={
                 "type": "object",
@@ -224,6 +226,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_write",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description=(
                 "Write (overwrite) a file in the vault. Creates it if missing. "
                 "Returns the absolute path."
@@ -245,6 +248,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_patch",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description=(
                 "Patch an existing file. JSON files: deep-merges the provided object. "
                 "Text files: replaces first occurrence of `find` with `replace`. "
@@ -275,6 +279,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_list",
+            annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description="List files in the vault, optionally filtered by extension or subdirectory.",
             inputSchema={
                 "type": "object",
@@ -293,6 +298,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="vault_delete",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description="Delete a file from the vault. Returns confirmation.",
             inputSchema={
                 "type": "object",
@@ -308,6 +314,7 @@ async def list_tools() -> list[Tool]:
         # -- Python executor --
         Tool(
             name="execute_python",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description=(
                 "Execute Python code in a secure Docker container (512 MB RAM, 1 CPU, "
                 "read-only filesystem, no network by default). "
@@ -350,6 +357,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="tool_code",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False),
             description=(
                 "Alias for execute_python. Execute Python code in a secure Docker container. "
                 "Use this to run calculations, data processing, or test logic safely."

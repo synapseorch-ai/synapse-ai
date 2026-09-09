@@ -1,9 +1,15 @@
 """
 Deterministic tool-result memoization.
 
-Only tools in DETERMINISTIC_TOOLS are eligible — anything that reads live state
-(bash, sql_agent, web_scraper, sandbox) is bypassed because cached results
-would silently mask reality.
+A tool is eligible when it says it is: read-only, idempotent, and not reaching
+an open world whose answer could have changed underneath. Those are the MCP
+annotations a server declares, so a tool that knows its own behaviour no
+longer has to be added to a list here by hand.
+
+DETERMINISTIC_TOOLS remains for tools that declare nothing — third-party MCP
+servers, mostly — and is the only way such a tool becomes cacheable. It is
+also where a *scope* comes from: an annotation cannot say "this answer is per
+user", which `personal_details` needs.
 
 Scope rules:
 - "session": key includes the session_id (e.g. personal_details, user-bound configs)
@@ -27,7 +33,19 @@ DETERMINISTIC_TOOLS: dict[str, str] = {
 }
 
 
-def is_cacheable(tool_name: str) -> bool:
+def is_cacheable(tool_name: str, tool=None) -> bool:
+    """Whether a previous result may be served for this tool.
+
+    `tool` is the declaration (an MCP `Tool` or a `VirtualTool`); when it
+    carries annotations they decide, and the override list is not consulted.
+    Without it — or without annotations — the answer is the hand-kept list,
+    which is what every third-party tool falls back to.
+    """
+    if tool is not None:
+        from core.tools import tool_hints
+        hints = tool_hints(tool)
+        if hints.declared:
+            return hints.cacheable
     return tool_name in DETERMINISTIC_TOOLS
 
 

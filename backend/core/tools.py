@@ -8,6 +8,7 @@ import datetime
 import zoneinfo
 
 import anyio
+from dataclasses import dataclass
 
 from core.config import load_settings, MCP_LIST_TOOLS_TIMEOUT
 from core.tool_router import SEP, ToolRouter
@@ -60,11 +61,96 @@ Your mission is to assist the user with everyday tasks, retrieving personal info
 
 
 class VirtualTool:
-    """A lightweight tool descriptor that mimics the shape of an MCP tool."""
-    def __init__(self, name, description, inputSchema):
+    """A lightweight tool descriptor that mimics the shape of an MCP tool.
+
+    `annotations` carries the MCP `ToolAnnotations` a server declared
+    (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`).
+    It used to stop here: a server's hints survived `list_tools()` and were
+    dropped the moment a tool was wrapped, so the engine could not tell a file
+    read from a database write.
+    """
+    def __init__(self, name, description, inputSchema, annotations=None, title=None):
         self.name = name
         self.description = description
         self.inputSchema = inputSchema
+        self.annotations = annotations
+        self.title = title
+
+
+@dataclass(frozen=True)
+class ToolHints:
+    """What a tool says about itself, normalised.
+
+    `declared` is the field that matters for policy. MCP's own defaults are
+    `destructiveHint=True` and `openWorldHint=True`, so treating an absent
+    annotation as its default would mark every un-annotated tool in existence
+    as destructive. An undeclared tool is `declared=False` and policy decides
+    what to do with *that*, rather than pretending it was told something.
+
+    `trusted` separates our own servers from third-party ones — the MCP spec
+    is explicit that hints from an untrusted server are not a security
+    boundary. Ours are declared in this repo; theirs are a claim.
+    """
+    read_only: bool = False
+    destructive: bool = False
+    idempotent: bool = False
+    open_world: bool = False
+    declared: bool = False
+    trusted: bool = True
+
+    @property
+    def cacheable(self) -> bool:
+        """Safe to serve a previous result for. Read-only and idempotent, and
+        not reaching an outside world that could have changed underneath."""
+        return self.declared and self.read_only and self.idempotent and not self.open_world
+
+
+#: Appended to a tool's description so the model knows what a call costs.
+#: Deterministic by construction — the tools array sits inside the prompt
+#: cache prefix, and a suffix that varied per turn would invalidate it.
+_HINT_SUFFIXES = (
+    ("destructive", " (modifies data — not reversible)"),
+    ("open_world", " (reaches systems outside this workspace)"),
+    ("read_only", " (read-only)"),
+)
+
+
+def describe_with_hints(description: str, hints: "ToolHints") -> str:
+    """`description` with at most one behaviour note appended."""
+    if not hints.declared:
+        return description or ""
+    for attr, suffix in _HINT_SUFFIXES:
+        if getattr(hints, attr):
+            base = (description or "").rstrip()
+            return base + suffix if not base.endswith(suffix) else base
+    return description or ""
+
+
+def tool_hints(tool, *, trusted: bool = True) -> ToolHints:
+    """The hints for one `Tool` or `VirtualTool`."""
+    ann = getattr(tool, "annotations", None)
+    if ann is None:
+        return ToolHints(declared=False, trusted=trusted)
+
+    def hint(name):
+        value = getattr(ann, name, None)
+        if value is None and isinstance(ann, dict):
+            value = ann.get(name)
+        return value
+
+    read_only = bool(hint("readOnlyHint"))
+    # "destructiveHint is meaningful only when readOnlyHint is false" — MCP.
+    destructive = (not read_only) and hint("destructiveHint") is not False
+    return ToolHints(
+        read_only=read_only,
+        destructive=destructive,
+        # Not inferred from read_only: reading the clock changes nothing and
+        # still answers differently every call. Only the server can say.
+        idempotent=bool(hint("idempotentHint")),
+        open_world=bool(hint("openWorldHint")),
+        declared=True,
+        trusted=trusted,
+    )
 
 
 #: Servers whose tools `"all"` does not cover — an agent has to name one of them
@@ -184,7 +270,8 @@ async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_
                 continue
             opt_in = session_key in OPT_IN_SERVERS
             if key in allowed or permits(allowed, name, opt_in=opt_in):
-                return VirtualTool(name, t.description, t.inputSchema)
+                return VirtualTool(name, t.description, t.inputSchema,
+                                   getattr(t, "annotations", None))
             return None
 
     for vt in build_virtual_tools():
@@ -299,7 +386,8 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
                 # every existing agent's list silently stop matching.
                 name = key or f"{session_name[len('ext_mcp_'):]}{SEP}{t.name}"
                 if permits(allowed_tools, name, opt_in=opt_in):
-                    all_tools.append(VirtualTool(name, t.description, t.inputSchema))
+                    all_tools.append(VirtualTool(name, t.description, t.inputSchema,
+                                                 getattr(t, "annotations", None)))
                 continue
 
             # A native tool an agent asked for *by its namespaced key*. This is
@@ -307,7 +395,8 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
             # e.g. code_vault_search__read_file_by_lines, whose repo-aware
             # implementation file_reader has always shadowed.
             if key is not None and key in allowed_tools:
-                all_tools.append(VirtualTool(key, t.description, t.inputSchema))
+                all_tools.append(VirtualTool(key, t.description, t.inputSchema,
+                                             getattr(t, "annotations", None)))
                 continue
 
             # Otherwise a native tool is declared under its bare name, but only
@@ -375,7 +464,7 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
             'type': 'function',
             'function': {
                 'name': t.name,
-                'description': t.description,
+                'description': describe_with_hints(t.description, tool_hints(t)),
                 'parameters': t.inputSchema
             }
         }
@@ -384,7 +473,8 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
     
     # String version for cloud models (system prompt injection)
     tools_json = str([
-        {'tool': t.name, 'description': t.description, 'schema': t.inputSchema}
+        {'tool': t.name, 'description': describe_with_hints(t.description, tool_hints(t)),
+         'schema': t.inputSchema}
         for t in all_tools
     ])
 

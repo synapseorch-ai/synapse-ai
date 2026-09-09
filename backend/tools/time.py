@@ -1,6 +1,6 @@
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import ToolAnnotations, Tool, TextContent
 from datetime import datetime, timedelta
 import calendar
 import zoneinfo
@@ -15,6 +15,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="get_datetime",
+            annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=False),
             description="""Get the current or future date as a 10-digit Unix timestamp based on natural language inputs.
 
 PARAMETER COMBINATIONS & LOGIC:

@@ -1,5 +1,5 @@
 
-from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
+from mcp.types import ToolAnnotations, Tool, TextContent, ImageContent, EmbeddedResource
 import mcp.types as types
 from mcp.server import Server
 import asyncio
@@ -157,6 +157,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="list_tables",
+            annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description="List all tables in a database. Provide db_id when multiple databases are linked.",
             inputSchema={
                 "type": "object",
@@ -165,6 +166,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_table_schema",
+            annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description="Get the detailed schema (columns, types, foreign keys) for specific table(s). Provide db_id when multiple databases are linked.",
             inputSchema={
                 "type": "object",
@@ -181,6 +183,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="run_sql_query",
+            annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
             description=(
                 "Execute a SQL query against a linked database. "
                 "Provide db_id when multiple databases are linked. "

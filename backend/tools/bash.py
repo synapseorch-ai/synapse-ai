@@ -115,6 +115,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="run_bash",
+            annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True),
             description=(
                 f"Run a shell command on the host system (OS: {_OS_LABEL}). "
                 f"The command executes in the specified working directory. "

@@ -515,6 +515,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="search_codebase",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Search indexed code repositories for relevant code snippets using semantic vector search. "
                 "Returns matching code with filename, location, and relevance score. "
@@ -554,6 +555,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="multi_repo_search",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Search across multiple indexed repos simultaneously and return globally ranked results. "
                 "Unlike search_codebase, repo_ids is optional — if omitted, ALL indexed repos are searched automatically. "
@@ -592,6 +594,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="find_similar_code",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Given a code snippet, find semantically similar code patterns across one or more repos. "
                 "Unlike search_codebase (which takes natural language), this embeds actual code — "
@@ -630,6 +633,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="list_indexed_files",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "List all files that have been embedded in the vector index for a repo, with their chunk counts. "
                 "Use this to discover what's covered by the index before searching, or to verify a specific file was indexed. "
@@ -652,6 +656,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_file_chunks",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Get all embedded chunks for a specific file — the semantic view of that file as seen by the index. "
                 "After finding a relevant file via search_codebase, use this to retrieve all its indexed segments "
@@ -674,6 +679,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="grep",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Search for a pattern inside a file or across all files in a folder (grep-like). "
                 "Pass a file path to search that file, or a folder path to search all matching files within it. "
@@ -699,6 +705,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="glob",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "List files under a folder matching a glob pattern. Returns paths relative to the provided folder. "
                 "IMPORTANT: `folder_path` must be an absolute path (e.g. from list_allowed_directories or list_directory)."
@@ -718,6 +725,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="read_file_by_lines",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "Read a specific range of lines from a file (1-indexed, inclusive). Returns the content, "
                 "start/end line numbers, and total line count. Use this instead of read_file when you only "

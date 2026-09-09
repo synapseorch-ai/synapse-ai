@@ -16,6 +16,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="parse_xlsx",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description="Parse an Excel file (XLSX) from a URL. Extracts sheets and converts them to Markdown tables.",
             inputSchema={
                 "type": "object",

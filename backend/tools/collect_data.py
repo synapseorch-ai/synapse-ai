@@ -30,6 +30,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="collect_data",
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
                 "**USE THIS TOOL TO REQUEST DATA FROM THE USER VIA A FORM.** "
                 "This tool displays a form in the chat interface where the user can enter their information. "

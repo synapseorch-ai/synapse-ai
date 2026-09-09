@@ -1166,6 +1166,10 @@ async def run_agent_step(
     if _memory_enabled:
         always_allowed |= set(MEMORY_TOOL_NAMES)  # injected via the memory flag, same reason
 
+    # name -> declaration, for the annotation-aware cache check below.
+    _tool_by_name = {getattr(t, 'name', None) or t.get('function', {}).get('name'): t
+                     for t in all_tools}
+
     MAX_PROMPT_CHARS = 400000
     MAX_TRUNCATION_RETRIES = 2
     MAX_PARSE_RETRIES = 1
@@ -1485,6 +1489,8 @@ async def run_agent_step(
 
                 # Apply sticky args
                 tool_schema = tool_schema_map.get(tool_name)
+                # The declaration itself — the cache reads its annotations.
+                _declared_tool = _tool_by_name.get(tool_name)
                 tool_args = _apply_sticky_args(session_id, tool_name, tool_args, tool_schema)
 
                 # ── browser_snapshot filename guard ────────────────────────────
@@ -1656,7 +1662,7 @@ async def run_agent_step(
                 # Side-effectful tools (bash, sql_agent, web_scraper, sandbox)
                 # are never cached — see core.cache.tool_cache.DETERMINISTIC_TOOLS.
                 from core.cache import tool_cache as _tool_cache
-                if _tool_cache.is_cacheable(tool_name):
+                if _tool_cache.is_cacheable(tool_name, _declared_tool):
                     _cached = _tool_cache.get(tool_name, tool_args, session_id=session_id)
                     if _cached is not None:
                         raw_output = _cached if isinstance(_cached, str) else json.dumps(_cached)
@@ -1784,7 +1790,7 @@ async def run_agent_step(
                     # reads instead of running a regex over `preview`.
                     for _saved in resource_events:
                         yield _saved
-                    if _tool_cache.is_cacheable(tool_name) and not raw_output.startswith('{"error"'):
+                    if _tool_cache.is_cacheable(tool_name, _declared_tool) and not raw_output.startswith('{"error"'):
                         _tool_cache.set(tool_name, tool_args, raw_output, session_id=session_id)
                     if post_tool_hook is not None:
                         async for _extra in post_tool_hook(tool_name, raw_output):
@@ -2049,7 +2055,7 @@ async def run_agent_step(
                     # MCP tool results are no longer embedded in ChromaDB
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
-                    if _tool_cache.is_cacheable(tool_name):
+                    if _tool_cache.is_cacheable(tool_name, _declared_tool):
                         _tool_cache.set(tool_name, tool_args, raw_output, session_id=session_id)
                     if post_tool_hook is not None:
                         async for _extra in post_tool_hook(tool_name, raw_output):
