@@ -1242,6 +1242,40 @@ export default function Home() {
         setStreamingActivity(`🔗 Merged ${data.input_count} results`);
         break;
 
+      // ── What the loop did to keep going ──────────────────────────────────
+      // All four are emitted by the engine and were dropped at the SSE route,
+      // so the only trace of a truncated answer or a discarded middle was that
+      // the reply read oddly. They are notes, not messages: nobody said them.
+      case 'truncated_output':
+        setMessages(prev => [...prev, {
+          role: 'assistant', msgType: 'note',
+          content: 'That answer hit the response limit. The agent was asked to carry on from where it stopped.',
+        }]);
+        return { done: false };
+
+      case 'context_trimmed':
+        setMessages(prev => [...prev, {
+          role: 'assistant', msgType: 'note',
+          content: `The conversation outgrew the model's context, so the middle of it was dropped${
+            data.chars_dropped ? ` (${Math.round((data.chars_dropped as number) / 1000)}k characters)` : ''
+          }. The start and the most recent turns are intact.`,
+        }]);
+        return { done: false };
+
+      case 'tool_call_unparsed':
+        setMessages(prev => [...prev, {
+          role: 'assistant', msgType: 'note',
+          content: 'The agent wrote a tool call that could not be read, and was asked for it again.',
+        }]);
+        return { done: false };
+
+      case 'tool_approval_replay':
+        setMessages(prev => [...prev, {
+          role: 'assistant', msgType: 'note',
+          content: `Running ${data.tool_name as string} — the call you approved.`,
+        }]);
+        return { done: false };
+
       case 'done':
         return { done: true };
 
@@ -1477,6 +1511,16 @@ export default function Home() {
           msg={msg}
           onCollectDataSubmit={handleCollectDataSubmit}
         />
+      );
+    }
+
+    // ── A quiet line: something the loop did, not something anyone said ──
+    if (msg.msgType === 'note') {
+      return (
+        <div key={idx} className="flex items-center gap-2 max-w-4xl py-0.5 pl-11 text-[11px] text-zinc-600 font-sans">
+          <span className="h-px w-4 bg-zinc-800 shrink-0" aria-hidden />
+          <span className="min-w-0">{msg.content}</span>
+        </div>
       );
     }
 

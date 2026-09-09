@@ -200,6 +200,14 @@ async def chat_stream(request: ChatRequest):
                     "loop_iteration", "loop_complete", "merge_complete",
                     "transform_result", "routing_decision",
                     "loop_limit_reached", "step_warning",
+                    # Things the loop does to keep going, which the person is
+                    # entitled to know about. All four were emitted by the
+                    # engine and dropped here, so the only visible trace of a
+                    # truncated answer or a discarded middle was that the reply
+                    # read oddly.
+                    "truncated_output", "context_trimmed",
+                    "tool_call_unparsed", "tool_approval_replay",
+                    "cancelled",
                 ):
                     yield f"data: {json.dumps(event, default=str)}\n\n"
 

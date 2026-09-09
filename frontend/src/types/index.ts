@@ -41,7 +41,10 @@ export type OrchMsgType =
     | 'step_start'
     | 'agent_step_result'
     | 'orchestration_complete'
-    | 'human_input_required';
+    | 'human_input_required'
+    /** A quiet line in the transcript: something the loop did to keep going.
+     *  Not the agent speaking, so it is not a bubble and carries no avatar. */
+    | 'note';
 
 export interface Message {
     role: 'user' | 'assistant';
