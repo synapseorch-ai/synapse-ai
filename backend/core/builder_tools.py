@@ -5,11 +5,9 @@ Provides CRUD operations on agents and orchestrations that the builder
 meta-agent can call to design and create multi-agent workflows.
 """
 import json
-import os
 import random
 import string
 import time
-import datetime
 from typing import Any
 
 from core.store import collections
@@ -19,6 +17,58 @@ from core.store.resources import load_mcp_servers
 def _random_id(prefix: str, length: int = 7) -> str:
     chars = string.ascii_lowercase + string.digits
     return prefix + ''.join(random.choices(chars, k=length))
+
+
+# ─── What the builder is allowed to see and touch ────────────────────────────
+# The builder is itself a seeded orchestration with sub-agents (`native_builder`),
+# and those rows live in the same store as the customer's own. They carry a
+# `system` marker, and every read path here filters on it: the builder must not
+# list, edit or delete its own machinery. Cloud additionally soft-deletes an
+# orchestration by stamping `is_active` false, which the engine's list does not
+# filter — so a retired orchestration is invisible here too, rather than being
+# resurrected by the next save.
+
+def _is_visible(resource: dict) -> bool:
+    """Whether a stored agent/orchestration is workspace content."""
+    if resource.get("system"):
+        return False
+    return resource.get("is_active", True) is not False
+
+
+async def _visible_orchestration(orch_id: str | None) -> dict | None:
+    """Point-load one orchestration, or None if it is missing or not ours to touch."""
+    if not orch_id:
+        return None
+    from core.store.resources import get_orchestration
+    orch = await get_orchestration(orch_id)
+    if orch is None or not _is_visible(orch):
+        return None
+    return orch
+
+
+def _refuse_ungated_transform(steps: list) -> dict | None:
+    """Refuse `transform` steps when this workspace has no code runtime.
+
+    Checked at authoring time rather than only at run time: a plan gate that
+    fires halfway through a run leaves the customer with a saved orchestration
+    that cannot complete. `code_execution_enabled` is set by the cloud's
+    per-plan settings binding; open-source installs run their own sandbox and
+    default to true.
+    """
+    from core.config import load_settings
+
+    if load_settings().get("code_execution_enabled", True):
+        return None
+    offenders = [s.get("id") or "?" for s in steps if s.get("type") == "transform"]
+    if not offenders:
+        return None
+    return {
+        "error": (
+            f"Transform steps run Python code, which this workspace's plan does not "
+            f"include: {offenders}. Use an `llm` step to reshape data, or upgrade the "
+            f"plan to run code."
+        )
+    }
 
 
 # ─── JSON-string boundary ────────────────────────────────────────────────────
@@ -739,8 +789,14 @@ async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -
 
 
 async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
-    from core.routes.agents import load_user_agents, save_user_agents
-    from core.routes.orchestrations import load_orchestrations, save_orchestrations
+    from core.routes.agents import load_user_agents
+    from core.routes.orchestrations import load_orchestrations
+    from core.store.resources import (
+        get_agent as _load_agent,
+        get_orchestration as _load_orch,
+        save_agent,
+        save_orchestration,
+    )
 
     if tool_name == "list_agents":
         agents = await load_user_agents()
@@ -754,19 +810,23 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                 "model": a.get("model"),
             }
             for a in agents
-            if a.get("type") != "builder"  # hide the builder itself
+            if not a.get("system")  # the builder's own machinery is not workspace content
         ]
 
     elif tool_name == "get_agent":
-        agents = await load_user_agents()
-        agent = next((a for a in agents if a["id"] == args["agent_id"]), None)
-        if not agent:
+        agent = await _load_agent(args["agent_id"])
+        if not agent or agent.get("system"):
             return {"error": f"Agent '{args['agent_id']}' not found"}
         return agent
 
     elif tool_name == "create_agent":
         agents = await load_user_agents()
-        new_id = f"agent_{int(time.time() * 1000)}"
+        existing_ids = {a.get("id") for a in agents}
+        # Guarantee uniqueness: the id is a primary key, and on cloud it is a
+        # global one. A millisecond timestamp collides under any concurrency.
+        new_id = _random_id("agent_", length=10)
+        while new_id in existing_ids:
+            new_id = _random_id("agent_", length=10)
         agent = {
             "id": new_id,
             "name": args["name"],
@@ -783,8 +843,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "max_turns": None,
             "delegate_agent_ids": args.get("delegate_agent_ids", []) or [],
         }
-        agents.append(agent)
-        await save_user_agents(agents)
+        await save_agent(agent)
         return {"status": "created", "agent": agent}
 
     elif tool_name == "create_agents":
@@ -794,6 +853,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         agents = await load_user_agents()
         existing_ids = {a.get("id") for a in agents}
         created = []
+        documents = []
         errors = []
         for i, spec in enumerate(specs):
             if not isinstance(spec, dict):
@@ -825,7 +885,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                     "max_turns": None,
                     "delegate_agent_ids": spec.get("delegate_agent_ids", []) or [],
                 }
-                agents.append(agent)
+                documents.append(agent)
                 created.append({
                     "role": spec.get("role"),
                     "id": new_id,
@@ -833,18 +893,20 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                     "type": agent["type"],
                     "repos": agent["repos"],
                 })
-        if created:
-            await save_user_agents(agents)
+        for document in documents:
+            await save_agent(document)
         return {"status": "created", "agents": created, "errors": errors}
 
     elif tool_name == "update_agent":
-        agents = await load_user_agents()
-        idx = next((i for i, a in enumerate(agents) if a["id"] == args["agent_id"]), None)
-        if idx is None:
+        agent = await _load_agent(args["agent_id"])
+        if not agent:
             return {"error": f"Agent '{args['agent_id']}' not found"}
-        agents[idx].update(args.get("fields", {}))
-        await save_user_agents(agents)
-        return {"status": "updated", "agent": agents[idx]}
+        if agent.get("system"):
+            return {"error": f"Agent '{args['agent_id']}' is part of the builder itself and cannot be edited."}
+        agent.update(args.get("fields", {}))
+        agent["id"] = args["agent_id"]  # the id is not patchable
+        await save_agent(agent)
+        return {"status": "updated", "agent": agent}
 
     elif tool_name == "list_all_tools":
         server_filter = (args.get("server_name") or "").strip()
@@ -870,9 +932,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             else:
                 from core.tools import aggregate_all_tools
                 from core.routes.tools import load_custom_tools
-                from core.routes.agents import load_user_agents as _lau
-                _agents = _lau()
-                active_agent = next((a for a in _agents if a.get("type") != "builder"), _agents[0] if _agents else {})
+                _agents = await load_user_agents()
+                active_agent = next((a for a in _agents if not a.get("system")), _agents[0] if _agents else {})
                 custom_tools = await load_custom_tools()
                 all_tools, _, _, _ = await aggregate_all_tools(
                     server_module, active_agent, custom_tools
@@ -888,9 +949,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         try:
             from core.tools import aggregate_all_tools
             from core.routes.tools import load_custom_tools
-            from core.routes.agents import load_user_agents as _lau
-            _agents = _lau()
-            active_agent = next((a for a in _agents if a.get("type") != "builder"), _agents[0] if _agents else {})
+            _agents = await load_user_agents()
+            active_agent = next((a for a in _agents if not a.get("system")), _agents[0] if _agents else {})
             custom_tools = await load_custom_tools()
             all_tools, _, _, _ = await aggregate_all_tools(
                 server_module, active_agent, custom_tools
@@ -992,18 +1052,20 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                 "step_count": len(o.get("steps", [])),
             }
             for o in orchs
+            if _is_visible(o)
         ]
 
     elif tool_name == "get_orchestration":
-        orchs = await load_orchestrations()
-        orch = next((o for o in orchs if o["id"] == args["orch_id"]), None)
-        if not orch:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         return orch
 
     elif tool_name == "create_orchestration":
-        orchs = await load_orchestrations()
+        existing_ids = {o.get("id") for o in await load_orchestrations()}
         orch_id = _random_id("orch_")
+        while orch_id in existing_ids:
+            orch_id = _random_id("orch_")
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         _normalize_state_schema_arg(args)
@@ -1012,6 +1074,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         if not isinstance(steps, list) or not steps:
             return {"error": "steps_json must decode to a non-empty JSON array of step objects"}
         steps = _fill_step_defaults(steps)
+        refused = _refuse_ungated_transform(steps)
+        if refused:
+            return refused
 
         orch = {
             "id": orch_id,
@@ -1028,14 +1093,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "created_at": now,
             "updated_at": now,
         }
-        orchs.append(orch)
-        await save_orchestrations(orchs)
+        await save_orchestration(orch)
         return {"status": "created", "orchestration": orch}
 
     elif tool_name == "update_orchestration":
-        orchs = await load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         # update_orchestration now accepts flat top-level fields (like the other
         # builder tools), falling back to legacy `fields` for back-compat.
@@ -1049,18 +1112,23 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         _normalize_steps_arg(fields)
         if "steps" in fields and isinstance(fields["steps"], list):
             fields["steps"] = _fill_step_defaults(fields["steps"])
+            refused = _refuse_ungated_transform(fields["steps"])
+            if refused:
+                return refused
         if not fields or set(fields.keys()) - {"orch_id"} == set():
             return {"error": "no updatable fields supplied"}
         # Drop orch_id if it snuck in
         fields.pop("orch_id", None)
-        orchs[idx].update(fields)
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestrations(orchs)
-        return {"status": "updated", "orchestration": orchs[idx]}
+        orch.update(fields)
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(orch)
+        return {"status": "updated", "orchestration": orch}
 
     elif tool_name == "create_orchestration_skeleton":
-        orchs = await load_orchestrations()
+        existing_ids = {o.get("id") for o in await load_orchestrations()}
         orch_id = _random_id("orch_")
+        while orch_id in existing_ids:
+            orch_id = _random_id("orch_")
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _normalize_state_schema_arg(args)
         orch = {
@@ -1078,14 +1146,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "created_at": now,
             "updated_at": now,
         }
-        orchs.append(orch)
-        await save_orchestrations(orchs)
+        await save_orchestration(orch)
         return {"status": "created", "orchestration": orch}
 
     elif tool_name == "add_steps":
-        orchs = await load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         raw_steps = args.get("steps_json", args.get("steps", ""))
         _normalize_steps_arg(args)
@@ -1098,7 +1164,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                          f"Received: {preview}... "
                          f"Hint: ensure all inner quotes are escaped as \\\" and inner *_json values use \\\\\\\" for their quotes."
             }
-        existing = orchs[idx].get("steps", []) or []
+        existing = orch.get("steps", []) or []
         existing_ids = {s.get("id") for s in existing}
         incoming_ids = [s.get("id") for s in new_steps if s.get("id")]
         dup = existing_ids.intersection(incoming_ids)
@@ -1108,25 +1174,27 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         # pattern past any existing steps.
         offset = len(existing)
         filled = _fill_step_defaults(new_steps)
+        refused = _refuse_ungated_transform(filled)
+        if refused:
+            return refused
         for i, s in enumerate(filled):
             s["position_x"] = _POS_X_START + (offset + i) * _POS_X_STEP
             s["position_y"] = _zigzag_y(offset + i)
-        orchs[idx]["steps"] = existing + filled
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestrations(orchs)
+        orch["steps"] = existing + filled
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(orch)
         return {
             "status": "appended",
             "added_step_ids": [s["id"] for s in filled],
-            "total_steps": len(orchs[idx]["steps"]),
+            "total_steps": len(orch["steps"]),
         }
 
     elif tool_name == "add_single_step":
         # Flat-parameter tool: assemble a step dict from individual args,
         # then reuse the same pipeline as add_steps.
-        orchs = await load_orchestrations()
         orch_id = args.get("orch_id")
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == orch_id), None)
-        if idx is None:
+        orch = await _visible_orchestration(orch_id)
+        if orch is None:
             return {"error": f"Orchestration '{orch_id}' not found"}
 
         step_id = args.get("step_id")
@@ -1138,7 +1206,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             return {"error": "name and type are required"}
 
         # Check duplicate
-        existing = orchs[idx].get("steps", []) or []
+        existing = orch.get("steps", []) or []
         if any(s.get("id") == step_id for s in existing):
             return {"error": f"Duplicate step id: {step_id}"}
 
@@ -1154,32 +1222,34 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         # Normalize *_json fields (route_map_json → route_map, etc.)
         step = _normalize_step_inputs(step)
         filled = _fill_step_defaults([step])
+        refused = _refuse_ungated_transform(filled)
+        if refused:
+            return refused
         # Position continues the zig-zag past any existing steps.
         offset = len(existing)
         filled[0]["position_x"] = _POS_X_START + offset * _POS_X_STEP
         filled[0]["position_y"] = _zigzag_y(offset)
-        orchs[idx]["steps"] = existing + filled
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestrations(orchs)
+        orch["steps"] = existing + filled
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(orch)
         return {
             "status": "step_added",
             "step_id": filled[0]["id"],
-            "total_steps": len(orchs[idx]["steps"]),
+            "total_steps": len(orch["steps"]),
         }
 
     elif tool_name == "add_multiple_steps":
         # Batch version of add_single_step — takes a native array of step objects.
-        orchs = await load_orchestrations()
         orch_id = args.get("orch_id")
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == orch_id), None)
-        if idx is None:
+        orch = await _visible_orchestration(orch_id)
+        if orch is None:
             return {"error": f"Orchestration '{orch_id}' not found"}
 
         raw_steps = args.get("steps") or []
         if not isinstance(raw_steps, list) or not raw_steps:
             return {"error": "steps must be a non-empty array of step objects"}
 
-        existing = orchs[idx].get("steps", []) or []
+        existing = orch.get("steps", []) or []
         existing_ids = {s.get("id") for s in existing}
 
         processed = []
@@ -1199,23 +1269,25 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             processed.append(step)
 
         filled = _fill_step_defaults(processed)
+        refused = _refuse_ungated_transform(filled)
+        if refused:
+            return refused
         offset = len(existing)
         for i, s in enumerate(filled):
             s["position_x"] = _POS_X_START + (offset + i) * _POS_X_STEP
             s["position_y"] = _zigzag_y(offset + i)
-        orchs[idx]["steps"] = existing + filled
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestrations(orchs)
+        orch["steps"] = existing + filled
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(orch)
         return {
             "status": "steps_added",
             "added_step_ids": [s["id"] for s in filled],
-            "total_steps": len(orchs[idx]["steps"]),
+            "total_steps": len(orch["steps"]),
         }
 
     elif tool_name == "set_orchestration_meta":
-        orchs = await load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         # Accept flat top-level fields (preferred); legacy `fields` wrapper still
         # works for callers that haven't migrated yet.
@@ -1229,52 +1301,52 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         fields = {k: v for k, v in raw_fields.items() if k in allowed}
         if not fields:
             return {"error": f"No allowed meta fields to set. Allowed: {sorted(allowed)}"}
-        orchs[idx].update(fields)
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestrations(orchs)
+        orch.update(fields)
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(orch)
         return {"status": "meta_updated", "fields": list(fields.keys())}
 
     elif tool_name == "update_step":
-        orchs = await load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         step_id = args["step_id"]
         patch = _normalize_patch_arg(args)
         if not isinstance(patch, dict) or not patch:
             return {"error": "patch_json must decode to a non-empty JSON object of step fields"}
-        steps = orchs[idx].get("steps", []) or []
+        steps = orch.get("steps", []) or []
         sidx = next((i for i, s in enumerate(steps) if s.get("id") == step_id), None)
         if sidx is None:
             return {"error": f"Step '{step_id}' not found in orchestration '{args['orch_id']}'"}
         merged = {**steps[sidx], **patch}
         merged["id"] = step_id  # id is immutable via patch
         steps[sidx] = _fill_step_defaults([merged])[0]
-        orchs[idx]["steps"] = steps
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestrations(orchs)
+        refused = _refuse_ungated_transform([steps[sidx]])
+        if refused:
+            return refused
+        orch["steps"] = steps
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(orch)
         return {"status": "step_updated", "step": steps[sidx]}
 
     elif tool_name == "remove_step":
-        orchs = await load_orchestrations()
-        idx = next((i for i, o in enumerate(orchs) if o["id"] == args["orch_id"]), None)
-        if idx is None:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         step_id = args["step_id"]
-        steps = orchs[idx].get("steps", []) or []
+        steps = orch.get("steps", []) or []
         before = len(steps)
         steps = [s for s in steps if s.get("id") != step_id]
         if len(steps) == before:
             return {"error": f"Step '{step_id}' not found in orchestration '{args['orch_id']}'"}
-        orchs[idx]["steps"] = steps
-        orchs[idx]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestrations(orchs)
+        orch["steps"] = steps
+        orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        await save_orchestration(orch)
         return {"status": "step_removed", "step_id": step_id, "remaining_steps": len(steps)}
 
     elif tool_name == "validate_orchestration":
-        orchs = await load_orchestrations()
-        orch = next((o for o in orchs if o["id"] == args["orch_id"]), None)
-        if not orch:
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         return _validate_orchestration(orch)
 
