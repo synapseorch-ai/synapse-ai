@@ -43,6 +43,12 @@ const WELCOME: BuilderMessage = {
         '- *"Change the research workflow to ask me before it sends anything"*',
 };
 
+function newSessionId(): string {
+    return typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : String(Date.now());
+}
+
 interface OpenOptions {
     currentOrchestrationId?: string | null;
 }
@@ -82,9 +88,14 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     // this one" means this one. Held in a ref: it is read when a message is
     // sent, and changing it should not re-render the panel.
     const currentOrchestrationId = useRef<string | null>(null);
-    const clientSessionId = useRef<string>(
-        typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
-    );
+    // Minted on first use, not during render: `crypto.randomUUID()` and
+    // `Date.now()` are both impure, and a render that runs twice would
+    // otherwise produce two conversations.
+    const clientSessionId = useRef<string | null>(null);
+    const conversationId = useCallback(() => {
+        clientSessionId.current ??= newSessionId();
+        return clientSessionId.current;
+    }, []);
     const abortRef = useRef<AbortController | null>(null);
 
     useEffect(() => {
@@ -122,8 +133,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
 
     const newConversation = useCallback(() => {
         abortRef.current?.abort();
-        clientSessionId.current =
-            typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+        clientSessionId.current = newSessionId();
         setState(emptyBuilderState([WELCOME]));
         setStreaming(false);
     }, []);
@@ -209,7 +219,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                               can_create_agents: true,
                               model: sessionModel || undefined,
                               current_orchestration_id: currentOrchestrationId.current,
-                              client_session_id: clientSessionId.current,
+                              client_session_id: conversationId(),
                           }),
                       });
 
@@ -232,7 +242,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 abortRef.current = null;
             }
         },
-        [consume, sessionModel, state.messages, state.pending, streaming],
+        [consume, conversationId, sessionModel, state.messages, state.pending, streaming],
     );
 
     const saveBuilderModel = useCallback(async (model: string) => {
