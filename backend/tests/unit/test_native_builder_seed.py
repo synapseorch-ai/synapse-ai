@@ -30,7 +30,8 @@ class TestTheBundle:
         re-seed matches on the role. A missing one would orphan that agent."""
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
-            "agent_creator", "analyst", "orchestrator", "saver_create", "saver_update",
+            "agent_creator", "analyst", "operator", "orchestrator",
+            "saver_create", "saver_update",
         ]
 
     def test_the_version_is_stable_and_moves_with_the_content(self):
@@ -70,7 +71,7 @@ class TestSeeding:
     async def test_it_installs_the_builder(self):
         result = await seed_native_builder()
         assert result["orchestration"] == "added"
-        assert len(result["agents_added"]) == 5
+        assert len(result["agents_added"]) == 6
         assert result["version"] == bundle_version()
 
         from core.store.resources import get_orchestration
@@ -139,3 +140,58 @@ class TestItStaysOutOfSight:
         exported = (await client.get("/api/export/data")).json()
         assert [o["id"] for o in exported["orchestrations"]] == ["orch_mine"]
         assert [a["id"] for a in exported["agents"]] == ["agent_mine"]
+
+
+class TestOnlyTheOperatorCanDestroy:
+    """Two layers guard a deletion. `confirm=true` is one; this is the other,
+    and it is the one that matters — the operator runs only after a human has
+    read a plan that named the deletion and approved it."""
+
+    DESTRUCTIVE = {"delete_agent", "delete_orchestration", "delete_custom_tool", "delete_schedule"}
+
+    def test_no_other_sub_agent_holds_a_delete(self):
+        for agent in bundled_definitions()["agents"]:
+            if agent["system_role"] == "operator":
+                continue
+            held = self.DESTRUCTIVE & set(agent.get("tools") or [])
+            assert not held, f"{agent['system_role']} holds {held}"
+
+    def test_the_operator_holds_all_of_them(self):
+        operator = next(
+            a for a in bundled_definitions()["agents"] if a["system_role"] == "operator"
+        )
+        assert self.DESTRUCTIVE <= set(operator["tools"])
+
+    def test_nothing_inherits_the_default_tool_set_by_accident(self):
+        """A sub-agent that does not skip the defaults gets every tool in the
+        workspace on top of its declared list — which for the operator would
+        mean tools no plan ever mentioned."""
+        for agent in bundled_definitions()["agents"]:
+            if not agent.get("tools"):
+                continue  # the orchestrator shell declares none and runs none
+            assert agent.get("skip_default_tools") is True, agent["system_role"]
+
+    def test_the_operator_is_reached_only_through_a_human_approval(self):
+        """The path to it: plan → human → router → operator. Remove the human
+        step and the builder can delete things unprompted."""
+        orch = bundled_definitions()["orchestration"]
+        by_id = {s["id"]: s for s in orch["steps"]}
+        operator_step = next(
+            s for s in orch["steps"] if s.get("agent_id") == "agent_native_builder_operator"
+        )
+
+        # Who can reach the operator's step?
+        reaching = [
+            s for s in orch["steps"]
+            if operator_step["id"] in
+            [s.get("next_step_id"), *(s.get("route_map") or {}).values()]
+        ]
+        assert reaching, "nothing reaches the operator"
+        for step in reaching:
+            # Every route in is a router whose own input came from a human step.
+            assert step["type"] == "evaluator", step["id"]
+            feeders = [
+                s for s in orch["steps"]
+                if step["id"] in [s.get("next_step_id"), *(s.get("route_map") or {}).values()]
+            ]
+            assert any(by_id[f["id"]]["type"] == "human" for f in feeders), step["id"]

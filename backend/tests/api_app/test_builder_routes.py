@@ -206,19 +206,19 @@ class TestSeeHowImBuilt:
         legend = (await client.get("/api/builder/legend")).json()
 
         assert legend["name"] == "Synapse AI Builder"
-        assert legend["step_count"] == 15
+        assert legend["step_count"] == 19
         assert legend["entry_step"]["type"] == "evaluator"
-        assert {r["label"] for r in legend["routes"]} == {"create", "update"}
-        assert len(legend["human_gates"]) == 2
+        assert {r["label"] for r in legend["routes"]} == {"create", "update", "manage"}
+        assert len(legend["human_gates"]) == 3
         assert {a["role"] for a in legend["agents"]} == {
-            "analyst", "agent_creator", "saver_create", "saver_update",
+            "analyst", "agent_creator", "saver_create", "saver_update", "operator",
         }
         assert "evaluator" in legend["step_types"]
 
     async def test_duplicating_gives_the_workspace_an_editable_copy(self, client, builder):
         result = (await client.post("/api/builder/duplicate")).json()
         assert result["status"] == "created"
-        assert len(result["agent_ids"]) == 5
+        assert len(result["agent_ids"]) == 6
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])
