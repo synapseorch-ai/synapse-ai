@@ -3,6 +3,11 @@ Native Builder — Synapse's AI Builder implemented as a real orchestration.
 
 This package holds the seed JSON definitions (orchestration + sub-agents) and
 the idempotent seeding function used at startup. See seed.py.
+
+⚠ When `orchestration.json` changes shape — a step added, a route renamed —
+re-run `node scripts/shoot-builder.mjs` against a scratch instance. It produces
+the picture the "See how I'm built" modal shows, and nothing else notices when
+that picture starts describing a builder we no longer ship.
 """
 from .seed import (
     NATIVE_BUILDER_AGENT_ID,
