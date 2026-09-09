@@ -105,3 +105,108 @@ class TestResumeFailed:
         from core.orchestration.engine import OrchestrationEngine
         with pytest.raises(FileNotFoundError):
             await _collect(OrchestrationEngine.resume_failed("no_such_run", _server()))
+
+
+class TestModelOverride:
+    """One model for a whole run, chosen by the caller, carried in the state.
+
+    It rides in shared_state rather than a `run()` argument because the state
+    is checkpointed: a run that pauses on a human step and resumes on another
+    worker has to come back on the model the user picked, not on whatever each
+    step happens to name.
+    """
+
+    def _orch(self):
+        from core.models_orchestration import Orchestration
+        return Orchestration.model_validate(S.make_orchestration(steps=[
+            {"id": "step_1", "name": "Think", "type": "llm", "model": "its-own-model",
+             "prompt_template": "hi", "output_key": "out", "next_step_id": "step_2"},
+            {"id": "step_2", "name": "Ask", "type": "human", "human_prompt": "?",
+             "human_fields": [{"name": "answer", "type": "textarea", "label": "A"}],
+             "output_key": "answer", "next_step_id": "step_3"},
+            {"id": "step_3", "name": "End", "type": "end"},
+        ], entry_step_id="step_1"))
+
+    def test_it_reaches_every_llm_backed_step_and_skips_the_rest(self):
+        from core.orchestration.engine import apply_model_override
+
+        orch = self._orch()
+        apply_model_override(orch, "chosen-model")
+
+        by_id = {s.id: s for s in orch.steps}
+        assert by_id["step_1"].model == "chosen-model"   # overrides the step's own
+        assert by_id["step_2"].model is None             # human step runs no LLM
+        assert by_id["step_3"].model is None             # nor does an end step
+
+    def test_no_choice_leaves_every_step_as_authored(self):
+        from core.orchestration.engine import apply_model_override
+
+        orch = self._orch()
+        apply_model_override(orch, None)
+        assert {s.id: s.model for s in orch.steps}["step_1"] == "its-own-model"
+
+    async def test_a_run_stamps_it_from_the_initial_state(self, tmp_path):
+        import core.server as server
+        from core.orchestration.engine import OrchestrationEngine
+
+        engine = OrchestrationEngine(self._orch(), server)
+        events = [
+            e async for e in engine.run(
+                initial_input="go", run_id="run_override",
+                initial_state={OrchestrationEngine.MODEL_OVERRIDE_KEY: "chosen-model"},
+            )
+        ]
+        assert any(e["type"] == "human_input_required" for e in events)
+        assert {s.id: s.model for s in engine.orch.steps}["step_1"] == "chosen-model"
+
+    async def test_a_resume_reapplies_it_from_the_checkpoint(self):
+        """The failure this prevents: the second half of a builder conversation
+        silently running on a different model from the first."""
+        import core.server as server
+        from core.orchestration.engine import OrchestrationEngine
+        from core.orchestration.state import SharedState
+
+        orch = self._orch()
+        engine = OrchestrationEngine(orch, server)
+        async for _ in engine.run(
+            initial_input="go", run_id="run_override2",
+            initial_state={OrchestrationEngine.MODEL_OVERRIDE_KEY: "chosen-model"},
+        ):
+            pass
+
+        run = (await SharedState.restore("run_override2")).run
+        assert run.shared_state[OrchestrationEngine.MODEL_OVERRIDE_KEY] == "chosen-model"
+
+        # Resume loads the definition fresh from the store, so every step comes
+        # back with its authored model unless the override is re-applied.
+        await S.seed_orchestrations([S.make_orchestration(id=orch.id, steps=[
+            s.model_dump(mode="json") for s in self._orch().steps
+        ], entry_step_id="step_1")])
+
+        async for event in OrchestrationEngine.resume("run_override2", {"answer": "yes"}, server):
+            if event.get("type") in ("orchestration_complete", "orchestration_error"):
+                break
+
+        # The definition the resumed engine ran, not the one we started with.
+        from core.scale.context import resolve_orchestration
+        from core.models_orchestration import Orchestration
+
+        reloaded = Orchestration.model_validate(await resolve_orchestration(orch.id))
+        assert {s.id: s.model for s in reloaded.steps}["step_1"] == "its-own-model"
+
+        engines: list = []
+        real_init = OrchestrationEngine.__init__
+
+        def _spy(self, orchestration, *args, **kwargs):
+            engines.append(orchestration)
+            return real_init(self, orchestration, *args, **kwargs)
+
+        import pytest as _pytest
+        with _pytest.MonkeyPatch.context() as mp:
+            mp.setattr(OrchestrationEngine, "__init__", _spy)
+            async for event in OrchestrationEngine.resume("run_override2", {"answer": "yes"}, server):
+                if event.get("type") in ("orchestration_complete", "orchestration_error"):
+                    break
+
+        assert engines, "resume built no engine"
+        assert {s.id: s.model for s in engines[0].steps}["step_1"] == "chosen-model"

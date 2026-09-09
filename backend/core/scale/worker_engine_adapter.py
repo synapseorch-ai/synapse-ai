@@ -18,7 +18,7 @@ path for that reason.
 from typing import AsyncGenerator
 
 from core.models_orchestration import Orchestration, OrchestrationRun
-from core.orchestration.engine import OrchestrationEngine
+from core.orchestration.engine import OrchestrationEngine, apply_model_override
 from core.scale.pubsub import RunEventPublisher, is_cancelled, clear_cancellation
 
 
@@ -154,6 +154,12 @@ class WorkerEngineAdapter:
         restored = await SharedState.restore(self._run_id)
         run = restored.run
         _log.debug(f"[adapter.resume] 📋 restored: status={run.status} current_step_id={run.current_step_id!r} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}")
+
+        # The model the run was started with, re-applied from the checkpoint.
+        # This is the whole reason the override rides in shared_state: the
+        # worker resuming is rarely the worker that paused, and it loaded
+        # `self._orch` fresh from Postgres with every step's own model.
+        apply_model_override(self._orch, run.shared_state.get(OrchestrationEngine.MODEL_OVERRIDE_KEY))
 
         # Build engine using self._orch (Postgres-loaded) so step_map is always populated.
         engine = self._build_engine()

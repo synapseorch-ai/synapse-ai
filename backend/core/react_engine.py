@@ -1668,10 +1668,13 @@ async def run_agent_step(
                 # ===== NATIVE BUILDER TOOLS =====
                 # Registered as first-class tools in aggregate_all_tools. Any
                 # agent that declares these in its `tools` list lands here.
-                from core.builder_tools import BUILDER_TOOL_NAMES, execute_builder_tool
+                from core.builder_tools import BUILDER_TOOL_NAMES, execute_builder_tool_with_events
                 if tool_name in BUILDER_TOOL_NAMES:
+                    resource_events: list[dict] = []
                     try:
-                        raw_output = await execute_builder_tool(tool_name, tool_args, server_module)
+                        raw_output, resource_events = await execute_builder_tool_with_events(
+                            tool_name, tool_args, server_module
+                        )
                     except Exception as e:
                         raw_output = json.dumps({"error": str(e)})
                     current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
@@ -1679,6 +1682,11 @@ async def run_agent_step(
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
                     _log.debug(f"🏗 Builder tool ({tool_name}): {preview}")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
+                    # What the tool actually changed, in full, after the
+                    # truncated preview the model sees. This is what the panel
+                    # reads instead of running a regex over `preview`.
+                    for _saved in resource_events:
+                        yield _saved
                     if _tool_cache.is_cacheable(tool_name) and not raw_output.startswith('{"error"'):
                         _tool_cache.set(tool_name, tool_args, raw_output, session_id=session_id)
                     if post_tool_hook is not None:

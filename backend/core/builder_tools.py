@@ -1129,14 +1129,49 @@ BUILDER_TOOL_NAMES = {t["function"]["name"] for t in BUILDER_TOOL_SCHEMAS}
 
 async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -> str:
     """Dispatch a builder tool call and return a JSON string result."""
+    output, _events = await execute_builder_tool_with_events(tool_name, args, server_module)
+    return output
+
+
+async def execute_builder_tool_with_events(
+    tool_name: str, args: dict, server_module: Any
+) -> tuple[str, list[dict]]:
+    """Dispatch a builder tool, returning its JSON result *and* what it changed.
+
+    The result string is what the model reads, so it stays lean. The events are
+    what the UI reads, so they carry the whole resource. Keeping them separate
+    is the point: the panel used to recover "an orchestration was saved" by
+    running a regex over a 500-character truncation of the result, which failed
+    on any orchestration big enough to be worth building.
+    """
+    events: list[dict] = []
     try:
-        result = await _dispatch(tool_name, args, server_module)
-        return json.dumps(result, default=str)
+        result = await _dispatch(tool_name, args, server_module, events)
+        return json.dumps(result, default=str), events
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return json.dumps({"error": str(e)}), []
 
 
-async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
+def _emit(
+    events: list[dict],
+    kind: str,
+    action: str,
+    resource_id: str | None,
+    name: str | None,
+    resource: Any = None,
+) -> None:
+    """Record that the builder changed something the workspace can see."""
+    events.append({
+        "type": "resource_saved",
+        "kind": kind,           # agent | orchestration | tool | skill | schedule
+        "action": action,       # created | updated | deleted
+        "id": resource_id,
+        "name": name,
+        "resource": resource,
+    })
+
+
+async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list[dict]) -> Any:
     from core.routes.agents import load_user_agents
     from core.routes.orchestrations import load_orchestrations
     from core.store.resources import (
@@ -1192,6 +1227,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "delegate_agent_ids": args.get("delegate_agent_ids", []) or [],
         }
         await save_agent(agent)
+        _emit(events, "agent", "created", agent["id"], agent["name"], agent)
         return {"status": "created", "agent": agent}
 
     elif tool_name == "create_agents":
@@ -1243,6 +1279,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
                 })
         for document in documents:
             await save_agent(document)
+            _emit(events, "agent", "created", document["id"], document["name"], document)
         return {"status": "created", "agents": created, "errors": errors}
 
     elif tool_name == "update_agent":
@@ -1254,6 +1291,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         agent.update(args.get("fields", {}))
         agent["id"] = args["agent_id"]  # the id is not patchable
         await save_agent(agent)
+        _emit(events, "agent", "updated", agent["id"], agent.get("name"), agent)
         return {"status": "updated", "agent": agent}
 
     elif tool_name == "list_all_tools":
@@ -1442,6 +1480,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "updated_at": now,
         }
         await save_orchestration(orch)
+        _emit(events, "orchestration", "created", orch["id"], orch["name"], orch)
         return {"status": "created", "orchestration": orch}
 
     elif tool_name == "update_orchestration":
@@ -1470,6 +1509,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         orch.update(fields)
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(orch)
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "updated", "orchestration": orch}
 
     elif tool_name == "create_orchestration_skeleton":
@@ -1495,6 +1535,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             "updated_at": now,
         }
         await save_orchestration(orch)
+        _emit(events, "orchestration", "created", orch["id"], orch["name"], orch)
         return {"status": "created", "orchestration": orch}
 
     elif tool_name == "add_steps":
@@ -1531,6 +1572,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         orch["steps"] = existing + filled
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(orch)
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {
             "status": "appended",
             "added_step_ids": [s["id"] for s in filled],
@@ -1580,6 +1622,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         orch["steps"] = existing + filled
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(orch)
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {
             "status": "step_added",
             "step_id": filled[0]["id"],
@@ -1627,6 +1670,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         orch["steps"] = existing + filled
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(orch)
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {
             "status": "steps_added",
             "added_step_ids": [s["id"] for s in filled],
@@ -1652,6 +1696,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         orch.update(fields)
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(orch)
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "meta_updated", "fields": list(fields.keys())}
 
     elif tool_name == "update_step":
@@ -1675,6 +1720,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         orch["steps"] = steps
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(orch)
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "step_updated", "step": steps[sidx]}
 
     elif tool_name == "remove_step":
@@ -1690,6 +1736,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         orch["steps"] = steps
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(orch)
+        _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "step_removed", "step_id": step_id, "remaining_steps": len(steps)}
 
     elif tool_name == "validate_orchestration":
@@ -1752,6 +1799,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         if body_template:
             tool["body_template"] = body_template
         await save_tool(tool)
+        _emit(events, "tool", "created", name, name, tool)
         return {"status": "created", "id": name, "name": name}
 
     elif tool_name == "import_openapi":
@@ -1788,6 +1836,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             t["group"] = group["id"]
         await _upsert_group(group)
         await save_tools(generated)
+        # One event for the import, not one per operation: a 60-endpoint spec
+        # would otherwise fill the panel with sixty identical banners.
+        _emit(events, "tool", "created", group["id"], group_name,
+              {"group": group, "count": len(generated), "names": [t["name"] for t in generated]})
         return {
             "status": "imported",
             "id": group["id"],
@@ -1804,6 +1856,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         name = str(args.get("name") or "")
         if not await delete_tool(name):
             return {"error": f"Custom tool '{name}' not found"}
+        _emit(events, "tool", "deleted", name, name)
         return {"status": "deleted", "id": name, "name": name}
 
     # ── Skills ───────────────────────────────────────────────────────────────
@@ -1837,6 +1890,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             return {"error": "description is required — it is how an agent decides to load the skill"}
         document = {"id": name, "name": name, "description": description, "body": body}
         await skills_mod.save_library([s for s in library if (s.get("name") or s.get("id")) != name] + [document])
+        _emit(events, "skill", "updated" if existing else "created", name, name, document)
         return {
             "status": "updated" if existing else "created",
             "id": name,
@@ -1859,6 +1913,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         agent["skills"] = wanted
         agent["id"] = args["agent_id"]
         await save_agent(agent)
+        _emit(events, "agent", "updated", agent["id"], agent.get("name"), agent)
         return {"status": "updated", "id": agent["id"], "name": agent.get("name"), "skills": wanted}
 
     # ── Schedules ────────────────────────────────────────────────────────────
@@ -1921,6 +1976,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         except Exception as exc:
             return {"error": f"Could not work out when that would next run: {exc}"}
         await schedule_store.save(schedule)
+        _emit(events, "schedule", "created", schedule["id"], schedule["name"], schedule)
         return {
             "status": "created",
             "id": schedule["id"],
@@ -1937,6 +1993,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             return {"error": f"Schedule '{schedule_id}' not found"}
         schedule["enabled"] = bool(args.get("enabled"))
         await schedule_store.save(schedule)
+        _emit(events, "schedule", "updated", schedule_id, schedule.get("name"), schedule)
         return {
             "status": "updated",
             "id": schedule_id,
@@ -1955,6 +2012,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         if schedule is None:
             return {"error": f"Schedule '{schedule_id}' not found"}
         await schedule_store.delete_one(schedule_id)
+        _emit(events, "schedule", "deleted", schedule_id, schedule.get("name"))
         return {"status": "deleted", "id": schedule_id, "name": schedule.get("name")}
 
     # ── Variables and runs ───────────────────────────────────────────────────
@@ -2017,6 +2075,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
             for s in (o.get("steps") or []) if s.get("agent_id") == agent_id
         ]
         await _delete_agent(agent_id)
+        _emit(events, "agent", "deleted", agent_id, agent.get("name"))
         return {
             "status": "deleted",
             "id": agent_id,
@@ -2035,6 +2094,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         if orch is None:
             return {"error": f"Orchestration '{orch_id}' not found"}
         await _delete_orch(orch_id)
+        _emit(events, "orchestration", "deleted", orch_id, orch.get("name"))
         return {"status": "deleted", "id": orch_id, "name": orch.get("name")}
 
     else:

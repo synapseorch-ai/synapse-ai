@@ -39,6 +39,25 @@ def _seconds_since(iso_timestamp: str | None) -> float | None:
 MAX_NESTED_DEPTH = 3
 
 
+#: Step types with no model to override: they run no LLM at all.
+_MODEL_FREE_STEP_TYPES = {"end", "human", "merge", "parallel", "loop", "print", "transform"}
+
+
+def apply_model_override(orchestration: "Orchestration", model: str | None) -> None:
+    """Point every LLM-backed step at `model`, in place.
+
+    A per-run choice expressed through the per-step field the engine already
+    reads, so nothing downstream needs to learn about it. A step that names its
+    own model is overridden too — the caller picking a model for the run means
+    the run, not "the steps that had not decided".
+    """
+    if not model:
+        return
+    for step in orchestration.steps:
+        if step.type not in _MODEL_FREE_STEP_TYPES:
+            step.model = model
+
+
 class OrchestrationEngine:
     """Runs an orchestration by walking through its step graph."""
 
@@ -93,6 +112,12 @@ class OrchestrationEngine:
         except Exception:
             return {}
 
+    #: Shared-state key naming the model every LLM-backed step should use for
+    #: this run. It lives in the state rather than in a run() argument on
+    #: purpose: the state is checkpointed, so a run that pauses on a human step
+    #: and resumes on a different worker still uses the model the user picked.
+    MODEL_OVERRIDE_KEY = "_model_override"
+
     async def run(
         self,
         initial_input: str,
@@ -116,6 +141,7 @@ class OrchestrationEngine:
         shared_state = self._init_state(initial_input)
         if initial_state:
             shared_state.update(initial_state)
+        apply_model_override(self.orch, shared_state.get(self.MODEL_OVERRIDE_KEY))
 
         run = OrchestrationRun(
             run_id=run_id,
@@ -490,6 +516,7 @@ class OrchestrationEngine:
             return
 
         orch = Orchestration.model_validate(orch_data)
+        apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
         engine = cls(orch, server_module)
         engine.global_variables = await engine._load_global_variables()
         engine.agent_names = await engine._load_agent_names()
@@ -542,6 +569,7 @@ class OrchestrationEngine:
             return
 
         orch = Orchestration.model_validate(orch_data)
+        apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
         engine = cls(orch, server_module)
         engine.global_variables = await engine._load_global_variables()
         _log.debug(f"[engine.resume] 🗺  step_map keys: {list(engine.step_map.keys())}")

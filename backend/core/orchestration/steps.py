@@ -470,7 +470,8 @@ class ToolStepExecutor:
             _log.debug(f"TOOL STEP: 📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}")
 
             try:
-                result = await self._execute_tool(called_tool, tool_args, engine)
+                resource_events: list[dict] = []
+                result = await self._execute_tool(called_tool, tool_args, engine, resource_events)
                 final_response = result
                 if step.output_key:
                     run.shared_state[step.output_key] = result
@@ -482,6 +483,8 @@ class ToolStepExecutor:
                     "tool_name": called_tool,
                     "preview": preview,
                 }
+                for _saved in resource_events:
+                    yield {**_saved, "orch_step_id": step.id, "step_name": step.name}
                 _log.debug(f"TOOL STEP: 📤 Tool Result ({called_tool}): {preview}")
                 _log.debug(f"TOOL STEP: ✅ tool '{called_tool}' succeeded")
                 break
@@ -515,17 +518,28 @@ class ToolStepExecutor:
             inputs_snapshot=inputs_snapshot,
         )
 
-    async def _execute_tool(self, tool_name: str, tool_args: dict, engine: "OrchestrationEngine") -> str:
-        """Execute a tool via MCP session or Docker sandbox (custom Python tools)."""
+    async def _execute_tool(
+        self, tool_name: str, tool_args: dict, engine: "OrchestrationEngine",
+        resource_events: list | None = None,
+    ) -> str:
+        """Execute a tool via MCP session or Docker sandbox (custom Python tools).
+
+        `resource_events`, when given, collects what a builder tool changed so
+        the caller can yield it after the result — this returns a string, and
+        the whole resource does not belong in one.
+        """
         from datetime import timedelta
         server_module = engine.server_module
 
         # Native builder tools (create_orchestration, list_agents, etc.) —
         # dispatched directly to execute_builder_tool so TOOL steps can drive
         # the builder primitives.
-        from core.builder_tools import BUILDER_TOOL_NAMES, execute_builder_tool
+        from core.builder_tools import BUILDER_TOOL_NAMES, execute_builder_tool_with_events
         if tool_name in BUILDER_TOOL_NAMES:
-            return await execute_builder_tool(tool_name, tool_args, server_module)
+            output, saved = await execute_builder_tool_with_events(tool_name, tool_args, server_module)
+            if resource_events is not None:
+                resource_events.extend(saved)
+            return output
 
         tool_router = getattr(server_module, "tool_router", {})
         if tool_name in tool_router:

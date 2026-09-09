@@ -482,3 +482,100 @@ class TestRunInspection:
 
     async def test_a_run_with_no_checkpoint_says_so(self, server):
         assert "error" in await call("get_run_summary", {"run_id": "run_missing"}, server)
+
+
+# ── what the panel reads instead of guessing (D3) ────────────────────────────
+
+class TestResourceSavedEvents:
+    """The panel used to recover "an orchestration was saved" with a regex over
+    a 500-character truncation of the tool result. It failed on anything big
+    enough to be worth building, and three fallbacks behind it were dead code.
+    The dispatcher now says what it changed."""
+
+    async def test_creating_an_agent_announces_it_in_full(self, server):
+        from core.builder_tools import execute_builder_tool_with_events
+
+        _output, events = await execute_builder_tool_with_events("create_agent", {
+            "name": "Researcher", "description": "d", "type": "conversational",
+            "tools": [], "system_prompt": "p",
+        }, server)
+
+        assert len(events) == 1
+        event = events[0]
+        assert event["type"] == "resource_saved"
+        assert (event["kind"], event["action"], event["name"]) == ("agent", "created", "Researcher")
+        assert event["id"].startswith("agent_")
+        # The whole resource, not a truncation of it.
+        assert event["resource"]["system_prompt"] == "p"
+
+    async def test_the_result_string_stays_lean_while_the_event_carries_the_resource(self, server):
+        """A big orchestration is exactly the case the old regex could not
+        survive: the model's copy is truncated, the event's is not."""
+        from core.builder_tools import execute_builder_tool_with_events
+
+        steps = [
+            {"id": f"step_{i}", "name": f"Step {i}" * 20, "type": "print",
+             "print_content": "x" * 200, "next_step_id": f"step_{i + 1}"}
+            for i in range(12)
+        ] + [{"id": "step_12", "name": "End", "type": "end"}]
+
+        output, events = await execute_builder_tool_with_events("create_orchestration", {
+            "name": "Big", "entry_step_id": "step_0", "steps_json": json.dumps(steps),
+        }, server)
+
+        assert len(output) > 500  # the caller truncates this to 500 for the model
+        assert len(events) == 1
+        assert events[0]["kind"] == "orchestration"
+        assert len(events[0]["resource"]["steps"]) == 13
+
+    async def test_creating_several_agents_announces_each(self, server):
+        from core.builder_tools import execute_builder_tool_with_events
+
+        _output, events = await execute_builder_tool_with_events("create_agents", {
+            "agents": [
+                {"name": "One", "description": "d", "type": "conversational", "tools": [], "system_prompt": "p"},
+                {"name": "Two", "description": "d", "type": "conversational", "tools": [], "system_prompt": "p"},
+            ],
+        }, server)
+        assert [e["name"] for e in events] == ["One", "Two"]
+        assert {e["action"] for e in events} == {"created"}
+
+    async def test_an_openapi_import_announces_once_not_per_operation(self, server):
+        """A sixty-endpoint spec must not put sixty banners in the panel."""
+        from core.builder_tools import execute_builder_tool_with_events
+
+        spec = json.dumps({
+            "openapi": "3.0.0", "info": {"title": "Widgets"},
+            "servers": [{"url": "https://api.example.com"}],
+            "paths": {f"/w{i}": {"get": {"operationId": f"op{i}"}} for i in range(8)},
+        })
+        _output, events = await execute_builder_tool_with_events("import_openapi", {"spec_text": spec}, server)
+
+        assert len(events) == 1
+        assert events[0]["resource"]["count"] == 8
+
+    async def test_a_delete_is_announced_too(self, server):
+        from core.builder_tools import execute_builder_tool_with_events
+
+        await S.seed_orchestrations([S.make_orchestration(id="orch_doomed", name="Doomed")])
+        _output, events = await execute_builder_tool_with_events(
+            "delete_orchestration", {"orch_id": "orch_doomed", "confirm": True}, server
+        )
+        assert (events[0]["kind"], events[0]["action"], events[0]["id"]) == (
+            "orchestration", "deleted", "orch_doomed",
+        )
+
+    async def test_a_read_changes_nothing_and_says_nothing(self, server):
+        from core.builder_tools import execute_builder_tool_with_events
+
+        _output, events = await execute_builder_tool_with_events("list_agents", {}, server)
+        assert events == []
+
+    async def test_a_refused_write_announces_nothing(self, server):
+        from core.builder_tools import execute_builder_tool_with_events
+
+        await S.seed_orchestrations([S.make_orchestration(id="orch_doomed")])
+        _output, events = await execute_builder_tool_with_events(
+            "delete_orchestration", {"orch_id": "orch_doomed"}, server  # no confirm
+        )
+        assert events == []
