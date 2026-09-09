@@ -123,6 +123,33 @@ async def clear_cancellation(redis_client, run_id: str) -> None:
     await redis_client.delete(f"synapse:cancel:{run_id}")
 
 
+#: A chat turn is the one job type with no `orchestration_runs` row and no run
+#: id — see `run_agent_chat_job`. So it is keyed on the session instead, in its
+#: own namespace: a chat session id and a run id are both opaque strings, and
+#: sharing a key space between them is a collision waiting for the day someone
+#: names a session after a run.
+def _chat_cancel_key(session_id: str) -> str:
+    return f"synapse:cancel:chat:{session_id}"
+
+
+async def publish_chat_cancellation(redis_client, session_id: str, ttl: int = 3600) -> None:
+    """Signal a worker to cancel the turn running for this chat session.
+
+    The key this writes has existed since `/api/v2/chat/{id}/cancel` was added.
+    Nothing read it, so that endpoint returned 200 and did nothing at all; the
+    reader is `run_agent_chat_job`, and it arrives with this commit.
+    """
+    await redis_client.set(_chat_cancel_key(session_id), "1", ex=ttl)
+
+
+async def is_chat_cancelled(redis_client, session_id: str) -> bool:
+    return bool(await redis_client.get(_chat_cancel_key(session_id)))
+
+
+async def clear_chat_cancellation(redis_client, session_id: str) -> None:
+    await redis_client.delete(_chat_cancel_key(session_id))
+
+
 # ---------------------------------------------------------------------------
 # Human-in-the-loop helpers (API server → worker via Redis key)
 # ---------------------------------------------------------------------------

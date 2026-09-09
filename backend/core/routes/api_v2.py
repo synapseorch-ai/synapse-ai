@@ -638,7 +638,12 @@ async def v2_cancel_chat(
     """Publish a cancellation signal for a chat session."""
     redis = _require_scale_mode(request)
 
-    await redis.set(f"synapse:cancel:chat:{session_id}", "1", ex=3600)
+    # Through the helper, so the key this writes and the key the worker reads
+    # are the same string by construction. They were the same string by
+    # coincidence before, and nothing read it — this endpoint returned 200 and
+    # did nothing at all.
+    from core.scale.pubsub import publish_chat_cancellation
+    await publish_chat_cancellation(redis, session_id)
     return {"status": "cancellation_requested", "session_id": session_id}
 
 

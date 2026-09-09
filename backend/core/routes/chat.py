@@ -14,6 +14,33 @@ from core.react_engine import run_react_loop, parse_tool_call, iter_with_heartbe
 router = APIRouter()
 
 
+#: Chat turns running in *this* process, by session id.
+#:
+#: The single-process product has no worker and no Redis, so there is nothing
+#: to publish a stop signal to — the task doing the work is right here. Same
+#: shape as `core.orchestration.runner._active_tasks`, and the same reason:
+#: cancelling the task reaches a turn that is inside an LLM call, which a flag
+#: checked between turns cannot.
+#:
+#: Scale mode keeps its own path (the Redis key the worker watches). A
+#: deployment may be running both, so `/chat/{id}/cancel` does both and reports
+#: whether anything was actually there to stop.
+_ACTIVE_CHAT_TASKS: dict[str, asyncio.Task] = {}
+
+#: Sessions asked to stop. Two mechanisms, because they fail in opposite ways.
+#:
+#: The flag is the clean one: the loop consults it between turns and raises,
+#: which unwinds through the generator and leaves a `cancelled` event and a
+#: `done` on the stream — so the client learns why the turn ended. It cannot
+#: reach a turn already inside one long LLM call.
+#:
+#: Cancelling the task can. What it cannot do is speak afterwards: the response
+#: task is the one being cancelled, so anything yielded after that point may
+#: never reach the wire. Setting the flag first gives the loop a chance to end
+#: cleanly, and the cancel is what stops a wedged turn from running on.
+_STOP_REQUESTED: set[str] = set()
+
+
 async def _resolve_agent(request: ChatRequest):
     """Return the agent dict for the request's agent_id (or the active agent)."""
     from core.routes.agents import get_active_agent_data
@@ -62,6 +89,29 @@ async def chat_stream(request: ChatRequest):
     async def event_generator():
         import core.server as _server
 
+        # Claim this session for the duration of the turn. Registered from
+        # inside the generator because that is the task actually streaming —
+        # the request handler has already returned by the time this runs.
+        _session_key = getattr(request, "session_id", None)
+        _task = asyncio.current_task()
+        if _session_key and _task is not None:
+            _ACTIVE_CHAT_TASKS[_session_key] = _task
+
+        try:
+            async for chunk in _event_stream(request, _server):
+                yield chunk
+        except asyncio.CancelledError:
+            # Stopped on purpose: say so and close the stream cleanly, rather
+            # than letting the client wait out a socket that will never speak
+            # again.
+            yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Stopped.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        finally:
+            if _session_key and _ACTIVE_CHAT_TASKS.get(_session_key) is _task:
+                _ACTIVE_CHAT_TASKS.pop(_session_key, None)
+            _STOP_REQUESTED.discard(_session_key or "")
+
+    async def _event_stream(request, _server):
         # Route builder agents to the dedicated builder stream
         agent = await _resolve_agent(request)
         if agent and agent.get("type") == "builder":
@@ -70,8 +120,13 @@ async def chat_stream(request: ChatRequest):
                 yield chunk
             return
 
+        async def _stopped() -> bool:
+            return getattr(request, "session_id", None) in _STOP_REQUESTED
+
         try:
-            async for event in iter_with_heartbeat(run_react_loop(request, _server)):
+            async for event in iter_with_heartbeat(
+                run_react_loop(request, _server, should_stop=_stopped)
+            ):
                 # Heartbeat comments are yielded as raw SSE strings — pass through.
                 if isinstance(event, str):
                     yield event
@@ -165,3 +220,41 @@ async def chat_stream(request: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/chat/{session_id}/cancel")
+async def cancel_chat(session_id: str):
+    """Stop the turn running for this chat session.
+
+    Answers `"cancelling"`, never `"cancelled"` — the same word
+    `/orchestrations/runs/{id}/cancel` uses, for the same reason. The request
+    asks; what it cannot do is promise the turn has already noticed. A turn
+    inside a long provider call stops when that call returns.
+
+    `stopped` says whether anything was found to stop: false means the turn had
+    already finished, which is not an error and should not read as one.
+    """
+    stopped = False
+
+    # In-process (single-process product): the task is right here.
+    _STOP_REQUESTED.add(session_id)
+    task = _ACTIVE_CHAT_TASKS.get(session_id)
+    if task is not None and not task.done():
+        task.cancel()
+        stopped = True
+
+    # Scale mode: the turn is on a worker, so the signal goes through Redis.
+    # Both paths run — a deployment can be serving chat in-process while the
+    # queue is enabled, and the caller should not have to know which one ran
+    # this turn.
+    try:
+        import core.server as _server
+        redis = getattr(_server, "redis_client", None)
+        if redis is not None:
+            from core.scale.pubsub import publish_chat_cancellation
+            await publish_chat_cancellation(redis, session_id)
+            stopped = True
+    except Exception:  # noqa: BLE001 — no Redis is not a failure to cancel
+        pass
+
+    return {"status": "cancelling", "session_id": session_id, "stopped": stopped}

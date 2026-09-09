@@ -4,6 +4,7 @@ Defines the job functions and WorkerSettings class consumed by `arq run_worker`.
 Entry point: backend/worker_main.py
 """
 import asyncio
+import contextlib
 import functools
 import json
 import os
@@ -19,6 +20,7 @@ from arq.connections import RedisSettings
 
 from core import settings_runtime
 from core.scale import mcp_pool
+from core.scale.pubsub import clear_chat_cancellation, is_chat_cancelled
 from core.scale.config import QUEUE_NAME, get_scale_config
 from core.tenancy import get_tenant, tenant_scope
 
@@ -438,6 +440,60 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
         _active_jobs = max(0, _active_jobs - 1)
 
 
+#: How often a running chat turn looks for its stop signal. Matches the run
+#: watcher's interval — the person is waiting either way.
+CHAT_CANCEL_POLL_SECONDS = 2.0
+
+
+async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
+    """Run `consume()` under a cancel watcher. True if it was stopped.
+
+    Lifted from `WorkerEngineAdapter._cancel_guarded`, which does this for
+    orchestration runs, and kept deliberately close to it: the polling
+    interval, the `uncancel()` and the "was this cancel ours?" question are the
+    parts that are easy to get subtly wrong.
+
+    `task.uncancel()` is the subtle one. Without it the outstanding
+    cancellation count stays raised, and every `await` in the caller's cleanup
+    — persisting the partial turn, publishing the terminal event — is cancelled
+    again the moment it starts, so a stopped turn would leave exactly the silent
+    dead stream that stopping it is meant to avoid.
+
+    A cancel that is not ours (an ARQ timeout, a worker shutting down) is not a
+    request: it propagates, and the job is retried or abandoned as it always was.
+    """
+    driver = asyncio.create_task(consume())
+    stop = asyncio.Event()
+
+    async def watch():
+        while not stop.is_set():
+            try:
+                if await is_chat_cancelled(redis, session_id):
+                    driver.cancel()
+                    return
+            except Exception:  # noqa: BLE001 — a Redis hiccup is not a cancel
+                pass
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=CHAT_CANCEL_POLL_SECONDS)
+
+    watcher = asyncio.create_task(watch())
+    try:
+        await driver
+        return False
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None and hasattr(task, "uncancel"):
+            task.uncancel()
+        if not await is_chat_cancelled(redis, session_id):
+            raise
+        return True
+    finally:
+        stop.set()
+        watcher.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await watcher
+
+
 # ---------------------------------------------------------------------------
 # Job: run an agent chat turn
 # ---------------------------------------------------------------------------
@@ -517,25 +573,55 @@ async def run_agent_chat_job(
             agent_id=agent_id,
             images=images or [],
         )
-        async for event in run_react_loop(chat_request, server_module):
-            await publisher.publish(event)
-            # Capture the final response text and cost
-            if event.get("type") in ("response", "final"):
-                response_text = event.get("response", response_text)
-            elif event.get("type") == "tool_execution":
-                tool_calls_summary.append({
-                    "tool": event.get("tool_name"),
-                    "args": event.get("tool_args"),
-                })
-            elif event.get("type") == "done":
-                total_cost = event.get("total_cost_usd", 0.0)
+        async def _consume():
+            """Drive the loop. Separated so the cancel watcher has a task to
+            cancel that is not the whole job."""
+            nonlocal response_text, total_cost
+            async for event in run_react_loop(chat_request, server_module):
+                await publisher.publish(event)
+                # Capture the final response text and cost
+                if event.get("type") in ("response", "final"):
+                    response_text = event.get("response", response_text)
+                elif event.get("type") == "tool_execution":
+                    tool_calls_summary.append({
+                        "tool": event.get("tool_name"),
+                        "args": event.get("tool_args"),
+                    })
+                elif event.get("type") == "done":
+                    total_cost = event.get("total_cost_usd", 0.0)
 
+        # A chat turn can now be stopped, the same way a run can.
+        #
+        # The engine checks a stop flag between turns, and between turns is not
+        # where a turn spends its time: it is inside one LLM call, or a
+        # twenty-minute tool, or one of the continuation retries the loop makes
+        # when a response comes back truncated. So the watcher cancels the task
+        # driving the engine rather than asking it to notice — the same
+        # `_cancel_guarded` shape `WorkerEngineAdapter` uses for runs, keyed on
+        # the session because a chat turn has no run id.
+        cancelled = await _run_chat_turn_cancellably(redis, session_id, _consume)
+
+        if cancelled:
+            # Say so on the stream before closing it. A client that hangs when
+            # the server stops talking is a client bug; a server that stops
+            # talking without saying why is a server bug, and this is that half
+            # — the same rule the `except` below already follows.
+            await publisher.publish({"type": "cancelled", "message": "Stopped."})
         await publisher.publish_done()
 
-        # Append to message history and persist
+        # Append to message history and persist.
+        #
+        # A cancelled turn is persisted too, with whatever the agent had
+        # already said. Dropping it would mean the Stop button destroyed the
+        # exchange rather than ending it — and Retry would have nothing to
+        # retry from.
         history.append({"role": "user", "content": message})
         history.append({"role": "assistant", "content": response_text})
-        await _upsert_chat_session(session_factory, session_id, agent_id, "completed", history)
+        await _upsert_chat_session(session_factory, session_id, agent_id,
+                                   "cancelled" if cancelled else "completed", history)
+        if cancelled:
+            await clear_chat_cancellation(redis, session_id)
+            return {"status": "cancelled", "session_id": session_id}
 
         # Deliver webhook if requested
         if webhook_url:
@@ -581,7 +667,14 @@ async def run_agent_chat_job(
                 pass
 
         try:
-            await _upsert_chat_session(session_factory, session_id, agent_id, "failed", [])
+            # `history` — never `[]`. This wrote an empty list into the
+            # `messages` column, and `_upsert_chat_session` lists `messages`
+            # among the columns it updates, so **every failed turn erased the
+            # whole conversation**. The row was described here as "the durable
+            # record"; it was the opposite. `history` holds the turns loaded at
+            # the top of this job, so the exchange survives its own failure and
+            # there is something left to retry from.
+            await _upsert_chat_session(session_factory, session_id, agent_id, "failed", history)
         except Exception:
             pass
         raise

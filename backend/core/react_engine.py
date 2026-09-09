@@ -2261,8 +2261,14 @@ async def run_agent_step(
     yield {"type": "final", "response": final_response, "intent": last_intent, "data": last_data, "tool_name": tool_name}
 
 
-async def run_react_loop(request, server_module):
+async def run_react_loop(request, server_module, should_stop=None):
     """Async generator that runs the ReAct loop and yields structured events.
+
+    `should_stop` is an optional predicate the loop consults between turns and
+    honours by raising `CancelledError`. It is the cooperative half of stopping
+    a chat turn; the forceful half — cancelling the task, which is what reaches
+    a turn already inside a twenty-minute tool call — lives in the caller. Both
+    exist because between turns is not where a turn spends its time.
 
     This is the top-level entry point called by /chat and /chat/stream.
     It resolves the active agent, checks for orchestrator type, and delegates
@@ -2351,6 +2357,7 @@ async def run_react_loop(request, server_module):
             server_module=server_module,
             max_turns=agent_max_turns,
             images=getattr(request, 'images', None) or None,
+            should_stop=should_stop,
         ):
             _agent_log.log_event(event)
             yield event
