@@ -93,7 +93,9 @@ async def maybe_compact(
     compact_stats is {"stage", "chars_before", "chars_after", "reduction_pct"} when
     compaction fired, or None when it didn't.
     """
-    if not settings.get("auto_compact_enabled", False):
+    # On by default: with it off, the only thing standing between a long run
+    # and a truncated context was the 400k backstop, which is a blunt cut.
+    if not settings.get("auto_compact_enabled", True):
         return current_context_text, recent_history_messages, None, None
 
     threshold = settings.get("auto_compact_threshold", 100000)

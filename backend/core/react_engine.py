@@ -270,6 +270,21 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
     return tool_calls
 
 
+_TOOL_SHAPE_RE = _re.compile(r'<tool_call>|"tool"\s*:|\'tool\'\s*:', _re.IGNORECASE)
+
+
+def looks_like_a_tool_call(text: str) -> bool:
+    """Whether `text` was *trying* to be a tool call.
+
+    Used only when nothing parsed. The loop's rule is "no tool call means this
+    is the final answer", so a call the model wrote with a trailing comma, a
+    single quote, or a truncation was handed to the user as the agent's own
+    words. A false positive here costs one extra turn and then answers anyway;
+    a false negative ships JSON to a person.
+    """
+    return bool(_TOOL_SHAPE_RE.search(strip_reasoning(text or "")))
+
+
 def parse_all_tool_calls(llm_output: str) -> list[dict]:
     """Extract ALL tool-call JSON objects from one LLM response, in order."""
     return _scan_tool_calls(llm_output, stop_on_non_tool_json=False)
@@ -1108,8 +1123,14 @@ async def run_agent_step(
     # though the DOM snapshot is replaced on each navigation/click.
     browser_action_history: list[str] = []
     _browser_snapshot: tuple[str, str] | None = None  # (tool_name, page state) — rendered in the tail
-    _has_compacted = False  # anti-thrash: only compact once per run
+    # Anti-thrash: compaction is allowed again only after this many further
+    # turns. It used to be once per run, so a long run compacted at 100k and
+    # then grew unbounded to the 400k backstop, where the newest observations
+    # were the ones thrown away.
+    _last_compact_turn: int | None = None
+    COMPACT_COOLDOWN_TURNS = 3
     _truncation_retries = 0  # consecutive responses cut off at the output limit
+    _parse_retries = 0        # consecutive responses that looked like a tool call and were not
 
     # ── Mid-node resume: seed the loop from a prior interrupted attempt ──────
     # The orchestration executor checkpoints a _step_progress snapshot after
@@ -1123,7 +1144,11 @@ async def run_agent_step(
             "\n[System: this task was interrupted and has been resumed. Continue from the "
             "last observation above; do not repeat tool calls that already succeeded.]\n"
         )
-        _has_compacted = bool(resume_state.get("has_compacted"))
+        # An older checkpoint carries a bool; treat "it compacted at some
+        # point" as "it compacted just before this turn".
+        _last_compact_turn = resume_state.get("last_compact_turn")
+        if _last_compact_turn is None and resume_state.get("has_compacted"):
+            _last_compact_turn = int(resume_state.get("turn") or 0)
         browser_action_history = list(resume_state.get("browser_actions") or [])
         tools_used_summary = list(resume_state.get("tools_used") or [])
         start_turn = min(int(resume_state.get("turn") or 0), max(0, max_turns - 1))
@@ -1143,15 +1168,12 @@ async def run_agent_step(
 
     MAX_PROMPT_CHARS = 400000
     MAX_TRUNCATION_RETRIES = 2
+    MAX_PARSE_RETRIES = 1
 
     # Browser tools produce DOM snapshots that are only useful for the current turn.
     # Previous snapshots become stale the moment the page changes, so we skip
     # appending them to the accumulated context and only keep a short summary.
     BROWSER_TOOL_PREFIXES = ("browser_",)
-
-    def _truncate_tool_output(text: str, limit: int = 0) -> str:
-        """No-op: returns the full tool output without any truncation."""
-        return text
 
     def _is_browser_tool(name: str) -> bool:
         return name.startswith(BROWSER_TOOL_PREFIXES)
@@ -1218,11 +1240,12 @@ async def run_agent_step(
             active_prompt = current_context_text
             active_history = recent_history_messages if (turn == 0 and not _resumed_mid_step) else []
 
-            # Auto-compact: summarise accumulated context when it exceeds the threshold.
-            # Gated on turn > 0 (nothing to compact on the first turn) and
-            # _has_compacted (anti-thrash: skip if we already compacted this run so we
-            # don't loop calling the LLM when a single output fills the window).
-            if turn > 0 and not _has_compacted:
+            # Auto-compact: summarise accumulated context when it exceeds the
+            # threshold. Gated on turn > 0 (nothing to compact on the first
+            # turn) and on the cooldown, so a single oversized output cannot
+            # make every turn an LLM summarisation call.
+            _compact_ready = _last_compact_turn is None or (turn - _last_compact_turn) >= COMPACT_COOLDOWN_TURNS
+            if turn > 0 and _compact_ready:
                 _compact_ctx, _compact_hist, _compact_path, _compact_stats = await maybe_compact(
                     current_context_text,
                     recent_history_messages,
@@ -1239,7 +1262,7 @@ async def run_agent_step(
                     recent_history_messages = _compact_hist
                     active_prompt = current_context_text
                     active_history = []
-                    _has_compacted = True
+                    _last_compact_turn = turn
                     yield {
                         "type": "context_compact",
                         "stage": (_compact_stats or {}).get("stage", "unknown"),
@@ -1253,9 +1276,27 @@ async def run_agent_step(
             total_prompt_chars = len(active_prompt) + len(volatile_tail) + len(active_sys_prompt) + len(memory_context)
             _log.debug(f"📊 Context size — prompt: {len(active_prompt)} | tail: {len(volatile_tail)} | system: {len(active_sys_prompt)} | memory: {len(memory_context)} | total: {total_prompt_chars} chars")
             if total_prompt_chars > MAX_PROMPT_CHARS:
+                # Drop from the middle. Keeping the head and cutting the tail —
+                # which is what this did — threw away the newest observations,
+                # the ones the model needs to act on, and left it re-reading a
+                # request it had already answered. The head stays byte-identical
+                # so the first cache block survives, and the marker means the
+                # model can see that something was removed.
                 overflow = total_prompt_chars - MAX_PROMPT_CHARS
-                active_prompt = active_prompt[: len(active_prompt) - overflow]
-                _log.warning(f"⚠️ Truncated prompt by {overflow} chars")
+                head_len = min(len(active_prompt) // 10, 20_000)
+                marker = ""
+                dropped = 0
+                if len(active_prompt) - head_len > overflow:
+                    dropped = overflow + 200          # 200 ≈ the marker's own length
+                    marker = (f"\n\n[… {dropped:,} characters of earlier observations trimmed to fit "
+                              f"the context window — the full transcript is in the run log …]\n\n")
+                    active_prompt = active_prompt[:head_len] + marker + active_prompt[head_len + dropped:]
+                else:
+                    # Nothing but head and overflow: keep the newest end.
+                    active_prompt = active_prompt[-max(0, len(active_prompt) - overflow):]
+                    dropped = overflow
+                _log.warning(f"⚠️ Trimmed {dropped:,} chars from the middle of the transcript")
+                yield {"type": "context_trimmed", "turn": turn + 1, "chars_dropped": dropped}
             # Blocks are derived from the (possibly truncated) transcript so
             # the joined text, the blocks and the log all agree.
             prompt_blocks = _transcript_blocks(active_prompt)
@@ -1355,6 +1396,26 @@ async def run_agent_step(
             tool_calls = parse_all_tool_calls(action_text)
 
             if not tool_calls:
+                # ── A tool call that did not parse is not a final answer ─────
+                # Ask for it again rather than presenting broken JSON as the
+                # agent's response. Once: a model that cannot produce valid
+                # JSON twice is not going to on the third attempt, and the
+                # text still reaches the user as the answer below.
+                if (looks_like_a_tool_call(action_text) and _parse_retries < MAX_PARSE_RETRIES
+                        and turn + 1 < max_turns):
+                    _parse_retries += 1
+                    _log.warning(f"⚠️ Response looks like a tool call but did not parse "
+                                 f"(retry {_parse_retries}/{MAX_PARSE_RETRIES})")
+                    current_context_text += (
+                        f"\n[Turn {turn + 1} — Action]\n{action_text}\n"
+                        "\nSystem: that looked like a tool call but it could not be parsed as "
+                        "JSON. Emit the whole call again as one valid JSON object: "
+                        '{"tool": "<name>", "arguments": {...}}. If you did not mean to call a '
+                        "tool, answer in plain text with no JSON.\n"
+                    )
+                    yield {"type": "tool_call_unparsed", "turn": turn + 1, "retry": _parse_retries}
+                    continue
+
                 # ── Task binding: an agent that opened tasks must close them ──
                 # Deterministic and bounded: the final response is refused at
                 # most twice, then accepted with a structural tasks_incomplete
@@ -2014,7 +2075,8 @@ async def run_agent_step(
                     "type": "_step_progress",
                     "turn": turn + 1,
                     "context_text": current_context_text[-200_000:],
-                    "has_compacted": _has_compacted,
+                    "has_compacted": _last_compact_turn is not None,   # older readers
+                    "last_compact_turn": _last_compact_turn,
                     "browser_actions": browser_action_history[-50:],
                     "tools_used": [s[:500] for s in tools_used_summary[-20:]],
                 }
