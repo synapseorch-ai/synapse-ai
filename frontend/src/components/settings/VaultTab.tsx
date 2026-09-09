@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 import React, { useState, useEffect, useCallback } from 'react';
-import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, Save, Eye, EyeOff, RefreshCw, FolderPlus, FilePlus, Loader2, AlignLeft, Cloud } from 'lucide-react';
+import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, Save, Eye, EyeOff, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud } from 'lucide-react';
 import { renderTextContent } from '@/lib/utils';
-import { ConfirmDialog, Modal } from '@/components/ui';
+import { ConfirmDialog, Modal, Spinner } from '@/components/ui';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -573,7 +573,7 @@ export function VaultTab() {
                 <div className="flex-1 overflow-y-auto modern-scrollbar py-1">
                     {loading ? (
                         <div className="flex items-center gap-2 px-4 py-4 text-zinc-600 text-xs">
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…
+                            <Spinner size={14} /> Loading…
                         </div>
                     ) : tree.length === 0 ? (
                         <div className="px-4 py-6 text-center">
@@ -639,7 +639,7 @@ export function VaultTab() {
                                 className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed
                                     ${saveStatus === 'saved' ? 'bg-emerald-600 text-white' : saveStatus === 'error' ? 'bg-red-600 text-white' : 'bg-accent text-accent-fg hover:bg-accent-hover'}`}
                             >
-                                {savingFile ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                                {savingFile ? <Spinner size={12} /> : <Save className="h-3 w-3" />}
                                 {saveStatus === 'saved' ? 'SAVED' : saveStatus === 'error' ? 'ERROR' : 'SAVE'}
                             </button>
                         </div>
@@ -647,7 +647,7 @@ export function VaultTab() {
                         {/* Editor area */}
                         {loadingFile ? (
                             <div className="flex-1 flex items-center justify-center">
-                                <Loader2 className="h-5 w-5 animate-spin text-zinc-600" />
+                                <Spinner size={20} className="text-zinc-600" />
                             </div>
                         ) : selectedNode.ext === '.json' ? (
                             <JsonEditor value={fileContent} onChange={setFileContent} />

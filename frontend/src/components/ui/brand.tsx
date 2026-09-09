@@ -134,6 +134,32 @@ export function Wordmark({
  * ones (see `brand-motion.css`), so the mark still reads as busy while nothing
  * moves.
  */
+/**
+ * The inline busy indicator: the mark, turning, with signals running it.
+ *
+ * Every "something is happening" in both products goes through this rather
+ * than a generic spinner — a product that shows its own mark working reads as
+ * one thing, and a rotating slash reads as a browser default. It is
+ * `BrandLoader` with a size chosen for text: at 16px the two-layer form is
+ * what survives, and `BrandLoader` picks it automatically below 20.
+ *
+ * Sizes worth knowing: 14 beside `text-xs`, 16 beside `text-sm` and inside a
+ * button, 20 in a table cell, 40+ for an empty state — above that reach for
+ * `BrandLoader` directly and give it a label.
+ */
+export function Spinner({
+  size = 16,
+  label,
+  className,
+}: {
+  size?: number;
+  /** Announce the busy state. Omit when text beside it already says so. */
+  label?: string;
+  className?: string;
+}) {
+  return <BrandLoader size={size} label={label} className={className} />;
+}
+
 export function BrandLoader({
   size = 56,
   compact,

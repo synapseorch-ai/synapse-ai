@@ -11,8 +11,9 @@
  * two definition lists the workspace already loads.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { Spinner } from '@/components/ui';
 import {
-    Loader2, ScrollText, Coins, Workflow, Clock, MessageSquare, Bot, X,
+    ScrollText, Coins, Workflow, Clock, MessageSquare, Bot, X,
 } from 'lucide-react';
 
 export type ActivityTab = 'runs' | 'metrics' | 'usedby';
@@ -55,9 +56,10 @@ const Empty = ({ icon: Icon, children }: { icon: any; children: React.ReactNode 
     </div>
 );
 
-const Spinner = () => (
-    <div className="flex items-center gap-2 text-2xs text-text-faint p-4">
-        <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+/** The panel's own "loading a section" line, on the kit's spinner. */
+const Loading = () => (
+    <div className="flex items-center gap-2 p-4 text-2xs text-text-faint">
+        <Spinner size={14} /> Loading…
     </div>
 );
 
@@ -86,7 +88,7 @@ function RunsTab({ agentId }: { agentId: string }) {
             .catch(() => setContent('Could not load this log.'));
     }, []);
 
-    if (runs === null) return <Spinner />;
+    if (runs === null) return <Loading />;
     if (runs.length === 0) {
         return <Empty icon={ScrollText}>This agent has not run yet. Runs appear here as soon as it does.</Empty>;
     }
@@ -131,7 +133,7 @@ function RunsTab({ agentId }: { agentId: string }) {
                             <X className="h-3 w-3" />
                         </button>
                     </div>
-                    {content === null ? <Spinner /> : (
+                    {content === null ? <Loading /> : (
                         <pre className="p-3 text-2xs font-mono text-text-muted whitespace-pre-wrap max-h-[400px] overflow-y-auto modern-scrollbar">
                             {content}
                         </pre>
@@ -156,7 +158,7 @@ function MetricsTab({ agentId }: { agentId: string }) {
     }, [agentId]);
 
     if (failed) return <Empty icon={Coins}>Usage could not be read for this agent.</Empty>;
-    if (!m) return <Spinner />;
+    if (!m) return <Loading />;
     if (m.calls === 0) {
         return <Empty icon={Coins}>No model calls recorded for this agent yet.</Empty>;
     }
@@ -247,7 +249,7 @@ function UsedByTab({ agentId, channels, agents }: { agentId: string; channels: a
         });
     }, [agentId]);
 
-    if (orchestrations === null || schedules === null) return <Spinner />;
+    if (orchestrations === null || schedules === null) return <Loading />;
 
     // An agent that delegates to this one dangles just as badly as a step does.
     const delegators = agents.filter(

@@ -139,7 +139,7 @@ export function AppRail({
                 {/* The mark is the brand; the name reads beside it while there is
                     room. Collapsed there is 24px of content, and the bell —
                     the one thing here that changes on its own — takes it. */}
-                <Mark size={18} className={cn('text-accent', collapsed ? 'hidden' : 'hidden md:block')} />
+                <Mark size={20} className={cn('shrink-0 text-accent', collapsed ? 'hidden' : 'hidden md:block')} />
                 <span className={cn(
                     'text-sm font-semibold tracking-tight text-text',
                     collapsed ? 'hidden' : 'hidden md:inline',

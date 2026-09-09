@@ -2,12 +2,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback } from 'react';
 import {
-    Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertTriangle,
+    CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertTriangle,
     Activity, Server, Database, Zap, Eye, Cloud,
     ChevronDown, ChevronRight, Search, Copy, BarChart3, BookOpen, X,
 } from 'lucide-react';
 
-import { Button, Field, Input, Label } from '@/components/ui';
+import { Button, Field, Input, Label, Spinner } from '@/components/ui';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1082,7 +1082,7 @@ export function ScaleTab() {
                         <div className="flex items-center justify-between mb-3">
                             <Label>Failed Jobs (DLQ)</Label>
                             <button onClick={loadDlq} className="text-text-faint hover:text-text-muted transition-colors">
-                                {dlqLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                                {dlqLoading ? <Spinner size={12} /> : <RefreshCw className="h-3 w-3" />}
                             </button>
                         </div>
                         {dlqEntries.length === 0 ? (
@@ -1104,7 +1104,7 @@ export function ScaleTab() {
                                                 disabled={retryingDlq === entry.id}
                                                 className="text-2xs border border-border-strong px-2 py-1 text-text-faint hover:text-text disabled:opacity-40 shrink-0 transition-colors"
                                             >
-                                                {retryingDlq === entry.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                                                {retryingDlq === entry.id ? <Spinner size={12} /> : <RefreshCw className="h-3 w-3" />}
                                             </button>
                                         </div>
                                     </div>
@@ -1382,7 +1382,7 @@ export function ScaleTab() {
             <div className="flex items-center gap-4 pt-2">
                 <button onClick={handleSave} disabled={isSaving}
                     className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold uppercase tracking-wider bg-accent text-accent-fg hover:bg-accent-hover disabled:opacity-40 transition-colors rounded-md">
-                    {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {isSaving ? <Spinner size={16} /> : null}
                     Save Scale Config
                 </button>
                 {saveMsg && <p className="text-xs text-text-muted">{saveMsg}</p>}

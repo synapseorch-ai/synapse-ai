@@ -23,7 +23,7 @@ export {
   type ButtonVariant,
 } from "./button";
 export { Badge, Tag, type BadgeTone } from "./badge";
-export { BrandLoader, Mark, Wordmark } from "./brand";
+export { BrandLoader, Mark, Spinner, Wordmark } from "./brand";
 export { Card, CardBody, CardFooter } from "./card";
 export { EmptyState, ErrorNote, SuccessNote } from "./feedback";
 export { controlStyles, type ControlSize } from "./control-styles";

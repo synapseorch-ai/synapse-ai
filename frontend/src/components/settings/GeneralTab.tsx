@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Loader2, AlertTriangle } from 'lucide-react';
-import { Button, Input, Label, Modal } from '@/components/ui';
+import { AlertTriangle } from 'lucide-react';
+import { Button, Input, Label, Modal, Spinner } from '@/components/ui';
 
 type EmbedIssue = 'no_psql' | 'no_db' | 'existing_url_broken' | 'no_pgvector' | 'connection_error';
 
@@ -294,7 +294,7 @@ export function GeneralTab({
                 {/* Checking state */}
                 {embedChecking && (
                     <div className="flex items-center gap-2 text-xs text-text-muted">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <Spinner size={14} />
                         Checking PostgreSQL setup…
                     </div>
                 )}
@@ -351,7 +351,7 @@ export function GeneralTab({
                         {setupError && <p className="text-danger font-mono text-2xs">{setupError}</p>}
                         <div className="flex items-center gap-2 pt-1">
                             <button onClick={handleSetupDb} disabled={setupInProgress} className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-                                {setupInProgress && <Loader2 className="w-3 h-3 animate-spin" />}
+                                {setupInProgress && <Spinner size={12} />}
                                 {setupInProgress ? 'Connecting…' : 'Save & Connect'}
                             </button>
                             <button onClick={() => setEmbedCheckState(null)} className="px-3 py-2 text-xs text-text-faint hover:text-text transition-colors">Cancel</button>
@@ -440,7 +440,7 @@ export function GeneralTab({
                                 disabled={setupInProgress}
                                 className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {setupInProgress && <Loader2 className="w-3 h-3 animate-spin" />}
+                                {setupInProgress && <Spinner size={12} />}
                                 {setupInProgress ? 'Creating…' : 'Create Database'}
                             </button>
                             <button
@@ -716,7 +716,7 @@ export function GeneralTab({
                                 disabled={isLoginSaving}
                                 className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all disabled:opacity-50"
                             >
-                                {isLoginSaving && <Loader2 className="w-3 h-3 animate-spin" />}
+                                {isLoginSaving && <Spinner size={12} />}
                                 {isLoginSaving ? 'Saving…' : 'Save Login Settings'}
                             </button>
                             <button
@@ -748,7 +748,7 @@ export function GeneralTab({
                     disabled={isSaving}
                     className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                    {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {isSaving && <Spinner size={16} />}
                     {isSaving ? 'Saving…' : 'Save Changes'}
                 </button>
             </div>

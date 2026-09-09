@@ -13,11 +13,12 @@
  * component does.
  */
 
-import { Loader2 } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
 import { cn, focusRing } from "@/lib/cn";
+
+import { Spinner } from "./brand";
 
 export type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
 export type ButtonSize = "sm" | "md";
@@ -86,7 +87,7 @@ export function Button({
       disabled={props.disabled || loading}
       className={cn(buttonStyles({ variant, size, iconOnly }), className)}
     >
-      {loading && <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />}
+      {loading && <Spinner size={16} className="shrink-0" />}
       {children}
     </button>
   );

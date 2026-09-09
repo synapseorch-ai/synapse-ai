@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Check, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Info, Loader2, Terminal, Eye, EyeOff } from 'lucide-react';
-import { Combobox, Input, Label, Select, Textarea, type ComboboxOption } from '@/components/ui';
+import { Check, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Info, Terminal, Eye, EyeOff } from 'lucide-react';
+import { Combobox, Input, Label, Select, Spinner, Textarea, type ComboboxOption } from '@/components/ui';
 import React, { useState } from 'react';
 
 type BrandIconProps = { className?: string; style?: React.CSSProperties };
@@ -698,7 +698,7 @@ export const ModelsTab = ({
                     disabled={isSaving}
                     className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed rounded-md"
                 >
-                    {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {isSaving && <Spinner size={16} />}
                     {isSaving ? 'Saving…' : 'Save Changes'}
                 </button>
             </div>

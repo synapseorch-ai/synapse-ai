@@ -1,14 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useRef, useState } from 'react';
 import {
-    Server, Plus, Trash, RefreshCw, Loader2,
-    CheckCircle, XCircle, AlertCircle, Zap,
+    Server, Plus, Trash, RefreshCw, CheckCircle, XCircle, AlertCircle, Zap,
     Terminal, Globe, Eye, EyeOff, ShieldAlert
 } from 'lucide-react';
 import { useDispatch } from 'react-redux';
 import { AppDispatch } from '@/store';
 import { setMcpServers } from '@/store/settingsSlice';
-import { Label, type ToastTone } from '@/components/ui';
+import { Label, Spinner, type ToastTone } from '@/components/ui';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -88,7 +87,7 @@ const REMOTE_PRESETS: Preset[] = [
 const StatusBadge = ({ status }: { status?: string }) => {
     if (status === 'connecting') return (
         <span className="flex items-center gap-1 text-2xs bg-accent/20 text-accent px-1.5 py-0.5 rounded-md border border-accent/30 uppercase">
-            <Loader2 className="h-2.5 w-2.5 animate-spin" /> Connecting
+            <Spinner size={10} /> Connecting
         </span>
     );
     if (status === 'connected') return (
@@ -302,7 +301,7 @@ export const McpServersTab = ({
                 <h4 className="text-xs uppercase font-bold text-text-faint tracking-wider">Connected Servers</h4>
                 {loadingMcp ? (
                     <div className="flex items-center gap-2 text-text-faint text-sm">
-                        <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+                        <Spinner size={16} /> Loading…
                     </div>
                 ) : mcpServers.length === 0 ? (
                     <div className="p-8 text-center border border-dashed border-border rounded-md bg-surface/30">
@@ -336,7 +335,7 @@ export const McpServersTab = ({
                                 </div>
                                 <div className="flex items-center gap-1 ml-4 shrink-0">
                                     {server.status === 'connecting' && (
-                                        <span className="p-2"><Loader2 className="h-3.5 w-3.5 text-accent animate-spin" /></span>
+                                        <span className="p-2"><Spinner size={14} className="text-accent" /></span>
                                     )}
                                     {server.status === 'reauth_needed' && (
                                         <button onClick={() => onReconnectServer(server.name)} title="Re-authenticate"
@@ -521,7 +520,7 @@ export const McpServersTab = ({
                     <button onClick={onAddServer} disabled={isConnecting}
                         className="flex items-center gap-2 px-6 py-2 bg-accent text-accent-fg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
                         {isConnecting
-                            ? <><Loader2 className="h-4 w-4 animate-spin" /> Connecting…</>
+                            ? <><Spinner size={16} /> Connecting…</>
                             : 'Connect Server'}
                     </button>
                 </div>

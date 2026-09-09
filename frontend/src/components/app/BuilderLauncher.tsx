@@ -6,10 +6,9 @@
  * things cannot own the same corner, and the toast is the one that appears
  * unbidden.
  */
-import { Sparkles } from 'lucide-react';
 
 import { useBuilder } from '@/components/app/BuilderProvider';
-import { Hint } from '@/components/ui';
+import { Hint, Mark } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
 
 export function BuilderLauncher() {
@@ -30,7 +29,7 @@ export function BuilderLauncher() {
                     focusRing,
                 )}
             >
-                <Sparkles size={17} aria-hidden />
+                <Mark size={18} aria-hidden />
                 {streaming && (
                     <span
                         className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-accent"

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Trash2, FolderGit2, RefreshCw, Loader2, ChevronDown, ChevronUp, Info, Square } from 'lucide-react';
+import { Plus, Trash2, FolderGit2, RefreshCw, ChevronDown, ChevronUp, Info, Square } from 'lucide-react';
 import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
 
+import { Spinner } from '@/components/ui';
 // Mirrors backend's BASE_EXCLUDED_PATTERNS — shown read-only in the form.
 const BASE_EXCLUDED = [
     '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/site-packages/**',
@@ -356,7 +357,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                             disabled={isSaving}
                             className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                            {isSaving && <Spinner size={16} />}
                             {isSaving ? 'Saving…' : 'Save Repository'}
                         </button>
                     </div>
@@ -417,7 +418,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                         <h4 className="font-bold text-white text-lg flex items-center gap-2">
                                             {repo.name}
                                             <span className={`text-[10px] font-bold px-2 py-0.5 border uppercase tracking-wide inline-flex items-center gap-1 ${getStatusColor(repo.status)}`}>
-                                                {(isIndexing || isStopping) && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+                                                {(isIndexing || isStopping) && <Spinner size={10} />}
                                                 {!embedCode && repo.status === 'pending' ? 'not indexed' : repo.status}
                                             </span>
                                         </h4>

@@ -2,8 +2,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Save, Play, Trash, Square, Loader2, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX } from 'lucide-react';
-import { Button, Combobox, Hint, IconButton, Modal, SearchInput } from '@/components/ui';
+import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX } from 'lucide-react';
+import { Button, Combobox, Hint, IconButton, Mark, Modal, SearchInput, Spinner } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
@@ -1332,7 +1332,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                         })}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent hover:bg-accent-hover text-accent-fg transition-colors"
                     >
-                        <Sparkles size={13} /> Build with AI
+                        <Mark size={14} /> Build with AI
                     </button>
                 </div>
 
@@ -1357,7 +1357,7 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
                         <IconButton label="Redo (Ctrl+Shift+Z)" icon={Redo2} size="sm" onClick={redo} disabled={!canRedo} />
                         <div className="mx-1 h-5 w-px bg-border-strong" />
                         <Button size="sm" variant="secondary" onClick={handleSave} disabled={saving} title={dirty ? 'Unsaved changes (Ctrl+S)' : 'Saved (Ctrl+S)'}>
-                            {saving ? <Loader2 size={14} className="animate-spin" aria-hidden /> : <Save size={14} aria-hidden />}
+                            {saving ? <Spinner size={16} /> : <Save size={14} aria-hidden />}
                             Save
                             {dirty && <span className="size-1.5 rounded-full bg-accent" aria-label="Unsaved changes" />}
                         </Button>
@@ -1985,7 +1985,7 @@ function BottomPanel({
                         {/* Live activity: what the model is doing right now */}
                         {runStatus === 'running' && liveActivity && (
                             <div className="flex items-center gap-2 text-[11px] text-sky-300/90 bg-sky-950/30 border border-sky-900/40 rounded-md px-2.5 py-1.5">
-                                <Loader2 size={11} className="animate-spin shrink-0" />
+                                <Spinner size={16} className="shrink-0" />
                                 <span className="truncate">{liveActivity}</span>
                             </div>
                         )}

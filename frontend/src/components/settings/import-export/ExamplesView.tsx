@@ -2,9 +2,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { Spinner } from '@/components/ui';
 import {
   PackageOpen, Bot, Workflow, Server, Wrench,
-  Download, Loader2, AlertCircle, ChevronRight, Sparkles,
+  Download, AlertCircle, ChevronRight, Sparkles,
 } from "lucide-react";
 
 interface ExamplePack {
@@ -81,7 +82,7 @@ export function ExamplesView({ onLoadBundle }: ExamplesViewProps) {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-6 w-6 text-zinc-500 animate-spin" />
+        <Spinner size={24} className="text-zinc-500" />
         <span className="ml-3 text-sm text-zinc-500">Loading example packs…</span>
       </div>
     );
@@ -159,7 +160,7 @@ export function ExamplesView({ onLoadBundle }: ExamplesViewProps) {
                 >
                   {isLoading ? (
                     <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <Spinner size={14} />
                       Loading…
                     </>
                   ) : (

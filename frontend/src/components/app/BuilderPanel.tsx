@@ -12,16 +12,14 @@ import {
     CheckCircle2,
     ChevronDown,
     ChevronUp,
-    Loader2,
     Send,
-    Sparkles,
     Trash2,
     X,
 } from 'lucide-react';
 
 import { useBuilder } from '@/components/app/BuilderProvider';
 import { HowImBuilt } from '@/components/app/HowImBuilt';
-import { Combobox, Hint } from '@/components/ui';
+import { Combobox, Hint, Mark, Spinner } from '@/components/ui';
 import type { BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
 import { renderTextContent } from '@/lib/utils';
@@ -54,7 +52,7 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
                 <div key={i} className="flex items-center gap-2 py-0.5 pl-1">
                     {done
                         ? <CheckCircle2 size={12} className="shrink-0 text-success" aria-hidden />
-                        : <Loader2 size={12} className="shrink-0 animate-spin text-accent" aria-hidden />}
+                        : <Spinner size={16} className="shrink-0 text-accent" />}
                     <span className={cn('truncate font-code text-[11px]', done ? 'text-text-faint' : 'text-text-muted')}>
                         {message.stepName}
                     </span>
@@ -192,7 +190,7 @@ export function BuilderPanel() {
             >
                 <header className="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
                     <div className="flex items-center gap-2">
-                        <Sparkles size={15} className="text-accent" aria-hidden />
+                        <Mark size={16} className="text-accent" aria-hidden />
                         <span className="text-sm font-semibold text-text">AI Builder</span>
                     </div>
                     <div className="flex items-center gap-1">
@@ -315,7 +313,7 @@ export function BuilderPanel() {
                                 focusRing,
                             )}
                         >
-                            {streaming ? <Loader2 size={15} className="animate-spin" aria-hidden /> : <Send size={15} aria-hidden />}
+                            {streaming ? <Spinner size={16} /> : <Send size={15} aria-hidden />}
                         </button>
                     </div>
 

@@ -3,13 +3,13 @@
 
 import { useState, useCallback } from "react";
 import {
-  Download, Package, AlertTriangle, XCircle, Loader2,
-  Workflow, Bot, Server, Wrench,
+  Download, Package, AlertTriangle, XCircle, Workflow, Bot, Server, Wrench,
 } from "lucide-react";
 import type { ExportData } from "./types";
 import { orchAgentDeps, agentMcpDeps, agentToolDeps, agentDelegateDeps } from "./utils";
 import { SectionTable } from "./SectionTable";
 
+import { Spinner } from '@/components/ui';
 const inputCls = "w-full bg-zinc-900 border border-zinc-800 p-2 text-sm text-white focus:border-white focus:outline-none placeholder:text-zinc-700";
 
 export function ExportView() {
@@ -118,7 +118,7 @@ export function ExportView() {
             disabled={loading}
             className="mt-4 flex items-center gap-2 px-5 py-2 bg-accent text-accent-fg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-50 mx-auto"
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Package className="h-4 w-4" />}
+            {loading ? <Spinner size={16} /> : <Package className="h-4 w-4" />}
             {loading ? "Loading…" : "Load Export Data"}
           </button>
         </div>
@@ -184,7 +184,7 @@ export function ExportView() {
               disabled={exporting}
               className="flex items-center gap-2 px-6 py-2 bg-accent text-accent-fg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-50 shrink-0"
             >
-              {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {exporting ? <Spinner size={16} /> : <Download className="h-4 w-4" />}
               {exporting ? "Exporting…" : "Export & Download"}
             </button>
           </div>

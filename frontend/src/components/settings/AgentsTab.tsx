@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Bot, Plus, Save, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, Eye, EyeOff, Loader2, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
-import { Combobox, Label, SearchInput, Select } from '@/components/ui';
+import { Bot, Plus, Save, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, Eye, EyeOff, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
+import { Combobox, Label, SearchInput, Select, Spinner } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
 import { humanizeToolName } from '@/lib/toolNames';
 import { VaultTextarea } from '@/components/VaultMention';
@@ -331,7 +331,7 @@ export const AgentsTab = ({
                             className="w-full py-1.5 bg-accent hover:bg-accent-hover disabled:bg-surface-2 disabled:text-text-faint text-accent-fg text-xs font-bold flex items-center justify-center gap-2 transition-colors"
                         >
                             {isBuilding
-                                ? <><Loader2 className="h-3 w-3 animate-spin" /> BUILDING…</>
+                                ? <><Spinner size={12} /> BUILDING…</>
                                 : <><Sparkles className="h-3 w-3" /> CREATE AGENT</>}
                         </button>
                     </div>
@@ -349,7 +349,7 @@ export const AgentsTab = ({
                 <div className="space-y-2 flex-1 overflow-y-auto modern-scrollbar">
                     {loadingAgents && agents.length === 0 && (
                         <div className="flex items-center gap-2 text-text-faint text-sm py-4">
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <Spinner size={16} />
                             Loading agents…
                         </div>
                     )}
@@ -446,7 +446,7 @@ export const AgentsTab = ({
                                         className="flex items-center gap-2 px-4 py-1.5 bg-accent text-accent-fg text-xs font-bold hover:bg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed"
                                     >
                                         {isSaving
-                                            ? <><Loader2 className="h-3 w-3 animate-spin" /> SAVING…</>
+                                            ? <><Spinner size={12} /> SAVING…</>
                                             : <><Save className="h-3 w-3" /> SAVE AGENT</>}
                                     </button>
                                 )}
@@ -946,7 +946,7 @@ export const AgentsTab = ({
                                                 className="px-4 py-2 bg-accent hover:bg-accent-hover disabled:bg-surface-2 disabled:text-text-faint text-accent-fg text-xs font-bold flex items-center gap-2 transition-colors"
                                             >
                                                 {isGenerating ? (
-                                                    <><Loader2 className="h-3 w-3 animate-spin" /> GENERATING...</>
+                                                    <><Spinner size={12} /> GENERATING...</>
                                                 ) : (
                                                     <><Sparkles className="h-3 w-3" /> GENERATE</>
                                                 )}

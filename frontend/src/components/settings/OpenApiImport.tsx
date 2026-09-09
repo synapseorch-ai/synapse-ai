@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState } from 'react';
-import { X, FileUp, Loader2, CheckSquare, Square, Import } from 'lucide-react';
+import { X, FileUp, CheckSquare, Square, Import } from 'lucide-react';
 
+import { Spinner } from '@/components/ui';
 interface OpenApiImportProps {
     /** Return to the tool list without importing. */
     onClose: () => void;
@@ -197,7 +198,7 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                     disabled={loading}
                     className="px-3 py-2 bg-zinc-800 border border-zinc-700 text-zinc-200 font-bold text-xs uppercase flex items-center gap-2 hover:bg-zinc-700 hover:text-white transition-colors disabled:opacity-50 rounded-md"
                 >
-                    {loading && !preview ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {loading && !preview ? <Spinner size={16} /> : null}
                     Preview tools
                 </button>
             </div>
@@ -243,7 +244,7 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                             disabled={loading || selectedCount === 0}
                             className="px-4 py-2 bg-emerald-800/80 border border-emerald-700 text-white font-bold text-xs uppercase flex items-center gap-2 hover:bg-emerald-700 transition-colors disabled:opacity-50 rounded-md"
                         >
-                            {loading && preview ? <Loader2 className="h-4 w-4 animate-spin" /> : <Import className="h-4 w-4" />}
+                            {loading && preview ? <Spinner size={16} /> : <Import className="h-4 w-4" />}
                             Import {selectedCount || ''} tool{selectedCount === 1 ? '' : 's'}
                         </button>
                     </div>

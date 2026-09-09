@@ -2,7 +2,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Play, ChevronDown, ChevronUp, Terminal, Package, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { Play, ChevronDown, ChevronUp, Terminal, Package, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { EditorView } from '@codemirror/view';
 import { basicSetup } from 'codemirror';
 import { python } from '@codemirror/lang-python';
@@ -11,6 +11,7 @@ import { EditorState } from '@codemirror/state';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 
+import { Spinner } from '@/components/ui';
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 
 export interface PythonDraftTool {
@@ -360,7 +361,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                         className="flex items-center gap-2 px-4 py-2 bg-accent hover:bg-accent-hover disabled:bg-zinc-800 disabled:text-zinc-600 text-accent-fg text-xs font-bold transition-colors mt-4 shrink-0"
                     >
                         {testLoading
-                            ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Running...</>
+                            ? <><Spinner size={14} /> Running...</>
                             : <><Play className="h-3.5 w-3.5" /> Run</>
                         }
                     </button>

@@ -5,12 +5,13 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import {
   Upload, Package, CheckCircle2, AlertTriangle,
   SkipForward, XCircle, Workflow, Bot, Server, Wrench,
-  AlertCircle, Loader2, Cpu, RotateCcw, ChevronDown, ChevronUp,
+  AlertCircle, Cpu, RotateCcw, ChevronDown, ChevronUp,
 } from "lucide-react";
 import type { ImportBundle, ImportResult, OrchestrationType, AgentType, McpServerType, CustomToolType } from "./types";
 import { orchAgentDeps, agentMcpDeps, agentToolDeps, agentDelegateDeps } from "./utils";
 import { SectionTable } from "./SectionTable";
 
+import { Spinner } from '@/components/ui';
 const inputCls = "w-full bg-zinc-900 border border-zinc-800 p-2 text-sm text-white focus:border-white focus:outline-none placeholder:text-zinc-700";
 
 const GOOGLE_WORKSPACE_TOOLS = new Set([
@@ -642,7 +643,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
             onClick={handleImport}
             className="flex items-center gap-2 px-6 py-2 bg-accent text-accent-fg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-50"
           >
-            {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            {importing ? <Spinner size={16} /> : <Upload className="h-4 w-4" />}
             {importing ? "Importing…" : "Start Import"}
           </button>
         </div>

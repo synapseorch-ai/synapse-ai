@@ -1,4 +1,4 @@
-import { Loader2 } from 'lucide-react';
+import { Spinner } from '@/components/ui';
 
 export default function Loading() {
     return (
@@ -13,7 +13,7 @@ export default function Loading() {
                     <div className="h-14 animate-pulse rounded-md bg-surface" />
                     <div className="h-14 animate-pulse rounded-md bg-surface" />
                     <div className="flex items-center justify-center py-16">
-                        <Loader2 className="h-6 w-6 animate-spin text-text-faint" />
+                        <Spinner size={24} className="text-text-faint" />
                     </div>
                 </div>
             </div>

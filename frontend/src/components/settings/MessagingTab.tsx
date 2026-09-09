@@ -3,10 +3,10 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
     MessageSquare, Plus, Trash, Save, Play, Square, FlaskConical,
     ChevronDown, ChevronRight, AlertTriangle, CheckCircle, XCircle,
-    Loader2, Info, RefreshCw,
+    Info, RefreshCw,
 } from 'lucide-react';
 import { ConfirmationModal } from './ConfirmationModal';
-import { Select } from '@/components/ui';
+import { Select, Spinner } from '@/components/ui';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -561,7 +561,7 @@ export const MessagingTab = () => {
                                         disabled={testing}
                                         className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold transition-colors disabled:opacity-50"
                                     >
-                                        {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <FlaskConical className="h-3 w-3" />}
+                                        {testing ? <Spinner size={12} /> : <FlaskConical className="h-3 w-3" />}
                                         TEST
                                     </button>
                                 )}
@@ -570,7 +570,7 @@ export const MessagingTab = () => {
                                     disabled={saving}
                                     className="flex items-center gap-2 px-4 py-1.5 bg-accent text-accent-fg text-xs font-bold hover:bg-accent-hover disabled:opacity-50"
                                 >
-                                    {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                                    {saving ? <Spinner size={12} /> : <Save className="h-3 w-3" />}
                                     SAVE & CONNECT
                                 </button>
                             </div>
