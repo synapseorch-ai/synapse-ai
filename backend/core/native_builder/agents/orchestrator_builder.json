@@ -11,5 +11,7 @@
     "orchestration_id": "orch_native_builder",
     "model": null,
     "provider": null,
-    "max_turns": null
+    "max_turns": null,
+    "system": "native_builder",
+    "system_role": "orchestrator"
 }

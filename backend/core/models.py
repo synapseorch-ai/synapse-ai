@@ -76,6 +76,7 @@ class AgentActiveRequest(BaseModel):
 class Settings(BaseModel):
     agent_name: str
     model: str = "mistral" # Default model (Ollama or Cloud)
+    builder_model: str = ""  # Model for the AI builder; empty = use `model`
     mode: str = "local" # "local" | "cloud" | "bedrock"
     openai_key: str = ""
     anthropic_key: str = ""

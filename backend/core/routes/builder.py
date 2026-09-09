@@ -1,36 +1,38 @@
-"""
-Builder agent endpoint: POST /api/builder/chat
+"""The AI builder's endpoints.
 
-Drives the native `orch_native_builder` orchestration and translates its
-engine events into the shape BuilderPanel.tsx expects. Also exposes a
-`human_input_required` event so the builder's clarify loop can surface
-questions to the user inline.
+The builder is an ordinary orchestration (`orch_native_builder`) with ordinary
+sub-agents, so these routes do very little: start a run, resume one, and stream
+what the engine says. The stream is the engine's own events, unchanged.
+
+That last part used to be false. This module translated engine events into a
+private vocabulary and, because a tool result reaches it truncated to 500
+characters, recovered "an orchestration was saved" by running a regex over the
+truncation — with three fallbacks behind it, all three dead code, the last of
+which announced *the most recently updated orchestration in the workspace*
+whether or not this run had touched it. The dispatcher now emits
+`resource_saved` with the whole resource, so there is nothing left to infer,
+and one reducer in the frontend maps engine events to panel messages for both
+this product and the commercial one.
 """
-import json
 import asyncio
+import json
 import uuid
-import re
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.models_orchestration import Orchestration
+from core.native_builder import NATIVE_BUILDER_ORCH_ID, bundled_definitions
 from core.orchestration.engine import OrchestrationEngine
-from core.native_builder import NATIVE_BUILDER_ORCH_ID
 from core.react_engine import iter_with_heartbeat
 
 router = APIRouter()
 
-_SKIP_STEP_TYPES = {"end", "human", "merge", "parallel", "loop"}
-
-
-def _apply_selected_model(orch: Orchestration, model: str | None) -> None:
-    if not model:
-        return
-    for step in orch.steps:
-        if step.type not in _SKIP_STEP_TYPES:
-            step.model = model
+#: Engine events that are internal bookkeeping — mid-step progress markers and
+#: the tool-step's own LLM log. Underscore-prefixed by convention.
+def _is_internal(event_type: str) -> bool:
+    return event_type.startswith("_")
 
 
 class BuilderChatRequest(BaseModel):
@@ -40,17 +42,22 @@ class BuilderChatRequest(BaseModel):
     can_create_agents: bool = False
     model: str | None = None
     current_orchestration_id: str | None = None
+    #: Identifies one conversation. It reaches the engine as part of the
+    #: session id, which scopes the tool cache and the agents' own history —
+    #: this was the literal string "builder" for every conversation, and in the
+    #: commercial edition that meant every conversation of every user.
+    client_session_id: str = ""
+
+
+class BuilderResumeRequest(BaseModel):
+    run_id: str
+    response: dict = {}
 
 
 def _format_history(history: list[dict]) -> str:
     if not history:
         return ""
-    lines = []
-    for m in history:
-        role = m.get("role", "user")
-        content = m.get("content", "")
-        lines.append(f"{role}: {content}")
-    return "\n".join(lines)
+    return "\n".join(f"{m.get('role', 'user')}: {m.get('content', '')}" for m in history)
 
 
 async def _resolve_current_orch_id(raw: str | None) -> str:
@@ -63,216 +70,44 @@ async def _resolve_current_orch_id(raw: str | None) -> str:
     return raw if await get_orchestration(raw) else ""
 
 
-class BuilderResumeRequest(BaseModel):
-    run_id: str
-    response: dict = {}
-    model: str | None = None
+async def _workspace_profile() -> str:
+    """What this workspace is for, in one line, for the analyst's first read.
+
+    Open source has nowhere to record it: the `personal_details` collection is
+    contact information — a name, a phone number, a postal address — not a
+    description of the work, and piping that into a model prompt costs
+    something and buys nothing. The commercial edition fills this key from the
+    onboarding questionnaire, which does ask.
+    """
+    return "(not recorded — ask the user if the answer would change what you build)"
 
 
-async def _translate_engine_events(event_source, run_id: str):
-    """Shared translator: engine events → BuilderPanel events."""
-    orchestration_saved_emitted = False
-    # Track orch_id from builder tool results so we can emit orchestration_saved
-    # at completion even when the saver uses skeleton+add_step tools (not the
-    # monolithic create_orchestration tool).
-    tracked_orch_id: str | None = None
-
-    async for event in event_source:
-        etype = event.get("type")
-
-        if etype == "step_start":
-            yield {"type": "thinking", "message": f"Running: {event.get('step_name', '')}"}
-
-        elif etype == "thinking":
-            yield {"type": "thinking", "message": event.get("message", "Thinking…")}
-
-        elif etype == "tool_execution":
-            yield {
-                "type": "tool_call",
-                "tool_name": event.get("tool_name"),
-                "args": event.get("args", {}),
-            }
-
-        elif etype == "tool_result":
-            tool_name = event.get("tool_name")
-            preview = event.get("preview", "")
-            yield {"type": "tool_result", "tool_name": tool_name, "result": preview}
-            if tool_name in ("create_agent", "update_agent"):
-                try:
-                    parsed = json.loads(preview)
-                    agent_obj = parsed.get("agent") if isinstance(parsed, dict) else None
-                    agent_obj = agent_obj or (parsed if isinstance(parsed, dict) and "id" in parsed else None)
-                    if agent_obj and "id" in agent_obj:
-                        yield {"type": "agent_saved", "agent": agent_obj}
-                except Exception:
-                    pass
-            elif tool_name == "create_agents":
-                try:
-                    parsed = json.loads(preview)
-                    agents_list = parsed.get("agents")
-                    if isinstance(agents_list, list):
-                        for agent_obj in agents_list:
-                            if isinstance(agent_obj, dict) and "id" in agent_obj:
-                                yield {"type": "agent_saved", "agent": agent_obj}
-                except Exception:
-                    pass
-            elif tool_name in ("create_orchestration", "update_orchestration"):
-                # Legacy monolithic tool path
-                try:
-                    from core.routes.orchestrations import load_orchestrations as _load_orchs
-                    orch_id = None
-                    try:
-                        parsed = json.loads(preview)
-                        orch_obj = parsed.get("orchestration") if isinstance(parsed, dict) else None
-                        orch_id = orch_obj.get("id") if isinstance(orch_obj, dict) else None
-                    except Exception:
-                        pass
-                    if not orch_id:
-                        m = re.search(r'"id"\s*:\s*"(orch_[a-z0-9]+)"', preview)
-                        if m:
-                            orch_id = m.group(1)
-                    if orch_id:
-                        full_orch = next((o for o in _load_orchs() if o.get("id") == orch_id), None)
-                        if full_orch:
-                            yield {"type": "orchestration_saved", "orchestration": full_orch}
-                            orchestration_saved_emitted = True
-                except Exception:
-                    pass
-            elif tool_name == "create_orchestration_skeleton":
-                # Skeleton-based saver: extract orch_id for later
-                try:
-                    parsed = json.loads(preview)
-                    oid = None
-                    if isinstance(parsed, dict):
-                        orch_obj = parsed.get("orchestration")
-                        if isinstance(orch_obj, dict):
-                            oid = orch_obj.get("id")
-                        if not oid:
-                            oid = parsed.get("orch_id") or parsed.get("id")
-                    if not oid:
-                        m = re.search(r'"id"\s*:\s*"(orch_[a-z0-9]+)"', preview)
-                        if m:
-                            oid = m.group(1)
-                    if oid:
-                        tracked_orch_id = oid
-                        print(f"DEBUG BUILDER: 🔍 Tracked orch_id={oid} from create_orchestration_skeleton", flush=True)
-                    else:
-                        print(f"DEBUG BUILDER: ⚠️ Could not extract orch_id from skeleton preview: {preview[:200]}", flush=True)
-                except Exception as e:
-                    print(f"DEBUG BUILDER: ❌ Error parsing skeleton result: {e}", flush=True)
-            elif tool_name == "validate_orchestration" and not tracked_orch_id:
-                # Fallback: extract orch_id from validate result args
-                try:
-                    m = re.search(r'orch_[a-z0-9]+', preview)
-                    if m:
-                        tracked_orch_id = m.group(0)
-                        print(f"DEBUG BUILDER: 🔍 Tracked orch_id={tracked_orch_id} from validate_orchestration", flush=True)
-                except Exception:
-                    pass
-
-        elif etype == "human_input_required":
-            yield {
-                "type": "human_input_required",
-                "run_id": run_id,
-                "orch_step_id": event.get("orch_step_id"),
-                "prompt": event.get("prompt"),
-                "fields": event.get("fields", []),
-            }
-
-        elif etype == "orchestration_complete":
-            if not orchestration_saved_emitted:
-                # Try to emit orchestration_saved from final_state or tracked_orch_id
-                final_state = event.get("final_state", {}) or {}
-                final_orch = final_state.get("final_orch")
-                orch_obj = None
-                if isinstance(final_orch, dict):
-                    orch_obj = final_orch.get("orchestration") or (final_orch if "id" in final_orch else None)
-                elif isinstance(final_orch, str) and final_orch.strip():
-                    try:
-                        parsed = json.loads(final_orch)
-                        orch_obj = parsed.get("orchestration") if isinstance(parsed, dict) else None
-                        orch_obj = orch_obj or (parsed if isinstance(parsed, dict) and "id" in parsed else None)
-                    except Exception:
-                        pass
-                
-                if orch_obj and "id" in orch_obj:
-                    yield {"type": "orchestration_saved", "orchestration": orch_obj}
-                    orchestration_saved_emitted = True
-
-                # Fallback 1: use tracked_orch_id to load the full orchestration from disk
-                if not orchestration_saved_emitted and tracked_orch_id:
-                    try:
-                        from core.routes.orchestrations import load_orchestrations as _load_orchs
-                        full_orch = next((o for o in _load_orchs() if o.get("id") == tracked_orch_id), None)
-                        if full_orch:
-                            yield {"type": "orchestration_saved", "orchestration": full_orch}
-                            orchestration_saved_emitted = True
-                    except Exception:
-                        pass
-
-                # Fallback 2: find the most recently updated user orchestration
-                if not orchestration_saved_emitted:
-                    try:
-                        from core.routes.orchestrations import load_orchestrations as _load_orchs
-                        all_orchs = _load_orchs()
-                        user_orchs = [o for o in all_orchs if o.get("id") != "orch_native_builder"]
-                        if user_orchs:
-                            latest = max(user_orchs, key=lambda o: o.get("updated_at", o.get("created_at", "")))
-                            yield {"type": "orchestration_saved", "orchestration": latest}
-                            orchestration_saved_emitted = True
-                    except Exception:
-                        pass
+async def _selected_model(request_model: str | None) -> str | None:
+    """The model this run uses: the caller's pick, else the workspace default."""
+    if request_model:
+        return request_model
+    from core.config import load_settings
+    return load_settings().get("builder_model") or None
 
 
-        elif etype == "final":
-            response = event.get("response", "")
-            final_state = (event.get("data") or {}).get("shared_state", {}) or {}
-            final_text = _summarize_final(response, final_state, orchestration_saved_emitted)
-            yield {"type": "final", "response": final_text}
-
-        elif etype == "step_complete":
-            yield {"type": "step_complete", "step_name": event.get("step_name", "")}
-
-        elif etype == "routing_decision":
-            yield {
-                "type": "routing_decision",
-                "decision": event.get("decision", ""),
-                "step_name": event.get("step_name", ""),
-            }
-
-        elif etype in ("orchestration_error", "step_error"):
-            yield {"type": "error", "message": event.get("error", "Unknown error")}
-
+def _session_id(client_session_id: str) -> str:
+    from core.tenancy import get_tenant
+    return f"builder:{get_tenant()}:{client_session_id or 'default'}"
 
 
 async def run_builder_stream(request: BuilderChatRequest, server_module):
-    """Drive the native builder orchestration and emit BuilderPanel events.
+    """Drive the builder orchestration, yielding the engine's own events."""
+    from core.store.resources import get_orchestration
 
-    Event types yielded:
-      thinking             — step_start / engine status messages
-      tool_call            — tool about to execute (name + args)
-      tool_result          — result of a tool call (name + result preview)
-      orchestration_saved  — derived from final_state.final_orch at completion
-      agent_saved          — derived from create_agent / update_agent tool_result
-      human_input_required — analyst wants more info; frontend surfaces a reply box
-      final                — final text response
-      error                — unrecoverable error
-    """
-    from core.routes.orchestrations import load_orchestrations
-
-    orchs = await load_orchestrations()
-    orch_data = next((o for o in orchs if o.get("id") == NATIVE_BUILDER_ORCH_ID), None)
+    orch_data = await get_orchestration(NATIVE_BUILDER_ORCH_ID)
     if not orch_data:
-        yield {"type": "error", "message": f"Native builder orchestration '{NATIVE_BUILDER_ORCH_ID}' not found. Seed it first."}
+        yield {
+            "type": "orchestration_error",
+            "error": f"The builder orchestration '{NATIVE_BUILDER_ORCH_ID}' is not installed.",
+        }
         return
 
     orch = Orchestration.model_validate(orch_data)
-
-    # Propagate the frontend-selected model to every step that runs an LLM.
-    # `end`/`human` steps don't take a model; everything else (agent, evaluator,
-    # tool, llm, transform-with-llm) reads step.model and falls back to settings.
-    _apply_selected_model(orch, request.model)
-
     engine = OrchestrationEngine(orch, server_module)
 
     initial_state = {
@@ -281,220 +116,226 @@ async def run_builder_stream(request: BuilderChatRequest, server_module):
         "selected_agent_ids": list(request.selected_agent_ids or []),
         "can_create_agents": bool(request.can_create_agents),
         "current_orchestration_id": await _resolve_current_orch_id(request.current_orchestration_id),
+        "org_profile": await _workspace_profile(),
         "requirements": "",
         "human_response": "",
-        "plan": "",
         "final_orch": {},
+        # Applied by the engine on run and re-applied on resume, so the second
+        # half of a conversation runs on the model the first half did.
+        OrchestrationEngine.MODEL_OVERRIDE_KEY: await _selected_model(request.model),
     }
 
-    run_id = f"builder_{uuid.uuid4().hex[:12]}"
-    session_id = "builder"
-
-    engine_stream = engine.run(
+    async for event in engine.run(
         initial_input=request.message,
-        run_id=run_id,
-        session_id=session_id,
+        run_id=f"builder_{uuid.uuid4().hex[:12]}",
+        session_id=_session_id(request.client_session_id),
         initial_state=initial_state,
-    )
-    async for out in _translate_engine_events(engine_stream, run_id):
-        yield out
-
-
-async def run_builder_resume_stream(
-    run_id: str,
-    human_response: dict,
-    server_module,
-    model: str | None = None,
-):
-    """Resume a paused builder run and translate events for BuilderPanel.
-
-    Mirrors OrchestrationEngine.resume, but reapplies the frontend-selected
-    model to the freshly-loaded orch so every step after the human-clarify
-    resume uses the user's picked model (not just the first leg of the run).
-    """
-    from core.orchestration.state import SharedState as SS
-    from core.orchestration.logger import OrchestrationLogger
-    from core.routes.orchestrations import load_orchestrations
-
-    async def _event_source():
-        yield {"type": "thinking", "message": "Resuming..."}
-        restored = await SS.restore(run_id)
-        run = restored.run
-
-        orchestrations = await load_orchestrations()
-        orch_data = next((o for o in orchestrations if o["id"] == run.orchestration_id), None)
-        if not orch_data:
-            yield {"type": "orchestration_error", "error": f"Orchestration '{run.orchestration_id}' not found"}
-            return
-
-        orch = Orchestration.model_validate(orch_data)
-        _apply_selected_model(orch, model)
-        engine = OrchestrationEngine(orch, server_module)
-
-        engine.logger = OrchestrationLogger(
-            run_id=run_id,
-            orchestration_id=run.orchestration_id,
-            orchestration_name=orch.name,
-            user_input=f"(resumed) human_response={human_response}",
-            session_id=run.session_id,
-        )
-
-        current_step = engine.step_map.get(run.current_step_id)
-        output_key = (current_step.output_key if current_step else None) or "human_response"
-
-        # The frontend sends { field_name: "user text" } — extract the plain
-        # text value so downstream prompt templates like {state.human_response}
-        # receive a clean string, not a dict representation.
-        if isinstance(human_response, dict) and len(human_response) == 1:
-            flat_value = next(iter(human_response.values()))
-        elif isinstance(human_response, dict):
-            flat_value = " ".join(str(v) for v in human_response.values())
-        else:
-            flat_value = human_response
-
-        run.shared_state[output_key] = flat_value
-        if output_key != "human_response":
-            run.shared_state["human_response"] = flat_value
-
-        run.waiting_for_human = False
-        run.status = "running"
-
-        if current_step:
-            next_id, _ = engine._resolve_next(current_step, run)
-            run.current_step_id = next_id
-
-        state = SS(run)
-        async for event in engine._execute_loop(run, state):
+    ):
+        if not _is_internal(event.get("type", "")):
             yield event
 
-    async for out in _translate_engine_events(_event_source(), run_id):
-        yield out
+
+async def run_builder_resume_stream(run_id: str, human_response: dict, server_module):
+    """Resume a paused builder run, yielding the engine's own events.
+
+    This used to be a hand-copied near-duplicate of `OrchestrationEngine.resume`
+    that had drifted: it never called `_complete_human_step`, so the approval
+    stayed open in the run's history, and it re-applied the model itself
+    because there was nowhere to carry it. Both are the engine's job now.
+    """
+    async for event in OrchestrationEngine.resume(run_id, human_response, server_module):
+        if not _is_internal(event.get("type", "")):
+            yield event
 
 
-def _summarize_final(raw_response: str, final_state: dict, orch_saved: bool) -> str:
-    """Turn the engine's raw final output into a user-facing builder reply."""
-    # If we paused for a human clarification, surface the analyst's question.
-    requirements = final_state.get("requirements")
-    if requirements and not final_state.get("plan") and not final_state.get("final_orch"):
-        return str(requirements)
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, default=str)}\n\n"
 
-    final_orch = final_state.get("final_orch")
-    if orch_saved and isinstance(final_orch, dict):
-        orch_obj = final_orch.get("orchestration") or final_orch
-        name = orch_obj.get("name") or orch_obj.get("id") or "orchestration"
-        step_count = len(orch_obj.get("steps", []))
-        return f"✓ Orchestration **{name}** saved ({step_count} steps). You can open it from the orchestrations tab."
 
-    return str(raw_response or "Done.")
+def _stream(source) -> StreamingResponse:
+    async def event_generator():
+        try:
+            async for event in iter_with_heartbeat(source):
+                if isinstance(event, str):  # heartbeat comment — pass through
+                    yield event
+                    continue
+                yield _sse(event)
+                await asyncio.sleep(0)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            yield _sse({"type": "orchestration_error", "error": str(exc)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/api/builder/chat")
+async def builder_chat(request: BuilderChatRequest, http_request: Request):
+    return _stream(run_builder_stream(request, http_request.app.state.server_module))
+
+
+@router.post("/api/builder/resume")
+async def builder_resume(request: BuilderResumeRequest, http_request: Request):
+    """Resume a paused builder run after the user answers."""
+    return _stream(
+        run_builder_resume_stream(
+            request.run_id, request.response, http_request.app.state.server_module
+        )
+    )
 
 
 async def run_builder_stream_compat(request, server_module):
-    """SSE pass-through for the main chat endpoint (page.tsx uses this)."""
+    """SSE for the main chat page, which talks to a builder-typed agent.
+
+    The chat page has no builder panel: no inline approval box, no canvas to
+    open. So the run's events are flattened into the chat vocabulary, and a
+    human step ends the turn with the question as an assistant message — the
+    user answers by replying, which starts a fresh turn.
+    """
     builder_req = BuilderChatRequest(
         message=request.message,
         history=getattr(request, "history_messages", []) or [],
         can_create_agents=True,
         model=getattr(request, "model", None),
+        client_session_id=str(getattr(request, "session_id", "") or "chat"),
     )
 
     async for event in iter_with_heartbeat(run_builder_stream(builder_req, server_module)):
         if isinstance(event, str):  # heartbeat comment — pass through
             yield event
             continue
-        etype = event["type"]
+        etype = event.get("type")
 
-        if etype == "thinking":
-            yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"
+        if etype == "step_start":
+            yield _sse({"type": "status", "message": f"Running: {event.get('step_name', '')}"})
 
-        elif etype == "tool_call":
-            yield f"data: {json.dumps({'type': 'tool_execution', 'tool_name': event['tool_name'], 'args': event['args']})}\n\n"
+        elif etype == "thinking":
+            yield _sse({"type": "status", "message": event.get("message", "Thinking…")})
+
+        elif etype == "tool_execution":
+            yield _sse({"type": "tool_execution", "tool_name": event.get("tool_name"), "args": event.get("args", {})})
 
         elif etype == "tool_result":
-            try:
-                result_obj = json.loads(event["result"])
-                preview = json.dumps(result_obj)[:200]
-            except Exception:
-                preview = str(event["result"])[:200]
-            yield f"data: {json.dumps({'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': preview})}\n\n"
+            yield _sse({"type": "tool_result", "tool_name": event.get("tool_name"), "preview": event.get("preview", "")[:200]})
 
-        elif etype == "orchestration_saved":
-            orch = event["orchestration"]
-            preview = f"✓ Orchestration '{orch.get('name', orch.get('id', ''))}' saved"
-            yield f"data: {json.dumps({'type': 'tool_result', 'tool_name': 'orchestration_saved', 'preview': preview})}\n\n"
-
-        elif etype == "agent_saved":
-            agent = event["agent"]
-            preview = f"✓ Agent '{agent.get('name', agent.get('id', ''))}' saved"
-            yield f"data: {json.dumps({'type': 'tool_result', 'tool_name': 'agent_saved', 'preview': preview})}\n\n"
+        elif etype == "resource_saved":
+            preview = f"✓ {event.get('kind', 'resource')} '{event.get('name') or event.get('id')}' {event.get('action', 'saved')}"
+            yield _sse({"type": "tool_result", "tool_name": "resource_saved", "preview": preview})
 
         elif etype == "human_input_required":
-            # Main chat has no inline reply box — surface as a normal assistant message.
-            yield f"data: {json.dumps({'type': 'response', 'content': event.get('prompt', ''), 'intent': 'chat', 'data': None, 'tool_name': None}, default=str)}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            yield _sse({"type": "response", "content": event.get("prompt", ""), "intent": "chat", "data": None, "tool_name": None})
+            yield _sse({"type": "done"})
             return
 
-        elif etype == "final":
-            yield f"data: {json.dumps({'type': 'response', 'content': event['response'], 'intent': 'chat', 'data': None, 'tool_name': None}, default=str)}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        elif etype == "orchestration_complete":
+            summary = (event.get("final_state") or {}).get("summary")
+            yield _sse({"type": "response", "content": summary or "Done.", "intent": "chat", "data": None, "tool_name": None})
+            yield _sse({"type": "done"})
 
-        elif etype == "error":
-            yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
+        elif etype in ("orchestration_error", "step_error"):
+            yield _sse({"type": "error", "message": event.get("error", "Unknown error")})
 
         await asyncio.sleep(0)
 
 
-@router.post("/api/builder/chat")
-async def builder_chat(request: BuilderChatRequest, http_request: Request):
-    server_module = http_request.app.state.server_module
+# ── "See how I'm built" ──────────────────────────────────────────────────────
 
-    async def event_generator():
-        try:
-            async for event in iter_with_heartbeat(run_builder_stream(request, server_module)):
-                if isinstance(event, str):  # heartbeat comment — pass through
-                    yield event
-                    continue
-                yield f"data: {json.dumps(event, default=str)}\n\n"
-                await asyncio.sleep(0)
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+@router.get("/api/builder/legend")
+async def builder_legend():
+    """The builder's own shape, read from the definitions it ships with.
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    Rendered rather than written down, so it cannot drift from the thing it
+    describes the way a hand-typed diagram would.
+    """
+    bundle = bundled_definitions()
+    orch = bundle["orchestration"]
+    agents = {a["id"]: a for a in bundle["agents"]}
+    by_id = {s["id"]: s for s in orch["steps"]}
+
+    entry = by_id.get(orch["entry_step_id"], {})
+    return {
+        "name": orch["name"],
+        "description": orch["description"],
+        "step_count": len(orch["steps"]),
+        "entry_step": {"id": entry.get("id"), "name": entry.get("name"), "type": entry.get("type")},
+        "routes": [
+            {"label": label, "to": by_id.get(target, {}).get("name", target),
+             "description": (entry.get("route_descriptions") or {}).get(label, "")}
+            for label, target in (entry.get("route_map") or {}).items()
+        ],
+        "human_gates": [
+            {"id": s["id"], "name": s["name"], "asks": (s.get("human_fields") or [{}])[0].get("label", "")}
+            for s in orch["steps"] if s.get("type") == "human"
+        ],
+        "agents": [
+            {
+                "role": agents[s["agent_id"]].get("system_role"),
+                "name": agents[s["agent_id"]]["name"],
+                "description": agents[s["agent_id"]].get("description", ""),
+                "step": s["name"],
+                "tools": agents[s["agent_id"]].get("tools", []),
+            }
+            for s in orch["steps"]
+            if s.get("agent_id") and s["agent_id"] in agents
+        ],
+        "step_types": sorted({s["type"] for s in orch["steps"]}),
+    }
 
 
-@router.post("/api/builder/resume")
-async def builder_resume(request: BuilderResumeRequest, http_request: Request):
-    """Resume a paused builder run after the user submits a clarification."""
-    server_module = http_request.app.state.server_module
+@router.post("/api/builder/duplicate")
+async def builder_duplicate():
+    """Copy the builder into the workspace as an ordinary, editable orchestration.
 
-    async def event_generator():
-        try:
-            async for event in iter_with_heartbeat(run_builder_resume_stream(request.run_id, request.response, server_module, model=request.model)):
-                if isinstance(event, str):  # heartbeat comment — pass through
-                    yield event
-                    continue
-                yield f"data: {json.dumps(event, default=str)}\n\n"
-                await asyncio.sleep(0)
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+    Fresh ids, agent references remapped to them, and the `system` marker
+    stripped — so the copy is the customer's, not another instance of ours.
+    """
+    from core.builder_tools import _random_id
+    from core.routes.agents import load_user_agents
+    from core.routes.orchestrations import load_orchestrations
+    from core.store.resources import save_agent, save_orchestration
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    bundle = bundled_definitions()
+    taken_agents = {a.get("id") for a in await load_user_agents()}
+    taken_orchs = {o.get("id") for o in await load_orchestrations()}
+
+    def _mint(prefix: str, taken: set[str]) -> str:
+        new_id = _random_id(prefix, length=10)
+        while new_id in taken:
+            new_id = _random_id(prefix, length=10)
+        taken.add(new_id)
+        return new_id
+
+    mapping: dict[str, str] = {}
+    for agent in bundle["agents"]:
+        copy = {k: v for k, v in agent.items() if k not in ("system", "system_role")}
+        copy["id"] = _mint("agent_", taken_agents)
+        copy["name"] = f"{agent['name']} (Copy)"
+        mapping[agent["id"]] = copy["id"]
+        # The orchestrator shell points at the orchestration; fixed up below.
+        if copy.get("orchestration_id"):
+            copy["orchestration_id"] = None
+        await save_agent(copy)
+
+    orch = {k: v for k, v in bundle["orchestration"].items() if k != "system"}
+    orch["id"] = _mint("orch_", taken_orchs)
+    orch["name"] = f"{bundle['orchestration']['name']} (Copy)"
+    orch["steps"] = [
+        {**s, "agent_id": mapping.get(s["agent_id"], s["agent_id"])} if s.get("agent_id") else s
+        for s in orch["steps"]
+    ]
+    await save_orchestration(orch)
+
+    return {
+        "status": "created",
+        "orchestration_id": orch["id"],
+        "name": orch["name"],
+        "agent_ids": list(mapping.values()),
+    }

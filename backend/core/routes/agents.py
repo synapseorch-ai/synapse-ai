@@ -49,7 +49,13 @@ async def get_active_agent_data():
 
 @router.get("/api/agents")
 async def get_agents():
-    return await load_user_agents()
+    """This workspace's agents, without the AI builder's own sub-agents.
+
+    Same reasoning as the orchestration list: the builder's five agents sit in
+    this table too, and every screen that wanted to hide them was matching on
+    an id prefix of its own.
+    """
+    return [a for a in await load_user_agents() if not a.get("system")]
 
 
 @router.post("/api/agents")

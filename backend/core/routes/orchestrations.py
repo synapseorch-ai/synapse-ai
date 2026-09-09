@@ -37,7 +37,14 @@ async def save_orchestrations(data: list[dict]):
 
 @router.get("/api/orchestrations")
 async def list_orchestrations():
-    return await load_orchestrations()
+    """This workspace's orchestrations.
+
+    The AI builder is itself a seeded orchestration living in the same table.
+    It is filtered out here rather than by each caller: four screens used to
+    each carry their own `id != "orch_native_builder"` check, and the ones that
+    forgot (the schedule target picker, for one) offered it as something to run.
+    """
+    return [o for o in await load_orchestrations() if not o.get("system")]
 
 
 @router.get("/api/orchestrations/runs")

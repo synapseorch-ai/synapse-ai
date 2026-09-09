@@ -26,14 +26,18 @@ router = APIRouter()
 # did disagree with core/routes/*.py about what was on disk.
 # --------------------------------------------------------------------------- #
 
+# The AI builder's own orchestration and sub-agents ship with the product, so
+# they are never part of an export: carrying them would put a stale copy of the
+# builder into whatever workspace imports the bundle, where seeding would then
+# fight it on every restart.
 async def _load_agents() -> List[dict]:
     from core.store.resources import load_agents
-    return await load_agents()
+    return [a for a in await load_agents() if not a.get("system")]
 
 
 async def _load_orchestrations() -> List[dict]:
     from core.store.resources import load_orchestrations
-    return await load_orchestrations()
+    return [o for o in await load_orchestrations() if not o.get("system")]
 
 
 async def _load_custom_tools() -> List[dict]:

@@ -4,12 +4,22 @@ Native Builder — Synapse's AI Builder implemented as a real orchestration.
 This package holds the seed JSON definitions (orchestration + sub-agents) and
 the idempotent seeding function used at startup. See seed.py.
 """
-from .seed import seed_native_builder, NATIVE_BUILDER_ORCH_ID, NATIVE_BUILDER_AGENT_ID
+from .seed import (
+    NATIVE_BUILDER_AGENT_ID,
+    NATIVE_BUILDER_ORCH_ID,
+    SYSTEM_MARKER,
+    bundle_version,
+    bundled_definitions,
+    seed_native_builder,
+)
 
 __all__ = [
     "seed_native_builder",
+    "bundled_definitions",
+    "bundle_version",
     "NATIVE_BUILDER_ORCH_ID",
     "NATIVE_BUILDER_AGENT_ID",
+    "SYSTEM_MARKER",
     "STEP_TYPE_CHEATSHEET",
 ]
 

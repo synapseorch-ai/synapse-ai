@@ -1,10 +1,21 @@
 """Idempotent seeding of the native builder orchestration and its sub-agents.
 
-Reads bundled JSON definitions from this package and merges any missing entries
-(by id) into data/user_agents.json and data/orchestrations.json.
+Reads bundled JSON definitions from this package and syncs them into the store.
+
+The builder is the product demonstrating itself: an ordinary orchestration with
+ordinary sub-agents, sitting in the same tables as the customer's own. What
+keeps the two apart is the `system: "native_builder"` marker every bundled
+definition carries — read paths filter on it, so the builder never offers its
+own machinery as something to edit, delete, schedule or count against a plan.
+
+`bundled_definitions` and `bundle_version` exist for the commercial edition,
+which cannot seed from here: it has many organisations in one database and
+mints its own ids per organisation. It takes the definitions, remaps them, and
+stamps the version so it knows when to re-seed.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import Any
@@ -16,9 +27,12 @@ _ORCH_FILE = os.path.join(_HERE, "orchestration.json")
 NATIVE_BUILDER_ORCH_ID = "orch_native_builder"
 NATIVE_BUILDER_AGENT_ID = "agent_native_builder"
 
+#: The value of the `system` marker on every bundled definition.
+SYSTEM_MARKER = "native_builder"
+
 # Agent IDs that were shipped by earlier versions of the native builder and
 # should be purged on startup. Kept here so stale entries get cleaned up from
-# data/user_agents.json when users upgrade.
+# the store when users upgrade.
 LEGACY_BUILDER_AGENT_IDS: set[str] = {
     "agent_native_builder_planner_create",
     "agent_native_builder_planner_update",
@@ -67,69 +81,73 @@ def _load_bundled_orchestration() -> dict:
     return _apply_cheatsheet_to_orch(_load_json(_ORCH_FILE))
 
 
+def bundled_definitions() -> dict[str, Any]:
+    """The builder as shipped: `{"orchestration": {...}, "agents": [...]}`.
+
+    Cheatsheet tokens already expanded, so what comes back is what would run.
+    """
+    return {"orchestration": _load_bundled_orchestration(), "agents": _load_bundled_agents()}
+
+
+def bundle_version() -> str:
+    """A short hash of the expanded definitions.
+
+    Stamped on a seeded copy so a later release can tell whether that copy is
+    the current one without diffing fifteen steps and five system prompts.
+    """
+    payload = json.dumps(bundled_definitions(), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
 async def seed_native_builder() -> dict:
     """Sync the builder orchestration and sub-agents from the bundled definitions.
 
-    Native-builder entries (ids starting with `agent_native_builder` / equal to
-    `orch_native_builder`) are always replaced with the bundled version so tool
-    list / prompt fixes propagate on restart. Other entries are left alone.
+    Bundled entries always win, so tool-list and prompt fixes land on restart.
+    Everything else in the store is left exactly as it is: the writes here are
+    one row each, because this used to replace the whole tenant — which meant
+    every start-up rewrote every agent and orchestration a customer owned.
 
-    Returns: {"agents_added": [...], "agents_updated": [...], "agents_removed": [...], "orchestration": "added"|"updated"|"unchanged"}.
+    Returns: {"agents_added": [...], "agents_updated": [...], "agents_removed": [...],
+              "orchestration": "added"|"updated"|"unchanged", "version": "..."}.
     """
-    from core.routes.agents import load_user_agents, save_user_agents
-    from core.routes.orchestrations import load_orchestrations, save_orchestrations
+    from core.routes.agents import load_user_agents
+    from core.routes.orchestrations import load_orchestrations
+    from core.store.resources import delete_agent, save_agent, save_orchestration
 
     bundled_agents = _load_bundled_agents()
     bundled_orch = _load_bundled_orchestration()
-    bundled_agent_map = {a["id"]: a for a in bundled_agents}
 
-    existing_agents = await load_user_agents()
+    existing_agents = {a.get("id"): a for a in await load_user_agents()}
     agents_added: list[str] = []
     agents_updated: list[str] = []
     agents_removed: list[str] = []
-    seen_bundled_ids: set[str] = set()
-    new_agents: list[dict] = []
-    for a in existing_agents:
-        aid = a.get("id")
-        if aid in LEGACY_BUILDER_AGENT_IDS:
-            agents_removed.append(aid)
-            continue
-        if aid in bundled_agent_map:
-            bundled = bundled_agent_map[aid]
-            if a != bundled:
-                agents_updated.append(aid)
-            new_agents.append(bundled)
-            seen_bundled_ids.add(aid)
-        else:
-            new_agents.append(a)
-    for aid, bundled in bundled_agent_map.items():
-        if aid not in seen_bundled_ids:
-            new_agents.append(bundled)
-            agents_added.append(aid)
-    if agents_added or agents_updated or agents_removed:
-        await save_user_agents(new_agents)
 
-    existing_orchs = await load_orchestrations()
-    orch_status = "unchanged"
-    new_orchs: list[dict] = []
-    seen_orch = False
-    for o in existing_orchs:
-        if o.get("id") == bundled_orch["id"]:
-            seen_orch = True
-            if o != bundled_orch:
-                orch_status = "updated"
-            new_orchs.append(bundled_orch)
-        else:
-            new_orchs.append(o)
-    if not seen_orch:
-        new_orchs.append(bundled_orch)
-        orch_status = "added"
-    if orch_status != "unchanged":
-        await save_orchestrations(new_orchs)
+    for legacy_id in LEGACY_BUILDER_AGENT_IDS:
+        if legacy_id in existing_agents:
+            await delete_agent(legacy_id)
+            agents_removed.append(legacy_id)
+
+    for bundled in bundled_agents:
+        aid = bundled["id"]
+        current = existing_agents.get(aid)
+        if current == bundled:
+            continue
+        await save_agent(bundled)
+        (agents_updated if current is not None else agents_added).append(aid)
+
+    existing_orch = next(
+        (o for o in await load_orchestrations() if o.get("id") == bundled_orch["id"]), None
+    )
+    if existing_orch == bundled_orch:
+        orch_status = "unchanged"
+    else:
+        await save_orchestration(bundled_orch)
+        orch_status = "updated" if existing_orch is not None else "added"
 
     return {
         "agents_added": agents_added,
         "agents_updated": agents_updated,
         "agents_removed": agents_removed,
         "orchestration": orch_status,
+        "version": bundle_version(),
     }

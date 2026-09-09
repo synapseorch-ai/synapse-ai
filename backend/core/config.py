@@ -109,6 +109,11 @@ def load_settings():
 _DEFAULTS = {
         "agent_name": "Synapse",
         "model": "ollama.mistral",
+        # Which model the AI builder itself runs on. Empty means "whatever
+        # `model` is" — the builder is a long multi-step run, so it is worth
+        # being able to point it at a stronger model than the day-to-day one
+        # without changing every agent.
+        "builder_model": "",
         "mode": "local",
         "openai_key": "",
         "anthropic_key": "",

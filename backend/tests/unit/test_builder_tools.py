@@ -579,3 +579,59 @@ class TestResourceSavedEvents:
             "delete_orchestration", {"orch_id": "orch_doomed"}, server  # no confirm
         )
         assert events == []
+
+
+class TestBothDispatchSitesYieldIt:
+    """A builder tool reaches the engine two ways — an agent calling it mid-ReAct,
+    and a tool step forcing it. Both have to pass the event on, or the panel
+    goes quiet on whichever path it happens to take."""
+
+    async def test_an_agent_calling_a_builder_tool_yields_it(self, fake_llm):
+        import core.server as server
+        from core.react_engine import run_agent_step
+
+        fake_llm.set_default(json.dumps({
+            "tool": "create_agent",
+            "arguments": {"name": "R", "description": "d", "type": "conversational",
+                          "tools": [], "system_prompt": "p"},
+        }))
+        agent = S.make_agent(id="agent_builder_ish", tools=["create_agent"], skip_default_tools=True)
+        await S.seed_agents([agent])
+
+        events = []
+        async for event in run_agent_step(
+            message="make an agent", agent_id="agent_builder_ish",
+            session_id="s1", server_module=server, max_turns=2,
+        ):
+            events.append(event)
+
+        types = [e["type"] for e in events]
+        assert "resource_saved" in types, types
+        assert types.index("tool_result") < types.index("resource_saved")
+
+    async def test_a_tool_step_forcing_a_builder_tool_yields_it(self, fake_llm):
+        import core.server as server
+        from core.models_orchestration import Orchestration
+        from core.orchestration.engine import OrchestrationEngine
+
+        fake_llm.set_default(json.dumps({
+            "tool": "create_agent",
+            "arguments": {"name": "R", "description": "d", "type": "conversational",
+                          "tools": [], "system_prompt": "p"},
+        }))
+        orch = Orchestration.model_validate(S.make_orchestration(
+            entry_step_id="step_write",
+            steps=[
+                {"id": "step_write", "name": "Write", "type": "tool",
+                 "forced_tool": "create_agent", "prompt_template": "go",
+                 "output_key": "out", "next_step_id": "step_end"},
+                {"id": "step_end", "name": "End", "type": "end"},
+            ],
+        ))
+        events = [e async for e in OrchestrationEngine(orch, server).run("go", run_id="run_ts")]
+
+        saved = [e for e in events if e["type"] == "resource_saved"]
+        assert saved, [e["type"] for e in events]
+        # A step's events carry where they happened, like every other step event.
+        assert saved[0]["step_name"] == "Write"
+        assert saved[0]["orch_step_id"] == "step_write"
