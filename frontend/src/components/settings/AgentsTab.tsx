@@ -23,6 +23,11 @@ interface AgentsTabProps {
     customTools: any[];
     onDeleteAgent: (id: string) => void;
     providers?: Record<string, { available: boolean; models: string[] }>;
+    /** Models with a native reasoning channel, from the models endpoint. The
+     *  list is served rather than restated here: a second copy of the
+     *  capability table would be wrong the first time a family ships and only
+     *  one of them was updated. */
+    reasoningCapable?: string[];
     defaultModel?: string;
     loadingAgents?: boolean;
 }
@@ -32,7 +37,7 @@ import React, { useState, useEffect } from 'react';
 export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
     draftAgent, setDraftAgent, availableCapabilities, loadingCapabilities = false, customTools,
-    onDeleteAgent, providers, defaultModel, loadingAgents = false
+    onDeleteAgent, providers, reasoningCapable, defaultModel, loadingAgents = false
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const [repos, setRepos] = useState<any[]>([]);
@@ -551,6 +556,41 @@ export const AgentsTab = ({
                                             />
                                             <p className="text-2xs text-text-faint mt-1">Override the default model for this agent. Leave empty to use the system default.</p>
                                         </div>
+
+                                        {/* Reasoning effort.
+
+                                            Hidden — not disabled — when the
+                                            resolved model has no reasoning
+                                            channel. A control that cannot
+                                            affect anything is worse than an
+                                            absent one: it invites the reading
+                                            that reasoning was set and ignored. */}
+                                        {(reasoningCapable ?? []).includes(draftAgent.model || defaultModel || '') && (
+                                            <div className="space-y-1">
+                                                <Label className="block">Reasoning</Label>
+                                                <div className="flex gap-1">
+                                                    {(['off', 'low', 'medium', 'high'] as const).map(level => {
+                                                        const active = (draftAgent.reasoning_effort || 'medium') === level;
+                                                        return (
+                                                            <button
+                                                                key={level}
+                                                                type="button"
+                                                                onClick={() => setDraftAgent({ ...draftAgent, reasoning_effort: level })}
+                                                                aria-pressed={active}
+                                                                className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors ${
+                                                                    active
+                                                                        ? 'border-accent bg-accent/10 text-accent'
+                                                                        : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
+                                                                }`}
+                                                            >
+                                                                {level}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                                <p className="text-2xs text-text-faint mt-1">How much this model thinks before it answers. Higher costs more and takes longer; thinking tokens are billed as output.</p>
+                                            </div>
+                                        )}
 
                                         {/* Max Turns */}
                                         <div className="space-y-1">

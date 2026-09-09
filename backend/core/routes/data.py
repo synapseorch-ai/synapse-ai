@@ -658,11 +658,18 @@ async def get_models():
     # --- Backward compat ---
     cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat + mg_chat
 
+    # --- Which of them can be asked to think ---
+    # The capability table lives in `core.reasoning` and is served from here
+    # rather than restated in TypeScript: a second copy would be wrong the
+    # first time a model family ships and only one of them was updated.
+    from core.reasoning import supports_native
+
     return {
         "providers": providers,
         "all_available": all_available,
         "local": ollama_chat,
         "cloud": cloud_models,
+        "reasoning_capable": sorted({m for m in all_available if supports_native(m)}),
     }
 
 

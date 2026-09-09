@@ -70,6 +70,7 @@ export function AgentsScreen() {
                 customTools={customTools}
                 onDeleteAgent={(id: string) => setConfirmDelete(id)}
                 providers={models.providers || {}}
+                reasoningCapable={models.reasoning_capable || []}
                 defaultModel={defaultModel}
                 loadingAgents={loading}
             />

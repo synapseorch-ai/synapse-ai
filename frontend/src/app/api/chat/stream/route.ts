@@ -9,11 +9,18 @@ export async function POST(req: Request) {
     try {
         const body = await req.json();
 
-        // Forward request to Python Backend SSE endpoint
+        // Forward request to Python Backend SSE endpoint.
+        //
+        // `signal` matters: without it, a browser that gives up — a closed tab,
+        // a navigation, the Stop button — left this proxy holding an open
+        // request to a backend still generating an answer nobody would read.
+        // The abort now reaches the backend, whose handler cancels the turn it
+        // is streaming.
         const backendResponse = await fetch(`${BACKEND_URL}/chat/stream`, {
             method: 'POST',
             headers: backendHeaders(),
             body: JSON.stringify(body),
+            signal: req.signal,
         });
 
         if (!backendResponse.ok) {
