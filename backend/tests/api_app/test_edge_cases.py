@@ -50,11 +50,26 @@ class TestVaultTraversal:
 
 
 class TestOversizedInputs:
-    async def test_more_than_five_images_does_not_crash(self, client, monkeypatch):
+    async def test_more_than_five_images_is_refused_with_a_reason(self, client, monkeypatch):
+        """It used to be answered 200.
+
+        Eight images were sliced to five inside each provider's content
+        builder and the rest dropped in silence — and `"data:x"` is not an
+        image at all, so what did reach the provider was whatever it made of
+        that. A 422 naming the limit is the answer; what this test has always
+        really been about is that neither is a 500.
+        """
         import core.routes.chat as chat
         monkeypatch.setattr(chat, "run_react_loop", E.gen_from([E.final("ok")]))
         resp = await client.post("/chat", json={"message": "hi", "images": ["data:x"] * 8})
-        assert resp.status_code == 200
+        assert resp.status_code == 422
+        assert "5 images" in resp.text
+
+    async def test_a_junk_attachment_is_refused_rather_than_forwarded(self, client, monkeypatch):
+        import core.routes.chat as chat
+        monkeypatch.setattr(chat, "run_react_loop", E.gen_from([E.final("ok")]))
+        resp = await client.post("/chat", json={"message": "hi", "images": ["data:x"]})
+        assert resp.status_code == 422
 
 
 class TestMalformedLLMOutput:
