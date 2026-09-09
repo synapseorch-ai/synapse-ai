@@ -21,7 +21,6 @@ DETERMINISTIC_TOOLS: dict[str, str] = {
     "code_search":      "global",
     "pdf_parser":       "global",
     "xlsx_parser":      "global",
-    "time":             "global",
     "code_indexer":     "global",
     "collect_data":     "global",
     "personal_details": "session",
