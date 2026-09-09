@@ -13,6 +13,7 @@ No API key needed — tool calling is emulated via system prompt injection + <to
 import os
 import re
 import json
+from typing import NamedTuple
 import tempfile
 import asyncio
 import base64
@@ -125,6 +126,60 @@ def _build_anthropic_image_content(text: str, images: list[str] | None) -> list[
         })
     parts.append({"type": "text", "text": text})
     return parts
+
+
+#: Cap on a single response. 4096 was hardcoded per provider; a long final
+#: answer or a big tool-call argument hit it and came back truncated, which the
+#: loop could not see. Overridable per tenant via the `max_output_tokens`
+#: setting, read in `generate_response`.
+DEFAULT_MAX_OUTPUT_TOKENS = 8192
+
+
+#: Providers spell "why the model stopped" four different ways. The loop cares
+#: about one distinction — was this response complete? — so they are normalised
+#: to: "stop" (finished), "max_tokens" (cut off mid-sentence), "tool_use"
+#: (stopped to call a tool), or None (the provider did not say).
+_STOP_REASONS = {
+    # Anthropic
+    "end_turn": "stop", "stop_sequence": "stop", "refusal": "stop",
+    "max_tokens": "max_tokens", "tool_use": "tool_use",
+    # OpenAI-compatible (openai, grok, deepseek, v1, gateway) + Ollama
+    "stop": "stop", "length": "max_tokens", "tool_calls": "tool_use",
+    "content_filter": "stop", "function_call": "tool_use",
+    # Gemini (upper-cased in the SDK)
+    "MAX_TOKENS": "max_tokens", "STOP": "stop", "SAFETY": "stop", "RECITATION": "stop",
+    # Bedrock Converse
+    "end_turn ": "stop", "max_tokens ": "max_tokens",
+}
+
+
+def _normalise_stop_reason(raw) -> str | None:
+    """One vocabulary for every provider's stop reason. Unknown values map to
+    None rather than a guess: the loop only acts on "max_tokens"."""
+    if raw is None:
+        return None
+    name = getattr(raw, "name", None) or str(raw)
+    return _STOP_REASONS.get(name) or _STOP_REASONS.get(name.strip().lower())
+
+
+class LLMResult(NamedTuple):
+    """One provider call's outcome.
+
+    The first five fields keep the order and meaning of the tuple every
+    ``call_*`` used to return, so ``text, *_ = await call_x(...)`` and
+    ``result[0]`` still read correctly. What is new is `stop_reason` — without
+    it a response cut off at the token limit was indistinguishable from a
+    finished one, and the loop treated it as the agent's final answer — and
+    `tool_calls`, which is populated but not yet read (the loop still parses
+    them out of the text; see the plan's Phase C).
+    """
+    text: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    stop_reason: str | None = None
+    tool_calls: tuple = ()
 
 
 class LLMError(Exception):
@@ -775,10 +830,9 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
             choice = data["choices"][0]
             msg = choice.get("message", {})
             text = _openai_compat_extract(msg)
-            if msg.get("tool_calls"):
-                return text, input_tokens, output_tokens, cache_read, cache_write
             _log.debug(f"✅ OpenAI call complete (attempt {attempt})")
-            return text, input_tokens, output_tokens, cache_read, cache_write
+            return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                             _normalise_stop_reason(choice.get("finish_reason")))
         except httpx.TimeoutException:
             last_error = f"Request timed out ({OPENAI_TIMEOUT}s)"
             _log.debug(f"⏱️ OpenAI timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -841,11 +895,13 @@ def _openai_compat_extract(msg: dict) -> str:
     """
     tool_calls = msg.get("tool_calls") or []
     if tool_calls:
-        tc = tool_calls[0]
-        call_json = json.dumps({
+        # Every call, as consecutive JSON objects: the ReAct loop parses all of
+        # them and executes them in order. Only `tool_calls[0]` used to
+        # survive, so a model that answered with two parallel calls ran one.
+        call_json = "\n".join(json.dumps({
             "tool": tc["function"]["name"],
             "arguments": json.loads(tc["function"].get("arguments") or "{}"),
-        })
+        }) for tc in tool_calls)
         reasoning = (msg.get("content") or "").strip()
         if reasoning:
             return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
@@ -866,15 +922,17 @@ def _extract_anthropic_response(response) -> str:
         return "Error: Empty Anthropic response."
 
     text_parts: list[str] = []
-    tool_use_call: dict | None = None
+    tool_use_calls: list[dict] = []
     for block in response.content:
-        if block.type == "tool_use" and tool_use_call is None:
-            tool_use_call = {"tool": block.name, "arguments": block.input or {}}
+        if block.type == "tool_use":
+            tool_use_calls.append({"tool": block.name, "arguments": block.input or {}})
         elif block.type == "text" and block.text:
             text_parts.append(block.text)
 
-    if tool_use_call is not None:
-        call_json = json.dumps(tool_use_call)
+    if tool_use_calls:
+        # Every call, as consecutive JSON objects — the loop executes them in
+        # order. Only the first tool_use block used to survive.
+        call_json = "\n".join(json.dumps(c) for c in tool_use_calls)
         reasoning = "\n".join(t for t in text_parts if t and t.strip()).strip()
         if reasoning:
             return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
@@ -887,7 +945,8 @@ def _extract_anthropic_response(response) -> str:
 
 
 async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
-                         prompt_blocks: list[str] | None = None, volatile_tail: str | None = None):
+                         prompt_blocks: list[str] | None = None, volatile_tail: str | None = None,
+                         max_tokens: int | None = None):
     """Call Anthropic using the official SDK with native tool calling.
 
     Args:
@@ -964,7 +1023,7 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
     kwargs = {
         "model": model,
         "messages": clean_messages,
-        "max_tokens": 4096,
+        "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
     }
     if system and str(system).strip():
         kwargs["system"] = str(system).strip()
@@ -995,7 +1054,9 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
             output_tokens = getattr(getattr(response, 'usage', None), 'output_tokens', 0) or 0
             from core.cache.prompt_cache import extract_anthropic_cache_tokens
             cache_read, cache_write = extract_anthropic_cache_tokens(response)
-            return _extract_anthropic_response(response), input_tokens, output_tokens, cache_read, cache_write
+            return LLMResult(_extract_anthropic_response(response), input_tokens, output_tokens,
+                             cache_read, cache_write,
+                             _normalise_stop_reason(getattr(response, "stop_reason", None)))
         except anthropic.APITimeoutError:
             last_error = f"Request timed out ({ANTHROPIC_TIMEOUT}s)"
             _log.debug(f"⏱️ Anthropic timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -1422,10 +1483,8 @@ def _extract_gemini_response(response) -> str:
             text_parts.append(p.text)
 
     if function_calls:
-        if len(function_calls) > 1:
-            names = [fc["tool"] for fc in function_calls]
-            _log.warning(f"⚠️ Gemini returned {len(function_calls)} function calls: {names}. Using first: {names[0]}")
-        call_json = json.dumps(function_calls[0])
+        # Every call, in order; this used to keep the first and log the rest.
+        call_json = "\n".join(json.dumps(fc) for fc in function_calls)
         reasoning = "\n".join(t for t in text_parts if t and t.strip()).strip()
         if reasoning:
             return f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
@@ -1519,7 +1578,13 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
                         input_tokens = max(0, input_tokens - cache_read)
             except Exception:
                 pass
-            return result, input_tokens, output_tokens, cache_read, cache_write
+            _finish = None
+            try:
+                _finish = response.candidates[0].finish_reason
+            except (AttributeError, IndexError, TypeError):
+                pass
+            return LLMResult(result, input_tokens, output_tokens, cache_read, cache_write,
+                             _normalise_stop_reason(_finish))
 
         # except asyncio.TimeoutError:
         #     last_error = f"Request timed out ({GEMINI_TIMEOUT}s)"
@@ -1540,7 +1605,8 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
-async def call_grok(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def call_grok(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
+                    max_tokens: int | None = None):
     """Call xAI Grok via its OpenAI-compatible API with 5-attempt exponential backoff.
 
     Returns:
@@ -1566,7 +1632,8 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 )
                 break
 
-    payload: dict = {"model": model, "messages": full_messages, "max_tokens": 4096}
+    payload: dict = {"model": model, "messages": full_messages,
+                     "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -1600,10 +1667,9 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
             choice = data["choices"][0]
             msg = choice.get("message", {})
             text = _openai_compat_extract(msg)
-            if msg.get("tool_calls"):
-                return text, input_tokens, output_tokens, cache_read, cache_write
             _log.debug(f"✅ Grok call complete (attempt {attempt})")
-            return text, input_tokens, output_tokens, cache_read, cache_write
+            return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                             _normalise_stop_reason(choice.get("finish_reason")))
         except httpx.TimeoutException:
             last_error = f"Request timed out ({GROK_TIMEOUT}s)"
             _log.debug(f"⏱️ Grok timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -1629,7 +1695,8 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
     raise LLMError(error_msg)
 
 
-async def call_deepseek(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True):
+async def call_deepseek(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
+                        max_tokens: int | None = None):
     """Call DeepSeek via its OpenAI-compatible API with 5-attempt exponential backoff.
 
     DeepSeek prompt caching is automatic server-side. It surfaces hit/miss as
@@ -1652,7 +1719,8 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
         full_messages.append({"role": "system", "content": str(system).strip()})
     full_messages.extend(messages or [])
 
-    payload: dict = {"model": model, "messages": full_messages, "max_tokens": 4096}
+    payload: dict = {"model": model, "messages": full_messages,
+                     "max_tokens": max_tokens or DEFAULT_MAX_OUTPUT_TOKENS}
     # DeepSeek-Reasoner does not support function calling
     if tools and "reasoner" not in model.lower():
         payload["tools"] = tools
@@ -1687,10 +1755,9 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
             choice = data["choices"][0]
             msg = choice.get("message", {})
             text = _openai_compat_extract(msg)
-            if msg.get("tool_calls"):
-                return text, input_tokens, output_tokens, cache_read, cache_write
             _log.debug(f"✅ DeepSeek call complete (attempt {attempt})")
-            return text, input_tokens, output_tokens, cache_read, cache_write
+            return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                             _normalise_stop_reason(choice.get("finish_reason")))
         except httpx.TimeoutException:
             last_error = f"Request timed out ({DEEPSEEK_TIMEOUT}s)"
             _log.debug(f"⏱️ DeepSeek timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -1800,10 +1867,9 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             choice = data["choices"][0]
             msg = choice.get("message", {})
             text = _openai_compat_extract(msg)
-            if msg.get("tool_calls"):
-                return text, input_tokens, output_tokens, cache_read, cache_write
             _log.debug(f"✅ V1-compatible call complete (attempt {attempt})")
-            return text, input_tokens, output_tokens, cache_read, cache_write
+            return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                             _normalise_stop_reason(choice.get("finish_reason")))
         except httpx.TimeoutException:
             last_error = f"Request timed out ({V1_TIMEOUT}s)"
             _log.debug(f"⏱️ V1-compatible timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
@@ -2050,7 +2116,8 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                     if cache_read:
                         inp = max(0, inp - cache_read)
                     _log.debug(f"✅ Bedrock (converse) complete (attempt {attempt})")
-                    return text, inp, out, cache_read, cache_write
+                    return LLMResult(text, inp, out, cache_read, cache_write,
+                                     _normalise_stop_reason((resp or {}).get("stopReason")))
                 except Exception as converse_err:
                     msg_str = str(converse_err)
                     if "on-demand throughput" in msg_str:
@@ -2072,14 +2139,14 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                     content = response_body.get("content") or []
                     text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
                     _log.debug(f"✅ Bedrock (invoke_model) complete (attempt {attempt})")
-                    return text, 0, 0, 0, 0
+                    return LLMResult(text)
             else:
                 resp = await _invoke_model_call()
                 response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
                 content = response_body.get("content") or []
                 text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
                 _log.debug(f"✅ Bedrock (invoke_model) complete (attempt {attempt})")
-                return text, 0, 0, 0, 0
+                return LLMResult(text)
         except LLMError:
             raise  # Non-retryable (config error)
         except Exception as e:
@@ -2254,7 +2321,7 @@ async def call_huggingface(
         _log.debug(f"🔄 HF call start (model={model_id})")
         text, input_tokens, output_tokens = await asyncio.to_thread(_run)
         _log.debug(f"✅ HF call complete (model={model_id}, out_tokens={output_tokens})")
-        return text, input_tokens, output_tokens, 0, 0
+        return LLMResult(text, input_tokens, output_tokens)
     except LLMError:
         raise
     except Exception as e:
@@ -2296,7 +2363,7 @@ def _messages_to_transcript(messages: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
-async def generate_response(
+async def generate_response_ex(
     prompt_msg,
     sys_prompt,
     mode,
@@ -2327,9 +2394,12 @@ async def generate_response(
     volatile_tail: str | None = None,
 ):
     """
-    Unified LLM dispatch function. Routes to the appropriate provider
-    based on mode and current_model. Logs token usage and cost after
-    every successful call via usage_tracker.
+    Unified LLM dispatch. Routes to the provider for `mode`/`current_model`,
+    logs usage, and returns the full `LLMResult`.
+
+    `generate_response` below returns just the text and is what most callers
+    want. This one exists for the ReAct loop, which has to know whether a
+    response finished or was cut off at the token limit.
     """
     import time as _time
     from core import usage_tracker
@@ -2355,6 +2425,9 @@ async def generate_response(
     output_tokens = 0
     cache_read_tokens = 0
     cache_write_tokens = 0
+    stop_reason = None
+    _tool_calls: tuple = ()
+    _max_out = int(current_settings.get("max_output_tokens") or DEFAULT_MAX_OUTPUT_TOKENS)
 
     # ── Response cache (opt-in per call) ─────────────────────────────────────
     # Built BEFORE dispatch so a hit short-circuits the entire LLM round-trip.
@@ -2396,7 +2469,7 @@ async def generate_response(
                 )
             except Exception as _track_err:
                 _log.warning(f"usage_tracker: log_usage (cache hit) failed: {_track_err}")
-            return _hit.get("text", "")
+            return LLMResult(_hit.get("text", ""))
 
     if mode in ["cloud", "bedrock"]:
         try:
@@ -2407,7 +2480,7 @@ async def generate_response(
             messages.append({"role": "user", "content": prompt_msg})
 
             if current_model.startswith("gpt"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_openai(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_openai(
                     current_model,
                     [{"role": "system", "content": augmented_system}] + messages,
                     current_settings.get("openai_key"),
@@ -2416,7 +2489,7 @@ async def generate_response(
                     prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("claude"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_anthropic(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_anthropic(
                     current_model,
                     messages,
                     augmented_system,
@@ -2424,11 +2497,12 @@ async def generate_response(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    max_tokens=_max_out,
                     prompt_blocks=prompt_blocks,
                     volatile_tail=volatile_tail,
                 )
             elif current_model.startswith("gemini") or current_model.startswith("gemma") or current_model.startswith("lyria"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_gemini(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_gemini(
                     current_model,
                     messages,
                     augmented_system,
@@ -2438,7 +2512,7 @@ async def generate_response(
                     prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("bedrock"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_bedrock(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_bedrock(
                     current_model,
                     messages,
                     augmented_system,
@@ -2454,7 +2528,7 @@ async def generate_response(
                     )
                     output_tokens = usage_tracker.estimate_tokens_from_text(result_text)
             elif current_model.startswith("grok"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_grok(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_grok(
                     current_model,
                     messages,
                     augmented_system,
@@ -2462,9 +2536,10 @@ async def generate_response(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    max_tokens=_max_out,
                 )
             elif current_model.startswith("deepseek"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_deepseek(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_deepseek(
                     current_model,
                     messages,
                     augmented_system,
@@ -2472,9 +2547,10 @@ async def generate_response(
                     tools=tools,
                     images=images,
                     prompt_cache=_prompt_cache,
+                    max_tokens=_max_out,
                 )
             elif current_model.startswith("synapse."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_model_gateway(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_model_gateway(
                     current_model,
                     messages,
                     augmented_system,
@@ -2484,7 +2560,7 @@ async def generate_response(
                     prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("oaic."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_v1_compatible(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_v1_compatible(
                     current_model[len("oaic."):],
                     messages,
                     augmented_system,
@@ -2495,7 +2571,7 @@ async def generate_response(
                     prompt_cache=_prompt_cache,
                 )
             elif current_model.startswith("locv1."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_v1_compatible(
+                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_v1_compatible(
                     current_model[len("locv1."):],
                     messages,
                     augmented_system,
@@ -2506,13 +2582,13 @@ async def generate_response(
                     prompt_cache=_prompt_cache,
                 )
             else:
-                return "Error: Unknown cloud model selected."
+                return LLMResult("Error: Unknown cloud model selected.")
         except LLMError:
             # LLM errors must propagate — do NOT swallow them.
             # Orchestration engine will catch this and stop execution.
             raise
         except Exception as e:
-            return f"Cloud API Error: {str(e)}"
+            return LLMResult(f"Cloud API Error: {str(e)}")
 
     elif mode == "cli":
         # CLI session providers: build a flat prompt and spawn the local binary.
@@ -2551,7 +2627,7 @@ async def generate_response(
         except LLMError:
             raise
         except Exception as e:
-            return f"CLI Provider Error: {str(e)}"
+            return LLMResult(f"CLI Provider Error: {str(e)}")
 
     elif mode == "hf":
         try:
@@ -2560,7 +2636,7 @@ async def generate_response(
                 messages_for_hf.extend(history_messages)
             messages_for_hf.append({"role": "user", "content": prompt_msg})
 
-            result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = await call_huggingface(
+            result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls = await call_huggingface(
                 current_model,
                 messages_for_hf,
                 augmented_system,
@@ -2571,7 +2647,7 @@ async def generate_response(
         except LLMError:
             raise
         except Exception as e:
-            return f"HuggingFace Provider Error: {str(e)}"
+            return LLMResult(f"HuggingFace Provider Error: {str(e)}")
 
     else:
         # Local Ollama
@@ -2618,12 +2694,11 @@ async def generate_response(
                         # Preserve any text content the model emitted alongside the
                         # call as a [REASONING] preamble (some Ollama models emit
                         # both — qwen3, deepseek-r1 routinely do).
-                        tc = msg["tool_calls"][0]
-                        _log.debug(f"Native Tool Call received: {tc['function']['name']}")
-                        call_json = json.dumps({
+                        _log.debug(f"Native tool call(s) received: {[tc['function']['name'] for tc in msg['tool_calls']]}")
+                        call_json = "\n".join(json.dumps({
                             "tool": tc["function"]["name"],
                             "arguments": tc["function"]["arguments"]
-                        })
+                        }) for tc in msg["tool_calls"])
                         reasoning = (msg.get("content") or "").strip()
                         if reasoning:
                             result_text = f"[REASONING]\n{reasoning}\n[/REASONING]\n{call_json}"
@@ -2631,6 +2706,8 @@ async def generate_response(
                             result_text = call_json
                     else:
                         result_text = msg.get("content", "")
+
+                    stop_reason = _normalise_stop_reason(data.get("done_reason"))
 
                     # Ollama eval_count / prompt_eval_count (available when stream=False)
                     input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_msg)
@@ -2663,7 +2740,7 @@ async def generate_response(
                     output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
 
             except Exception as e:
-                return f"Local Agent Error: {e}"
+                return LLMResult(f"Local Agent Error: {e}")
 
     # ── Log usage (fire-and-forget, never raises) ────────────────────────────
     try:
@@ -2714,7 +2791,17 @@ async def generate_response(
         except Exception as _cache_err:
             _log.warning(f"response_cache: set failed (non-fatal): {_cache_err}")
 
-    return result_text
+    return LLMResult(result_text, input_tokens, output_tokens,
+                     cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls)
+
+
+async def generate_response(*args, **kwargs) -> str:
+    """The text of one LLM call.
+
+    Kept as the whole signature's front door: every caller but the ReAct loop
+    wants the string and nothing else, and this is what the test suite patches.
+    """
+    return (await generate_response_ex(*args, **kwargs)).text
 
 
 # ─── Embedding Helpers ──────────────────────────────────────────────────────

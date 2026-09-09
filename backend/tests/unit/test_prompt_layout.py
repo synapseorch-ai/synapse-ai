@@ -16,7 +16,7 @@ from _fakes.fake_llm import tool_call
 # Captured at import (collection) time: the autouse `fake_llm` fixture replaces
 # `core.llm_providers.generate_response` with the fake before each test runs,
 # and the provider-dispatch tests below need the real one.
-from core.llm_providers import generate_response as _real_generate_response
+from core.llm_providers import LLMResult, generate_response as _real_generate_response
 
 
 def _server():
@@ -203,7 +203,7 @@ class TestOtherProvidersAreUntouched:
 
         async def fake_openai(model, messages, key, tools=None, images=None, prompt_cache=True):
             seen["messages"] = messages
-            return "ok", 1, 1, 0, 0
+            return LLMResult("ok", 1, 1, 0, 0)
 
         monkeypatch.setattr(lp, "call_openai", fake_openai)
         await _real_generate_response(

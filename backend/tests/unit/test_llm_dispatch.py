@@ -6,6 +6,8 @@ dispatch logic itself.
 """
 import pytest
 
+from core.llm_providers import LLMResult
+
 from _fakes.fake_http import install_httpx, FakeResponse
 
 # Capture the REAL generate_response at import time (before the autouse fake_llm
@@ -16,7 +18,7 @@ _REAL_GENERATE = _llm_mod.generate_response
 
 def _stub_call(text="hello", it=10, ot=5, cr=0, cw=0):
     async def _c(*a, **k):
-        return text, it, ot, cr, cw
+        return LLMResult(text, it, ot, cr, cw)
     return _c
 
 
@@ -54,7 +56,7 @@ class TestCloudDispatch:
 
         async def _spy(model, messages, system, base_url, api_key, **k):
             seen.update(model=model, base_url=base_url, api_key=api_key)
-            return "ok", 1, 1, 0, 0
+            return LLMResult("ok", 1, 1, 0, 0)
 
         monkeypatch.setattr(_llm_mod, "call_v1_compatible", _spy)
         out = await _llm_mod.call_model_gateway(
@@ -158,7 +160,7 @@ class TestMemoryContext:
         seen = {}
         async def _capture(model, messages, system, *a, **k):
             seen["system"] = system
-            return "ok", 1, 1, 0, 0
+            return LLMResult("ok", 1, 1, 0, 0)
         monkeypatch.setattr(_llm_mod, "call_anthropic", _capture)
         await _REAL_GENERATE("hi", "BASE", "cloud", "claude-x", {"anthropic_key": "x"},
                              memory_context_text="REMEMBER THIS")

@@ -20,7 +20,7 @@ from core.session import (
     get_recent_history_messages, _get_conversation_history,
     _save_conversation_turn,
 )
-from core.llm_providers import generate_response as llm_generate_response
+from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.tools import aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 import anyio as _anyio
 import re as _re
@@ -1051,8 +1051,14 @@ async def run_agent_step(
 
     async def generate_response(prompt_msg, sys_prompt, tools=None, history_messages=None, memory_context_text="",
                                 images_for_turn=None, tool_name_for_log=None,
-                                prompt_blocks=None, volatile_tail=None):
-        return await llm_generate_response(
+                                prompt_blocks=None, volatile_tail=None) -> LLMResult:
+        """One LLM call, always as an LLMResult.
+
+        A test double (or an older embedder patch) that returns a bare string
+        is wrapped rather than rejected: `stop_reason` is then None, which
+        reads as "the provider did not say" and changes nothing downstream.
+        """
+        result = await llm_generate_response(
             prompt_msg=prompt_msg,
             sys_prompt=sys_prompt,
             mode=mode,
@@ -1070,6 +1076,7 @@ async def run_agent_step(
             prompt_blocks=prompt_blocks,
             volatile_tail=volatile_tail,
         )
+        return result if isinstance(result, LLMResult) else LLMResult(str(result))
 
     # ReAct loop state
     user_message = message
@@ -1102,6 +1109,7 @@ async def run_agent_step(
     browser_action_history: list[str] = []
     _browser_snapshot: tuple[str, str] | None = None  # (tool_name, page state) — rendered in the tail
     _has_compacted = False  # anti-thrash: only compact once per run
+    _truncation_retries = 0  # consecutive responses cut off at the output limit
 
     # ── Mid-node resume: seed the loop from a prior interrupted attempt ──────
     # The orchestration executor checkpoints a _step_progress snapshot after
@@ -1134,6 +1142,7 @@ async def run_agent_step(
         always_allowed |= set(MEMORY_TOOL_NAMES)  # injected via the memory flag, same reason
 
     MAX_PROMPT_CHARS = 400000
+    MAX_TRUNCATION_RETRIES = 2
 
     # Browser tools produce DOM snapshots that are only useful for the current turn.
     # Previous snapshots become stale the moment the page changes, so we skip
@@ -1272,7 +1281,7 @@ async def run_agent_step(
             _log.debug(f"🔄 Calling LLM...")
             _llm_start = time.time()
             try:
-                llm_output = await generate_response(
+                _llm_result = await generate_response(
                     full_prompt, active_sys_prompt,
                     tools=ollama_tools, history_messages=active_history,
                     memory_context_text=memory_context,
@@ -1288,7 +1297,34 @@ async def run_agent_step(
                 yield {"type": "error", "message": str(llm_err)}
                 break
             _llm_duration = round(time.time() - _llm_start, 1)
+            llm_output = _llm_result.text
             _log.debug(f"🤖 LLM Response ({_llm_duration}s): {llm_output[:500]}{'...(truncated)' if len(llm_output) > 500 else ''}")
+
+            # ── A response that hit the token ceiling is not an answer ───────
+            # Without the stop reason a truncated reply was indistinguishable
+            # from a finished one: a half-written tool call failed to parse and
+            # was shipped to the user as the agent's final word. Ask for the
+            # rest instead. Bounded, because a model that truncates twice in a
+            # row is producing something the budget cannot hold, and a third
+            # attempt would just spend another call to learn that again.
+            if _llm_result.stop_reason == "max_tokens" and turn + 1 < max_turns:
+                _truncation_retries += 1
+                if _truncation_retries <= MAX_TRUNCATION_RETRIES:
+                    _log.warning(f"⚠️ Response hit the output limit (retry {_truncation_retries}/{MAX_TRUNCATION_RETRIES})")
+                    current_context_text += (
+                        f"\n[Turn {turn + 1} — Partial]\n{llm_output}\n"
+                        "\nSystem: your previous response was cut off at the output limit before it "
+                        "finished. Continue from exactly where you stopped. If you were writing a tool "
+                        "call, emit the whole call again as valid JSON.\n"
+                    )
+                    yield {"type": "truncated_output", "turn": turn + 1,
+                           "retry": _truncation_retries, "chars": len(llm_output)}
+                    continue
+                _log.warning("⚠️ Output limit hit twice in a row — accepting the partial response")
+                yield {"type": "truncated_output", "turn": turn + 1,
+                       "retry": _truncation_retries, "chars": len(llm_output), "accepted": True}
+            else:
+                _truncation_retries = 0
 
             # ── Project [REASONING] blocks into a dedicated event ────────────
             # The LLM emits its private chain-of-thought wrapped in

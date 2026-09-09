@@ -30,7 +30,7 @@ class TestGeminiBody:
     async def test_text_response(self, monkeypatch):
         part = SimpleNamespace(function_call=None, text="gemini answer")
         monkeypatch.setattr(llm, "_gemini_client", self._fake_client([part]))
-        text, it, ot, cr, cw = await llm.call_gemini(
+        text, it, ot, cr, cw, *_ = await llm.call_gemini(
             "gemini-2.0", [{"role": "user", "content": "q"}], "sys", "key")
         assert text == "gemini answer"
         assert it == 10 and ot == 5
@@ -52,7 +52,7 @@ class TestBedrockBody:
                         "usage": {"inputTokens": 12, "outputTokens": 7}}
 
         monkeypatch.setattr(llm, "_make_aws_client", lambda *a, **k: _FakeBedrock())
-        text, it, ot, cr, cw = await llm.call_bedrock(
+        text, it, ot, cr, cw, *_ = await llm.call_bedrock(
             "bedrock.anthropic.claude", [{"role": "user", "content": "q"}], "sys",
             "us-east-1", {})
         assert text == "bedrock answer"

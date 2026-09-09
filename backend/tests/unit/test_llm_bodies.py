@@ -27,7 +27,7 @@ def _openai_ok(text="hello", tool_calls=None):
 class TestOpenAIBody:
     async def test_success_and_cache_accounting(self, monkeypatch):
         install_httpx(monkeypatch, _openai_ok("hi there"))
-        text, it, ot, cr, cw = await llm.call_openai("gpt-4o", [{"role": "user", "content": "q"}], "key")
+        text, it, ot, cr, cw, *_ = await llm.call_openai("gpt-4o", [{"role": "user", "content": "q"}], "key")
         assert text == "hi there"
         assert cr == 4              # cached tokens surfaced
         assert it == 6             # prompt_tokens (10) minus cached (4)
@@ -108,7 +108,7 @@ class TestAnthropicBody:
         import anthropic
         blocks = [SimpleNamespace(type="text", text="claude here", name=None, input=None)]
         monkeypatch.setattr(anthropic, "AsyncAnthropic", self._fake_anthropic(blocks))
-        text, it, ot, cr, cw = await llm.call_anthropic(
+        text, it, ot, cr, cw, *_ = await llm.call_anthropic(
             "claude-x", [{"role": "user", "content": "q"}], "sys", "key")
         assert text == "claude here"
         assert it == 12 and ot == 7
