@@ -45,7 +45,7 @@
    * that are actually circular — status dots, avatars, count bubbles and switch
    * tracks — which stay round in either mode.
    * -------------------------------------------------------------------- */
-  --ui-radius: 4px;
+  --ui-radius: 6px;
 
   /* ── Surfaces, text, borders ─────────────────────────────────────────── */
   --bg: #09090b;            /* zinc-950 */

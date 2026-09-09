@@ -38,24 +38,33 @@ export type NavEntry = {
 
 export type NavGroup = { group: string | null; items: NavEntry[] };
 
-/** The rail. Nine work destinations; Settings is rendered separately at the foot. */
+/**
+ * The rail. Three groups, read top to bottom as *watch → author → connect*:
+ * Overview is the workspace as it stands and what it has done; Build is what
+ * you author; Tools is what agents reach through. Settings is rendered
+ * separately at the foot.
+ */
 export const PRIMARY_NAV: NavGroup[] = [
     {
-        group: null,
+        group: 'Overview',
         items: [
             {
-                id: 'dashboard', label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard,
+                id: 'dashboard', label: 'Home', href: '/dashboard', icon: LayoutDashboard,
                 blurb: 'Where the workspace stands right now.',
+            },
+            {
+                id: 'logs', label: 'Runs & Logs', href: '/runs', icon: ScrollText,
+                blurb: 'Replay what agents, orchestrations and schedules actually did.',
+            },
+            {
+                id: 'usage', label: 'Usage', href: '/usage', icon: DollarSign,
+                blurb: 'Token usage and cost tracking across every LLM call.',
             },
         ],
     },
     {
         group: 'Build',
         items: [
-            {
-                id: 'chat', label: 'Chat', href: '/', icon: MessagesSquare,
-                blurb: 'Talk to an agent and watch it work.',
-            },
             {
                 id: 'orchestrations', label: 'Orchestrations', href: '/orchestrations', icon: Workflow,
                 blurb: 'Design multi-agent workflows on a visual canvas.',
@@ -70,6 +79,19 @@ export const PRIMARY_NAV: NavGroup[] = [
                 blurb: 'Reusable instruction packages agents load on demand.',
             },
             {
+                id: 'chat', label: 'Chat', href: '/', icon: MessagesSquare,
+                blurb: 'Talk to an agent and watch it work.',
+            },
+            {
+                id: 'schedules', label: 'Schedules', href: '/schedules', icon: Clock,
+                blurb: 'Automate agent and orchestration runs on a recurring schedule.',
+            },
+        ],
+    },
+    {
+        group: 'Tools',
+        items: [
+            {
                 id: 'custom_tools', label: 'Tools', href: '/tools', icon: Wrench,
                 blurb: 'Wire up HTTP, Python and n8n tools your agents can call.',
             },
@@ -78,25 +100,8 @@ export const PRIMARY_NAV: NavGroup[] = [
                 blurb: 'Connect Model Context Protocol servers and their tool catalogues.',
             },
             {
-                id: 'schedules', label: 'Schedules', href: '/schedules', icon: Clock,
-                blurb: 'Automate agent and orchestration runs on a recurring schedule.',
-            },
-            {
                 id: 'vault', label: 'Vault', href: '/vault', icon: Vault,
                 blurb: 'Knowledge files and skills agents reference with @[path] in their prompts.',
-            },
-        ],
-    },
-    {
-        group: 'Operate',
-        items: [
-            {
-                id: 'logs', label: 'Runs & Logs', href: '/runs', icon: ScrollText,
-                blurb: 'Replay what agents, orchestrations and schedules actually did.',
-            },
-            {
-                id: 'usage', label: 'Usage', href: '/usage', icon: DollarSign,
-                blurb: 'Token usage and cost tracking across every LLM call.',
             },
         ],
     },

@@ -16,32 +16,46 @@ import { TooltipProvider, usePersisted } from '@/components/ui';
 import { BuilderLauncher } from '@/components/app/BuilderLauncher';
 import { BuilderPanel } from '@/components/app/BuilderPanel';
 import { BuilderProvider } from '@/components/app/BuilderProvider';
-import { AppRail } from '@/components/app/AppRail';
+import { AppRail, type ThemeMode } from '@/components/app/AppRail';
 import { NavGuardProvider } from '@/components/app/NavGuard';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-    const [theme, setTheme] = usePersisted<'dark' | 'light'>(
-        'synapseTheme', raw => (raw === 'light' ? 'light' : 'dark'), 'dark');
+    // Three modes, one class. `system` follows the OS and keeps following it
+    // while the tab is open; the two explicit modes pin the class regardless.
+    const [mode, setMode] = usePersisted<ThemeMode>(
+        'synapseTheme',
+        raw => (raw === 'light' || raw === 'system' ? raw : 'dark'),
+        'dark',
+    );
 
     // The class goes on <html>, not on the shell div. `body` resolves
     // `--background` against itself, so a .light-mode starting below body left
     // the page ground dark behind a light app — visible on overscroll and
     // behind the app-wide toast host, which renders outside this shell.
-    // Writing to the DOM is what an effect is actually for.
     useEffect(() => {
         const root = document.documentElement;
-        root.classList.toggle('light-mode', theme === 'light');
-        return () => root.classList.remove('light-mode');
-    }, [theme]);
+        const media = window.matchMedia('(prefers-color-scheme: light)');
+        const apply = () => {
+            const light = mode === 'light' || (mode === 'system' && media.matches);
+            root.classList.toggle('light-mode', light);
+        };
+        apply();
+        if (mode !== 'system') return () => root.classList.remove('light-mode');
+        media.addEventListener('change', apply);
+        return () => {
+            media.removeEventListener('change', apply);
+            root.classList.remove('light-mode');
+        };
+    }, [mode]);
 
     // Swapping the palette drags every `transition-colors` in the app along at
     // once — a smear where controls are mid-way between the two while cards,
     // which have no transition, have already switched. Suppress transitions for
     // a frame around the swap.
-    const toggleTheme = () => {
+    const changeMode = (next: ThemeMode) => {
         const root = document.documentElement;
         root.setAttribute('data-theme-switching', '');
-        setTheme(theme === 'dark' ? 'light' : 'dark');
+        setMode(next);
         window.requestAnimationFrame(() => {
             window.requestAnimationFrame(() => root.removeAttribute('data-theme-switching'));
         });
@@ -58,7 +72,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 survive navigating between them. */}
             <BuilderProvider>
             <div className="flex h-screen overflow-hidden bg-bg font-sans text-text">
-                <AppRail theme={theme} onToggleTheme={toggleTheme} />
+                <AppRail mode={mode} onModeChange={changeMode} />
                 {/* The only <main> in the app. Pages render a plain flex column
                     inside it — a nested <main> gives two landmarks and two
                     scrollbars. */}

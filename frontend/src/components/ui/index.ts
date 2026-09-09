@@ -57,7 +57,7 @@ export { Checkbox, type CheckedState } from "./checkbox";
 export { Section } from "./collapsible";
 export { DataTable, type Column } from "./data-table";
 export { ConfirmDialog, Modal } from "./dialog";
-export { MenuItem, MenuLabel, MenuSeparator, RowMenu } from "./menu";
+export { Menu, MenuItem, MenuLabel, MenuLink, MenuSegment, MenuSeparator, RowMenu } from "./menu";
 export { Select, type SelectOption } from "./select";
 export { Combobox, type ComboboxOption } from "./combobox";
 export { StatusBadge, normaliseStatus, type RunStatus } from "./status";
