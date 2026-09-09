@@ -152,6 +152,47 @@ async def pop_last_turn(session_id: str, agent_id: str,
         return {"user": user.get("content", ""), "assistant": assistant.get("content", "")}
 
 
+async def set_pending_approval(session_id: str, agent_id: str, pending: dict | None) -> None:
+    """Park (or clear) the tool call this conversation is waiting on.
+
+    `pending` carries the call itself and the turn-boundary snapshot to resume
+    from. Pass None to clear it — which must happen whether the person allows
+    the call or refuses it, or the next turn re-opens a question already
+    answered.
+    """
+    from core.store import session
+    from core.store.models import ChatSessionDB
+
+    async with session() as s:
+        row = await _row(s, session_id, agent_id)
+        if row is None:
+            if pending is None:
+                return
+            # The row is written on the first *completed* turn, so a
+            # conversation whose very first turn stops to ask permission has
+            # nothing to hang the question on yet. Without this the pause was
+            # dropped and answering it returned "not waiting on an approval".
+            s.add(ChatSessionDB(
+                tenant_id=get_tenant(),
+                session_id=session_id,
+                agent_id=agent_id,
+                messages=[],
+                cli_session_ids={},
+                pending_approval=pending,
+                last_message_at=datetime.now(timezone.utc),
+            ))
+            return
+        row.pending_approval = pending
+
+
+async def get_pending_approval(session_id: str, agent_id: str) -> dict | None:
+    from core.store import session
+
+    async with session() as s:
+        row = await _row(s, session_id, agent_id)
+        return (row.pending_approval or None) if row is not None else None
+
+
 async def set_cli_session_id(session_id: str, agent_id: str, provider_key: str, cli_id: str) -> None:
     from core.store import session
     from core.store.models import ChatSessionDB

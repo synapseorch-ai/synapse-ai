@@ -52,6 +52,10 @@ _ADDITIONS: tuple[tuple[str, str, str, str | None], ...] = (
     # Mid-step agent progress, moved out of shared_state so a per-turn
     # checkpoint is a one-column update (core/orchestration/state_store.py).
     ("orchestration_runs", "step_progress", "JSON", None),
+    # A chat turn paused on a tool approval, plus the snapshot it resumes
+    # from (core/routes/chat.py). The orchestration equivalent is
+    # `step_progress` above; a chat turn has no run row to keep it on.
+    ("chat_sessions", "pending_approval", "JSON", None),
 )
 
 

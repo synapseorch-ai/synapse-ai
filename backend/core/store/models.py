@@ -438,6 +438,15 @@ class ChatSessionDB(Base):
     webhook_url = Column(Text)
     webhook_secret = Column(Text)
 
+    # A tool call this conversation is waiting on a person to allow, together
+    # with the turn-boundary snapshot needed to carry on afterwards.
+    #
+    # Persisted rather than held in memory because the snapshot is the point:
+    # without it, resuming means re-running every tool that already succeeded
+    # in that turn, side effects included. An orchestration run keeps the same
+    # thing on `step_progress`; a chat turn has no run row to keep it on.
+    pending_approval = Column(JSONType)
+
     __table_args__ = (
         # Deliberately unnamed: this is the one table core/store/migrate.py
         # rebuilds, and a named constraint would collide with the live table's

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from core.models import ChatRequest, ChatResponse
+from pydantic import BaseModel
 from core.react_engine import run_react_loop, parse_tool_call, iter_with_heartbeat  # noqa: F401 — re-export for backwards compat
 
 router = APIRouter()
@@ -85,7 +86,15 @@ async def chat(request: ChatRequest):
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Real-time streaming endpoint with SSE"""
+    return _sse(_guarded_stream(request))
 
+
+def _guarded_stream(request: ChatRequest, resume_state: dict | None = None):
+    """The turn's events, with the session claimed and a stop handled.
+
+    Shared by the first turn and by a resume after a tool approval: both are
+    the same loop, they only differ in what seeds it.
+    """
     async def event_generator():
         import core.server as _server
 
@@ -98,7 +107,7 @@ async def chat_stream(request: ChatRequest):
             _ACTIVE_CHAT_TASKS[_session_key] = _task
 
         try:
-            async for chunk in _event_stream(request, _server):
+            async for chunk in _event_stream(request, _server, resume_state):
                 yield chunk
         except asyncio.CancelledError:
             # Stopped on purpose: say so and close the stream cleanly, rather
@@ -111,116 +120,12 @@ async def chat_stream(request: ChatRequest):
                 _ACTIVE_CHAT_TASKS.pop(_session_key, None)
             _STOP_REQUESTED.discard(_session_key or "")
 
-    async def _event_stream(request, _server):
-        # Route builder agents to the dedicated builder stream
-        agent = await _resolve_agent(request)
-        if agent and agent.get("type") == "builder":
-            from core.routes.builder import run_builder_stream_compat
-            async for chunk in run_builder_stream_compat(request, _server):
-                yield chunk
-            return
+    return event_generator()
 
-        async def _stopped() -> bool:
-            return getattr(request, "session_id", None) in _STOP_REQUESTED
 
-        try:
-            async for event in iter_with_heartbeat(
-                run_react_loop(request, _server, should_stop=_stopped)
-            ):
-                # Heartbeat comments are yielded as raw SSE strings — pass through.
-                if isinstance(event, str):
-                    yield event
-                    continue
-                etype = event["type"]
-
-                if etype == "status":
-                    yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"
-
-                elif etype == "thinking":
-                    yield f"data: {json.dumps({'type': 'thinking', 'message': event.get('message', ''), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
-
-                elif etype == "tool_execution":
-                    yield f"data: {json.dumps({'type': 'tool_execution', 'tool_name': event['tool_name'], 'args': event['args'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
-
-                elif etype == "tool_result":
-                    yield f"data: {json.dumps({'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': event['preview'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
-
-                elif etype == "llm_reasoning":
-                    # Private chain-of-thought extracted from [REASONING] blocks.
-                    # Rendered as a dedicated "thinking" panel above the tool call
-                    # in the chat UI / orchestration step view.
-                    yield f"data: {json.dumps({'type': 'llm_reasoning', 'reasoning': event['reasoning'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
-
-                elif etype == "llm_thought":
-                    # Action text (tool-call JSON or final-response prose) with
-                    # reasoning already stripped — carries orch_step_id & step_name
-                    # when inside orchestration.
-                    yield f"data: {json.dumps({'type': 'llm_thought', 'thought': event['thought'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
-
-                elif etype == "final":
-                    # Sub-agent step final (inside orchestration) → agent_step_result
-                    # Distinguished by the presence of orch_step_id (added by AgentStepExecutor)
-                    if event.get("orch_step_id"):
-                        yield f"data: {json.dumps({'type': 'agent_step_result', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name', ''), 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}, default=str)}\n\n"
-                    else:
-                        # Top-level final (single agent or orchestration summary) → response + done
-                        yield f"data: {json.dumps({'type': 'response', 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}, default=str)}\n\n"
-                        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-                elif etype == "error":
-                    yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
-
-                # ── Orchestration lifecycle events ────────────────────────────────
-                elif etype == "orchestration_start":
-                    yield f"data: {json.dumps({'type': 'orchestration_start', 'run_id': event.get('run_id'), 'orchestration_name': event.get('orchestration_name'), 'orchestration_id': event.get('orchestration_id')}, default=str)}\n\n"
-
-                elif etype == "step_start":
-                    yield f"data: {json.dumps({'type': 'step_start', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name'), 'step_type': event.get('step_type')}, default=str)}\n\n"
-
-                elif etype == "step_complete":
-                    yield f"data: {json.dumps({'type': 'step_complete', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name'), 'duration_seconds': event.get('duration_seconds')}, default=str)}\n\n"
-
-                elif etype == "step_error":
-                    yield f"data: {json.dumps({'type': 'step_error', 'orch_step_id': event.get('orch_step_id'), 'error': event.get('error')}, default=str)}\n\n"
-
-                elif etype == "orchestration_complete":
-                    yield f"data: {json.dumps({'type': 'orchestration_complete', 'run_id': event.get('run_id'), 'status': event.get('status')}, default=str)}\n\n"
-
-                elif etype == "orchestration_error":
-                    yield f"data: {json.dumps({'type': 'orchestration_error', 'error': event.get('error')}, default=str)}\n\n"
-
-                elif etype == "human_input_required":
-                    yield f"data: {json.dumps(event, default=str)}\n\n"
-                    # Send done so the loading spinner stops — user must submit the form
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                    return
-
-                elif etype in (
-                    "parallel_start", "parallel_complete", "branch_start",
-                    "loop_iteration", "loop_complete", "merge_complete",
-                    "transform_result", "routing_decision",
-                    "loop_limit_reached", "step_warning",
-                    # Things the loop does to keep going, which the person is
-                    # entitled to know about. All four were emitted by the
-                    # engine and dropped here, so the only visible trace of a
-                    # truncated answer or a discarded middle was that the reply
-                    # read oddly.
-                    "truncated_output", "context_trimmed",
-                    "tool_call_unparsed", "tool_approval_replay",
-                    "cancelled",
-                ):
-                    yield f"data: {json.dumps(event, default=str)}\n\n"
-
-                await asyncio.sleep(0)
-
-        except Exception as e:
-            print(f"ERROR in SSE stream: {e}")
-            import traceback
-            traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-
+def _sse(generator):
     return StreamingResponse(
-        event_generator(),
+        generator,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -228,6 +133,147 @@ async def chat_stream(request: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+async def _event_stream(request, _server, resume_state: dict | None = None):
+    # Route builder agents to the dedicated builder stream
+    agent = await _resolve_agent(request)
+    if agent and agent.get("type") == "builder":
+        from core.routes.builder import run_builder_stream_compat
+        async for chunk in run_builder_stream_compat(request, _server):
+            yield chunk
+        return
+
+    async def _stopped() -> bool:
+        return getattr(request, "session_id", None) in _STOP_REQUESTED
+
+    try:
+        # The last turn-boundary snapshot. Kept so a pause can be resumed from
+        # it rather than from the top: without it, allowing a gated call means
+        # re-running every tool that already succeeded this turn, side effects
+        # and all. Never forwarded — it is engine state, not an event.
+        latest_progress: dict | None = None
+
+        async for event in iter_with_heartbeat(
+            run_react_loop(request, _server, should_stop=_stopped,
+                           progress_events=True, resume_state=resume_state)
+        ):
+            # Heartbeat comments are yielded as raw SSE strings — pass through.
+            if isinstance(event, str):
+                yield event
+                continue
+            etype = event["type"]
+
+            if etype == "_step_progress":
+                latest_progress = {k: v for k, v in event.items() if k != "type"}
+                continue
+
+            if etype == "status":
+                yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"
+
+            elif etype == "thinking":
+                yield f"data: {json.dumps({'type': 'thinking', 'message': event.get('message', ''), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
+
+            elif etype == "tool_execution":
+                yield f"data: {json.dumps({'type': 'tool_execution', 'tool_name': event['tool_name'], 'args': event['args'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
+
+            elif etype == "tool_result":
+                yield f"data: {json.dumps({'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': event['preview'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
+
+            elif etype == "llm_reasoning":
+                # Private chain-of-thought extracted from [REASONING] blocks.
+                # Rendered as a dedicated "thinking" panel above the tool call
+                # in the chat UI / orchestration step view.
+                yield f"data: {json.dumps({'type': 'llm_reasoning', 'reasoning': event['reasoning'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
+
+            elif etype == "llm_thought":
+                # Action text (tool-call JSON or final-response prose) with
+                # reasoning already stripped — carries orch_step_id & step_name
+                # when inside orchestration.
+                yield f"data: {json.dumps({'type': 'llm_thought', 'thought': event['thought'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
+
+            elif etype == "final":
+                # Sub-agent step final (inside orchestration) → agent_step_result
+                # Distinguished by the presence of orch_step_id (added by AgentStepExecutor)
+                if event.get("orch_step_id"):
+                    yield f"data: {json.dumps({'type': 'agent_step_result', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name', ''), 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}, default=str)}\n\n"
+                else:
+                    # Top-level final (single agent or orchestration summary) → response + done
+                    yield f"data: {json.dumps({'type': 'response', 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}, default=str)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+            elif etype == "error":
+                yield f"data: {json.dumps({'type': 'error', 'message': event['message']})}\n\n"
+
+            # ── Orchestration lifecycle events ────────────────────────────────
+            elif etype == "orchestration_start":
+                yield f"data: {json.dumps({'type': 'orchestration_start', 'run_id': event.get('run_id'), 'orchestration_name': event.get('orchestration_name'), 'orchestration_id': event.get('orchestration_id')}, default=str)}\n\n"
+
+            elif etype == "step_start":
+                yield f"data: {json.dumps({'type': 'step_start', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name'), 'step_type': event.get('step_type')}, default=str)}\n\n"
+
+            elif etype == "step_complete":
+                yield f"data: {json.dumps({'type': 'step_complete', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name'), 'duration_seconds': event.get('duration_seconds')}, default=str)}\n\n"
+
+            elif etype == "step_error":
+                yield f"data: {json.dumps({'type': 'step_error', 'orch_step_id': event.get('orch_step_id'), 'error': event.get('error')}, default=str)}\n\n"
+
+            elif etype == "orchestration_complete":
+                yield f"data: {json.dumps({'type': 'orchestration_complete', 'run_id': event.get('run_id'), 'status': event.get('status')}, default=str)}\n\n"
+
+            elif etype == "orchestration_error":
+                yield f"data: {json.dumps({'type': 'orchestration_error', 'error': event.get('error')}, default=str)}\n\n"
+
+            elif etype == "human_input_required":
+                # A tool call waiting on a person is the one pause a chat turn
+                # can hit and never come back from: an orchestration run
+                # resumes from its own row, and a chat turn has no run. Park
+                # the call and the snapshot so `/chat/{id}/approve` can pick
+                # the turn up where it stopped.
+                if event.get("kind") == "tool_approval":
+                    from core.store import sessions as _sessions
+                    await _sessions.set_pending_approval(
+                        getattr(request, "session_id", "") or "",
+                        getattr(request, "agent_id", None) or "default",
+                        {
+                            "tool_name": event.get("tool_name"),
+                            "tool_args": event.get("tool_args") or {},
+                            "approval_id": event.get("approval_id"),
+                            "category": event.get("category"),
+                            # The question that started this turn: a resume
+                            # rebuilds the conversation around it.
+                            "message": getattr(request, "message", "") or "",
+                            "progress": latest_progress or {},
+                        },
+                    )
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+                # Send done so the loading spinner stops — user must submit the form
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                return
+
+            elif etype in (
+                "parallel_start", "parallel_complete", "branch_start",
+                "loop_iteration", "loop_complete", "merge_complete",
+                "transform_result", "routing_decision",
+                "loop_limit_reached", "step_warning",
+                # Things the loop does to keep going, which the person is
+                # entitled to know about. All four were emitted by the
+                # engine and dropped here, so the only visible trace of a
+                # truncated answer or a discarded middle was that the reply
+                # read oddly.
+                "truncated_output", "context_trimmed",
+                "tool_call_unparsed", "tool_approval_replay",
+                "cancelled",
+            ):
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+
+            await asyncio.sleep(0)
+
+    except Exception as e:
+        print(f"ERROR in SSE stream: {e}")
+        import traceback
+        traceback.print_exc()
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
 
 @router.post("/chat/{session_id}/cancel")
@@ -266,3 +312,67 @@ async def cancel_chat(session_id: str):
         pass
 
     return {"status": "cancelling", "session_id": session_id, "stopped": stopped}
+
+
+class ApprovalDecision(BaseModel):
+    """A person's answer to "may this tool call run?"."""
+    approve: bool
+    reason: str = ""
+    agent_id: str | None = None
+
+
+@router.post("/chat/{session_id}/approve")
+async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
+    """Answer the tool-call question this conversation is waiting on.
+
+    The gate itself has existed since tool policies landed, but only
+    orchestration runs could answer it: a run resumes from its own row, and a
+    chat turn has no run. So in chat the pause was a dead end — the turn
+    stopped with a question, and nothing in the product could reply to it.
+
+    The turn is picked up from its last turn-boundary snapshot rather than
+    started again, which is the whole reason the snapshot is kept. Starting
+    again would re-run every tool that already succeeded before the pause, and
+    those are the calls with side effects.
+
+    An approval is spent on the exact call it was given for — `approval_id` is
+    derived from the tool *and its arguments* — so allowing `ls` does not also
+    allow `rm`.
+    """
+    from core.store import sessions as _sessions
+
+    agent_key = decision.agent_id or "default"
+    pending = await _sessions.get_pending_approval(session_id, agent_key)
+    if not pending:
+        raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
+
+    # Cleared before the turn runs, not after. A resume that crashed with the
+    # row still set would re-open a question the person has already answered.
+    await _sessions.set_pending_approval(session_id, agent_key, None)
+
+    approval_id = pending.get("approval_id")
+    bucket = "approved_calls" if decision.approve else "denied_calls"
+    progress = dict(pending.get("progress") or {})
+    resume_state = {
+        **progress,
+        bucket: sorted(set(progress.get(bucket) or []) | {approval_id}),
+        "pending_call": {
+            "approval_id": approval_id,
+            "tool": pending.get("tool_name"),
+            "arguments": pending.get("tool_args") or {},
+            "approved": decision.approve,
+            "reason": decision.reason,
+        },
+    }
+    if not decision.approve and decision.reason:
+        resume_state["denied_reasons"] = {
+            **(progress.get("denied_reasons") or {}),
+            approval_id: decision.reason,
+        }
+
+    resumed = ChatRequest(
+        message=pending.get("message") or "",
+        session_id=session_id,
+        agent_id=None if agent_key == "default" else agent_key,
+    )
+    return _sse(_guarded_stream(resumed, resume_state=resume_state))

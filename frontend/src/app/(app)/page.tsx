@@ -320,6 +320,83 @@ const TIPS = [
 ];
 
 // ─── Welcome Screen ──────────────────────────────────────────────────────────
+/**
+ * The agent wants to run something the policy will not let it run unasked.
+ *
+ * Deliberately not a `CollectDataForm`: that renders a question with fields,
+ * and this is a decision with a subject. What matters is being able to read
+ * the exact call — `run_sql_query` is one door for SELECT and DROP, and
+ * "allow this tool?" without the arguments is not a question anyone can answer.
+ */
+function ToolApprovalCard({
+  msg, onDecide, disabled,
+}: {
+  msg: Message;
+  onDecide: (approve: boolean, reason: string) => void;
+  disabled: boolean;
+}) {
+  const [reason, setReason] = useState('');
+  const [answered, setAnswered] = useState(false);
+  const args = msg.data?.tool_args as Record<string, unknown> | undefined;
+
+  return (
+    <div className="flex gap-4 max-w-4xl">
+      <div className="h-8 w-8 shrink-0 flex items-center justify-center border border-amber-700/50 bg-amber-950/30 text-amber-400 rounded-md">
+        <AlertCircle className="h-4 w-4" />
+      </div>
+      <div className="flex-1 min-w-0 p-4 border border-amber-900/40 bg-amber-950/10 relative font-sans rounded-md">
+        <div className="absolute -top-3 left-2 bg-zinc-950 border border-amber-900/50 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-500 font-mono rounded-md">
+          Permission needed
+        </div>
+        <div className="prose prose-invert max-w-none text-zinc-100 font-normal text-[15px] leading-7">
+          {renderTextContent(msg.content)}
+        </div>
+
+        {args && Object.keys(args).length > 0 && (
+          <pre className="mt-3 p-3 bg-zinc-950 border border-zinc-800 rounded-md text-[12px] font-code text-zinc-300 overflow-x-auto">
+            {JSON.stringify(args, null, 2)}
+          </pre>
+        )}
+
+        {answered ? (
+          <p className="mt-3 text-[12px] text-zinc-500">Answered.</p>
+        ) : (
+          <>
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Why not? (optional — the agent reads this and works around it)"
+              disabled={disabled}
+              className="mt-3 w-full bg-zinc-950 border border-zinc-800 px-3 py-2 text-[13px] text-zinc-200 placeholder:text-zinc-600 rounded-md focus:border-amber-700/60 focus:outline-none disabled:opacity-50"
+            />
+            <div className="flex gap-2 mt-3">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => { setAnswered(true); onDecide(true, ''); }}
+                className="px-3 py-1.5 bg-accent text-accent-fg text-[11px] font-semibold uppercase tracking-wider rounded-md hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Allow once
+              </button>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => { setAnswered(true); onDecide(false, reason); }}
+                className="px-3 py-1.5 border border-zinc-700 text-zinc-300 text-[11px] font-semibold uppercase tracking-wider rounded-md hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Refuse
+              </button>
+            </div>
+            <p className="mt-2 text-[11px] text-zinc-600">
+              Allowing applies to this call and these arguments only.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function WelcomeScreen({ agentName, onPrompt, onNavigate, showExamplesBanner, onDismissBanner }: { agentName: string; onPrompt: (text: string) => void; onNavigate: (path: string) => void; showExamplesBanner: boolean; onDismissBanner: () => void; }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
@@ -893,6 +970,87 @@ export default function Home() {
     textareaRef.current?.focus();
   };
 
+  /**
+   * Consume an SSE stream from a POST, through the shared event handler.
+   *
+   * The chat turn, the orchestration resume and now the tool-approval resume
+   * all speak the same event vocabulary and differ only in the URL and the
+   * body — so the reading of it is written once. The abort controller is
+   * registered the same way a turn's is, which is what lets Stop reach a
+   * resumed turn as well as a fresh one.
+   */
+  const streamFrom = async (url: string, body: Record<string, unknown>) => {
+    const controller = new AbortController();
+    sseAbortRef.current = controller;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No reader available');
+
+    const decoder = new TextDecoder();
+    const stepState = { thoughts: [] as string[], reasoning: [] as string[], orchStepId: null as string | null, orchCompleted: false, receivedAgentStep: false };
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await readWithStallTimeout(reader, controller);
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            const result = handleSSEEvent(data, stepState);
+            if (result.done) return;
+            if (result.error) throw result.error;
+          } catch (e) {
+            if (e instanceof Error && e.message) throw e;
+            console.error('Failed to parse SSE event:', e);
+          }
+        }
+      }
+    } finally {
+      if (sseAbortRef.current === controller) sseAbortRef.current = null;
+    }
+  };
+
+  /**
+   * Allow or refuse a tool call the agent stopped to ask about.
+   *
+   * The answer resumes the same turn — the backend picks it up from its last
+   * turn-boundary snapshot — so this streams into the transcript exactly as
+   * the first half did, rather than starting a new exchange.
+   */
+  const handleToolApproval = async (approve: boolean, reason: string) => {
+    if (isLoading) return;
+    setMessages(prev => [...prev, {
+      role: 'assistant', msgType: 'note',
+      content: approve ? 'You allowed the call.' : `You refused the call${reason ? `: ${reason}` : '.'}`,
+    }]);
+    setIsLoading(true);
+    setTurnOutcome(null);
+    turnAnsweredRef.current = false;
+    try {
+      await streamFrom(`/api/chat/${encodeURIComponent(sessionId)}/approve`, {
+        approve, reason, agent_id: currentAgentId,
+      });
+    } catch (e) {
+      console.error('Failed to resume after the approval', e);
+      setTurnOutcome(prev => prev ?? { kind: 'failed', message: 'The turn did not pick back up.' });
+    } finally {
+      setIsLoading(false);
+      setStreamingActivity(null);
+      setIsThinking(false);
+      setThinkingPreview(null);
+    }
+  };
+
   const handleCollectDataSubmit = async (values: Record<string, any>) => {
     // Format the response based on whether it's a single field or multiple fields
     const keys = Object.keys(values);
@@ -1217,6 +1375,13 @@ export default function Home() {
             orch_step_id: data.orch_step_id,
             agent_context: data.agent_context,
             channel_id: data.channel_id,
+            // A gated tool call, rather than a workflow asking a question. It
+            // has no run behind it — the turn itself is what resumes — so it
+            // is answered somewhere else and rendered as a decision, not a form.
+            kind: data.kind,
+            tool_name: data.tool_name,
+            tool_args: data.tool_args,
+            category: data.category,
           },
         }]);
         break;
@@ -1522,6 +1687,13 @@ export default function Home() {
           <span className="min-w-0">{msg.content}</span>
         </div>
       );
+    }
+
+    // ── A tool call waiting on permission ──
+    // Not a form: the answer is yes or no, and the interesting part is *what*
+    // is being asked, so the call and its arguments are the content.
+    if (msg.msgType === 'human_input_required' && msg.data?.kind === 'tool_approval') {
+      return <ToolApprovalCard key={idx} msg={msg} onDecide={handleToolApproval} disabled={isLoading} />;
     }
 
     // ── Human input required ──

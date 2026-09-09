@@ -2261,8 +2261,16 @@ async def run_agent_step(
     yield {"type": "final", "response": final_response, "intent": last_intent, "data": last_data, "tool_name": tool_name}
 
 
-async def run_react_loop(request, server_module, should_stop=None):
+async def run_react_loop(request, server_module, should_stop=None, *,
+                         progress_events: bool = False, resume_state: dict | None = None):
     """Async generator that runs the ReAct loop and yields structured events.
+
+    `progress_events` and `resume_state` are the two halves of carrying a chat
+    turn across a pause. The first makes the loop emit a turn-boundary snapshot
+    the caller keeps and never forwards; the second seeds a new loop from one.
+    Chat needs them because a tool call can stop mid-turn to ask a person, and
+    without the snapshot the answer would be acted on by re-running every tool
+    that already succeeded in that turn — side effects included.
 
     `should_stop` is an optional predicate the loop consults between turns and
     honours by raising `CancelledError`. It is the cooperative half of stopping
@@ -2358,6 +2366,8 @@ async def run_react_loop(request, server_module, should_stop=None):
             max_turns=agent_max_turns,
             images=getattr(request, 'images', None) or None,
             should_stop=should_stop,
+            progress_events=progress_events,
+            resume_state=resume_state,
         ):
             _agent_log.log_event(event)
             yield event
