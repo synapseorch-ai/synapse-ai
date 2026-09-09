@@ -46,6 +46,74 @@ async def _visible_orchestration(orch_id: str | None) -> dict | None:
     return orch
 
 
+def _tool_name(raw: Any) -> str:
+    """A custom tool's name is an identifier the model types into a tool call."""
+    name = str(raw or "").strip()
+    return name if name and name.replace("_", "a").isalnum() and not name[0].isdigit() else ""
+
+
+async def _refuse_inward_url(url: str) -> dict | None:
+    """Refuse a tool URL that points back inside our own network.
+
+    Narrow on purpose. A host that does not resolve from this machine right now
+    is allowed through — an internal API, a service not yet deployed, a DNS
+    blip — because refusing there would be a guess about someone else's
+    network, and the tool would be just as creatable from the tools screen.
+    What is refused is what is never right: a non-HTTP scheme, no host, and a
+    host that is (or resolves to) loopback, link-local, or private space. That
+    is the shape a prompt-injected builder writes when it goes looking for the
+    cloud metadata endpoint.
+
+    Note this is the only check these URLs get: `core/http_tool.py` does not
+    guard egress when the tool actually runs.
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    from core import egress_guard
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return {"error": f"A tool URL must be http or https, not '{parsed.scheme or url}'."}
+    host = (parsed.hostname or "").strip().lower().strip("[]")
+    if not host:
+        return {"error": "That URL has no host."}
+    if host in egress_guard.allowed_hosts():
+        return None
+
+    try:
+        ipaddress.ip_address(host)
+        addresses = [host]
+    except ValueError:
+        try:
+            addresses = await egress_guard.resolve(host)
+        except egress_guard.BlockedEgress:
+            return None  # unresolvable from here; not our call to make
+
+    for address in addresses:
+        reason = egress_guard.reject_address(address)
+        if reason is not None:
+            return {"error": f"That URL points inside our own network ({reason}) and cannot be used as a tool."}
+    return None
+
+
+def _require_confirm(args: dict, what: str) -> dict | None:
+    """Destructive tools refuse until the caller says so explicitly.
+
+    Two layers guard a delete: this one, and the fact that `delete_*` is
+    declared only on the operator agent, which runs only after a human has
+    approved a plan naming the deletion.
+    """
+    if args.get("confirm") is True:
+        return None
+    return {
+        "error": (
+            f"Refusing to {what} without confirmation. This cannot be undone. "
+            f"Call again with confirm=true once the user has agreed."
+        )
+    }
+
+
 def _refuse_ungated_transform(steps: list) -> dict | None:
     """Refuse `transform` steps when this workspace has no code runtime.
 
@@ -767,6 +835,286 @@ BUILDER_TOOL_SCHEMAS = [
             },
         },
     },
+    # ── Custom HTTP tools ────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_custom_tools",
+            "description": "List this workspace's custom HTTP tools with their name, description, method, URL and group.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_http_tool",
+            "description": (
+                "Create a custom HTTP tool an agent can call. The tool's inputs are declared as a "
+                "JSON Schema; use {{ placeholders }} in the URL, headers and body to interpolate them "
+                "(e.g. https://api.example.com/users/{{ user_id }}). Use {{ global.KEY }} for a "
+                "workspace variable and {{ args }} for the whole argument payload. Re-creating a tool "
+                "with an existing name replaces it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Unique tool name (snake_case, e.g. create_ticket)"},
+                    "description": {"type": "string", "description": "What the tool does — the model reads this to decide when to call it"},
+                    "url": {"type": "string", "description": "Full https URL, with {{ placeholders }} for path/query values"},
+                    "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "description": "HTTP method (default GET)"},
+                    "headers_json": {"type": "string", "description": "JSON object of static headers, e.g. '{\"Authorization\":\"Bearer {{ global.API_KEY }}\"}'"},
+                    "input_schema_json": {"type": "string", "description": "JSON Schema object describing the tool's arguments, e.g. '{\"type\":\"object\",\"properties\":{\"user_id\":{\"type\":\"string\"}},\"required\":[\"user_id\"]}'"},
+                    "body_template": {"type": "string", "description": "Request body template for POST/PUT/PATCH, with {{ placeholders }}. Omit to send the arguments as JSON."},
+                    "group": {"type": "string", "description": "Optional group name to file the tool under"},
+                },
+                "required": ["name", "description", "url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "import_openapi",
+            "description": (
+                "Import an OpenAPI 3.x / Swagger 2.0 spec as a set of custom HTTP tools — one tool per "
+                "operation, filed under a single group. Pass the spec text (JSON or YAML). Use this "
+                "instead of hand-writing many create_http_tool calls when the user supplies a spec."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "spec_text": {"type": "string", "description": "The raw OpenAPI spec, JSON or YAML"},
+                    "base_url": {"type": "string", "description": "Override the spec's server base URL"},
+                    "name_prefix": {"type": "string", "description": "Prefix for every generated tool name, to avoid collisions"},
+                    "group": {"type": "string", "description": "Group name (default: the spec's title)"},
+                },
+                "required": ["spec_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_custom_tool",
+            "description": "Delete a custom tool by name. Destructive: requires confirm=true, and agents referencing the tool lose it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "confirm": {"type": "boolean", "description": "Must be true. Deleting is not reversible."},
+                },
+                "required": ["name", "confirm"],
+            },
+        },
+    },
+    # ── Skills ───────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_skills",
+            "description": "List the skills available in this workspace (name, description, source). Skills are reusable instruction documents an agent loads on demand.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_skill",
+            "description": "Read one skill's full body by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_skill",
+            "description": (
+                "Create a reusable skill: a markdown instruction document an agent can load when the "
+                "task calls for it. Prefer a skill over stuffing procedure into a system prompt — it is "
+                "shared across agents and only enters the context when needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "kebab-case name, e.g. quarterly-report-format"},
+                    "description": {"type": "string", "description": "One line: when an agent should load this skill"},
+                    "body": {"type": "string", "description": "The skill's markdown body — the instructions themselves"},
+                },
+                "required": ["name", "description", "body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_skill",
+            "description": "Replace an existing skill's description and/or body.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "attach_skills",
+            "description": "Set the list of skills an agent can load. Replaces the agent's current skill list.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "string"},
+                    "names": {"type": "array", "items": {"type": "string"}, "description": "Skill names; pass [] to detach all"},
+                },
+                "required": ["agent_id", "names"],
+            },
+        },
+    },
+    # ── Schedules ────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_schedules",
+            "description": "List this workspace's schedules with their target, cadence, enabled state and next run.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_schedule",
+            "description": (
+                "Run an agent or orchestration on a cadence. Either an interval "
+                "(interval_value + interval_unit) or a cron expression — not both."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "target_type": {"type": "string", "enum": ["agent", "orchestration"]},
+                    "target_id": {"type": "string", "description": "The agent or orchestration id to run"},
+                    "prompt": {"type": "string", "description": "The message the scheduled run starts with"},
+                    "schedule_type": {"type": "string", "enum": ["interval", "cron"]},
+                    "interval_value": {"type": "integer"},
+                    "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days"]},
+                    "cron_expression": {"type": "string", "description": "Standard 5-field cron, e.g. '0 8 * * 1-5'"},
+                    "enabled": {"type": "boolean", "description": "Default true"},
+                },
+                "required": ["name", "target_type", "target_id", "prompt", "schedule_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_schedule_enabled",
+            "description": "Pause or resume a schedule without deleting it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schedule_id": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                },
+                "required": ["schedule_id", "enabled"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_schedule",
+            "description": "Delete a schedule. Destructive: requires confirm=true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schedule_id": {"type": "string"},
+                    "confirm": {"type": "boolean", "description": "Must be true."},
+                },
+                "required": ["schedule_id", "confirm"],
+            },
+        },
+    },
+    # ── Variables and runs ───────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "list_variables",
+            "description": (
+                "List the workspace variable keys with a short preview of each value. Values are "
+                "referenced in tool URLs, headers and bodies as {{ global.KEY }}. Previews are "
+                "truncated — never quote a value back to the user."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_recent_runs",
+            "description": "Recent orchestration runs, newest first, with their status and step. Use this to answer questions about what ran and what failed.",
+            "parameters": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "description": "How many runs (default 10, max 50)"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_run_summary",
+            "description": "Status snapshot for one run: status, current step, whether it is waiting on a human, start and end times.",
+            "parameters": {
+                "type": "object",
+                "properties": {"run_id": {"type": "string"}},
+                "required": ["run_id"],
+            },
+        },
+    },
+    # ── Deletes ──────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_agent",
+            "description": (
+                "Delete an agent. Destructive: requires confirm=true. Orchestration steps that name "
+                "this agent will fail until they are repointed — check with list_orchestrations first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "string"},
+                    "confirm": {"type": "boolean", "description": "Must be true."},
+                },
+                "required": ["agent_id", "confirm"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_orchestration",
+            "description": "Delete an orchestration. Destructive: requires confirm=true. Its run history is kept.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "orch_id": {"type": "string"},
+                    "confirm": {"type": "boolean", "description": "Must be true."},
+                },
+                "required": ["orch_id", "confirm"],
+            },
+        },
+    },
 ]
 
 
@@ -1349,6 +1697,345 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any) -> Any:
         if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         return _validate_orchestration(orch)
+
+    # ── Custom HTTP tools ────────────────────────────────────────────────────
+
+    elif tool_name == "list_custom_tools":
+        from core.routes.tools import load_custom_tools
+        return [
+            {
+                "name": t.get("name"),
+                "description": t.get("description", ""),
+                "method": t.get("method", "GET"),
+                "url": t.get("url", ""),
+                "group": t.get("group"),
+                "tool_type": t.get("tool_type", "http"),
+            }
+            for t in await load_custom_tools()
+        ]
+
+    elif tool_name == "create_http_tool":
+        from core.store.resources import save_tool
+
+        name = _tool_name(args.get("name"))
+        if not name:
+            return {"error": "name must be a tool-style identifier (letters, digits, underscores)"}
+        url = str(args.get("url") or "").strip()
+        refused = await _refuse_inward_url(url)
+        if refused:
+            return refused
+        headers = _parse_json_field(args.get("headers_json"), {})
+        if not isinstance(headers, dict):
+            return {"error": "headers_json must decode to a JSON object"}
+        input_schema = _parse_json_field(args.get("input_schema_json"), {"type": "object", "properties": {}})
+        if not isinstance(input_schema, dict):
+            return {"error": "input_schema_json must decode to a JSON Schema object"}
+        group_name = str(args.get("group") or "").strip()
+        group_id = None
+        if group_name:
+            from core.routes.tools import _group_id, _upsert_group
+            group_id = _group_id(group_name)
+            await _upsert_group({"id": group_id, "name": group_name, "description": ""})
+
+        tool = {
+            "name": name,
+            "generalName": name.replace("_", " ").title()[:80],
+            "description": str(args.get("description") or "").strip(),
+            "tool_type": "http",
+            "method": str(args.get("method") or "GET").upper(),
+            "url": url,
+            "headers": headers,
+            "inputSchema": input_schema,
+            "group": group_id,
+        }
+        body_template = args.get("body_template")
+        if body_template:
+            tool["body_template"] = body_template
+        await save_tool(tool)
+        return {"status": "created", "id": name, "name": name}
+
+    elif tool_name == "import_openapi":
+        from core.openapi_import import parse_openapi_spec
+        from core.routes.tools import _group_id, _parse_spec_text, _upsert_group
+        from core.store.resources import save_tools
+
+        try:
+            spec = _parse_spec_text(args.get("spec_text") or "")
+        except Exception as exc:  # HTTPException from the shared parser
+            return {"error": f"Could not parse the spec: {getattr(exc, 'detail', exc)}"}
+        try:
+            generated = parse_openapi_spec(
+                spec,
+                base_url=(args.get("base_url") or None),
+                name_prefix=str(args.get("name_prefix") or ""),
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+        info = spec.get("info") or {}
+        group_name = (
+            str(args.get("group") or "").strip()
+            or str(info.get("title") or "").strip()
+            or str(args.get("name_prefix") or "").strip()
+            or "Imported API"
+        )
+        group = {
+            "id": _group_id(group_name),
+            "name": group_name,
+            "description": str(info.get("description") or "").strip()[:500],
+        }
+        for t in generated:
+            t["group"] = group["id"]
+        await _upsert_group(group)
+        await save_tools(generated)
+        return {
+            "status": "imported",
+            "id": group["id"],
+            "name": group_name,
+            "tool_names": [t["name"] for t in generated],
+            "count": len(generated),
+        }
+
+    elif tool_name == "delete_custom_tool":
+        refused = _require_confirm(args, f"delete the tool '{args.get('name')}'")
+        if refused:
+            return refused
+        from core.store.resources import delete_tool
+        name = str(args.get("name") or "")
+        if not await delete_tool(name):
+            return {"error": f"Custom tool '{name}' not found"}
+        return {"status": "deleted", "id": name, "name": name}
+
+    # ── Skills ───────────────────────────────────────────────────────────────
+
+    elif tool_name == "list_skills":
+        from core import skills as skills_mod
+        return await skills_mod.list_skills()
+
+    elif tool_name == "get_skill":
+        from core import skills as skills_mod
+        skill = await skills_mod.get_skill(str(args.get("name") or ""))
+        if skill is None:
+            return {"error": f"Skill '{args.get('name')}' not found"}
+        return skill
+
+    elif tool_name in ("create_skill", "update_skill"):
+        from core import skills as skills_mod
+
+        name = skills_mod.normalize_name(str(args.get("name") or ""))
+        if not skills_mod._NAME_RE.match(name):
+            return {"error": f"'{name}' is not a usable skill name (letters, digits, ., _, -)"}
+        library = await skills_mod.load_library()
+        existing = next((s for s in library if (s.get("name") or s.get("id")) == name), None)
+        if tool_name == "update_skill" and existing is None:
+            return {"error": f"Skill '{name}' is not in the library — create it first"}
+        description = str(args.get("description") or (existing or {}).get("description") or "").strip()
+        body = args.get("body")
+        if body is None:
+            body = (existing or {}).get("body", "")
+        if not description:
+            return {"error": "description is required — it is how an agent decides to load the skill"}
+        document = {"id": name, "name": name, "description": description, "body": body}
+        await skills_mod.save_library([s for s in library if (s.get("name") or s.get("id")) != name] + [document])
+        return {
+            "status": "updated" if existing else "created",
+            "id": name,
+            "name": name,
+        }
+
+    elif tool_name == "attach_skills":
+        from core import skills as skills_mod
+
+        agent = await _load_agent(args["agent_id"])
+        if not agent:
+            return {"error": f"Agent '{args['agent_id']}' not found"}
+        if agent.get("system"):
+            return {"error": f"Agent '{args['agent_id']}' is part of the builder itself and cannot be edited."}
+        wanted = [skills_mod.normalize_name(n) for n in (args.get("names") or [])]
+        known = {s["name"] for s in await skills_mod.list_skills()}
+        missing = [n for n in wanted if n not in known]
+        if missing:
+            return {"error": f"No such skill(s): {missing}. Call list_skills to see what exists."}
+        agent["skills"] = wanted
+        agent["id"] = args["agent_id"]
+        await save_agent(agent)
+        return {"status": "updated", "id": agent["id"], "name": agent.get("name"), "skills": wanted}
+
+    # ── Schedules ────────────────────────────────────────────────────────────
+
+    elif tool_name == "list_schedules":
+        from core.store import schedules as schedule_store
+        return [
+            {
+                "id": s.get("id"),
+                "name": s.get("name"),
+                "enabled": s.get("enabled", True),
+                "target_type": s.get("target_type"),
+                "target_id": s.get("target_id"),
+                "schedule_type": s.get("schedule_type"),
+                "interval_value": s.get("interval_value"),
+                "interval_unit": s.get("interval_unit"),
+                "cron_expression": s.get("cron_expression"),
+                "next_run_at": s.get("next_run_at"),
+                "last_run_at": s.get("last_run_at"),
+            }
+            for s in await schedule_store.load()
+        ]
+
+    elif tool_name == "create_schedule":
+        import uuid as _uuid
+
+        from pydantic import ValidationError
+
+        from core.models_schedule import ScheduleCreate
+        from core.scheduler import _iso, _utc_now, compute_next_run
+        from core.store import schedules as schedule_store
+
+        # The target has to exist, or the schedule fires into nothing forever.
+        target_type = args.get("target_type")
+        target_id = str(args.get("target_id") or "")
+        if target_type == "agent":
+            target = await _load_agent(target_id)
+            if target is None or target.get("system"):
+                return {"error": f"Agent '{target_id}' not found"}
+        elif target_type == "orchestration":
+            if await _visible_orchestration(target_id) is None:
+                return {"error": f"Orchestration '{target_id}' not found"}
+        else:
+            return {"error": "target_type must be 'agent' or 'orchestration'"}
+
+        try:
+            body = ScheduleCreate.model_validate({
+                k: v for k, v in args.items()
+                if k in ScheduleCreate.model_fields and v is not None
+            })
+        except ValidationError as exc:
+            return {"error": f"Invalid schedule: {exc.errors()[0]['msg']}"}
+
+        schedule = body.model_dump()
+        schedule["id"] = f"sched_{_uuid.uuid4().hex[:8]}"
+        schedule["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        schedule["last_run_at"] = None
+        try:
+            schedule["next_run_at"] = _iso(compute_next_run(schedule, _utc_now()))
+        except Exception as exc:
+            return {"error": f"Could not work out when that would next run: {exc}"}
+        await schedule_store.save(schedule)
+        return {
+            "status": "created",
+            "id": schedule["id"],
+            "name": schedule["name"],
+            "next_run_at": schedule["next_run_at"],
+        }
+
+    elif tool_name == "set_schedule_enabled":
+        from core.store import schedules as schedule_store
+
+        schedule_id = str(args.get("schedule_id") or "")
+        schedule = await schedule_store.get(schedule_id)
+        if schedule is None:
+            return {"error": f"Schedule '{schedule_id}' not found"}
+        schedule["enabled"] = bool(args.get("enabled"))
+        await schedule_store.save(schedule)
+        return {
+            "status": "updated",
+            "id": schedule_id,
+            "name": schedule.get("name"),
+            "enabled": schedule["enabled"],
+        }
+
+    elif tool_name == "delete_schedule":
+        refused = _require_confirm(args, f"delete the schedule '{args.get('schedule_id')}'")
+        if refused:
+            return refused
+        from core.store import schedules as schedule_store
+
+        schedule_id = str(args.get("schedule_id") or "")
+        schedule = await schedule_store.get(schedule_id)
+        if schedule is None:
+            return {"error": f"Schedule '{schedule_id}' not found"}
+        await schedule_store.delete_one(schedule_id)
+        return {"status": "deleted", "id": schedule_id, "name": schedule.get("name")}
+
+    # ── Variables and runs ───────────────────────────────────────────────────
+
+    elif tool_name == "list_variables":
+        from core import variables
+
+        # Keys and a short preview only. A variable holds things like an API
+        # token; the builder needs to know it exists and how to reference it,
+        # never what it says.
+        return [
+            {"key": key, "preview": str(value)[:40], "reference": f"{{{{ global.{key} }}}}"}
+            for key, value in sorted((await variables.load()).items())
+        ]
+
+    elif tool_name == "list_recent_runs":
+        from core.orchestration.state import SharedState
+
+        limit = max(1, min(int(args.get("limit") or 10), 50))
+        visible = {o["id"] for o in await load_orchestrations() if _is_visible(o) and o.get("id")}
+        runs = await SharedState.list_runs(limit=limit, orchestration_ids=visible)
+        return [
+            {
+                "run_id": r.get("run_id"),
+                "orchestration_id": r.get("orchestration_id"),
+                "status": r.get("status"),
+                "current_step_id": r.get("current_step_id"),
+                "started_at": r.get("started_at"),
+                "ended_at": r.get("ended_at"),
+            }
+            for r in runs
+        ]
+
+    elif tool_name == "get_run_summary":
+        from core.routes.orchestrations import _run_summary
+
+        summary = await _run_summary(str(args.get("run_id") or ""))
+        if summary is None:
+            return {"error": f"Run '{args.get('run_id')}' has no checkpoint"}
+        if await _visible_orchestration(summary.get("orchestration_id")) is None:
+            return {"error": f"Run '{args.get('run_id')}' has no checkpoint"}
+        return summary
+
+    # ── Deletes ──────────────────────────────────────────────────────────────
+
+    elif tool_name == "delete_agent":
+        refused = _require_confirm(args, f"delete the agent '{args.get('agent_id')}'")
+        if refused:
+            return refused
+        from core.store.resources import delete_agent as _delete_agent
+
+        agent_id = str(args.get("agent_id") or "")
+        agent = await _load_agent(agent_id)
+        if agent is None or agent.get("system"):
+            return {"error": f"Agent '{agent_id}' not found"}
+        # Name what breaks rather than silently leaving dangling references.
+        orphaned = [
+            {"orchestration_id": o.get("id"), "step_id": s.get("id")}
+            for o in await load_orchestrations() if _is_visible(o)
+            for s in (o.get("steps") or []) if s.get("agent_id") == agent_id
+        ]
+        await _delete_agent(agent_id)
+        return {
+            "status": "deleted",
+            "id": agent_id,
+            "name": agent.get("name"),
+            "orphaned_steps": orphaned,
+        }
+
+    elif tool_name == "delete_orchestration":
+        refused = _require_confirm(args, f"delete the orchestration '{args.get('orch_id')}'")
+        if refused:
+            return refused
+        from core.store.resources import delete_orchestration as _delete_orch
+
+        orch_id = str(args.get("orch_id") or "")
+        orch = await _visible_orchestration(orch_id)
+        if orch is None:
+            return {"error": f"Orchestration '{orch_id}' not found"}
+        await _delete_orch(orch_id)
+        return {"status": "deleted", "id": orch_id, "name": orch.get("name")}
 
     else:
         return {"error": f"Unknown tool: {tool_name}"}

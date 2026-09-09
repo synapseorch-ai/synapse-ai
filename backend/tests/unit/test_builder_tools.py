@@ -231,3 +231,254 @@ class TestToolDiscoveryWorksAtAll:
         ])
         result = await call("list_all_tools", {"limit": 200}, server)
         assert isinstance(result, list) and result
+
+
+# ── the wider tool set (D2) ──────────────────────────────────────────────────
+
+class TestCustomTools:
+    async def test_creating_an_http_tool_stores_it(self, server):
+        result = await call("create_http_tool", {
+            "name": "create_ticket",
+            "description": "Open a support ticket",
+            "url": "https://api.example.com/tickets/{{ project }}",
+            "method": "POST",
+            "headers_json": json.dumps({"Authorization": "Bearer {{ global.TOKEN }}"}),
+            "input_schema_json": json.dumps({
+                "type": "object", "properties": {"project": {"type": "string"}}, "required": ["project"],
+            }),
+        }, server)
+        assert result == {"status": "created", "id": "create_ticket", "name": "create_ticket"}
+
+        from core.routes.tools import load_custom_tools
+        tool = (await load_custom_tools())[0]
+        assert tool["method"] == "POST"
+        assert tool["headers"]["Authorization"] == "Bearer {{ global.TOKEN }}"
+        assert tool["inputSchema"]["required"] == ["project"]
+
+    @pytest.mark.parametrize("url", [
+        "http://169.254.169.254/latest/meta-data/",  # the cloud metadata endpoint
+        "http://127.0.0.1:8000/api/settings",        # our own API
+        "http://10.0.0.5/internal",                  # private space
+        "file:///etc/passwd",                        # not even HTTP
+    ])
+    async def test_a_url_pointing_inward_is_refused(self, server, url):
+        """The shape a prompt-injected builder writes when it goes looking for
+        credentials. This is the only check these URLs get — the HTTP executor
+        does not guard egress at run time."""
+        result = await call("create_http_tool", {"name": "peek", "description": "d", "url": url}, server)
+        assert "error" in result
+
+        from core.routes.tools import load_custom_tools
+        assert await load_custom_tools() == []
+
+    async def test_a_host_that_does_not_resolve_here_is_still_allowed(self, server):
+        """An internal API, or one not deployed yet. Refusing would be a guess
+        about someone else's network, and the tools screen would allow it."""
+        result = await call("create_http_tool", {
+            "name": "internal_api", "description": "d",
+            "url": "https://tickets.internal.example.invalid/v1/create",
+        }, server)
+        assert result["status"] == "created"
+
+    async def test_a_tool_name_must_be_callable(self, server):
+        result = await call("create_http_tool", {
+            "name": "not a tool name!", "description": "d", "url": "https://api.example.com/x",
+        }, server)
+        assert "error" in result
+
+    async def test_importing_a_spec_creates_one_tool_per_operation(self, server):
+        spec = json.dumps({
+            "openapi": "3.0.0",
+            "info": {"title": "Widgets", "description": "The widget API"},
+            "servers": [{"url": "https://api.example.com"}],
+            "paths": {
+                "/widgets": {"get": {"operationId": "listWidgets", "summary": "List widgets"}},
+                "/widgets/{id}": {
+                    "get": {
+                        "operationId": "getWidget", "summary": "Get one",
+                        "parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "string"}}],
+                    }
+                },
+            },
+        })
+        result = await call("import_openapi", {"spec_text": spec}, server)
+        assert result["count"] == 2
+        assert set(result["tool_names"]) == {"listwidgets", "getwidget"}
+
+        from core.routes.tools import load_custom_tools
+        tools = {t["name"]: t for t in await load_custom_tools()}
+        # One group per import, and the path parameter arrives as {{ }}.
+        assert tools["getwidget"]["group"] == result["id"]
+        assert tools["getwidget"]["url"].endswith("{{id}}")
+
+    async def test_a_spec_that_is_not_a_spec_is_reported_not_raised(self, server):
+        result = await call("import_openapi", {"spec_text": "not a spec"}, server)
+        assert "error" in result
+
+
+class TestSkills:
+    async def test_create_then_read_back(self, server):
+        created = await call("create_skill", {
+            "name": "Quarterly Report Format",
+            "description": "How the quarterly report is laid out",
+            "body": "# Format\n\nOne section per region.",
+        }, server)
+        assert created == {"status": "created", "id": "quarterly-report-format", "name": "quarterly-report-format"}
+
+        fetched = await call("get_skill", {"name": "quarterly-report-format"}, server)
+        assert fetched["body"].startswith("# Format")
+
+    async def test_update_keeps_the_body_when_only_the_description_changes(self, server):
+        await call("create_skill", {"name": "tone", "description": "old", "body": "Be brief."}, server)
+        result = await call("update_skill", {"name": "tone", "description": "new"}, server)
+        assert result["status"] == "updated"
+
+        fetched = await call("get_skill", {"name": "tone"}, server)
+        assert fetched["description"] == "new"
+        assert fetched["body"] == "Be brief."
+
+    async def test_updating_a_skill_that_does_not_exist_says_so(self, server):
+        assert "error" in await call("update_skill", {"name": "ghost", "description": "d"}, server)
+
+    async def test_attaching_skills_to_an_agent(self, server):
+        await S.seed_agents([S.make_agent(id="agent_writer")])
+        await call("create_skill", {"name": "tone", "description": "d", "body": "b"}, server)
+
+        result = await call("attach_skills", {"agent_id": "agent_writer", "names": ["tone"]}, server)
+        assert result["skills"] == ["tone"]
+
+        from core.store.resources import get_agent
+        assert (await get_agent("agent_writer"))["skills"] == ["tone"]
+
+    async def test_attaching_a_skill_that_does_not_exist_is_refused(self, server):
+        await S.seed_agents([S.make_agent(id="agent_writer")])
+        result = await call("attach_skills", {"agent_id": "agent_writer", "names": ["nope"]}, server)
+        assert "error" in result
+
+        from core.store.resources import get_agent
+        assert "skills" not in (await get_agent("agent_writer"))
+
+
+class TestSchedules:
+    async def test_creating_a_schedule_computes_its_next_run(self, server):
+        await S.seed_orchestrations([S.make_orchestration(id="orch_brief", name="Market brief")])
+        result = await call("create_schedule", {
+            "name": "Weekday brief", "target_type": "orchestration", "target_id": "orch_brief",
+            "prompt": "Run the brief", "schedule_type": "interval",
+            "interval_value": 1, "interval_unit": "days",
+        }, server)
+        assert result["status"] == "created"
+        assert result["next_run_at"]
+
+        from core.store import schedules as schedule_store
+        assert len(await schedule_store.load()) == 1
+
+    async def test_a_schedule_cannot_point_at_nothing(self, server):
+        """A schedule whose target does not exist fires into the void forever."""
+        result = await call("create_schedule", {
+            "name": "Ghost", "target_type": "orchestration", "target_id": "orch_missing",
+            "prompt": "go", "schedule_type": "interval", "interval_value": 1, "interval_unit": "hours",
+        }, server)
+        assert "error" in result
+
+        from core.store import schedules as schedule_store
+        assert await schedule_store.load() == []
+
+    async def test_a_schedule_cannot_target_the_builder_itself(self, server):
+        await S.seed_orchestrations([S.make_orchestration(id="orch_native_builder", system="native_builder")])
+        result = await call("create_schedule", {
+            "name": "Loop", "target_type": "orchestration", "target_id": "orch_native_builder",
+            "prompt": "go", "schedule_type": "interval", "interval_value": 1, "interval_unit": "hours",
+        }, server)
+        assert "error" in result
+
+    async def test_pausing_and_listing(self, server):
+        await S.seed_agents([S.make_agent(id="agent_x")])
+        created = await call("create_schedule", {
+            "name": "Hourly", "target_type": "agent", "target_id": "agent_x", "prompt": "go",
+            "schedule_type": "interval", "interval_value": 1, "interval_unit": "hours",
+        }, server)
+        await call("set_schedule_enabled", {"schedule_id": created["id"], "enabled": False}, server)
+
+        listed = await call("list_schedules", {}, server)
+        assert listed[0]["enabled"] is False
+
+
+class TestVariablesArePreviewedNotDisclosed:
+    async def test_values_are_truncated_and_the_reference_is_given(self, server):
+        from core import variables
+        await variables.save({"API_TOKEN": "sk-" + "x" * 200})
+
+        listed = await call("list_variables", {}, server)
+        assert listed == [{
+            "key": "API_TOKEN",
+            "preview": ("sk-" + "x" * 200)[:40],
+            "reference": "{{ global.API_TOKEN }}",
+        }]
+        assert len(listed[0]["preview"]) == 40
+
+
+class TestDeletesRefuseWithoutConfirmation:
+    """Two layers guard a delete: `confirm=true`, and the fact that these tools
+    are declared only on the operator agent, which runs after a human approves
+    a plan naming the deletion."""
+
+    @pytest.mark.parametrize("tool,args", [
+        ("delete_agent", {"agent_id": "agent_doomed"}),
+        ("delete_orchestration", {"orch_id": "orch_doomed"}),
+        ("delete_custom_tool", {"name": "tool_doomed"}),
+        ("delete_schedule", {"schedule_id": "sched_doomed"}),
+    ])
+    async def test_refused_without_confirm(self, server, tool, args):
+        result = await call(tool, args, server)
+        assert "error" in result
+        assert "confirm" in result["error"]
+
+    @pytest.mark.parametrize("tool,args", [
+        ("delete_agent", {"agent_id": "agent_doomed", "confirm": False}),
+        ("delete_orchestration", {"orch_id": "orch_doomed", "confirm": "yes"}),
+    ])
+    async def test_confirm_must_be_true_not_merely_present(self, server, tool, args):
+        assert "error" in await call(tool, args, server)
+
+    async def test_deleting_an_agent_names_the_steps_it_orphans(self, server):
+        await S.seed_agents([S.make_agent(id="agent_doomed", name="Doomed")])
+        await S.seed_orchestrations([S.make_orchestration(id="orch_uses_it", steps=[
+            {"id": "step_1", "name": "Work", "type": "agent", "agent_id": "agent_doomed"},
+        ])])
+        result = await call("delete_agent", {"agent_id": "agent_doomed", "confirm": True}, server)
+        assert result["status"] == "deleted"
+        assert result["orphaned_steps"] == [{"orchestration_id": "orch_uses_it", "step_id": "step_1"}]
+
+        from core.store.resources import get_agent
+        assert await get_agent("agent_doomed") is None
+
+    async def test_the_builders_own_parts_cannot_be_deleted(self, server):
+        await S.seed_agents([S.make_agent(id="agent_native_builder", system="native_builder")])
+        await S.seed_orchestrations([S.make_orchestration(id="orch_native_builder", system="native_builder")])
+
+        assert "error" in await call("delete_agent", {"agent_id": "agent_native_builder", "confirm": True}, server)
+        assert "error" in await call("delete_orchestration", {"orch_id": "orch_native_builder", "confirm": True}, server)
+
+        from core.store.resources import get_agent, get_orchestration
+        assert await get_agent("agent_native_builder") is not None
+        assert await get_orchestration("orch_native_builder") is not None
+
+    async def test_deleting_an_orchestration_that_is_not_there(self, server):
+        assert "error" in await call("delete_orchestration", {"orch_id": "orch_ghost", "confirm": True}, server)
+
+
+class TestRunInspection:
+    async def test_recent_runs_exclude_the_builders_own(self, server):
+        """The builder's conversations are runs too; they are not the
+        workspace's run history."""
+        await S.seed_orchestrations([
+            S.make_orchestration(id="orch_mine"),
+            S.make_orchestration(id="orch_native_builder", system="native_builder"),
+        ])
+        listed = await call("list_recent_runs", {}, server)
+        assert isinstance(listed, list)
+        assert all(r["orchestration_id"] != "orch_native_builder" for r in listed)
+
+    async def test_a_run_with_no_checkpoint_says_so(self, server):
+        assert "error" in await call("get_run_summary", {"run_id": "run_missing"}, server)
