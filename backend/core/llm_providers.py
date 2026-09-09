@@ -81,15 +81,19 @@ def _match_auth(text: str) -> bool:
 def _parse_data_uri(data_uri: str) -> tuple[str, str]:
     """Parse a data URI into (mime_type, raw_base64).
 
-    Accepts:
-      - "data:image/png;base64,iVBOR..."
-      - plain base64 string (assumes image/png)
+    Delegates to `core.images`, which is where the rules live now. What this
+    used to do: take the header's word for the type and hand it to Anthropic as
+    `media_type` — a caller-controlled string reaching a provider unchecked —
+    assume `image/png` for anything without a header, and raise `ValueError`
+    from inside the ReAct loop on a `data:` string with no comma.
+
+    Requests arriving through `ChatRequest` are validated before they get here,
+    so in practice this is the second lock rather than the first.
     """
-    if data_uri.startswith("data:"):
-        header, b64 = data_uri.split(",", 1)
-        mime = header.split(";")[0].replace("data:", "")
-        return mime, b64
-    return "image/png", data_uri
+    from core.images import ALLOWED_MIME, parse_data_uri
+
+    mime, b64 = parse_data_uri(data_uri)
+    return (mime if mime in ALLOWED_MIME else "image/png"), b64
 
 
 def _build_openai_image_content(text: str, images: list[str] | None) -> list[dict] | str:
@@ -100,7 +104,10 @@ def _build_openai_image_content(text: str, images: list[str] | None) -> list[dic
     """
     if not images:
         return text
-    parts: list[dict] = [{"type": "text", "text": text}]
+    # An image on its own is a message. Every provider here rejects an empty
+    # text block, so the part is omitted rather than sent blank — which is what
+    # made the old "[Images attached]" placeholder necessary.
+    parts: list[dict] = [{"type": "text", "text": text}] if text and text.strip() else []
     for img in images[:5]:
         mime, b64 = _parse_data_uri(img)
         parts.append({
@@ -124,7 +131,8 @@ def _build_anthropic_image_content(text: str, images: list[str] | None) -> list[
             "type": "image",
             "source": {"type": "base64", "media_type": mime, "data": b64}
         })
-    parts.append({"type": "text", "text": text})
+    if text and text.strip():
+        parts.append({"type": "text", "text": text})
     return parts
 
 
@@ -2260,8 +2268,11 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
             for img in images[:5]:
                 mime, b64 = _parse_data_uri(img)
                 # Map MIME to Bedrock format name
-                fmt_map = {"image/png": "png", "image/jpeg": "jpeg", "image/gif": "gif", "image/webp": "webp"}
-                fmt = fmt_map.get(mime, "png")
+                # No `.get(mime, "png")` fallback any more. It labelled a
+                # HEIC as a PNG and let Bedrock discover the lie; the mime is
+                # now one of four by the time it reaches here.
+                fmt = {"image/png": "png", "image/jpeg": "jpeg",
+                       "image/gif": "gif", "image/webp": "webp"}[mime]
                 blocks.append({"image": {"format": fmt, "source": {"bytes": base64.b64decode(b64)}}})
 
         normalized_messages.append({"role": role, "content": blocks})

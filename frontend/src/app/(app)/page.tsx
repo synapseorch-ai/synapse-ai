@@ -575,7 +575,21 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Attached images (max 5)
-  const [attachedImages, setAttachedImages] = useState<{ preview: string; base64: string }[]>([]);
+  const [attachedImages, setAttachedImages] = useState<{ preview: string; base64: string; name: string }[]>([]);
+  // Why the last attempt to attach something did not work. Files used to be
+  // dropped in silence when they were the wrong type or one too many, which
+  // reads as the button being broken.
+  const [attachError, setAttachError] = useState<string | null>(null);
+  // Whether attaching anything to this agent does something. Answered by
+  // `/api/status`, which already resolves each agent's model — the alternative
+  // was a second copy in here of the list of providers that cannot see, and a
+  // silent drop every time the two disagreed.
+  const canAttach = (() => {
+    const info = currentAgentId ? systemStatus?.agents?.[currentAgentId] : undefined;
+    return typeof info === 'object' && info !== null && 'can_see_images' in info
+      ? (info as { can_see_images?: boolean }).can_see_images !== false
+      : true;
+  })();
 
   // Welcome banner — shown for 12 days from installation date, dismissible per session
   const [showExamplesBanner, setShowExamplesBanner] = useState(false);
@@ -854,11 +868,56 @@ export default function Home() {
 
 
 
+  /**
+   * Take files from the picker, a paste or a drop — one path, so all three
+   * behave the same and all three can say why they refused something.
+   *
+   * The limits match the server's, which is the point: the server is the one
+   * that enforces them, and finding out there after a round trip and a failed
+   * turn is a worse way to learn that a photo was too big.
+   */
+  const acceptFiles = (files: File[]) => {
+    const MAX_BYTES = 5 * 1024 * 1024;
+    const ALLOWED = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+    setAttachError(null);
+
+    const room = 5 - attachedImages.length;
+    if (room <= 0) { setAttachError('Five images is the limit for one message.'); return; }
+
+    const usable: File[] = [];
+    for (const file of files) {
+      if (!ALLOWED.includes(file.type)) {
+        setAttachError(`${file.name || 'That file'} is not a PNG, JPEG, GIF or WebP.`);
+        continue;
+      }
+      if (file.size > MAX_BYTES) {
+        setAttachError(`${file.name || 'That image'} is ${Math.round(file.size / (1024 * 1024))} MB; the limit is 5 MB.`);
+        continue;
+      }
+      usable.push(file);
+    }
+    if (usable.length > room) {
+      setAttachError(`Only ${room} more ${room === 1 ? 'image fits' : 'images fit'} in this message.`);
+    }
+    usable.slice(0, room).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const base64 = ev.target?.result as string;
+        setAttachedImages(prev => prev.length < 5
+          ? [...prev, { preview: base64, base64, name: file.name || 'image' }]
+          : prev);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if ((!input.trim() && attachedImages.length === 0) || isLoading) return;
 
-    const userMessage = input.trim() || (attachedImages.length > 0 ? '[Images attached]' : '');
+    // An image on its own is a message. It used to be sent as the literal
+    // string "[Images attached]", which the model then read as the question.
+    const userMessage = input.trim();
     const imagesToSend = attachedImages.map(img => img.base64);
 
     // Route to human-step resume if there's an unanswered human_input_required in history
@@ -2151,48 +2210,70 @@ export default function Home() {
               </div>
             )}
 
-            {/* Image Preview Strip */}
-            {attachedImages.length > 0 && (
-              <div className="flex items-center gap-3 mb-3 p-3 border border-zinc-800/80 bg-zinc-950/90 backdrop-blur-md overflow-x-auto shadow-2xl rounded-md">
-                {attachedImages.map((img, idx) => (
-                  <div key={idx} className="relative group shrink-0">
-                    <img
-                      src={img.preview}
-                      alt={`Attachment ${idx + 1}`}
-                      className="h-[4rem] w-[4rem] object-cover border border-zinc-700/60 rounded-lg shadow-sm"
-                    />
-                    <button
-                      onClick={() => setAttachedImages(prev => prev.filter((_, i) => i !== idx))}
-                      className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-zinc-800/95 border border-zinc-600 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-zinc-700 hover:scale-105 transition-all shadow-md backdrop-blur-sm"
-                    >
-                      <X className="h-3.5 w-3.5 text-zinc-300" />
-                    </button>
-                  </div>
-                ))}
-                <span className="text-[10.5px] text-zinc-500 font-mono uppercase tracking-widest shrink-0 px-2 pl-3 border-l border-zinc-800/50">
-                  {attachedImages.length} / 5
-                </span>
+            {/* Why the last attach did not take. */}
+            {attachError && (
+              <div className="flex items-center gap-2 mb-2 px-3 py-2 border border-amber-900/50 bg-amber-950/20 text-[12px] text-amber-300 rounded-md">
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 font-sans">{attachError}</span>
+                <button
+                  type="button"
+                  onClick={() => setAttachError(null)}
+                  aria-label="Dismiss"
+                  className="shrink-0 p-0.5 rounded text-amber-500/70 hover:text-amber-300"
+                >
+                  <X className="h-3 w-3" />
+                </button>
               </div>
             )}
             <form
               onSubmit={handleSubmit}
-              className="flex items-end gap-1.5 border border-border-strong bg-surface shadow-2xl focus-within:border-accent focus-within:ring-2 focus-within:ring-[var(--ring)] transition-all p-1.5 rounded-md"
+              className="flex flex-col border border-border-strong bg-surface shadow-2xl focus-within:border-accent focus-within:ring-2 focus-within:ring-[var(--ring)] transition-all p-1.5 rounded-md"
               onDrop={(e) => {
                 e.preventDefault();
-                const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+                const files = Array.from(e.dataTransfer.files);
                 if (files.length === 0) return;
-                const remaining = 5 - attachedImages.length;
-                files.slice(0, remaining).forEach(file => {
-                  const reader = new FileReader();
-                  reader.onload = (ev) => {
-                    const base64 = ev.target?.result as string;
-                    setAttachedImages(prev => prev.length < 5 ? [...prev, { preview: base64, base64 }] : prev);
-                  };
-                  reader.readAsDataURL(file);
-                });
+                acceptFiles(files);
               }}
               onDragOver={(e) => e.preventDefault()}
             >
+              {/* Attachments, inside the border rather than floating above it.
+
+                  They belong to the message being written, and a separate bar
+                  above the composer read as a notification about them. The
+                  remove button is always visible and focusable: the old one
+                  appeared on hover, which meant it did not exist for a
+                  keyboard or a touchscreen. */}
+              {attachedImages.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 px-2 pt-2 pb-1">
+                  {attachedImages.map((img, idx) => (
+                    <span
+                      key={idx}
+                      className="group flex items-center gap-2 pl-1 pr-1.5 py-1 bg-zinc-900 border border-zinc-800 rounded-md max-w-[14rem]"
+                    >
+                      <img
+                        src={img.preview}
+                        alt=""
+                        className="h-6 w-6 object-cover rounded shrink-0"
+                      />
+                      <span className="min-w-0 truncate text-[11px] text-zinc-400 font-sans">{img.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => { setAttachedImages(prev => prev.filter((_, i) => i !== idx)); setAttachError(null); }}
+                        aria-label={`Remove ${img.name}`}
+                        className={cn(
+                          "shrink-0 p-0.5 rounded text-zinc-600 transition-colors",
+                          "hover:text-zinc-200 hover:bg-zinc-800 focus-visible:text-zinc-200",
+                        )}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <span className="text-[10px] text-zinc-600 font-sans">{attachedImages.length} of 5</span>
+                </div>
+              )}
+
+              <div className="flex items-end gap-1.5">
               <div className="pl-4 pr-2 py-4 text-zinc-500 shrink-0">
                 <Terminal className={cn("h-4 w-4", isLoading ? "animate-pulse text-green-500" : "")} />
               </div>
@@ -2222,21 +2303,13 @@ export default function Home() {
                   }
                 }}
                 onPaste={(e) => {
-                  const items = Array.from(e.clipboardData.items);
-                  const imageItems = items.filter(item => item.type.startsWith('image/'));
-                  if (imageItems.length === 0) return;
+                  const files = Array.from(e.clipboardData.items)
+                    .filter(item => item.kind === 'file')
+                    .map(item => item.getAsFile())
+                    .filter((f): f is File => f !== null);
+                  if (files.length === 0) return;
                   e.preventDefault();
-                  const remaining = 5 - attachedImages.length;
-                  imageItems.slice(0, remaining).forEach(item => {
-                    const file = item.getAsFile();
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                      const base64 = ev.target?.result as string;
-                      setAttachedImages(prev => prev.length < 5 ? [...prev, { preview: base64, base64 }] : prev);
-                    };
-                    reader.readAsDataURL(file);
-                  });
+                  acceptFiles(files);
                 }}
                 placeholder={isLoading ? "Agent is working — type your next message…" : "Enter command…"}
                 title="Shift+Enter for a new line"
@@ -2250,29 +2323,25 @@ export default function Home() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/png,image/jpeg,image/gif,image/webp"
                 multiple
                 className="hidden"
                 onChange={(e) => {
-                  const files = Array.from(e.target.files || []);
-                  const remaining = 5 - attachedImages.length;
-                  files.slice(0, remaining).forEach(file => {
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                      const base64 = ev.target?.result as string;
-                      setAttachedImages(prev => prev.length < 5 ? [...prev, { preview: base64, base64 }] : prev);
-                    };
-                    reader.readAsDataURL(file);
-                  });
+                  acceptFiles(Array.from(e.target.files || []));
                   e.target.value = ''; // reset so same file can be re-selected
                 }}
               />
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={isLoading || attachedImages.length >= 5}
+                disabled={!canAttach || attachedImages.length >= 5}
+                aria-label="Attach images"
                 className="p-2.5 text-zinc-500 hover:text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0 self-end mb-1 relative top-[1px]"
-                title={attachedImages.length >= 5 ? 'Max 5 images' : 'Attach images'}
+                title={
+                  !canAttach
+                    ? "This agent's model cannot read images"
+                    : attachedImages.length >= 5 ? 'Five images is the limit' : 'Attach images'
+                }
               >
                 <ImageIcon className="h-[18px] w-[18px]" />
               </button>
@@ -2301,6 +2370,7 @@ export default function Home() {
                   <Send className="h-4 w-4 md:hidden" />
                 </button>
               )}
+              </div>
             </form>
             <div className="text-center mt-2">
               <p className="text-xs text-zinc-500 uppercase tracking-widest font-mono">

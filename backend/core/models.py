@@ -3,7 +3,7 @@ Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class ChatRequest(BaseModel):
@@ -16,8 +16,22 @@ class ChatRequest(BaseModel):
     agent_id: str | None = None
     # Optional ephemeral client-side state we want the server/agent to reuse.
     client_state: dict[str, Any] | None = None
-    # Base64 data-URI images (e.g. "data:image/png;base64,..."). Max 5 per request.
+    # Base64 data-URI images (e.g. "data:image/png;base64,..."). Max 5 per
+    # request — and now actually enforced. The limit used to live in this
+    # comment and in `[:5]` slices inside each provider's content builder, so
+    # a caller reaching the API directly was bounded by nothing at all.
     images: list[str] = []
+
+    @field_validator("images")
+    @classmethod
+    def _check_images(cls, value: list[str]) -> list[str]:
+        from core.images import ImageRejected, validate
+        try:
+            return validate(value)
+        except ImageRejected as exc:
+            # The reason is written to be shown to a person, so it travels as
+            # the validation message rather than being logged and replaced.
+            raise ValueError(str(exc)) from None
 
 class ChatResponse(BaseModel):
     response: str

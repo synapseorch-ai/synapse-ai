@@ -69,15 +69,24 @@ def _init_memory_store(settings: dict):
 @router.get("/api/status")
 async def get_status():
     from core.routes.agents import load_user_agents, active_agent_id
+    from core.images import model_can_see_images
     from core.llm_providers import detect_provider_from_model
 
     user_agents = await load_user_agents()
-    agents_status = {}
-    for a in user_agents:
-        agents_status[a["id"]] = {"name": a["name"], "status": "online"}
-
     current_settings = load_settings()
     default_model = current_settings.get("model", "mistral")
+
+    agents_status = {}
+    for a in user_agents:
+        # Whether attaching an image to this agent does anything. DeepSeek and
+        # HuggingFace log a warning and discard; the CLI providers discard in
+        # silence. Answered here rather than in the browser so the list of
+        # providers that cannot see does not need a second copy in TypeScript.
+        agents_status[a["id"]] = {
+            "name": a["name"],
+            "status": "online",
+            "can_see_images": model_can_see_images(a.get("model") or default_model),
+        }
 
     # Resolve active agent's model
     active_agent = next((a for a in user_agents if a["id"] == active_agent_id), None)

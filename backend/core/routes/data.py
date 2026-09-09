@@ -662,6 +662,7 @@ async def get_models():
     # The capability table lives in `core.reasoning` and is served from here
     # rather than restated in TypeScript: a second copy would be wrong the
     # first time a model family ships and only one of them was updated.
+    from core.images import model_can_see_images
     from core.reasoning import supports_native
 
     return {
@@ -670,6 +671,10 @@ async def get_models():
         "local": ollama_chat,
         "cloud": cloud_models,
         "reasoning_capable": sorted({m for m in all_available if supports_native(m)}),
+        # Which of them can actually see an attachment. Served for the same
+        # reason as the line above: the alternative is a second copy of the
+        # list in TypeScript, wrong the first time only one of them is updated.
+        "vision_capable": sorted({m for m in all_available if model_can_see_images(m)}),
     }
 
 
