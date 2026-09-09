@@ -48,7 +48,10 @@ export function Toast({
     <div
       role="status"
       className={cn(
-        "fixed bottom-5 right-5 z-50 flex items-center gap-2.5 rounded-lg border px-4 py-2.5 text-sm shadow-xl",
+        // `bottom-20`, not `bottom-5`: the AI builder's launcher owns the
+        // bottom-right corner in both products, and a toast landing on top of
+        // it hides the control the user is most likely reaching for.
+        "fixed bottom-20 right-5 z-50 flex items-center gap-2.5 rounded-lg border px-4 py-2.5 text-sm shadow-xl",
         chip,
       )}
     >
