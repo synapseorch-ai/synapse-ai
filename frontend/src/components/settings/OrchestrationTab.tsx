@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX } from 'lucide-react';
-import { Button, Combobox, Hint, IconButton, Mark, Modal, SearchInput, Spinner } from '@/components/ui';
+import { Button, Combobox, Hint, IconButton, Mark, Markdown, Modal, SearchInput, Spinner } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
@@ -1656,30 +1656,6 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
 // used to render through a four-entry map at text-xs, which flattened a
 // report's headings into cramped body text while the agent-response modal
 // next to it looked finished.
-const RICH_MD_COMPONENTS = {
-    p: ({ children }: { children?: React.ReactNode }) => <p className="mb-3 last:mb-0">{children}</p>,
-    h1: ({ children }: { children?: React.ReactNode }) => <h1 className="text-lg font-bold text-zinc-100 mb-2 mt-4 first:mt-0">{children}</h1>,
-    h2: ({ children }: { children?: React.ReactNode }) => <h2 className="text-base font-semibold text-zinc-100 mb-2 mt-3">{children}</h2>,
-    h3: ({ children }: { children?: React.ReactNode }) => <h3 className="text-sm font-semibold text-zinc-200 mb-1 mt-2">{children}</h3>,
-    ul: ({ children }: { children?: React.ReactNode }) => <ul className="list-disc pl-5 mb-3 space-y-1">{children}</ul>,
-    ol: ({ children }: { children?: React.ReactNode }) => <ol className="list-decimal pl-5 mb-3 space-y-1">{children}</ol>,
-    li: ({ children }: { children?: React.ReactNode }) => <li className="text-zinc-300">{children}</li>,
-    code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
-        const isBlock = className?.includes('language-');
-        return isBlock
-            ? <code className={`block bg-zinc-800 rounded-md px-3 py-2 text-xs font-code text-zinc-200 overflow-x-auto ${className}`}>{children}</code>
-            : <code className="bg-zinc-800 px-1.5 py-0.5 rounded-md text-xs font-code text-emerald-300">{children}</code>;
-    },
-    pre: ({ children }: { children?: React.ReactNode }) => <pre className="font-code bg-zinc-800/60 rounded-lg p-3 mb-3 overflow-x-auto border border-zinc-700/50">{children}</pre>,
-    blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote className="border-l-2 border-zinc-600 pl-3 text-zinc-400 italic">{children}</blockquote>,
-    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => <a href={href} className="text-blue-400 underline hover:text-blue-300" target="_blank" rel="noreferrer">{children}</a>,
-    strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-zinc-100">{children}</strong>,
-    em: ({ children }: { children?: React.ReactNode }) => <em className="italic text-zinc-300">{children}</em>,
-    hr: () => <hr className="border-zinc-700 my-4" />,
-    table: ({ children }: { children?: React.ReactNode }) => <table className="w-full text-xs border-collapse mb-3">{children}</table>,
-    th: ({ children }: { children?: React.ReactNode }) => <th className="border border-zinc-700 px-2 py-1 text-zinc-200 font-semibold bg-zinc-800 rounded-md">{children}</th>,
-    td: ({ children }: { children?: React.ReactNode }) => <td className="border border-zinc-700 px-2 py-1 text-zinc-300">{children}</td>,
-};
 
 function ResponseModal({ stepName, stepType, content, onClose }: { stepName: string; stepType?: string; content: string; onClose: () => void }) {
     // Try to pretty-print JSON for extract_json steps
@@ -1752,11 +1728,7 @@ function ResponseModal({ stepName, stepType, content, onClose }: { stepName: str
                                 })}
                         </pre>
                     ) : (
-                    <div className="prose prose-sm prose-invert max-w-none text-zinc-300 text-sm leading-relaxed">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={RICH_MD_COMPONENTS}>
-                            {content}
-                        </ReactMarkdown>
-                    </div>
+                    <Markdown className="max-w-none">{content}</Markdown>
                     )}
                 </div>
             </div>
@@ -2008,7 +1980,7 @@ function BottomPanel({
                                                             remarkPlugins={[remarkGfm]}
                                                             components={{
                                                                 p: ({ children }) => <span>{children}</span>,
-                                                                code: ({ children }) => <code className="font-code bg-zinc-800 px-1 rounded-md text-[10px]">{children}</code>,
+                                                                code: ({ children }) => <code className="font-code bg-surface-2 px-1 rounded-md text-[10px]">{children}</code>,
                                                             }}
                                                         >{entry.text}</ReactMarkdown>
                                                     </span>
@@ -2149,8 +2121,8 @@ function BottomPanel({
                                                 remarkPlugins={[remarkGfm]}
                                                 components={{
                                                     p: ({ children }) => <span>{children}</span>,
-                                                    code: ({ children }) => <code className="font-code bg-zinc-800 px-1 rounded-md text-[10px]">{children}</code>,
-                                                    pre: ({ children }) => <pre className="font-code bg-zinc-800 p-1 rounded-md mt-0.5 overflow-x-auto">{children}</pre>,
+                                                    code: ({ children }) => <code className="font-code bg-surface-2 px-1 rounded-md text-[10px]">{children}</code>,
+                                                    pre: ({ children }) => <pre className="font-code bg-surface-2 p-1 rounded-md mt-0.5 overflow-x-auto">{children}</pre>,
                                                     a: ({ href, children }) => <a href={href} className="underline opacity-70" target="_blank" rel="noreferrer">{children}</a>,
                                                 }}
                                             >{entry}</ReactMarkdown>
@@ -2198,10 +2170,8 @@ function BottomPanel({
                         >
                             <div className="space-y-3">
                                 {humanContext && (
-                                    <div className="max-h-[45vh] overflow-y-auto rounded-md border border-zinc-700/50 bg-zinc-800/60 p-4 text-sm leading-relaxed text-zinc-300">
-                                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={RICH_MD_COMPONENTS}>
-                                            {humanContext}
-                                        </ReactMarkdown>
+                                    <div className="max-h-[45vh] overflow-y-auto rounded-md border border-border bg-surface-2 p-4">
+                                        <Markdown>{humanContext}</Markdown>
                                     </div>
                                 )}
                                 <div className="text-sm leading-relaxed text-amber-300">

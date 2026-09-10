@@ -38,9 +38,11 @@ const WELCOME: BuilderMessage = {
     content:
         "I build things in this workspace — agents, orchestrations, tools, skills and schedules. " +
         "Tell me what you want to happen and I'll ask what I need, show you a plan, and build it once you approve.\n\n" +
-        '- *"Every weekday at 8, summarise yesterday\'s support tickets and post it to Slack"*\n' +
-        '- *"Add a tool that files a ticket in our issue tracker"*\n' +
-        '- *"Change the research workflow to ask me before it sends anything"*',
+        // Not italicised. Three italic lines is most of what made this read as
+        // filler rather than as examples you could type.
+        '- "Every weekday at 8, summarise yesterday\'s support tickets and post it to Slack"\n' +
+        '- "Add a tool that files a ticket in our issue tracker"\n' +
+        '- "Change the research workflow to ask me before it sends anything"',
 };
 
 function newSessionId(): string {

@@ -7,9 +7,9 @@ import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { useRegisterNavGuard } from '@/components/app/NavGuard';
-import { Spinner } from '@/components/ui';
+import { Markdown, Spinner } from '@/components/ui';
 
-import { renderTextContent, cn } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
 import { Message, OrchMsgType, SystemStatus } from '@/types';
 
@@ -164,9 +164,7 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
           <ReasoningCollapsible reasoning={msg.reasoning} stepName={msg.stepName} />
         )}
         <div className="p-3 text-[14px] leading-7 border border-accent/40 bg-accent-subtle relative font-sans rounded-sm group">
-          <div className="prose prose-invert max-w-none text-zinc-200 font-normal">
-            {renderTextContent(displayContent)}
-          </div>
+          <Markdown>{displayContent}</Markdown>
           <button
             onClick={() => { navigator.clipboard.writeText(displayContent); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
             className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-accent-subtle hover:bg-accent/20 text-accent hover:text-accent-hover"
@@ -207,9 +205,7 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
             {agentName}
           </div>
         )}
-        <div className="prose prose-invert max-w-none text-zinc-100 font-normal">
-          {renderTextContent(msg.content)}
-        </div>
+        <Markdown>{msg.content}</Markdown>
         {msg.images && msg.images.length > 0 && (
           <div className="flex flex-wrap gap-3 mt-4">
             {msg.images.map((img, imgIdx) => (
@@ -348,9 +344,7 @@ function ToolApprovalCard({
         <div className="absolute -top-3 left-2 bg-zinc-950 border border-amber-900/50 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-500 font-mono rounded-md">
           Permission needed
         </div>
-        <div className="prose prose-invert max-w-none text-zinc-100 font-normal text-[15px] leading-7">
-          {renderTextContent(msg.content)}
-        </div>
+        <Markdown className="text-[15px] leading-7">{msg.content}</Markdown>
 
         {args && Object.keys(args).length > 0 && (
           <pre className="mt-3 p-3 bg-zinc-950 border border-zinc-800 rounded-md text-[12px] font-code text-zinc-300 overflow-x-auto">
@@ -1767,9 +1761,7 @@ export default function Home() {
               <div className="absolute -top-3 left-2 bg-zinc-950 border border-amber-900/50 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-500 font-mono rounded-md">
                 Human Input Required
               </div>
-              <div className="prose prose-invert max-w-none text-zinc-100 font-normal mb-4">
-                {renderTextContent(msg.content)}
-              </div>
+              <Markdown className="mb-4">{msg.content}</Markdown>
               <CollectDataForm
                 data={{ ...msg.data, fields: msg.data?.fields || [] }}
                 onSubmit={(values) => handleHumanInputSubmit(msg.data?.run_id, msg.data?.orch_step_id, values)}
@@ -1828,9 +1820,7 @@ export default function Home() {
                   <Pencil className="h-3.5 w-3.5" />
                 </button>
               )}
-              <div className="prose prose-invert max-w-none text-zinc-100 font-normal">
-                {renderTextContent(msg.content)}
-              </div>
+              <Markdown>{msg.content}</Markdown>
               {msg.images && msg.images.length > 0 && (
                 <div className="flex flex-wrap gap-3 mt-4">
                   {msg.images.map((img, imgIdx) => (
