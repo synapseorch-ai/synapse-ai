@@ -248,16 +248,35 @@ async def widget_chat(
         session_id=claims.session_id,
         agent_id=claims.agent_id,
     )
-    return _sse(_ungated(_guarded_stream(turn)))
+    return _sse(_for_a_visitor(_guarded_stream(turn)))
 
 
-#: Events a visitor must never be shown, and what to say instead.
+#: The only events that may leave this building.
 #:
+#: **An allowlist, not a denylist, and that distinction is the whole point.** The
+#: workspace timeline shows an agent's reasoning, its tool calls with their
+#: arguments, its task list and — in `_log_llm_call` — the *full assembled
+#: prompt and the agent's system prompt*. All of that is fine for a member
+#: entitled to see how their own agent works. Streamed to an anonymous visitor on
+#: somebody else's website it is the customer's intellectual property, their
+#: retrieved documents, and whatever a tool result happened to contain.
+#:
+#: A denylist would have to be updated every time the engine learns a new event,
+#: and would be wrong by default until somebody noticed. This way a new event is
+#: invisible to a widget until someone decides it should not be.
+#:
+#: Everything here is something the widget actually renders: whether it is
+#: working, what it finally said, and how it ended.
+_VISITOR_EVENTS = frozenset((
+    "status", "thinking", "final", "response",
+    "cancelled", "error", "orchestration_error", "done",
+))
+
 #: `human_input_required` is the tool-approval card and the workflow pause. Both
 #: ask a *member* to decide something; neither has an answer a stranger on a
-#: marketing page could give. `_refuse_a_gated_agent` above stops the ordinary
-#: case at bind time and again before the turn — this is the backstop for a
-#: policy edited mid-conversation, or a pause the agent reaches some other way.
+#: marketing page could give. `_refuse_a_gated_agent` stops the ordinary case at
+#: bind time and again before the turn — this is the backstop for a policy edited
+#: mid-conversation, or a pause the agent reaches some other way.
 _PAUSE_EVENTS = frozenset(("human_input_required",))
 
 _PAUSED_MESSAGE = (
@@ -266,27 +285,57 @@ _PAUSED_MESSAGE = (
 )
 
 
-async def _ungated(stream):
-    """The turn's events, with any request for a human decision turned into an
-    ending.
+async def _for_a_visitor(stream):
+    """The turn's events, narrowed to what a stranger may see.
 
-    The turn is *closed*, not parked: the pause has already been written to the
-    session by the loop, and a member can see it in the workspace — but the
-    visitor gets a sentence and a finished conversation instead of a spinner
-    waiting on a dialog that will never be shown to them.
+    Two jobs, and they are separate on purpose. The allowlist decides what leaves
+    the building; the pause branch decides how a turn that wants a human decision
+    ends, since the visitor cannot give one.
+
+    Anything not in `_VISITOR_EVENTS` is dropped silently rather than replaced
+    with a placeholder — the widget is not a debugging surface, and a gap in the
+    timeline is not something a visitor can act on.
     """
     async for chunk in stream:
-        if isinstance(chunk, str) and chunk.startswith("data: "):
-            try:
-                event = json.loads(chunk[6:].strip())
-            except (ValueError, TypeError):
-                yield chunk
-                continue
-            if isinstance(event, dict) and event.get("type") in _PAUSE_EVENTS:
-                yield f"data: {json.dumps({'type': 'response', 'content': _PAUSED_MESSAGE})}\n\n"
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                return
-        yield chunk
+        if not isinstance(chunk, str) or not chunk.startswith("data: "):
+            # Heartbeat comments keep the connection alive and carry nothing.
+            yield chunk
+            continue
+        try:
+            event = json.loads(chunk[6:].strip())
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+
+        kind = event.get("type")
+        if kind in _PAUSE_EVENTS:
+            # Closed, not parked: the pause is already written to the session and
+            # a member can see it in the workspace. The visitor gets a sentence
+            # and a finished conversation instead of a spinner waiting on a
+            # dialog that will never be shown to them.
+            yield f"data: {json.dumps({'type': 'response', 'content': _PAUSED_MESSAGE})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        if kind not in _VISITOR_EVENTS:
+            continue
+
+        # Re-serialised from a narrowed dict rather than passed through, so a
+        # field added to an allowed event cannot ride along unread.
+        yield f"data: {json.dumps(_visitor_fields(event))}\n\n"
+
+
+def _visitor_fields(event: dict) -> dict:
+    """One allowed event, reduced to the keys the widget reads.
+
+    `status` and `thinking` keep no message: the engine's own words describe the
+    machinery ("calling scrape_url", "turn 3 of 8"), and the widget renders a
+    single "Thinking…" from the fact of the event rather than its content.
+    """
+    kind = event.get("type")
+    if kind in ("final", "response"):
+        return {"type": kind, "content": event.get("response") or event.get("content") or ""}
+    return {"type": kind}
 
 
 @router.post("/api/widget/cancel")

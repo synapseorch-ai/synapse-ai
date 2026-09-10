@@ -240,3 +240,76 @@ class TestKeyRotation:
                   "allowed_origins": ["https://acme.com"]},
         )
         assert renamed.json()["public_key"] == widget["public_key"]
+
+
+class TestTheStreamIsAnAllowlist:
+    """What reaches a stranger's browser, and what must never.
+
+    `_log_llm_call` carries the **full assembled prompt and the agent's system
+    prompt**; `tool_execution` carries a tool's arguments. Both are fine on the
+    workspace timeline, where the reader owns the agent. Neither is fine on
+    somebody else's marketing page, and the widget client ignoring them is not a
+    defence — they still travel, and devtools still shows them.
+
+    Written against the filter directly rather than through a live turn: the
+    point is the rule, and a test that needs a model to prove it would be skipped
+    on the machine where it matters.
+    """
+
+    async def _emitted(self, events):
+        from core.routes.widget import _for_a_visitor
+
+        async def source():
+            for event in events:
+                yield f"data: {json.dumps(event)}\n\n"
+
+        seen = []
+        async for chunk in _for_a_visitor(source()):
+            seen.append(json.loads(chunk[6:].strip()))
+        return seen
+
+    async def test_the_full_prompt_never_leaves_the_building(self):
+        out = await self._emitted([
+            {"type": "_log_llm_call", "prompt": "SECRET PROMPT",
+             "system_prompt": "You are Acme's confidential assistant."},
+            {"type": "final", "response": "Hello."},
+        ])
+        assert out == [{"type": "final", "content": "Hello."}]
+
+    async def test_tool_calls_and_reasoning_are_dropped(self):
+        out = await self._emitted([
+            {"type": "llm_thought", "thought": "I should check the CRM"},
+            {"type": "tool_execution", "tool_name": "run_sql_query",
+             "args": {"sql": "SELECT * FROM customers"}},
+            {"type": "tool_result", "tool_name": "run_sql_query", "preview": "3 rows"},
+            {"type": "tasks_updated", "tasks": [{"title": "look up the account"}]},
+            {"type": "done"},
+        ])
+        assert out == [{"type": "done"}]
+
+    async def test_an_event_the_engine_has_not_invented_yet_is_invisible(self):
+        """The reason this is an allowlist. A denylist would ship every new event
+        to every visitor until somebody noticed."""
+        out = await self._emitted([{"type": "brand_new_engine_event", "secrets": "…"}])
+        assert out == []
+
+    async def test_status_keeps_no_message(self):
+        """The engine's own words describe the machinery — "calling scrape_url",
+        which names a tool and often a target."""
+        out = await self._emitted([{"type": "status", "message": "calling scrape_url on acme.com"}])
+        assert out == [{"type": "status"}]
+
+    async def test_a_pause_ends_the_conversation_rather_than_asking(self):
+        out = await self._emitted([
+            {"type": "human_input_required", "kind": "tool_approval",
+             "tool_name": "delete_everything",
+             "tool_args": {"table": "customers", "cascade": True}},
+            {"type": "final", "response": "should never be reached"},
+        ])
+        # Ends, and ends *here* — the `final` after it is never reached, because
+        # the turn the visitor was watching is over as far as they are concerned.
+        assert [e["type"] for e in out] == ["response", "done"]
+        # Neither the tool nor its arguments appear anywhere in what was sent.
+        rendered = json.dumps(out)
+        for leaked in ("delete_everything", "customers", "cascade"):
+            assert leaked not in rendered
