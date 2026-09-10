@@ -22,9 +22,13 @@ import { HowImBuilt } from '@/components/app/HowImBuilt';
 import { Combobox, Hint, Mark, Spinner } from '@/components/ui';
 import type { BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
+import { modelOptions, withUnreachable } from '@/lib/models';
 import { renderTextContent } from '@/lib/utils';
 
 const COLLAPSE_THRESHOLD = 600;
+
+/** Empty `sessionModel` means "follow the workspace builder model". */
+const DEFAULT_SENTINEL = '__default__';
 
 
 function isActivity(message: BuilderMessage): boolean {
@@ -146,7 +150,7 @@ function HumanPromptCard({ content }: { content: string }) {
 export function BuilderPanel() {
     const {
         isOpen, entered, close, state, streaming, send, newConversation,
-        models, builderModel, sessionModel, setSessionModel, saveBuilderModel,
+        providers, builderModel, sessionModel, setSessionModel, saveBuilderModel,
     } = useBuilder();
 
     const [input, setInput] = useState('');
@@ -173,6 +177,14 @@ export function BuilderPanel() {
         setInput('');
         void send(text);
     };
+
+    // Grouped by provider rather than one flat list of ~66, and a remembered
+    // pick whose provider has since lost its key shows under "Not reachable"
+    // instead of leaving the control looking empty.
+    const modelChoices = [
+        { value: DEFAULT_SENTINEL, label: `Default (${builderModel || 'workspace model'})` },
+        ...withUnreachable(modelOptions(providers), sessionModel || undefined),
+    ];
 
     // Consecutive activity collapses into one block; everything else is its own.
     type Group = { type: 'activity'; events: BuilderMessage[] } | { type: 'single'; message: BuilderMessage };
@@ -345,16 +357,13 @@ export function BuilderPanel() {
                     <div className="flex items-center gap-1.5">
                         <span className="shrink-0 text-[10px] text-text-faint">Model</span>
                         <Combobox
-                            value={sessionModel || '__default__'}
-                            onChange={(v) => setSessionModel(v === '__default__' ? '' : v)}
+                            value={sessionModel || DEFAULT_SENTINEL}
+                            onChange={(v) => setSessionModel(v === DEFAULT_SENTINEL ? '' : v)}
                             aria-label="Model for this build"
                             searchPlaceholder="Search models…"
                             size="sm"
                             className="max-w-[200px]"
-                            options={[
-                                { value: '__default__', label: `Default (${builderModel || 'workspace model'})` },
-                                ...models.map((m) => ({ value: m, label: m })),
-                            ]}
+                            options={modelChoices}
                         />
                         {sessionModel && sessionModel !== builderModel && (
                             <button

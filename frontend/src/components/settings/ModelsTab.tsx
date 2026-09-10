@@ -1,6 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Check, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Info, Terminal, Eye, EyeOff } from 'lucide-react';
-import { Combobox, Input, Label, Select, Spinner, Textarea, type ComboboxOption } from '@/components/ui';
+import { Combobox, Input, Label, Select, Spinner, Textarea } from '@/components/ui';
+import { modelOptions as buildModelOptions, providerLabel, withUnreachable } from '@/lib/models';
+
+/** `builder_model` is empty when it should follow `model`; a Combobox needs a value. */
+const DEFAULT_SENTINEL = '__default__';
 import React, { useState } from 'react';
 
 type BrandIconProps = { className?: string; style?: React.CSSProperties };
@@ -55,6 +59,7 @@ interface ModelsTabProps {
     providers: Record<string, ProviderInfo>;
     selectedModel: string; setSelectedModel: (v: string) => void;
     embeddingModel: string; setEmbeddingModel: (v: string) => void;
+    builderModel: string; setBuilderModel: (v: string) => void;
     openaiKey: string; setOpenaiKey: (v: string) => void;
     anthropicKey: string; setAnthropicKey: (v: string) => void;
     geminiKey: string; setGeminiKey: (v: string) => void;
@@ -91,7 +96,6 @@ interface ModelsTabProps {
 }
 
 interface ProviderMeta {
-    label: string;
     icon: React.FC<BrandIconProps>;
     color: string;
     description: string;
@@ -104,13 +108,11 @@ interface ProviderMeta {
 
 const PROVIDER_META: Record<string, ProviderMeta> = {
     ollama: {
-        label: 'Ollama (Local)',
         icon: OllamaIcon,
         color: '#22c55e',
         description: 'Runs locally on your machine. Private, free, no API key needed.',
     },
     huggingface: {
-        label: 'HuggingFace (Local)',
         icon: HuggingFaceIcon,
         color: '#facc15',
         description: 'Run HuggingFace transformers models directly on the host machine. Requires torch + transformers installed and (for large models) a GPU.',
@@ -119,7 +121,6 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         keyNote: 'Token is only needed for gated models (Llama, Gemma, etc.). Public models work without it.',
     },
     gemini: {
-        label: 'Google Gemini',
         icon: GeminiIcon,
         color: '#4285f4',
         description: 'Google AI models. Fast and capable, with a generous free tier.',
@@ -128,7 +129,6 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         keyNote: 'Free tier available. Key starts with AIza...',
     },
     anthropic: {
-        label: 'Anthropic Claude',
         icon: AnthropicIcon,
         color: '#d97706',
         description: 'Advanced reasoning and analysis via Claude models.',
@@ -137,7 +137,6 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         keyNote: 'Key starts with sk-ant-api03-...',
     },
     openai: {
-        label: 'OpenAI',
         icon: OpenAIIcon,
         color: '#10b981',
         description: 'GPT-4o and latest OpenAI models.',
@@ -146,7 +145,6 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         keyNote: 'Key starts with sk-proj-... or sk-...',
     },
     grok: {
-        label: 'xAI Grok',
         icon: GrokIcon,
         color: '#e5e7eb',
         description: "Grok-3 and frontier reasoning models from Elon Musk's AI lab, xAI.",
@@ -155,7 +153,6 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         keyNote: 'Key starts with xai-...',
     },
     deepseek: {
-        label: 'DeepSeek',
         icon: DeepSeekIcon,
         color: '#4f6ef7',
         description: 'DeepSeek-V3 (chat + tools) and DeepSeek-R1 (powerful chain-of-thought reasoning).',
@@ -164,7 +161,6 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         keyNote: 'Note: deepseek-reasoner (R1) does not support tool/function calling.',
     },
     openai_compatible: {
-        label: 'OpenAI Compatible',
         icon: OpenAIIcon,
         color: '#f97316',
         description: 'Any OpenAI v1-compatible cloud provider (OpenRouter, Together, Fireworks, etc.).',
@@ -172,14 +168,12 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         keyNote: 'Enter your API key, base URL, and model names below.',
     },
     local_compatible: {
-        label: 'Local V1 Compatible',
         icon: OllamaIcon,
         color: '#06b6d4',
         description: 'Any local OpenAI v1-compatible server (vLLM, LM Studio, llama.cpp server, etc.).',
         keyNote: 'Enter your base URL and model names below. API key is optional.',
     },
     bedrock: {
-        label: 'AWS Bedrock',
         icon: AWSIcon,
         color: '#f59e0b',
         description: 'Enterprise-grade models via AWS, including Claude, Llama, and Titan.',
@@ -188,25 +182,21 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         keyNote: 'Supports long-term keys (ABSK...) and temporary keys (bedrock-api-key...). Bearer prefix is auto-normalized.',
     },
     anthropic_cli: {
-        label: 'Claude (CLI)',
         icon: AnthropicIcon,
         color: '#d97706',
         description: 'Use the locally installed Anthropic Claude CLI. No API key needed — uses your existing terminal session.',
     },
     gemini_cli: {
-        label: 'Gemini (CLI)',
         icon: GeminiIcon,
         color: '#4285f4',
         description: 'Use the locally installed Google Gemini CLI. No API key needed — uses your existing terminal session.',
     },
     codex_cli: {
-        label: 'Codex (CLI)',
         icon: CliIcon,
         color: '#a78bfa',
         description: 'Use the locally installed OpenAI Codex CLI agent. No API key needed — uses your existing terminal session.',
     },
     github_copilot_cli: {
-        label: 'GitHub Copilot (CLI)',
         icon: CliIcon,
         color: '#8957e5',
         description: 'Use the locally installed GitHub Copilot CLI. No API key needed — uses your existing GitHub session.',
@@ -216,6 +206,7 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
 export const ModelsTab = ({
     providers, selectedModel, setSelectedModel,
     embeddingModel, setEmbeddingModel,
+    builderModel, setBuilderModel,
     openaiKey, setOpenaiKey, anthropicKey, setAnthropicKey,
     geminiKey, setGeminiKey, grokKey, setGrokKey,
     deepseekKey, setDeepseekKey,
@@ -276,30 +267,18 @@ export const ModelsTab = ({
         }
     };
 
-    // Grouped by provider, in the order the providers are listed. The Combobox
-    // filters these itself, so nothing here has to guard the selected value
-    // against being filtered out from under the control.
-    const modelOptions: ComboboxOption[] = Object.entries(providers).flatMap(
-        ([providerKey, info]) =>
-            !info.available || info.models.length === 0
-                ? []
-                : info.models.map((m: string) => ({
-                    value: m,
-                    label: m,
-                    group: PROVIDER_META[providerKey]?.label || providerKey,
-                })),
+    // Both lists, and the builder's picker, are built by one helper in
+    // lib/models — they used to be three separate flatMaps that disagreed.
+    const modelOptions = withUnreachable(buildModelOptions(providers), selectedModel);
+    const embeddingOptions = withUnreachable(
+        buildModelOptions(providers, 'embedding_models'), embeddingModel,
     );
-
-    const embeddingOptions: ComboboxOption[] = Object.entries(providers).flatMap(
-        ([providerKey, info]) =>
-            !info.available || !info.embedding_models?.length
-                ? []
-                : info.embedding_models.map((m: string) => ({
-                    value: m,
-                    label: m,
-                    group: PROVIDER_META[providerKey]?.label || providerKey,
-                })),
-    );
+    // Empty means "whatever the default model is", which is a real choice and
+    // needs a row of its own — a blank control reads as nothing being set.
+    const builderOptions = [
+        { value: DEFAULT_SENTINEL, label: `Same as default model${selectedModel ? ` (${selectedModel})` : ''}` },
+        ...withUnreachable(buildModelOptions(providers), builderModel),
+    ];
 
     return (
         <div className="space-y-8">
@@ -332,7 +311,7 @@ export const ModelsTab = ({
                                         <Icon className={`h-4 w-4 ${!providerData.available ? 'opacity-40 grayscale' : ''}`} style={{ color: providerData.available ? meta.color : '#71717a' }} />
                                         <div>
                                             <span className={`text-sm font-bold ${providerData.available ? 'text-text' : 'text-text-faint'}`}>
-                                                {meta.label}
+                                                {providerLabel(key)}
                                             </span>
                                             <span className="text-2xs text-text-faint ml-2">
                                                 {providerData.available
@@ -587,7 +566,7 @@ export const ModelsTab = ({
                                                 <div className="text-2xs text-text-faint">
                                                     {providerData.available
                                                         ? `Detected ${modelCount} CLI session${modelCount !== 1 ? 's' : ''}: ${providerData.models.join(', ')}`
-                                                        : `No CLI binary found in PATH for ${meta.label}.`
+                                                        : `No CLI binary found in PATH for ${providerLabel(key)}.`
                                                     }
                                                 </div>
                                                 <div className="p-2.5 bg-accent/5 border border-accent/20 text-2xs text-accent leading-relaxed rounded-md">
@@ -666,6 +645,24 @@ export const ModelsTab = ({
                     placeholder={loadingModels ? 'Loading models…' : 'Select default model…'}
                     searchPlaceholder="Search models…"
                     aria-label="Default model"
+                />
+            </div>
+            {/* Builder Model Selector.
+
+                `builder_model` has been writable and honoured end to end since
+                the builder shipped, and nothing here ever set it — the only way
+                to change it was the "Set as default" button inside the panel,
+                which you have to already be in the panel to find. */}
+            <div className="space-y-2">
+                <Label size="sm" className="block">Builder Model</Label>
+                <p className="text-2xs text-text-faint -mt-1">Used by the AI builder for every step of a build. Reasoning-capable models do noticeably better here.</p>
+                <Combobox
+                    value={builderModel || DEFAULT_SENTINEL}
+                    onChange={(v) => setBuilderModel(v === DEFAULT_SENTINEL ? '' : v)}
+                    options={builderOptions}
+                    placeholder={loadingModels ? 'Loading models…' : 'Select builder model…'}
+                    searchPlaceholder="Search models…"
+                    aria-label="Builder model"
                 />
             </div>
             {/* Default Embedding Model Selector */}

@@ -23,6 +23,8 @@ import {
     type BuilderState,
     type SavedResource,
 } from '@/lib/builderEvents';
+import { usePersisted } from '@/components/ui';
+import type { ProviderModels } from '@/lib/models';
 import { readWithStallTimeout } from '@/lib/sse';
 
 /**
@@ -75,7 +77,7 @@ interface BuilderContextValue {
     streaming: boolean;
     send: (text: string) => Promise<void>;
     newConversation: () => void;
-    models: string[];
+    providers: Record<string, ProviderModels>;
     builderModel: string;
     sessionModel: string;
     setSessionModel: (model: string) => void;
@@ -95,9 +97,13 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const [entered, setEntered] = useState(false);
     const [state, setState] = useState<BuilderState>(() => emptyBuilderState([WELCOME]));
     const [streaming, setStreaming] = useState(false);
-    const [models, setModels] = useState<string[]>([]);
+    const [providers, setProviders] = useState<Record<string, ProviderModels>>({});
     const [builderModel, setBuilderModel] = useState('');
-    const [sessionModel, setSessionModel] = useState('');
+    // Remembered, not per-conversation: picking a model and then losing it to a
+    // reload or to "new conversation" made the control feel like it had not
+    // taken. Empty means "use the workspace builder model".
+    const [sessionModel, setSessionModel] = usePersisted<string>(
+        'synapseBuilderModel', (raw) => raw ?? '', '');
 
     // The orchestration the user had open when they asked, so "add a step to
     // this one" means this one. Held in a ref: it is read when a message is
@@ -124,7 +130,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 if (cancelled) return;
                 if (modelsRes.ok) {
                     const data = await modelsRes.json();
-                    setModels(Array.isArray(data.all_available) ? data.all_available : []);
+                    setProviders(data.providers ?? {});
                 }
                 if (settingsRes.ok) {
                     const data = await settingsRes.json();
@@ -285,10 +291,10 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const value = useMemo(
         () => ({
             isOpen, entered, open, close, state, streaming, send, newConversation,
-            models, builderModel, sessionModel, setSessionModel, saveBuilderModel,
+            providers, builderModel, sessionModel, setSessionModel, saveBuilderModel,
         }),
         [isOpen, entered, open, close, state, streaming, send, newConversation,
-         models, builderModel, sessionModel, saveBuilderModel],
+         providers, builderModel, sessionModel, setSessionModel, saveBuilderModel],
     );
 
     return <BuilderContext.Provider value={value}>{children}</BuilderContext.Provider>;

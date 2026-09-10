@@ -38,6 +38,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [agentName, setAgentName] = useState('');
     const [selectedModel, setSelectedModel] = useState('');
     const [embeddingModel, setEmbeddingModel] = useState('');
+    const [builderModel, setBuilderModel] = useState('');
     const [mode, setMode] = useState('local'); // local | cloud
     const [localModels, setLocalModels] = useState<string[]>([]);
     const [cloudModels, setCloudModels] = useState<string[]>([]);
@@ -170,6 +171,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             agent_name: agentName,
             model: selectedModel,
             embedding_model: embeddingModel,
+            builder_model: builderModel,
             mode: mode,
             openai_key: openaiKey,
             anthropic_key: anthropicKey,
@@ -351,6 +353,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setAgentName(data.agent_name || 'Antigravity Agent');
                 setSelectedModel(data.model || 'ollama.mistral');
                 setEmbeddingModel(data.embedding_model || '');
+                setBuilderModel(data.builder_model || '');
                 setMode(data.mode || 'local');
                 setOpenaiKey(data.openai_key || '');
                 setAnthropicKey(data.anthropic_key || '');
@@ -537,6 +540,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         mode={mode} setMode={setMode}
                         selectedModel={selectedModel} setSelectedModel={setSelectedModel}
                         embeddingModel={embeddingModel} setEmbeddingModel={setEmbeddingModel}
+                        builderModel={builderModel} setBuilderModel={setBuilderModel}
                         localModels={localModels} cloudModels={cloudModels}
                         filteredModels={filteredModels}
                         loadingModels={loadingModels}
