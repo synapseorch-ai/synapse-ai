@@ -99,13 +99,26 @@ class WorkerEngineAdapter:
         initial_input: str,
         session_id: str | None = None,
         initial_state: dict | None = None,
+        images: list[str] | None = None,
     ) -> str:
         """
         Run the orchestration and publish events to Redis.
         Returns the final status string.
         Raises on unrecoverable error (ARQ will retry).
+
+        `images` are the attachments this run starts with, given to steps that
+        set `pass_images`. They are set on the engine and deliberately not put
+        in `initial_state`: that becomes `shared_state`, which is echoed to the
+        browser twice per run, checkpointed at every step boundary, returned by
+        the run-detail endpoint and fed to the memory summariser. Fine for a
+        model name, not for twenty megabytes of image.
+
+        The in-process route sets `engine.images` directly, which is why this
+        parameter did not exist until something ran a builder conversation on a
+        worker instead.
         """
         engine = self._build_engine()
+        engine.images = list(images or [])
         final_status = "completed"
 
         async for event in engine.run(
@@ -136,6 +149,7 @@ class WorkerEngineAdapter:
     async def resume(
         self,
         human_response: dict | str,
+        images: list[str] | None = None,
     ) -> str:
         """Resume a paused run after human input.
 
@@ -143,6 +157,11 @@ class WorkerEngineAdapter:
         OrchestrationEngine.resume() classmethod, which also reloads the
         orchestration definition and would go looking for one this process may
         not have.
+
+        `images` are the attachments sent *with the answer*, matching
+        `OrchestrationEngine.resume`. The ones the run started with are not
+        persisted anywhere, by design, so a step re-entered after a pause sees
+        only what the person attached to their reply.
         """
         from core.orchestration.state import SharedState
         from core.orchestration.logger import OrchestrationLogger
@@ -163,6 +182,7 @@ class WorkerEngineAdapter:
 
         # Build engine using self._orch (Postgres-loaded) so step_map is always populated.
         engine = self._build_engine()
+        engine.images = list(images or [])
         _log.debug(f"[adapter.resume] 🗺  step_map keys: {list(engine.step_map.keys())}")
 
         engine.logger = OrchestrationLogger(

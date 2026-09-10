@@ -100,8 +100,13 @@ async def run_orchestration_job(
     webhook_url: str | None = None,
     webhook_secret: str | None = None,
     api_key_id: str | None = None,
+    images: list | None = None,
 ) -> dict:
     """Pull an orchestration definition from the store, run it, publish events.
+
+    `images` are the attachments this run starts with — see
+    `WorkerEngineAdapter.run` for why they travel on the engine and never in
+    `initial_state`.
 
     There is deliberately no `tenant_id` parameter. It used to be taken from
     the job payload and written straight onto the run row, which meant any
@@ -178,6 +183,7 @@ async def run_orchestration_job(
             initial_input=initial_input,
             session_id=session_id,
             initial_state=initial_state,
+            images=images,
         )
 
         # Deliver webhook if requested
@@ -259,8 +265,13 @@ async def resume_orchestration_job(
     human_response: dict | str,
     webhook_url: str | None = None,
     webhook_secret: str | None = None,
+    images: list | None = None,
 ) -> dict:
-    """Resume a paused orchestration run after human input is submitted."""
+    """Resume a paused orchestration run after human input is submitted.
+
+    `images` are the attachments sent with the answer, not the ones the run
+    started with — see `WorkerEngineAdapter.resume`.
+    """
     global _active_jobs
     _active_jobs += 1
     cfg = get_scale_config()
@@ -329,7 +340,7 @@ async def resume_orchestration_job(
             job_id=ctx.get("job_id", ""),
         )
         _log.debug(f"[resume] 🔄 calling adapter.resume() ...")
-        final_status = await adapter.resume(human_response=human_response)
+        final_status = await adapter.resume(human_response=human_response, images=images)
         _log.debug(f"[resume] 🏁 adapter.resume() returned final_status={final_status}")
 
         if webhook_url and final_status != "paused":
