@@ -195,7 +195,35 @@ export default function WidgetChat({
         return;
       }
 
-      const reader = response.body.getReader();
+      /**
+       * Where the events actually are, which differs by deployment.
+       *
+       * Self-hosted runs the turn in the request and streams straight back from
+       * this POST. The hosted product queues every turn onto a shared fleet, so
+       * the POST can only answer "accepted" with a cursor, and the events come
+       * off a stream opened separately. Branching on the content type we were
+       * actually handed is the honest way to serve both from one file — the
+       * alternative is a build flag that lies on whichever product it is wrong
+       * about.
+       */
+      let stream = response;
+      if (!(response.headers.get('content-type') ?? '').includes('text/event-stream')) {
+        const accepted = (await response.json().catch(() => ({}))) as { cursor?: string };
+        const opened = await fetch(
+          `/api/widget/stream?cursor=${encodeURIComponent(accepted.cursor ?? '0')}`,
+          { headers: { Authorization: `Bearer ${token.current}` }, signal: controller.signal },
+        );
+        if (!opened.ok || !opened.body) {
+          setMessages((m) => [
+            ...m,
+            { role: 'assistant', text: 'Something went wrong. Please try again.', failed: true },
+          ]);
+          return;
+        }
+        stream = opened;
+      }
+
+      const reader = stream.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let answered = false;
@@ -230,6 +258,10 @@ export default function WidgetChat({
           } else if (event.type === 'cancelled') {
             answered = true;
             setMessages((m) => [...m, { role: 'assistant', text: 'Stopped.', failed: true }]);
+          } else if (event.type === 'done') {
+            // The queued stream stays open until it is told the turn is over.
+            await reader.cancel().catch(() => {});
+            break;
           } else if (event.type === 'error' || event.type === 'orchestration_error') {
             answered = true;
             setMessages((m) => [
