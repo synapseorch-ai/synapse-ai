@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import styles from './embed.module.css';
 
@@ -23,19 +23,39 @@ type Message = { role: 'user' | 'assistant'; text: string; failed?: boolean };
 
 const THINKING = 'Thinking…';
 
+/** Everything the customer chose about how this looks. */
+export type Theme = {
+  accent: string;
+  on_accent: string;
+  font: string;
+  theme: string;
+  header_style: string;
+  launcher: string;
+  launcher_label: string;
+  logo: string;
+  title: string;
+  greeting: string;
+};
+
 export default function WidgetChat({
   token: initialToken,
   storageKey,
-  greeting,
-  accent,
-  title,
+  theme: initialTheme,
+  preview = false,
 }: {
   token: string;
   storageKey: string;
-  greeting: string;
-  accent: string;
-  title: string;
+  theme: Theme;
+  /**
+   * Only true on the owner's own preview route.
+   *
+   * It does two things, and both must stay off in the real widget: it lets the
+   * parent push a draft theme in by `postMessage`, and it skips the transcript,
+   * so previewing does not resume whatever conversation a visitor last had.
+   */
+  preview?: boolean;
 }) {
+  const [theme, setTheme] = useState(initialTheme);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -63,6 +83,30 @@ export default function WidgetChat({
   );
 
   /**
+   * Let the settings screen drive this frame while somebody is editing.
+   *
+   * The preview renders the *real* widget rather than a mock — a mock drifts
+   * from the thing it previews, and then it is worse than nothing — so the only
+   * way to show an unsaved change is to hand it to the real one.
+   *
+   * Guarded twice: `preview` is false everywhere a visitor can reach, and the
+   * origin check refuses anything not sent by our own app. On a customer's site
+   * the parent is a different origin and could not pass either.
+   */
+  useEffect(() => {
+    if (!preview) return;
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as { type?: string; theme?: Theme } | null;
+      if (data?.type === 'synapse:preview-theme' && data.theme) setTheme(data.theme);
+    };
+    window.addEventListener('message', onMessage);
+    // The parent may have rendered first and already sent one.
+    window.parent?.postMessage({ type: 'synapse:preview-ready' }, window.location.origin);
+    return () => window.removeEventListener('message', onMessage);
+  }, [preview]);
+
+  /**
    * Pick the conversation back up when the visitor moves between pages.
    *
    * A bubble widget is reloaded by every navigation on the host site, and a
@@ -79,6 +123,7 @@ export default function WidgetChat({
    * Wrapped, because a browser set to block site data throws on access.
    */
   useEffect(() => {
+    if (preview) return;
     let cancelled = false;
     const slot = `synapse:widget:${storageKey}`;
 
@@ -133,7 +178,7 @@ export default function WidgetChat({
     return () => {
       cancelled = true;
     };
-  }, [initialToken, storageKey, remember]);
+  }, [initialToken, storageKey, remember, preview]);
 
   /**
    * Tell the loader the frame really rendered.
@@ -145,8 +190,26 @@ export default function WidgetChat({
    * not hearing it, says out loud what probably happened.
    */
   useEffect(() => {
-    window.parent?.postMessage({ type: 'synapse:ready' }, '*');
-  }, []);
+    // The launcher's own appearance travels with this message.
+    //
+    // The floating button lives in the *host* page, where it can be positioned
+    // against the viewport, but everything it should look like is decided here.
+    // Sending it up costs nothing — this frame is already loading — where a
+    // second endpoint for the loader to fetch would be another public surface
+    // and another round trip before the button paints.
+    window.parent?.postMessage(
+      {
+        type: 'synapse:ready',
+        launcher: {
+          accent: theme.accent,
+          onAccent: theme.on_accent,
+          logo: theme.launcher === 'logo' ? theme.logo : '',
+          label: theme.launcher_label,
+        },
+      },
+      '*',
+    );
+  }, [theme]);
 
   const close = () => window.parent?.postMessage({ type: 'synapse:close' }, '*');
 
@@ -322,16 +385,39 @@ export default function WidgetChat({
   const failed = messages.length > 0 && messages[messages.length - 1].failed;
 
   return (
-    <div className={styles.shell} style={{ ['--accent' as string]: accent }}>
+    <div
+      className={styles.shell}
+      data-font={theme.font}
+      data-theme={theme.theme}
+      data-header={theme.header_style}
+      style={
+        {
+          '--accent': theme.accent,
+          '--on-accent': theme.on_accent,
+        } as React.CSSProperties
+      }
+    >
       <header className={styles.header}>
-        <span className={styles.title}>{title || 'Chat'}</span>
+        {theme.logo && (
+          // A plain `<img>`, not `next/image`: the logo is already a `data:`
+          // URI inlined into this page, so there is nothing to fetch, resize or
+          // cache — the optimizer would only add a dependency to a page served
+          // to every visitor of every customer site.
+          //
+          // `alt=""` is deliberate: the title beside it already names the
+          // business, and a screen reader announcing "Acme logo, Acme" is worse
+          // than silence.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={theme.logo} alt="" className={styles.logo} />
+        )}
+        <span className={styles.title}>{theme.title || 'Chat'}</span>
         <button type="button" onClick={close} className={styles.close} aria-label="Close chat">
           ×
         </button>
       </header>
 
       <div className={styles.log} ref={log} role="log" aria-live="polite">
-        <p className={styles.greeting}>{greeting}</p>
+        <p className={styles.greeting}>{theme.greeting}</p>
         {messages.map((message, index) => (
           <p
             key={index}

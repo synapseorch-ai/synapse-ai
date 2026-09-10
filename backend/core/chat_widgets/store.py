@@ -23,6 +23,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+from core.chat_widgets import branding as _branding
 from core.chat_widgets import origins as _origins
 from core.widget_token import new_public_key
 
@@ -38,11 +39,21 @@ GATING_DECISIONS = frozenset(("confirm",))
 DEFAULTS: dict[str, object] = {
     "enabled": True,
     "greeting": "Hi! How can I help?",
-    "accent": "#4f46e5",
+    "accent": _branding.PRESET_ACCENTS[0],
     "position": "right",
     "launcher_label": "Chat",
     "title": "",
     "daily_message_cap": 500,
+    # Branding. `auto` follows the visitor's own OS setting, which is the right
+    # default: a widget that ignores dark mode on a dark site is the complaint
+    # the theme option answers.
+    "font": "system",
+    "theme": "auto",
+    "header_style": "accent",
+    "launcher": "bubble",
+    #: The logo, already a `data:` URI. Inlined by the embed page rather than
+    #: served from a route of its own — see `branding.MAX_LOGO_BYTES`.
+    "logo": "",
 }
 
 
@@ -70,11 +81,7 @@ def public_view(widget: dict) -> dict:
     return {
         "id": widget.get("id"),
         "agent_id": widget.get("agent_id"),
-        "greeting": widget.get("greeting") or DEFAULTS["greeting"],
-        "accent": widget.get("accent") or DEFAULTS["accent"],
-        "position": widget.get("position") or DEFAULTS["position"],
-        "launcher_label": widget.get("launcher_label") or DEFAULTS["launcher_label"],
-        "title": widget.get("title") or "",
+        **_branding.public_theme({**DEFAULTS, **widget}),
     }
 
 
@@ -119,6 +126,10 @@ async def save_widget(widget: dict) -> dict:
         if widget.get(field) in (None, ""):
             widget[field] = value
     widget["allowed_origins"] = _origins.clean_list(widget.get("allowed_origins"))
+    # Validated here, once, so the embed page never has to defend itself against
+    # a value the API let through — the accent in particular is interpolated
+    # into a CSS custom property.
+    _branding.clean(widget)
 
     idx = next((i for i, w in enumerate(data) if w.get("id") == widget["id"]), None)
     if idx is not None:

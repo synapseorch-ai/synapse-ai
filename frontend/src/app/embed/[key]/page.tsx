@@ -3,7 +3,7 @@ import { headers } from 'next/headers';
 import { BACKEND_URL, backendHeaders } from '@/lib/backend';
 
 import EmbedRefusal from './EmbedRefusal';
-import WidgetChat from './WidgetChat';
+import WidgetChat, { type Theme } from './WidgetChat';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,7 +53,9 @@ export default async function EmbedPage({ params }: PageProps) {
   let session: {
     token?: string;
     session_id?: string;
-    widget?: { greeting?: string; accent?: string; title?: string; launcher_label?: string };
+    // The whole theme, built server-side by `branding.public_theme` so the
+    // widget and its preview render from one shape and cannot disagree.
+    widget?: Theme;
     detail?: string;
   } = {};
   let status = 500;
@@ -81,13 +83,5 @@ export default async function EmbedPage({ params }: PageProps) {
     return <EmbedRefusal detail={session.detail ?? 'This chat is unavailable right now.'} />;
   }
 
-  return (
-    <WidgetChat
-      token={session.token}
-      storageKey={key}
-      greeting={session.widget?.greeting ?? 'Hi! How can I help?'}
-      accent={session.widget?.accent ?? '#4f46e5'}
-      title={session.widget?.title ?? ''}
-    />
-  );
+  return <WidgetChat token={session.token} storageKey={key} theme={session.widget!} />;
 }

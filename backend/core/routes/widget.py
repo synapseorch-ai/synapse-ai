@@ -53,9 +53,10 @@ import hmac
 import json
 import time
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
+from core.chat_widgets import branding as _branding
 from core.chat_widgets import limits as _limits
 from core.chat_widgets import origins as _origins
 from core.chat_widgets import store as _store
@@ -382,6 +383,17 @@ class WidgetBody(BaseModel):
     title: str = Field(default="", max_length=80)
     daily_message_cap: int = Field(default=500, ge=0, le=1_000_000)
 
+    # Branding. Every one of these is a closed vocabulary validated in
+    # `core.chat_widgets.branding`; the model only bounds the length so a
+    # megabyte of junk is refused before it reaches the validator.
+    font: str = Field(default="system", max_length=20)
+    theme: str = Field(default="auto", max_length=10)
+    header_style: str = Field(default="accent", max_length=10)
+    launcher: str = Field(default="bubble", max_length=10)
+    #: The logo is **not** here. It arrives as bytes on its own route, because a
+    #: JSON body carrying a 128 KB data URI on every rename is a bad trade, and
+    #: because bytes are the only thing we can check the magic numbers of.
+
 
 async def _refuse_a_gated_agent(agent_id: str) -> None:
     """A widget will not bind an agent that would stop and ask a person.
@@ -467,6 +479,61 @@ async def rotate_key(widget_id: str):
     if widget is None:
         raise HTTPException(status_code=404, detail="No such widget.")
     return widget
+
+
+@router.post("/api/widgets/{widget_id}/logo")
+async def upload_logo(widget_id: str, file: UploadFile = File(...)):
+    """Replace this widget's logo.
+
+    Stored as a `data:` URI on the widget and inlined by the embed page, rather
+    than served from a route of its own. A visitor is anonymous, so a logo route
+    would be a *second* public surface with its own cache and abuse story — for
+    an image drawn at 28 pixels.
+
+    The type comes from the magic bytes, never the filename or the browser's
+    `Content-Type`: both are attacker-controlled, and this string ends up in a
+    `data:` URI the browser will honour.
+    """
+    import base64
+
+    from core.images import sniff
+
+    widget = await _store.get_widget(widget_id)
+    if widget is None:
+        raise HTTPException(status_code=404, detail="No such widget.")
+
+    raw = await file.read(_branding.MAX_LOGO_BYTES + 1)
+    if not raw:
+        raise HTTPException(status_code=422, detail="That file is empty.")
+    if len(raw) > _branding.MAX_LOGO_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"A logo has to be under {_branding.MAX_LOGO_BYTES // 1024} KB. "
+                "It is drawn at 28 pixels, so a small one is not a compromise."
+            ),
+        )
+
+    mime = sniff(raw)
+    if mime is None:
+        raise HTTPException(
+            status_code=422,
+            detail="That is not a PNG, JPEG, GIF or WebP. Renaming a file does not change what is inside it.",
+        )
+
+    widget["logo"] = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+    await _store.save_widget(widget)
+    return {"logo": widget["logo"]}
+
+
+@router.delete("/api/widgets/{widget_id}/logo")
+async def remove_logo(widget_id: str):
+    widget = await _store.get_widget(widget_id)
+    if widget is None:
+        raise HTTPException(status_code=404, detail="No such widget.")
+    widget["logo"] = ""
+    await _store.save_widget(widget)
+    return {"logo": ""}
 
 
 @router.post("/api/widgets/{widget_id}/preview")

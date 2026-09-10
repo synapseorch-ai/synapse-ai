@@ -4,34 +4,93 @@
  * This page renders inside an iframe on somebody else's website, so it inherits
  * none of the app's Tailwind layer and needs none of it. A module rather than
  * globals because the embed route must never pull the workspace stylesheet in —
- * that is a large download to put in front of every visitor of every customer
- * site, for a surface that is five elements.
+ * that is a large download in front of every visitor of every customer site,
+ * for a surface that is five elements.
+ *
+ * ## How branding is applied
+ *
+ * Everything the customer chose arrives as custom properties and `data-`
+ * attributes on `.shell`, and every rule below reads those rather than a literal.
+ * That is what lets the live preview work: the settings screen posts a draft
+ * theme into the frame, the frame sets the attributes, and the CSS does the rest
+ * — no re-render, no second stylesheet, and no way for the preview to disagree
+ * with the real thing.
+ *
+ * `--on-accent` is computed server-side from the accent's relative luminance, so
+ * a customer whose brand colour is a pale yellow gets black text on it instead of
+ * unreadable white. See `core/chat_widgets/branding.py::readable_on`.
  */
 
 .shell {
   --accent: #4f46e5;
+  --on-accent: #ffffff;
+
+  /* Light, by default. The dark block at the bottom overrides these. */
+  --bg: #ffffff;
+  --text: #18181b;
+  --muted: #52525b;
+  --surface: #f4f4f5;
+  --line: #e4e4e7;
+  --danger-bg: #fef2f2;
+  --danger-text: #991b1b;
+
+  /* Filled in by the [data-font] rules below. */
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
   display: flex;
   flex-direction: column;
   height: 100vh;
   margin: 0;
   overflow: hidden;
   border-radius: 14px;
-  background: #fff;
-  color: #18181b;
-  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--font);
 }
+
+/*
+ * Font stacks the visitor's device already has.
+ *
+ * No webfont, deliberately: a Google Font would be a third-party request from
+ * the customer's visitors — a live GDPR problem in the EU — and one that loads
+ * late repaints a widget sitting on a page that is not ours. These cost zero
+ * bytes and never flash.
+ */
+.shell[data-font='system'] { --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+.shell[data-font='sans']   { --font: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+.shell[data-font='serif']  { --font: Georgia, 'Times New Roman', Times, serif; }
+.shell[data-font='rounded'] {
+  --font: 'Avenir Next', Avenir, 'Nunito Sans', 'Segoe UI', system-ui, sans-serif;
+}
+.shell[data-font='mono']   { --font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 9px;
   padding: 12px 14px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
-.title { font-size: 14px; }
+/* The quiet header: the accent stays on buttons and the visitor's own bubbles,
+   which is what brands with a loud primary colour ask for. */
+.shell[data-header='neutral'] .header {
+  background: var(--bg);
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+}
+
+.logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.title { font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .close {
   border: 0;
@@ -42,8 +101,9 @@
   cursor: pointer;
   padding: 0 4px;
   border-radius: 6px;
+  flex-shrink: 0;
 }
-.close:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.close:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
 .log {
   flex: 1;
@@ -54,7 +114,7 @@
   gap: 8px;
 }
 
-.greeting { margin: 0 0 4px; color: #52525b; }
+.greeting { margin: 0 0 4px; color: var(--muted); }
 
 .bubble {
   margin: 0;
@@ -65,16 +125,17 @@
   overflow-wrap: anywhere;
 }
 
-.fromUser { align-self: flex-end; background: var(--accent); color: #fff; }
-.fromAgent { align-self: flex-start; background: #f4f4f5; }
-.failed { background: #fef2f2; color: #991b1b; }
+.fromUser { align-self: flex-end; background: var(--accent); color: var(--on-accent); }
+.fromAgent { align-self: flex-start; background: var(--surface); }
+.failed { background: var(--danger-bg); color: var(--danger-text); }
 
-.status { margin: 0; color: #71717a; font-size: 13px; }
+.status { margin: 0; color: var(--muted); font-size: 13px; }
 
 .retry {
   align-self: flex-start;
-  border: 1px solid #d4d4d8;
-  background: #fff;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: inherit;
   border-radius: 8px;
   padding: 5px 10px;
   cursor: pointer;
@@ -85,18 +146,18 @@
   display: flex;
   gap: 8px;
   padding: 10px;
-  border-top: 1px solid #e4e4e7;
+  border-top: 1px solid var(--line);
 }
 
 .input {
   flex: 1;
   min-width: 0;
-  border: 1px solid #d4d4d8;
+  border: 1px solid var(--line);
   border-radius: 9px;
   padding: 9px 11px;
   font: inherit;
   color: inherit;
-  background: #fff;
+  background: var(--bg);
 }
 .input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 
@@ -107,10 +168,10 @@
   cursor: pointer;
   font: inherit;
   font-weight: 600;
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent);
 }
-.stop { background: #71717a; }
+.stop { background: var(--muted); color: var(--bg); }
 .send:disabled { opacity: 0.45; cursor: default; }
 
 /* The refusal an unlisted origin gets. Rendered rather than 404'd: the reader is
@@ -134,14 +195,35 @@
 .refusalTitle { margin: 0; font-weight: 600; color: #18181b; }
 .refusalBody { margin: 0; max-width: 34ch; }
 
+/*
+ * Dark.
+ *
+ * Two selectors, and both are needed. `[data-theme='dark']` is the customer
+ * saying so; the media query inside `[data-theme='auto']` is the visitor's own
+ * setting. A customer on a dark site can now force dark instead of hoping every
+ * visitor has the OS preference — which is the complaint the option answers.
+ */
+.shell[data-theme='dark'] {
+  --bg: #18181b;
+  --text: #f4f4f5;
+  --muted: #a1a1aa;
+  --surface: #27272a;
+  --line: #3f3f46;
+  --danger-bg: #450a0a;
+  --danger-text: #fecaca;
+}
+
 @media (prefers-color-scheme: dark) {
-  .shell { background: #18181b; color: #f4f4f5; }
-  .fromAgent { background: #27272a; }
-  .failed { background: #450a0a; color: #fecaca; }
-  .greeting, .status { color: #a1a1aa; }
-  .composer { border-top-color: #3f3f46; }
-  .input { background: #27272a; border-color: #3f3f46; }
-  .retry { background: #27272a; border-color: #3f3f46; color: inherit; }
+  .shell[data-theme='auto'] {
+    --bg: #18181b;
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --surface: #27272a;
+    --line: #3f3f46;
+    --danger-bg: #450a0a;
+    --danger-text: #fecaca;
+  }
+
   .refusal { background: #18181b; color: #a1a1aa; }
   .refusalTitle { color: #f4f4f5; }
 }

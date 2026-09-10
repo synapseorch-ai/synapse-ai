@@ -43,12 +43,20 @@ const AUTH_BYPASS_PREFIXES = [
     // backend mints and verifies. See core/routes/widget.py.
     '/embed/',
     '/api/widget/',
+    // NOTE: `/embed/preview/` is deliberately NOT bypassed — see
+    // `shouldBypassAuth`. It is the owner's own preview and must stay behind the
+    // login gate; bypassing it would make it a way to talk to any widget without
+    // being on that widget's allowed list.
     '/auth/',
     '/_next/',
     '/favicon',
 ];
 
+/** Paths that look bypassed by prefix but must not be. */
+const AUTH_BYPASS_EXCEPTIONS = ['/embed/preview/'];
+
 function shouldBypassAuth(pathname: string): boolean {
+    if (AUTH_BYPASS_EXCEPTIONS.some(p => pathname.startsWith(p))) return false;
     return AUTH_BYPASS_PREFIXES.some(p => pathname.startsWith(p));
 }
 
@@ -104,6 +112,16 @@ export async function proxy(request: NextRequest) {
     const requestHeaders = new Headers(request.headers);
     if (internalToken) {
         requestHeaders.set('X-Synapse-Internal', internalToken);
+    }
+
+    // The owner's own preview. Framed by our settings screen and nobody else's
+    // page — and it stays behind the login gate, because `shouldBypassAuth`
+    // excludes this prefix. Placed before the visitor branch below so the
+    // narrower path wins.
+    if (pathname.startsWith('/embed/preview/')) {
+        const res = NextResponse.next({ request: { headers: requestHeaders } });
+        res.headers.set('Content-Security-Policy', "frame-ancestors 'self'");
+        return res;
     }
 
     // The embed page is the one route that answers with a CSP of its own,

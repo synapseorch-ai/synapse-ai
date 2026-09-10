@@ -313,3 +313,113 @@ class TestTheStreamIsAnAllowlist:
         rendered = json.dumps(out)
         for leaked in ("delete_everything", "customers", "cascade"):
             assert leaked not in rendered
+
+
+class TestTheLogo:
+    """A logo becomes a `data:` URI the browser will honour, so what we accept
+    matters more than it looks."""
+
+    #: The smallest valid PNG — an 8-byte signature is what `sniff` reads.
+    PNG = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c6300010000050001" "0d0a2db4" "0000000049454e44ae426082"
+    )
+
+    async def _widget(self, client, seed_agent):
+        agent = await seed_agent()
+        return await _make_widget(client, agent["id"])
+
+    async def test_a_png_becomes_a_data_uri(self, client, seed_agent):
+        widget = await self._widget(client, seed_agent)
+        response = await client.post(
+            f"/api/widgets/{widget['id']}/logo",
+            files={"file": ("logo.png", self.PNG, "image/png")},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["logo"].startswith("data:image/png;base64,")
+
+    async def test_the_magic_bytes_decide_not_the_filename(self, client, seed_agent):
+        """`.png` on a text file is the ordinary way this goes wrong, and the
+        value ends up in a `data:` URI, so the name is not evidence."""
+        widget = await self._widget(client, seed_agent)
+        response = await client.post(
+            f"/api/widgets/{widget['id']}/logo",
+            files={"file": ("logo.png", b"not an image at all", "image/png")},
+        )
+        assert response.status_code == 422
+        assert "Renaming a file" in response.json()["detail"]
+
+    async def test_an_oversized_logo_is_refused_with_the_number(self, client, seed_agent):
+        widget = await self._widget(client, seed_agent)
+        oversized = self.PNG + b"\x00" * (128 * 1024)
+        response = await client.post(
+            f"/api/widgets/{widget['id']}/logo",
+            files={"file": ("logo.png", oversized, "image/png")},
+        )
+        assert response.status_code == 413
+        assert "128 KB" in response.json()["detail"]
+
+    async def test_it_can_be_removed(self, client, seed_agent):
+        widget = await self._widget(client, seed_agent)
+        await client.post(
+            f"/api/widgets/{widget['id']}/logo",
+            files={"file": ("logo.png", self.PNG, "image/png")},
+        )
+        assert (await client.delete(f"/api/widgets/{widget['id']}/logo")).json()["logo"] == ""
+
+    async def test_a_visitor_is_handed_the_logo_but_never_the_allow_list(
+        self, client, seed_agent
+    ):
+        widget = await self._widget(client, seed_agent)
+        await client.post(
+            f"/api/widgets/{widget['id']}/logo",
+            files={"file": ("logo.png", self.PNG, "image/png")},
+        )
+        session = await client.post(
+            "/api/widget/session",
+            json={"public_key": widget["public_key"], "origin": "https://acme.com"},
+        )
+        theme = session.json()["widget"]
+        assert theme["logo"].startswith("data:image/png")
+        assert "allowed_origins" not in theme
+
+
+class TestThePreviewIsOwnerOnly:
+    """The preview skips the origin check, because the caller *is* the workspace.
+
+    That is only safe while it stays behind the login gate, which is a property
+    of `proxy.ts`'s bypass list and easy to undo by accident — `/embed/preview/`
+    has to be excluded from the prefix that lets a stranger reach `/embed/{key}`.
+    """
+
+    async def test_the_bypass_list_excludes_it(self):
+        """Read out of the file, because the mistake this guards against is
+        someone widening the prefix and never seeing a test fail."""
+        import pathlib
+        import re
+
+        proxy = (
+            pathlib.Path(__file__).resolve().parents[3]
+            / "frontend" / "src" / "proxy.ts"
+        ).read_text()
+        assert "'/embed/preview/'" in proxy
+        exceptions = re.search(r"AUTH_BYPASS_EXCEPTIONS\s*=\s*\[([^\]]*)\]", proxy)
+        assert exceptions and "/embed/preview/" in exceptions.group(1)
+
+    async def test_it_mints_a_token_for_the_owners_own_frame(self, client, seed_agent):
+        agent = await seed_agent()
+        widget = await _make_widget(client, agent["id"], origins=[])
+        response = await client.post(f"/api/widgets/{widget['id']}/preview")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["token"].startswith("wgt1.")
+        # An empty allow-list stops a *visitor*; it must not stop the owner
+        # seeing what they are configuring.
+        assert body["widget"]["accent"]
+
+    async def test_a_widget_with_no_agent_says_so_rather_than_500ing(
+        self, client, seed_agent
+    ):
+        widget = await _make_widget(client, "")
+        response = await client.post(f"/api/widgets/{widget['id']}/preview")
+        assert response.status_code == 409

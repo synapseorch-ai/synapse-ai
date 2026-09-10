@@ -139,10 +139,42 @@ const LOADER = String.raw`
     'display:flex', 'align-items:center', 'justify-content:center',
     'padding:0', 'font:inherit'
   ].join(';');
-  button.innerHTML =
+  var GLYPH =
     '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>';
+  button.innerHTML = GLYPH;
+
+  /**
+   * Apply the branding the frame just sent.
+   *
+   * Built with DOM calls and not innerHTML for the logo: that value is a data
+   * URI from our own API, but this code runs on the customer's page, and a
+   * string concatenated into markup there is the one place a mistake would be
+   * theirs to explain rather than ours. Assigning img.src cannot become an
+   * element, however odd the value is.
+   */
+  function dressLauncher(look) {
+    if (look.accent) button.style.background = look.accent;
+    if (look.onAccent) button.style.color = look.onAccent;
+    if (look.label) {
+      button.setAttribute('aria-label', look.label);
+      frame.title = look.label;
+    }
+    if (look.logo) {
+      button.innerHTML = '';
+      var img = document.createElement('img');
+      img.src = look.logo;
+      img.alt = '';
+      img.style.cssText = 'width:30px;height:30px;object-fit:contain;border-radius:6px';
+      button.appendChild(img);
+      // The logo carries the brand; a coloured disc behind it usually fights it.
+      button.style.background = '#fff';
+      button.style.boxShadow = '0 6px 20px rgba(0,0,0,.22), inset 0 0 0 1px rgba(0,0,0,.06)';
+    } else {
+      button.innerHTML = GLYPH;
+    }
+  }
 
   function setOpen(next) {
     open = next;
@@ -164,7 +196,12 @@ const LOADER = String.raw`
   // else is somebody else's page talking, and is ignored.
   window.addEventListener('message', function (event) {
     if (event.origin !== origin || !event.data) return;
-    if (event.data.type === 'synapse:ready') ready = true;
+    if (event.data.type === 'synapse:ready') {
+      ready = true;
+      // The frame decides how the button looks; only *where* it goes is decided
+      // here, because only the host page knows about its own viewport.
+      if (event.data.launcher) dressLauncher(event.data.launcher);
+    }
     if (event.data.type === 'synapse:close') setOpen(false);
   });
 
