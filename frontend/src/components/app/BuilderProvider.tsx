@@ -31,6 +31,12 @@ import { readWithStallTimeout } from '@/lib/sse';
  */
 export const RESOURCE_SAVED_EVENT = 'synapse-resource-saved';
 
+/**
+ * How long the panel's exit transition takes. Paired with `duration-200` on the
+ * card in `BuilderPanel`; kept here because this is where the timer runs.
+ */
+export const EXIT_MS = 200;
+
 const WELCOME: BuilderMessage = {
     role: 'assistant',
     kind: 'text',
@@ -57,6 +63,12 @@ interface OpenOptions {
 
 interface BuilderContextValue {
     isOpen: boolean;
+    /**
+     * True once the panel should be in its open position — one frame after
+     * `isOpen`, and false for the length of the exit while `isOpen` is still
+     * true. The panel reads this to transition; nothing else needs it.
+     */
+    entered: boolean;
     open: (options?: OpenOptions) => void;
     close: () => void;
     state: BuilderState;
@@ -80,6 +92,7 @@ export function useBuilder(): BuilderContextValue {
 
 export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const [isOpen, setIsOpen] = useState(false);
+    const [entered, setEntered] = useState(false);
     const [state, setState] = useState<BuilderState>(() => emptyBuilderState([WELCOME]));
     const [streaming, setStreaming] = useState(false);
     const [models, setModels] = useState<string[]>([]);
@@ -129,9 +142,19 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
             currentOrchestrationId.current = options.currentOrchestrationId ?? null;
         }
         setIsOpen(true);
+        // Next frame, so the card paints once in its closed position before it
+        // is told to open. Set both in one tick and there are no two values for
+        // the transition to interpolate between.
+        requestAnimationFrame(() => setEntered(true));
     }, []);
 
-    const close = useCallback(() => setIsOpen(false), []);
+    // Closing runs the transition first and unmounts after it. This lives here
+    // rather than in the panel because the provider is what owns open/close;
+    // doing it in the panel would mean setState inside an effect.
+    const close = useCallback(() => {
+        setEntered(false);
+        window.setTimeout(() => setIsOpen(false), EXIT_MS);
+    }, []);
 
     const newConversation = useCallback(() => {
         abortRef.current?.abort();
@@ -261,10 +284,10 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
 
     const value = useMemo(
         () => ({
-            isOpen, open, close, state, streaming, send, newConversation,
+            isOpen, entered, open, close, state, streaming, send, newConversation,
             models, builderModel, sessionModel, setSessionModel, saveBuilderModel,
         }),
-        [isOpen, open, close, state, streaming, send, newConversation,
+        [isOpen, entered, open, close, state, streaming, send, newConversation,
          models, builderModel, sessionModel, saveBuilderModel],
     );
 

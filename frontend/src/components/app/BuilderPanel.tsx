@@ -26,6 +26,7 @@ import { renderTextContent } from '@/lib/utils';
 
 const COLLAPSE_THRESHOLD = 600;
 
+
 function isActivity(message: BuilderMessage): boolean {
     return (
         message.kind === 'step_progress' ||
@@ -67,7 +68,7 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
                         <summary className="cursor-pointer list-none truncate font-code text-[11px] text-accent">
                             {message.toolName?.replace(/_/g, ' ')}
                         </summary>
-                        <pre className="mt-0.5 max-h-28 overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-surface p-1.5 font-code text-[10px] text-text-muted">
+                        <pre className="mt-0.5 max-h-28 overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-surface-2 p-1.5 font-code text-[10px] text-text-muted">
                             {JSON.stringify(message.toolArgs, null, 2)}
                         </pre>
                     </details>
@@ -144,7 +145,7 @@ function HumanPromptCard({ content }: { content: string }) {
 
 export function BuilderPanel() {
     const {
-        isOpen, close, state, streaming, send, newConversation,
+        isOpen, entered, close, state, streaming, send, newConversation,
         models, builderModel, sessionModel, setSessionModel, saveBuilderModel,
     } = useBuilder();
 
@@ -156,9 +157,14 @@ export function BuilderPanel() {
     const bottomRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
+        // Not while closing: scrolling a card that is fading out is motion in
+        // two directions at once.
+        if (!entered) return;
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [state.messages]);
+    }, [state.messages, entered]);
 
+    // `isOpen` stays true for the length of the exit transition — the provider
+    // clears it when the card has finished leaving.
     if (!isOpen) return null;
 
     const submit = () => {
@@ -186,7 +192,26 @@ export function BuilderPanel() {
         <>
             <aside
                 aria-label="AI builder"
-                className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[620px] flex-col border-l border-border bg-bg shadow-2xl"
+                onKeyDown={(e) => {
+                    // Escape on the panel, not on the document: the card is not
+                    // modal and does not trap focus, so a document listener
+                    // would eat Escape from whatever screen is behind it.
+                    if (e.key === 'Escape') { e.stopPropagation(); close(); }
+                }}
+                className={cn(
+                    'fixed right-3 top-3 bottom-3 z-40 flex flex-col overflow-hidden',
+                    // `min()` rather than `max-w`: the card keeps its 12px of
+                    // margin on both sides all the way down to a 320px phone,
+                    // where it is 296px wide and the page still does not
+                    // scroll sideways.
+                    'w-[min(620px,calc(100vw-1.5rem))]',
+                    // `overflow-hidden` is what gives the header and the
+                    // composer the inner radius, instead of restating it on
+                    // three children that would then disagree.
+                    'rounded-xl border border-border-strong bg-surface shadow-2xl',
+                    'transition-[opacity,transform] duration-200 ease-out',
+                    entered ? 'translate-x-0 opacity-100' : 'pointer-events-none translate-x-2 opacity-0',
+                )}
             >
                 <header className="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
                     <div className="flex items-center gap-2">
@@ -245,7 +270,7 @@ export function BuilderPanel() {
                                     className={cn(
                                         'flex items-center gap-2 rounded-lg border px-3 py-2 text-[12px]',
                                         gone
-                                            ? 'border-border bg-surface text-text-muted'
+                                            ? 'border-border bg-surface-2 text-text-muted'
                                             : 'border-success/40 bg-success-subtle text-text',
                                     )}
                                 >
@@ -268,7 +293,7 @@ export function BuilderPanel() {
                         }
                         return (
                             <div key={message.key} className="flex justify-start">
-                                <div className="max-w-[88%] rounded-xl bg-surface px-4 py-3 text-sm text-text">
+                                <div className="max-w-[88%] rounded-xl bg-surface-2 px-4 py-3 text-sm text-text">
                                     {renderTextContent(message.content)}
                                 </div>
                             </div>
@@ -297,7 +322,7 @@ export function BuilderPanel() {
                             disabled={streaming}
                             aria-label="Message the AI builder"
                             className={cn(
-                                'flex-1 resize-none rounded-lg border border-border-strong bg-surface px-3.5 py-2.5',
+                                'flex-1 resize-none rounded-lg border border-border-strong bg-surface-2 px-3.5 py-2.5',
                                 'font-sans text-sm text-text placeholder:text-text-faint',
                                 'outline-none transition-colors focus:border-accent disabled:opacity-50',
                             )}
