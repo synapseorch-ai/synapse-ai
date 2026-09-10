@@ -1,6 +1,12 @@
 """
 The embeddable chat widget: one script tag drops an agent into another site.
 
+The visitor route names — ``session``, ``refresh``, ``chat``, ``cancel``,
+``history`` — are a contract shared with the cloud product, because the widget
+client that calls them is the same file in both. It reaches a Next route handler
+here and a control-plane route there, and the paths are what let one file do
+both. Renaming one without the other is a 404 that only shows up in a browser.
+
 Two route groups with very different callers, deliberately in one file so the
 asymmetry is visible:
 
@@ -194,7 +200,7 @@ async def widget_csp(public_key: str):
     return {"frame_ancestors": _origins.frame_ancestors(allowed)}
 
 
-@router.post("/api/widget/session/refresh")
+@router.post("/api/widget/refresh")
 async def refresh_session(authorization: str | None = Header(default=None)):
     """A fresh token for a conversation that outlived the first one."""
     token = ""
@@ -283,7 +289,7 @@ async def _ungated(stream):
         yield chunk
 
 
-@router.post("/api/widget/chat/cancel")
+@router.post("/api/widget/cancel")
 async def widget_cancel(request: Request, authorization: str | None = Header(default=None)):
     """Stop the turn this conversation is running.
 

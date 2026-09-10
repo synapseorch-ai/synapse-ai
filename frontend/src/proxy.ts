@@ -109,7 +109,12 @@ export async function proxy(request: NextRequest) {
     // The embed page is the one route that answers with a CSP of its own,
     // computed per widget. Handled before the bypass returns, so the header is
     // set on the response the visitor actually receives.
-    const embedded = pathname.match(/^\/embed\/([^/]+)\/?$/);
+    // `v1.js` is the loader, not an embed page: it is a route handler, and it
+    // is fetched by every visitor of every customer site. Excluding it here
+    // saves each of them a round trip for a header that means nothing on a
+    // script.
+    const embedded =
+        pathname === "/embed/v1.js" ? null : pathname.match(/^\/embed\/([^/]+)\/?$/);
     if (embedded) {
         const directive = await frameAncestors(decodeURIComponent(embedded[1]), internalToken);
         const res = NextResponse.next({ request: { headers: requestHeaders } });

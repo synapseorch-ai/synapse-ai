@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 /** Forwards the visitor's token; the backend is the only thing that reads it. */
 export async function POST(req: Request) {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/widget/session/refresh`, {
+    const response = await fetch(`${BACKEND_URL}/api/widget/refresh`, {
       method: 'POST',
       headers: backendHeaders({ Authorization: req.headers.get('authorization') ?? '' }),
     });
