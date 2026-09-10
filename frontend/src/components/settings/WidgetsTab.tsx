@@ -103,8 +103,15 @@ export const WidgetsTab = () => {
                 fetch('/api/agents').then((r) => (r.ok ? r.json() : [])),
             ]);
             if (cancelled) return;
-            setWidgets(Array.isArray(w) ? w : []);
+            const rows: WidgetRecord[] = Array.isArray(w) ? w : [];
+            setWidgets(rows);
             setAgents(Array.isArray(a) ? a.map((x: AgentOption) => ({ id: x.id, name: x.name })) : []);
+            // Land on something. A screen that lists one widget and shows an
+            // empty right-hand side reads as broken — and the preview is the
+            // point of the screen, so it should be on when you arrive.
+            setSelectedId((current) =>
+                rows.some((r) => r.id === current) ? current : (rows[0]?.id ?? ''),
+            );
         })();
         return () => { cancelled = true; };
     }, [reloads]);
@@ -272,8 +279,15 @@ export const WidgetsTab = () => {
             )}
 
             {selected && (
-                <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-5 items-start">
-                    <div className="space-y-4">
+                <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-5 items-start">
+                    {/*
+                      * `minmax(0,1fr)` above and `min-w-0` here, both needed. A
+                      * grid track defaults to `min-width: auto`, so the snippet
+                      * `<pre>` — one long unbreakable line — widens this column
+                      * past the viewport and pushes the preview off the right
+                      * edge, `overflow-x-auto` on the `<pre>` notwithstanding.
+                      */}
+                    <div className="space-y-4 min-w-0">
                         {error && (
                             <p className="flex items-start gap-2 text-xs text-danger border border-danger/40 rounded-md p-3">
                                 <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
