@@ -2,8 +2,8 @@ import { headers } from 'next/headers';
 
 import { BACKEND_URL, backendHeaders } from '@/lib/backend';
 
+import EmbedRefusal from './EmbedRefusal';
 import WidgetChat from './WidgetChat';
-import styles from './embed.module.css';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,14 +78,7 @@ export default async function EmbedPage({ params }: PageProps) {
   }
 
   if (status !== 200 || !session.token || !session.session_id) {
-    return (
-      <main className={styles.refusal} role="alert">
-        <p className={styles.refusalTitle}>This chat can’t load here.</p>
-        <p className={styles.refusalBody}>
-          {session.detail ?? 'This chat is unavailable right now.'}
-        </p>
-      </main>
-    );
+    return <EmbedRefusal detail={session.detail ?? 'This chat is unavailable right now.'} />;
   }
 
   return (

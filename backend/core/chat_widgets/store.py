@@ -112,8 +112,12 @@ async def save_widget(widget: dict) -> dict:
         widget["public_key"] = new_public_key()
 
     widget["updated_at"] = now
+    # `setdefault` is not enough: the API model supplies `""` for every unset
+    # string, so the key is present and the default never lands. An empty theme
+    # field means "you did not choose one", not "you chose blank".
     for field, value in DEFAULTS.items():
-        widget.setdefault(field, value)
+        if widget.get(field) in (None, ""):
+            widget[field] = value
     widget["allowed_origins"] = _origins.clean_list(widget.get("allowed_origins"))
 
     idx = next((i for i, w in enumerate(data) if w.get("id") == widget["id"]), None)

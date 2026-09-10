@@ -135,6 +135,19 @@ export default function WidgetChat({
     };
   }, [initialToken, storageKey, remember]);
 
+  /**
+   * Tell the loader the frame really rendered.
+   *
+   * This is what makes a blocked widget diagnosable. When an origin is not on
+   * the allow-list the *browser* refuses to paint this frame, which is the
+   * strongest possible refusal and also a completely silent one — the host page
+   * gets a grey box and no explanation. The loader waits for this message and,
+   * not hearing it, says out loud what probably happened.
+   */
+  useEffect(() => {
+    window.parent?.postMessage({ type: 'synapse:ready' }, '*');
+  }, []);
+
   const close = () => window.parent?.postMessage({ type: 'synapse:close' }, '*');
 
   const send = useCallback(async (text: string) => {

@@ -49,6 +49,35 @@ const LOADER = String.raw`
   var label = script.getAttribute('data-label') || 'Chat';
   var id = 'synapse-widget-' + Math.random().toString(36).slice(2, 8);
 
+  // Whether the frame ever managed to render. See watchForABlockedFrame.
+  var ready = false;
+
+  /**
+   * Say out loud when the browser refused to paint the widget.
+   *
+   * If this page's origin is not on the widget's allow-list, the embed page
+   * comes back with a frame-ancestors directive that excludes it, and the
+   * browser blocks the frame outright. That is the strongest refusal there is
+   * and a completely silent one: no error, no event, just an empty box.
+   * Nothing can read into a blocked frame to find out why, so the signal is
+   * its absence: the frame announces itself when it renders, and not hearing
+   * that means it never did.
+   *
+   * The console is the right place for it. The reader is a developer who has
+   * just pasted a snippet, and the fix is one line of configuration.
+   */
+  function watchForABlockedFrame() {
+    setTimeout(function () {
+      if (ready) return;
+      console.error(
+        '[synapse] the chat widget did not load on ' + window.location.origin + '.\n' +
+        'The most likely reason is that this site is not on the widget\'s allowed list, ' +
+        'so the browser refused to embed it. Add ' + window.location.origin +
+        ' under Settings \u2192 Widgets, or check that data-key is the current key.'
+      );
+    }, 6000);
+  }
+
   var frame = document.createElement('iframe');
   frame.src = origin + '/embed/' + encodeURIComponent(key);
   frame.title = label;
@@ -79,6 +108,7 @@ const LOADER = String.raw`
     frame.style.height = '100%';
     frame.style.minHeight = '420px';
     host.appendChild(frame);
+    watchForABlockedFrame();
     return;
   }
 
@@ -127,12 +157,14 @@ const LOADER = String.raw`
   // else is somebody else's page talking, and is ignored.
   window.addEventListener('message', function (event) {
     if (event.origin !== origin || !event.data) return;
+    if (event.data.type === 'synapse:ready') ready = true;
     if (event.data.type === 'synapse:close') setOpen(false);
   });
 
   function attach() {
     document.body.appendChild(frame);
     document.body.appendChild(button);
+    watchForABlockedFrame();
   }
   if (document.body) attach();
   else document.addEventListener('DOMContentLoaded', attach);
