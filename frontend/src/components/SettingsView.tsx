@@ -24,6 +24,7 @@ import { ToastNotification } from './settings/ToastNotification';
 import { ReposTab } from './settings/ReposTab';
 import { DBsTab } from './settings/DBsTab';
 import { MessagingTab } from './settings/MessagingTab';
+import { WidgetsTab } from './settings/WidgetsTab';
 import { ImportExportTab } from './settings/ImportExportTab';
 import { SupportTab } from './settings/SupportTab';
 import { APIKeysTab } from './settings/APIKeysTab';
@@ -458,6 +459,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             >
                 {/* MESSAGING TAB */}
                 {activeTab === 'messaging' && <MessagingTab />}
+                {activeTab === 'widgets' && <WidgetsTab />}
 
                 {/* IMPORT / EXPORT TAB */}
                 {activeTab === 'import_export' && (

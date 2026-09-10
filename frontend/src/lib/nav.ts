@@ -14,7 +14,7 @@
 import {
     Braces,
     ArrowLeftRight, BookOpen, Bot, Clock, Cloud, Cpu, Database, DollarSign, Eraser, LayoutDashboard,
-    FolderGit2, Gauge, Key, LayoutGrid, LifeBuoy, MessageSquare, MessagesSquare,
+    FolderGit2, Gauge, Globe, Key, LayoutGrid, LifeBuoy, MessageSquare, MessagesSquare,
     ScrollText, Server, Shield, Vault, Workflow, Wrench,
     type LucideIcon,
 } from 'lucide-react';
@@ -145,6 +145,10 @@ export const SETTINGS_NAV: NavGroup[] = [
                 id: 'messaging', label: 'Messaging', href: '/settings/messaging', icon: MessageSquare,
                 blurb: 'Reach your agents from Telegram, Discord, Slack, Teams or WhatsApp.',
                 flag: 'messaging_enabled',
+            },
+            {
+                id: 'widgets', label: 'Widgets', href: '/settings/widgets', icon: Globe,
+                blurb: 'Embed an agent in your own site with one script tag.',
             },
             {
                 id: 'repos', label: 'Repos', href: '/settings/repos', icon: FolderGit2,
