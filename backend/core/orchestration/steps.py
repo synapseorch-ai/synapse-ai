@@ -785,11 +785,24 @@ class EvaluatorStepExecutor:
                 raise
             _log.debug(f"Evaluator routing call failed: {e}")
 
-        # Fallback: pick the first route
+        # Fallback when the model's reply did not parse into a route.
+        #
+        # This used to be "the first key of `route_map`", which is not a thing
+        # that exists: `definition` is JSONB on Postgres, and JSONB sorts object
+        # keys by (length, bytes) rather than storing them in insertion order.
+        # The same orchestration therefore fell back one way on SQLite and
+        # another on Postgres — and adding a route could silently move it, which
+        # is exactly what happened when the builder gained `answer` (six
+        # characters, sorting ahead of `create`).
+        #
+        # `fallback_route` says which one out loud. `labels[0]` remains the
+        # default so every orchestration that predates the field behaves as it
+        # did on SQLite.
         if not routing_decision:
-            fallback_label = labels[0] if labels else None
+            declared = step.fallback_route
+            fallback_label = declared if declared in labels else (labels[0] if labels else None)
             if fallback_label:
-                _log.debug(f"Evaluator falling back to first route: {fallback_label}")
+                _log.debug(f"Evaluator falling back to route: {fallback_label}")
                 routing_decision = {
                     "type": "routing_decision",
                     "tool_name": f"route_{fallback_label}",

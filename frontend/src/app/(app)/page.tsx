@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, ImageIcon, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Square, Pencil, RotateCcw} from 'lucide-react';
+import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Square, Pencil, RotateCcw} from 'lucide-react';
 
 import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';

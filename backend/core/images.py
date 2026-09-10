@@ -137,3 +137,30 @@ def model_can_see_images(model: str) -> bool:
     """Whether sending an image to this model does anything."""
     name = (model or "").strip().lower()
     return bool(name) and not name.startswith(_BLIND_PREFIXES)
+
+
+def checked_images(field: str = "images"):
+    """A Pydantic validator that runs `validate` and reports its reason.
+
+    Three request models carry attachments now — chat, a builder turn and a
+    builder resume — and the wrapper that turns "what counts as an image" into
+    an HTTP 422 was being copied along with each one. This module exists so
+    there is one answer to that question; the answer needs one door as well.
+
+    The reason travels as the validation message rather than being logged and
+    replaced with something generic, because it is written to be read by the
+    person who picked the file.
+
+        class ChatRequest(BaseModel):
+            images: list[str] = []
+            _check_images = checked_images()
+    """
+    from pydantic import field_validator
+
+    def _check(cls, value: list[str]) -> list[str]:
+        try:
+            return validate(value)
+        except ImageRejected as exc:
+            raise ValueError(str(exc)) from None
+
+    return field_validator(field)(classmethod(_check))

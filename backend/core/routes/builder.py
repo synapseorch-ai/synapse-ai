@@ -20,8 +20,9 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
+from core.images import checked_images
 from core.models_orchestration import Orchestration
 from core.native_builder import NATIVE_BUILDER_ORCH_ID, bundled_definitions
 from core.orchestration.engine import OrchestrationEngine
@@ -52,21 +53,18 @@ class BuilderChatRequest(BaseModel):
     #: `run_builder_stream` for why.
     images: list[str] = []
 
-    @field_validator("images")
-    @classmethod
-    def _check_images(cls, value: list[str]) -> list[str]:
-        from core.images import ImageRejected, validate
-        try:
-            return validate(value)
-        except ImageRejected as exc:
-            # Written to be read by a person, so it travels as the validation
-            # message rather than being logged and replaced with a generic one.
-            raise ValueError(str(exc)) from None
+    _check_images = checked_images()
 
 
 class BuilderResumeRequest(BaseModel):
     run_id: str
     response: dict = {}
+    #: Attachments sent *with the answer*. The images a run started with are
+    #: not persisted anywhere — see `OrchestrationEngine.resume` — so a step
+    #: re-entered after a pause sees only what was attached to the reply.
+    images: list[str] = []
+
+    _check_images = checked_images()
 
 
 def _format_history(history: list[dict]) -> str:
@@ -108,6 +106,30 @@ async def _selected_model(request_model: str | None) -> str | None:
 def _session_id(client_session_id: str) -> str:
     from core.tenancy import get_tenant
     return f"builder:{get_tenant()}:{client_session_id or 'default'}"
+
+
+async def reject_unseeable_images(request: BuilderChatRequest) -> None:
+    """Refuse attachments a model will throw away, rather than throwing them away.
+
+    Four providers discard images — two with a log line nobody reads, two in
+    silence — so the run answers as though nothing were attached, which reads as
+    the agent ignoring you. The composer already disables its attach button from
+    `vision_capable`; this is for every caller that is not the composer, and for
+    the chat page's builder-typed agent, which reaches the same run by a
+    different door.
+    """
+    if not request.images:
+        return
+    from core.config import load_settings
+    from core.images import model_can_see_images
+
+    resolved = await _selected_model(request.model) or load_settings().get("model", "")
+    if not model_can_see_images(resolved):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{resolved} cannot see images. Pick a different builder model, "
+                   f"or send the message without them.",
+        )
 
 
 async def run_builder_stream(request: BuilderChatRequest, server_module):
@@ -156,7 +178,8 @@ async def run_builder_stream(request: BuilderChatRequest, server_module):
             yield event
 
 
-async def run_builder_resume_stream(run_id: str, human_response: dict, server_module):
+async def run_builder_resume_stream(run_id: str, human_response: dict, server_module,
+                                    images: list[str] | None = None):
     """Resume a paused builder run, yielding the engine's own events.
 
     This used to be a hand-copied near-duplicate of `OrchestrationEngine.resume`
@@ -164,7 +187,7 @@ async def run_builder_resume_stream(run_id: str, human_response: dict, server_mo
     stayed open in the run's history, and it re-applied the model itself
     because there was nowhere to carry it. Both are the engine's job now.
     """
-    async for event in OrchestrationEngine.resume(run_id, human_response, server_module):
+    async for event in OrchestrationEngine.resume(run_id, human_response, server_module, images):
         if not _is_internal(event.get("type", "")):
             yield event
 
@@ -200,20 +223,7 @@ def _stream(source) -> StreamingResponse:
 
 @router.post("/api/builder/chat")
 async def builder_chat(request: BuilderChatRequest, http_request: Request):
-    if request.images:
-        # The frontend disables the attach button for a blind model, so this is
-        # for everything that is not the frontend. Refusing is the honest
-        # answer: four of the providers discard images with no warning at all,
-        # and the run would otherwise answer as though nothing was attached.
-        from core.images import model_can_see_images
-        model = await _selected_model(request.model)
-        from core.config import load_settings
-        resolved = model or load_settings().get("model", "")
-        if not model_can_see_images(resolved):
-            raise HTTPException(
-                status_code=422,
-                detail=f"{resolved} cannot see images. Pick a different builder model, or send the request without them.",
-            )
+    await reject_unseeable_images(request)
     return _stream(run_builder_stream(request, http_request.app.state.server_module))
 
 
@@ -222,7 +232,7 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
     """Resume a paused builder run after the user answers."""
     return _stream(
         run_builder_resume_stream(
-            request.run_id, request.response, http_request.app.state.server_module
+            request.run_id, request.response, http_request.app.state.server_module, request.images
         )
     )
 
@@ -246,6 +256,15 @@ async def run_builder_stream_compat(request, server_module):
         # that already exists. Already validated on the way in as ChatRequest.
         images=list(getattr(request, "images", None) or []),
     )
+
+    try:
+        await reject_unseeable_images(builder_req)
+    except HTTPException as exc:
+        # This generator is already streaming SSE to the chat page, so the
+        # refusal has to arrive as an event rather than as a status code.
+        yield _sse({"type": "error", "message": str(exc.detail)})
+        yield _sse({"type": "done"})
+        return
 
     async for event in iter_with_heartbeat(run_builder_stream(builder_req, server_module)):
         if isinstance(event, str):  # heartbeat comment — pass through

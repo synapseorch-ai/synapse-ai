@@ -27,6 +27,10 @@ export const MAX_IMAGES = 5;
 const MAX_BYTES = 5 * 1024 * 1024;
 /** Mirrors `core.images.ALLOWED_MIME`. */
 const ALLOWED = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+/** Mirrors `core.images.MAX_TOTAL_BYTES`. Five 4.5 MB phone photos clear every
+ *  per-image check and still fail this one, so leaving it out meant the easiest
+ *  limit to hit was the only one you learned about after the round trip. */
+const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 
 /** What the composer holds and what the request sends. */
 export interface Attachment {
@@ -57,47 +61,60 @@ export function useImageAttachments(): ImageAttachments {
     const [images, setImages] = useState<Attachment[]>([]);
     const [error, setError] = useState<string | null>(null);
 
+    // Reads `images` from the closure rather than from inside a `setImages`
+    // updater. React double-invokes updaters in Strict Mode, and this one has
+    // to create FileReaders — so every dropped file was read, and appended,
+    // twice in development. `accept` is recreated whenever `images` changes,
+    // and handlers are re-bound on the same render, so the closure is current.
     const accept = useCallback((files: File[]) => {
         setError(null);
-        setImages((current) => {
-            const room = MAX_IMAGES - current.length;
-            if (room <= 0) {
-                setError(`${MAX_IMAGES} images is the limit for one message.`);
-                return current;
-            }
+        const current = images;
+        const room = MAX_IMAGES - current.length;
+        if (room <= 0) {
+            setError(`${MAX_IMAGES} images is the limit for one message.`);
+            return;
+        }
 
-            const usable: File[] = [];
-            for (const file of files) {
-                if (!ALLOWED.includes(file.type)) {
-                    setError(`${file.name || 'That file'} is not a PNG, JPEG, GIF or WebP.`);
-                    continue;
-                }
-                if (file.size > MAX_BYTES) {
-                    setError(`${file.name || 'That image'} is ${Math.round(file.size / (1024 * 1024))}\u00a0MB; the limit is ${MAX_BYTES / (1024 * 1024)}\u00a0MB.`);
-                    continue;
-                }
-                usable.push(file);
+        let total = current.reduce((sum, image) => sum + image.base64.length * 0.75, 0);
+        const usable: File[] = [];
+        for (const file of files) {
+            if (!ALLOWED.includes(file.type)) {
+                setError(`${file.name || 'That file'} is not a PNG, JPEG, GIF or WebP.`);
+                continue;
             }
-            if (usable.length > room) {
-                setError(`Only ${room} more ${room === 1 ? 'image fits' : 'images fit'} in this message.`);
+            if (file.size > MAX_BYTES) {
+                setError(`${file.name || 'That image'} is ${Math.round(file.size / (1024 * 1024))}\u00a0MB; the limit is ${MAX_BYTES / (1024 * 1024)}\u00a0MB.`);
+                continue;
             }
+            if (total + file.size > MAX_TOTAL_BYTES) {
+                setError(`That would be over ${MAX_TOTAL_BYTES / (1024 * 1024)}\u00a0MB of images in one message.`);
+                continue;
+            }
+            total += file.size;
+            usable.push(file);
+        }
+        if (usable.length > room) {
+            setError(`Only ${room} more ${room === 1 ? 'image fits' : 'images fit'} in this message.`);
+        }
 
-            // Reading is async, so each file appends when it lands rather than
-            // this returning them. The cap is re-checked on append: two drops in
-            // flight at once would otherwise both see room for the same slot.
-            usable.slice(0, room).forEach((file) => {
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    const base64 = ev.target?.result as string;
-                    setImages((prev) => prev.length < MAX_IMAGES
-                        ? [...prev, { preview: base64, base64, name: file.name || 'image' }]
-                        : prev);
-                };
-                reader.readAsDataURL(file);
-            });
-            return current;
+        // Reading is async, so each file appends when it lands rather than this
+        // returning them. The cap is re-checked on append: two drops in flight
+        // at once would otherwise both see room for the same slot.
+        usable.slice(0, room).forEach((file) => {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const base64 = ev.target?.result as string;
+                setImages((prev) => prev.length < MAX_IMAGES
+                    ? [...prev, { preview: base64, base64, name: file.name || 'image' }]
+                    : prev);
+            };
+            // Without this a file that passes every check but cannot be read —
+            // a volume that goes away mid-read, a permissions error — is
+            // dropped in silence, which is the thing this hook exists to stop.
+            reader.onerror = () => setError(`${file.name || 'That image'} could not be read.`);
+            reader.readAsDataURL(file);
         });
-    }, []);
+    }, [images]);
 
     const remove = useCallback((index: number) => {
         setImages((prev) => prev.filter((_, i) => i !== index));
@@ -128,23 +145,26 @@ export function useImageAttachments(): ImageAttachments {
 
 /** Why the last attach did not take, with a way to dismiss it. */
 export function AttachmentError({ error, onDismiss }: { error: string | null; onDismiss: () => void }) {
-    if (!error) return null;
+    // The wrapper is always mounted. A live region inserted at the same moment
+    // as its text is not announced — screen readers report mutations to a
+    // region that was already there — so rendering `null` while there is no
+    // error would have made this silent for the people it is for.
     return (
-        <div
-            role="status"
-            aria-live="polite"
-            className="mb-2 flex items-center gap-2 rounded-md border border-warning/50 bg-warning-subtle px-3 py-2 text-[12px] text-warning"
-        >
-            <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span className="min-w-0 flex-1 font-sans">{error}</span>
-            <button
-                type="button"
-                onClick={onDismiss}
-                aria-label="Dismiss"
-                className="shrink-0 rounded p-0.5 opacity-70 transition-opacity hover:opacity-100"
-            >
-                <X className="h-3 w-3" aria-hidden />
-            </button>
+        <div role="status" aria-live="polite">
+            {error && (
+                <div className="mb-2 flex items-center gap-2 rounded-md border border-warning/50 bg-warning-subtle px-3 py-2 text-[12px] text-warning">
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    <span className="min-w-0 flex-1 font-sans">{error}</span>
+                    <button
+                        type="button"
+                        onClick={onDismiss}
+                        aria-label="Dismiss"
+                        className="shrink-0 rounded p-0.5 opacity-70 transition-opacity hover:opacity-100"
+                    >
+                        <X className="h-3 w-3" aria-hidden />
+                    </button>
+                </div>
+            )}
         </div>
     );
 }

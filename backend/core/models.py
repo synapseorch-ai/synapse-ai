@@ -3,7 +3,9 @@ Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
+
+from core.images import checked_images
 
 
 class ChatRequest(BaseModel):
@@ -22,16 +24,7 @@ class ChatRequest(BaseModel):
     # a caller reaching the API directly was bounded by nothing at all.
     images: list[str] = []
 
-    @field_validator("images")
-    @classmethod
-    def _check_images(cls, value: list[str]) -> list[str]:
-        from core.images import ImageRejected, validate
-        try:
-            return validate(value)
-        except ImageRejected as exc:
-            # The reason is written to be shown to a person, so it travels as
-            # the validation message rather than being logged and replaced.
-            raise ValueError(str(exc)) from None
+    _check_images = checked_images()
 
 class ChatResponse(BaseModel):
     response: str

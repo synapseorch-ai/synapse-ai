@@ -195,3 +195,50 @@ class TestOnlyTheOperatorCanDestroy:
                 if step["id"] in [s.get("next_step_id"), *(s.get("route_map") or {}).values()]
             ]
             assert any(by_id[f["id"]]["type"] == "human" for f in feeders), step["id"]
+
+
+class TestAParseFailureGoesSomewhereSafe:
+    """Every evaluator says which way it falls when the model's reply is junk.
+
+    It used to be "the first key of `route_map`", which is not a property an
+    orchestration has: `definition` is JSONB on Postgres, and JSONB sorts object
+    keys by (length, bytes) rather than keeping insertion order. Five of the
+    builder's seven evaluators fell one way on SQLite and the other on Postgres,
+    and two of those five approved a plan nobody had read.
+    """
+
+    def _evaluators(self):
+        from core.native_builder import bundled_definitions
+        return [s for s in bundled_definitions()["orchestration"]["steps"]
+                if s["type"] == "evaluator"]
+
+    def test_every_evaluator_declares_one(self):
+        missing = [s["id"] for s in self._evaluators() if not s.get("fallback_route")]
+        assert not missing, missing
+
+    def test_each_one_names_a_route_it_actually_has(self):
+        for step in self._evaluators():
+            assert step["fallback_route"] in step["route_map"], step["id"]
+
+    def test_nothing_writes_on_a_parse_failure(self):
+        """The two that matter. `step_approval_route` and `step_manage_route`
+        both listed `approved` first, so on SQLite — the default store — an
+        unparseable reply ran the saver, or the operator with its write tools,
+        without anyone approving anything."""
+        by_id = {s["id"]: s for s in self._evaluators()}
+        assert by_id["step_approval_route"]["fallback_route"] == "revise"
+        assert by_id["step_manage_route"]["fallback_route"] == "revise"
+        assert by_id["step_manage_writes"]["fallback_route"] == "writes"
+
+    def test_it_does_not_depend_on_key_order(self):
+        """What Postgres does to the map, done here: if the fallback survives
+        the keys being re-sorted, it is not reading position."""
+        from core.models_orchestration import StepConfig
+
+        for step in self._evaluators():
+            shuffled = dict(sorted(step["route_map"].items(),
+                                   key=lambda kv: (len(kv[0]), kv[0].encode())))
+            config = StepConfig.model_validate({**step, "route_map": shuffled})
+            labels = list(config.route_map)
+            resolved = config.fallback_route if config.fallback_route in labels else labels[0]
+            assert resolved == step["fallback_route"], step["id"]

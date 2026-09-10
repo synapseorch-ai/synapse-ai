@@ -60,8 +60,8 @@ async function main() {
         console.error(`Could not duplicate the builder (${created.status}). Is the backend running?`);
         process.exit(1);
     }
-    const { orchestration_id: orchestrationId } = await created.json();
-    console.log(`copied the builder → ${orchestrationId}`);
+    const { orchestration_id: orchestrationId, agent_ids: agentIds = [] } = await created.json();
+    console.log(`copied the builder → ${orchestrationId} (+${agentIds.length} agents)`);
 
     const executablePath = process.env.PLAYWRIGHT_CHROMIUM || undefined;
     const browser = await chromium.launch({ executablePath });
@@ -107,9 +107,15 @@ async function main() {
         }
     } finally {
         await browser.close();
-        // Leave the workspace as we found it.
+        // Leave the workspace as we found it. The duplicate is an
+        // orchestration *and* one agent per bundled sub-agent — deleting only
+        // the orchestration left seven orphans behind on every run, and this
+        // script is meant to be re-run on every change to the definition.
         await fetch(`${BASE}/api/orchestrations/${orchestrationId}`, { method: 'DELETE' }).catch(() => {});
-        console.log('removed the copy');
+        for (const id of agentIds) {
+            await fetch(`${BASE}/api/agents/${id}`, { method: 'DELETE' }).catch(() => {});
+        }
+        console.log(`removed the copy and its ${agentIds.length} agents`);
     }
 }
 

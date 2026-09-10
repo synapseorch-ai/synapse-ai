@@ -66,8 +66,17 @@ const COMPONENTS: Components = {
   // The block form is bare: `pre` below owns the surface, the border, the
   // padding and the scroll. Painting both is why fenced blocks had two
   // borders, one inside the other.
-  code: ({ className, children }) => {
-    const isBlock = Boolean(className);
+  //
+  // `node.position` rather than `Boolean(className)`: a fence written without a
+  // language — which is what models produce for shell output, JSON dumps and
+  // stack traces — gets no `language-*` class, so the class test called the
+  // commonest kind of block inline and rendered it as a padded pill inside
+  // `pre`'s own box. Spanning more than one line is what actually makes it a
+  // block. Both maps this replaces had the same bug.
+  code: ({ className, children, node }) => {
+    const position = node?.position;
+    const isBlock = Boolean(className) ||
+      (position ? position.end.line > position.start.line : false);
     return isBlock ? (
       <code className={cn("font-code text-[13px]", className)}>{children}</code>
     ) : (

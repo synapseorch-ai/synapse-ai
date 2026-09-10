@@ -394,16 +394,31 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
         ]
 
     async def test_a_step_that_did_not_ask_is_not_given_them(self, client, builder, fake_llm):
-        """`step_manage_plan` has no `pass_images`, so a manage turn pays for
-        nothing it cannot use."""
+        """The negative half, driven through an *agent* step.
+
+        `pass_images` is only read by the agent executor, so routing this
+        through `step_manage_plan` (an `llm` step) would pass whether the opt-in
+        existed or not. `step_manage_apply` is an agent step without it.
+        """
         fake_llm.script([
             route("manage"),
-            "- delete_schedule — remove the nightly brief",
+            "- create_skill — add a summarising skill",
             route("writes"),
         ])
-        await stream(client, "/api/builder/chat", {
-            "message": "delete the nightly brief", "images": [self.PNG],
+        events = await stream(client, "/api/builder/chat", {
+            "message": "add a summarising skill", "images": [self.PNG],
         })
+        # It pauses at the gate; answer it so the operator actually runs.
+        run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]
+        fake_llm.reset()
+        fake_llm.script([route("approved"), "Created the skill."])
+        after = await stream(client, "/api/builder/resume", {
+            "run_id": run_id, "response": {"feedback": "approve"},
+        })
+
+        # The assertion is worthless unless the agent step actually ran.
+        steps = [e.get("step_name") for e in after if e["type"] == "step_start"]
+        assert "Apply the Change" in steps, steps
         assert not any(c.get("images") for c in fake_llm.calls)
 
     async def test_no_image_bytes_reach_the_browser(self, client, builder, fake_llm):

@@ -112,3 +112,17 @@ class TestTheRequestChecksThemFirst:
         from core.routes.builder import BuilderChatRequest
 
         assert BuilderChatRequest(message="hi", images=[URI]).images == [URI]
+
+
+class TestTheFlagRefusesToBeANoOp:
+    def test_a_non_agent_step_cannot_set_it(self):
+        """Only the agent executor reads `pass_images`. Storing it on an `llm`
+        step would look like it worked and do nothing."""
+        import pytest as _pytest
+        from pydantic import ValidationError
+
+        with _pytest.raises(ValidationError, match="only read by agent steps"):
+            StepConfig(id="s", name="S", type=StepType.LLM, pass_images=True)
+
+    def test_an_agent_step_can(self):
+        assert StepConfig(id="s", name="S", type=StepType.AGENT, pass_images=True).pass_images

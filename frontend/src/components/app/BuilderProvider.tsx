@@ -129,6 +129,8 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         return clientSessionId.current;
     }, []);
     const abortRef = useRef<AbortController | null>(null);
+    //: The pending unmount at the end of the close transition, so `open` can cancel it.
+    const exitTimer = useRef<number | null>(null);
 
     useEffect(() => {
         let cancelled = false;
@@ -160,6 +162,13 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         if (options && 'currentOrchestrationId' in options) {
             currentOrchestrationId.current = options.currentOrchestrationId ?? null;
         }
+        // Cancel a close still in flight. `OrchestrationTab`'s "Build with AI"
+        // stays clickable while the panel is leaving, so reopening inside the
+        // exit window let the stale timer unmount what had just been reopened.
+        if (exitTimer.current !== null) {
+            window.clearTimeout(exitTimer.current);
+            exitTimer.current = null;
+        }
         setIsOpen(true);
         // Next frame, so the card paints once in its closed position before it
         // is told to open. Set both in one tick and there are no two values for
@@ -172,7 +181,10 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     // doing it in the panel would mean setState inside an effect.
     const close = useCallback(() => {
         setEntered(false);
-        window.setTimeout(() => setIsOpen(false), EXIT_MS);
+        exitTimer.current = window.setTimeout(() => {
+            exitTimer.current = null;
+            setIsOpen(false);
+        }, EXIT_MS);
     }, []);
 
     const newConversation = useCallback(() => {
@@ -255,6 +267,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                           body: JSON.stringify({
                               run_id: pending.runId,
                               response: { [pending.field]: text },
+                              images,
                           }),
                       })
                     : await fetch('/api/builder/chat', {

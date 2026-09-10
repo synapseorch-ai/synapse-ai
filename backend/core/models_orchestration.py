@@ -4,7 +4,7 @@ Defines orchestrations (workflow graphs), steps (nodes), and run state.
 """
 from typing import Any
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_HUMAN_TIMEOUT, ORCH_STEP_TIMEOUT
 
@@ -43,6 +43,14 @@ class StepConfig(BaseModel):
     route_descriptions: dict[str, str] = {}
     # Evaluator-specific prompt for the routing decision (separate from agent's prompt_template)
     evaluator_prompt: str | None = None
+    # EVALUATOR -- which route to take when the model's reply does not parse.
+    #
+    # Unset means "the first key of `route_map`", which is only well-defined on
+    # a store that preserves object key order. It is not: `definition` is JSONB
+    # on Postgres, which sorts keys by (length, bytes). Any evaluator whose
+    # fallback matters should name it rather than rely on where a key happens
+    # to sort.
+    fallback_route: str | None = None
     # Per-step model override (especially useful for evaluators)
     model: str | None = None
 
@@ -99,6 +107,20 @@ class StepConfig(BaseModel):
     # injected into the prompt as text, and a base64 data URI there would blow
     # the context window and the bill. They ride on the engine instead.
     pass_images: bool = False
+
+    @model_validator(mode="after")
+    def _images_only_where_they_are_read(self):
+        """`pass_images` is read by the agent executor and nowhere else.
+
+        Accepting it on an `llm` or `tool` step would store a flag that does
+        nothing, with no warning — the worst kind of setting, because it looks
+        like it worked. Say so at the point it is set instead.
+        """
+        if self.pass_images and self.type != StepType.AGENT:
+            raise ValueError(
+                f"pass_images is only read by agent steps; step '{self.id}' is '{self.type.value}'."
+            )
+        return self
 
     input_keys: list[str] = []    # Keys to pull from shared state as context
     output_key: str | None = None  # Key to write result into shared state

@@ -86,6 +86,15 @@ class OrchestrationEngine:
         #: The tenant's `{{ global.* }}` values, loaded once per run/resume
         #: (core/variables.py); prompt templates render against it.
         self.global_variables: dict = {}
+        #: Attachments for this turn, given to steps that set `pass_images`.
+        #: Declared here rather than set ad hoc by the caller so `resume` and
+        #: the nested-run path have something real to carry, and so a step
+        #: reading it never depends on whether a caller happened to set it.
+        #:
+        #: NOT shared state, deliberately: that is echoed to the browser twice
+        #: per run, checkpointed at every step boundary and fed to the memory
+        #: summariser. Fine for a model name, not for 20 MB of image.
+        self.images: list[str] = []
         #: Agents (and their tool sets) resolved for this run, keyed by agent id
         #: — see core/orchestration/resolved.py. Nothing in it changes while a
         #: run is in flight, so it is never invalidated, only discarded with
@@ -550,9 +559,15 @@ class OrchestrationEngine:
 
     @classmethod
     async def resume(
-        cls, run_id: str, human_response: dict, server_module
+        cls, run_id: str, human_response: dict, server_module, images: list[str] | None = None
     ) -> AsyncGenerator[dict, None]:
-        """Resume a paused orchestration after human input."""
+        """Resume a paused orchestration after human input.
+
+        `images` are the attachments sent *with the answer*, not the ones the
+        run started with — those are not persisted anywhere, by design, so a
+        step re-entered after a pause sees only what the person attached to
+        their reply.
+        """
         from .state import SharedState as SS
 
         _log.debug(f"[engine.resume] ▶ restoring state from JSON checkpoint for run_id={run_id}")
@@ -572,6 +587,7 @@ class OrchestrationEngine:
         apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
         engine = cls(orch, server_module)
         engine.global_variables = await engine._load_global_variables()
+        engine.images = list(images or [])
         _log.debug(f"[engine.resume] 🗺  step_map keys: {list(engine.step_map.keys())}")
 
         # Create logger — appends to existing log file if present
