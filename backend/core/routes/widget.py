@@ -176,6 +176,24 @@ async def open_session(body: SessionRequest, request: Request):
     }
 
 
+@router.get("/api/widget/{public_key}/csp")
+async def widget_csp(public_key: str):
+    """The `frame-ancestors` directive for this widget's embed page.
+
+    Its own endpoint because a CSP header has to be set before the page renders,
+    and in Next that means middleware — which cannot see what the page later
+    learns. One collection read, and the answer is the same for every visitor, so
+    it caches at the edge of the request rather than per person.
+
+    An unknown key gets `'none'`, identical to a widget with an empty allow-list.
+    The browser's behaviour is then the same in both cases — nothing renders —
+    and the page itself says which it was, to the one person who can act on it.
+    """
+    widget = await _store.get_by_public_key(public_key)
+    allowed = (widget or {}).get("allowed_origins") if (widget or {}).get("enabled", True) else []
+    return {"frame_ancestors": _origins.frame_ancestors(allowed)}
+
+
 @router.post("/api/widget/session/refresh")
 async def refresh_session(authorization: str | None = Header(default=None)):
     """A fresh token for a conversation that outlived the first one."""

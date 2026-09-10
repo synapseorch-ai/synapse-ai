@@ -31,6 +31,18 @@ const AUTH_BYPASS_PREFIXES = [
     '/api/auth/',
     '/api/v1/',   // external versioned API — Bearer API-key auth, not the login gate
     '/api/v2/',   // (kept in sync with InternalTokenMiddleware's /api/v\d+ skip)
+    // The embeddable widget. Both of these are reached by a visitor on somebody
+    // else's website who has no account here and never will, so the login gate
+    // is not a check they could ever pass — it would redirect a customer's
+    // paying visitors to our sign-in form.
+    //
+    // Bypassing it is not bypassing authentication, for the same reason
+    // '/api/v1/' above is not: these routes carry their own credential. A widget
+    // conversation is admitted by the parent origin matching the widget's
+    // allow-list, and every call after that by a signed visitor token the
+    // backend mints and verifies. See core/routes/widget.py.
+    '/embed/',
+    '/api/widget/',
     '/auth/',
     '/_next/',
     '/favicon',
@@ -52,6 +64,38 @@ async function verifyJwt(token: string, secret: string): Promise<boolean> {
     }
 }
 
+/**
+ * `frame-ancestors` for a widget's embed page.
+ *
+ * The browser-enforced half of the origin check: a page carrying this simply
+ * will not paint inside a site that is not listed, whatever the embedding page
+ * tries. It has to be a real response header — the spec ignores
+ * `frame-ancestors` in a `<meta http-equiv>` tag — and a Server Component cannot
+ * set one, so it is fetched here, before the page renders.
+ *
+ * Fails **closed**. The alternative to "nobody may embed this" is "anybody may",
+ * which is not a thing to fall back to when the backend is slow.
+ */
+async function frameAncestors(publicKey: string, internalToken: string): Promise<string> {
+    const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
+    try {
+        const res = await fetch(
+            `${backendUrl}/api/widget/${encodeURIComponent(publicKey)}/csp`,
+            {
+                headers: internalToken ? { 'X-Synapse-Internal': internalToken } : {},
+                signal: AbortSignal.timeout(2000),
+            },
+        );
+        if (res.ok) {
+            const body = await res.json();
+            if (typeof body.frame_ancestors === 'string') return body.frame_ancestors;
+        }
+    } catch {
+        // fall through to 'none'
+    }
+    return "frame-ancestors 'none'";
+}
+
 export async function proxy(request: NextRequest) {
     const { pathname } = request.nextUrl;
     const internalToken = process.env.SYNAPSE_INTERNAL_TOKEN || '';
@@ -60,6 +104,23 @@ export async function proxy(request: NextRequest) {
     const requestHeaders = new Headers(request.headers);
     if (internalToken) {
         requestHeaders.set('X-Synapse-Internal', internalToken);
+    }
+
+    // The embed page is the one route that answers with a CSP of its own,
+    // computed per widget. Handled before the bypass returns, so the header is
+    // set on the response the visitor actually receives.
+    const embedded = pathname.match(/^\/embed\/([^/]+)\/?$/);
+    if (embedded) {
+        const directive = await frameAncestors(decodeURIComponent(embedded[1]), internalToken);
+        const res = NextResponse.next({ request: { headers: requestHeaders } });
+        res.headers.set('Content-Security-Policy', directive);
+        // Belt to the CSP's braces for anything old enough to honour one and not
+        // the other. It can only say "nobody", so it is set only when that is
+        // the answer.
+        if (directive === "frame-ancestors 'none'") {
+            res.headers.set('X-Frame-Options', 'DENY');
+        }
+        return res;
     }
 
     // Bypass auth check for login page, auth API, external API, and static assets

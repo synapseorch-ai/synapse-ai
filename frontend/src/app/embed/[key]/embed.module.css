@@ -1,0 +1,147 @@
+/*
+ * Self-contained on purpose.
+ *
+ * This page renders inside an iframe on somebody else's website, so it inherits
+ * none of the app's Tailwind layer and needs none of it. A module rather than
+ * globals because the embed route must never pull the workspace stylesheet in —
+ * that is a large download to put in front of every visitor of every customer
+ * site, for a surface that is five elements.
+ */
+
+.shell {
+  --accent: #4f46e5;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #fff;
+  color: #18181b;
+  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.title { font-size: 14px; }
+
+.close {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 6px;
+}
+.close:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+.log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.greeting { margin: 0 0 4px; color: #52525b; }
+
+.bubble {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 12px;
+  max-width: 85%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fromUser { align-self: flex-end; background: var(--accent); color: #fff; }
+.fromAgent { align-self: flex-start; background: #f4f4f5; }
+.failed { background: #fef2f2; color: #991b1b; }
+
+.status { margin: 0; color: #71717a; font-size: 13px; }
+
+.retry {
+  align-self: flex-start;
+  border: 1px solid #d4d4d8;
+  background: #fff;
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid #e4e4e7;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #d4d4d8;
+  border-radius: 9px;
+  padding: 9px 11px;
+  font: inherit;
+  color: inherit;
+  background: #fff;
+}
+.input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.send, .stop {
+  border: 0;
+  border-radius: 9px;
+  padding: 9px 14px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+}
+.stop { background: #71717a; }
+.send:disabled { opacity: 0.45; cursor: default; }
+
+/* The refusal an unlisted origin gets. Rendered rather than 404'd: the reader is
+   almost always the customer who forgot to list the site they just pasted the
+   snippet onto, and this is the only place they will see why. */
+.refusal {
+  height: 100vh;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  background: #fff;
+  color: #52525b;
+  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.refusalTitle { margin: 0; font-weight: 600; color: #18181b; }
+.refusalBody { margin: 0; max-width: 34ch; }
+
+@media (prefers-color-scheme: dark) {
+  .shell { background: #18181b; color: #f4f4f5; }
+  .fromAgent { background: #27272a; }
+  .failed { background: #450a0a; color: #fecaca; }
+  .greeting, .status { color: #a1a1aa; }
+  .composer { border-top-color: #3f3f46; }
+  .input { background: #27272a; border-color: #3f3f46; }
+  .retry { background: #27272a; border-color: #3f3f46; color: inherit; }
+  .refusal { background: #18181b; color: #a1a1aa; }
+  .refusalTitle { color: #f4f4f5; }
+}
