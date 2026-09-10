@@ -148,7 +148,14 @@ const LOADER = String.raw`
     open = next;
     frame.style.display = open ? 'block' : 'none';
     button.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) frame.contentWindow && frame.contentWindow.postMessage({ type: 'synapse:opened' }, origin);
+    // Wrapped: when the frame was blocked its window has an opaque origin, and
+    // a targeted postMessage into it logs a warning that reads like a bug sitting
+    // right next to the message explaining the real problem.
+    if (open) {
+      try {
+        frame.contentWindow && frame.contentWindow.postMessage({ type: 'synapse:opened' }, origin);
+      } catch (e) { /* a blocked frame has nothing listening */ }
+    }
   }
   button.addEventListener('click', function () { setOpen(!open); });
 
