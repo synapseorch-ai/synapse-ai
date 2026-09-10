@@ -24,6 +24,17 @@ def tool_call(tool: str, **args) -> str:
     return json.dumps({"tool": tool, "arguments": args})
 
 
+def route(label: str) -> str:
+    """An evaluator's routing decision.
+
+    Evaluators only accept a `route_<label>` tool call — a bare label string
+    does not parse, and the step then falls back to the FIRST entry in its
+    `route_map`. So a test that returns a bare "create" is exercising the
+    fallback, not the routing.
+    """
+    return tool_call(f"route_{label}", reasoning="test")
+
+
 async def stream(client, path: str, body: dict) -> list[dict]:
     """POST an SSE endpoint and collect its decoded events."""
     events: list[dict] = []
@@ -206,19 +217,21 @@ class TestSeeHowImBuilt:
         legend = (await client.get("/api/builder/legend")).json()
 
         assert legend["name"] == "Synapse AI Builder"
-        assert legend["step_count"] == 19
+        assert legend["step_count"] == 21
         assert legend["entry_step"]["type"] == "evaluator"
-        assert {r["label"] for r in legend["routes"]} == {"create", "update", "manage"}
-        assert len(legend["human_gates"]) == 3
+        assert {r["label"] for r in legend["routes"]} == {"create", "update", "manage", "answer"}
         assert {a["role"] for a in legend["agents"]} == {
-            "analyst", "agent_creator", "saver_create", "saver_update", "operator",
+            "analyst", "agent_creator", "saver_create", "saver_update", "operator", "reporter",
         }
+        # The answer path adds a step and a sub-agent but no gate: a question
+        # has nothing to approve.
+        assert len(legend["human_gates"]) == 3
         assert "evaluator" in legend["step_types"]
 
     async def test_duplicating_gives_the_workspace_an_editable_copy(self, client, builder):
         result = (await client.post("/api/builder/duplicate")).json()
         assert result["status"] == "created"
-        assert len(result["agent_ids"]) == 6
+        assert len(result["agent_ids"]) == 7
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])
@@ -251,3 +264,106 @@ class TestSeeHowImBuilt:
 
     async def test_the_seed_version_is_reported_for_the_copy_to_be_compared_against(self):
         assert len(bundle_version()) == 16
+
+
+class TestAQuestionGetsAnAnswer:
+    """The `answer` fast path.
+
+    "How many runs failed this week?" used to go down the `manage` branch, which
+    drafts a plan and asks a human to approve it before anything runs — an
+    approval step for a lookup. It now routes straight to a read-only agent
+    whose reply *is* the run's summary.
+    """
+
+    async def test_a_question_skips_the_plan_and_the_gate(self, client, builder, fake_llm):
+        fake_llm.script([
+            route("answer"),               # step_intent
+            "You have three agents.",      # step_answer — the reporter's reply
+        ])
+        events = await stream(client, "/api/builder/chat", {"message": "what agents do I have?"})
+
+        steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
+        assert "Answer the Question" in steps
+        # No plan, no approval, no operator.
+        assert "Approve the Change" not in steps
+        assert "Apply the Change" not in steps
+        assert "Plan the Change" not in steps
+        assert not [e for e in events if e["type"] == "human_input_required"]
+
+    async def test_the_answer_is_the_summary_the_panel_renders(self, client, builder, fake_llm):
+        """`step_answer` writes `summary` and goes straight to the end, bypassing
+        `step_summarize` — the panel renders `final_state.summary`, so the
+        reporter's own words reach the user rather than a paraphrase of them."""
+        fake_llm.script([
+            route("answer"),
+            "Four of thirty-seven runs failed in the last 7 days.",
+        ])
+        events = await stream(client, "/api/builder/chat", {"message": "how many runs failed?"})
+
+        done = next(e for e in events if e["type"] == "orchestration_complete")
+        assert "Four of thirty-seven" in done["final_state"]["summary"]
+
+        steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
+        assert "Summarise Result" not in steps
+
+    async def test_the_reporter_cannot_write(self, builder):
+        """The whole safety argument for skipping the gate: the destination has
+        no write tools, so a misrouted request degrades to being answered rather
+        than being done without approval."""
+        from core.native_builder import bundled_definitions
+
+        reporter = next(
+            a for a in bundled_definitions()["agents"] if a["system_role"] == "reporter"
+        )
+        assert reporter["skip_default_tools"] is True
+        assert all(
+            not t.startswith(("create_", "update_", "delete_", "attach_", "import_", "set_"))
+            for t in reporter["tools"]
+        ), reporter["tools"]
+        # Variable *values* are previews, and an agent that exists to quote what
+        # it read is the wrong holder of them.
+        assert "list_variables" not in reporter["tools"]
+
+
+class TestAReadOnlyPlanHasNothingToApprove:
+    async def test_it_skips_the_gate_and_answers(self, client, builder, fake_llm):
+        fake_llm.script([
+            route("manage"),                           # step_intent
+            "- list_recent_runs — see what failed",    # step_manage_plan
+            route("read_only"),                        # step_manage_writes
+            "Nothing failed yesterday.",               # step_answer
+        ])
+        events = await stream(client, "/api/builder/chat", {"message": "anything fail yesterday?"})
+
+        steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
+        assert "Plan the Change" in steps
+        assert "Answer the Question" in steps
+        assert "Approve the Change" not in steps
+        assert "Apply the Change" not in steps
+        assert not [e for e in events if e["type"] == "human_input_required"]
+
+    async def test_a_writing_plan_still_stops_at_the_gate(self, client, builder, fake_llm):
+        fake_llm.script([
+            route("manage"),                                 # step_intent
+            "- delete_schedule — remove the nightly brief",  # step_manage_plan
+            route("writes"),                                 # step_manage_writes
+        ])
+        events = await stream(client, "/api/builder/chat", {"message": "delete the nightly brief"})
+
+        asked = next(e for e in events if e["type"] == "human_input_required")
+        assert asked["fields"][0]["name"] == "feedback"
+        steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
+        assert "Apply the Change" not in steps
+
+    async def test_an_unreadable_decision_falls_back_to_the_gate(self, client, builder, fake_llm):
+        """An evaluator that cannot parse its own reply falls back to the first
+        label in `route_map`. `writes` is first for exactly this reason: the
+        accident has to be the one that asks a human."""
+        fake_llm.script([
+            route("manage"),
+            "- delete_schedule — remove the nightly brief",
+            "not a route at all",       # step_manage_writes, unparseable
+        ])
+        events = await stream(client, "/api/builder/chat", {"message": "delete something"})
+
+        assert [e for e in events if e["type"] == "human_input_required"]

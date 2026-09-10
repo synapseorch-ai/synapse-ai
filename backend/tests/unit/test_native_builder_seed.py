@@ -31,7 +31,7 @@ class TestTheBundle:
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
             "agent_creator", "analyst", "operator", "orchestrator",
-            "saver_create", "saver_update",
+            "reporter", "saver_create", "saver_update",
         ]
 
     def test_the_version_is_stable_and_moves_with_the_content(self):
@@ -71,7 +71,7 @@ class TestSeeding:
     async def test_it_installs_the_builder(self):
         result = await seed_native_builder()
         assert result["orchestration"] == "added"
-        assert len(result["agents_added"]) == 6
+        assert len(result["agents_added"]) == 7
         assert result["version"] == bundle_version()
 
         from core.store.resources import get_orchestration

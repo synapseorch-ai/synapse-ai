@@ -29,7 +29,8 @@
         "manage_plan": {"type": "str", "default": "", "description": "The exact changes the operator will make, written for a human to approve"},
         "manage_review": {"type": "str", "default": "", "description": "The user's approval of, or changes to, the management plan"},
         "manage_decision": {"type": "str", "default": "", "description": "Router result: approved or revise"},
-        "manage_result": {"type": "str", "default": "", "description": "What the operator actually did"}
+        "manage_result": {"type": "str", "default": "", "description": "What the operator actually did"},
+        "writes_decision": {"type": "str", "default": "", "description": "Router result: writes (needs approval) or read_only (skips the gate)"}
     },
     "max_total_turns": 150,
     "timeout_minutes": 45,
@@ -44,14 +45,16 @@
             "route_map": {
                 "create": "step_understand",
                 "update": "step_fetch_existing",
-                "manage": "step_manage_plan"
+                "manage": "step_manage_plan",
+                "answer": "step_answer"
             },
             "route_descriptions": {
                 "create": "Building a NEW orchestration. The default for any request to build, design or set up a workflow, even when current_orchestration_id is set (viewing an orchestration is not editing it).",
                 "update": "Changing the orchestration the user is looking at. Pick this ONLY when BOTH conditions hold: (a) current_orchestration_id is a non-empty string, AND (b) the user's latest message explicitly uses words like 'edit', 'update', 'modify', 'change', 'add to', 'remove from', or otherwise clearly refers to mutating that existing orchestration.",
-                "manage": "Everything else about the workspace: create or change or delete a TOOL, a SKILL, a SCHEDULE or an AGENT on its own; attach skills to an agent; import an API spec; delete an orchestration; or answer a question about what has been running. Anything that is not designing a workflow's steps."
+                "manage": "CHANGING something in the workspace that is not an orchestration's steps: create, edit or delete a TOOL, a SKILL, a SCHEDULE or an AGENT on its own; attach skills to an agent; import an API spec; delete an orchestration. Something ends up different afterwards.",
+                "answer": "READING something and reporting back. A question about what exists, how it is configured, or what has been running — 'what agents do I have', 'which runs failed this week', 'what does the nightly schedule do', 'is that tool still there'. Nothing ends up different afterwards."
             },
-            "evaluator_prompt": "Decide what the user is asking for.\n\n- `create` — they want a new orchestration built. This is the default for any 'build me…', 'set up a workflow that…', 'I need something that…'.\n- `update` — they want the orchestration they are currently viewing changed. Requires `current_orchestration_id` to be non-empty AND an explicit edit verb referring to it ('edit', 'add a step', 'remove the X step', 'make it also do Y').\n- `manage` — anything else in the workspace: a tool, a skill, a schedule, an agent on its own, importing an API spec, deleting something, or a question about recent runs. If the request names a tool / skill / schedule / agent / API and does NOT describe a multi-step workflow, pick `manage`.\n\nReturn exactly one of: create, update, manage.",
+            "evaluator_prompt": "Decide what the user is asking for.\n\n- `create` — they want a new orchestration built. This is the default for any 'build me…', 'set up a workflow that…', 'I need something that…'.\n- `update` — they want the orchestration they are currently viewing changed. Requires `current_orchestration_id` to be non-empty AND an explicit edit verb referring to it ('edit', 'add a step', 'remove the X step', 'make it also do Y').\n- `manage` — they want something in the workspace CHANGED that is not a workflow's steps: a tool, a skill, a schedule, an agent, an API import, a deletion. Something is different afterwards.\n- `answer` — they asked a QUESTION and want to be told. What exists, how something is configured, what has run, what failed. Nothing is different afterwards.\n\nThe line between `manage` and `answer` is whether the workspace changes. 'Delete the nightly schedule' is `manage`; 'what does the nightly schedule do' is `answer`. Naming a tool or an agent does not by itself make it `manage` — asking about one is still a question.\n\nReturn exactly one of: create, update, manage, answer.",
             "model": null,
             "parallel_branches": [],
             "merge_strategy": "list",
@@ -492,9 +495,47 @@
             "max_turns": 5,
             "timeout_seconds": 600,
             "allowed_tools": null,
-            "next_step_id": "step_manage_review",
+            "next_step_id": "step_manage_writes",
             "max_iterations": 5,
             "position_x": 1200,
+            "position_y": 400
+        },
+        {
+            "id": "step_manage_writes",
+            "name": "Route: Changes or Just a Look",
+            "type": "evaluator",
+            "agent_id": null,
+            "prompt_template": null,
+            "route_map": {
+                "writes": "step_manage_review",
+                "read_only": "step_answer"
+            },
+            "route_descriptions": {
+                "writes": "The plan creates, changes, attaches, enables or deletes something — any line naming a tool that writes. This is the answer whenever there is any doubt.",
+                "read_only": "The plan only reads: every line is a list_* or get_* call, and the workspace is identical afterwards. A question about what exists or what has been running."
+            },
+            "evaluator_prompt": "Does `manage_plan` change anything in the workspace?\n\n- `writes` — it names any of: create_agent, update_agent, attach_skills, create_http_tool, import_openapi, create_skill, update_skill, create_schedule, set_schedule_enabled, delete_agent, delete_orchestration, delete_custom_tool, delete_schedule. Also `writes` if any line begins `⚠️ DELETES:`.\n- `read_only` — every line is a lookup (list_* / get_*) and the workspace is identical afterwards.\n\nA read-only plan has nothing for a human to approve, so it skips the approval step. Skipping that step is the ONLY thing this decision does — and it cannot cause a write either way, because the read-only path has no write tools. Still: if you are unsure, or `manage_plan` is empty or unreadable, return `writes` and let a person look at it.\n\nReturn exactly one of: writes, read_only.",
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "input_keys": [
+                "manage_plan"
+            ],
+            "output_key": "writes_decision",
+            "forced_tool": null,
+            "max_turns": 3,
+            "timeout_seconds": 120,
+            "allowed_tools": null,
+            "next_step_id": "step_manage_review",
+            "max_iterations": 5,
+            "position_x": 1350,
             "position_y": 400
         },
         {
@@ -572,6 +613,41 @@
             "max_iterations": 3,
             "position_x": 1800,
             "position_y": 400
+        },
+        {
+            "id": "step_answer",
+            "name": "Answer the Question",
+            "type": "agent",
+            "agent_id": "agent_native_builder_reporter",
+            "prompt_template": "The user asked a question about this workspace. Find out and answer it, using your read tools.\n\nWhat they asked:\n{state.user_message}\n\nConversation so far:\n{state.chat_history}\n\nWorkspace profile (what this organisation does):\n{state.org_profile}\n\nA plan, if one was drafted before it turned out to change nothing (empty otherwise) — carry out its read-only steps rather than starting over:\n{state.manage_plan}",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "input_keys": [
+                "user_message",
+                "chat_history",
+                "org_profile",
+                "manage_plan"
+            ],
+            "output_key": "summary",
+            "forced_tool": null,
+            "max_turns": 12,
+            "timeout_seconds": 600,
+            "allowed_tools": null,
+            "next_step_id": "step_end",
+            "max_iterations": 3,
+            "position_x": 1500,
+            "position_y": 750
         },
         {
             "id": "step_manage_apply",
