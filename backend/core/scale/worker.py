@@ -507,10 +507,19 @@ async def run_agent_chat_job(
     images: list | None = None,
     webhook_url: str | None = None,
     webhook_secret: str | None = None,
+    resume_state: dict | None = None,
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
 
     No `tenant_id` parameter — see `run_orchestration_job`.
+
+    `resume_state` picks a turn up from where a tool-approval pause left it,
+    and is the queued twin of what `core/routes/chat.py` does in-process. Until
+    it existed, a gated call on a worker was a dead end that the person could
+    not even see was a dead end: the loop yielded its question and returned, the
+    job appended an empty assistant message and marked the conversation
+    `completed`. So the answer arrived as silence, and the transcript recorded
+    that the agent had replied with nothing.
     """
     global _active_jobs
     _active_jobs += 1
@@ -573,22 +582,47 @@ async def run_agent_chat_job(
             agent_id=agent_id,
             images=images or [],
         )
+        # The last turn-boundary snapshot, and whether this turn stopped to ask
+        # a person something. Both are read after `_consume` returns, which is
+        # why they are declared out here.
+        latest_progress: dict | None = None
+        paused_on: dict | None = None
+
         async def _consume():
             """Drive the loop. Separated so the cancel watcher has a task to
             cancel that is not the whole job."""
-            nonlocal response_text, total_cost
-            async for event in run_react_loop(chat_request, server_module):
+            nonlocal response_text, total_cost, latest_progress, paused_on
+            async for event in run_react_loop(
+                chat_request, server_module,
+                progress_events=True, resume_state=resume_state,
+            ):
+                etype = event.get("type")
+
+                # Engine state, not an event. It is what a resume is rebuilt
+                # from, and forwarding it would put a whole turn's context on
+                # a Redis stream the browser reads.
+                if etype == "_step_progress":
+                    latest_progress = {k: v for k, v in event.items() if k != "type"}
+                    continue
+
                 await publisher.publish(event)
+
                 # Capture the final response text and cost
-                if event.get("type") in ("response", "final"):
+                if etype in ("response", "final"):
                     response_text = event.get("response", response_text)
-                elif event.get("type") == "tool_execution":
+                elif etype == "tool_execution":
                     tool_calls_summary.append({
                         "tool": event.get("tool_name"),
                         "args": event.get("tool_args"),
                     })
-                elif event.get("type") == "done":
+                elif etype == "done":
                     total_cost = event.get("total_cost_usd", 0.0)
+                elif etype == "human_input_required" and event.get("kind") == "tool_approval":
+                    # The loop has already returned by the time we see this —
+                    # it yields the question and stops. Remember it; the parking
+                    # itself happens below, outside the task the cancel watcher
+                    # may be about to cancel.
+                    paused_on = event
 
         # A chat turn can now be stopped, the same way a run can.
         #
@@ -608,6 +642,28 @@ async def run_agent_chat_job(
             # — the same rule the `except` below already follows.
             await publisher.publish({"type": "cancelled", "message": "Stopped."})
         await publisher.publish_done()
+
+        # A turn that stopped to ask permission is not a turn that finished.
+        #
+        # Before this, it fell through to the append below and was written as
+        # `completed` with an empty assistant message — so the conversation
+        # recorded an answer nobody gave, and the next turn read that silence
+        # as context. Park the call instead and leave the history alone: the
+        # user's question is still unanswered, and `resume_state` is how it
+        # gets answered.
+        #
+        # Not inside `_consume`: that task is the one the cancel watcher
+        # cancels, and a write racing a cancellation is how you get a pending
+        # approval for a turn that no longer exists.
+        if paused_on is not None and not cancelled:
+            from core.chat_approval import parked_payload
+            from core.store import sessions as _sessions
+            await _sessions.set_pending_approval(
+                session_id, agent_id or "default",
+                parked_payload(paused_on, message=message, progress=latest_progress),
+            )
+            await _upsert_chat_session(session_factory, session_id, agent_id, "paused", history)
+            return {"status": "paused", "session_id": session_id}
 
         # Append to message history and persist.
         #

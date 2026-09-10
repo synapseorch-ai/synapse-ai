@@ -231,20 +231,16 @@ async def _event_stream(request, _server, resume_state: dict | None = None):
                 # the call and the snapshot so `/chat/{id}/approve` can pick
                 # the turn up where it stopped.
                 if event.get("kind") == "tool_approval":
+                    from core.chat_approval import parked_payload
                     from core.store import sessions as _sessions
                     await _sessions.set_pending_approval(
                         getattr(request, "session_id", "") or "",
                         getattr(request, "agent_id", None) or "default",
-                        {
-                            "tool_name": event.get("tool_name"),
-                            "tool_args": event.get("tool_args") or {},
-                            "approval_id": event.get("approval_id"),
-                            "category": event.get("category"),
-                            # The question that started this turn: a resume
-                            # rebuilds the conversation around it.
-                            "message": getattr(request, "message", "") or "",
-                            "progress": latest_progress or {},
-                        },
+                        parked_payload(
+                            event,
+                            message=getattr(request, "message", "") or "",
+                            progress=latest_progress,
+                        ),
                     )
                 yield f"data: {json.dumps(event, default=str)}\n\n"
                 # Send done so the loading spinner stops — user must submit the form
@@ -350,25 +346,8 @@ async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
     # row still set would re-open a question the person has already answered.
     await _sessions.set_pending_approval(session_id, agent_key, None)
 
-    approval_id = pending.get("approval_id")
-    bucket = "approved_calls" if decision.approve else "denied_calls"
-    progress = dict(pending.get("progress") or {})
-    resume_state = {
-        **progress,
-        bucket: sorted(set(progress.get(bucket) or []) | {approval_id}),
-        "pending_call": {
-            "approval_id": approval_id,
-            "tool": pending.get("tool_name"),
-            "arguments": pending.get("tool_args") or {},
-            "approved": decision.approve,
-            "reason": decision.reason,
-        },
-    }
-    if not decision.approve and decision.reason:
-        resume_state["denied_reasons"] = {
-            **(progress.get("denied_reasons") or {}),
-            approval_id: decision.reason,
-        }
+    from core.chat_approval import resume_state_for
+    resume_state = resume_state_for(pending, approve=decision.approve, reason=decision.reason)
 
     resumed = ChatRequest(
         message=pending.get("message") or "",

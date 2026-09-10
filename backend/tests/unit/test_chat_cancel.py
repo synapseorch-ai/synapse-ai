@@ -90,7 +90,7 @@ def chat_job(monkeypatch):
 def _loop_that(events, hang_forever=False):
     """A fake `run_react_loop` yielding `events`, then optionally never ending
     — which is what a turn stuck inside one long provider call looks like."""
-    async def fake_loop(request, server_module, should_stop=None):
+    async def fake_loop(request, server_module, should_stop=None, **_kw):
         for ev in events:
             yield ev
             await asyncio.sleep(0)
@@ -202,7 +202,7 @@ class TestAFailedTurnKeepsItsConversation:
         """B1. This passed `[]`, and `messages` is in the update list — so a
         failure did not merely mark the row, it emptied it. The row was
         described in the code as "the durable record"; it was the opposite."""
-        async def exploding_loop(request, server_module, should_stop=None):
+        async def exploding_loop(request, server_module, should_stop=None, **_kw):
             yield {"type": "status", "message": "working"}
             raise RuntimeError("the provider fell over")
 
