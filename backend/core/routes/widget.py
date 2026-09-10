@@ -349,21 +349,30 @@ async def _refuse_a_gated_agent(agent_id: str) -> None:
 
     gating = _store.gating_categories(agent, load_settings())
     if gating:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This agent asks a person before it runs tools that "
-                f"{', '.join(_gating_reason(c) for c in gating)}. A widget visitor is not "
-                "a member of this workspace and cannot answer that, so it cannot be "
-                "published. Change the agent's tool policy, or publish a different agent."
-            ),
-        )
+        raise HTTPException(status_code=409, detail=_gated_refusal(gating))
 
 
-def _gating_reason(category: str) -> str:
+def _gated_refusal(categories: list[str]) -> str:
+    """The sentence an owner reads when their agent cannot be published.
+
+    `explain()` returns independent clauses that each begin with "it" — "it
+    reaches systems outside this workspace" — so they are joined as clauses and
+    introduced with a colon. Splicing them after "tools that" produced "tools
+    that it reaches systems outside this workspace", which is what shipped to a
+    screenshot before anybody read it aloud.
+    """
     from core.tool_policy import explain
 
-    return explain(category)
+    reasons = [explain(c) for c in categories]
+    if len(reasons) > 1:
+        joined = "; ".join(reasons[:-1]) + "; and " + reasons[-1]
+    else:
+        joined = reasons[0]
+    return (
+        f"This agent's tool policy stops and asks a person before some calls: {joined}. "
+        "A widget visitor is not a member of this workspace and cannot answer that, so it "
+        "cannot be published. Change the agent's tool policy, or publish a different agent."
+    )
 
 
 @router.get("/api/widgets")
