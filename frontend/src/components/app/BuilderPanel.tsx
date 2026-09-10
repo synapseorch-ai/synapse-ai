@@ -190,7 +190,7 @@ export function BuilderPanel() {
             >
                 <header className="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
                     <div className="flex items-center gap-2">
-                        <Mark size={16} className="text-accent" aria-hidden />
+                        <Mark size={20} compact={false} className="text-accent" aria-hidden />
                         <span className="text-sm font-semibold text-text">AI Builder</span>
                     </div>
                     <div className="flex items-center gap-1">

@@ -138,8 +138,13 @@ export function AppRail({
             )}>
                 {/* The mark is the brand; the name reads beside it while there is
                     room. Collapsed there is 24px of content, and the bell —
-                    the one thing here that changes on its own — takes it. */}
-                <Mark size={20} className={cn('shrink-0 text-accent', collapsed ? 'hidden' : 'hidden md:block')} />
+                    the one thing here that changes on its own — takes it.
+
+                    `compact={false}` because 20 is exactly `COMPACT_BELOW`: at
+                    this size the full mark reads, but one digit off and it
+                    would silently become the reduced two-layer form. Say which
+                    mark this is rather than letting the size decide. */}
+                <Mark size={20} compact={false} className={cn('shrink-0 text-accent', collapsed ? 'hidden' : 'hidden md:block')} />
                 <span className={cn(
                     'text-sm font-semibold tracking-tight text-text',
                     collapsed ? 'hidden' : 'hidden md:inline',

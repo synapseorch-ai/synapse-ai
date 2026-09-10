@@ -29,7 +29,7 @@ export function BuilderLauncher() {
                     focusRing,
                 )}
             >
-                <Mark size={18} aria-hidden />
+                <Mark size={22} compact={false} aria-hidden />
                 {streaming && (
                     <span
                         className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-accent"
