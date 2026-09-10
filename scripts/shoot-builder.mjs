@@ -71,13 +71,22 @@ async function main() {
                 viewport: { width: WIDTH, height: HEIGHT },
                 deviceScaleFactor: 2,
             });
-            // The app keys light mode off `synapseTheme` in localStorage.
+            // The app keys light mode off `synapseTheme` in localStorage. The
+            // step palette is collapsed the same way: expanded it covers the
+            // left third of the canvas, which is where the entry router sits.
             await context.addInitScript(
-                (value) => window.localStorage.setItem('synapseTheme', value),
+                (value) => {
+                    window.localStorage.setItem('synapseTheme', value);
+                    window.localStorage.setItem('orch-palette-collapsed', '1');
+                },
                 theme,
             );
             const page = await context.newPage();
-            await page.goto(`${BASE}/orchestrations?id=${orchestrationId}`, { waitUntil: 'networkidle' });
+            // Not `networkidle`: the app holds a notifications stream open on
+            // every screen, so the network is never idle and this waited out
+            // its whole timeout. The two waits below are the real signal
+            // anyway — they wait for the canvas rather than for the socket.
+            await page.goto(`${BASE}/orchestrations?id=${orchestrationId}`, { waitUntil: 'domcontentloaded' });
 
             // The canvas lays out asynchronously; wait for the nodes, then for
             // the layout to settle rather than for a fixed number of seconds.

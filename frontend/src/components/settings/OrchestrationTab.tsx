@@ -83,7 +83,7 @@ const EMPTY_ORCHESTRATION: Orchestration = {
     trigger: 'manual',
 };
 
-export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {}) {
+export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId?: string; initialOrchId?: string } = {}) {
     // --- Orchestration list ---
     const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
     const [orchQuery, setOrchQuery] = useState('');
@@ -1206,6 +1206,19 @@ export function OrchestrationTab({ initialRunId }: { initialRunId?: string } = {
 
     // Keep a ref mirror of runId so async handlers read the live value.
     useEffect(() => { currentRunIdRef.current = runId; }, [runId]);
+
+    // Deep link (?id=<orchestration_id>): open it on the canvas, exactly as if
+    // its row had been clicked. `HowImBuilt` has been sending people here since
+    // it shipped — "duplicate the builder" ends with
+    // `window.location.href = /orchestrations?id=…` — and the page read only
+    // `?run=`, so the link landed on the list with nothing selected.
+    const initialOrchConsumedRef = useRef(false);
+    useEffect(() => {
+        if (!initialOrchId || initialOrchConsumedRef.current || orchestrations.length === 0) return;
+        if (!orchestrations.some((o) => o.id === initialOrchId)) return;
+        initialOrchConsumedRef.current = true;
+        selectOrchestration(initialOrchId);
+    }, [initialOrchId, orchestrations, selectOrchestration]);
 
     // Deep link (?run=<run_id>): once orchestrations are loaded, open that run
     // exactly as if it was clicked in the Active Runs banner.
