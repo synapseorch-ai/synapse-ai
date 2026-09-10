@@ -232,7 +232,7 @@ export function BuilderPanel() {
                     // composer the inner radius, instead of restating it on
                     // three children that would then disagree.
                     'rounded-xl border border-border-strong bg-surface shadow-2xl',
-                    'transition-[opacity,transform] duration-200 ease-out',
+                    'transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
                     entered ? 'translate-x-0 opacity-100' : 'pointer-events-none translate-x-2 opacity-0',
                 )}
             >
@@ -272,7 +272,7 @@ export function BuilderPanel() {
                     </div>
                 </header>
 
-                <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4 font-sans">
+                <div className="flex-1 space-y-3 overflow-y-auto overscroll-contain px-5 py-4 font-sans">
                     {groups.map((group, i) => {
                         if (group.type === 'activity') {
                             return (
@@ -357,6 +357,9 @@ export function BuilderPanel() {
                                 rows={2}
                                 disabled={streaming}
                                 aria-label="Message the AI builder"
+                                // The box around this owns the focus ring; see
+                                // `[data-no-focus-ring]` in globals.css.
+                                data-no-focus-ring
                                 {...attachments.pasteHandlers}
                                 className={cn(
                                     'flex-1 resize-none bg-transparent px-3.5 py-2.5',

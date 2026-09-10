@@ -73,7 +73,7 @@ export function useImageAttachments(): ImageAttachments {
                     continue;
                 }
                 if (file.size > MAX_BYTES) {
-                    setError(`${file.name || 'That image'} is ${Math.round(file.size / (1024 * 1024))} MB; the limit is ${MAX_BYTES / (1024 * 1024)} MB.`);
+                    setError(`${file.name || 'That image'} is ${Math.round(file.size / (1024 * 1024))}\u00a0MB; the limit is ${MAX_BYTES / (1024 * 1024)}\u00a0MB.`);
                     continue;
                 }
                 usable.push(file);
@@ -130,7 +130,11 @@ export function useImageAttachments(): ImageAttachments {
 export function AttachmentError({ error, onDismiss }: { error: string | null; onDismiss: () => void }) {
     if (!error) return null;
     return (
-        <div className="mb-2 flex items-center gap-2 rounded-md border border-warning/50 bg-warning-subtle px-3 py-2 text-[12px] text-warning">
+        <div
+            role="status"
+            aria-live="polite"
+            className="mb-2 flex items-center gap-2 rounded-md border border-warning/50 bg-warning-subtle px-3 py-2 text-[12px] text-warning"
+        >
             <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
             <span className="min-w-0 flex-1 font-sans">{error}</span>
             <button
@@ -169,7 +173,13 @@ export function AttachmentChips({
                     className="flex max-w-[14rem] items-center gap-2 rounded-md border border-border bg-surface-2 py-1 pl-1 pr-1.5"
                 >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={image.preview} alt="" className="h-6 w-6 shrink-0 rounded object-cover" />
+                    <img
+                        src={image.preview}
+                        alt=""
+                        width={24}
+                        height={24}
+                        className="h-6 w-6 shrink-0 rounded object-cover"
+                    />
                     <span className="min-w-0 truncate font-sans text-[11px] text-text-muted">{image.name}</span>
                     <button
                         type="button"

@@ -94,6 +94,21 @@ const COMPONENTS: Components = {
   td: ({ children }) => <td className="border border-border px-3 py-2">{children}</td>,
   tr: ({ children }) => <tr className="transition-colors hover:bg-row-hover">{children}</tr>,
 
+  // Neither previous map had an `img`, so a markdown image rendered at its
+  // natural size — out through the side of a 620px panel, for anything wide.
+  img: ({ src, alt }) => (
+    // Not `next/image`: the src comes from whatever markdown the model wrote,
+    // so there is no known host to configure a loader for and no dimensions to
+    // give it.
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={typeof src === "string" ? src : undefined}
+      alt={alt ?? ""}
+      loading="lazy"
+      className="my-2 h-auto max-w-full rounded-md border border-border"
+    />
+  ),
+
   blockquote: ({ children }) => (
     <blockquote className="mb-2.5 border-l-2 border-border-strong pl-4 text-text-muted last:mb-0">{children}</blockquote>
   ),
