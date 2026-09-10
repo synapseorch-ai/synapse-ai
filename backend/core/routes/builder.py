@@ -18,9 +18,9 @@ import asyncio
 import json
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from core.models_orchestration import Orchestration
 from core.native_builder import NATIVE_BUILDER_ORCH_ID, bundled_definitions
@@ -47,6 +47,21 @@ class BuilderChatRequest(BaseModel):
     #: this was the literal string "builder" for every conversation, and in the
     #: commercial edition that meant every conversation of every user.
     client_session_id: str = ""
+    #: Base64 data-URI images, same transport and same limits as chat. Reaches
+    #: the run out of band rather than in `initial_state` — see
+    #: `run_builder_stream` for why.
+    images: list[str] = []
+
+    @field_validator("images")
+    @classmethod
+    def _check_images(cls, value: list[str]) -> list[str]:
+        from core.images import ImageRejected, validate
+        try:
+            return validate(value)
+        except ImageRejected as exc:
+            # Written to be read by a person, so it travels as the validation
+            # message rather than being logged and replaced with a generic one.
+            raise ValueError(str(exc)) from None
 
 
 class BuilderResumeRequest(BaseModel):
@@ -109,6 +124,12 @@ async def run_builder_stream(request: BuilderChatRequest, server_module):
 
     orch = Orchestration.model_validate(orch_data)
     engine = OrchestrationEngine(orch, server_module)
+    # Deliberately NOT in `initial_state`. Shared state is echoed to the browser
+    # twice at the end of a run, checkpointed at every step boundary, returned by
+    # the run-detail endpoint and fed to the memory summariser — all fine for a
+    # model name, none of it fine for up to 20 MB of image. `global_variables`
+    # travels the same way for the same reason.
+    engine.images = list(request.images or [])
 
     initial_state = {
         "user_message": request.message,
@@ -179,6 +200,20 @@ def _stream(source) -> StreamingResponse:
 
 @router.post("/api/builder/chat")
 async def builder_chat(request: BuilderChatRequest, http_request: Request):
+    if request.images:
+        # The frontend disables the attach button for a blind model, so this is
+        # for everything that is not the frontend. Refusing is the honest
+        # answer: four of the providers discard images with no warning at all,
+        # and the run would otherwise answer as though nothing was attached.
+        from core.images import model_can_see_images
+        model = await _selected_model(request.model)
+        from core.config import load_settings
+        resolved = model or load_settings().get("model", "")
+        if not model_can_see_images(resolved):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{resolved} cannot see images. Pick a different builder model, or send the request without them.",
+            )
     return _stream(run_builder_stream(request, http_request.app.state.server_module))
 
 
@@ -206,6 +241,10 @@ async def run_builder_stream_compat(request, server_module):
         can_create_agents=True,
         model=getattr(request, "model", None),
         client_session_id=str(getattr(request, "session_id", "") or "chat"),
+        # Chat has an attach button and the builder-typed agent is reached
+        # through it, so dropping these here would lose the one attachment path
+        # that already exists. Already validated on the way in as ChatRequest.
+        images=list(getattr(request, "images", None) or []),
     )
 
     async for event in iter_with_heartbeat(run_builder_stream(builder_req, server_module)):

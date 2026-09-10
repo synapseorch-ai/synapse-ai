@@ -90,6 +90,16 @@ class StepConfig(BaseModel):
     human_timeout_seconds: int = int(ORCH_HUMAN_TIMEOUT)  # how long to wait for messaging response
 
     # I/O mapping
+    # Whether this step's agent sees the attachments the caller sent. Off by
+    # default and opt-in per step, because the images are worth real tokens and
+    # most steps of most orchestrations have no use for them — on the builder
+    # only the analyst and the reporter do.
+    #
+    # They deliberately do NOT arrive as an `input_keys` entry: those are
+    # injected into the prompt as text, and a base64 data URI there would blow
+    # the context window and the bill. They ride on the engine instead.
+    pass_images: bool = False
+
     input_keys: list[str] = []    # Keys to pull from shared state as context
     output_key: str | None = None  # Key to write result into shared state
 

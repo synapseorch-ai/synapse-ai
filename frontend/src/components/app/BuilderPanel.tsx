@@ -19,6 +19,12 @@ import {
 
 import { useBuilder } from '@/components/app/BuilderProvider';
 import { HowImBuilt } from '@/components/app/HowImBuilt';
+import {
+    AttachButton,
+    AttachmentChips,
+    AttachmentError,
+    useImageAttachments,
+} from '@/components/app/ImageAttachments';
 import { Combobox, Hint, Mark, Spinner } from '@/components/ui';
 import type { BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
@@ -149,7 +155,7 @@ function HumanPromptCard({ content }: { content: string }) {
 
 export function BuilderPanel() {
     const {
-        isOpen, entered, close, state, streaming, send, newConversation,
+        isOpen, entered, close, state, streaming, send, newConversation, canAttach,
         providers, builderModel, sessionModel, setSessionModel, saveBuilderModel,
     } = useBuilder();
 
@@ -159,6 +165,7 @@ export function BuilderPanel() {
     // mode off a class on <html>, which is not something React can subscribe to.
     const [how, setHow] = useState<{ theme: 'light' | 'dark' } | null>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
+    const attachments = useImageAttachments();
 
     useEffect(() => {
         // Not while closing: scrolling a card that is fading out is motion in
@@ -173,9 +180,13 @@ export function BuilderPanel() {
 
     const submit = () => {
         const text = input.trim();
-        if (!text || streaming) return;
+        // An image on its own is a message — "what is this?" is often the
+        // picture, not the words.
+        if ((!text && !attachments.images.length) || streaming) return;
+        const images = attachments.images.map((image) => image.base64);
         setInput('');
-        void send(text);
+        attachments.clear();
+        void send(text, images);
     };
 
     // Grouped by provider rather than one flat list of ~66, and a remembered
@@ -322,36 +333,57 @@ export function BuilderPanel() {
                 </div>
 
                 <div className="shrink-0 space-y-2.5 border-t border-border px-4 pb-4 pt-3">
-                    <div className="flex items-end gap-2">
-                        <textarea
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
-                            }}
-                            placeholder={state.pending ? 'Answer the question above…' : 'Describe what you want to happen…'}
-                            rows={2}
-                            disabled={streaming}
-                            aria-label="Message the AI builder"
-                            className={cn(
-                                'flex-1 resize-none rounded-lg border border-border-strong bg-surface-2 px-3.5 py-2.5',
-                                'font-sans text-sm text-text placeholder:text-text-faint',
-                                'outline-none transition-colors focus:border-accent disabled:opacity-50',
-                            )}
-                        />
-                        <button
-                            type="button"
-                            onClick={submit}
-                            disabled={!input.trim() || streaming}
-                            aria-label="Send"
-                            className={cn(
-                                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg',
-                                'transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40',
-                                focusRing,
-                            )}
-                        >
-                            {streaming ? <Spinner size={16} /> : <Send size={15} aria-hidden />}
-                        </button>
+                    <AttachmentError error={attachments.error} onDismiss={attachments.dismissError} />
+
+                    {/* One bordered box holding the chips and the row, so an
+                        attachment reads as part of the message being written
+                        rather than as a notification above it. */}
+                    <div
+                        className={cn(
+                            'flex flex-col rounded-lg border border-border-strong bg-surface-2',
+                            'transition-colors focus-within:border-accent',
+                        )}
+                        {...attachments.dropHandlers}
+                    >
+                        <AttachmentChips images={attachments.images} onRemove={attachments.remove} />
+                        <div className="flex items-end gap-1">
+                            <textarea
+                                value={input}
+                                onChange={(e) => setInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+                                }}
+                                placeholder={state.pending ? 'Answer the question above…' : 'Describe what you want to happen…'}
+                                rows={2}
+                                disabled={streaming}
+                                aria-label="Message the AI builder"
+                                {...attachments.pasteHandlers}
+                                className={cn(
+                                    'flex-1 resize-none bg-transparent px-3.5 py-2.5',
+                                    'font-sans text-sm text-text placeholder:text-text-faint',
+                                    'outline-none disabled:opacity-50',
+                                )}
+                            />
+                            <AttachButton
+                                onFiles={attachments.accept}
+                                count={attachments.images.length}
+                                disabledReason={canAttach ? '' : 'This model cannot read images'}
+                                className="mb-2 p-1.5"
+                            />
+                            <button
+                                type="button"
+                                onClick={submit}
+                                disabled={(!input.trim() && !attachments.images.length) || streaming}
+                                aria-label="Send"
+                                className={cn(
+                                    'mb-1.5 mr-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-accent-fg',
+                                    'transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40',
+                                    focusRing,
+                                )}
+                            >
+                                {streaming ? <Spinner size={16} /> : <Send size={15} aria-hidden />}
+                            </button>
+                        </div>
                     </div>
 
                     <div className="flex items-center gap-1.5">
@@ -374,7 +406,9 @@ export function BuilderPanel() {
                                 Set as default
                             </button>
                         )}
-                        <span className="ml-auto text-[10px] text-text-faint">Enter to send · Shift+Enter for a newline</span>
+                        {/* Wraps to three lines and squeezes the picker on a phone-width
+                            card, where it is also the least useful thing on screen. */}
+                        <span className="ml-auto hidden text-[10px] text-text-faint sm:inline">Enter to send · Shift+Enter for a newline</span>
                     </div>
                 </div>
             </aside>

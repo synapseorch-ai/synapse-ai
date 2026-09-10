@@ -133,6 +133,7 @@
             "allowed_tools": null,
             "next_step_id": "step_clarify_route",
             "max_iterations": 3,
+            "pass_images": true,
             "position_x": 600,
             "position_y": 0
         },
@@ -646,6 +647,7 @@
             "allowed_tools": null,
             "next_step_id": "step_end",
             "max_iterations": 3,
+            "pass_images": true,
             "position_x": 1500,
             "position_y": 750
         },

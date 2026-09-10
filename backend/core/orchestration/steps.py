@@ -156,6 +156,11 @@ class AgentStepExecutor:
                 initial_tasks=[dict(t) for t in (run.tasks or [])],
                 preresolved=resolved,
                 global_variables=getattr(engine, "global_variables", None),
+                # Opt-in per step, and off the engine rather than out of shared
+                # state — see `StepConfig.pass_images`. `run_agent_step` applies
+                # them on its first turn only, so a step that crash-resumes
+                # mid-transcript will not see them again.
+                images=(getattr(engine, "images", None) or None) if step.pass_images else None,
                 should_stop=getattr(engine, "cancel_hook", None),
             ):
                 if event.get("type") == "tasks_updated":

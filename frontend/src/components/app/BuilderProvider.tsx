@@ -75,9 +75,16 @@ interface BuilderContextValue {
     close: () => void;
     state: BuilderState;
     streaming: boolean;
-    send: (text: string) => Promise<void>;
+    send: (text: string, images?: string[]) => Promise<void>;
     newConversation: () => void;
     providers: Record<string, ProviderModels>;
+    /**
+     * Whether the model this build will actually run on can see an attachment.
+     * Resolved here rather than in the panel because it needs three things the
+     * panel does not hold: the per-conversation pick, the workspace builder
+     * model, and the workspace default behind that.
+     */
+    canAttach: boolean;
     builderModel: string;
     sessionModel: string;
     setSessionModel: (model: string) => void;
@@ -98,6 +105,10 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const [state, setState] = useState<BuilderState>(() => emptyBuilderState([WELCOME]));
     const [streaming, setStreaming] = useState(false);
     const [providers, setProviders] = useState<Record<string, ProviderModels>>({});
+    // Served by the backend rather than restated here: a second copy of which
+    // model families can see would be wrong the first time only one was updated.
+    const [visionCapable, setVisionCapable] = useState<string[]>([]);
+    const [workspaceModel, setWorkspaceModel] = useState('');
     const [builderModel, setBuilderModel] = useState('');
     // Remembered, not per-conversation: picking a model and then losing it to a
     // reload or to "new conversation" made the control feel like it had not
@@ -131,10 +142,12 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 if (modelsRes.ok) {
                     const data = await modelsRes.json();
                     setProviders(data.providers ?? {});
+                    setVisionCapable(Array.isArray(data.vision_capable) ? data.vision_capable : []);
                 }
                 if (settingsRes.ok) {
                     const data = await settingsRes.json();
                     setBuilderModel(data.builder_model || '');
+                    setWorkspaceModel(data.model || '');
                 }
             } catch {
                 /* the picker falls back to the workspace default */
@@ -207,8 +220,9 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     );
 
     const send = useCallback(
-        async (text: string) => {
-            if (!text.trim() || streaming) return;
+        async (text: string, images: string[] = []) => {
+            // An image on its own is a message. Only an empty one is nothing.
+            if ((!text.trim() && !images.length) || streaming) return;
             const pending = state.pending;
 
             setState((prev) => ({
@@ -218,7 +232,12 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 error: null,
                 messages: [
                     ...prev.messages,
-                    { role: 'user', content: text, kind: 'text', key: `user-${prev.messages.length}` },
+                    {
+                        role: 'user',
+                        content: text || `(${images.length} ${images.length === 1 ? 'image' : 'images'})`,
+                        kind: 'text',
+                        key: `user-${prev.messages.length}`,
+                    },
                 ],
             }));
             setStreaming(true);
@@ -249,6 +268,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                                   .map((m) => ({ role: m.role, content: m.content })),
                               can_create_agents: true,
                               model: sessionModel || undefined,
+                              images,
                               current_orchestration_id: currentOrchestrationId.current,
                               client_session_id: conversationId(),
                           }),
@@ -288,13 +308,19 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         setBuilderModel(model);
     }, []);
 
+    // `vision_capable` is a list of model names, so this resolves the same
+    // three-step fallback the backend does: this conversation's pick, the
+    // workspace builder model, then the workspace default behind it.
+    const resolvedModel = sessionModel || builderModel || workspaceModel;
+    const canAttach = Boolean(resolvedModel) && visionCapable.includes(resolvedModel);
+
     const value = useMemo(
         () => ({
             isOpen, entered, open, close, state, streaming, send, newConversation,
-            providers, builderModel, sessionModel, setSessionModel, saveBuilderModel,
+            providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
         }),
         [isOpen, entered, open, close, state, streaming, send, newConversation,
-         providers, builderModel, sessionModel, setSessionModel, saveBuilderModel],
+         providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel],
     );
 
     return <BuilderContext.Provider value={value}>{children}</BuilderContext.Provider>;

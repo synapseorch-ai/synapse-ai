@@ -7,6 +7,7 @@ including `resource_saved`, which is the whole point of the change.
 """
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -367,3 +368,70 @@ class TestAReadOnlyPlanHasNothingToApprove:
         events = await stream(client, "/api/builder/chat", {"message": "delete something"})
 
         assert [e for e in events if e["type"] == "human_input_required"]
+
+
+class TestAnAttachmentReachesTheStepAndNothingElse:
+    """Images ride on the engine rather than in shared state.
+
+    `orchestration_complete` carries `final_state` — the whole of shared state —
+    and the `final` event carries it a second time. A reserved state key would
+    have shipped megabytes of base64 down this stream on every build, and into
+    every checkpoint besides.
+    """
+
+    PNG = "data:image/png;base64," + base64.b64encode(
+        b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    ).decode()
+
+    async def test_the_opted_in_step_is_given_them(self, client, builder, fake_llm):
+        fake_llm.script([route("answer"), "That is a picture of a cat."])
+        await stream(client, "/api/builder/chat", {
+            "message": "what is this?", "images": [self.PNG],
+        })
+        # `step_answer` sets pass_images; the reporter's own call carries them.
+        assert any(c.get("images") for c in fake_llm.calls), [
+            sorted(c) for c in fake_llm.calls
+        ]
+
+    async def test_a_step_that_did_not_ask_is_not_given_them(self, client, builder, fake_llm):
+        """`step_manage_plan` has no `pass_images`, so a manage turn pays for
+        nothing it cannot use."""
+        fake_llm.script([
+            route("manage"),
+            "- delete_schedule — remove the nightly brief",
+            route("writes"),
+        ])
+        await stream(client, "/api/builder/chat", {
+            "message": "delete the nightly brief", "images": [self.PNG],
+        })
+        assert not any(c.get("images") for c in fake_llm.calls)
+
+    async def test_no_image_bytes_reach_the_browser(self, client, builder, fake_llm):
+        fake_llm.script([route("answer"), "A cat."])
+        events = await stream(client, "/api/builder/chat", {
+            "message": "what is this?", "images": [self.PNG],
+        })
+        assert events
+        wire = json.dumps(events)
+        assert "base64" not in wire
+        assert self.PNG[:40] not in wire
+
+    async def test_a_model_that_cannot_see_them_refuses_rather_than_discarding(
+        self, client, builder
+    ):
+        """Four providers discard images with no warning at all, so the run would
+        answer as though nothing had been attached. The frontend disables the
+        attach button for these; this is for everything that is not the
+        frontend."""
+        response = await client.post("/api/builder/chat", json={
+            "message": "what is this?", "images": [self.PNG], "model": "cli.claude",
+        })
+        assert response.status_code == 422
+        assert "cannot see images" in response.json()["detail"]
+
+    async def test_too_many_is_refused_with_the_reason(self, client, builder):
+        response = await client.post("/api/builder/chat", json={
+            "message": "hi", "images": [self.PNG] * 6,
+        })
+        assert response.status_code == 422
+        assert "Up to 5 images" in json.dumps(response.json())

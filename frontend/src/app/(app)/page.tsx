@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { useRegisterNavGuard } from '@/components/app/NavGuard';
+import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { Markdown, Spinner } from '@/components/ui';
 
 import { cn } from '@/lib/utils';
@@ -566,14 +567,11 @@ export default function Home() {
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Attached images (max 5)
-  const [attachedImages, setAttachedImages] = useState<{ preview: string; base64: string; name: string }[]>([]);
-  // Why the last attempt to attach something did not work. Files used to be
-  // dropped in silence when they were the wrong type or one too many, which
-  // reads as the button being broken.
-  const [attachError, setAttachError] = useState<string | null>(null);
+  // Shared with the AI builder's composer — one validator, one chip strip, one
+  // counter, one set of refusal messages.
+  const attachments = useImageAttachments();
+  const attachedImages = attachments.images;
   // Whether attaching anything to this agent does something. Answered by
   // `/api/status`, which already resolves each agent's model — the alternative
   // was a second copy in here of the list of providers that cannot see, and a
@@ -862,49 +860,6 @@ export default function Home() {
 
 
 
-  /**
-   * Take files from the picker, a paste or a drop — one path, so all three
-   * behave the same and all three can say why they refused something.
-   *
-   * The limits match the server's, which is the point: the server is the one
-   * that enforces them, and finding out there after a round trip and a failed
-   * turn is a worse way to learn that a photo was too big.
-   */
-  const acceptFiles = (files: File[]) => {
-    const MAX_BYTES = 5 * 1024 * 1024;
-    const ALLOWED = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-    setAttachError(null);
-
-    const room = 5 - attachedImages.length;
-    if (room <= 0) { setAttachError('Five images is the limit for one message.'); return; }
-
-    const usable: File[] = [];
-    for (const file of files) {
-      if (!ALLOWED.includes(file.type)) {
-        setAttachError(`${file.name || 'That file'} is not a PNG, JPEG, GIF or WebP.`);
-        continue;
-      }
-      if (file.size > MAX_BYTES) {
-        setAttachError(`${file.name || 'That image'} is ${Math.round(file.size / (1024 * 1024))} MB; the limit is 5 MB.`);
-        continue;
-      }
-      usable.push(file);
-    }
-    if (usable.length > room) {
-      setAttachError(`Only ${room} more ${room === 1 ? 'image fits' : 'images fit'} in this message.`);
-    }
-    usable.slice(0, room).forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const base64 = ev.target?.result as string;
-        setAttachedImages(prev => prev.length < 5
-          ? [...prev, { preview: base64, base64, name: file.name || 'image' }]
-          : prev);
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if ((!input.trim() && attachedImages.length === 0) || isLoading) return;
@@ -930,7 +885,7 @@ export default function Home() {
     }
 
     setInput('');
-    setAttachedImages([]);
+    attachments.clear();
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
     // Rewriting a question replaces it and drops everything after it. A
@@ -2200,68 +2155,16 @@ export default function Home() {
               </div>
             )}
 
-            {/* Why the last attach did not take. */}
-            {attachError && (
-              <div className="flex items-center gap-2 mb-2 px-3 py-2 border border-amber-900/50 bg-amber-950/20 text-[12px] text-amber-300 rounded-md">
-                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                <span className="min-w-0 flex-1 font-sans">{attachError}</span>
-                <button
-                  type="button"
-                  onClick={() => setAttachError(null)}
-                  aria-label="Dismiss"
-                  className="shrink-0 p-0.5 rounded text-amber-500/70 hover:text-amber-300"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            )}
+            <AttachmentError error={attachments.error} onDismiss={attachments.dismissError} />
             <form
               onSubmit={handleSubmit}
               className="flex flex-col border border-border-strong bg-surface shadow-2xl focus-within:border-accent focus-within:ring-2 focus-within:ring-[var(--ring)] transition-all p-1.5 rounded-md"
-              onDrop={(e) => {
-                e.preventDefault();
-                const files = Array.from(e.dataTransfer.files);
-                if (files.length === 0) return;
-                acceptFiles(files);
-              }}
-              onDragOver={(e) => e.preventDefault()}
+              {...attachments.dropHandlers}
             >
-              {/* Attachments, inside the border rather than floating above it.
-
-                  They belong to the message being written, and a separate bar
-                  above the composer read as a notification about them. The
-                  remove button is always visible and focusable: the old one
-                  appeared on hover, which meant it did not exist for a
-                  keyboard or a touchscreen. */}
-              {attachedImages.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 px-2 pt-2 pb-1">
-                  {attachedImages.map((img, idx) => (
-                    <span
-                      key={idx}
-                      className="group flex items-center gap-2 pl-1 pr-1.5 py-1 bg-zinc-900 border border-zinc-800 rounded-md max-w-[14rem]"
-                    >
-                      <img
-                        src={img.preview}
-                        alt=""
-                        className="h-6 w-6 object-cover rounded shrink-0"
-                      />
-                      <span className="min-w-0 truncate text-[11px] text-zinc-400 font-sans">{img.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => { setAttachedImages(prev => prev.filter((_, i) => i !== idx)); setAttachError(null); }}
-                        aria-label={`Remove ${img.name}`}
-                        className={cn(
-                          "shrink-0 p-0.5 rounded text-zinc-600 transition-colors",
-                          "hover:text-zinc-200 hover:bg-zinc-800 focus-visible:text-zinc-200",
-                        )}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-                  <span className="text-[10px] text-zinc-600 font-sans">{attachedImages.length} of 5</span>
-                </div>
-              )}
+              {/* Inside the border, not floating above it: they belong to the
+                  message being written, and a bar above the composer read as a
+                  notification about them. */}
+              <AttachmentChips images={attachedImages} onRemove={attachments.remove} />
 
               <div className="flex items-end gap-1.5">
               <div className="pl-4 pr-2 py-4 text-zinc-500 shrink-0">
@@ -2292,15 +2195,7 @@ export default function Home() {
                     setInput('');
                   }
                 }}
-                onPaste={(e) => {
-                  const files = Array.from(e.clipboardData.items)
-                    .filter(item => item.kind === 'file')
-                    .map(item => item.getAsFile())
-                    .filter((f): f is File => f !== null);
-                  if (files.length === 0) return;
-                  e.preventDefault();
-                  acceptFiles(files);
-                }}
+                {...attachments.pasteHandlers}
                 placeholder={isLoading ? "Agent is working — type your next message…" : "Enter command…"}
                 title="Shift+Enter for a new line"
                 // The <form> above owns the focus ring for this control.
@@ -2309,32 +2204,12 @@ export default function Home() {
                 rows={1}
                 autoFocus
               />
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/gif,image/webp"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  acceptFiles(Array.from(e.target.files || []));
-                  e.target.value = ''; // reset so same file can be re-selected
-                }}
+              <AttachButton
+                onFiles={attachments.accept}
+                count={attachedImages.length}
+                disabledReason={canAttach ? '' : "This agent's model cannot read images"}
+                className="p-2.5 self-end mb-1 relative top-[1px]"
               />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!canAttach || attachedImages.length >= 5}
-                aria-label="Attach images"
-                className="p-2.5 text-zinc-500 hover:text-zinc-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0 self-end mb-1 relative top-[1px]"
-                title={
-                  !canAttach
-                    ? "This agent's model cannot read images"
-                    : attachedImages.length >= 5 ? 'Five images is the limit' : 'Attach images'
-                }
-              >
-                <ImageIcon className="h-[18px] w-[18px]" />
-              </button>
               {/* The one button, in whichever job the moment calls for.
 
                   Two buttons would mean one of them is always dead, and the
