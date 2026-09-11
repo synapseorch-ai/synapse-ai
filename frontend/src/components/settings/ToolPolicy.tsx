@@ -93,7 +93,13 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
 
     const set = (category: string, decision: string | null) => {
         const next = { ...value };
-        if (decision === null) delete next[category];
+        // At the workspace level, "Allow" *is* the absence of a rule — the
+        // engine resolves an unnamed category to allow. Storing it explicitly
+        // would pin the workspace to today's default and quietly survive a
+        // later change to it, which is the argument the settings writer already
+        // makes for every other key. At the agent level it is kept, because
+        // there it overrides a floor that may be stricter.
+        if (decision === null || (!canInherit && decision === 'allow')) delete next[category];
         else next[category] = decision;
         onChange(next);
     };
@@ -103,6 +109,10 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
             {POLICY_CATEGORIES.map(cat => {
                 const chosen = value?.[cat.id];
                 const effective = chosen ?? (canInherit ? resolvedDefaults[cat.id] : 'allow');
+                // What is highlighted. An unset category at the workspace level
+                // is not "nothing chosen" — it is Allow, and a radio group with
+                // no selection cannot say what the setting currently is.
+                const selected = chosen ?? (canInherit ? undefined : 'allow');
                 return (
                     <div key={cat.id} className="space-y-1">
                         <Label className="block">{cat.label}</Label>
@@ -112,9 +122,9 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
                                     type="button"
                                     disabled={disabled}
                                     onClick={() => set(cat.id, null)}
-                                    aria-pressed={chosen === undefined}
+                                    aria-pressed={selected === undefined}
                                     className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors disabled:opacity-50 ${
-                                        chosen === undefined
+                                        selected === undefined
                                             ? 'border-accent bg-accent/10 text-accent'
                                             : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
                                     }`}
@@ -123,7 +133,7 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
                                 </button>
                             )}
                             {POLICY_CHOICES.map(choice => {
-                                const active = chosen === choice.value;
+                                const active = selected === choice.value;
                                 return (
                                     <button
                                         key={choice.value}
