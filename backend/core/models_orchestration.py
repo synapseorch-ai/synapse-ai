@@ -174,6 +174,13 @@ class Orchestration(BaseModel):
     timeout_minutes: int = ORCH_GLOBAL_TIMEOUT_MIN
 
     trigger: str = "manual"  # "manual" | "scheduled"
+
+    #: The rubric every run of this orchestration is scored against
+    #: (core/evals). Empty means "not evaluated", which is the opt-in: binding
+    #: a rubric is what consents to the judge call's cost. A dangling id — the
+    #: rubric was deleted — reads the same as unset rather than failing a run.
+    rubric_id: str = ""
+
     created_at: str | None = None
     updated_at: str | None = None
 

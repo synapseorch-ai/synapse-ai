@@ -113,6 +113,9 @@ export interface Orchestration {
     max_total_cost_usd?: number | null;
     timeout_minutes: number;
     trigger: 'manual' | 'scheduled';
+    /** The rubric every run is scored against. Empty means "not evaluated",
+     *  which is the opt-in: binding one is what consents to the judge's cost. */
+    rubric_id?: string;
     created_at?: string;
     updated_at?: string;
 }

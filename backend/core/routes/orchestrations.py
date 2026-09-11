@@ -57,7 +57,36 @@ async def list_runs(limit: int = 20):
     """
     from core.orchestration.state import SharedState
     known_ids = {o["id"] for o in await load_orchestrations() if o.get("id")}
-    return await SharedState.list_runs(limit=max(1, min(limit, 200)), orchestration_ids=known_ids)
+    runs = await SharedState.list_runs(
+        limit=max(1, min(limit, 200)), orchestration_ids=known_ids
+    )
+    return await _with_scores(runs)
+
+
+async def _with_scores(runs: list[dict]) -> list[dict]:
+    """Graft each run's latest judge score onto its summary.
+
+    Done here rather than in `state_store.list_runs` because a score is not run
+    state: it is an opinion about a finished run, kept in its own table, and
+    written long after the checkpoint the summary comes from. One query for the
+    whole page, not one per row.
+
+    Best-effort. A runs list that failed to load because the eval tables were
+    unreachable would be a regression dashboard breaking the screen it is meant
+    to inform.
+    """
+    if not runs:
+        return runs
+    try:
+        from core.store import evals as evals_store
+        scores = await evals_store.scores_for_runs([r["run_id"] for r in runs if r.get("run_id")])
+    except Exception:
+        return runs
+    for run in runs:
+        verdict = scores.get(run.get("run_id"))
+        run["score"] = verdict["score"] if verdict else None
+        run["score_regression"] = bool(verdict["regression"]) if verdict else False
+    return runs
 
 
 async def _run_summary(run_id: str) -> dict | None:

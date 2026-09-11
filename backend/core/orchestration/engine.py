@@ -466,6 +466,19 @@ class OrchestrationEngine:
         except Exception as exc:
             _log.warning(f"run memory summaries failed: {exc}")
 
+        # An LLM judge scores the finished run against the rubric bound to this
+        # orchestration, if one is. Here rather than in a route or a worker job
+        # because `_execute_loop` is the one place every path passes through:
+        # `run()` delegates to it and `WorkerEngineAdapter.resume()` enters it
+        # directly, so an in-process run, an in-process resume, a fleet run and
+        # a fleet resume all reach this line. Anything hung off the runner pump
+        # would be invisible to the fleet, which is the mistake this codebase
+        # has now made twice. Never allowed to fail the run.
+        try:
+            await self._score_run(run)
+        except Exception as exc:
+            _log.warning(f"run scoring failed: {exc}")
+
         if logger:
             logger.run_end(run.status)
             await logger.aclose()
@@ -1012,6 +1025,32 @@ class OrchestrationEngine:
             "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "output_key": step.output_key,
         })
+
+    async def _score_run(self, run: OrchestrationRun) -> None:
+        """Judge this run, if its orchestration asked to be judged.
+
+        Top-level runs only, matching `_write_memory_summaries`: a nested
+        sub-orchestration's work is part of its parent's result, and scoring it
+        separately would bill twice for one verdict and put a number on
+        something no screen shows.
+
+        Cost note, because it is the trade this design accepts: the call
+        happens before `orchestration_complete` is yielded, so a scored run
+        reports complete a few seconds later than an unscored one. It is
+        bounded by `judge.TIMEOUT_SECONDS`, and the alternative — a queued job
+        — needs a second admission path and a second gateway credential in
+        cloud for a latency saving nobody had yet measured. See D84.
+        """
+        if self.depth > 0:
+            return
+        rubric_id = getattr(self.orch, "rubric_id", "") or ""
+        if not rubric_id:
+            return
+
+        from core.config import load_settings
+        from core.evals import scoring
+
+        await scoring.score_run(run, self.orch, load_settings())
 
     async def _write_memory_summaries(self, run: OrchestrationRun) -> None:
         """One session summary per memory-enabled agent that took part.

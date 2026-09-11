@@ -88,6 +88,7 @@ class Settings(BaseModel):
     agent_name: str
     model: str = "mistral" # Default model (Ollama or Cloud)
     builder_model: str = ""  # Model for the AI builder; empty = use `model`
+    judge_model: str = ""    # Model for eval scoring; empty = use `model`
     reasoning_effort: str = "medium"  # workspace default; agents may override
     mode: str = "local" # "local" | "cloud" | "bedrock"
     openai_key: str = ""

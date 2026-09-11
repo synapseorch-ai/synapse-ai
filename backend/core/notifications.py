@@ -249,7 +249,10 @@ class NotificationHub:
             )
             if not chat_id:
                 return
-            icon = {"human_input": "⏸", "run_completed": "✅", "run_failed": "❌"}.get(item["kind"], "🔔")
+            icon = {
+                "human_input": "⏸", "run_completed": "✅", "run_failed": "❌",
+                "eval_regression": "📉",
+            }.get(item["kind"], "🔔")
             text = f"{icon} {item['title']}"
             if item.get("body"):
                 text += f"\n{item['body']}"

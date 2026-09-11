@@ -15,7 +15,7 @@ import {
     Braces,
     ArrowLeftRight, BookOpen, Bot, Clock, Cloud, Cpu, Database, DollarSign, Eraser, LayoutDashboard,
     FolderGit2, Gauge, Globe, Key, LayoutGrid, LifeBuoy, MessageSquare, MessagesSquare,
-    ScrollText, Server, Shield, Vault, Workflow, Wrench,
+    ScrollText, Server, Shield, Target, Vault, Workflow, Wrench,
     type LucideIcon,
 } from 'lucide-react';
 
@@ -55,6 +55,10 @@ export const PRIMARY_NAV: NavGroup[] = [
             {
                 id: 'logs', label: 'Runs & Logs', href: '/runs', icon: ScrollText,
                 blurb: 'Replay what agents, orchestrations and schedules actually did.',
+            },
+            {
+                id: 'evals', label: 'Evals', href: '/evals', icon: Target,
+                blurb: 'Score runs against a rubric and catch regressions early.',
             },
             {
                 id: 'usage', label: 'Usage', href: '/usage', icon: DollarSign,

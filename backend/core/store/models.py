@@ -367,6 +367,142 @@ class ModelPricingDB(Base):
 
 
 # ---------------------------------------------------------------------------
+# Evals
+# ---------------------------------------------------------------------------
+
+class EvalScoreDB(Base):
+    """One judge verdict on one run, under one version of one rubric.
+
+    A real table rather than a ``CollectionDB`` slot for the reason that class's
+    own docstring gives: these rows are *queried*. The dashboard asks for a
+    run's scores, and for an orchestration's scores in time order — which is
+    both the trend and the baseline the next verdict is measured against.
+
+    **One row per (run, rubric version), never an update in place.** Re-scoring
+    a run after the rubric changed appends; it does not overwrite. That is the
+    whole mechanism behind "a rubric edit does not silently rewrite history":
+    two scores for one run are not a conflict, they are two different questions
+    asked of the same work, and the trend line breaks between versions rather
+    than pretending they are comparable.
+
+    ``baseline``, ``regression`` and ``rule`` are **stored, not derived on
+    read.** The baseline is a function of which runs had been scored at the
+    moment of judging, so recomputing it later would quietly change what the
+    dashboard said yesterday — the same failure an unversioned rubric causes,
+    arriving by a different door. What fired is recorded with the verdict.
+    """
+    __tablename__ = "eval_scores"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = _tenant_column()
+    run_id = Column(String(255), nullable=False)
+    orchestration_id = Column(String(255), nullable=False)
+    rubric_id = Column(String(255), nullable=False)
+    #: The rubric's `version` at judging time. Scores are only comparable
+    #: within one version — see the class docstring.
+    rubric_version = Column(Integer, nullable=False, default=1)
+
+    score = Column(Float, nullable=False, default=0.0)
+    #: {criterion_id: {"score": float, "reasoning": str}}
+    per_criterion = Column(JSONType, default=dict)
+    #: {step_id: {"score": float, "reasoning": str}} — the same judge call's
+    #: step attribution. Empty when the run had no agent steps to attribute to.
+    per_step = Column(JSONType, default=dict)
+    reasoning = Column(Text, default="")
+
+    judged_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    judge_model = Column(String(255), default="")
+    #: Set when this score belongs to a golden-set suite run, so suite results
+    #: can be aggregated without walking every run the org ever made.
+    suite_run_id = Column(String(255))
+
+    baseline = Column(Float)
+    regression = Column(Boolean, nullable=False, default=False)
+    #: Which rule fired: "floor" or "drop". NULL when nothing did.
+    rule = Column(String(50))
+
+    cost_usd = Column(Float, default=0.0)
+    latency_seconds = Column(Float, default=0.0)
+
+    __table_args__ = (
+        Index("idx_eval_scores_tenant_run", "tenant_id", "run_id"),
+        # The trend query and the baseline query are the same query.
+        Index("idx_eval_scores_tenant_orch", "tenant_id", "orchestration_id", "judged_at"),
+        Index("idx_eval_scores_tenant_suite", "tenant_id", "suite_run_id"),
+    )
+
+
+class EvalFeedbackDB(Base):
+    """A person's thumb on a run or on one chat turn.
+
+    The counterpart to a judge score, and the only ground truth in the product:
+    without it a judge's number can be trusted or not, but never *measured*.
+    The dashboard's agreement figure is the join of this table and
+    ``eval_scores`` on ``run_id``.
+
+    **Exactly one target per row.** A run thumb sets ``run_id``; a chat thumb
+    sets ``session_id`` and ``turn_index``. ``turn_index`` is an index into
+    ``chat_sessions.messages`` — the same join ``chat_attachments`` uses,
+    because the worker owns that list and writes plain ``{role, content}``
+    entries with nothing in a message to key on.
+    """
+    __tablename__ = "eval_feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = _tenant_column()
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    #: Who left it, for display and for "change your own mind". Opaque here:
+    #: the engine has no user table, and cloud passes its own user id.
+    user_ref = Column(String(255), default="")
+
+    run_id = Column(String(255))
+    session_id = Column(String(255))
+    turn_index = Column(Integer)
+
+    #: +1 or -1. A SMALLINT rather than a boolean so "no opinion" is the
+    #: absence of a row and cannot be confused with a thumbs-down.
+    verdict = Column(Integer, nullable=False)
+    comment = Column(Text)
+
+    __table_args__ = (
+        Index("idx_eval_feedback_tenant_run", "tenant_id", "run_id"),
+        Index("idx_eval_feedback_tenant_turn", "tenant_id", "session_id", "turn_index"),
+    )
+
+
+class EvalSuiteRunDB(Base):
+    """One execution of a golden set — N cases run and scored together.
+
+    A suite run is not a new kind of execution: each case is an ordinary run of
+    the orchestration, admitted and metered like any other, and scored by the
+    same terminal hook because the orchestration already carries a rubric. This
+    row is the thing that makes N runs answerable as one question, and it is
+    updated as cases land so a half-finished suite is still readable.
+    """
+    __tablename__ = "eval_suite_runs"
+
+    id = Column(String(255), primary_key=True)
+    tenant_id = _tenant_column()
+    suite_id = Column(String(255), nullable=False)
+    orchestration_id = Column(String(255), nullable=False)
+
+    status = Column(String(50), nullable=False, default="running")
+    case_count = Column(Integer, nullable=False, default=0)
+    scored_count = Column(Integer, nullable=False, default=0)
+    mean_score = Column(Float)
+
+    rubric_id = Column(String(255), default="")
+    rubric_version = Column(Integer, default=1)
+
+    started_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    ended_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("idx_eval_suite_runs_tenant_suite", "tenant_id", "suite_id", "started_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Schedules
 # ---------------------------------------------------------------------------
 

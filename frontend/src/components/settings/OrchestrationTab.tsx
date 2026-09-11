@@ -81,6 +81,7 @@ const EMPTY_ORCHESTRATION: Orchestration = {
     max_total_cost_usd: null,
     timeout_minutes: 30,
     trigger: 'manual',
+    rubric_id: '',
 };
 
 export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId?: string; initialOrchId?: string } = {}) {
@@ -201,9 +202,16 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         waiting_for_human?: boolean;
         total_cost_usd?: number | null;
         session_id?: string | null;
+        /** The judge's latest verdict, when the orchestration has a rubric
+         *  bound. `null` is "not scored", which is not the same as zero. */
+        score?: number | null;
+        score_regression?: boolean;
     };
     const [activeRuns, setActiveRuns] = useState<RunSummary[]>([]);
     const activeRunsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    // Rubrics, for the "score runs against" picker in Guardrails. Names only —
+    // the editor lives on /evals.
+    const [rubrics, setRubrics] = useState<Array<{ id: string; name: string }>>([]);
     const [pastRuns, setPastRuns] = useState<RunSummary[]>([]);
     // Landing dashboard: which table is shown when no orchestration is open.
     const [schedules, setSchedules] = useState<Array<{ id: string; name: string }>>([]);
@@ -228,6 +236,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         // Schedule names, for labelling schedule-triggered runs.
         fetch('/api/schedules').then(r => r.json()).then(data => {
             setSchedules(Array.isArray(data) ? data : []);
+        }).catch(() => {});
+
+        // Rubrics, for the Guardrails picker.
+        fetch('/api/rubrics').then(r => r.json()).then(data => {
+            setRubrics(Array.isArray(data) ? data : []);
         }).catch(() => {});
     }, []);
 
@@ -320,6 +333,21 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         }
     };
 
+    // Colour band for a judge score. A flagged run is red whatever it scored:
+    // the point of the column is to be scannable, and "this one regressed" is
+    // the fact worth seeing from across the table.
+    const runScoreMeta = (run: RunSummary): { text: string; title: string } => {
+        if (run.score === null || run.score === undefined) {
+            return { text: 'text-zinc-600', title: 'Not scored' };
+        }
+        if (run.score_regression) {
+            return { text: 'text-red-300', title: 'Scored below expectation' };
+        }
+        if (run.score >= 7.5) return { text: 'text-green-400', title: 'Scored well' };
+        if (run.score >= 5) return { text: 'text-yellow-300', title: 'Scored moderately' };
+        return { text: 'text-red-300', title: 'Scored poorly' };
+    };
+
     const thCls = 'px-4 py-2 text-[10px] font-medium uppercase tracking-wider text-zinc-500 whitespace-nowrap';
     const tdCls = 'px-4 py-2.5 text-xs';
 
@@ -335,6 +363,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                             <th className={thCls}>Trigger</th>
                             <th className={`${thCls} text-right`}>Progress</th>
                             <th className={`${thCls} text-right`}>Cost</th>
+                            <th className={`${thCls} text-right`}>Score</th>
                             <th className={`${thCls} text-right`}>Started</th>
                             <th className={`${thCls} text-right`}>Duration</th>
                             <th className={thCls}></th>
@@ -343,7 +372,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                     <tbody>
                         {rows.length === 0 ? (
                             <tr>
-                                <td colSpan={9} className="px-4 py-10 text-center text-xs text-zinc-600 italic">
+                                <td colSpan={10} className="px-4 py-10 text-center text-xs text-zinc-600 italic">
                                     {empty}
                                 </td>
                             </tr>
@@ -382,6 +411,16 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                     </td>
                                     <td className={`${tdCls} text-right text-zinc-500 whitespace-nowrap`}>
                                         {run.total_cost_usd ? `$${run.total_cost_usd.toFixed(4)}` : '—'}
+                                    </td>
+                                    <td className={`${tdCls} text-right whitespace-nowrap`}>
+                                        <span
+                                            className={runScoreMeta(run).text}
+                                            title={runScoreMeta(run).title}
+                                        >
+                                            {run.score === null || run.score === undefined
+                                                ? '—'
+                                                : run.score.toFixed(1)}
+                                        </span>
                                     </td>
                                     <td className={`${tdCls} text-right text-zinc-500 whitespace-nowrap`}>
                                         {run.started_at ? new Date(run.started_at).toLocaleString() : '—'}
@@ -1617,6 +1656,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                             onSubmitHuman={submitHumanInput}
                             onOpenResponseModal={setResponseModal}
                             runId={runId}
+                            rubrics={rubrics}
                             onResumeRun={resumeRun}
                             pastRuns={pastRuns}
                             onRestoreRun={restoreRun}
@@ -1754,7 +1794,7 @@ function ResponseModal({ stepName, stepType, content, onClose }: { stepName: str
 function BottomPanel({
     draft, setDraft, runStatus, liveActivity, runLog, runInput, setRunInput, onStartRun,
     humanPrompt, humanContext, humanResponse, setHumanResponse, onSubmitHuman, onOpenResponseModal,
-    runId, onResumeRun, pastRuns, onRestoreRun,
+    runId, onResumeRun, pastRuns, onRestoreRun, rubrics,
 }: {
     draft: Orchestration;
     setDraft: (o: Orchestration) => void;
@@ -1774,6 +1814,7 @@ function BottomPanel({
     onResumeRun: () => void;
     pastRuns: { run_id: string; orchestration_id: string; status: string; started_at?: string | null; ended_at?: string | null }[];
     onRestoreRun: (run: { run_id: string; orchestration_id: string; status: string }) => void;
+    rubrics: { id: string; name: string }[];
 }) {
     const [activeSection, setActiveSection] = useState<'state' | 'guardrails' | 'run' | 'recent'>('run');
     const [panelHeight, setPanelHeight] = useState(280);
@@ -1904,6 +1945,24 @@ function BottomPanel({
                                 onChange={(e) => setDraft({ ...draft, max_total_cost_usd: e.target.value ? parseFloat(e.target.value) : null })}
                                 placeholder="No limit"
                             />
+                        </div>
+                        <div className="col-span-3">
+                            <label className="text-xs text-zinc-400 block mb-1">Score runs against</label>
+                            <select
+                                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
+                                value={draft.rubric_id ?? ''}
+                                onChange={(e) => setDraft({ ...draft, rubric_id: e.target.value })}
+                            >
+                                <option value="">Not evaluated</option>
+                                {rubrics.map((r) => (
+                                    <option key={r.id} value={r.id}>{r.name}</option>
+                                ))}
+                            </select>
+                            <div className="text-[11px] text-zinc-600 mt-1">
+                                {draft.rubric_id
+                                    ? 'Every run is judged when it finishes. The judge is a model call, billed like any other.'
+                                    : 'Pick a rubric to have an LLM judge score every run and flag regressions. Rubrics are written on the Evals screen.'}
+                            </div>
                         </div>
                     </div>
                 )}
