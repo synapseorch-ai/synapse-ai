@@ -109,26 +109,25 @@ class TestTheTallyIsWrittenAsItGoes:
 
 
 class TestCancellation:
+    """The stop flag lives in the row, not in a module-level set.
+
+    On a fleet the process serving the click is never the process running the
+    suite, so a process-local flag would be a stop button that does nothing and
+    reports success. These tests cancel the way the route does — through the
+    store — which is the only way that works in both products.
+    """
+
     async def test_a_cancelled_suite_stops_and_says_so(self, fake_llm, monkeypatch):
         fake_llm.set_default(VERDICT)
         suite, _ = await _setup(case_count=5)
 
-        run_id_holder = {}
-        original = store.create_suite_run
-
-        async def _capture(values):
-            run_id_holder["id"] = values["id"]
-            return await original(values)
-
-        monkeypatch.setattr(store, "create_suite_run", _capture)
-
-        # Cancel as soon as the first case has been scored.
-        original_update = store.update_suite_run
+        original = store.update_suite_run
 
         async def _cancel_after_first(suite_run_id, **values):
+            result = await original(suite_run_id, **values)
             if values.get("scored_count") == 1:
-                suites.cancel(suite_run_id)
-            return await original_update(suite_run_id, **values)
+                await suites.cancel(suite_run_id)
+            return result
 
         monkeypatch.setattr(store, "update_suite_run", _cancel_after_first)
 
@@ -142,17 +141,52 @@ class TestCancellation:
         fake_llm.set_default(VERDICT)
         suite, _ = await _setup(case_count=4)
 
-        original_update = store.update_suite_run
+        original = store.update_suite_run
 
         async def _cancel_after_first(suite_run_id, **values):
+            result = await original(suite_run_id, **values)
             if values.get("scored_count") == 1:
-                suites.cancel(suite_run_id)
-            return await original_update(suite_run_id, **values)
+                await suites.cancel(suite_run_id)
+            return result
 
         monkeypatch.setattr(store, "update_suite_run", _cancel_after_first)
         result = await suites.run_suite(suite, _server())
 
-        assert len(await store.scores_for_suite_run(result["id"])) == result["scored_count"] >= 1
+        kept = await store.scores_for_suite_run(result["id"])
+        assert len(kept) == result["scored_count"] >= 1
+
+    async def test_cancelling_nothing_says_so(self):
+        assert await suites.cancel("esr_nothing") is False
+
+    async def test_a_finished_suite_cannot_be_cancelled(self, fake_llm):
+        """The button is gone by then, but a stale tab still has it."""
+        fake_llm.set_default(VERDICT)
+        suite, _ = await _setup(case_count=1)
+        result = await suites.run_suite(suite, _server())
+        assert await suites.cancel(result["id"]) is False
+
+
+class TestASecondStartIsRefusedAcrossProcesses:
+    async def test_running_for_finds_the_run_in_flight(self, fake_llm, monkeypatch):
+        """`running_for` reads the store, so a second Start is refused whichever
+        worker picked the first one up."""
+        fake_llm.set_default(VERDICT)
+        suite, _ = await _setup(case_count=3)
+
+        seen: list[str | None] = []
+        original = store.update_suite_run
+
+        async def _observe(suite_run_id, **values):
+            result = await original(suite_run_id, **values)
+            if values.get("scored_count") == 1:
+                seen.append(await suites.running_for(suite["id"]))
+            return result
+
+        monkeypatch.setattr(store, "update_suite_run", _observe)
+        result = await suites.run_suite(suite, _server())
+
+        assert seen == [result["id"]], "mid-flight, the set reports itself running"
+        assert await suites.running_for(suite["id"]) is None, "and stops once it is done"
 
 
 class TestASuiteWithoutARubricScoresNothingButStillRuns:

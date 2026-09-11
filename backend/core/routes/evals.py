@@ -271,7 +271,7 @@ async def list_suites():
         out.append({
             **suite,
             "estimate": suites_mod.estimate(suite),
-            "running": suites_mod.is_running(suite["id"]),
+            "running": await suites_mod.running_for(suite["id"]) is not None,
         })
     return out
 
@@ -336,7 +336,7 @@ async def run_suite(suite_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Set not found")
     if not (suite.get("cases") or []):
         raise HTTPException(status_code=400, detail="This set has no cases yet.")
-    if suites_mod.is_running(suite_id):
+    if await suites_mod.running_for(suite_id) is not None:
         raise HTTPException(status_code=409, detail="This set is already running.")
 
     server_module = getattr(request.app.state, "server_module", None)
@@ -362,13 +362,11 @@ async def cancel_suite(suite_id: str):
     pretending otherwise by hiding them would make the bill unexplainable.
     """
     from core.evals import suites as suites_mod
-    from core.store import evals as store
 
-    runs = await store.suite_runs_for(suite_id, limit=1)
-    if not runs or runs[0]["status"] != "running":
+    suite_run_id = await suites_mod.running_for(suite_id)
+    if suite_run_id is None or not await suites_mod.cancel(suite_run_id):
         raise HTTPException(status_code=404, detail="Nothing running for this set.")
-    suites_mod.cancel(runs[0]["id"])
-    return {"status": "cancelling", "suite_run_id": runs[0]["id"]}
+    return {"status": "cancelling", "suite_run_id": suite_run_id}
 
 
 @router.get("/api/evals/suites/{suite_id}/runs")
