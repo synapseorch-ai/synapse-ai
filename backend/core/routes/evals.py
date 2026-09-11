@@ -14,7 +14,9 @@ do is re-run that judgement on demand: one run, or the last N of an
 orchestration. They exist because a rubric written today is worth pointing at
 work that already happened.
 """
-from fastapi import APIRouter, HTTPException
+import asyncio
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.evals import regression as regression_mod
@@ -238,3 +240,142 @@ async def leave_feedback(payload: FeedbackIn):
 async def session_feedback(session_id: str):
     from core.store import evals as store
     return await store.feedback_for_session(session_id)
+
+
+# ── golden sets ──────────────────────────────────────────────────────────────
+
+class CaseIn(BaseModel):
+    id: str = ""
+    name: str = Field(default="", max_length=evals_store.MAX_NAME_CHARS)
+    input: str = Field(min_length=1, max_length=evals_store.MAX_TEXT_CHARS)
+    notes: str = Field(default="", max_length=evals_store.MAX_TEXT_CHARS)
+
+
+class SuiteIn(BaseModel):
+    name: str = Field(min_length=1, max_length=evals_store.MAX_NAME_CHARS)
+    orchestration_id: str = Field(min_length=1)
+    cases: list[CaseIn] = []
+
+
+class GenerateIn(BaseModel):
+    count: int = Field(default=5, ge=1, le=10)
+    steer: str = Field(default="", max_length=1_000)
+
+
+@router.get("/api/evals/suites")
+async def list_suites():
+    from core.evals import suites as suites_mod
+
+    out = []
+    for suite in await evals_store.load_suites():
+        out.append({
+            **suite,
+            "estimate": suites_mod.estimate(suite),
+            "running": suites_mod.is_running(suite["id"]),
+        })
+    return out
+
+
+@router.post("/api/evals/suites")
+async def create_suite(payload: SuiteIn):
+    return await evals_store.save_suite(payload.model_dump())
+
+
+@router.put("/api/evals/suites/{suite_id}")
+async def update_suite(suite_id: str, payload: SuiteIn):
+    if await evals_store.get_suite(suite_id) is None:
+        raise HTTPException(status_code=404, detail="Set not found")
+    return await evals_store.save_suite({**payload.model_dump(), "id": suite_id})
+
+
+@router.delete("/api/evals/suites/{suite_id}")
+async def delete_suite(suite_id: str):
+    if not await evals_store.delete_suite(suite_id):
+        raise HTTPException(status_code=404, detail="Set not found")
+    return {"status": "deleted"}
+
+
+@router.post("/api/evals/suites/{suite_id}/generate")
+async def generate_cases(suite_id: str, payload: GenerateIn):
+    """Propose cases. **Nothing is saved** — the caller edits and accepts.
+
+    A generator that wrote straight to the set would be putting model-authored
+    text into the thing the model is later measured against, which is how a
+    golden set quietly starts testing what the model finds easy.
+    """
+    from core.config import load_settings
+    from core.evals import generate
+    from core.store.resources import get_orchestration
+
+    suite = await evals_store.get_suite(suite_id)
+    if suite is None:
+        raise HTTPException(status_code=404, detail="Set not found")
+    orch = await get_orchestration(suite.get("orchestration_id") or "")
+    if not orch:
+        raise HTTPException(status_code=404, detail="Orchestration not found")
+
+    rubric = await evals_store.get_rubric(orch.get("rubric_id") or "")
+    cases = await generate.propose(
+        orch, rubric, load_settings(), count=payload.count, steer=payload.steer
+    )
+    return {"cases": cases, "saved": False}
+
+
+@router.post("/api/evals/suites/{suite_id}/run")
+async def run_suite(suite_id: str, request: Request):
+    """Start a suite run. Returns as soon as it is under way.
+
+    Detached deliberately: N runs takes minutes, and a request held open for
+    them would be a timeout on every deployment that has one. Progress is read
+    from the suite-run row, which is written as each case lands.
+    """
+    from core.evals import suites as suites_mod
+
+    suite = await evals_store.get_suite(suite_id)
+    if suite is None:
+        raise HTTPException(status_code=404, detail="Set not found")
+    if not (suite.get("cases") or []):
+        raise HTTPException(status_code=400, detail="This set has no cases yet.")
+    if suites_mod.is_running(suite_id):
+        raise HTTPException(status_code=409, detail="This set is already running.")
+
+    server_module = getattr(request.app.state, "server_module", None)
+    suite_run_id = suites_mod.new_suite_run_id()
+
+    async def _drive():
+        try:
+            await suites_mod.run_suite(suite, server_module, suite_run_id=suite_run_id)
+        except Exception as exc:  # noqa: BLE001 - a detached task must not vanish silently
+            from core.log import get_logger
+            get_logger(__name__).warning(f"suite run '{suite_run_id}' failed: {exc}")
+
+    asyncio.create_task(_drive())
+    return {"suite_run_id": suite_run_id, "status": "running",
+            "estimate": suites_mod.estimate(suite)}
+
+
+@router.post("/api/evals/suites/{suite_id}/cancel")
+async def cancel_suite(suite_id: str):
+    """Stop after the case in flight. Nothing is rolled back.
+
+    The runs that already happened are real runs that really cost money, and
+    pretending otherwise by hiding them would make the bill unexplainable.
+    """
+    from core.evals import suites as suites_mod
+    from core.store import evals as store
+
+    runs = await store.suite_runs_for(suite_id, limit=1)
+    if not runs or runs[0]["status"] != "running":
+        raise HTTPException(status_code=404, detail="Nothing running for this set.")
+    suites_mod.cancel(runs[0]["id"])
+    return {"status": "cancelling", "suite_run_id": runs[0]["id"]}
+
+
+@router.get("/api/evals/suites/{suite_id}/runs")
+async def suite_history(suite_id: str, limit: int = 20):
+    from core.store import evals as store
+
+    runs = await store.suite_runs_for(suite_id, limit=max(1, min(limit, 100)))
+    for run in runs:
+        run["scores"] = await store.scores_for_suite_run(run["id"])
+    return runs

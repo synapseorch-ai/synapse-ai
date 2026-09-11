@@ -1050,7 +1050,13 @@ class OrchestrationEngine:
         from core.config import load_settings
         from core.evals import scoring
 
-        await scoring.score_run(run, self.orch, load_settings())
+        # Set by the golden-set runner on the engine it builds, so the score
+        # this run produces can be found again as part of that suite. It rides
+        # on the engine rather than in `initial_state` for the reason D80 gives
+        # about attachments: `shared_state` is the run's own data and a private
+        # key in it is read by everything that renders a run.
+        suite_run_id = getattr(self, "eval_suite_run_id", None)
+        await scoring.score_run(run, self.orch, load_settings(), suite_run_id=suite_run_id)
 
     async def _write_memory_summaries(self, run: OrchestrationRun) -> None:
         """One session summary per memory-enabled agent that took part.
