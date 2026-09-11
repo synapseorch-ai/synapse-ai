@@ -58,3 +58,48 @@ class TestAgentTypes:
         # Response is a list or dict of known agent types.
         payload = resp.json()
         assert payload  # non-empty
+
+
+class TestToolPolicySurvivesASave:
+    """The regression this screen exists for.
+
+    `Agent` had no `tool_policy` field, so `create_agent`'s `agent.dict()`
+    dropped it: the one documented way to reach the feature — editing the agent
+    document by hand — was erased by the next save through the UI. Nothing
+    failed; the policy simply stopped being there.
+    """
+
+    async def test_a_policy_round_trips(self, client):
+        body = _valid_agent_body(id="agent_policy_1",
+                                 tool_policy={"destructive": "confirm", "undeclared": "deny"})
+        resp = await client.post("/api/agents", json=body)
+        assert resp.status_code == 200
+        assert resp.json()["tool_policy"] == {"destructive": "confirm", "undeclared": "deny"}
+
+        listed = next(a for a in (await client.get("/api/agents")).json()
+                      if a["id"] == "agent_policy_1")
+        assert listed["tool_policy"] == {"destructive": "confirm", "undeclared": "deny"}
+
+    async def test_junk_is_cleaned_on_the_way_in(self, client):
+        """Stored clean rather than as sent: one of the readers of this document
+        decides whether a chat widget may publish the agent."""
+        resp = await client.post("/api/agents", json=_valid_agent_body(
+            id="agent_policy_2", tool_policy={"open_world": "confirm", "wat": "deny",
+                                              "destructive": "sometimes"}))
+        assert resp.status_code == 200
+        assert resp.json()["tool_policy"] == {"open_world": "confirm"}
+
+    async def test_an_agent_that_says_nothing_stores_an_empty_policy(self, client):
+        resp = await client.post("/api/agents", json=_valid_agent_body(id="agent_policy_3"))
+        assert resp.json()["tool_policy"] == {}
+
+    async def test_the_engine_reads_what_the_route_stored(self, client):
+        """The route and `resolve_policy` have to agree about the shape, or the
+        screen writes something the loop never acts on."""
+        from core.tool_policy import resolve_policy
+
+        await client.post("/api/agents", json=_valid_agent_body(
+            id="agent_policy_4", tool_policy={"destructive": "deny"}))
+        stored = next(a for a in (await client.get("/api/agents")).json()
+                      if a["id"] == "agent_policy_4")
+        assert resolve_policy(stored, None)["destructive"] == "deny"

@@ -44,6 +44,33 @@ class TestSettingsRoutes:
         assert resp.status_code == 200
         assert resp.json()["agent_name"] == "Cov Agent"
 
+    async def test_the_workspace_tool_policy_round_trips_and_is_cleaned(self, client):
+        """The floor every agent inherits. It had no home at all before this:
+        `tool_policy_defaults` was read by `resolve_policy` and written by
+        nothing, so a deployment could not opt in."""
+        resp = await client.post("/api/settings", json={
+            "agent_name": "Cov Agent",
+            "tool_policy_defaults": {"undeclared": "confirm", "nonsense": "deny",
+                                     "destructive": "whenever"},
+        })
+        assert resp.status_code == 200
+        assert (await client.get("/api/settings")).json()["tool_policy_defaults"] == {
+            "undeclared": "confirm"}
+
+    async def test_the_engine_reads_the_stored_workspace_policy(self, client):
+        """`load_settings()` is what the loop consults, so the setting is only
+        real if it arrives there — not merely if the endpoint echoes it."""
+        from core.config import load_settings
+        from core.tool_policy import resolve_policy
+
+        await client.post("/api/settings", json={
+            "agent_name": "Cov Agent",
+            "tool_policy_defaults": {"destructive": "deny"},
+        })
+        policy = resolve_policy(agent=None, settings=load_settings())
+        assert policy["destructive"] == "deny"
+        assert policy["undeclared"] == "allow"
+
     async def test_personal_details_roundtrip(self, client):
         resp = await client.post("/api/personal-details",
                                  json={"first_name": "Ada", "last_name": "Lovelace"})

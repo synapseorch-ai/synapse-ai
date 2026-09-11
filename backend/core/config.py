@@ -170,6 +170,10 @@ _DEFAULTS = {
         # single-user deployments only.
         "transform_runtime": "docker",
         "allow_db_write": False,
+        # Tool policy's deployment-wide floor — see core/tool_policy.py. Empty
+        # is `allow` everywhere, deliberately: a closed default would change the
+        # behaviour of every agent already running on upgrade.
+        "tool_policy_defaults": {},
         "coding_agent_enabled": True,
         "report_agent_enabled": True,
         "messaging_enabled": True,

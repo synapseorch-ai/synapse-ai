@@ -130,6 +130,15 @@ def _isolate_run_checkpoints(tmp_path, monkeypatch):
     import core.store.cache as cache_mod
     cache_mod.invalidate_all()
 
+    # And so does the settings snapshot, which is cached per tenant for 30
+    # seconds. Without this, a test that writes a setting is still being
+    # answered to the *next* tests in the process — against their own empty
+    # databases — for as long as the TTL lasts. That is ordering- and
+    # speed-dependent, which is the worst way to find out.
+    import core.settings_runtime as settings_mod
+    settings_mod.invalidate()
+    settings_mod._current.set(None)
+
 
 # ── notification store isolation (autouse) ───────────────────────────────────
 @pytest.fixture(autouse=True)

@@ -62,8 +62,16 @@ async def get_agents():
 async def create_agent(agent: Agent):
     # One upsert: read-list / mutate / write-list loses a concurrent edit.
     from core.store.resources import save_agent
-    await save_agent(agent.dict())
-    return agent
+    from core.tool_policy import clean_policy
+
+    document = agent.dict()
+    # Stored clean rather than as sent, so an unknown category or a misspelt
+    # decision never reaches the document — every reader would have to ignore it
+    # again, and one of those readers decides whether a widget may publish this
+    # agent. The response carries what was stored, not what was asked for.
+    document["tool_policy"] = clean_policy(document.get("tool_policy"))
+    await save_agent(document)
+    return document
 
 
 @router.delete("/api/agents/{agent_id}")

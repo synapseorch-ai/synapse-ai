@@ -90,3 +90,21 @@ REASONS = {
 
 def explain(category: str) -> str:
     return REASONS.get(category, "this agent's tool policy does not allow it")
+
+
+def clean_policy(value) -> dict[str, Decision]:
+    """What a write path should store: known categories, known decisions, in
+    riskiest-first order.
+
+    Not a safety check — `resolve_policy` already ignores anything it does not
+    understand, and it has to, because a policy can arrive from an import or a
+    hand-edited document. This is what stops a *write* from persisting junk that
+    every later reader then has to ignore again, and what keeps two agents with
+    the same policy storing the same JSON.
+
+    An empty dict means inherit: for an agent, the deployment's defaults; for a
+    deployment, `allow`.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {c: value[c] for c in CATEGORIES if value.get(c) in _VALID}

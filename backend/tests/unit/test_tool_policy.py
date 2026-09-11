@@ -13,7 +13,7 @@ import pytest
 
 from _fakes import seed as S
 from _fakes.fake_llm import tool_call
-from core.tool_policy import DEFAULT_POLICY, decide, resolve_policy
+from core.tool_policy import CATEGORIES, DEFAULT_POLICY, decide, resolve_policy
 from core.tools import VirtualTool
 
 
@@ -215,3 +215,29 @@ class TestTheGateInTheLoop:
                                   executed, tools_override=None)
         assert executed == [("danger", {})]
         assert not any(e["type"] == "human_input_required" for e in events)
+
+
+# ── What a write path stores ────────────────────────────────────────────────
+
+class TestCleanPolicy:
+    """`resolve_policy` ignores what it does not understand — it has to, since a
+    policy can arrive from an import or a hand-edited document. `clean_policy`
+    is the other half: what a *write* is allowed to persist."""
+
+    def test_unknown_categories_and_decisions_are_dropped(self):
+        from core.tool_policy import clean_policy
+
+        assert clean_policy({"destructive": "deny", "invented": "deny",
+                             "open_world": "maybe"}) == {"destructive": "deny"}
+
+    def test_anything_that_is_not_a_dict_is_no_policy_at_all(self):
+        from core.tool_policy import clean_policy
+
+        for junk in (None, "deny", ["deny"], 7):
+            assert clean_policy(junk) == {}
+
+    def test_the_order_is_canonical_so_two_equal_policies_store_alike(self):
+        from core.tool_policy import clean_policy
+
+        scrambled = {"undeclared": "confirm", "destructive": "deny", "open_world": "allow"}
+        assert list(clean_policy(scrambled)) == list(CATEGORIES)

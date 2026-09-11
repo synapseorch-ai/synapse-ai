@@ -143,6 +143,10 @@ async def update_settings(settings: Settings):
     existing = load_settings()
     # Never overwrite the bcrypt hash via the general settings endpoint
     data.pop("login_password_hash", None)
+    if "tool_policy_defaults" in data:
+        from core.tool_policy import clean_policy
+
+        data["tool_policy_defaults"] = clean_policy(data["tool_policy_defaults"])
     prev_bash_dirs = list(existing.get("bash_allowed_dirs", []))
     existing.update(data)
     data = existing

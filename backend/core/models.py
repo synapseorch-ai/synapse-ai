@@ -66,6 +66,13 @@ class Agent(BaseModel):
     # everything else keeps the [REASONING] prompt convention and ignores it.
     reasoning_effort: str | None = None
     delegate_agent_ids: list[str] = []  # for delegate-type agents; empty = allow all
+    # What this agent may do with the tools it holds, by behaviour rather than
+    # by name: {"destructive"|"open_world"|"undeclared": "allow"|"confirm"|"deny"}.
+    # An absent category inherits the deployment's `tool_policy_defaults`, which
+    # itself defaults to allow — so an empty dict is the upgrade-safe default.
+    # See core/tool_policy.py. This field is why an agent saved through the API
+    # keeps a policy at all: the model drops what it does not declare.
+    tool_policy: dict[str, str] = {}
 
 class Repo(BaseModel):
     id: str
@@ -138,6 +145,10 @@ class Settings(BaseModel):
     auto_compact_enabled: bool = False
     auto_compact_threshold: int = 100000
     allow_db_write: bool = False  # If False, only SELECT/SHOW/DESCRIBE queries allowed
+    # The deployment-wide floor for tool policy, in the same shape as an agent's
+    # own `tool_policy` and overridden by it per category. Empty means allow
+    # everything, which is what every existing agent already does.
+    tool_policy_defaults: dict[str, str] = {}
     embed_code: bool = False  # If False, search_codebase is disabled and postgres not required
     bash_allowed_dirs: list[str] = []  # Extra dirs the bash tool can run commands in (repos + vault always included)
     report_agent_enabled: bool = True

@@ -203,6 +203,25 @@ class TestGatedAgentsAreRefusedAtBindTime:
         detail = response.json()["detail"]
         assert "cannot be published" in detail
 
+    async def test_the_workspace_floor_gates_an_agent_that_says_nothing(
+        self, client, seed_agent
+    ):
+        """An agent inherits the workspace policy, so the bind check has to read
+        it. Reading only the agent's own document would publish a widget that
+        parks on the first tool call and tells a stranger to get in touch."""
+        await client.post("/api/settings", json={
+            "agent_name": "Synapse",
+            "tool_policy_defaults": {"undeclared": "confirm"},
+        })
+        agent = await seed_agent()
+        response = await client.post(
+            "/api/widgets",
+            json={"name": "Support", "agent_id": agent["id"],
+                  "allowed_origins": ["https://acme.com"]},
+        )
+        assert response.status_code == 409
+        assert "does not declare what it does" in response.json()["detail"]
+
     async def test_a_deny_policy_is_fine(self, client, seed_agent):
         """`deny` asks nobody anything — it refuses the call and tells the model
         why, which is exactly what a widget wants."""
