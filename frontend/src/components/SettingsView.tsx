@@ -14,6 +14,7 @@ import type { Tab } from './settings/types';
 import { LinkButton, Screen } from '@/components/ui';
 import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 import { GeneralTab } from './settings/GeneralTab';
+import type { ToolPolicy } from './settings/ToolPolicy';
 import { PersonalDetailsTab } from './settings/PersonalDetailsTab';
 import { VariablesTab } from './settings/VariablesTab';
 import { MemoryTab } from './settings/MemoryTab';
@@ -55,6 +56,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [autoCompactEnabled, setAutoCompactEnabled] = useState(false);
     const [autoCompactThreshold, setAutoCompactThreshold] = useState(50000);
     const [allowDbWrite, setAllowDbWrite] = useState(false);
+    const [toolPolicyDefaults, setToolPolicyDefaults] = useState<ToolPolicy>({});
     const [bashAllowedDirs, setBashAllowedDirs] = useState<string[]>([]);
 
     // Keys
@@ -205,6 +207,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             auto_compact_enabled: autoCompactEnabled,
             auto_compact_threshold: autoCompactThreshold,
             allow_db_write: allowDbWrite,
+            tool_policy_defaults: toolPolicyDefaults,
             embed_code: embedCode,
             bash_allowed_dirs: bashAllowedDirs,
         };
@@ -387,6 +390,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setAutoCompactEnabled(data.auto_compact_enabled || false);
                 setAutoCompactThreshold(data.auto_compact_threshold || 50000);
                 setAllowDbWrite(data.allow_db_write || false);
+                setToolPolicyDefaults(data.tool_policy_defaults || {});
                 setEmbedCode(data.embed_code || false);
                 setBashAllowedDirs(data.bash_allowed_dirs || []);
                 setLoginEnabled(data.login_enabled || false);
@@ -487,6 +491,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         setAutoCompactThreshold={setAutoCompactThreshold}
                         allowDbWrite={allowDbWrite}
                         setAllowDbWrite={setAllowDbWrite}
+                        toolPolicyDefaults={toolPolicyDefaults}
+                        setToolPolicyDefaults={setToolPolicyDefaults}
                         embedCode={embedCode}
                         setEmbedCode={setEmbedCode}
                         bashAllowedDirs={bashAllowedDirs}

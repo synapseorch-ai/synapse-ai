@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Button, Input, Label, Modal, Spinner } from '@/components/ui';
+import { ToolPolicyFields, type ToolPolicy } from './ToolPolicy';
 
 type EmbedIssue = 'no_psql' | 'no_db' | 'existing_url_broken' | 'no_pgvector' | 'connection_error';
 
@@ -30,6 +31,8 @@ interface GeneralTabProps {
     setAutoCompactThreshold: (v: number) => void;
     allowDbWrite: boolean;
     setAllowDbWrite: (v: boolean) => void;
+    toolPolicyDefaults: ToolPolicy;
+    setToolPolicyDefaults: (v: ToolPolicy) => void;
     embedCode: boolean;
     setEmbedCode: (v: boolean) => void;
     bashAllowedDirs: string[];
@@ -53,6 +56,7 @@ export function GeneralTab({
     autoCompactEnabled, setAutoCompactEnabled,
     autoCompactThreshold, setAutoCompactThreshold,
     allowDbWrite, setAllowDbWrite,
+    toolPolicyDefaults, setToolPolicyDefaults,
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
     transformRuntime, setTransformRuntime,
@@ -268,6 +272,22 @@ export function GeneralTab({
                         <strong>Write mode active.</strong> Agents MUST ask for explicit user confirmation before running any INSERT, UPDATE, DELETE, DROP, or CREATE queries. This is enforced in the system prompt.
                     </div>
                 )}
+            </div>
+
+            {/* Tool policy — the workspace floor. An agent sets its own per
+                category and inherits the rest from here. */}
+            <div className="space-y-4">
+                <Label size="sm" className="block">Tool Policy</Label>
+                <p className="text-xs text-text-faint -mt-2">
+                    What every agent may do with the tools it holds, decided by what a tool does rather than
+                    by its name. An agent can be stricter or looser per category; anything it leaves alone
+                    follows this. Allow everywhere is the shipped default, so nothing changes until you
+                    change it here.
+                </p>
+                <ToolPolicyFields
+                    value={toolPolicyDefaults}
+                    onChange={setToolPolicyDefaults}
+                />
             </div>
 
             {/* Code Repository Indexing */}

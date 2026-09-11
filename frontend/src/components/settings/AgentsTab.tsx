@@ -11,6 +11,7 @@ import { AppDispatch } from '@/store';
 import { addAgent, updateAgent } from '@/store/settingsSlice';
 import { ToastNotification } from './ToastNotification';
 import { AgentActivity, ActivityTab } from './AgentActivity';
+import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, type ToolPolicy } from './ToolPolicy';
 
 interface AgentsTabProps {
     agents: any[];
@@ -50,6 +51,11 @@ export const AgentsTab = ({
     const [showPreview, setShowPreview] = useState(false);
     const [agentSubTab, setAgentSubTab] = useState<'config' | 'messaging' | ActivityTab>('config');
     const [agentChannels, setAgentChannels] = useState<any[]>([]);
+    // The workspace floor an unset category inherits, and the widgets that
+    // publish this agent — both read-only here, both needed to say what a
+    // choice will actually do before it is saved.
+    const [policyDefaults, setPolicyDefaults] = useState<ToolPolicy>({});
+    const [widgets, setWidgets] = useState<any[]>([]);
     const [isSaving, setIsSaving] = useState(false);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'error' } | null>(null);
     const [aiBuilderOpen, setAiBuilderOpen] = useState(false);
@@ -175,6 +181,14 @@ export const AgentsTab = ({
             .then(res => res.json())
             .then(data => setAgentTypes(data.types || []))
             .catch(err => console.error("Failed to fetch agent types", err));
+        fetch('/api/settings')
+            .then(res => res.json())
+            .then(data => setPolicyDefaults(data?.tool_policy_defaults || {}))
+            .catch(err => console.error("Failed to fetch settings", err));
+        fetch('/api/widgets')
+            .then(res => res.json())
+            .then(data => setWidgets(Array.isArray(data) ? data : []))
+            .catch(err => console.error("Failed to fetch widgets", err));
     }, []);
 
     const toggleExpand = (capId: string) => {
@@ -894,6 +908,42 @@ export const AgentsTab = ({
                                         })()}
                                     </div>
                                     )}
+
+                                    {/* Tool policy — what the agent may DO with the tools above.
+                                        The list is about which tools it holds; this is about what
+                                        a call costs. Enforced in core/tool_policy.py. */}
+                                    <div className="space-y-1">
+                                        <Label className="block">Tool Policy</Label>
+                                        <p className="text-2xs text-text-faint -mt-1 mb-2">
+                                            Decided by what a tool does, not by its name — so a destructive call can wait
+                                            for a person without taking the tool away from the agent.
+                                        </p>
+                                        <ToolPolicyFields
+                                            value={draftAgent.tool_policy || {}}
+                                            onChange={(next) => setDraftAgent({ ...draftAgent, tool_policy: next })}
+                                            inheritFrom={policyDefaults}
+                                        />
+                                        {(() => {
+                                            const gating = gatingCategories(draftAgent.tool_policy || {}, policyDefaults);
+                                            const bound = widgets.filter((w: any) => w.agent_id === draftAgent.id);
+                                            if (gating.length === 0 || bound.length === 0) return null;
+                                            const names = bound.map((w: any) => w.name || 'Untitled widget').join(', ');
+                                            const asked = gating
+                                                .map(id => POLICY_CATEGORIES.find(c => c.id === id)?.clause)
+                                                .filter(Boolean)
+                                                .join(', or ');
+                                            return (
+                                                <div className="mt-3 bg-warning/30 border border-warning/50 p-3 rounded-md">
+                                                    <p className="text-2xs text-text">
+                                                        <span className="font-bold">{bound.length === 1 ? 'A chat widget publishes' : 'Chat widgets publish'} this agent</span>{' '}
+                                                        ({names}). A visitor there is not a member of this workspace and cannot
+                                                        answer an approval, so a call to {asked} will end their turn with a note
+                                                        asking them to get in touch. Saving is fine — but nobody will be asked.
+                                                    </p>
+                                                </div>
+                                            );
+                                        })()}
+                                    </div>
 
                                     {/* Skills — roster in the prompt, bodies on demand via load_skill */}
                                     <div className="space-y-1">
