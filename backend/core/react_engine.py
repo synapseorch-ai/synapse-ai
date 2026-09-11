@@ -1773,7 +1773,14 @@ async def run_agent_step(
                     yield {
                         "type": "human_input_required",
                         "kind": "tool_approval",
-                        "prompt": (f"The agent wants to run **{tool_name}**, which "
+                        # `explain()` returns an independent clause beginning
+                        # with "it", so it is joined with a dash rather than
+                        # spliced after "which": "…run **scrape_url**, which it
+                        # reaches systems outside this workspace" is what a live
+                        # approval card said, and it is the same splice the
+                        # widget refusal had to fix. Nobody had read this one
+                        # aloud because nothing could reach the card.
+                        "prompt": (f"The agent wants to run **{tool_name}** — "
                                    f"{_tool_policy.explain(_category)}. Allow it?"),
                         "tool_name": tool_name,
                         "tool_args": tool_args,

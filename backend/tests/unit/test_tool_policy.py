@@ -241,3 +241,22 @@ class TestCleanPolicy:
 
         scrambled = {"undeclared": "confirm", "destructive": "deny", "open_world": "allow"}
         assert list(clean_policy(scrambled)) == list(CATEGORIES)
+
+
+class TestTheSentenceAPersonReads:
+    """The approval card is the only place a person meets this feature, and
+    until it had a screen nobody had read its sentence aloud.
+
+    `explain()` returns an independent clause beginning with "it" — the same
+    shape that produced "tools that it reaches systems outside this workspace"
+    in the widget refusal. Spliced after "which", a live card said "run
+    **scrape_url**, which it reaches systems outside this workspace."
+    """
+
+    async def test_the_prompt_is_a_sentence(self, fake_llm):
+        events = await _run_agent(fake_llm, [tool_call("danger"), "done"],
+                                  _agent({"undeclared": "confirm"}))
+        prompt = events[-1]["prompt"]
+        assert prompt == ("The agent wants to run **danger** — it does not declare "
+                          "what it does. Allow it?")
+        assert ", which it " not in prompt
