@@ -390,14 +390,30 @@ class OrchestrationLogger:
             self._write(f"  ⚠️ WARNING: {event.get('message', '')}\n")
 
         elif etype == "if_decision":
-            self._write(
-                f"  🔀 IF: {event.get('condition', '')} → {event.get('result', '')}\n")
+            # Two different events answer to this name. The step executor emits
+            # one carrying the condition and what it evaluated to; `_resolve_next`
+            # emits a second carrying the branch actually taken. They share no
+            # field, so anything that assumes one shape renders nothing for the
+            # other — which is what both of this repo's UI consumers did.
+            if "condition" in event:
+                self._write(
+                    f"  🔀 IF: {event.get('condition', '')} → {event.get('result', '')}\n")
+            else:
+                self._write(
+                    f"  ↪ BRANCH: {event.get('decision') or 'false'}"
+                    f" → {event.get('target_step_id') or 'end'}\n")
 
         elif etype == "switch_decision":
-            matched = event.get("matched_case")
-            self._write(
-                f"  🔀 SWITCH: {event.get('expression', '')} → {event.get('value', '')}"
-                f" (case: {matched if matched is not None else 'default'})\n")
+            if "expression" in event:
+                matched = event.get("matched_case")
+                self._write(
+                    f"  🔀 SWITCH: {event.get('expression', '')} → {event.get('value', '')}"
+                    f" (case: {matched if matched is not None else 'default'})\n")
+            else:
+                matched = event.get("matched_case")
+                self._write(
+                    f"  ↪ BRANCH: case {matched if matched is not None else 'default'}"
+                    f" → {event.get('target_step_id') or 'end'}\n")
 
         elif etype == "orchestration_error":
             self._write(f"\n  ❌ ORCHESTRATION ERROR: {event.get('error', '')}\n")

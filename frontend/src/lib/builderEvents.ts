@@ -150,7 +150,9 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
         case 'switch_decision':
             return append(state, {
                 role: 'assistant', content: '', kind: 'routing', key,
-                routingDecision: String(event.decision ?? ''),
+                // `decision` is the router's field; `result` is the step's.
+                // Only one of them is ever present on a given event.
+                routingDecision: String(event.decision ?? event.result ?? ''),
             });
 
         case 'human_input_required':

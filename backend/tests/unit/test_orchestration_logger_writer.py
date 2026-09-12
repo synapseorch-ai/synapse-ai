@@ -102,3 +102,32 @@ async def test_a_warning_and_the_branch_it_explains_both_reach_the_transcript():
     assert "unsafe expression" in published
     assert "IF: ().__class__.__bases__[0].__subclasses__() → false" in published
     assert "SWITCH: state.category → None (case: default)" in published
+
+
+async def test_the_two_events_that_share_a_name_are_both_rendered():
+    """`if_decision` and `switch_decision` each name two different events.
+
+    The step executor emits one carrying the expression and what it came to;
+    `engine._resolve_next` emits a second carrying the branch actually taken.
+    They share no field. Rendering only the first shape printed an empty line
+    for the second — which is what the live run log did too, as
+    `If/Else:  → undefined`, on every if_else run there has ever been.
+    """
+    from core.orchestration.logger import OrchestrationLogger, _blob_key
+    from core.storage import get_blob_store
+
+    log = OrchestrationLogger(run_id="run_shapes", orchestration_id="o1",
+                              orchestration_name="Test", user_input="hi")
+    log.step_start("s1", "Branch", "if_else")
+    log.log_event({"type": "if_decision", "orch_step_id": "s1",
+                   "decision": "false", "target_step_id": "s_false"})
+    log.log_event({"type": "switch_decision", "orch_step_id": "s2",
+                   "matched_case": None, "target_step_id": "s_default"})
+    log.run_end("completed")
+    log.close()
+
+    published = get_blob_store().get(_blob_key("run_shapes"))
+    assert "↪ BRANCH: false → s_false" in published
+    assert "↪ BRANCH: case default → s_default" in published
+    assert "→ undefined" not in published
+    assert "IF:  →" not in published

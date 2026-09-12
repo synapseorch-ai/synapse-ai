@@ -1074,12 +1074,20 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 setRunLog(prev => [...prev, line('flow', `Evaluator routed → ${data.decision}${data.reasoning ? ` (${data.reasoning})` : ''}`)]);
                 break;
 
+            // Two events share each of these names: the step's own, which
+            // carries the expression and what it came to, and the router's,
+            // which carries the branch taken. Reading only the first shape
+            // printed `If/Else:  → undefined` on every run.
             case 'if_decision':
-                setRunLog(prev => [...prev, line('flow', `If/Else: ${data.condition || ''} → ${data.result}`)]);
+                setRunLog(prev => [...prev, line('flow', data.condition !== undefined
+                    ? `If/Else: ${data.condition} → ${data.result}`
+                    : `Branch: ${data.decision ?? 'false'} → ${data.target_step_id || 'end'}`)]);
                 break;
 
             case 'switch_decision':
-                setRunLog(prev => [...prev, line('flow', `Switch: ${data.expression || ''} = "${data.value}" → ${data.matched_case ?? 'default'}`)]);
+                setRunLog(prev => [...prev, line('flow', data.expression !== undefined
+                    ? `Switch: ${data.expression} = "${data.value}" → ${data.matched_case ?? 'default'}`
+                    : `Branch: case ${data.matched_case ?? 'default'} → ${data.target_step_id || 'end'}`)]);
                 break;
 
             case 'parallel_start':
