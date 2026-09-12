@@ -2055,15 +2055,15 @@ function BottomPanel({
                                             return (
                                                 <div key={i} className={`flex items-start gap-1.5 ${meta.cls}`}>
                                                     <LineIcon size={11} className="mt-[3px] shrink-0" aria-hidden />
-                                                    <span className="min-w-0 flex-1">
-                                                        <ReactMarkdown
-                                                            remarkPlugins={[remarkGfm]}
-                                                            components={{
-                                                                p: ({ children }) => <span>{children}</span>,
-                                                                code: ({ children }) => <code className="font-code bg-surface-2 px-1 rounded-md text-[10px]">{children}</code>,
-                                                            }}
-                                                        >{entry.text}</ReactMarkdown>
-                                                    </span>
+                                                    {/* Plain text, not markdown. These lines are built
+                                                        above out of event fields — an expression, a step
+                                                        name, a tool name, a customer's own data — and none
+                                                        of them is markdown anyone wrote. Rendering them as
+                                                        markdown ate the underscores in
+                                                        `().__class__.__bases__[0].__subclasses__()`, so a
+                                                        run log explaining which attribute the engine
+                                                        refused named a different attribute. */}
+                                                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{entry.text}</span>
                                                 </div>
                                             );
                                         }
