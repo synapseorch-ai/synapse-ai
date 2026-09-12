@@ -412,8 +412,8 @@ class OrchestrationEngine:
                 }
 
                 # Resolve next step
-                next_step_id, extra_event = self._resolve_next(step, run)
-                if extra_event:
+                next_step_id, extra_events = self._resolve_next(step, run)
+                for extra_event in extra_events:
                     if logger:
                         logger.log_event(extra_event)
                     yield extra_event
@@ -649,12 +649,12 @@ class OrchestrationEngine:
         if current_step:
             # Before _resolve_next, so the loop guard counts this iteration.
             engine._complete_human_step(run, current_step)
-            next_id, resume_event = engine._resolve_next(current_step, run)
+            next_id, resume_events = engine._resolve_next(current_step, run)
             run.current_step_id = next_id
-            # Usually a routing/loop_limit_reached event. Dropping it meant a run
-            # that hit its iteration cap on the step right after a human pause
-            # said nothing about why it moved on.
-            if resume_event:
+            # A routing decision, a loop_limit_reached, or both. Dropping them
+            # meant a run that hit its iteration cap on the step right after a
+            # human pause said nothing about why it moved on.
+            for resume_event in resume_events:
                 yield resume_event
             _log.debug(f"[engine.resume] ➡  _resolve_next({run.current_step_id!r} was HUMAN) → next_step_id={next_id!r}")
         else:
@@ -843,8 +843,8 @@ class OrchestrationEngine:
         run.status = "running"
 
         if parent_step:
-            next_id, extra_event = engine._resolve_next(parent_step, run)
-            if extra_event:
+            next_id, extra_events = engine._resolve_next(parent_step, run)
+            for extra_event in extra_events:
                 yield extra_event
             run.current_step_id = next_id
 
@@ -864,14 +864,21 @@ class OrchestrationEngine:
         state["user_query"] = user_input
         return state
 
-    def _resolve_next(self, step: StepConfig, run: OrchestrationRun) -> tuple[str | None, dict | None]:
+    def _resolve_next(self, step: StepConfig, run: OrchestrationRun) -> tuple[str | None, list[dict]]:
         """
         Resolve the next step ID based on step type and state.
-        Returns (next_step_id, optional_event).
+        Returns (next_step_id, events).
+
+        A list, because routing and the loop guard are two different facts and
+        one branch can produce both. This used to return `event or loop_event`,
+        and `event` is an unconditional dict for IF and SWITCH — so a branch
+        target that had exhausted its iterations routed to its fallback
+        correctly and never said why. Same failure class as the `step_warning`
+        nothing rendered: the behaviour was right, the explanation was dropped.
         """
         # END steps have no next
         if step.type == StepType.END:
-            return None, None
+            return None, []
 
         # EVALUATOR — routing decision from LLM call
         if step.type == StepType.EVALUATOR and step.route_map:
@@ -892,18 +899,19 @@ class OrchestrationEngine:
                 }
                 if target is None:
                     # None = end orchestration
-                    return None, event
+                    return None, [event]
                 next_id = target
             else:
                 # Fallback to next_step_id if no routing decision
                 next_id = step.next_step_id
                 event = None
 
+            events = [event] if event else []
             # Apply loop guard on target
             if next_id:
                 guarded_id, loop_event = self._apply_loop_guard(next_id, run)
-                return guarded_id, event or loop_event
-            return next_id, event
+                return guarded_id, events + ([loop_event] if loop_event else [])
+            return next_id, events
 
         # IF_ELSE — deterministic true/false branch
         if step.type == StepType.IF_ELSE:
@@ -928,8 +936,8 @@ class OrchestrationEngine:
             }
             if target:
                 guarded_id, loop_event = self._apply_loop_guard(target, run)
-                return guarded_id, event or loop_event
-            return target, event
+                return guarded_id, [event] + ([loop_event] if loop_event else [])
+            return target, [event]
 
         # SWITCH — deterministic case matching
         if step.type == StepType.SWITCH and step.switch_cases:
@@ -949,20 +957,21 @@ class OrchestrationEngine:
                 "target_step_id": target,
             }
             if target is None:
-                return None, event
+                return None, [event]
             if target:
                 guarded_id, loop_event = self._apply_loop_guard(target, run)
-                return guarded_id, event or loop_event
-            return target, event
+                return guarded_id, [event] + ([loop_event] if loop_event else [])
+            return target, [event]
 
         # Default linear routing
         next_id = step.next_step_id
 
         # Apply loop guard
         if next_id:
-            return self._apply_loop_guard(next_id, run)
+            guarded_id, loop_event = self._apply_loop_guard(next_id, run)
+            return guarded_id, [loop_event] if loop_event else []
 
-        return next_id, None
+        return next_id, []
 
     def _engine_turns(self, run: OrchestrationRun) -> int:
         """How many turns this run has already spent against `max_total_turns`.

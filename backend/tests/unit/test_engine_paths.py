@@ -390,3 +390,43 @@ class TestTheRouterEmitsOneEventName:
         assert "decision" not in picked[0]
         # No `routing_decision` may arrive without the field that sorts it.
         assert all("step_type" in e for e in routed)
+
+
+class TestRoutingAndTheLoopGuardAreTwoFacts:
+    """A branch target can be routed to *and* be out of iterations.
+
+    `_resolve_next` returned `event or loop_event`, and `event` is an
+    unconditional dict for IF and SWITCH — so the loop-limit event was always
+    the one discarded. The run still routed to the fallback correctly; it just
+    never said why, which is the same failure class as a `step_warning` that
+    nothing rendered.
+    """
+
+    async def test_an_exhausted_if_branch_reports_both(self):
+        orch = S.make_orchestration(
+            id="route_if_capped",
+            entry_step_id="s",
+            steps=[
+                {"id": "s", "name": "S", "type": "if_else", "if_condition": "state.k == 'yes'",
+                 "if_true_step_id": "t", "if_false_step_id": "f", "next_step_id": None},
+                # `t` is out of iterations before the run starts, so routing to
+                # it must fall through to `after` and say so.
+                {"id": "t", "name": "T", "type": "print", "print_content": "t",
+                 "output_key": "o", "max_iterations": 0, "next_step_id": "after"},
+                {"id": "f", "name": "F", "type": "print", "print_content": "f", "output_key": "o", "next_step_id": None},
+                {"id": "after", "name": "After", "type": "print", "print_content": "a", "output_key": "o", "next_step_id": None},
+            ],
+        )
+
+        events = await _run(orch, initial_state={"k": "yes"})
+        types_seen = [e.get("type") for e in events]
+
+        assert "routing_decision" in types_seen
+        assert "loop_limit_reached" in types_seen
+        routed = _routing(events)
+        assert routed[0]["step_type"] == "if_else"
+        assert routed[0]["decision"] == "true"
+        capped = [e for e in events if e.get("type") == "loop_limit_reached"][0]
+        assert capped["orch_step_id"] == "t"
+        # Routing still lands on the guard's fallback, as it always did.
+        assert any(e.get("orch_step_id") == "after" for e in events)

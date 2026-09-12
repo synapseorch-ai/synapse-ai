@@ -236,8 +236,16 @@ class WorkerEngineAdapter:
             # awaiting input, its duration grew forever against wall-clock, and
             # `_apply_loop_guard` never counted a human step inside a loop.
             engine._complete_human_step(run, current_step)
-            next_id, _ = engine._resolve_next(current_step, run)
+            next_id, resume_events = engine._resolve_next(current_step, run)
             run.current_step_id = next_id
+            # `OrchestrationEngine.resume()` yields these, and this method is a
+            # copy of it that dropped them. A shared fleet takes this path and
+            # never that one, so the routing decision after an approval — and
+            # the loop-limit refusal that explains an iteration cap — reached a
+            # self-hosted run log and never a cloud one. Same drift as the
+            # `_complete_human_step` line above, in the same file.
+            for ev in resume_events:
+                await self._publisher.publish(ev)
             _log.debug(f"[adapter.resume] ➡  _resolve_next → next_step_id={next_id!r}")
         else:
             _log.debug(f"[adapter.resume] ⚠️  current_step not in step_map — step_id={run.current_step_id!r} will fail in _execute_loop")
