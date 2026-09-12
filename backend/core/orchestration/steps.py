@@ -15,6 +15,7 @@ from typing import AsyncGenerator, TYPE_CHECKING
 import anyio
 
 from core.config import HTTP_TOOL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT, ORCH_STEP_TIMEOUT
+from core import expressions as _expressions
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 if TYPE_CHECKING:
@@ -639,6 +640,14 @@ class ToolStepExecutor:
             return m.group(0)
 
         url = _re.sub(r"\{([^}]+)\}", _replace_placeholder, url)
+
+        # Where this request is going, checked at the moment it is sent. The URL
+        # is templated just above, so the destination is not known any earlier —
+        # and a check at *save* time cannot hold anyway, because DNS can be
+        # re-pointed afterwards and the Tools screen writes a raw document.
+        from core import egress_guard as _egress
+
+        await _egress.check_tool_url(url)
 
         async with _httpx.AsyncClient() as client:
             if method in ("GET", "DELETE"):
@@ -1597,63 +1606,26 @@ class ExtractJsonStepExecutor:
         return results
 
 
-class _DotNavigableState:
-    """Wrapper for shared state that supports dot-notation access.
-    Missing keys return None instead of raising errors."""
+def _eval_state_expr(expr: str, state: dict, default=None):
+    """Evaluate `expr` against shared state in the restricted dialect.
 
-    def __init__(self, data: dict):
-        object.__setattr__(self, '_data', data)
+    Returns ``(value, error_message)``; on failure the value is `default` and
+    the caller decides whether that is a warning or a hard stop.
 
-    def __getattr__(self, name: str):
-        data = object.__getattribute__(self, '_data')
-        if name.startswith('_'):
-            raise AttributeError(name)
-        val = data.get(name)
-        if isinstance(val, dict):
-            return _DotNavigableState(val)
-        return val
+    The dialect, and the boundary that makes it one, live in `core.expressions`.
+    This was a bare `eval()` with an empty `__builtins__` until 1.9.2, which
+    stopped nothing: the builder writes `if_condition` directly, so the path ran
+    from a chat message through prompt injection to arbitrary code in this
+    process (GHSA pending / S3).
 
-    def __getitem__(self, key):
-        data = object.__getattribute__(self, '_data')
-        val = data.get(key)
-        if isinstance(val, dict):
-            return _DotNavigableState(val)
-        return val
-
-    def __repr__(self):
-        data = object.__getattribute__(self, '_data')
-        return repr(data)
-
-    def __str__(self):
-        data = object.__getattribute__(self, '_data')
-        return str(data)
-
-    def __eq__(self, other):
-        if isinstance(other, _DotNavigableState):
-            return object.__getattribute__(self, '_data') == object.__getattribute__(other, '_data')
-        return object.__getattribute__(self, '_data') == other
-
-    def __bool__(self):
-        data = object.__getattribute__(self, '_data')
-        return bool(data)
-
-    def __contains__(self, item):
-        data = object.__getattribute__(self, '_data')
-        return item in data
-
-    def __len__(self):
-        data = object.__getattribute__(self, '_data')
-        return len(data)
-
-
-# Restricted namespace for safe eval in IF/Else and Switch steps
-_SAFE_EVAL_BUILTINS = {
-    '__builtins__': {},
-    'None': None, 'True': True, 'False': False,
-    'len': len, 'int': int, 'float': float, 'str': str,
-    'bool': bool, 'list': list, 'dict': dict, 'abs': abs,
-    'min': min, 'max': max, 'round': round,
-}
+    A refused expression says so, and then behaves exactly like one that raised
+    — both call sites below already had an answer for that, and an existing
+    workflow should not stop running on the day this ships.
+    """
+    result = _expressions.evaluate_expression(expr, state, default)
+    if result.refused:
+        return result.value, f"unsafe expression — {result.error}"
+    return result.value, result.error
 
 
 class IfElseStepExecutor:
@@ -1673,16 +1645,12 @@ class IfElseStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[IF/Else Condition] {condition}"}
 
-        state_wrapper = _DotNavigableState(run.shared_state)
-        eval_ns = {**_SAFE_EVAL_BUILTINS, 'state': state_wrapper}
-
-        try:
-            result = bool(eval(condition, eval_ns))
-        except Exception as e:
-            print(f"DEBUG IF_ELSE: ⚠ Condition eval failed: {e}", flush=True)
-            result = False
+        raw, err = _eval_state_expr(condition, run.shared_state, default=False)
+        result = bool(raw)
+        if err:
+            print(f"DEBUG IF_ELSE: ⚠ Condition eval failed: {err}", flush=True)
             yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": f"Condition eval error (treating as False): {e}"}
+                   "message": f"Condition eval error (treating as False): {err}"}
 
         decision = "true" if result else "false"
         run.shared_state[f"_if_decision_{step.id}"] = decision
@@ -1717,16 +1685,11 @@ class SwitchStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[Switch Expression] {expression}"}
 
-        state_wrapper = _DotNavigableState(run.shared_state)
-        eval_ns = {**_SAFE_EVAL_BUILTINS, 'state': state_wrapper}
-
-        try:
-            value = eval(expression, eval_ns)
-        except Exception as e:
-            print(f"DEBUG SWITCH: ⚠ Expression eval failed: {e}", flush=True)
-            value = None
+        value, err = _eval_state_expr(expression, run.shared_state, default=None)
+        if err:
+            print(f"DEBUG SWITCH: ⚠ Expression eval failed: {err}", flush=True)
             yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": f"Expression eval error: {e}"}
+                   "message": f"Expression eval error: {err}"}
 
         # Convert to string for case matching
         value_str = str(value) if value is not None else "None"
