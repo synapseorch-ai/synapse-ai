@@ -51,6 +51,36 @@ class BlockedEgress(ValueError):
     """A URL that must not be fetched. The message is safe to echo to the model."""
 
 
+class MalformedUrl(BlockedEgress):
+    """Not a URL with a scheme, so it names no destination to check.
+
+    A subclass for the same reason `UnresolvedHost` is: the scraper should
+    refuse what it cannot evaluate. A custom HTTP tool should not, because the
+    commonest way to get here is an unrendered `{{global.api_base}}` — a missing
+    variable, whose own error message names the variable and is worth more than
+    this one. Nothing is conceded: a string with no scheme is one httpx refuses
+    to send anywhere. A URL with a scheme that is simply not http stays a plain
+    `BlockedEgress`.
+    """
+
+
+class UnresolvedHost(BlockedEgress):
+    """The host could not be resolved, so nothing is known about where it points.
+
+    A subclass, so every existing caller keeps failing closed: for the scraper,
+    which is handed URLs a model invented, "unknown" is the right thing to
+    refuse. A *saved* custom HTTP tool is the other case — the host may be an
+    internal API, a service not yet deployed, or a DNS blip, and refusing it is
+    a guess about somebody else's network. `core/builder_tools.py` already says
+    so in as many words about the same URLs at creation time.
+
+    Letting it through concedes nothing: httpx resolves through the same stack
+    a moment later and fails the same lookup. What is not conceded is an
+    address — an IP literal always "resolves", so `169.254.169.254` is still
+    refused by the check below.
+    """
+
+
 def allowed_hosts() -> frozenset[str]:
     raw = os.environ.get("EGRESS_ALLOW_HOSTS", "")
     return frozenset(h.strip().lower() for h in raw.split(",") if h.strip())
@@ -101,7 +131,7 @@ async def resolve(host: str) -> list[str]:
     try:
         infos = await loop.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
-        raise BlockedEgress(f"could not resolve {host}") from exc
+        raise UnresolvedHost(f"could not resolve {host}") from exc
     # sockaddr[0] is typed `str | int` because the tuple shape differs by
     # address family; for AF_INET and AF_INET6 it is always the address.
     addresses = sorted({str(info[4][0]) for info in infos})
@@ -138,8 +168,10 @@ async def check_host(host: str) -> None:
 async def check_url(url: str) -> None:
     """Check one URL, or raise `BlockedEgress`."""
     parsed = urlparse(url)
+    if not parsed.scheme:
+        raise MalformedUrl("that is not a URL; it has no http:// or https:// scheme")
     if parsed.scheme not in {"http", "https"}:
         raise BlockedEgress(
-            f"{parsed.scheme or 'that'} URLs are not supported; use http or https"
+            f"{parsed.scheme} URLs are not supported; use http or https"
         )
     await check_host(parsed.hostname or "")

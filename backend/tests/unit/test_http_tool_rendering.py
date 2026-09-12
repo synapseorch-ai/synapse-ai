@@ -182,3 +182,110 @@ class TestSingleBraceStillWorks:
         await _tool(url="https://api.test/{nope}", body="")
         await TestTheToolStepMatchesTheAgent()._call({"id": 1})
         assert outbound.calls[0]["url"] == "https://api.test/{nope}"
+
+
+class TestEgressAtTheMomentOfTheCall:
+    """S4: the URL a custom tool dials is checked when it is dialled.
+
+    `core/egress_guard.py` has existed since the scraper needed it and the
+    scraper was the only caller, so a tool pointed at the cloud metadata
+    endpoint ran — from a worker that on a shared fleet holds someone's
+    credentials. Checking at creation cannot cover it: the Tools screen takes a
+    raw document, and DNS can be re-pointed after a tool is saved.
+    """
+
+    class _NeverCalled:
+        async def request(self, **kwargs):
+            raise AssertionError(f"the request was sent anyway: {kwargs['url']}")
+
+    @pytest.mark.parametrize("url", [
+        "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        "http://[fd00::1]/internal",
+        "http://127.0.0.1:8000/admin",
+        "http://localhost/admin",
+        "http://10.0.0.5/internal",
+        "http://192.168.1.1/",
+        "http://100.64.0.1/",
+        "http://0.0.0.0/",
+    ])
+    async def test_an_inward_url_never_reaches_the_client(self, url):
+        from core import http_tool
+        from core.egress_guard import BlockedEgress
+
+        with pytest.raises(BlockedEgress):
+            await http_tool.send(
+                self._NeverCalled(), {"url": url, "method": "GET"}, {}, {}
+            )
+
+    async def test_a_non_http_scheme_is_refused(self):
+        from core import http_tool
+        from core.egress_guard import BlockedEgress
+
+        with pytest.raises(BlockedEgress):
+            await http_tool.send(
+                self._NeverCalled(), {"url": "file:///etc/passwd", "method": "GET"}, {}, {}
+            )
+
+    async def test_the_check_sees_the_rendered_url_not_the_template(self):
+        # The whole reason this cannot live in `build_request`: the address is
+        # not known until the arguments are substituted in.
+        from core import http_tool
+        from core.egress_guard import BlockedEgress
+
+        tool = {"url": "http://{{args.host}}/meta-data/", "method": "GET"}
+        with pytest.raises(BlockedEgress):
+            await http_tool.send(
+                self._NeverCalled(), tool, {"host": "169.254.169.254"}, {}
+            )
+
+    async def test_allow_hosts_is_the_escape_hatch(self, monkeypatch):
+        from core import http_tool
+
+        sent = {}
+
+        class _Recording:
+            async def request(self, **kwargs):
+                sent.update(kwargs)
+                return "ok"
+
+        monkeypatch.setenv("EGRESS_ALLOW_HOSTS", "internal.example.test,127.0.0.1")
+        result = await http_tool.send(
+            _Recording(), {"url": "http://127.0.0.1:9/ping", "method": "GET"}, {}, {}
+        )
+        assert result == "ok"
+        assert sent["url"] == "http://127.0.0.1:9/ping"
+
+    async def test_a_public_url_still_goes_out(self):
+        from core import http_tool
+
+        sent = {}
+
+        class _Recording:
+            async def request(self, **kwargs):
+                sent.update(kwargs)
+                return "ok"
+
+        await http_tool.send(
+            _Recording(), {"url": "https://example.com/api", "method": "GET"}, {}, {}
+        )
+        assert sent["url"] == "https://example.com/api"
+
+    async def test_a_host_that_does_not_resolve_is_not_our_verdict_to_make(self):
+        # The blast-radius case: an internal API, a service not yet deployed, a
+        # split-horizon DNS. Blocking here would break every such tool on every
+        # self-hosted install, and would buy nothing — httpx fails the same
+        # lookup a moment later if the host really is absent.
+        from core import http_tool
+
+        sent = {}
+
+        class _Recording:
+            async def request(self, **kwargs):
+                sent.update(kwargs)
+                return "ok"
+
+        await http_tool.send(
+            _Recording(),
+            {"url": "https://nothing-here.invalid/api", "method": "GET"}, {}, {},
+        )
+        assert sent["url"] == "https://nothing-here.invalid/api"

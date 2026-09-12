@@ -2034,10 +2034,10 @@ async def run_agent_step(
                             # between the two ways a tool gets called. They had.
                             from core import http_tool as _http_tool
 
-                            _request = _http_tool.build_request(
-                                target_tool, tool_args, _global_variables
+                            resp = await _http_tool.send(
+                                client, target_tool, tool_args, _global_variables,
+                                timeout=HTTP_TOOL_TIMEOUT,
                             )
-                            resp = await client.request(**_request, timeout=HTTP_TOOL_TIMEOUT)
 
                             json_resp, raw_output = _http_tool.decode(resp, target_tool)
 
