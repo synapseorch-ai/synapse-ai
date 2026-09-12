@@ -736,10 +736,10 @@ function IfElseSection({ step, update, otherSteps, stateKeys }: StepSectionProps
     return (
         <div className="space-y-3">
             <Note>
-                <strong>If / Else</strong> — evaluates a Python condition against shared state and routes to
+                <strong>If / Else</strong> — evaluates a condition against shared state and routes to
                 the True or False path. Missing keys resolve to <code className="font-code">None</code>.
             </Note>
-            <Field label="Condition" required hint={<>A Python expression over <span className="font-code">state.key</span> / <span className="font-code">state.key.nested</span>.</>}>
+            <Field label="Condition" required hint={<>Restricted Python over <span className="font-code">state.key</span> / <span className="font-code">state.key.nested</span> — comparisons, <span className="font-code">and</span>/<span className="font-code">or</span>/<span className="font-code">not</span>, <span className="font-code">in</span>, <span className="font-code">str()</span>/<span className="font-code">len()</span> and the common string methods. No f-strings or comprehensions.</>}>
                 <Input
                     size="sm"
                     className="font-code"
@@ -776,7 +776,7 @@ function SwitchSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                 <strong>Switch</strong> — evaluates an expression against shared state and matches the result
                 to case values (as strings). Routes to the matching case or the default path.
             </Note>
-            <Field label="Expression" required hint={<>A Python expression over <span className="font-code">state.key</span>.</>}>
+            <Field label="Expression" required hint={<>Restricted Python over <span className="font-code">state.key</span> — same syntax as an If / Else condition. Build text with <span className="font-code">str(…)</span>, not an f-string.</>}>
                 <Input
                     size="sm"
                     className="font-code"

@@ -64,8 +64,10 @@ async def _refuse_inward_url(url: str) -> dict | None:
     is the shape a prompt-injected builder writes when it goes looking for the
     cloud metadata endpoint.
 
-    Note this is the only check these URLs get: `core/http_tool.py` does not
-    guard egress when the tool actually runs.
+    This is no longer the only check these URLs get — `core/http_tool.py::send`
+    re-checks the rendered URL at the moment of the call (S4), which is the one
+    that holds when DNS moves after a tool is saved. This check stays because a
+    refusal while the model is still writing is worth more than one at run time.
     """
     import ipaddress
     from urllib.parse import urlparse
@@ -135,6 +137,60 @@ def _refuse_ungated_transform(steps: list) -> dict | None:
             f"Transform steps run Python code, which this workspace's plan does not "
             f"include: {offenders}. Use an `llm` step to reshape data, or upgrade the "
             f"plan to run code."
+        )
+    }
+
+
+#: The five step fields that carry an expression. `core.expressions` decides
+#: what one may contain; this is only the list of places to look.
+_EXPRESSION_FIELDS = (
+    "if_condition",
+    "switch_expression",
+    "loop_over",
+    "loop_while_condition",
+    "loop_break_condition",
+)
+
+
+def _expression_problems(steps: list, *, unsafe_only: bool) -> list[str]:
+    """Every expression problem in `steps`, as sentences naming step and field."""
+    from core import expressions
+
+    look = expressions.unsafe_reason if unsafe_only else expressions.check_expression
+    found = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        sid = step.get("id") or "?"
+        for field in _EXPRESSION_FIELDS:
+            reason = look(step.get(field))
+            if reason:
+                found.append(f"step '{sid}' {field}: {reason}")
+    return found
+
+
+def _refuse_unsafe_expression(steps: list) -> dict | None:
+    """Refuse steps whose expression this engine will not run.
+
+    Checked at authoring time for the reason `_refuse_ungated_transform` gives:
+    an orchestration that saves and then refuses to evaluate is worse than one
+    that would not save. It matters more here, because `if_condition` is a
+    parameter this model writes directly — so refusing now is what turns a
+    prompt-injected expression into a corrected one rather than a stored one.
+
+    Only *unsafe* expressions are refused. A typo is left to the validator to
+    report: the engine survives one with a warning, and failing a tool call on
+    a mistyped condition would be the worse trade.
+    """
+    problems = _expression_problems(steps, unsafe_only=True)
+    if not problems:
+        return None
+    return {
+        "error": (
+            "Refusing to save: an expression uses something this engine will not run. "
+            + " ".join(problems)
+            + " An expression reads `state` with dots, compares and combines values, "
+            "and may call str/int/len and the common string methods — nothing else."
         )
     }
 
@@ -709,11 +765,11 @@ BUILDER_TOOL_SCHEMAS = [
                         "description": "Step IDs in loop body (loop steps)",
                     },
                     "loop_count": {"type": "integer", "description": "Number of loop iterations (fixed-count loops)"},
-                    "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count."},
+                    "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count. Same restricted expression syntax as if_condition; filter a list in a transform step and loop over what it writes."},
                     "loop_item_key": {"type": "string", "description": "State key each for-each item is written to (default `loop_item`)"},
                     "loop_index_key": {"type": "string", "description": "State key each for-each 0-based index is written to (default `loop_index`)"},
-                    "loop_while_condition": {"type": "string", "description": "Python condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps)"},
-                    "loop_break_condition": {"type": "string", "description": "Python condition evaluated after each iteration; True stops the loop (loop steps)"},
+                    "loop_while_condition": {"type": "string", "description": "Condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps). Same restricted expression syntax as if_condition."},
+                    "loop_break_condition": {"type": "string", "description": "Condition evaluated after each iteration; True stops the loop (loop steps). Same restricted expression syntax as if_condition."},
                     "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
                     "transform_code": {"type": "string", "description": "Python code: reads `state`, assigns `result` (transform steps)"},
                     # ── New deterministic step fields ──────────────────────────
@@ -727,9 +783,9 @@ BUILDER_TOOL_SCHEMAS = [
                     "if_condition": {
                         "type": "string",
                         "description": (
-                            "Python expression evaluated against shared state (if_else steps). "
+                            "Condition for if_else steps, evaluated against shared state. "
                             "Use dot-notation: e.g. `state.result.flag == True` or `state.score > 5`. "
-                            "Missing keys are treated as None."
+                            "Missing keys are treated as None. Restricted Python over `state`: dot-notation, comparisons, and/or/not, arithmetic, `in`, the functions str/int/float/bool/list/dict/len/abs/min/max/round, and the common string methods. No f-strings, comprehensions or lambdas."
                         ),
                     },
                     "if_true_step_id": {"type": "string", "description": "Step to go to when if_condition is True (if_else steps)"},
@@ -737,8 +793,8 @@ BUILDER_TOOL_SCHEMAS = [
                     "switch_expression": {
                         "type": "string",
                         "description": (
-                            "Python expression whose str() result is matched against switch_cases (switch steps). "
-                            "Example: `state.category` or `state.result.status.lower()`."
+                            "Expression whose str() result is matched against switch_cases (switch steps). "
+                            "Example: `state.category` or `state.result.status.lower()`. Restricted Python over `state`: dot-notation, comparisons, and/or/not, arithmetic, `in`, the functions str/int/float/bool/list/dict/len/abs/min/max/round, and the common string methods. No f-strings, comprehensions or lambdas."
                         ),
                     },
                     "switch_cases_json": {
@@ -808,18 +864,18 @@ BUILDER_TOOL_SCHEMAS = [
                                 "merge_strategy": {"type": "string", "enum": ["concat", "list", "dict"]},
                                 "loop_step_ids": {"type": "array", "items": {"type": "string"}},
                                 "loop_count": {"type": "integer"},
-                                "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count."},
+                                "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count. Same restricted expression syntax as if_condition; filter a list in a transform step and loop over what it writes."},
                                 "loop_item_key": {"type": "string", "description": "State key each for-each item is written to (default `loop_item`)"},
                                 "loop_index_key": {"type": "string", "description": "State key each for-each 0-based index is written to (default `loop_index`)"},
-                                "loop_while_condition": {"type": "string", "description": "Python condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps)"},
-                                "loop_break_condition": {"type": "string", "description": "Python condition evaluated after each iteration; True stops the loop (loop steps)"},
+                                "loop_while_condition": {"type": "string", "description": "Condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps). Same restricted expression syntax as if_condition."},
+                                "loop_break_condition": {"type": "string", "description": "Condition evaluated after each iteration; True stops the loop (loop steps). Same restricted expression syntax as if_condition."},
                                 "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
                                 "transform_code": {"type": "string"},
                                 "print_content": {"type": "string", "description": "Markdown/text for print steps. Supports {state.key} interpolation."},
-                                "if_condition": {"type": "string", "description": "Python condition for if_else steps (e.g. `state.flag == True`)"},
+                                "if_condition": {"type": "string", "description": "Condition for if_else steps (e.g. `state.flag == True`). Restricted Python over `state`: dot-notation, comparisons, and/or/not, arithmetic, `in`, the functions str/int/float/bool/list/dict/len/abs/min/max/round, and the common string methods. No f-strings, comprehensions or lambdas."},
                                 "if_true_step_id": {"type": "string", "description": "Step ID when condition is True"},
                                 "if_false_step_id": {"type": "string", "description": "Step ID when condition is False"},
-                                "switch_expression": {"type": "string", "description": "Expression to evaluate for switch steps"},
+                                "switch_expression": {"type": "string", "description": "Expression to evaluate for switch steps. Same restricted expression syntax as if_condition."},
                                 "switch_cases_json": {"type": "string", "description": "JSON string: '{\"value\":\"step_id\"}'"},
                                 "switch_default_step_id": {"type": "string", "description": "Fallback step when no case matches"},
                                 "max_turns": {"type": "integer"},
@@ -1463,6 +1519,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_ungated_transform(steps)
         if refused:
             return refused
+        refused = _refuse_unsafe_expression(steps)
+        if refused:
+            return refused
 
         orch = {
             "id": orch_id,
@@ -1500,6 +1559,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if "steps" in fields and isinstance(fields["steps"], list):
             fields["steps"] = _fill_step_defaults(fields["steps"])
             refused = _refuse_ungated_transform(fields["steps"])
+            if refused:
+                return refused
+            refused = _refuse_unsafe_expression(fields["steps"])
             if refused:
                 return refused
         if not fields or set(fields.keys()) - {"orch_id"} == set():
@@ -1566,6 +1628,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_ungated_transform(filled)
         if refused:
             return refused
+        refused = _refuse_unsafe_expression(filled)
+        if refused:
+            return refused
         for i, s in enumerate(filled):
             s["position_x"] = _POS_X_START + (offset + i) * _POS_X_STEP
             s["position_y"] = _zigzag_y(offset + i)
@@ -1615,6 +1680,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_ungated_transform(filled)
         if refused:
             return refused
+        refused = _refuse_unsafe_expression(filled)
+        if refused:
+            return refused
         # Position continues the zig-zag past any existing steps.
         offset = len(existing)
         filled[0]["position_x"] = _POS_X_START + offset * _POS_X_STEP
@@ -1661,6 +1729,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
 
         filled = _fill_step_defaults(processed)
         refused = _refuse_ungated_transform(filled)
+        if refused:
+            return refused
+        refused = _refuse_unsafe_expression(filled)
         if refused:
             return refused
         offset = len(existing)
@@ -1715,6 +1786,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         merged["id"] = step_id  # id is immutable via patch
         steps[sidx] = _fill_step_defaults([merged])[0]
         refused = _refuse_ungated_transform([steps[sidx]])
+        if refused:
+            return refused
+        refused = _refuse_unsafe_expression([steps[sidx]])
         if refused:
             return refused
         orch["steps"] = steps
@@ -2238,6 +2312,13 @@ def _validate_orchestration(orch: dict) -> dict:
                         f"neither in the loop body nor the loop's done path. A loop "
                         f"body runs only the steps listed in loop_step_ids."
                     )
+
+    # Expression check. `_refuse_unsafe_expression` is the gate on the write
+    # paths; this catches the rest — an imported bundle, a hand-edited document,
+    # a step the model wrote before the gate existed — and reports a typo too,
+    # which the gate deliberately lets through.
+    for problem in _expression_problems(steps, unsafe_only=False):
+        issues.append(f"Expression problem: {problem}")
 
     # Writer-membership check: every input_key must be `user_input` /
     # `user_query` (engine-seeded) or the `output_key` of some step. Branch

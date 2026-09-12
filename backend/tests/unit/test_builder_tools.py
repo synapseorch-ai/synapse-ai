@@ -635,3 +635,74 @@ class TestBothDispatchSitesYieldIt:
         # A step's events carry where they happened, like every other step event.
         assert saved[0]["step_name"] == "Write"
         assert saved[0]["orch_step_id"] == "step_write"
+
+
+class TestAnUnsafeExpressionIsRefusedAtAuthoringTime:
+    """`if_condition` is a parameter this model writes directly.
+
+    That is the whole of S3's live path: a chat message, a prompt injection, an
+    expression, and code running in-process. `core.expressions` closes it at run
+    time; refusing at the write is what turns an injected expression into a
+    corrected one rather than a stored one the owner never sees.
+    """
+
+    async def test_a_dunder_walk_is_refused_and_nothing_is_saved(self, server):
+        result = await call("create_orchestration", {
+            "name": "Sneaky", "description": "d", "entry_step_id": "s1",
+            "steps_json": json.dumps([
+                {"id": "s1", "name": "Branch", "type": "if_else",
+                 "if_condition": "().__class__.__bases__[0].__subclasses__()",
+                 "if_true_step_id": None, "if_false_step_id": None},
+            ]),
+        }, server)
+        assert "error" in result
+        assert "will not run" in result["error"]
+        assert "if_condition" in result["error"]
+
+        from core.routes.orchestrations import load_orchestrations
+        assert not [o for o in await load_orchestrations() if o.get("name") == "Sneaky"]
+
+    async def test_every_expression_field_is_checked(self, server):
+        for field, value in (
+            ("if_condition", "state.x.__class__"),
+            ("switch_expression", "f'{state.x}'"),
+            ("loop_over", "[x for x in state.items]"),
+            ("loop_while_condition", "(lambda: 1)()"),
+            ("loop_break_condition", "__import__('os')"),
+        ):
+            step = {"id": "s1", "name": "S", "type": "if_else", field: value}
+            result = await call("create_orchestration", {
+                "name": f"Bad {field}", "description": "d", "entry_step_id": "s1",
+                "steps_json": json.dumps([step]),
+            }, server)
+            assert "error" in result and field in result["error"], field
+
+    async def test_an_ordinary_condition_still_saves(self, server):
+        result = await call("create_orchestration", {
+            "name": "Fine", "description": "d", "entry_step_id": "s1",
+            "steps_json": json.dumps([
+                {"id": "s1", "name": "Branch", "type": "if_else",
+                 "if_condition": "str(state.verdict).strip().lower() == 'approve'",
+                 "if_true_step_id": None, "if_false_step_id": None},
+            ]),
+        }, server)
+        assert "error" not in result, result
+
+    async def test_a_typo_is_reported_by_the_validator_not_the_gate(self, server):
+        # The gate is deliberately narrow: the engine survives a broken
+        # expression with a warning, so failing the write on one would be the
+        # worse trade. The validator is where an author hears about it.
+        created = await call("create_orchestration", {
+            "name": "Typo", "description": "d", "entry_step_id": "s1",
+            "steps_json": json.dumps([
+                {"id": "s1", "name": "Branch", "type": "if_else",
+                 "if_condition": "state.a.b.c ===",
+                 "if_true_step_id": None, "if_false_step_id": None},
+            ]),
+        }, server)
+        assert "error" not in created, created
+
+        orch_id = created["orchestration"]["id"]
+        report = await call("validate_orchestration", {"orch_id": orch_id}, server)
+        assert any("Expression problem" in i and "if_condition" in i
+                   for i in report.get("issues", [])), report
