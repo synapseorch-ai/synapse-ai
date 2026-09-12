@@ -1193,7 +1193,6 @@ async def run_agent_step(
     # agent continues from its last observation instead of redoing every tool
     # call (side effects included).
     start_turn = 0
-    _resumed_mid_step = False
     _pending_refusal = locals().get("_refusal_text")
     if resume_state and resume_state.get("context_text"):
         current_context_text = resume_state["context_text"] + (
@@ -1208,7 +1207,6 @@ async def run_agent_step(
         browser_action_history = list(resume_state.get("browser_actions") or [])
         tools_used_summary = list(resume_state.get("tools_used") or [])
         start_turn = min(int(resume_state.get("turn") or 0), max(0, max_turns - 1))
-        _resumed_mid_step = True
     if _pending_refusal:
         current_context_text += _pending_refusal
         _log.debug(f"RUN_AGENT: ⏯ resuming mid-step from turn {start_turn + 1}/{max_turns}")
@@ -1299,11 +1297,20 @@ async def run_agent_step(
 
             # The prompt is the transcript on every turn, the first included:
             # turn 0 used to send the bare message and turn 1 the framed one,
-            # so the first block never matched its own successor. History rides
-            # along on turn 0 only; a mid-step resume continues from the seeded
-            # context (the original message is already inside it).
+            # so the first block never matched its own successor.
+            #
+            # The conversation rides along on *every* turn. It used to ride on
+            # turn 0 only, which meant one tool call erased the chat for the
+            # rest of the turn: `current_context_text` is seeded with this
+            # message alone, so turn 1 saw the observation and nothing about
+            # what was being discussed. The model reasoned with the history on
+            # turn 0 and then answered, on turn 1, that it had no context —
+            # both halves published from the same step, contradicting each
+            # other on screen. There is no duplication to avoid: history is
+            # completed user/assistant pairs only, and this turn's message is
+            # not appended to the session until the turn ends.
             active_prompt = current_context_text
-            active_history = recent_history_messages if (turn == 0 and not _resumed_mid_step) else []
+            active_history = recent_history_messages
 
             # Auto-compact: summarise accumulated context when it exceeds the
             # threshold. Gated on turn > 0 (nothing to compact on the first
@@ -1326,7 +1333,11 @@ async def run_agent_step(
                     current_context_text = _compact_ctx
                     recent_history_messages = _compact_hist
                     active_prompt = current_context_text
-                    active_history = []
+                    # Derived, not blanked: Stage-2 folds the conversation into
+                    # the summary and hands back `[]`, while Stage-1 only trims
+                    # tool output and hands the history back untouched. Hard
+                    # coding `[]` threw away a conversation Stage-1 had kept.
+                    active_history = _compact_hist
                     _last_compact_turn = turn
                     yield {
                         "type": "context_compact",

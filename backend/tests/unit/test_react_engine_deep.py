@@ -169,6 +169,69 @@ class TestToolLoopVariants:
         assert fake_llm.last_call.get("history_messages")
 
 
+class TestConversationHistoryAcrossTurns:
+    """The conversation must reach the model on every turn, not just the first.
+
+    `active_history` used to be `recent_history_messages if turn == 0 else []`,
+    so one tool call blanked the conversation for the rest of the turn: the
+    model reasoned with context, called a tool, and answered the observation
+    having forgotten what was being talked about. It read as amnesia to the
+    user and as a model failure to us, because turn 0's reasoning — published
+    as `llm_reasoning` — still had the history the answer no longer did.
+
+    `last_call` cannot catch this. A single-turn script makes `last_call` *be*
+    turn 0, which is exactly the turn that was never broken; the assertion has
+    to walk every call.
+    """
+
+    HISTORY = [
+        {"role": "user", "content": "add the sun research to a google doc"},
+        {"role": "assistant", "content": "The connection was revoked; here is the research."},
+    ]
+
+    async def _calls_for(self, fake_llm, script, **kwargs):
+        from core.react_engine import run_agent_step
+        agent = S.make_agent(tools=["all"], skip_default_tools=True)
+        fake_llm.script(script)
+
+        async def executor(name, args):
+            return "TOOL-OUTPUT"
+
+        events = [ev async for ev in run_agent_step(
+            message="try again now", agent_id=agent["id"], session_id="s-hist",
+            server_module=_server(), agent_override=agent,
+            tools_override=[_tool_schema()], tool_executor=executor,
+            history_override=self.HISTORY, max_turns=5, **kwargs)]
+        assert any(e.get("type") == "final" for e in events), _types(events)
+        return fake_llm.calls
+
+    async def test_a_tool_call_does_not_erase_the_conversation(self, fake_llm):
+        calls = await self._calls_for(
+            fake_llm, [tool_call("my_tool", x=1), "Filed it."])
+        assert len(calls) >= 2, "the script should have driven two LLM turns"
+        for turn, call in enumerate(calls):
+            assert call.get("history_messages") == self.HISTORY, (
+                f"turn {turn} lost the conversation: {call.get('history_messages')!r}"
+            )
+
+    async def test_history_survives_several_tool_calls(self, fake_llm):
+        calls = await self._calls_for(
+            fake_llm,
+            [tool_call("my_tool", x=1), tool_call("my_tool", x=2), "Done."])
+        assert len(calls) >= 3
+        assert all(c.get("history_messages") == self.HISTORY for c in calls)
+
+    async def test_a_resumed_turn_still_carries_the_conversation(self, fake_llm):
+        # A tool-approval resume seeds `context_text` and sets `_resumed_mid_step`,
+        # which used to blank history on the resumed turn 0 as well — so an
+        # approved tool call answered with no idea what the chat was about.
+        calls = await self._calls_for(
+            fake_llm, ["Resumed and answered."],
+            resume_state={"context_text": "User Request: try again now\n[Turn 1 — Action]\n",
+                          "turn": 1})
+        assert calls
+        assert all(c.get("history_messages") == self.HISTORY for c in calls)
+
 class TestDelegateContext:
     async def test_delegate_agent_builds_roster(self, fake_llm, seed_agent):
         target = await seed_agent(id="worker", name="Worker", description="does work")
