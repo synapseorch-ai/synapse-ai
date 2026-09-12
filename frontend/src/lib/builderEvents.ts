@@ -146,13 +146,26 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
         }
 
         case 'routing_decision':
+        case 'evaluator_decision':
         case 'if_decision':
         case 'switch_decision':
             return append(state, {
                 role: 'assistant', content: '', kind: 'routing', key,
-                // `decision` is the router's field; `result` is the step's.
-                // Only one of them is ever present on a given event.
-                routingDecision: String(event.decision ?? event.result ?? ''),
+                // Four events, three fields. `decision` is the router's,
+                // `result` the if/switch step's, `tool_name` the evaluator
+                // step's. Only one is ever present on a given event.
+                //
+                // Every branch must yield something truthy: BuilderPanel
+                // renders a routing bubble only when `routingDecision` is, so
+                // an empty string drops the line rather than showing it blank.
+                // A switch that took its default has `decision: null` — that
+                // is "default", not "nothing".
+                routingDecision:
+                    type === 'evaluator_decision'
+                        ? String(event.tool_name ?? '').replace(/^route_/, '') || '(no route)'
+                        : event.step_type === 'switch'
+                            ? `case ${event.decision ?? 'default'}`
+                            : String(event.decision ?? event.result ?? ''),
             });
 
         case 'human_input_required':

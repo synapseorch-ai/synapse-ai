@@ -1395,9 +1395,22 @@ export default function Home() {
         break;
 
       // ── Parallel / loop / routing info ──────────────────────────────────────
-      case 'routing_decision':
-        setStreamingActivity(`🔀 Route: ${(data.decision as string) || (data.tool_name as string)}`);
+      case 'evaluator_decision':
+        setStreamingActivity(
+          `🔀 Route: ${String(data.tool_name || '').replace(/^route_/, '') || '(no route)'}`);
         break;
+
+      case 'routing_decision': {
+        // The chat stream's allow-list already passed this event for evaluator
+        // steps; if/switch routing reaches it now too, so a switch taking its
+        // default must not render as `Route: undefined`.
+        const st = data.step_type as string | undefined;
+        setStreamingActivity(
+          st === 'if_else' ? `🔀 Branch: ${(data.decision as string) ?? 'false'}`
+            : st === 'switch' ? `🔀 Case: ${(data.decision as string) ?? 'default'}`
+              : `🔀 Route: ${(data.decision as string) || (data.tool_name as string)}`);
+        break;
+      }
 
       case 'loop_iteration':
         setStreamingActivity(`🔄 Loop iteration ${data.iteration}/${data.total}`);

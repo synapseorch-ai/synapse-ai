@@ -325,13 +325,49 @@ class OrchestrationLogger:
 {self._indent(response)}
 """)
 
-        elif etype == "routing_decision":
-            decision = event.get("decision", "")
-            target = event.get("target_step_id", "")
-            reasoning = event.get("reasoning", "")
+        elif etype == "evaluator_decision":
+            # The evaluator step's own event: the route the model picked, and
+            # why. The router's `routing_decision` below says where that
+            # actually led. This used to share that name and carry neither of
+            # its fields.
             tool_name = event.get("tool_name", "")
-            label = decision or (tool_name.replace("route_", "", 1) if tool_name.startswith("route_") else tool_name)
-            self._write(f"""
+            label = tool_name.replace("route_", "", 1) if tool_name.startswith("route_") else tool_name
+            reasoning = event.get("arguments", {}).get("reasoning", "")
+            self._write(f"  🔀 EVALUATOR: {label or '(no route)'}"
+                        f"{f' — {reasoning}' if reasoning else ''}\n")
+
+        elif etype == "routing_decision":
+            # One event, three routing step types; `step_type` says which one
+            # routed. Dispatch on it *before* reading `decision`, because a
+            # `None` decision means two different things: an IF whose step
+            # never set its state key, and a SWITCH that matched no case.
+            #
+            # Its absence means an archived run from before the rename, when
+            # only the evaluator used this name — so no `step_type` is an
+            # evaluator.
+            step_type = event.get("step_type") or "evaluator"
+            target = event.get("target_step_id")
+
+            if step_type == "if_else":
+                # `or` and not `??` — an unset decision reads as false, which
+                # is the branch the engine actually takes.
+                self._write(
+                    f"  ↪ BRANCH: {event.get('decision') or 'false'}"
+                    f" → {target or 'end'}\n")
+
+            elif step_type == "switch":
+                # `is not None`, because a matched case can be a falsy string.
+                matched = event.get("decision")
+                self._write(
+                    f"  ↪ BRANCH: case {matched if matched is not None else 'default'}"
+                    f" → {target or 'end'}\n")
+
+            else:
+                decision = event.get("decision", "")
+                reasoning = event.get("reasoning", "")
+                tool_name = event.get("tool_name", "")
+                label = decision or (tool_name.replace("route_", "", 1) if tool_name.startswith("route_") else tool_name)
+                self._write(f"""
   🔀 ROUTING DECISION: {label}
      Target Step  : {target or '(end orchestration)'}
      Reasoning    : {reasoning}
@@ -390,11 +426,11 @@ class OrchestrationLogger:
             self._write(f"  ⚠️ WARNING: {event.get('message', '')}\n")
 
         elif etype == "if_decision":
-            # Two different events answer to this name. The step executor emits
-            # one carrying the condition and what it evaluated to; `_resolve_next`
-            # emits a second carrying the branch actually taken. They share no
-            # field, so anything that assumes one shape renders nothing for the
-            # other — which is what both of this repo's UI consumers did.
+            # The step executor's own event: the condition and what it came to.
+            # `_resolve_next` used to answer to this name as well, with a
+            # payload sharing no field; it emits `routing_decision` now. The
+            # router branch below stays for good — a run journalled before the
+            # rename replays its raw events, so the old shape still arrives.
             if "condition" in event:
                 self._write(
                     f"  🔀 IF: {event.get('condition', '')} → {event.get('result', '')}\n")
@@ -404,6 +440,8 @@ class OrchestrationLogger:
                     f" → {event.get('target_step_id') or 'end'}\n")
 
         elif etype == "switch_decision":
+            # As above: the step's own event, plus a legacy router branch for
+            # runs journalled before `_resolve_next` moved to `routing_decision`.
             if "expression" in event:
                 matched = event.get("matched_case")
                 self._write(

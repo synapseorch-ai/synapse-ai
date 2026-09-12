@@ -95,7 +95,7 @@ STRUCTURAL_EVENT_TYPES = frozenset({
     "orchestration_start", "step_start", "step_complete", "step_error",
     "loop_iteration", "loop_complete", "loop_limit_reached",
     "parallel_start", "parallel_complete", "branch_start", "merge_complete",
-    "routing_decision", "if_decision", "switch_decision",
+    "routing_decision", "if_decision", "switch_decision", "evaluator_decision",
     "human_input_required", "orchestration_complete", "orchestration_error",
     "orchestration_end", "final", "run_stream_end", "journal_truncated",
     # A task list is the run's shape: past the event cap a long run must keep

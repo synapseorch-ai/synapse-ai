@@ -777,7 +777,14 @@ class EvaluatorStepExecutor:
                 tool_name = tool_call.get("tool", "")
                 if tool_name in {f"route_{l}" for l in labels}:
                     routing_decision = {
-                        "type": "routing_decision",
+                        # The step's own event: which route the model picked.
+                        # `routing_decision` is the ROUTER's name for the
+                        # resolved target, and this used to borrow it — two
+                        # payloads sharing no field, so the run log printed
+                        # `Evaluator routed → undefined` before every real
+                        # decision. Named for its step type now, exactly like
+                        # `if_decision` and `switch_decision`.
+                        "type": "evaluator_decision",
                         "tool_name": tool_name,
                         "arguments": tool_call.get("arguments", {}),
                     }
@@ -808,7 +815,7 @@ class EvaluatorStepExecutor:
             if fallback_label:
                 _log.debug(f"Evaluator falling back to route: {fallback_label}")
                 routing_decision = {
-                    "type": "routing_decision",
+                    "type": "evaluator_decision",
                     "tool_name": f"route_{fallback_label}",
                     "arguments": {"reasoning": "Fallback — LLM did not return a valid routing decision"},
                 }

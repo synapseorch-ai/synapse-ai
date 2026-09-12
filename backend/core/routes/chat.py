@@ -250,7 +250,7 @@ async def _event_stream(request, _server, resume_state: dict | None = None):
             elif etype in (
                 "parallel_start", "parallel_complete", "branch_start",
                 "loop_iteration", "loop_complete", "merge_complete",
-                "transform_result", "routing_decision",
+                "transform_result", "routing_decision", "evaluator_decision",
                 "loop_limit_reached", "step_warning",
                 # Things the loop does to keep going, which the person is
                 # entitled to know about. All four were emitted by the

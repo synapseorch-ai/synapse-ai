@@ -7,6 +7,7 @@ import types
 import pytest
 
 from _fakes import seed as S
+from _fakes.fake_llm import tool_call
 
 
 def _server():
@@ -285,3 +286,107 @@ class TestResumeVisibility:
         assert ckpt.waiting_for_human is False
         async for _ in agen:
             pass
+
+
+def _routing(events):
+    return [e for e in events if e.get("type") == "routing_decision"]
+
+
+def _no_router_shape_under_a_step_name(events):
+    """The regression guard: `if_decision`/`switch_decision` are the step
+    executors' names and carry no `target_step_id`. An event of those names
+    with one means the router has borrowed a step's name again."""
+    return not [
+        e for e in events
+        if e.get("type") in ("if_decision", "switch_decision")
+        and "target_step_id" in e
+    ]
+
+
+class TestTheRouterEmitsOneEventName:
+    """`_resolve_next` speaks for all three routing step types under one name.
+
+    It used to reuse the step executor's own name for if_else and switch, so
+    `if_decision` and `switch_decision` each carried two payloads that shared
+    no field — and every consumer read one shape and printed nothing for the
+    other. Only the evaluator had a name of its own.
+    """
+
+    async def test_if_else_routes_under_routing_decision(self):
+        orch = S.make_orchestration(
+            id="route_if",
+            entry_step_id="s",
+            steps=[
+                {"id": "s", "name": "S", "type": "if_else", "if_condition": "state.k == 'no'",
+                 "if_true_step_id": "t", "if_false_step_id": "f", "next_step_id": None},
+                {"id": "t", "name": "T", "type": "print", "print_content": "t", "output_key": "o", "next_step_id": None},
+                {"id": "f", "name": "F", "type": "print", "print_content": "f", "output_key": "o", "next_step_id": None},
+            ],
+        )
+        events = await _run(orch, initial_state={"k": "yes"})
+
+        routed = _routing(events)
+        assert len(routed) == 1
+        assert routed[0]["step_type"] == "if_else"
+        assert routed[0]["decision"] == "false"
+        assert routed[0]["target_step_id"] == "f"
+        assert _no_router_shape_under_a_step_name(events)
+
+    async def test_switch_default_routes_under_routing_decision(self):
+        orch = S.make_orchestration(
+            id="route_switch",
+            entry_step_id="s",
+            steps=[
+                {"id": "s", "name": "S", "type": "switch", "switch_expression": "state.k",
+                 "switch_cases": {"v": "a"}, "switch_default_step_id": "d", "next_step_id": None},
+                {"id": "a", "name": "A", "type": "print", "print_content": "a", "output_key": "o", "next_step_id": None},
+                {"id": "d", "name": "D", "type": "print", "print_content": "d", "output_key": "o", "next_step_id": None},
+            ],
+        )
+        events = await _run(orch, initial_state={"k": "nothing matches"})
+
+        routed = _routing(events)
+        assert len(routed) == 1
+        assert routed[0]["step_type"] == "switch"
+        # No case matched. `None` here is the default branch, and the step's
+        # own `switch_decision` event still carries the expression and value.
+        assert routed[0]["decision"] is None
+        assert routed[0]["target_step_id"] == "d"
+        assert _no_router_shape_under_a_step_name(events)
+
+    async def test_evaluator_step_and_router_no_longer_share_a_name(self, fake_llm):
+        orch = S.make_orchestration(
+            id="route_eval",
+            entry_step_id="ev",
+            steps=[
+                {"id": "ev", "name": "Decide", "type": "evaluator",
+                 "evaluator_prompt": "pick a route",
+                 "route_map": {"again": "body"},
+                 "route_descriptions": {"again": "retry"},
+                 "input_keys": [], "model": "claude-x", "next_step_id": None},
+                {"id": "body", "name": "Body", "type": "print",
+                 "print_content": "looping", "output_key": "b", "next_step_id": None},
+            ],
+        )
+        events = await _run(orch, fake_llm, [tool_call("route_again", reasoning="not yet")])
+
+        # The router's event: where the run actually went.
+        routed = _routing(events)
+        assert len(routed) == 1
+        assert routed[0]["step_type"] == "evaluator"
+        assert routed[0]["decision"] == "again"
+        assert routed[0]["target_step_id"] == "body"
+        # The evaluator's is the one routing event that carries a reason.
+        assert routed[0]["reasoning"] == "not yet"
+
+        # The step's own event: which route the model picked. It answered to
+        # `routing_decision` too until now, carrying neither `decision` nor
+        # `target_step_id` — so both products' run logs printed
+        # `Evaluator routed → undefined` before every real decision.
+        picked = [e for e in events if e.get("type") == "evaluator_decision"]
+        assert len(picked) == 1
+        assert picked[0]["tool_name"] == "route_again"
+        assert picked[0]["arguments"]["reasoning"] == "not yet"
+        assert "decision" not in picked[0]
+        # No `routing_decision` may arrive without the field that sorts it.
+        assert all("step_type" in e for e in routed)

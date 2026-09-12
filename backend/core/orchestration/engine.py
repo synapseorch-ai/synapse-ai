@@ -881,6 +881,10 @@ class OrchestrationEngine:
                 reasoning = run.shared_state.get(f"_routing_reasoning_{step.id}", "")
                 event = {
                     "type": "routing_decision",
+                    # The routing step's OWN type, not the target's. All three
+                    # routing step types emit this one event; `step_type` is
+                    # what tells a consumer which of them spoke.
+                    "step_type": step.type.value,
                     "orch_step_id": step.id,
                     "decision": decision,
                     "target_step_id": target,
@@ -911,7 +915,13 @@ class OrchestrationEngine:
             else:
                 target = step.next_step_id
             event = {
-                "type": "if_decision",
+                # `if_decision` is the step executor's name for its own
+                # {condition, result} event. The router borrowing it meant one
+                # name carried two payloads sharing no field, so every consumer
+                # read one shape and printed nothing for the other. One router
+                # event for all three routing step types instead.
+                "type": "routing_decision",
+                "step_type": step.type.value,
                 "orch_step_id": step.id,
                 "decision": decision,
                 "target_step_id": target,
@@ -929,9 +939,13 @@ class OrchestrationEngine:
             else:
                 target = step.switch_default_step_id
             event = {
-                "type": "switch_decision",
+                "type": "routing_decision",
+                "step_type": step.type.value,
                 "orch_step_id": step.id,
-                "matched_case": matched,
+                # The matched case IS this router's decision, so it travels
+                # under the one field every consumer reads. `None` means no
+                # case matched — the default branch — not "no decision".
+                "decision": matched,
                 "target_step_id": target,
             }
             if target is None:

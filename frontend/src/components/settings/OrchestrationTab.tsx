@@ -1070,14 +1070,35 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 break;
             }
 
-            case 'routing_decision':
-                setRunLog(prev => [...prev, line('flow', `Evaluator routed → ${data.decision}${data.reasoning ? ` (${data.reasoning})` : ''}`)]);
+            case 'evaluator_decision': {
+                // The evaluator step's own event: the route the model picked.
+                // It answered to `routing_decision` before, which carries
+                // neither of these fields — so this line read
+                // `Evaluator routed → undefined` on every evaluator run.
+                const picked = String(data.tool_name || '').replace(/^route_/, '');
+                const why = (data.arguments as Record<string, unknown> | undefined)?.reasoning;
+                setRunLog(prev => [...prev, line('flow',
+                    `Evaluator chose ${picked || '(no route)'}${why ? ` (${why})` : ''}`)]);
                 break;
+            }
 
-            // Two events share each of these names: the step's own, which
-            // carries the expression and what it came to, and the router's,
-            // which carries the branch taken. Reading only the first shape
-            // printed `If/Else:  → undefined` on every run.
+            case 'routing_decision': {
+                // One router event, three routing step types; `step_type` says
+                // which. Absent means an archived run from before the rename,
+                // when only the evaluator used this name.
+                const st = data.step_type as string | undefined;
+                const routed = st === 'if_else'
+                    ? `Branch: ${data.decision ?? 'false'} → ${data.target_step_id || 'end'}`
+                    : st === 'switch'
+                        ? `Branch: case ${data.decision ?? 'default'} → ${data.target_step_id || 'end'}`
+                        : `Evaluator routed → ${data.decision}${data.reasoning ? ` (${data.reasoning})` : ''}`;
+                setRunLog(prev => [...prev, line('flow', routed)]);
+                break;
+            }
+
+            // The step's own events. The router used to share these names with
+            // a payload that had no field in common; it emits `routing_decision`
+            // now. The second arm stays for runs archived before the rename.
             case 'if_decision':
                 setRunLog(prev => [...prev, line('flow', data.condition !== undefined
                     ? `If/Else: ${data.condition} → ${data.result}`
