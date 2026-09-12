@@ -380,6 +380,25 @@ class OrchestrationLogger:
         elif etype == "step_error":
             self._write(f"    ❌ STEP ERROR: {event.get('error', '')}\n")
 
+        elif etype == "step_warning":
+            # Every warning the engine emits was missing from the transcript —
+            # a condition that failed to evaluate, a `loop_over` that resolved
+            # to nothing, a loop that hit its ceiling. The stream carried them
+            # and the archive did not, so the one record that outlives the run
+            # showed a branch being taken and never said the expression behind
+            # it had not run.
+            self._write(f"  ⚠️ WARNING: {event.get('message', '')}\n")
+
+        elif etype == "if_decision":
+            self._write(
+                f"  🔀 IF: {event.get('condition', '')} → {event.get('result', '')}\n")
+
+        elif etype == "switch_decision":
+            matched = event.get("matched_case")
+            self._write(
+                f"  🔀 SWITCH: {event.get('expression', '')} → {event.get('value', '')}"
+                f" (case: {matched if matched is not None else 'default'})\n")
+
         elif etype == "orchestration_error":
             self._write(f"\n  ❌ ORCHESTRATION ERROR: {event.get('error', '')}\n")
 

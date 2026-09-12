@@ -63,3 +63,42 @@ async def test_an_engine_run_leaves_a_complete_log(fake_llm):
     published = get_blob_store().get(_blob_key("run_engine_log"))
     assert "STEP START: Only" in published
     assert "Status   : completed" in published
+
+
+async def test_a_warning_and_the_branch_it_explains_both_reach_the_transcript():
+    """The archive is the record that outlives the run, and it had neither.
+
+    `step_warning` was emitted by every failing expression, every exhausted
+    loop and every unconfigured branch, and rendered by nothing — so a run that
+    took the False path because its condition would not evaluate read exactly
+    like one whose condition was false. With the expression evaluator refusing
+    an unsafe condition rather than running it, that difference is the whole
+    report an owner gets.
+    """
+    from core.orchestration.logger import OrchestrationLogger, _blob_key
+    from core.storage import get_blob_store
+
+    log = OrchestrationLogger(run_id="run_warn", orchestration_id="o1",
+                              orchestration_name="Test", user_input="hi")
+    log.step_start("s1", "Branch", "if_else")
+    log.log_event({
+        "type": "step_warning", "orch_step_id": "s1",
+        "message": "Condition eval error (treating as False): unsafe expression — "
+                   "'.__subclasses__' is not readable",
+    })
+    log.log_event({
+        "type": "if_decision", "orch_step_id": "s1", "step_name": "Branch",
+        "condition": "().__class__.__bases__[0].__subclasses__()", "result": "false",
+    })
+    log.log_event({
+        "type": "switch_decision", "orch_step_id": "s2", "step_name": "Route",
+        "expression": "state.category", "value": "None", "matched_case": None,
+    })
+    log.run_end("completed")
+    log.close()
+
+    published = get_blob_store().get(_blob_key("run_warn"))
+    assert "⚠️ WARNING:" in published
+    assert "unsafe expression" in published
+    assert "IF: ().__class__.__bases__[0].__subclasses__() → false" in published
+    assert "SWITCH: state.category → None (case: default)" in published
