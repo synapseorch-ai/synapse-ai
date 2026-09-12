@@ -178,9 +178,13 @@ _METHODS: dict[tuple[type, str], Any] = {
 
 _METHOD_NAMES = frozenset(name for _, name in _METHODS)
 
+#: Every node the walker will evaluate. `Constant`, `Name`, `Attribute` and
+#: `Call` are listed here for completeness but are decided by their own branches
+#: in `_check` — they need context this set cannot carry.
 _ALLOWED_NODES = frozenset({
     ast.Expression, ast.Load, ast.Subscript, ast.Slice, ast.IfExp,
-    ast.Tuple, ast.List, ast.Set,
+    ast.Tuple, ast.List, ast.Set, ast.Dict,
+    ast.Constant, ast.Name, ast.Attribute, ast.Call,
     ast.BoolOp, ast.And, ast.Or,
     ast.UnaryOp, ast.Not, ast.USub, ast.UAdd,
     ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
@@ -272,13 +276,12 @@ def _check(node: ast.AST, depth: int, count: list[int], *, func_pos: bool = Fals
             raise ExpressionRefused(f'{type(node.value).__name__} literals are not allowed')
         return
 
-    if kind is ast.Dict:
+    if kind is ast.Dict and any(key is None for key in node.keys):
         # `{**other}` parses as a key of None, which `iter_child_nodes` skips —
         # so it has to be caught here or it reaches the walker unchecked.
-        if any(key is None for key in node.keys):
-            raise ExpressionRefused('dictionary unpacking is not allowed')
+        raise ExpressionRefused('dictionary unpacking is not allowed')
 
-    elif kind not in _ALLOWED_NODES:
+    if kind not in _ALLOWED_NODES:
         raise ExpressionRefused(
             f'{_describe(kind)} is not allowed in an expression{_HINTS.get(kind, "")}')
 
