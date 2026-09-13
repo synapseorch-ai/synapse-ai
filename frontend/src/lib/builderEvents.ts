@@ -49,8 +49,15 @@ export interface BuilderMessage {
 
 export interface BuilderState {
     messages: BuilderMessage[];
-    /** Set while a human step is open; the panel answers with these. */
-    pending: { runId: string; field: string } | null;
+    /**
+     * Set while a human step is open; the panel answers with these.
+     *
+     * Cleared by the run moving on — a later step starting, or the run ending
+     * — and not only by the panel sending an answer. A re-attaching stream
+     * replays from the first event, and a question cleared only locally came
+     * back open over a run that had long since resumed.
+     */
+    pending: { runId: string; field: string; stepId: string | null } | null;
     /** The line under the composer while the run is working. */
     status: string | null;
     runId: string | null;
@@ -110,7 +117,16 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
 
         case 'step_start':
             return append(
-                { ...state, messages: completeLastStep(state.messages), status: event.step_name ?? null },
+                {
+                    ...state,
+                    messages: completeLastStep(state.messages),
+                    status: event.step_name ?? null,
+                    // Another step starting means the question was answered.
+                    pending:
+                        state.pending && state.pending.stepId !== (event.orch_step_id ?? null)
+                            ? null
+                            : state.pending,
+                },
                 { role: 'assistant', content: '', kind: 'step_progress', key,
                   stepName: event.step_name ?? '', stepStatus: 'running' },
             );
@@ -177,6 +193,7 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
                     pending: {
                         runId: event.run_id,
                         field: event.fields?.[0]?.name ?? 'answer',
+                        stepId: event.orch_step_id ?? null,
                     },
                 },
                 {
@@ -187,7 +204,9 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
 
         case 'orchestration_complete': {
             const summary = event.final_state?.summary;
-            const withStatus = { ...state, messages: completeLastStep(state.messages), status: null, done: true };
+            const withStatus = {
+                ...state, messages: completeLastStep(state.messages), status: null, done: true, pending: null,
+            };
             if (!summary) return withStatus;
             return append(withStatus, {
                 role: 'assistant', content: String(summary), kind: 'text', key: `summary-${event.run_id ?? seq}`,
@@ -196,9 +215,20 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
 
         case 'orchestration_error':
         case 'step_error':
+            // A requested cancel arrives as this event too — the engine's own
+            // `_finish_cancelled`, whether the panel's Stop or the Runs page
+            // asked. It is not a failure, and saying "Something went wrong"
+            // blames the product for doing what it was told.
+            if (type === 'orchestration_error' && event.error === 'Cancelled') {
+                return append(
+                    { ...state, messages: completeLastStep(state.messages), status: null,
+                      done: true, error: null, pending: null },
+                    { role: 'assistant', content: 'Stopped.', kind: 'text', key: `stopped-${seq}` },
+                );
+            }
             return append(
                 { ...state, messages: completeLastStep(state.messages), status: null,
-                  done: true, error: String(event.error ?? 'Something went wrong.') },
+                  done: true, error: String(event.error ?? 'Something went wrong.'), pending: null },
                 { role: 'assistant', content: `**Something went wrong.** ${event.error ?? ''}`,
                   kind: 'text', key: `error-${seq}` },
             );
