@@ -30,7 +30,7 @@ preference, and a model that cannot honour it should still run.
 """
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 #: What a person can choose. `None` on an agent means "inherit the workspace
 #: setting"; the setting itself is always one of these.
@@ -93,6 +93,25 @@ _NATIVE = (
 #: we set anything, and gpt-oss through our own gateway is exactly that case.
 _READ_ONLY_NATIVE = ("synapse.", "oaic.", "locv1.")
 
+#: How a model takes the ladder — what `reasoning_kind` serves to the screens.
+#:
+#: `LEVELS` is every prefix in `_NATIVE`: off, low, medium and high all mean
+#: something. The other two exist for models a deployment has *measured* and
+#: listed in `settings["reasoning_models"]` (`{model id: kind}`), because an
+#: OpenAI-compatible gateway accepts `reasoning_effort` for every model and
+#: honours it for few — Bedrock ignored an invented key without complaint, so
+#: acceptance proves nothing and only a measurement does (cloud's
+#: `scripts/probe-bedrock-reasoning.py`, 2026-09-14). Two shapes came out:
+#:
+#: * `GRADED` — low, medium and high think progressively more, and the model
+#:   cannot be switched off (gpt-oss refuses `minimal`), so off runs at low.
+#: * `SWITCH` — the model thinks only when asked for high; low and medium were
+#:   indistinguishable from off (qwen3, glm, kimi-k2.5, nemotron, deepseek-v3.2).
+LEVELS = "levels"
+GRADED = "graded"
+SWITCH = "switch"
+_LISTED_KINDS = (GRADED, SWITCH)
+
 
 class ReasoningPlan(NamedTuple):
     """What this call should ask the provider for.
@@ -129,14 +148,38 @@ def normalise(effort: str | None, fallback: str = DEFAULT_EFFORT) -> str:
     return value if value in EFFORT else fallback
 
 
-def supports_native(model: str) -> bool:
+def listed_kind(model: str, listed: Any = None) -> str | None:
+    """This model's kind in a deployment's `reasoning_models`, or None.
+
+    Anything malformed reads as unlisted: the value is JSON a person or an
+    older version wrote, and a turn is not the place to discover a typo.
+    """
+    if not isinstance(listed, dict):
+        return None
+    name = (model or "").strip().lower()
+    for key, kind in listed.items():
+        if isinstance(key, str) and key.strip().lower() == name and kind in _LISTED_KINDS:
+            return str(kind)
+    return None
+
+
+def supports_native(model: str, listed: Any = None) -> bool:
     """Whether this model has a reasoning channel we can ask for.
 
     False here is not "no reasoning" — it is "reasoning stays the prompt
-    convention", which is what every model did until now.
+    convention", which is what every model did until now. `listed` is
+    `settings["reasoning_models"]`; see `GRADED` and `SWITCH`.
     """
     name = (model or "").strip().lower()
-    return bool(name) and name.startswith(_NATIVE)
+    return bool(name) and (name.startswith(_NATIVE) or listed_kind(name, listed) is not None)
+
+
+def reasoning_kind(model: str, listed: Any = None) -> str | None:
+    """How the screens should offer effort for this model, or None for no control."""
+    kind = listed_kind(model, listed)
+    if kind is not None:
+        return kind
+    return LEVELS if supports_native(model) else None
 
 
 def reads_native(model: str) -> bool:
@@ -163,6 +206,7 @@ def plan_for(
     model: str,
     effort: str | None,
     max_output_tokens: int,
+    listed: Any = None,
 ) -> ReasoningPlan | None:
     """The reasoning settings for one call, or None if there are none to send.
 
@@ -170,10 +214,17 @@ def plan_for(
     asked for off and this model can honour that. Both are the same instruction
     to an adapter, so they are the same return value.
     """
-    if not supports_native(model):
+    if not supports_native(model, listed):
         return None
 
     resolved = normalise(effort)
+    kind = listed_kind(model, listed)
+    if kind == SWITCH and resolved != "high":
+        # Not a plan with the channel off: a plan drops the `[REASONING]`
+        # prompt convention, and this model would then not think either.
+        return None
+    if kind == GRADED and resolved == "off":
+        resolved = "low"
     floor = minimum_budget(model)
 
     if resolved == "off" and not floor:

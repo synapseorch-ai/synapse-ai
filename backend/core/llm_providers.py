@@ -2704,7 +2704,9 @@ async def generate_response_ex(
     # the model has no reasoning channel, or the person turned it off; both
     # read the same way to a provider adapter.
     from core import reasoning as _reasoning_policy
-    _reasoning_plan = _reasoning_policy.plan_for(current_model, reasoning_effort, _max_out)
+    _reasoning_plan = _reasoning_policy.plan_for(
+        current_model, reasoning_effort, _max_out, current_settings.get("reasoning_models")
+    )
     if _reasoning_plan is not None:
         # A budget that does not fit under the response cap is refused by
         # Anthropic and Bedrock outright, so the plan may have raised it.

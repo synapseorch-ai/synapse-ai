@@ -49,6 +49,108 @@ class TestWhoHasAChannel:
         assert not R.reads_native("gpt-4o")
 
 
+class TestModelsADeploymentHasMeasured:
+    """`settings["reasoning_models"]` names gateway models that take the ladder.
+
+    Only the deployment serving them knows which do, and how — Bedrock accepts
+    `reasoning_effort` for any model and ignores it for most, so the list is
+    measured, not inferred (cloud's `scripts/probe-bedrock-reasoning.py`,
+    2026-09-14). Two shapes came out of that measurement and they need
+    different policies, which is why the value is a kind and not a flag.
+    """
+
+    LISTED = {
+        "synapse.gpt-oss-120b-1-0": R.GRADED,
+        "synapse.qwen3-32b": R.SWITCH,
+    }
+
+    def test_a_listed_model_is_asked(self):
+        assert R.supports_native("synapse.gpt-oss-120b-1-0", self.LISTED)
+        plan = R.plan_for("synapse.gpt-oss-120b-1-0", "high", 4096, self.LISTED)
+        assert plan is not None and plan.openai_effort == "high"
+        # Unlisted, the same model stays read-only, exactly as before.
+        assert R.plan_for("synapse.gpt-oss-120b-1-0", "high", 4096) is None
+
+    def test_a_graded_model_cannot_be_asked_for_off(self):
+        """gpt-oss refuses `minimal`; asked for off it runs at its floor."""
+        plan = R.plan_for("synapse.gpt-oss-120b-1-0", "off", 4096, self.LISTED)
+        assert plan is not None and plan.effort == "low" and plan.openai_effort == "low"
+
+    @pytest.mark.parametrize("effort", ["off", "low", "medium"])
+    def test_a_switch_model_below_high_is_not_native(self, effort):
+        """qwen3-32b thought at "high" and not at all at low or medium.
+
+        None, not a plan: a plan would drop the `[REASONING]` prompt
+        convention for a turn in which the model does not think either — an
+        empty panel where there used to be one.
+        """
+        assert R.plan_for("synapse.qwen3-32b", effort, 4096, self.LISTED) is None
+
+    def test_a_switch_model_at_high_is_asked(self):
+        plan = R.plan_for("synapse.qwen3-32b", "high", 4096, self.LISTED)
+        assert plan is not None and plan.openai_effort == "high"
+
+    def test_the_kind_is_served_for_the_screens(self):
+        assert R.reasoning_kind("claude-sonnet-4-6") == R.LEVELS
+        assert R.reasoning_kind("synapse.qwen3-32b", self.LISTED) == R.SWITCH
+        assert R.reasoning_kind("synapse.gpt-oss-120b-1-0", self.LISTED) == R.GRADED
+        assert R.reasoning_kind("synapse.deepseek-r1", self.LISTED) is None
+        assert R.reasoning_kind("gpt-4o") is None
+
+    async def test_the_dispatcher_sends_what_the_deployment_listed(self, monkeypatch):
+        """Through `generate_response_ex`, to the gateway adapter's `reasoning`."""
+        from core import llm_providers as llm
+        from core import usage_tracker
+
+        seen = []
+
+        async def gateway(model, messages, system, settings, **kwargs):
+            seen.append(kwargs.get("reasoning"))
+            return llm.LLMResult("ok")
+
+        async def no_usage(**_kwargs):
+            return None
+
+        monkeypatch.setattr(llm, "call_model_gateway", gateway)
+        monkeypatch.setattr(usage_tracker, "log_usage", no_usage)
+        settings = {"reasoning_models": self.LISTED}
+
+        await llm.generate_response_ex("q", "s", "cloud", "synapse.qwen3-32b", settings,
+                                       reasoning_effort="high")
+        await llm.generate_response_ex("q", "s", "cloud", "synapse.qwen3-32b", settings,
+                                       reasoning_effort="medium")
+        await llm.generate_response_ex("q", "s", "cloud", "synapse.qwen3-32b", {},
+                                       reasoning_effort="high")
+        assert seen[0] is not None and seen[0].openai_effort == "high"
+        assert seen[1] is None, "a switch model below high sends nothing"
+        assert seen[2] is None, "unlisted, a gateway model is still only read"
+
+    def test_every_caller_hands_over_the_list(self):
+        """Two call sites decide native reasoning; one forgetting the list would
+        send effort while the other kept teaching the prompt convention, or the
+        reverse. A missing fourth argument is the whole failure, so count them."""
+        import ast
+        import pathlib
+
+        import core
+
+        short = []
+        for path in pathlib.Path(core.__file__).parent.rglob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                if name in ("plan_for", "_plan_for") and len(node.args) + len(node.keywords) < 4:
+                    short.append(f"{path.name}:{node.lineno}")
+        assert short == [], short
+
+    def test_a_malformed_setting_is_ignored_not_raised(self):
+        """A settings value is JSON somebody wrote; a turn is no place to find a typo."""
+        for junk in (None, "", [], "synapse.qwen3-32b", {"synapse.qwen3-32b": "sometimes"}):
+            assert R.plan_for("synapse.qwen3-32b", "high", 4096, junk) is None
+            assert R.reasoning_kind("synapse.qwen3-32b", junk) is None
+
+
 class TestTheLadder:
     @pytest.mark.parametrize("effort", R.EFFORT)
     def test_every_effort_produces_a_usable_plan(self, effort):

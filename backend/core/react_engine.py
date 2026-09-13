@@ -899,7 +899,9 @@ async def run_agent_step(
     # computed once here rather than per turn: it sits in the prompt-cache
     # prefix, and a value that moved between turns would cost every cache hit.
     from core.reasoning import plan_for as _plan_for
-    _native_reasoning = _plan_for(current_model, reasoning_effort, 0) is not None
+    _native_reasoning = _plan_for(
+        current_model, reasoning_effort, 0, current_settings.get("reasoning_models")
+    ) is not None
     # Auto-detect mode from model name instead of relying on global mode
     from core.llm_providers import detect_mode_from_model
     mode = detect_mode_from_model(current_model)
