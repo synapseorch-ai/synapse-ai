@@ -843,6 +843,7 @@ async def run_agent_step(
     preresolved=None,                     # core.orchestration.resolved.ResolvedAgent; skips the store reads
     global_variables: dict | None = None, # the tenant's variables, when the caller already holds them
     should_stop=None,                     # async () -> bool; checked between turns, a True ends the step as cancelled
+    persist_turn: bool = True,            # False = not a conversation with a person (a delegated hand-off)
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1134,8 +1135,11 @@ async def run_agent_step(
     # ReAct loop state
     user_message = message
     memory_context = ""
-    # Orchestrator, builder, and delegate agents always start fresh — no history carryover between runs
-    is_orchestrator = agent_type in ("orchestrator", "builder", "delegate")
+    # Orchestrator and builder agents always start fresh — no history carryover
+    # between runs. A delegate is NOT one of them: it is a chat agent whose tools
+    # happen to be other agents, and grouping it here made it forget every earlier
+    # message in a conversation and never save its own turn.
+    is_orchestrator = agent_type in ("orchestrator", "builder")
     if history_override is not None:
         recent_history_messages = history_override
     elif is_orchestrator:
@@ -1915,6 +1919,13 @@ async def run_agent_step(
                             max_turns=target_agent.get("max_turns") or 15,
                             source=source,
                             run_id=run_id,
+                            # A hand-off is the task the delegate wrote, nothing
+                            # more. Reading the sub-agent's history under this
+                            # session gave it the person's *direct* chat with it,
+                            # and saving the hand-off wrote a second conversation
+                            # under the delegate's session id.
+                            history_override=[],
+                            persist_turn=False,
                         ):
                             if sub_event.get("type") == "final":
                                 # Capture only — do NOT propagate. A delegate sub-agent's
@@ -2265,7 +2276,7 @@ async def run_agent_step(
 
     # A memory-enabled chat agent leaves a cheap per-exchange trace — one line
     # per turn, no LLM. Orchestration runs get their proper summary at run end.
-    if _memory_enabled and source == "chat" and not is_orchestrator:
+    if _memory_enabled and source == "chat" and not is_orchestrator and persist_turn:
         try:
             _trace = (
                 f"- {time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime())} "
@@ -2279,8 +2290,9 @@ async def run_agent_step(
         except Exception as _mem_exc:
             _log.warning(f"session memory note failed: {_mem_exc}")
 
-    # Persist conversation turn to JSON session file (skip for orchestrator agents)
-    if not is_orchestrator:
+    # Persist the conversation turn (skip for orchestrator agents, and for a
+    # delegated hand-off, which is work done for another agent, not a chat)
+    if not is_orchestrator and persist_turn:
         try:
             await _save_conversation_turn(
                 session_id=session_id,

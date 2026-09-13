@@ -265,6 +265,42 @@ class TestDelegateContext:
             server_module=_server(), max_turns=2)]
         assert any(e.get("type") == "final" for e in events)
 
+    async def test_a_delegate_keeps_the_conversation_and_its_sub_agent_starts_fresh(self, fake_llm, seed_agent):
+        """A delegate was grouped with orchestrators and the builder as "always start
+        fresh", so it forgot every earlier message in a chat and never saved its own
+        turn. Its sub-agent, meanwhile, read *its own* direct chat under the same
+        session id and saved the delegated task into it — on cloud, a second
+        conversation row that reopening the chat could pick instead (2026-09-13)."""
+        from core.react_engine import run_agent_step
+        from core.session import _save_conversation_turn, get_recent_history_messages
+
+        worker = S.make_agent(id="worker", name="Worker", description="does work")
+        lead = S.make_agent(id="lead", name="Lead", type="delegate", tools=[])
+        await S.seed_agents([worker, lead])
+        await _save_conversation_turn(session_id="s1", agent_id="lead",
+                                      user="My name is Ada.", assistant="Noted, Ada.", tools=[])
+        await _save_conversation_turn(session_id="s1", agent_id="worker",
+                                      user="A private direct chat.", assistant="Private reply.", tools=[])
+
+        fake_llm.script([
+            tool_call("delegate_to_agent", agent_id="worker", task="Greet the user by name: Ada."),
+            "Hello, Ada.",
+            "The worker said: Hello, Ada.",
+        ])
+        events = [ev async for ev in run_agent_step(
+            message="Have the worker greet me.", agent_id="lead", session_id="s1",
+            server_module=_server(), max_turns=3)]
+        assert any(e.get("type") == "final" for e in events)
+
+        lead_call, worker_call = str(fake_llm.calls[0]), str(fake_llm.calls[1])
+        assert "My name is Ada." in lead_call, "the delegate forgot the conversation"
+        assert "A private direct chat." not in worker_call, "the sub-agent read its own chat"
+
+        worker_history = await get_recent_history_messages("s1", agent_id="worker")
+        assert "Greet the user by name" not in str(worker_history), "the hand-off was saved as a chat"
+        lead_history = await get_recent_history_messages("s1", agent_id="lead")
+        assert "Have the worker greet me." in str(lead_history), "the delegate's turn was not saved"
+
     async def test_the_roster_is_the_workspace_agents_and_nothing_else(self, fake_llm, seed_agent):
         """The builder's sub-agents are `conversational` with a `system` marker,
         so skipping only `type == "builder"` let a delegate hand customer work to
