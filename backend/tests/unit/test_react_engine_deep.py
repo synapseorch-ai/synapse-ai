@@ -232,6 +232,25 @@ class TestConversationHistoryAcrossTurns:
         assert calls
         assert all(c.get("history_messages") == self.HISTORY for c in calls)
 
+class TestWaitingOnTheModel:
+    async def test_a_slow_model_call_keeps_the_watcher_informed(self, fake_llm, monkeypatch):
+        """One gateway call hung for 187s inside an agent step and the run page
+        showed a single "Analyzing your request..." the whole time — a healthy
+        run that read as a stuck one."""
+        import core.model_wait as mw
+        monkeypatch.setattr(mw, "HEARTBEAT_SECONDS", 0.05)
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MIN", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MAX", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_PROB", "1")
+        agent = S.make_agent(tools=[], skip_default_tools=True)
+
+        events = await _drive(agent, fake_llm, ["Here is the answer."], tools_override=[])
+
+        beats = [e for e in events if e.get("type") == "thinking"
+                 and "waiting on the model" in str(e.get("message", ""))]
+        assert len(beats) >= 2, _types(events)
+        assert any(e.get("type") == "final" for e in events)
+
 class TestDelegateContext:
     async def test_delegate_agent_builds_roster(self, fake_llm, seed_agent):
         target = await seed_agent(id="worker", name="Worker", description="does work")

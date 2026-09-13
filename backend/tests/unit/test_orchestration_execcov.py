@@ -45,6 +45,31 @@ class TestEvaluatorStep:
         # A routing decision was emitted.
         assert any(e.get("type") in ("routing_decision", "thinking") for e in events)
 
+    async def test_a_slow_routing_call_keeps_the_watcher_informed(self, fake_llm, monkeypatch):
+        """The AI builder's first step is an evaluator. When its model call hung,
+        the run showed "Evaluator deciding route..." for 120 seconds and then
+        failed with nothing in between."""
+        import core.model_wait as mw
+        monkeypatch.setattr(mw, "HEARTBEAT_SECONDS", 0.05)
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MIN", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MAX", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_PROB", "1")
+        orch = S.make_orchestration(
+            entry_step_id="ev",
+            steps=[
+                {"id": "ev", "name": "Decide", "type": "evaluator",
+                 "evaluator_prompt": "pick a route",
+                 "route_map": {"done": None},
+                 "route_descriptions": {"done": "finish"},
+                 "input_keys": [], "model": "claude-x", "next_step_id": None},
+            ],
+        )
+        events, _ = await _run(orch, fake_llm, [tool_call("route_done", reasoning="fine")])
+        beats = [e for e in events if e.get("type") == "thinking"
+                 and "waiting on the model" in str(e.get("message", ""))]
+        assert len(beats) >= 2, [e.get("type") for e in events]
+        assert all(b.get("orch_step_id") == "ev" for b in beats)
+
     async def test_evaluator_no_routes_warns(self, fake_llm):
         orch = S.make_orchestration(
             entry_step_id="ev",

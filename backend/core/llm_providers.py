@@ -30,6 +30,26 @@ from core.log import get_logger
 
 _log = get_logger(__name__)
 
+
+def _retry_notice(provider: str, reason: str, attempt: int, max_retries: int, backoff: float) -> None:
+    """Say, out loud, that a model call failed and is being tried again.
+
+    Every retry loop below used to log "Retrying in Ns" at `debug` and nothing
+    else — invisible at a worker's INFO level, and printed on the final attempt
+    too, promising a retry that never came. A call that timed out and was
+    retried was therefore a stretch of silence on the run page: 187 seconds of
+    it in one report, on a run that then finished normally.
+
+    Now a warning, and a notice for whoever is waiting (`core.model_wait`), but
+    only when another attempt is actually coming.
+    """
+    if attempt >= max_retries:
+        return
+    _log.warning(f"⏳ {provider} {reason} on attempt {attempt}/{max_retries}; retrying in {backoff}s")
+    from core.model_wait import report
+
+    report(f"The model {reason} — retrying ({attempt + 1} of {max_retries}) in {backoff}s.")
+
 # No process-level AWS_BEARER_TOKEN_BEDROCK. It used to be set here and never
 # cleared, so one tenant's Bedrock key stayed in the environment of a worker
 # that then ran another tenant's job — visible in /proc/<pid>/environ and
@@ -867,7 +887,7 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                _log.debug(f"⏳ OpenAI {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
+                _retry_notice("OpenAI", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
@@ -894,7 +914,7 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                              _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
         except httpx.TimeoutException:
             last_error = f"Request timed out ({OPENAI_TIMEOUT}s)"
-            _log.debug(f"⏱️ OpenAI timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
+            _retry_notice("OpenAI", f"did not answer within {OPENAI_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
@@ -1149,7 +1169,7 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
                              (), _reasoning)
         except anthropic.APITimeoutError:
             last_error = f"Request timed out ({ANTHROPIC_TIMEOUT}s)"
-            _log.debug(f"⏱️ Anthropic timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
+            _retry_notice("Anthropic", f"did not answer within {ANTHROPIC_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
@@ -1158,7 +1178,7 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
             _log.warning(f"❌ Anthropic API error {e.status_code} on attempt {attempt}/{MAX_RETRIES}: {str(e)[:500]}")
             # Retry on transient/rate-limit errors (429 rate limit, 499 client disconnect, 5xx server errors, 529 overloaded)
             if attempt < MAX_RETRIES and e.status_code in (429, 499, 500, 502, 503, 529):
-                _log.debug(f"⏳ Retrying in {backoff}s...")
+                _retry_notice("Anthropic", f"answered {e.status_code}", attempt, MAX_RETRIES, backoff)
                 await asyncio.sleep(backoff)
                 continue
             # Non-retryable error (400, 401, 403, etc.) or last attempt
@@ -1745,7 +1765,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
             _log.warning(f"⚠️ Unexpected {type(e).__name__}: {vars(e) if hasattr(e, '__dict__') else e}")
             _log.warning(f"⚠️ Gemini error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
-                _log.debug(f"⏳ Retrying in {backoff}s...")
+                _retry_notice("Gemini", f"failed ({type(e).__name__})", attempt, MAX_RETRIES, backoff)
                 await asyncio.sleep(backoff)
                 continue
 
@@ -1800,7 +1820,7 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                _log.debug(f"⏳ Grok {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
+                _retry_notice("Grok", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
@@ -1823,7 +1843,7 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                              _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
         except httpx.TimeoutException:
             last_error = f"Request timed out ({GROK_TIMEOUT}s)"
-            _log.debug(f"⏱️ Grok timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
+            _retry_notice("Grok", f"did not answer within {GROK_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
@@ -1891,7 +1911,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                _log.debug(f"⏳ DeepSeek {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
+                _retry_notice("DeepSeek", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
@@ -1914,7 +1934,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
                              _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
         except httpx.TimeoutException:
             last_error = f"Request timed out ({DEEPSEEK_TIMEOUT}s)"
-            _log.debug(f"⏱️ DeepSeek timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
+            _retry_notice("DeepSeek", f"did not answer within {DEEPSEEK_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
@@ -2007,7 +2027,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 resp = await client.post(endpoint, headers=headers, json=payload)
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                _log.debug(f"⏳ V1-compatible {resp.status_code} on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
+                _retry_notice("V1-compatible", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
@@ -2030,7 +2050,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                              _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
         except httpx.TimeoutException:
             last_error = f"Request timed out ({V1_TIMEOUT}s)"
-            _log.debug(f"⏱️ V1-compatible timeout on attempt {attempt}/{MAX_RETRIES}. Retrying in {backoff}s...")
+            _retry_notice("V1-compatible", f"did not answer within {V1_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue

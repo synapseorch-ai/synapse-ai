@@ -750,7 +750,12 @@ class EvaluatorStepExecutor:
         from core.llm_providers import detect_mode_from_model
         eval_mode = detect_mode_from_model(eval_model)
         try:
-            response = await llm_generate_response(
+            from core.model_wait import ModelWait
+
+            # Out loud, as the agent loop waits: this step is the AI builder's
+            # first, and a hung call here was the full step timeout of silence
+            # under "Evaluator deciding route..." before the run failed.
+            _wait = ModelWait(llm_generate_response(
                 prompt_msg=prompt,
                 sys_prompt="You are a routing decision maker. Output ONLY valid JSON.",
                 mode=eval_mode,
@@ -765,7 +770,10 @@ class EvaluatorStepExecutor:
                 cache_response_ttl=step.cache_response_ttl_seconds,
                 cache_response_step_id=step.id,
                 cache_response_threshold=step.cache_response_threshold,
-            )
+            ), label="Evaluator", extra={"orch_step_id": step.id})
+            async for _wait_event in _wait.events():
+                yield _wait_event
+            response = _wait.result
             _log.debug(f"🔀 Evaluator LLM response: {response}")
 
             # Emit evaluator LLM response for the logger

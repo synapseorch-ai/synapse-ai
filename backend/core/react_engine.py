@@ -21,6 +21,7 @@ from core.session import (
     _save_conversation_turn,
 )
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
+from core.model_wait import ModelWait
 from core.tools import aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
 import anyio as _anyio
@@ -1414,14 +1415,21 @@ async def run_agent_step(
                 _log.debug(f"🔄 Calling LLM...")
                 _llm_start = time.time()
                 try:
-                    _llm_result = await generate_response(
+                    # Waited on out loud: a call still outstanding says so every
+                    # few seconds, and a provider retry is reported as it
+                    # happens. Awaited bare, a hung call was minutes of silence
+                    # on a run that went on to finish (see core/model_wait.py).
+                    _wait = ModelWait(generate_response(
                         full_prompt, active_sys_prompt,
                         tools=ollama_tools, history_messages=active_history,
                         memory_context_text=memory_context,
                         images_for_turn=images if turn == 0 else None,  # images only on first turn
                         tool_name_for_log=last_tool_logged,
                         prompt_blocks=prompt_blocks, volatile_tail=volatile_tail,
-                    )
+                    ))
+                    async for _wait_event in _wait.events():
+                        yield _wait_event
+                    _llm_result = _wait.result
                 except Exception as llm_err:
                     _llm_duration = round(time.time() - _llm_start, 1)
                     error_msg = f"LLM Error ({_llm_duration}s): {llm_err}"
