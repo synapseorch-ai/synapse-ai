@@ -13,6 +13,7 @@ skips it should say so rather than report green.
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 
@@ -204,6 +205,38 @@ class TestTheScriptWrappersAreUnchanged:
     def test_transform_prints_null_when_nothing_was_assigned(self, capsys):
         exec(compile(wrap_transform("pass", {}), "<wrapped>", "exec"), {})  # noqa: S102
         assert '"result": null' in capsys.readouterr().out
+
+
+class TestTransformStateReadsTheWayTheRestOfTheProductWrites:
+    """`state.key` is how a condition, a prompt and `{{state.key}}` all spell it,
+    so it is what people — and the AI builder — write in a transform too. With a
+    plain dict it raised `AttributeError: 'dict' object has no attribute`, which
+    reads like a bug in the product rather than in the step (2026-09-13: the
+    builder's own test harness failed exactly this way)."""
+
+    def _run(self, code, state, capsys):
+        exec(compile(wrap_transform(code, state), "<wrapped>", "exec"), {})  # noqa: S102
+        return json.loads(capsys.readouterr().out)["result"]
+
+    def test_dot_access_reads_a_key(self, capsys):
+        assert self._run('result = {"data": state.search_results}', {"search_results": [1, 2]}, capsys) == {
+            "data": [1, 2]
+        }
+
+    def test_dot_access_reaches_into_nested_objects_and_lists(self, capsys):
+        state = {"report": {"sections": [{"title": "Intro"}]}}
+        assert self._run("result = state.report.sections[0].title", state, capsys) == "Intro"
+
+    def test_subscripts_still_work(self, capsys):
+        assert self._run("result = state['n'] + state.get('m', 1)", {"n": 41}, capsys) == 42
+
+    def test_a_missing_key_names_what_state_does_have(self, capsys):
+        with pytest.raises(AttributeError) as exc:
+            self._run("result = state.search_results", {"query": "gold"}, capsys)
+        assert "search_results" in str(exc.value) and "query" in str(exc.value)
+
+    def test_a_result_built_from_state_is_still_plain_json(self, capsys):
+        assert self._run("result = state.report", {"report": {"a": {"b": 1}}}, capsys) == {"a": {"b": 1}}
 
 
 class TestTheHostRunnerIsRealAndSeparate:

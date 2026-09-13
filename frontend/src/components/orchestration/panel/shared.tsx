@@ -25,6 +25,8 @@ export interface StepSectionProps {
     availableTools: { name: string; description: string }[];
     stateKeys: string[];
     showVaultHints: boolean;
+    /** Where a transform's code runs, in this product's words. See `StepConfigPanel`. */
+    codeRunnerNote: string;
     orchestration?: Orchestration;
 }
 

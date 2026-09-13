@@ -57,7 +57,16 @@ interface StepConfigPanelProps {
      * even name.
      */
     canRunCode?: boolean;
+    /**
+     * One sentence on where a `transform` runs. The default is self-hosted's
+     * answer; the cloud has no Docker and no host mode, and a note that names
+     * both sends a person to a setting that does not exist.
+     */
+    codeRunnerNote?: string;
 }
+
+const SELF_HOSTED_RUNNER_NOTE =
+    'Runs in Docker by default (512MB RAM, no network); switch to host mode in Settings → General to lift the sandbox.';
 
 const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end'];
 
@@ -67,6 +76,7 @@ const MAX_WIDTH = 640;
 export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
     availableModels, orchestration, showVaultHints = true, canRunCode = true,
+    codeRunnerNote = SELF_HOSTED_RUNNER_NOTE,
 }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => onUpdate({ ...step, ...patch });
     const otherSteps = allStepIds.filter((s) => s.id !== step.id);
@@ -122,7 +132,7 @@ export function StepConfigPanel({
     const sectionProps: StepSectionProps = {
         step, update, otherSteps, agents,
         availableModels: availableModels || [],
-        availableTools, stateKeys, showVaultHints, orchestration,
+        availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration,
     };
     const TypeSection = STEP_SECTIONS[step.type];
     const isLinear = step.type !== 'end' && step.type !== 'evaluator' && step.type !== 'loop' && step.type !== 'if_else' && step.type !== 'switch';

@@ -47,7 +47,7 @@ STEP_TYPE_CHEATSHEET = """\
 - **merge**: combines parallel-branch outputs. Required: `merge_strategy` (`concat` | `list` | `dict`). Place immediately after a parallel's convergence.
 - **loop**: repeats a body. Required: `loop_step_ids` (ordered body). Pick ONE mode: `loop_count` (fixed repetition); `loop_over` — an expression yielding a list, e.g. `state.tickets`, which runs the body once per item and writes each to `loop_item_key`/`loop_index_key` (default `loop_item`/`loop_index`); or `loop_while_condition` — an expression re-checked before each iteration. `loop_break_condition` stops any of them early, `loop_max_iterations` caps all of them (default 50). Prefer these over an evaluator that routes backwards: a back-edge is capped by the target step's `max_iterations` (default 3). A loop body runs exactly the steps in `loop_step_ids`, in order — routing steps (`if_else`/`switch`/`evaluator`) and `human` steps do not belong inside one.
 - **human**: pauses for user input. Required: `human_prompt`, `human_fields_json` (JSON-encoded list of `{name, type, label}`). Output_key stores the response dict.
-- **transform**: runs a snippet of Python against state. Required: `transform_code` — reads `state`, assigns to `result`. Use for pure-data reshapes; avoid heavy logic.
+- **transform**: runs a snippet of Python against state. Required: `transform_code` — reads `state.key` (or `state["key"]`), assigns to `result`. Use for pure-data reshapes; avoid heavy logic.
 - **end**: terminates the orchestration. No type-specific fields. Every flow must reach an `end` step.
 
 JSON-string fields (the saver's tool schemas accept these as JSON-encoded strings — Gemini hangs on open objects, so these are passed as strings and parsed server-side):

@@ -673,13 +673,13 @@ function HumanSection({ step, update, stateKeys }: StepSectionProps) {
     );
 }
 
-function TransformSection({ step, update }: StepSectionProps) {
+function TransformSection({ step, update, codeRunnerNote }: StepSectionProps) {
     return (
         <div className="space-y-2">
             <Note>
-                <strong>Python execution</strong> — runs in Docker by default (512MB RAM, no network); switch
-                to host mode in Settings → General to lift the sandbox. <code className="font-code">state</code> dict
-                is injected. Assign to <code className="font-code">result</code> to write the output key.
+                <strong>Python execution</strong> — {codeRunnerNote} Read shared state as{' '}
+                <code className="font-code">state.key</code> or <code className="font-code">state[&quot;key&quot;]</code>, and
+                assign to <code className="font-code">result</code> to write the output key.
             </Note>
             <span className="block text-sm font-medium text-text">Python code</span>
             <div className="h-[240px] overflow-hidden rounded-md border border-border-strong transition-colors focus-within:border-accent">
