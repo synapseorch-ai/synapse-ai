@@ -161,27 +161,33 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
             });
         }
 
-        case 'routing_decision':
+        // Each routing step speaks twice: its executor announces its own
+        // result (`evaluator_decision`, `if_decision`, `switch_decision`), then
+        // the engine's router says where the run goes (`routing_decision`,
+        // with the routing step's `step_type`). A bubble for both drew every
+        // decision twice — "→ create → create". The router's is the one that
+        // says where the run went; the run log still shows both, on purpose.
+        //
+        // The one case this drops: an evaluator whose label is not in its
+        // `route_map` falls through to `next_step_id` and the router says
+        // nothing, so no bubble — the run continuing is visible anyway.
         case 'evaluator_decision':
         case 'if_decision':
         case 'switch_decision':
+            return state;
+
+        case 'routing_decision':
             return append(state, {
                 role: 'assistant', content: '', kind: 'routing', key,
-                // Four events, three fields. `decision` is the router's,
-                // `result` the if/switch step's, `tool_name` the evaluator
-                // step's. Only one is ever present on a given event.
-                //
                 // Every branch must yield something truthy: BuilderPanel
                 // renders a routing bubble only when `routingDecision` is, so
                 // an empty string drops the line rather than showing it blank.
                 // A switch that took its default has `decision: null` — that
                 // is "default", not "nothing".
                 routingDecision:
-                    type === 'evaluator_decision'
-                        ? String(event.tool_name ?? '').replace(/^route_/, '') || '(no route)'
-                        : event.step_type === 'switch'
-                            ? `case ${event.decision ?? 'default'}`
-                            : String(event.decision ?? event.result ?? ''),
+                    event.step_type === 'switch'
+                        ? `case ${event.decision ?? 'default'}`
+                        : String(event.decision ?? ''),
             });
 
         case 'human_input_required':
