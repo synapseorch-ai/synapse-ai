@@ -218,6 +218,24 @@ class TestResolveOneTool:
         # session's business, not this test's.
         assert any("preparing to call 'my_tool'" in str(e.get("message", "")) for e in events)
 
+    async def test_a_slow_tool_step_model_call_keeps_the_watcher_informed(self, fake_llm, monkeypatch):
+        import core.model_wait as mw
+        monkeypatch.setattr(mw, "HEARTBEAT_SECONDS", 0.05)
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MIN", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MAX", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_PROB", "1")
+        await S.seed_agents([S.make_agent(id="a1", tools=["all"])])
+        fake_llm.set_default(tool_call("my_tool", x=1))
+        orch = S.make_orchestration(
+            id="orch_toolslow", entry_step_id="t",
+            steps=[{"id": "t", "name": "Call", "type": "tool", "forced_tool": "my_tool",
+                    "agent_id": "a1", "prompt_template": "call it", "output_key": "o",
+                    "max_turns": 1, "next_step_id": None}],
+        )
+        events, _ = await _run(orch, server=self._server_with_mcp())
+        beats = [e for e in events if e.get("type") == "thinking"
+                 and "waiting on the model" in str(e.get("message", ""))]
+        assert len(beats) >= 2, [e.get("type") for e in events]
 
 class TestNestedOrchestration:
     async def test_the_sub_orchestration_is_resolved_by_id(self, fake_llm, monkeypatch):

@@ -109,3 +109,57 @@ async def test_abandoning_the_wait_cancels_the_call():
 
 def test_a_report_outside_any_wait_is_harmless():
     mw.report("nobody is listening")
+
+
+def test_nothing_that_feeds_a_run_awaits_a_model_bare():
+    """Every model call a watcher is waiting on goes through `ModelWait`.
+
+    This is the guard for how the first cut of this change went wrong: it
+    wrapped the agent loop and the evaluator, and the live proof showed an LLM
+    step's 81 seconds of retries reaching the worker log and not the run —
+    because the LLM step and the tool step import `generate_response` under a
+    different name, and a search for one name found one site. So the check is
+    by what is awaited, not by what it happens to be called: any `await` of the
+    provider call, under any alias, or of context compaction (itself a model
+    call), is a failure unless it is the argument handed to `ModelWait`.
+
+    The one exemption is `react_engine`'s local `generate_response` wrapper —
+    its body is the call, and the wrapper is what the loop hands to `ModelWait`.
+    """
+    import ast
+    import pathlib
+
+    import core
+
+    root = pathlib.Path(core.__file__).parent
+    watched = ("orchestration/steps.py", "react_engine.py")
+    names = {"llm_generate", "llm_generate_response", "generate_response",
+             "generate_response_ex", "maybe_compact"}
+    bare = []
+
+    class Scan(ast.NodeVisitor):
+        """Judges each `await` by its innermost enclosing function — the wrapper
+        is nested inside `run_agent_step`, so walking the outer function would
+        see its body as the loop's."""
+
+        def __init__(self, rel):
+            self.rel, self.stack = rel, []
+
+        def _function(self, node):
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        visit_FunctionDef = visit_AsyncFunctionDef = _function
+
+        def visit_Await(self, node):
+            call = node.value
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                    and call.func.id in names
+                    and not (self.rel == "react_engine.py" and self.stack[-1:] == ["generate_response"])):
+                bare.append(f"{self.rel}:{node.lineno} await {call.func.id}(...)")
+            self.generic_visit(node)
+
+    for rel in watched:
+        Scan(rel).visit(ast.parse((root / rel).read_text()))
+    assert not bare, "model calls awaited without ModelWait:\n" + "\n".join(sorted(set(bare)))

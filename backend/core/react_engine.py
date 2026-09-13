@@ -1319,7 +1319,10 @@ async def run_agent_step(
             # make every turn an LLM summarisation call.
             _compact_ready = _last_compact_turn is None or (turn - _last_compact_turn) >= COMPACT_COOLDOWN_TURNS
             if turn > 0 and _compact_ready:
-                _compact_ctx, _compact_hist, _compact_path, _compact_stats = await maybe_compact(
+                # Stage-2 compaction is a model call of its own, so it is waited
+                # on out loud too; below the threshold it returns at once and
+                # yields nothing.
+                _compact_wait = ModelWait(maybe_compact(
                     current_context_text,
                     recent_history_messages,
                     current_settings,
@@ -1329,7 +1332,10 @@ async def run_agent_step(
                     session_id,
                     agent_id_for_session,
                     run_id=run_id,
-                )
+                ), label="Compacting context")
+                async for _wait_event in _compact_wait.events():
+                    yield _wait_event
+                _compact_ctx, _compact_hist, _compact_path, _compact_stats = _compact_wait.result
                 if _compact_ctx is not current_context_text:
                     current_context_text = _compact_ctx
                     recent_history_messages = _compact_hist

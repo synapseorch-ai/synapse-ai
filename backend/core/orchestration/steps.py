@@ -460,7 +460,9 @@ class ToolStepExecutor:
                 tool_sys_prompt = "You are a tool-calling assistant. Output ONLY valid JSON."
                 if system_prompt_prefix:
                     tool_sys_prompt = system_prompt_prefix + "\n\n" + tool_sys_prompt
-                response = await llm_generate(
+                from core.model_wait import ModelWait
+
+                _wait = ModelWait(llm_generate(
                     prompt_msg=turn_prompt,
                     sys_prompt=tool_sys_prompt,
                     mode=mode,
@@ -470,7 +472,10 @@ class ToolStepExecutor:
                     agent_id=step.agent_id or "tool_step",
                     source="orchestration",
                     run_id=run.run_id,
-                )
+                ), label=f"Tool step '{step.name}'", extra={"orch_step_id": step.id})
+                async for _wait_event in _wait.events():
+                    yield _wait_event
+                response = _wait.result
             except Exception as e:
                 from core.llm_providers import LLMError
                 if isinstance(e, LLMError):
@@ -1646,7 +1651,9 @@ class LLMStepExecutor:
             sys_prompt = system_prompt_prefix + "\n\n" + sys_prompt
 
         try:
-            response = await llm_generate(
+            from core.model_wait import ModelWait
+
+            _wait = ModelWait(llm_generate(
                 prompt_msg=prompt,
                 sys_prompt=sys_prompt,
                 mode=mode,
@@ -1661,7 +1668,10 @@ class LLMStepExecutor:
                 cache_response_ttl=step.cache_response_ttl_seconds,
                 cache_response_step_id=step.id,
                 cache_response_threshold=step.cache_response_threshold,
-            )
+            ), label=f"LLM step '{step.name}'", extra={"orch_step_id": step.id, "step_name": step.name})
+            async for _wait_event in _wait.events():
+                yield _wait_event
+            response = _wait.result
         except Exception as e:
             from core.llm_providers import LLMError
             if isinstance(e, LLMError):

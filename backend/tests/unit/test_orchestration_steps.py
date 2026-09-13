@@ -60,6 +60,26 @@ class TestLLMStep:
         # The fake LLM was actually invoked for the LLM step.
         assert fake_llm.call_count >= 1
 
+    async def test_a_slow_model_call_keeps_the_watcher_informed(self, fake_llm, monkeypatch):
+        """The step in the live report. It awaited its model bare, so a run
+        whose one call hung showed "calling model..." and then nothing."""
+        import core.model_wait as mw
+        monkeypatch.setattr(mw, "HEARTBEAT_SECONDS", 0.05)
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MIN", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MAX", "0.25")
+        monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_PROB", "1")
+        fake_llm.set_default("SUMMARY: all good")
+        orch = S.make_orchestration(
+            entry_step_id="llm1",
+            steps=[{"id": "llm1", "name": "Summarize", "type": "llm",
+                    "prompt_template": "Summarize: {state.user_input}", "output_key": "summary",
+                    "model": "claude-test", "next_step_id": None}],
+        )
+        events = await _run(orch, initial_input="a long document")
+        beats = [e for e in events if e.get("type") == "thinking"
+                 and "waiting on the model" in str(e.get("message", ""))]
+        assert len(beats) >= 2, [e.get("type") for e in events]
+        assert all(b.get("orch_step_id") == "llm1" for b in beats)
 
 class TestTwoStepChain:
     async def test_llm_then_print_chain(self, fake_llm):
