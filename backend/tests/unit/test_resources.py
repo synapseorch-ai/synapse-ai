@@ -221,3 +221,40 @@ async def test_imported_rows_match_natively_written_ones(tmp_path):
     await resources.save_orchestration(item)
 
     assert imported == await resources.get_orchestration("orch-1")
+
+
+# ── the row's key is the id ──────────────────────────────────────────────────
+
+async def _insert_raw_agent(agent_id: str, name: str, definition: dict) -> None:
+    """A row written the way another writer stores it — the cloud control plane
+    keeps the id in the column and not inside `definition`."""
+    from core.store import cache, session
+    from core.store.models import AgentDB
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        s.add(AgentDB(id=agent_id, name=name, definition=definition, tenant_id=get_tenant()))
+        await s.commit()
+    cache.invalidate(AgentDB.__tablename__)
+
+
+@pytest.mark.asyncio
+async def test_a_listed_agent_carries_its_row_id_even_when_the_document_does_not():
+    """Every cloud agent created from a screen, a template or an import was listed
+    without an id, so each collapsed to `""`: a delegate offered the model an
+    `agent_id` enum containing an empty string (Gemini refuses the whole request),
+    the builder's `list_agents` answered `id: None`, and channel lookups keyed on
+    `a["id"]` raised. The row's key is the identity; the document is its payload."""
+    await _insert_raw_agent("agent_cloud_1", "Researcher", {"name": "Researcher", "type": "conversational"})
+
+    listed = {a["name"]: a for a in await resources.load_agents()}
+    assert listed["Researcher"]["id"] == "agent_cloud_1"
+    assert (await resources.get_agent("agent_cloud_1"))["id"] == "agent_cloud_1"
+
+
+@pytest.mark.asyncio
+async def test_a_document_without_a_name_is_listed_under_the_rows():
+    await _insert_raw_agent("agent_cloud_2", "Named in the column", {"type": "conversational"})
+
+    (agent,) = [a for a in await resources.load_agents() if a["id"] == "agent_cloud_2"]
+    assert agent["name"] == "Named in the column"

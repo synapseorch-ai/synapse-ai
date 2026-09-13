@@ -264,3 +264,22 @@ class TestDelegateContext:
             message="handle this", agent_id="lead", session_id="s1",
             server_module=_server(), max_turns=2)]
         assert any(e.get("type") == "final" for e in events)
+
+    async def test_the_roster_is_the_workspace_agents_and_nothing_else(self, fake_llm, seed_agent):
+        """The builder's sub-agents are `conversational` with a `system` marker,
+        so skipping only `type == "builder"` let a delegate hand customer work to
+        the builder's own saver. And "other delegate agents (no infinite loops)"
+        was a comment the loop never implemented."""
+        from core.react_engine import _build_delegate_context
+
+        worker = S.make_agent(id="worker", name="Worker", description="does work")
+        machinery = S.make_agent(id="builder_saver", name="Builder - Create Saver", system="native_builder")
+        other_lead = S.make_agent(id="other_lead", name="Other lead", type="delegate")
+        lead = S.make_agent(id="lead", name="Lead", type="delegate", tools=["all"])
+        await S.seed_agents([worker, machinery, other_lead, lead])
+
+        tool_schema_map: dict = {}
+        eligible = await _build_delegate_context(lead, [], tool_schema_map, [])
+
+        assert set(eligible) == {"worker"}
+        assert tool_schema_map["delegate_to_agent"]["properties"]["agent_id"]["enum"] == ["worker"]

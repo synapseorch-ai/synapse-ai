@@ -115,7 +115,22 @@ async def _list_uncached(model) -> list[dict]:
                 .order_by(model.created_at, _natural_key(model))
             )
         ).scalars().all()
-    return [r.definition for r in rows]
+    return [_document(model, r) for r in rows]
+
+
+#: Tables whose row key IS the item's id. The document usually repeats it —
+#: every row this engine writes does — but another writer need not: the cloud
+#: control plane keeps an agent's id in the column only, and every agent it
+#: created was listed without one. So the column wins, and a document with no
+#: name takes the row's. Tools and MCP servers are keyed on something else and
+#: are returned untouched.
+_KEYED_BY_ID = frozenset({"agents", "orchestrations"})
+
+
+def _document(model, row) -> dict:
+    if model.__tablename__ not in _KEYED_BY_ID:
+        return row.definition
+    return {**row.definition, "id": row.id, "name": row.definition.get("name") or row.name}
 
 
 def _natural_key(model):
@@ -146,7 +161,7 @@ async def _get_uncached(model, key_column, key_value) -> dict | None:
                 )
             )
         ).scalar_one_or_none()
-    return row.definition if row is not None else None
+    return _document(model, row) if row is not None else None
 
 
 async def _owner(s, model, key_column, key_value) -> str | None:

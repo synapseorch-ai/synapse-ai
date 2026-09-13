@@ -590,8 +590,10 @@ async def _build_delegate_context(
     for a in agents:
         aid = a.get("id", "")
         atype = a.get("type", "")
-        # Skip self, builder agents, and other delegate agents (no infinite loops)
-        if aid == own_id or atype in ("builder",):
+        # Skip self, other delegates (no infinite loops), and anything that is
+        # not workspace content: the builder's sub-agents are `conversational`
+        # with a `system` marker, so a type check alone handed them customer work.
+        if not aid or aid == own_id or atype in ("builder", "delegate") or a.get("system"):
             continue
         # If specific agents are selected, filter to those
         if delegate_agent_ids and aid not in delegate_agent_ids:
