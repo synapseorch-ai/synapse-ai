@@ -189,8 +189,10 @@ export function BrandLoader({
     <>
       {/* The tracks sit back so the signals read as the moving part. The static
           mark keeps full strength — a logo has to survive single-ink print,
-          where a dimmed track simply disappears. */}
-      <g opacity={0.4}>
+          where a dimmed track simply disappears. How far back is the theme's
+          call (`.synapse-track` in brand-motion.css): 40% of the accent on a
+          dark ground, but on white that left the rings a pale smear. */}
+      <g className="synapse-track">
         <Rings g={g} />
       </g>
       {Array.from({ length: count }, (_, i) => (
