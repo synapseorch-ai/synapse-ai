@@ -1658,6 +1658,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     _ = prompt_cache  # reserved for future explicit cached_content support
     global _gemini_client
     from google import genai
+    from google.genai import errors as _genai_errors
     from google.genai import types
 
     GEMINI_TIMEOUT = LLM_REQUEST_TIMEOUT   # seconds per attempt
@@ -1714,6 +1715,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
 
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]  # seconds between retries
     last_error = None
+    refused = False
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
@@ -1764,12 +1766,26 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
             last_error = str(e)
             _log.warning(f"⚠️ Unexpected {type(e).__name__}: {vars(e) if hasattr(e, '__dict__') else e}")
             _log.warning(f"⚠️ Gemini error on attempt {attempt}/{MAX_RETRIES}: {e}")
+            # A request Gemini refuses (400 malformed, 401/403 key, 404 model) is
+            # refused the same way every time; retrying it cost 79s of backoff
+            # before the person saw the first answer. Same rule as the other
+            # providers: only rate limits, cancellations and server errors retry.
+            # Anything that is not an API answer at all (a dropped connection)
+            # still does.
+            code = getattr(e, "code", None) if isinstance(e, _genai_errors.APIError) else None
+            if isinstance(code, int) and code not in (408, 429, 499) and code < 500:
+                refused = True
+                break
             if attempt < MAX_RETRIES:
                 _retry_notice("Gemini", f"failed ({type(e).__name__})", attempt, MAX_RETRIES, backoff)
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Gemini LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
+    error_msg = (
+        f"Gemini LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
+        if not refused
+        else f"Gemini LLM Error: the request was refused. {last_error}"
+    )
     _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
