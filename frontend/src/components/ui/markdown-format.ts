@@ -20,8 +20,27 @@ export type MarkdownEdit = {
 
 export type LinePrefix = "heading" | "bullet" | "numbered" | "quote";
 
-/** `**bold**`, `_italic_`, `` `code` `` — or a fenced block when code spans lines. */
-export function toggleWrap(text: string, start: number, end: number, marker: string, placeholder: string): MarkdownEdit {
+/**
+ * `**bold**`, `_italic_`, `` `code` `` — or a fenced block when code spans lines.
+ *
+ * Whitespace at either edge of the selection stays outside the markers. Markdown
+ * does not close emphasis after a space, so `**answered. **` renders its
+ * asterisks — and a double-click on Windows selects a word *with* the space
+ * after it (2026-09-14).
+ */
+export function toggleWrap(
+  text: string,
+  selectionStart: number,
+  selectionEnd: number,
+  marker: string,
+  placeholder: string,
+): MarkdownEdit {
+  let start = selectionStart;
+  let end = selectionEnd;
+  while (start < end && /\s/.test(text[start])) start++;
+  while (end > start && /\s/.test(text[end - 1])) end--;
+  // Only whitespace selected: type at its end rather than over it.
+  if (start === end) start = end = selectionEnd;
   const m = marker.length;
   const selected = text.slice(start, end);
 
