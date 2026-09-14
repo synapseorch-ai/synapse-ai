@@ -469,3 +469,150 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
         })
         assert response.status_code == 422
         assert "Up to 5 images" in json.dumps(response.json())
+
+
+class TestTheBuilderKnowsWhatYouMean:
+    """The page someone is on, or an orchestration they name, reaches the router.
+
+    Round two, item 12. Five times in one testing round the router was asked to
+    change "the extended research orchestration" and chose `create`, quoting its
+    own rule: an update needs `current_orchestration_id`, and it was empty.
+    """
+
+    MESSAGE = "update the second step to get the perfect json on the extended research orchestration"
+
+    @staticmethod
+    async def _orchestration(orch_id: str, name: str, **extra) -> None:
+        from core.store.resources import save_orchestration
+
+        await save_orchestration({
+            "id": orch_id, "name": name, "description": "", "trigger": "manual",
+            "entry_step_id": "step_end", "state_schema": {},
+            "steps": [{"id": "step_end", "name": "End", "type": "end"}],
+            **extra,
+        })
+
+    @staticmethod
+    async def _final_state(client, fake_llm, body: dict) -> dict:
+        fake_llm.script([route("answer"), "Which one did you mean?"])
+        events = await stream(client, "/api/builder/chat", body)
+        return next(e for e in events if e["type"] == "orchestration_complete")["final_state"]
+
+    async def test_the_open_orchestration_reaches_the_router(self, client, builder, fake_llm):
+        await self._orchestration("orch_ext", "extended research")
+        fake_llm.script([route("answer"), "It has one step."])
+        await stream(client, "/api/builder/chat", {
+            "message": "add a step that emails me", "current_orchestration_id": "orch_ext",
+        })
+        router_prompt = fake_llm.calls[0]["prompt_msg"]
+        assert "[current_orchestration_name]:\nextended research" in router_prompt
+        assert "[current_orchestration_source]:\nviewing" in router_prompt
+
+    async def test_a_named_orchestration_resolves_without_a_page(self, client, builder, fake_llm):
+        await self._orchestration("orch_ext", "extended research")
+        await self._orchestration("orch_weekly", "Weekly Report")
+        state = await self._final_state(client, fake_llm, {"message": self.MESSAGE})
+        assert state["current_orchestration_id"] == "orch_ext"
+        assert state["current_orchestration_name"] == "extended research"
+        assert state["current_orchestration_source"] == "named"
+
+    async def test_the_builder_itself_is_never_a_target(self, client, builder, fake_llm):
+        """It exists, so the old check — does this id exist? — let it through."""
+        state = await self._final_state(client, fake_llm, {
+            "message": "add a step to this", "current_orchestration_id": "orch_native_builder",
+        })
+        assert state["current_orchestration_id"] == ""
+        assert state["current_page"] == ""
+
+    async def test_a_retired_orchestration_is_not_a_target(self, client, builder, fake_llm):
+        await self._orchestration("orch_old", "old digest", is_active=False)
+        state = await self._final_state(client, fake_llm, {
+            "message": "update the old digest orchestration", "current_orchestration_id": "orch_old",
+        })
+        assert state["current_orchestration_id"] == ""
+        assert state["current_orchestration_source"] == ""
+
+    async def test_an_unsaved_draft_id_is_dropped(self, client, builder, fake_llm):
+        state = await self._final_state(client, fake_llm, {
+            "message": "add a step", "current_orchestration_id": "orch_temp_not_saved",
+        })
+        assert state["current_orchestration_id"] == ""
+
+    async def test_an_ambiguous_name_resolves_nothing(self, client, builder, fake_llm):
+        await self._orchestration("orch_ext", "extended research")
+        await self._orchestration("orch_ext_2", "Extended Research")
+        state = await self._final_state(client, fake_llm, {"message": self.MESSAGE})
+        assert state["current_orchestration_id"] == ""
+        assert state["current_orchestration_source"] == "ambiguous"
+        assert "orch_ext" in state["current_orchestration_matches"]
+        assert "orch_ext_2" in state["current_orchestration_matches"]
+
+    async def test_the_open_page_is_described_for_the_answer_and_the_planner(
+        self, client, builder, fake_llm
+    ):
+        await self._orchestration("orch_ext", "extended research")
+        state = await self._final_state(client, fake_llm, {
+            "message": "what does this one do?", "current_orchestration_id": "orch_ext",
+        })
+        assert "extended research" in state["current_page"]
+        assert "orch_ext" in state["current_page"]
+
+    async def test_a_run_paused_before_these_keys_existed_still_resumes(
+        self, client, builder, fake_llm
+    ):
+        """A release that adds state keys meets runs paused on the one before.
+
+        Resume restores the checkpointed state — which has none of the new keys
+        — and re-reads the definition from the store, which the new seed has
+        replaced. It has to carry on from the step it paused at.
+        """
+        import copy
+
+        import core.server as server
+        from core.models_orchestration import Orchestration
+        from core.native_builder import bundled_definitions
+        from core.native_builder.target import TARGET_KEYS
+        from core.orchestration.engine import OrchestrationEngine
+        from core.store.resources import get_orchestration, save_orchestration
+
+        added = set(TARGET_KEYS) - {"current_orchestration_id"}
+        shipped = bundled_definitions()["orchestration"]
+        previous = copy.deepcopy(shipped)
+        for key in added:
+            previous["state_schema"].pop(key, None)
+        for step in previous["steps"]:
+            step["input_keys"] = [k for k in step.get("input_keys") or [] if k not in added]
+        assert previous != shipped, "nothing was added, so nothing is being tested"
+        await save_orchestration(previous)
+
+        # Started the way the previous release started it: no target keys at all.
+        fake_llm.script([route("create"), "What should the new step check?", route("clarify")])
+        engine = OrchestrationEngine(Orchestration.model_validate(previous), server)
+        events = [e async for e in engine.run(
+            initial_input="add a step",
+            run_id="builder_paused_before_release",
+            session_id="builder:test:paused",
+            initial_state={"user_message": "add a step", "current_orchestration_id": ""},
+        )]
+        asked = next(e for e in events if e["type"] == "human_input_required")
+
+        await seed_native_builder()  # the new release
+        assert (await get_orchestration("orch_native_builder"))["state_schema"].keys() >= added
+
+        fake_llm.reset()
+        fake_llm.script([
+            "Requirements: check the final JSON has quality and content.",  # step_understand
+            route("draft"),                                                   # step_clarify_route
+            "## Overview\nOne new step.",                                     # step_draft_plan
+        ])
+        after = await stream(client, "/api/builder/resume", {
+            "run_id": asked["run_id"], "response": {"answer": "quality and content"},
+        })
+
+        steps = [e.get("step_name") for e in after if e["type"] == "step_start"]
+        draft = next(s["name"] for s in shipped["steps"] if s["id"] == "step_draft_plan")
+        assert draft in steps, steps
+        assert next(e for e in after if e["type"] == "human_input_required")
+        assert not [e for e in after if e["type"] in ("orchestration_error", "step_error")]
+        prompts = "\n".join(str(c.get("prompt_msg", "")) for c in fake_llm.calls)
+        assert "{state.current_" not in prompts

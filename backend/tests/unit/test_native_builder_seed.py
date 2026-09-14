@@ -7,6 +7,8 @@ the customer's own work.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from _fakes import seed as S
@@ -242,3 +244,54 @@ class TestAParseFailureGoesSomewhereSafe:
             labels = list(config.route_map)
             resolved = config.fallback_route if config.fallback_route in labels else labels[0]
             assert resolved == step["fallback_route"], step["id"]
+
+
+class TestTheBuilderKnowsItsTarget:
+    """Round two, item 12: which orchestration a message is about.
+
+    The server resolves it — the page someone is on, or a name in the message —
+    and the seed decides who reads it. New keys reach a step through
+    `input_keys` only: a step skips a key the run's state does not have, while a
+    `{state.key}` placeholder renders literally, and a run paused on the previous
+    release has none of these keys.
+    """
+
+    def _steps(self):
+        return {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+
+    def test_every_target_key_is_declared(self):
+        from core.native_builder.target import TARGET_KEYS
+
+        schema = bundled_definitions()["orchestration"]["state_schema"]
+        assert set(TARGET_KEYS) <= set(schema)
+
+    def test_the_router_reads_the_target(self):
+        keys = set(self._steps()["step_intent"]["input_keys"])
+        assert {
+            "current_orchestration_id", "current_orchestration_name",
+            "current_orchestration_source", "current_orchestration_matches",
+        } <= keys
+
+    def test_the_answer_and_the_change_planner_see_the_page(self):
+        steps = self._steps()
+        assert {"current_page", "current_orchestration_source", "current_orchestration_matches"} <= set(
+            steps["step_answer"]["input_keys"]
+        )
+        assert "current_page" in steps["step_manage_plan"]["input_keys"]
+
+    def test_an_unclear_change_is_answered_not_built(self):
+        """Two matches, or a name that is not the open one, leaves the id empty —
+        and the route that runs then must ask, not build a duplicate."""
+        intent = self._steps()["step_intent"]
+        assert "ambiguous" in intent["route_descriptions"]["answer"]
+        assert "ambiguous" in intent["evaluator_prompt"]
+
+    def test_no_prompt_uses_a_new_key_as_a_placeholder(self):
+        import re
+
+        from core.native_builder.target import TARGET_KEYS
+
+        added = set(TARGET_KEYS) - {"current_orchestration_id"}
+        blob = json.dumps(bundled_definitions())
+        placeholders = set(re.findall(r"\{\{?\s*state\.(\w+)", blob))
+        assert not (placeholders & added), placeholders & added

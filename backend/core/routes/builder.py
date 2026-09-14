@@ -73,14 +73,25 @@ def _format_history(history: list[dict]) -> str:
     return "\n".join(f"{m.get('role', 'user')}: {m.get('content', '')}" for m in history)
 
 
-async def _resolve_current_orch_id(raw: str | None) -> str:
-    """Only pass through IDs that actually exist — the UI may send temp draft IDs."""
-    if not raw:
-        return ""
-    # An indexed point lookup, rather than loading every orchestration to test
-    # one id for membership.
-    from core.store.resources import get_orchestration
-    return raw if await get_orchestration(raw) else ""
+async def _target_state(message: str, viewing_id: str | None) -> dict:
+    """Which orchestration this message is about, as the run's state keys.
+
+    This passed an id through if it existed, which let the builder's own
+    orchestration through, and never read the message — "update … on the
+    extended research orchestration" reached the router with no target and was
+    built as something new. Both signals go to one resolver now, over the
+    orchestrations the builder may touch; the commercial edition calls the same
+    resolver with its own tenant's rows.
+    """
+    from core.builder_tools import _is_visible
+    from core.native_builder.target import describe_page, resolve_target
+    from core.store.resources import load_orchestrations
+
+    visible = [o for o in await load_orchestrations() if _is_visible(o)]
+    target = resolve_target(message, viewing_id, visible)
+    viewing = next((o for o in visible if viewing_id and o["id"] == viewing_id), None)
+    page = describe_page("orchestration", viewing.get("name", ""), viewing["id"]) if viewing else ""
+    return {**target.state(), "current_page": page}
 
 
 async def _workspace_profile() -> str:
@@ -158,7 +169,7 @@ async def run_builder_stream(request: BuilderChatRequest, server_module):
         "chat_history": _format_history(request.history),
         "selected_agent_ids": list(request.selected_agent_ids or []),
         "can_create_agents": bool(request.can_create_agents),
-        "current_orchestration_id": await _resolve_current_orch_id(request.current_orchestration_id),
+        **await _target_state(request.message, request.current_orchestration_id),
         "org_profile": await _workspace_profile(),
         "requirements": "",
         "human_response": "",
