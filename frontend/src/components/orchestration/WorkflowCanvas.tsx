@@ -18,6 +18,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Maximize, Minus, Plus, Wand2 } from 'lucide-react';
+import { canvasFlags } from './canvasFlags';
 import { StepNode } from './StepNode';
 import { StepPalette, STEP_DRAG_TYPE } from './StepPalette';
 import { addStepToGraph, clearEdgeLink, removeStepFromGraph, ROUTE_COLORS, type EdgeLink } from './graph';
@@ -29,13 +30,20 @@ import type { Orchestration, StepConfig, StepIssue, StepNodeData, StepType } fro
 interface WorkflowCanvasProps {
     orchestration: Orchestration;
     agents: any[];
-    selectedStepId: string | null;
-    onSelectStep: (stepId: string | null) => void;
-    onUpdateOrchestration: (orch: Orchestration) => void;
+    selectedStepId?: string | null;
+    /** Omit to make steps inert to clicks — a preview with nothing to open. */
+    onSelectStep?: (stepId: string | null) => void;
+    /** Required unless `readOnly`: every edit on the canvas arrives here. */
+    onUpdateOrchestration?: (orch: Orchestration) => void;
     runStepStatuses?: Record<string, 'pending' | 'running' | 'paused' | 'completed' | 'failed'>;
     /** The palette rail is part of the canvas; a shell that renders its own can turn it off. */
     showPalette?: boolean;
+    /** Look, don't touch: no drag, connect, delete, drop, palette, Tidy up or issue badges. See `canvasFlags`. */
+    readOnly?: boolean;
 }
+
+const noop = () => {};
+const NO_ISSUES: Record<string, StepIssue[]> = {};
 
 const nodeTypes: NodeTypes = {
     stepNode: StepNode as any,
@@ -112,7 +120,7 @@ function edge(opts: {
     };
 }
 
-function stepsToEdges(steps: StepConfig[]): Edge[] {
+function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
     const edges: Edge[] = [];
 
     for (const step of steps) {
@@ -278,29 +286,37 @@ function stepsToEdges(steps: StepConfig[]): Edge[] {
         }
     }
 
-    return edges;
+    return editable ? edges : edges.map((e) => ({ ...e, deletable: false, selectable: false }));
 }
 
 export function WorkflowCanvas({
     orchestration,
     agents,
-    selectedStepId,
+    selectedStepId = null,
     onSelectStep,
-    onUpdateOrchestration,
+    onUpdateOrchestration = noop,
     runStepStatuses,
     showPalette = true,
+    readOnly = false,
 }: WorkflowCanvasProps) {
     const { fitView, getNodes, screenToFlowPosition, zoomIn, zoomOut } = useReactFlow();
+    const flags = canvasFlags({ readOnly, showPalette });
+    const selectStep = onSelectStep ?? noop;
 
-    const validation = useMemo(() => validateOrchestration(orchestration, agents), [orchestration, agents]);
+    // A preview has no draft to fix, and its agents may be local ids the
+    // validator would call missing.
+    const issuesByStep = useMemo(
+        () => (flags.issues ? validateOrchestration(orchestration, agents).byStep : NO_ISSUES),
+        [flags.issues, orchestration, agents]
+    );
 
     const computedNodes = useMemo(
-        () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, validation.byStep),
-        [orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, validation.byStep]
+        () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep),
+        [orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep]
     );
     const computedEdges = useMemo(
-        () => stepsToEdges(orchestration.steps),
-        [orchestration.steps]
+        () => stepsToEdges(orchestration.steps, flags.edits),
+        [orchestration.steps, flags.edits]
     );
 
     const [nodes, setNodes, onNodesChange] = useNodesState(computedNodes);
@@ -404,19 +420,19 @@ export function WorkflowCanvas({
             }
             if (next !== orchestration) {
                 onUpdateOrchestration(next);
-                if (selectedStepId && deletedIds.has(selectedStepId)) onSelectStep(null);
+                if (selectedStepId && deletedIds.has(selectedStepId)) selectStep(null);
             }
         },
-        [orchestration, onUpdateOrchestration, selectedStepId, onSelectStep]
+        [orchestration, onUpdateOrchestration, selectedStepId, selectStep]
     );
 
     const addStep = useCallback(
         (type: StepType, position?: { x: number; y: number }) => {
             const { orchestration: next, step } = addStepToGraph(orchestration, type, position);
             onUpdateOrchestration(next);
-            onSelectStep(step.id);
+            selectStep(step.id);
         },
-        [orchestration, onUpdateOrchestration, onSelectStep]
+        [orchestration, onUpdateOrchestration, selectStep]
     );
 
     const onDragOver = useCallback((event: React.DragEvent) => {
@@ -450,14 +466,14 @@ export function WorkflowCanvas({
 
     const onNodeClick = useCallback(
         (_: any, node: Node) => {
-            onSelectStep(node.id);
+            selectStep(node.id);
         },
-        [onSelectStep]
+        [selectStep]
     );
 
     const onPaneClick = useCallback(() => {
-        onSelectStep(null);
-    }, [onSelectStep]);
+        selectStep(null);
+    }, [selectStep]);
 
     const canvasButtonCls =
         'flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-2 text-xs text-text-muted shadow-md transition-colors hover:text-text';
@@ -469,34 +485,41 @@ export function WorkflowCanvas({
                 edges={edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
-                onConnect={onConnect}
-                onNodeDragStop={onNodeDragStop}
-                onNodeClick={onNodeClick}
-                onPaneClick={onPaneClick}
-                onDelete={onDelete}
-                onDragOver={onDragOver}
-                onDrop={onDrop}
+                onConnect={flags.edits ? onConnect : undefined}
+                onNodeDragStop={flags.edits ? onNodeDragStop : undefined}
+                onNodeClick={onSelectStep ? onNodeClick : undefined}
+                onPaneClick={onSelectStep ? onPaneClick : undefined}
+                onDelete={flags.edits ? onDelete : undefined}
+                onDragOver={flags.edits ? onDragOver : undefined}
+                onDrop={flags.edits ? onDrop : undefined}
+                nodesDraggable={flags.nodesDraggable}
+                nodesConnectable={flags.nodesConnectable}
+                elementsSelectable={flags.elementsSelectable}
+                nodesFocusable={flags.nodesFocusable}
+                edgesFocusable={flags.edgesFocusable}
                 nodeTypes={nodeTypes}
                 fitView
-                minZoom={0.2}
+                minZoom={flags.minZoom}
                 maxZoom={2}
-                snapToGrid
+                snapToGrid={flags.snapToGrid}
                 snapGrid={[12, 12]}
-                deleteKeyCode={['Delete', 'Backspace']}
+                deleteKeyCode={flags.deleteKeyCode}
                 proOptions={{ hideAttribution: true }}
                 defaultEdgeOptions={{ type: 'smoothstep' }}
             >
                 <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-                <MiniMap
-                    pannable
-                    zoomable
-                    nodeColor={(node: any) => {
-                        const type = node.data?.step?.type;
-                        return STEP_TYPE_META[type as keyof typeof STEP_TYPE_META]?.color || '#6b7280';
-                    }}
-                    maskColor="var(--minimap-mask)"
-                />
-                {showPalette && (
+                {flags.minimap && (
+                    <MiniMap
+                        pannable
+                        zoomable
+                        nodeColor={(node: any) => {
+                            const type = node.data?.step?.type;
+                            return STEP_TYPE_META[type as keyof typeof STEP_TYPE_META]?.color || '#6b7280';
+                        }}
+                        maskColor="var(--minimap-mask)"
+                    />
+                )}
+                {flags.palette && (
                     // The height bound lives on the Panel: it is absolutely
                     // positioned inside `.react-flow`, so percentage heights
                     // resolve against the canvas — on the palette div they
@@ -512,9 +535,11 @@ export function WorkflowCanvas({
                     sat alone in the bottom-left corner, a second home for
                     buttons that belong with Tidy up. */}
                 <Panel position="top-right" className="!m-2 flex gap-1.5">
-                    <button type="button" onClick={tidyUp} title="Auto-arrange the graph left to right" className={canvasButtonCls}>
-                        <Wand2 size={13} aria-hidden /> Tidy up
-                    </button>
+                    {flags.tidyUp && (
+                        <button type="button" onClick={tidyUp} title="Auto-arrange the graph left to right" className={canvasButtonCls}>
+                            <Wand2 size={13} aria-hidden /> Tidy up
+                        </button>
+                    )}
                     <button
                         type="button"
                         onClick={() => zoomIn({ duration: 150 })}
