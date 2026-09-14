@@ -1,6 +1,6 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import {
     ReactFlow,
     Background,
@@ -43,6 +43,16 @@ interface WorkflowCanvasProps {
 }
 
 const noop = () => {};
+
+/** `(pointer: coarse)`, live — a tablet with a mouse plugged in changes its answer. The server render says no. */
+const COARSE = '(pointer: coarse)';
+function subscribeCoarse(onChange: () => void) {
+    const media = window.matchMedia(COARSE);
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+}
+const readCoarse = () => window.matchMedia(COARSE).matches;
+const serverCoarse = () => false;
 const NO_ISSUES: Record<string, StepIssue[]> = {};
 
 const nodeTypes: NodeTypes = {
@@ -300,7 +310,8 @@ export function WorkflowCanvas({
     readOnly = false,
 }: WorkflowCanvasProps) {
     const { fitView, getNodes, screenToFlowPosition, zoomIn, zoomOut } = useReactFlow();
-    const flags = canvasFlags({ readOnly, showPalette });
+    const coarsePointer = useSyncExternalStore(subscribeCoarse, readCoarse, serverCoarse);
+    const flags = canvasFlags({ readOnly, showPalette, coarsePointer });
     const selectStep = onSelectStep ?? noop;
 
     // A preview has no draft to fix, and its agents may be local ids the
@@ -498,6 +509,17 @@ export function WorkflowCanvas({
                 nodesFocusable={flags.nodesFocusable}
                 edgesFocusable={flags.edgesFocusable}
                 nodeTypes={nodeTypes}
+                zoomOnScroll={flags.zoomOnScroll}
+                preventScrolling={flags.preventScrolling}
+                panOnDrag={flags.panOnDrag}
+                // Not dragging is not enough for a finger to scroll the page: xyflow
+                // 12.11's stylesheet gives the pane `touch-action: none`, so the
+                // browser still will not scroll from it. When the drag is given
+                // back to the page, the pane's touch is too. `!` because that
+                // stylesheet is unlayered, and an unlayered rule beats any rule in
+                // Tailwind's utilities layer whatever its specificity; `\_` because
+                // an unescaped underscore in an arbitrary variant is a space.
+                className={flags.panOnDrag ? undefined : String.raw`[&_.react-flow\_\_pane]:!touch-auto`}
                 fitView
                 minZoom={flags.minZoom}
                 maxZoom={2}
