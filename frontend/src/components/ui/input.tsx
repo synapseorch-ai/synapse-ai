@@ -27,7 +27,7 @@ export function Input({
   size = "md",
   invalid,
   ...props
-}: Omit<React.InputHTMLAttributes<HTMLInputElement>, "size"> & {
+}: Omit<React.ComponentProps<"input">, "size"> & {
   size?: ControlSize;
   invalid?: boolean;
 }) {
@@ -45,7 +45,7 @@ export function Textarea({
   size = "md",
   invalid,
   ...props
-}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+}: React.ComponentProps<"textarea"> & {
   size?: ControlSize;
   invalid?: boolean;
 }) {
@@ -66,12 +66,20 @@ export function Textarea({
  * is a labelable element. What it could not do is associate the *hint*: it was
  * grey text near a field, invisible to a screen reader. So the hint and error
  * get ids, and `aria-describedby` is threaded onto the child.
+ *
+ * **`composite`** is for a control that holds buttons of its own — a code
+ * editor with Format, a markdown editor with its tabs and toolbar. Wrapped in a
+ * `<label>`, the first of those buttons would become the labelled control and a
+ * click on the label text would press it. A composite field is a `role="group"`
+ * instead, and the label reaches the control through `aria-labelledby`, which the
+ * control forwards to its editable surface.
  */
 export function Field({
   label,
   hint,
   error,
   required,
+  composite,
   children,
   className,
 }: {
@@ -87,10 +95,12 @@ export function Field({
   /** Replaces the hint while set, and marks the control invalid. */
   error?: string;
   required?: boolean;
+  composite?: boolean;
   children: React.ReactNode;
   className?: string;
 }) {
   const id = React.useId();
+  const labelId = `${id}-label`;
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = error ? `${id}-error` : undefined;
   const describedBy = [errorId, errorId ? undefined : hintId].filter(Boolean).join(" ") || undefined;
@@ -99,19 +109,26 @@ export function Field({
   // is the shape all twenty-odd forms already use, and this keeps it.
   const control = React.isValidElement<{
     "aria-describedby"?: string;
+    "aria-labelledby"?: string;
     "aria-invalid"?: boolean;
     invalid?: boolean;
   }>(children)
     ? React.cloneElement(children, {
         "aria-describedby":
           [children.props["aria-describedby"], describedBy].filter(Boolean).join(" ") || undefined,
+        ...(composite ? { "aria-labelledby": labelId } : {}),
         ...(error ? { invalid: true } : {}),
       })
     : children;
 
+  const Wrapper = composite ? "div" : "label";
+
   return (
-    <label className={cn("block", className)}>
-      <span className="mb-1.5 block text-sm font-medium text-text">
+    <Wrapper
+      className={cn("block", className)}
+      {...(composite ? { role: "group", "aria-labelledby": labelId } : {})}
+    >
+      <span id={labelId} className="mb-1.5 block text-sm font-medium text-text">
         {label}
         {required && (
           <span className="ml-0.5 text-danger" aria-hidden>
@@ -131,7 +148,7 @@ export function Field({
           </span>
         )
       )}
-    </label>
+    </Wrapper>
   );
 }
 

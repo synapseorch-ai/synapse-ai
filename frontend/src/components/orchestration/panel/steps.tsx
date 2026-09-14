@@ -681,10 +681,15 @@ function TransformSection({ step, update, codeRunnerNote }: StepSectionProps) {
                 <code className="font-code">state.key</code> or <code className="font-code">state[&quot;key&quot;]</code>, and
                 assign to <code className="font-code">result</code> to write the output key.
             </Note>
-            <span className="block text-sm font-medium text-text">Python code</span>
-            <div className="h-[240px] overflow-hidden rounded-md border border-border-strong transition-colors focus-within:border-accent">
-                <PythonEditor value={step.transform_code || ''} onChange={(code) => update({ transform_code: code })} />
-            </div>
+            <Field label="Python code" composite>
+                {/* Keyed by step, so undo never walks back into another step's code. */}
+                <PythonEditor
+                    key={step.id}
+                    height={240}
+                    value={step.transform_code || ''}
+                    onChange={(code) => update({ transform_code: code })}
+                />
+            </Field>
         </div>
     );
 }

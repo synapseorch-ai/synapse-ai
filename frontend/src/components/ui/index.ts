@@ -65,3 +65,24 @@ export { StatusBadge, normaliseStatus, type RunStatus } from "./status";
 export { Toast, useToast, type ToastTone } from "./toast";
 export { Hint, TooltipProvider } from "./tooltip";
 export { usePersisted } from "./use-persisted";
+
+// The editor family. `CodeEditor` loads CodeMirror on demand — nothing here
+// imports it statically, so the barrel stays as light as it was.
+export { CodeEditor, type CodeEditorProps, type CodeLanguage } from "./code-editor";
+export { TemplateInput } from "./template-input";
+export { TemplateScope, TemplateSourcesProvider, useTemplateSources } from "./template-context";
+export { type MentionItem, type MentionSource } from "./template-suggest";
+export {
+  applyTemplate,
+  formatJson,
+  matchMention,
+  matchTemplate,
+  normaliseVariables,
+  schemaArgs,
+  templateJsonProblem,
+  type TemplateCandidate,
+  type TemplateMatch,
+  type TemplateProfile,
+  type TemplateSources,
+  type TemplateVariable,
+} from "./template-complete";
