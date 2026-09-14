@@ -4,6 +4,8 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { FileText, FileJson, AlignLeft } from 'lucide-react';
 
+import type { MentionSource } from '@/components/ui';
+
 interface VaultFile {
     name: string;
     path: string;
@@ -14,6 +16,22 @@ interface VaultTextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaEl
     value: string;
     onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
 }
+
+/**
+ * `@` in the kit's editors: the same vault search and the same `@[path]` insert
+ * as `VaultTextarea` below, as a source the markdown editor's suggestion list
+ * reads. Cloud's copy of this file exports none until it has a vault.
+ */
+export const vaultMentions: MentionSource = {
+    trigger: '@',
+    search: async (query) => {
+        const response = await fetch(`/api/vault/search?q=${encodeURIComponent(query)}`);
+        if (!response.ok) return [];
+        const data = await response.json();
+        const files: VaultFile[] = Array.isArray(data.files) ? data.files : [];
+        return files.map((file) => ({ id: file.path, label: file.path, detail: file.ext, insert: `@[${file.path}]` }));
+    },
+};
 
 /**
  * Drop-in replacement for <textarea> with @-mention support for vault files.

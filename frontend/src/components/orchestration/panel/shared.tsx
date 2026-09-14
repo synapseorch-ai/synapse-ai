@@ -11,8 +11,7 @@
 
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import { Combobox, Input, controlStyles } from '@/components/ui';
-import { cn } from '@/lib/cn';
+import { Combobox, Input } from '@/components/ui';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
 
 /** Props every per-type section receives. */
@@ -29,9 +28,6 @@ export interface StepSectionProps {
     codeRunnerNote: string;
     orchestration?: Orchestration;
 }
-
-/** The class VaultTextarea (a plain textarea underneath) wears to match the kit. */
-export const vaultTextareaCls = cn(controlStyles({ size: 'sm' }), 'resize-y min-h-[96px] font-code');
 
 /** Neutral explainer block — replaces the per-type rainbow of tinted boxes. */
 export function Note({ children }: { children: React.ReactNode }) {

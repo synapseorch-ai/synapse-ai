@@ -9,13 +9,13 @@
 
 import { useEffect, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { Button, Checkbox, Combobox, Field, Input, Select, Textarea } from '@/components/ui';
-import { VaultTextarea } from '@/components/VaultMention';
+import { Button, Checkbox, Combobox, Field, Input, MarkdownEditor, Select, Textarea } from '@/components/ui';
+import { vaultMentions } from '@/components/VaultMention';
 import { humanizeToolName } from '@/lib/toolNames';
 import type { StepConfig, StepType } from '@/types/orchestration';
 import {
     LocalInput, ModelSelect, Note, StateKeyHelper, StepTargetSelect,
-    vaultTextareaCls, type StepSectionProps,
+    type StepSectionProps,
 } from './shared';
 import { PythonEditor } from './PythonEditor';
 
@@ -129,6 +129,22 @@ function AllowedTools({ step, update, agents, availableTools }: StepSectionProps
 
 /* ── per-type sections ──────────────────────────────────────────────────── */
 
+/**
+ * The hint under an agent, LLM or tool step's prompt. These three render
+ * `{{ state.key }}` and `{{ global.key }}` (and the older `{state.key}`), and
+ * typing `{{` lists them — spaced, because an unspaced `{{state.key}}` renders
+ * wrong in a step prompt.
+ */
+function PromptHint({ showVaultHints }: { showVaultHints?: boolean }) {
+    return (
+        <>
+            Type <span className="font-code">{'{{'}</span> for state and variables —{' '}
+            <span className="font-code">{'{{ state.key }}'}</span>, <span className="font-code">{'{{ global.key }}'}</span>
+            {showVaultHints && <>. Type <span className="font-code text-accent">@</span> to reference a vault file</>}.
+        </>
+    );
+}
+
 function AgentSection(props: StepSectionProps) {
     const { step, update, agents, showVaultHints } = props;
     return (
@@ -144,21 +160,16 @@ function AgentSection(props: StepSectionProps) {
                     searchPlaceholder="Search agents…"
                 />
             </Field>
-            <Field
-                label="Prompt template"
-                hint={
-                    <>
-                        Use <span className="font-code">{'{state.key}'}</span> to embed shared state
-                        {showVaultHints && <>. Type <span className="font-code text-accent">@</span> to reference a vault file</>}.
-                    </>
-                }
-            >
-                <VaultTextarea
-                    className={vaultTextareaCls}
+            <Field label="Prompt template" composite hint={<PromptHint showVaultHints={showVaultHints} />}>
+                <MarkdownEditor
+                    key={step.id}
+                    compact
                     rows={4}
+                    profile="step-prompt"
+                    mentions={showVaultHints ? vaultMentions : undefined}
                     value={step.prompt_template || ''}
-                    onChange={(e) => update({ prompt_template: e.target.value })}
-                    placeholder={showVaultHints ? 'Use {state.key} to reference shared state, @ to reference vault files…' : 'Use {state.key} to reference shared state…'}
+                    onChange={(prompt_template) => update({ prompt_template })}
+                    placeholder="What this step should do. Type {{ for state and variables…"
                 />
             </Field>
             <AllowedTools {...props} />
@@ -174,22 +185,16 @@ function LlmSection({ step, update, availableModels, showVaultHints }: StepSecti
                 <strong>Single LLM call</strong> — no agent, no tools. Great for summaries, rewrites, and
                 lightweight reasoning between steps.
             </Note>
-            <Field
-                label="Prompt template"
-                required
-                hint={
-                    <>
-                        Use <span className="font-code">{'{state.key}'}</span> to embed shared state values
-                        {showVaultHints && <>. Type <span className="font-code text-accent">@</span> to reference a vault file</>}.
-                    </>
-                }
-            >
-                <VaultTextarea
-                    className={vaultTextareaCls}
+            <Field label="Prompt template" required composite hint={<PromptHint showVaultHints={showVaultHints} />}>
+                <MarkdownEditor
+                    key={step.id}
+                    compact
                     rows={5}
+                    profile="step-prompt"
+                    mentions={showVaultHints ? vaultMentions : undefined}
                     value={step.prompt_template || ''}
-                    onChange={(e) => update({ prompt_template: e.target.value })}
-                    placeholder={'Summarize the following in 3 bullet points:\n\n{state.analysis_result}'}
+                    onChange={(prompt_template) => update({ prompt_template })}
+                    placeholder={'Summarize the following in 3 bullet points:\n\n{{ state.analysis_result }}'}
                 />
             </Field>
             <Field label="Model override">
@@ -219,21 +224,16 @@ function ToolSection({ step, update, availableModels, availableTools, showVaultH
                     searchPlaceholder="Search tools…"
                 />
             </Field>
-            <Field
-                label="Prompt template"
-                hint={
-                    <>
-                        Use <span className="font-code">{'{state.key}'}</span> to embed shared state
-                        {showVaultHints && <>. Type <span className="font-code text-accent">@</span> to reference a vault file</>}.
-                    </>
-                }
-            >
-                <VaultTextarea
-                    className={vaultTextareaCls}
+            <Field label="Prompt template" composite hint={<PromptHint showVaultHints={showVaultHints} />}>
+                <MarkdownEditor
+                    key={step.id}
+                    compact
                     rows={4}
+                    profile="step-prompt"
+                    mentions={showVaultHints ? vaultMentions : undefined}
                     value={step.prompt_template || ''}
-                    onChange={(e) => update({ prompt_template: e.target.value })}
-                    placeholder={'Search for relevant data about {state.user_input}'}
+                    onChange={(prompt_template) => update({ prompt_template })}
+                    placeholder="Search for relevant data about {{ state.user_input }}"
                 />
             </Field>
             <Field label="Model override">
@@ -718,18 +718,24 @@ function PrintSection({ step, update, showVaultHints }: StepSectionProps) {
             </Note>
             <Field
                 label="Content"
+                composite
                 hint={
                     <>
-                        Use <span className="font-code">{'{state.key}'}</span> or <span className="font-code">{'{state.key.nested}'}</span>.
-                        Supports markdown{showVaultHints && <>. Type <span className="font-code text-accent">@</span> to reference a vault file</>}.
+                        {/* Print fills in only the single-brace form, so that is all it offers. */}
+                        Use <span className="font-code">{'{state.key}'}</span> or <span className="font-code">{'{state.key.nested}'}</span> —
+                        type <span className="font-code">{'{s'}</span> to pick a key. <span className="font-code">{'{{ }}'}</span> is not
+                        filled in here{showVaultHints && <>. Type <span className="font-code text-accent">@</span> to reference a vault file</>}.
                     </>
                 }
             >
-                <VaultTextarea
-                    className={vaultTextareaCls}
+                <MarkdownEditor
+                    key={step.id}
+                    compact
                     rows={6}
+                    profile="legacy-state-nested"
+                    mentions={showVaultHints ? vaultMentions : undefined}
                     value={step.print_content || ''}
-                    onChange={(e) => update({ print_content: e.target.value })}
+                    onChange={(print_content) => update({ print_content })}
                     placeholder={'# Summary\n\nThe analysis result is: {state.analysis_result}'}
                 />
             </Field>

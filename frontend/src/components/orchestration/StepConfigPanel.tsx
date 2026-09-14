@@ -20,7 +20,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 import {
-    Badge, Button, ConfirmDialog, Checkbox, ErrorNote, Field, IconButton, Input, Section, Select, usePersisted,
+    Badge, Button, ConfirmDialog, Checkbox, ErrorNote, Field, IconButton, Input, Section, Select, TemplateScope, usePersisted,
 } from '@/components/ui';
 import type { Orchestration, StepConfig, StepType } from '@/types/orchestration';
 import { STEP_TYPE_META } from '@/types/orchestration';
@@ -211,7 +211,10 @@ export function StepConfigPanel({
 
                 {/* Type-specific behavior */}
                 <hr className="border-border" />
-                <TypeSection {...sectionProps} />
+                {/* The orchestration's state keys, for the prompts' `{{` suggestions. */}
+                <TemplateScope state={stateKeys}>
+                    <TypeSection {...sectionProps} />
+                </TemplateScope>
 
                 {/* Data flow — not for end nodes */}
                 {step.type !== 'end' && (

@@ -12,12 +12,23 @@
  */
 import { useEffect } from 'react';
 
-import { TooltipProvider, usePersisted } from '@/components/ui';
+import { TemplateSourcesProvider, TooltipProvider, usePersisted } from '@/components/ui';
 import { BuilderLauncher } from '@/components/app/BuilderLauncher';
 import { BuilderPanel } from '@/components/app/BuilderPanel';
 import { BuilderProvider } from '@/components/app/BuilderProvider';
 import { AppRail, type ThemeMode } from '@/components/app/AppRail';
 import { NavGuardProvider } from '@/components/app/NavGuard';
+
+/**
+ * Variables for `{{ global.… }}` suggestions in every editor, fetched on the
+ * first `{{`. Self-hosted variables are plain values; only the names leave here.
+ */
+async function loadVariables() {
+    const response = await fetch('/api/settings/variables');
+    if (!response.ok) return [];
+    const { values } = (await response.json()) as { values?: Record<string, unknown> };
+    return Object.keys(values ?? {}).map((key) => ({ key }));
+}
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
     // Three modes, one class. `system` follows the OS and keeps following it
@@ -67,6 +78,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 open-delay timer, so tooltips start behaving differently
                 depending on which subtree they happen to be in. */}
             <TooltipProvider>
+            <TemplateSourcesProvider loadGlobals={loadVariables}>
             {/* The AI builder is mounted once, here, rather than by a screen:
                 it is reachable from every screen and its conversation has to
                 survive navigating between them. */}
@@ -81,6 +93,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <BuilderLauncher />
             <BuilderPanel />
             </BuilderProvider>
+            </TemplateSourcesProvider>
             </TooltipProvider>
         </NavGuardProvider>
     );
