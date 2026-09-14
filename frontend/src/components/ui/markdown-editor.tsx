@@ -143,11 +143,18 @@ export function MarkdownEditor({
         className,
       )}
     >
-      <div className="flex items-center justify-between gap-2 border-b border-border bg-surface-2 px-1">
+      <div
+        className={cn(
+          "flex items-center justify-between gap-2 border-b border-border bg-surface-2",
+          compact ? "px-1.5 py-1" : "px-2 py-1.5",
+        )}
+      >
+        {/* A segmented switch, the shape the rail's theme picker uses (`MenuSegment`).
+            An underline tab took the kit's button radius and curved at both ends. */}
         <div
           role="tablist"
           aria-label="Editor mode"
-          className="flex"
+          className="flex items-center gap-0.5 rounded-md border border-border bg-bg p-0.5"
           onKeyDown={(event) => {
             if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
               event.preventDefault();
@@ -168,11 +175,9 @@ export function MarkdownEditor({
               tabIndex={tab === which ? 0 : -1}
               onClick={() => chooseTab(which, true)}
               className={cn(
-                "-mb-px border-b-2 font-medium transition-colors",
-                compact ? "px-2 py-1.5 text-xs" : "px-3 py-2 text-sm",
-                tab === which
-                  ? "border-accent text-text"
-                  : "border-transparent text-text-faint hover:text-text",
+                "rounded-[calc(var(--ui-radius)-2px)] font-medium transition-colors",
+                compact ? "px-2 py-0.5 text-2xs" : "px-2.5 py-0.5 text-xs",
+                tab === which ? "bg-surface-2 text-text shadow-sm" : "text-text-faint hover:text-text",
               )}
             >
               {which === "write" ? "Write" : "Preview"}
