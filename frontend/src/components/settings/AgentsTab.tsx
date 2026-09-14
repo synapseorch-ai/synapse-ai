@@ -1,11 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Bot, Plus, Save, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, Eye, EyeOff, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
-import { Combobox, Label, SearchInput, Select, Spinner } from '@/components/ui';
+import { Bot, Plus, Save, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
+import { Combobox, Label, MarkdownEditor, SearchInput, Select, Spinner } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
 import { humanizeToolName } from '@/lib/toolNames';
-import { VaultTextarea } from '@/components/VaultMention';
+import { vaultMentions } from '@/components/VaultMention';
 import { CAPABILITIES, AUTO_TOOLS_BY_TYPE } from './types';
-import { renderTextContent } from '@/lib/utils';
 import { useDispatch } from 'react-redux';
 import { AppDispatch } from '@/store';
 import { addAgent, updateAgent } from '@/store/settingsSlice';
@@ -48,7 +47,6 @@ export const AgentsTab = ({
     const [expandedCaps, setExpandedCaps] = useState<Set<string>>(new Set());
     const [promptDescription, setPromptDescription] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
-    const [showPreview, setShowPreview] = useState(false);
     const [agentSubTab, setAgentSubTab] = useState<'config' | 'messaging' | ActivityTab>('config');
     const [agentChannels, setAgentChannels] = useState<any[]>([]);
     // The workspace floor an unset category inherits, and the widgets that
@@ -1045,30 +1043,25 @@ export const AgentsTab = ({
                                         <p className="text-2xs text-text-faint">Describe the agent&apos;s purpose and the AI will generate a comprehensive system prompt. Tools and date/time context are auto-injected at runtime.</p>
                                     </div>
 
-                                    {/* System Prompt with Preview */}
+                                    {/* System prompt — the kit's markdown editor. `global` because a
+                                        system prompt fills in `{{ global.key }}` and nothing else; the
+                                        vault's `@` rides the same suggestion list. */}
                                     <div className="space-y-1 flex-1 flex flex-col min-h-0">
-                                        <div className="flex items-center justify-between">
-                                            <Label className="block">System Prompt (The Brain)</Label>
-                                            <button
-                                                onClick={() => setShowPreview(!showPreview)}
-                                                className="flex items-center gap-1.5 text-2xs font-bold text-text-faint hover:text-text transition-colors px-2 py-1"
-                                            >
-                                                {showPreview ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                                                {showPreview ? 'EDIT' : 'PREVIEW'}
-                                            </button>
-                                        </div>
-                                        {showPreview ? (
-                                            <div className="w-full flex-1 min-h-[200px] max-h-[500px] overflow-y-auto bg-bg border border-border p-4 text-sm text-text leading-relaxed rounded-md">
-                                                {renderTextContent(draftAgent.system_prompt || '*No system prompt yet.*')}
-                                            </div>
-                                        ) : (
-                                            <VaultTextarea
-                                                value={draftAgent.system_prompt}
-                                                onChange={e => setDraftAgent({ ...draftAgent, system_prompt: e.target.value })}
-                                                className="w-full flex-1 min-h-[200px] bg-bg border border-border p-3 text-xs font-mono text-text focus:border-border-strong focus:outline-none resize-none leading-relaxed rounded-md"
-                                                placeholder="You are a helpful assistant. Type @ to reference a vault file..."
-                                            />
-                                        )}
+                                        <Label htmlFor="agent-system-prompt" className="block">System Prompt (The Brain)</Label>
+                                        <MarkdownEditor
+                                            key={draftAgent.id || 'new'}
+                                            id="agent-system-prompt"
+                                            rows={14}
+                                            profile="global"
+                                            mentions={vaultMentions}
+                                            value={draftAgent.system_prompt || ''}
+                                            onChange={system_prompt => setDraftAgent({ ...draftAgent, system_prompt })}
+                                            placeholder="You are a helpful assistant. Type {{ for a variable, @ for a vault file…"
+                                            previewEmpty="No system prompt yet."
+                                        />
+                                        <p className="text-2xs text-text-faint">
+                                            Type <code className="font-code">{'{{'}</code> for a variable — <code className="font-code">{'{{ global.key }}'}</code> is filled in each time the agent runs.
+                                        </p>
                                     </div>
                                 </div>
                             )} {/* end agentSubTab === 'config' */}

@@ -53,6 +53,8 @@ export type MarkdownEditorProps = {
   id?: string;
   invalid?: boolean;
   className?: string;
+  /** For a host that sizes the text area itself — a modal clamping it to the viewport, say. */
+  textareaClassName?: string;
   "aria-label"?: string;
   "aria-labelledby"?: string;
   "aria-describedby"?: string;
@@ -97,6 +99,7 @@ export function MarkdownEditor({
   id,
   invalid,
   className,
+  textareaClassName,
   ...aria
 }: MarkdownEditorProps) {
   const baseId = React.useId();
@@ -229,6 +232,7 @@ export function MarkdownEditor({
           className={cn(
             controlStyles({ size: compact ? "sm" : "md" }),
             "block resize-y rounded-none border-0 bg-transparent leading-relaxed focus-visible:ring-0",
+            textareaClassName,
           )}
           onChange={(event) => {
             suggest.track(event);

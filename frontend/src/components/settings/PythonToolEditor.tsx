@@ -1,17 +1,20 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { Play, ChevronDown, ChevronUp, Terminal, Package, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { EditorView } from '@codemirror/view';
-import { basicSetup } from 'codemirror';
-import { python } from '@codemirror/lang-python';
-import { oneDarkTheme } from '@codemirror/theme-one-dark';
-import { EditorState } from '@codemirror/state';
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
-import { tags } from '@lezer/highlight';
+/**
+ * A Python tool: its code, its input schema, and a test run.
+ *
+ * The three editors are the kit's `CodeEditor`. This file used to build its own
+ * CodeMirror with the change listener bound once at mount, so it called
+ * `onChange({...draft, code})` with the draft *as it was then*: a name or a
+ * description typed after the editor opened was wiped by the next keystroke in
+ * the code (2026-09-14). `CodeEditor` reads `onChange` fresh on every change.
+ */
 
-import { Spinner } from '@/components/ui';
+import { useMemo, useState } from 'react';
+import { Play, ChevronDown, ChevronUp, Terminal, Package, AlertCircle, CheckCircle2 } from 'lucide-react';
+
+import { CodeEditor, Spinner } from '@/components/ui';
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 
 export interface PythonDraftTool {
@@ -28,53 +31,6 @@ interface PythonToolEditorProps {
     draft: PythonDraftTool;
     onChange: (updated: PythonDraftTool) => void;
 }
-
-/* ─── Rich Python syntax highlighting ────────────────────────────────────── */
-
-const pythonHighlightStyle = HighlightStyle.define([
-    // Keywords: if, else, for, while, return, import, from, as, with, pass, break, continue, yield, lambda, del, global, nonlocal, raise, try, except, finally, assert
-    { tag: tags.keyword, color: '#c792ea', fontWeight: 'bold' },
-    // def / class keywords
-    { tag: tags.definitionKeyword, color: '#c792ea', fontWeight: 'bold' },
-    // self, True, False, None
-    { tag: tags.self, color: '#f78c6c', fontStyle: 'italic' },
-    { tag: tags.bool, color: '#ff9cac' },
-    { tag: tags.null, color: '#ff9cac' },
-    // Function / method names at definition (def foo:)
-    { tag: tags.definition(tags.function(tags.variableName)), color: '#82aaff', fontWeight: 'bold' },
-    // Function calls  (foo())
-    { tag: tags.function(tags.variableName), color: '#82aaff' },
-    // Class names
-    { tag: tags.definition(tags.className), color: '#ffcb6b', fontWeight: 'bold' },
-    { tag: tags.className, color: '#ffcb6b' },
-    // Decorator (@decorator)
-    { tag: tags.meta, color: '#ffa759', fontStyle: 'italic' },
-    // Variables / property access
-    { tag: tags.variableName, color: '#eeffff' },
-    { tag: tags.propertyName, color: '#89ddff' },
-    // Strings
-    { tag: tags.string, color: '#c3e88d' },
-    { tag: tags.special(tags.string), color: '#c3e88d' },  // f-strings, r-strings
-    // Numbers
-    { tag: tags.number, color: '#f78c6c' },
-    // Operators  + - * / = == != < > etc.
-    { tag: tags.operator, color: '#89ddff' },
-    // Punctuation / brackets
-    { tag: tags.punctuation, color: '#89ddff' },
-    { tag: tags.bracket, color: '#ffcb6b' },
-    // Comments
-    { tag: tags.comment, color: '#546e7a', fontStyle: 'italic' },
-    // Built-in attributes / special names
-    { tag: tags.special(tags.variableName), color: '#80cbc4' },
-    // Type annotations
-    { tag: tags.typeName, color: '#ffcb6b' },
-    // Import paths
-    { tag: tags.moduleKeyword, color: '#c792ea', fontWeight: 'bold' },
-    // Escape sequences in strings
-    { tag: tags.escape, color: '#f78c6c' },
-]);
-
-const richPythonTheme = syntaxHighlighting(pythonHighlightStyle);
 
 /* ─── Sandbox packages info ───────────────────────────────────────────────── */
 
@@ -132,8 +88,6 @@ function lintPython(code: string): LintWarning[] {
 /* ─── Component ──────────────────────────────────────────────────────────── */
 
 export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
-    const editorContainerRef = useRef<HTMLDivElement>(null);
-    const editorViewRef = useRef<EditorView | null>(null);
     const [showPackages, setShowPackages] = useState(false);
     const [testArgs, setTestArgs] = useState('{}');
     const [testResult, setTestResult] = useState<{
@@ -141,80 +95,23 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
     } | null>(null);
     const [testLoading, setTestLoading] = useState(false);
     const [testError, setTestError] = useState<string | null>(null);
-    const [lintWarnings, setLintWarnings] = useState<LintWarning[]>([]);
-
-    /* ── Init CodeMirror ──────────────────────────────────────────────────── */
-
-    const onDocChange = useCallback((code: string) => {
-        const warnings = lintPython(code);
-        setLintWarnings(warnings);
-        onChange({ ...draft, code });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [draft, onChange]);
-
-    useEffect(() => {
-        if (!editorContainerRef.current) return;
-        if (editorViewRef.current) return; // already mounted
-
-        const startState = EditorState.create({
-            doc: draft.code || DEFAULT_CODE,
-            extensions: [
-                basicSetup,
-                python(),
-                oneDarkTheme,
-                richPythonTheme,
-                EditorView.updateListener.of((update: import('@codemirror/view').ViewUpdate) => {
-                    if (update.docChanged) {
-                        onDocChange(update.state.doc.toString());
-                    }
-                }),
-                EditorView.theme({
-                    '&': {
-                        backgroundColor: '#09090b',
-                        height: '100%',
-                        borderRadius: '0',
-                    },
-                    '.cm-scroller': { overflow: 'auto', fontFamily: 'monospace', fontSize: '13px' },
-                    '.cm-content': { padding: '12px 0' },
-                    '.cm-line': { padding: '0 16px' },
-                    '&.cm-focused .cm-cursor': { borderLeftColor: '#a855f7' },
-                    '.cm-selectionBackground': { backgroundColor: '#3f3f46' },
-                    '&.cm-focused .cm-selectionBackground': { backgroundColor: '#4f46e5' },
-                }),
-            ],
-        });
-
-        editorViewRef.current = new EditorView({
-            state: startState,
-            parent: editorContainerRef.current,
-        });
-
-        // Initial lint
-        setLintWarnings(lintPython(draft.code || DEFAULT_CODE));
-
-        return () => {
-            editorViewRef.current?.destroy();
-            editorViewRef.current = null;
-        };
-        // Only run on mount
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    // Exactly the draft: a fallback here would put the starter code back the moment
+    // someone cleared the editor. Switching to Python seeds it instead.
+    const code = draft.code ?? '';
+    const lintWarnings = useMemo(() => lintPython(code), [code]);
 
     /* ── Schema JSON state ───────────────────────────────────────────────── */
 
     const [schemaStr, setSchemaStr] = useState(() =>
         JSON.stringify(draft.inputSchema || { type: 'object', properties: { input: { type: 'string' } } }, null, 2)
     );
-    const [schemaError, setSchemaError] = useState<string | null>(null);
-
+    // The editor says when the JSON does not parse; the draft keeps the last schema that did.
     const handleSchemaChange = (val: string) => {
         setSchemaStr(val);
         try {
-            const parsed = JSON.parse(val);
-            setSchemaError(null);
-            onChange({ ...draft, inputSchema: parsed });
+            onChange({ ...draft, inputSchema: JSON.parse(val) });
         } catch {
-            setSchemaError('Invalid JSON');
+            /* mid-edit */
         }
     };
 
@@ -301,9 +198,13 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                         </div>
                     )}
                 </div>
-                <div
-                    ref={editorContainerRef}
-                    className="min-h-[280px] h-[280px] overflow-hidden border border-zinc-800 focus-within:border-accent transition-colors rounded-sm"
+                <CodeEditor
+                    language="python"
+                    height={280}
+                    value={code}
+                    onChange={(next) => onChange({ ...draft, code: next })}
+                    placeholder={DEFAULT_CODE}
+                    aria-label="Python code"
                 />
                 {/* Lint warnings */}
                 {lintWarnings.length > 0 && (
@@ -321,17 +222,16 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
             {/* ── Input Schema (JSON) ──────────────────────────────────────── */}
             <div className="space-y-1">
                 <label className="text-[10px] uppercase font-bold text-zinc-500">Input Schema (JSON)</label>
-                <textarea
+                <CodeEditor
+                    language="json"
+                    lint="json"
+                    format
+                    height={200}
                     value={schemaStr}
-                    onChange={e => handleSchemaChange(e.target.value)}
-                    className="w-full bg-zinc-950 border border-zinc-800 p-3 text-[10px] font-mono text-zinc-300 focus:border-accent focus:outline-none resize-none min-h-[140px] rounded-md"
+                    onChange={handleSchemaChange}
                     placeholder='{"type": "object", "properties": {"query": {"type": "string", "description": "The input query"}}}'
+                    aria-label="Input schema (JSON)"
                 />
-                {schemaError && (
-                    <p className="text-[10px] text-red-400 flex items-center gap-1">
-                        <AlertCircle className="h-3 w-3 shrink-0" /> {schemaError}
-                    </p>
-                )}
             </div>
 
             {/* ── Test Runner ──────────────────────────────────────────────── */}
@@ -347,12 +247,13 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                 <div className="flex gap-2 items-start">
                     <div className="flex-1 space-y-1">
                         <label className="text-[9px] text-zinc-600 uppercase tracking-wider">Test Arguments (JSON)</label>
-                        <textarea
+                        <CodeEditor
+                            language="json"
+                            height={88}
                             value={testArgs}
-                            onChange={e => setTestArgs(e.target.value)}
-                            rows={2}
-                            className="w-full bg-zinc-950 border border-zinc-800 p-2 text-xs font-mono text-zinc-300 focus:border-accent focus:outline-none resize-none rounded-md"
+                            onChange={setTestArgs}
                             placeholder='{"query": "hello world"}'
+                            aria-label="Test arguments (JSON)"
                         />
                     </div>
                     <button

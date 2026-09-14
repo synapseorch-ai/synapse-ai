@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Wrench, Plus, Trash, X, ExternalLink, AlertTriangle, CheckCircle2, RefreshCw, Container, Import } from 'lucide-react';
 import { PythonToolEditor, type PythonDraftTool } from './PythonToolEditor';
 import { OpenApiImport } from './OpenApiImport';
-import { Button, Label, Select } from '@/components/ui';
+import { Button, CodeEditor, Label, Select, TemplateInput, TemplateScope, schemaArgs } from '@/components/ui';
 
 interface CustomToolsTabProps {
     customTools: any[];
@@ -37,6 +37,15 @@ export const CustomToolsTab = ({
 }: CustomToolsTabProps) => {
     // OpenAPI import panel toggle
     const [showImport, setShowImport] = useState(false);
+    // The argument names `{{` offers in the URL, headers and body — from the schema
+    // as typed, and none while it does not parse.
+    const schemaArgNames = useMemo(() => {
+        try {
+            return schemaArgs(JSON.parse(draftTool?.inputSchemaStr || '{}'));
+        } catch {
+            return [];
+        }
+    }, [draftTool?.inputSchemaStr]);
     // Docker status state
     type DockerStatus = { installed: boolean; running: boolean; image_exists: boolean } | null;
     const [dockerStatus, setDockerStatus] = useState<DockerStatus>(null);
@@ -307,6 +316,7 @@ export const CustomToolsTab = ({
 
                     {/* ── CONFIG mode (HTTP/n8n tool) ────────────────────── */}
                     {toolBuilderMode === 'config' && (
+                        <TemplateScope args={schemaArgNames}>
                         <div className="space-y-5 pr-2">
                             {/* Method */}
                             <div className="space-y-1">
@@ -403,12 +413,12 @@ export const CustomToolsTab = ({
                                         </span>
                                     )}
                                 </div>
-                                <input
-                                    type="text"
-                                    value={draftTool.url}
+                                <TemplateInput
+                                    profile="tool-url"
+                                    value={draftTool.url || ''}
                                     onChange={e => setDraftTool({ ...draftTool, url: e.target.value })}
-                                    className="w-full bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none font-mono rounded-md"
-                                    placeholder="https://api.example.com/users/{{id}}"
+                                    placeholder="https://api.example.com/users/{{ id }}"
+                                    aria-label="URL"
                                 />
                                 {/* URL templating hint — dynamic based on input schema */}
                                 {(() => {
@@ -424,12 +434,12 @@ export const CustomToolsTab = ({
                                     // whose own path syntax is single-brace — but it
                                     // is not what anything teaches any more.
                                     const examples = keys.length
-                                        ? keys.slice(0, 3).map(k => `{{${k}}}`).join(', ')
-                                        : '{{field}}';
+                                        ? keys.slice(0, 3).map(k => `{{ ${k} }}`).join(', ')
+                                        : '{{ field }}';
                                     return (
                                         <p className="mt-1 text-2xs text-text-faint leading-relaxed">
-                                            💡 Use <code className="font-code text-text-muted bg-surface px-1 rounded-md">{examples}</code> in the URL to inject input values.
-                                            {' '}<code className="font-code text-text-muted bg-surface px-1 rounded-md">{'{{global.key}}'}</code> works here too.
+                                            💡 Use <code className="font-code text-text-muted bg-surface px-1 rounded-md">{examples}</code> in the URL to inject input values — type <code className="font-code text-text-muted bg-surface px-1 rounded-md">{'{{'}</code> to pick one.
+                                            {' '}<code className="font-code text-text-muted bg-surface px-1 rounded-md">{'{{ global.key }}'}</code> works here too.
                                             {' '}GET/DELETE args become query params; POST/PUT go in the body.
                                         </p>
                                     );
@@ -439,14 +449,18 @@ export const CustomToolsTab = ({
                             {/* Body template — POST/PUT/DELETE */}
                             {(draftTool.method || 'POST') !== 'GET' && (
                                 <div className="space-y-1">
-                                    <Label htmlFor="cus-drafttool-body" className="block">Request body <span className="text-text-faint font-normal normal-case">(optional)</span></Label>
-                                    <textarea id="cus-drafttool-body"
+                                    <Label className="block">Request body <span className="text-text-faint font-normal normal-case">(optional)</span></Label>
+                                    <CodeEditor
+                                        language="json"
+                                        profile="tool"
+                                        lint="json-template"
+                                        height={120}
                                         value={draftTool.body || ''}
-                                        onChange={e => setDraftTool({ ...draftTool, body: e.target.value })}
-                                        className="w-full h-20 bg-bg border border-border p-2 text-2xs font-mono text-text focus:border-border-strong focus:outline-none resize-y rounded-md"
-                                        placeholder={'{{body}}   — the "body" argument is the request body\n{{body.data}}   — a key inside it\n{"customer": {{body}}, "ref": "{{id}}", "via": "{{global.source}}"}   — a JSON template'}
+                                        onChange={body => setDraftTool({ ...draftTool, body })}
+                                        placeholder={'{{ body }}   — the "body" argument is the request body\n{{ body.data }}   — a key inside it\n{"customer": {{ body }}, "ref": {{ id }}, "via": {{ global.source }}}   — a JSON template'}
+                                        aria-label="Request body"
                                     />
-                                    <p className="text-2xs text-text-faint">Empty sends every argument the URL did not use. <code className="font-mono">{'{{global.key}}'}</code> works here, in the URL and in headers.</p>
+                                    <p className="text-2xs text-text-faint">Empty sends every argument the URL did not use. <code className="font-mono">{'{{ global.key }}'}</code> works here, in the URL and in headers. Put a reference where a value goes, not inside a string, or the body is sent as text.</p>
                                 </div>
                             )}
 
@@ -474,16 +488,17 @@ export const CustomToolsTab = ({
                                             }}
                                             className="flex-1 bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none font-mono rounded-md"
                                         />
-                                        <input
-                                            type="text"
-                                            placeholder="Value"
+                                        <TemplateInput
+                                            profile="tool"
+                                            placeholder="Value — type {{ for a variable"
                                             value={row.value}
                                             onChange={e => {
                                                 const newRows = [...headerRows];
-                                                newRows[idx].value = e.target.value;
+                                                newRows[idx] = { ...row, value: e.target.value };
                                                 setHeaderRows(newRows);
                                             }}
-                                            className="flex-1 bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none font-mono rounded-md"
+                                            className="flex-1"
+                                            aria-label="Header value"
                                         />
                                         <button
                                             onClick={() => setHeaderRows(headerRows.filter(r => r.id !== row.id))}
@@ -497,15 +512,20 @@ export const CustomToolsTab = ({
 
                             {/* Schemas */}
                             <div className="space-y-1 flex flex-col min-h-[280px]">
-                                <Label htmlFor="cus-drafttool-inputschemastr" className="block">Input Schema (JSON)</Label>
-                                <textarea id="cus-drafttool-inputschemastr"
-                                    value={draftTool.inputSchemaStr}
-                                    onChange={e => setDraftTool({ ...draftTool, inputSchemaStr: e.target.value })}
-                                    className="w-full flex-1 bg-bg border border-border p-3 text-2xs font-mono text-text focus:border-border-strong focus:outline-none resize-none rounded-md"
+                                <Label className="block">Input Schema (JSON)</Label>
+                                <CodeEditor
+                                    language="json"
+                                    lint="json"
+                                    format
+                                    height={280}
+                                    value={draftTool.inputSchemaStr || ''}
+                                    onChange={inputSchemaStr => setDraftTool({ ...draftTool, inputSchemaStr })}
                                     placeholder='{"type": "object", "properties": {"msg": {"type": "string"}}}'
+                                    aria-label="Input Schema (JSON)"
                                 />
                             </div>
                         </div>
+                        </TemplateScope>
                     )}
 
                     {/* ── PYTHON mode ────────────────────────────────────── */}

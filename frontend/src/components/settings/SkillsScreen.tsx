@@ -14,13 +14,12 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
-import { Download, Eye, EyeOff, HardDrive, Library, Pencil, Plus, Trash } from "lucide-react";
+import { Download, HardDrive, Library, Pencil, Plus, Trash } from "lucide-react";
 
 import {
     Badge, Button, Card, CardBody, ConfirmDialog, EmptyState, Field, IconButton,
-    Input, Label, Modal, Textarea, Toast, useToast,
+    Input, Label, MarkdownEditor, Modal, Toast, useToast,
 } from "@/components/ui";
-import { renderTextContent } from "@/lib/utils";
 
 type Skill = {
     name: string;
@@ -309,32 +308,21 @@ export function SkillsScreen() {
                             modal body from growing its own scrollbar next to the pane's.
                             Two nested scrollbars was the bug. */}
                         <div className="space-y-1">
-                            <div className="flex items-center justify-between">
-                                <Label className="block">Instructions (markdown)</Label>
-                                <button
-                                    type="button"
-                                    onClick={() => setDraftTab(draftTab === "preview" ? "edit" : "preview")}
-                                    className="flex items-center gap-1.5 px-2 py-1 text-2xs font-bold text-text-faint transition-colors hover:text-text"
-                                >
-                                    {draftTab === "preview"
-                                        ? <><EyeOff className="h-3 w-3" aria-hidden /> EDIT</>
-                                        : <><Eye className="h-3 w-3" aria-hidden /> PREVIEW</>}
-                                </button>
-                            </div>
-                            {draftTab === "preview" ? (
-                                <div className="h-[clamp(160px,calc(85vh-390px),320px)] w-full overflow-y-auto rounded-md border border-border bg-bg p-4 text-sm leading-relaxed text-text">
-                                    {renderTextContent(draft.body || "*No instructions yet.*")}
-                                </div>
-                            ) : (
-                                <Textarea
-                                    value={draft.body}
-                                    onChange={(e) => setDraft({ ...draft, body: e.target.value })}
-                                    className="h-[clamp(160px,calc(85vh-390px),320px)] w-full resize-none font-mono text-xs leading-relaxed"
-                                    placeholder={"# My skill\n\nStep-by-step instructions the agent follows once loaded…"}
-                                />
-                            )}
+                            <Label htmlFor="skill-body" className="block">Instructions (markdown)</Label>
+                            {/* No `{{` suggestions: nothing in a skill body is filled in. The tab
+                                is controlled because an existing skill opens on Preview. */}
+                            <MarkdownEditor
+                                id="skill-body"
+                                tab={draftTab === "preview" ? "preview" : "write"}
+                                onTabChange={(next) => setDraftTab(next === "preview" ? "preview" : "edit")}
+                                value={draft.body}
+                                onChange={(body) => setDraft({ ...draft, body })}
+                                textareaClassName="h-[clamp(160px,calc(85vh-390px),320px)] resize-none"
+                                placeholder={"# My skill\n\nStep-by-step instructions the agent follows once loaded…"}
+                                previewEmpty="No instructions yet."
+                            />
                             <p className="text-2xs text-text-faint">
-                                Loaded into the agent&apos;s context only when it calls load_skill.
+                                Used as written. Loaded into the agent&apos;s context only when it calls load_skill.
                             </p>
                         </div>
                     </div>
