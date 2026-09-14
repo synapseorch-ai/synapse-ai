@@ -345,6 +345,17 @@ async def builder_legend():
             if s.get("agent_id") and s["agent_id"] in agents
         ],
         "step_types": sorted({s["type"] for s in orch["steps"]}),
+        # What the modal's read-only canvas draws: the steps as shipped, and
+        # the names their `agent_id`s resolve to.
+        "canvas": {
+            "orchestration": {
+                "id": orch.get("id") or "native_builder",
+                "name": orch["name"],
+                "entry_step_id": orch["entry_step_id"],
+                "steps": orch["steps"],
+            },
+            "agents": [{"id": a["id"], "name": a["name"]} for a in bundle["agents"]],
+        },
     }
 
 

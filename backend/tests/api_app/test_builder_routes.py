@@ -229,6 +229,25 @@ class TestSeeHowImBuilt:
         assert len(legend["human_gates"]) == 3
         assert "evaluator" in legend["step_types"]
 
+    async def test_the_legend_carries_the_orchestration_the_canvas_draws(self, client):
+        """The modal draws the builder on a read-only canvas instead of a
+        screenshot, so the legend hands over every step and the agents their
+        `agent_id`s name — and nothing that would let two steps sit on top of
+        each other."""
+        from core.native_builder import bundled_definitions
+
+        canvas = (await client.get("/api/builder/legend")).json()["canvas"]
+        shipped = bundled_definitions()["orchestration"]
+
+        assert canvas["orchestration"]["entry_step_id"] == shipped["entry_step_id"]
+        assert canvas["orchestration"]["steps"] == shipped["steps"]
+        names = {a["id"]: a["name"] for a in canvas["agents"]}
+        assert all(s["agent_id"] in names for s in shipped["steps"] if s.get("agent_id"))
+        # Names only: a sub-agent's prompt is not the canvas's business.
+        assert all(set(a) == {"id", "name"} for a in canvas["agents"])
+        positions = [(s.get("position_x"), s.get("position_y")) for s in shipped["steps"]]
+        assert len(set(positions)) == len(positions)
+
     async def test_duplicating_gives_the_workspace_an_editable_copy(self, client, builder):
         result = (await client.post("/api/builder/duplicate")).json()
         assert result["status"] == "created"

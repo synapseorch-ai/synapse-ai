@@ -160,10 +160,7 @@ export function BuilderPanel() {
     } = useBuilder();
 
     const [input, setInput] = useState('');
-    // Null when closed. The picture inside comes in two themes, and the theme is
-    // read when the modal is opened rather than tracked — the app keys light
-    // mode off a class on <html>, which is not something React can subscribe to.
-    const [how, setHow] = useState<{ theme: 'light' | 'dark' } | null>(null);
+    const [how, setHow] = useState(false);
     const bottomRef = useRef<HTMLDivElement>(null);
     const attachments = useImageAttachments();
 
@@ -244,9 +241,7 @@ export function BuilderPanel() {
                     <div className="flex items-center gap-1">
                         <button
                             type="button"
-                            onClick={() => setHow({
-                                theme: document.documentElement.classList.contains('light-mode') ? 'light' : 'dark',
-                            })}
+                            onClick={() => setHow(true)}
                             className={cn('rounded-md px-2 py-1 text-[11px] text-text-faint transition-colors hover:text-text', focusRing)}
                         >
                             See how I&rsquo;m built
@@ -417,9 +412,8 @@ export function BuilderPanel() {
             </aside>
 
             <HowImBuilt
-                open={how !== null}
-                onClose={() => setHow(null)}
-                theme={how?.theme ?? 'dark'}
+                open={how}
+                onClose={() => setHow(false)}
                 onDuplicated={(id) => { window.location.href = `/orchestrations?id=${id}`; }}
             />
         </>
