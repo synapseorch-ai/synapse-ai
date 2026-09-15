@@ -19,6 +19,11 @@ from core.log import get_logger
 
 _log = get_logger(__name__)
 
+
+def _mention_warnings(mentions) -> list[str]:
+    """A `step_warning` per `@[path]` that was left as typed — see core/vault.py."""
+    return [w for w in (m.warning() for m in mentions) if w]
+
 if TYPE_CHECKING:
     from .engine import OrchestrationEngine
 
@@ -55,12 +60,12 @@ class AgentStepExecutor:
         from .resolved import resolve_for_run
         _log.debug(f"AGENT EXEC: agent_id={step.agent_id} step={step.id}")
 
-        from .context import build_origin_aware_context, snapshot_inputs
+        from .context import build_step_prompt, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
         if transition is None:
             from .context import TransitionContext
             transition = TransitionContext(origin_type="entry", execution_number=1)
-        prompt, system_prompt_extra, system_prompt_prefix = build_origin_aware_context(
+        prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
             step, run, engine, transition
         )
         inputs_snapshot = snapshot_inputs(step, run, engine)
@@ -68,7 +73,10 @@ class AgentStepExecutor:
         # Emit prompt for the orchestration logger (filtered out before SSE)
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
-               "system_prompt_prefix": system_prompt_prefix}
+               "system_prompt_prefix": system_prompt_prefix,
+               "mentions": [m.summary() for m in mentions]}
+        for warning in _mention_warnings(mentions):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
 
         # ── Orchestrator-as-agent: delegate to a nested OrchestrationEngine ──
         # Resolved once per run: the agent, the custom tools and the aggregated
@@ -98,7 +106,8 @@ class AgentStepExecutor:
             user_message=prompt,
         )
         # Log the prompt in the agent log too
-        agent_log.log_event({"type": "_log_prompt", "prompt": prompt})
+        agent_log.log_event({"type": "_log_prompt", "prompt": prompt,
+                             "mentions": [m.summary() for m in mentions]})
 
         # ── Mid-node crash recovery ──────────────────────────────────────
         # A prior interrupted attempt leaves a turn-boundary transcript in
@@ -399,16 +408,21 @@ class ToolStepExecutor:
                    "message": f"No tool configured for TOOL step '{step.name}'"}
             return
 
-        from .context import build_origin_aware_context, TransitionContext, snapshot_inputs
+        from .context import build_step_prompt, TransitionContext, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
         if transition is None:
             transition = TransitionContext(origin_type="entry", execution_number=1)
-        prompt, system_prompt_extra, system_prompt_prefix = build_origin_aware_context(step, run, engine, transition)
+        prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
+            step, run, engine, transition
+        )
         inputs_snapshot = snapshot_inputs(step, run, engine)
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
-               "system_prompt_prefix": system_prompt_prefix}
+               "system_prompt_prefix": system_prompt_prefix,
+               "mentions": [m.summary() for m in mentions]}
+        for warning in _mention_warnings(mentions):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
 
         # Model resolution — same pattern as EvaluatorStepExecutor and LLMStepExecutor
         settings = load_settings()
@@ -1619,17 +1633,22 @@ class LLMStepExecutor:
         from core.llm_providers import generate_response as llm_generate, detect_mode_from_model
         from core.config import load_settings
 
-        from .context import build_origin_aware_context, snapshot_inputs
+        from .context import build_step_prompt, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
         if transition is None:
             from .context import TransitionContext
             transition = TransitionContext(origin_type="entry", execution_number=1)
-        prompt, system_prompt_extra, system_prompt_prefix = build_origin_aware_context(step, run, engine, transition)
+        prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
+            step, run, engine, transition
+        )
         inputs_snapshot = snapshot_inputs(step, run, engine)
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
                "system_prompt_extra": system_prompt_extra,
-               "system_prompt_prefix": system_prompt_prefix}
+               "system_prompt_prefix": system_prompt_prefix,
+               "mentions": [m.summary() for m in mentions]}
+        for warning in _mention_warnings(mentions):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
         yield {
             "type": "thinking",
             "orch_step_id": step.id,

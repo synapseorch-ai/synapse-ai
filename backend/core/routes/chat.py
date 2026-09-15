@@ -63,7 +63,7 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail="No agents connected")
 
     final_event = None
-    async for event in run_react_loop(request, _server):
+    async for event in run_react_loop(request, _server, expand_mentions=True):
         if event["type"] == "final":
             final_event = event
         elif event["type"] == "error":
@@ -86,14 +86,17 @@ async def chat(request: ChatRequest):
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Real-time streaming endpoint with SSE"""
-    return _sse(_guarded_stream(request))
+    return _sse(_guarded_stream(request, expand_mentions=True))
 
 
-def _guarded_stream(request: ChatRequest, resume_state: dict | None = None):
+def _guarded_stream(request: ChatRequest, resume_state: dict | None = None, *,
+                    expand_mentions: bool):
     """The turn's events, with the session claimed and a stop handled.
 
     Shared by the first turn and by a resume after a tool approval: both are
-    the same loop, they only differ in what seeds it.
+    the same loop, they only differ in what seeds it. `expand_mentions` has no
+    default on purpose: every caller says whose text this is — a member's
+    (`@[path]` reads the vault) or a widget visitor's (it never does).
     """
     async def event_generator():
         import core.server as _server
@@ -107,7 +110,8 @@ def _guarded_stream(request: ChatRequest, resume_state: dict | None = None):
             _ACTIVE_CHAT_TASKS[_session_key] = _task
 
         try:
-            async for chunk in _event_stream(request, _server, resume_state):
+            async for chunk in _event_stream(request, _server, resume_state,
+                                             expand_mentions=expand_mentions):
                 yield chunk
         except asyncio.CancelledError:
             # Stopped on purpose: say so and close the stream cleanly, rather
@@ -135,7 +139,8 @@ def _sse(generator):
     )
 
 
-async def _event_stream(request, _server, resume_state: dict | None = None):
+async def _event_stream(request, _server, resume_state: dict | None = None, *,
+                        expand_mentions: bool = False):
     # Route builder agents to the dedicated builder stream
     agent = await _resolve_agent(request)
     if agent and agent.get("type") == "builder":
@@ -156,7 +161,8 @@ async def _event_stream(request, _server, resume_state: dict | None = None):
 
         async for event in iter_with_heartbeat(
             run_react_loop(request, _server, should_stop=_stopped,
-                           progress_events=True, resume_state=resume_state)
+                           progress_events=True, resume_state=resume_state,
+                           expand_mentions=expand_mentions)
         ):
             # Heartbeat comments are yielded as raw SSE strings — pass through.
             if isinstance(event, str):
@@ -354,4 +360,4 @@ async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
         session_id=session_id,
         agent_id=None if agent_key == "default" else agent_key,
     )
-    return _sse(_guarded_stream(resumed, resume_state=resume_state))
+    return _sse(_guarded_stream(resumed, resume_state=resume_state, expand_mentions=True))

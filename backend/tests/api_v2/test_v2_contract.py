@@ -46,6 +46,13 @@ class TestV2Chat:
         assert args[0] == "run_agent_chat_job"
         assert kwargs["message"] == "hello"
 
+    async def test_chat_asks_the_worker_to_expand_mentions(self, client, v2, api_key):
+        """An API key is a member's; the widget and a channel never set this."""
+        await client.post("/api/v2/chat", json={"message": "read @[notes.md]", "agent": "agent_1"},
+                          headers=api_key["headers"])
+        _, kwargs = v2.state.arq_redis.enqueue_job.call_args
+        assert kwargs["expand_mentions"] is True
+
     async def test_chat_honors_supplied_session_id(self, client, v2, api_key):
         resp = await client.post("/api/v2/chat",
                                  json={"message": "hi", "session_id": "my-session"},

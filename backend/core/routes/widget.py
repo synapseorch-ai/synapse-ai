@@ -249,7 +249,8 @@ async def widget_chat(
         session_id=claims.session_id,
         agent_id=claims.agent_id,
     )
-    return _sse(_for_a_visitor(_guarded_stream(turn)))
+    # A visitor is not a member: their `@[path]` must not read the vault.
+    return _sse(_for_a_visitor(_guarded_stream(turn, expand_mentions=False)))
 
 
 #: The only events that may leave this building.

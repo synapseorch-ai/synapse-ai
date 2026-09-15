@@ -519,10 +519,15 @@ async def run_agent_chat_job(
     webhook_url: str | None = None,
     webhook_secret: str | None = None,
     resume_state: dict | None = None,
+    expand_mentions: bool = False,
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
 
     No `tenant_id` parameter — see `run_orchestration_job`.
+
+    `expand_mentions` is the enqueuer's word on whose text `message` is: a
+    member's (in-app chat, an API key, a schedule — `@[path]` reads the vault)
+    or a widget visitor's or a channel's (it never does). Off unless said.
 
     `resume_state` picks a turn up from where a tool-approval pause left it,
     and is the queued twin of what `core/routes/chat.py` does in-process. Until
@@ -606,6 +611,7 @@ async def run_agent_chat_job(
             async for event in run_react_loop(
                 chat_request, server_module,
                 progress_events=True, resume_state=resume_state,
+                expand_mentions=expand_mentions,
             ):
                 etype = event.get("type")
 

@@ -632,6 +632,8 @@ def build_origin_aware_context(
     run: "OrchestrationRun",
     engine: "OrchestrationEngine",
     transition: TransitionContext,
+    *,
+    prompt_template: str | None = None,
 ) -> tuple[str, str, str]:
     """
     Build (prompt, system_prompt_extra, system_prompt_prefix) for an
@@ -892,7 +894,11 @@ def build_origin_aware_context(
     # ------------------------------------------------------------------
     # Section: TASK (first run) / ORIGINAL TASK reference (re-run)
     # ------------------------------------------------------------------
-    prompt_template = step.prompt_template or run.shared_state.get("user_input", "")
+    # The step's template, or the run's input when it has none — unless the
+    # caller (`build_step_prompt`) hands the template in with its `@[path]`
+    # mentions already masked.
+    if prompt_template is None:
+        prompt_template = step.prompt_template or run.shared_state.get("user_input", "")
 
     # Replace {state.key} references
     def replace_ref(match):
@@ -980,3 +986,47 @@ def build_origin_aware_context(
         )
 
     return prompt, system_prompt_extra, system_prompt_prefix
+
+
+async def build_step_prompt(
+    step: "StepConfig",
+    run: "OrchestrationRun",
+    engine: "OrchestrationEngine",
+    transition: TransitionContext,
+) -> tuple[str, str, str, list]:
+    """`build_origin_aware_context`, with the step's `@[path]` mentions resolved.
+
+    Three passes, in this order because the order is the safety: the mentions
+    in `step.prompt_template` become placeholders; the sync builder renders
+    `{state.x}` and `{{ … }}` around them; the placeholders are swapped for the
+    files. So a file's text never meets the template pass (a file that holds
+    `{{ global.KEY }}` reaches the model as those words, not as the secret),
+    and a state value or the run's own input that contains `@[x]` is a value,
+    not a mention. Only the template a member typed expands.
+
+    Returns the prompt, the system-prompt extra and prefix, and the mentions
+    (`core.vault.Mention`) for the run log and for `step_warning`s. The Agent,
+    Tool and LLM executors call this; Loop and Parallel run those, so a
+    mention inside either is covered.
+    """
+    template = step.prompt_template or ""
+    if "@[" not in template:
+        prompt, extra, prefix = build_origin_aware_context(step, run, engine, transition)
+        return prompt, extra, prefix, []
+    reader = _mention_reader(engine)
+    masked, raws = reader.mask(template)
+    prompt, extra, prefix = build_origin_aware_context(
+        step, run, engine, transition, prompt_template=masked
+    )
+    prompt, mentions = await reader.fill(prompt, raws)
+    return prompt, extra, prefix, mentions
+
+
+def _mention_reader(engine):
+    """The run's reader — one cache per run — or a fresh one for an engine
+    stand-in that has none (tests build those)."""
+    getter = getattr(engine, "mention_reader", None)
+    if callable(getter):
+        return getter()
+    from core.vault import MentionReader
+    return MentionReader()

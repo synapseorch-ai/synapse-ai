@@ -876,7 +876,18 @@ async def run_agent_step(
     else:
         from core import variables as _variables
         _global_variables = await _variables.load()
+    # `@[path]` in a system prompt reads a vault file in — its author is always
+    # a member, so this holds whoever sent the message. Masked before the render
+    # and filled after it, so a file that says `{{ global.KEY }}` reaches the
+    # model as those words rather than as the secret (core/vault.py).
+    _mentions_reader = MentionReader()
+    agent_system_template, _mention_raws = _mentions_reader.mask(agent_system_template)
     agent_system_template = _templating.render(agent_system_template, {"global": _global_variables})
+    if _mention_raws:
+        agent_system_template, _mentions = await _mentions_reader.fill(agent_system_template, _mention_raws)
+        for _mention in _mentions:
+            if _mention.warning():
+                _log.warning(f"[react_engine] system prompt vault mention {_mention.warning()}")
     agent_system_template = await _inject_repo_context(active_agent, agent_system_template)
     agent_system_template = await _inject_db_context(active_agent, agent_system_template)
 
@@ -2310,8 +2321,15 @@ async def run_agent_step(
 
 
 async def run_react_loop(request, server_module, should_stop=None, *,
-                         progress_events: bool = False, resume_state: dict | None = None):
+                         progress_events: bool = False, resume_state: dict | None = None,
+                         expand_mentions: bool = False):
     """Async generator that runs the ReAct loop and yields structured events.
+
+    `expand_mentions` lets `@[path]` in the message read a vault file into the
+    prompt (core/vault.py). A caller passes True only for a signed-in member's
+    text — chat, an API key, a schedule — never for a widget visitor's or a
+    messaging channel's. Off by default, so a caller that forgets loses
+    expansion visibly rather than leaking a file to a stranger.
 
     `progress_events` and `resume_state` are the two halves of carrying a chat
     turn across a pause. The first makes the loop emit a turn-boundary snapshot
@@ -2343,7 +2361,13 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         return
 
     session_id = _get_session_id(request)
-    user_message, _mentions = await MentionReader().expand(request.message)
+    if expand_mentions:
+        user_message, _mentions = await MentionReader().expand(request.message)
+        for _mention in _mentions:
+            if _mention.warning():
+                _log.warning(f"[react_engine] vault mention {_mention.warning()}")
+    else:
+        user_message = request.message
 
     # Merge client state
     ss = _get_session_state(session_id)

@@ -224,6 +224,11 @@ class OrchestrationLogger:
   📝 INPUT PROMPT:
 {self._indent(prompt)}
 """)
+            # Each `@[path]` the prompt named, and what became of it — the
+            # prompt above shows the file, not why (or why not).
+            from core.vault import mention_line
+            for mention in event.get("mentions") or ():
+                self._write(f"  📎 {mention_line(mention)}\n")
             if system_prompt_extra:
                 self._write(f"""  🗺  SYSTEM CONTEXT (workflow graph + step position):
 {self._indent(system_prompt_extra)}

@@ -168,11 +168,15 @@ class AgentLogger:
 
         if etype == "_log_prompt":
             prompt = event.get("prompt", "")
+            from core.vault import mention_line
+            mentions = "".join(
+                f"  📎 {mention_line(m)}\n" for m in event.get("mentions") or ()
+            )
             self._write_bg(f"""
 {'─'*80}
   📝 INPUT PROMPT:
 {self._indent(prompt)}
-{'─'*80}
+{mentions}{'─'*80}
 """)
 
         elif etype == "_log_llm_call":

@@ -721,10 +721,12 @@ function PrintSection({ step, update, showVaultHints }: StepSectionProps) {
                 composite
                 hint={
                     <>
-                        {/* Print fills in only the single-brace form, so that is all it offers. */}
+                        {/* Print fills in only the single-brace form, so that is all it offers —
+                            and no `@`: a Print step is not a prompt, so nothing expands a vault
+                            mention in one. */}
                         Use <span className="font-code">{'{state.key}'}</span> or <span className="font-code">{'{state.key.nested}'}</span> —
                         type <span className="font-code">{'{s'}</span> to pick a key. <span className="font-code">{'{{ }}'}</span> is not
-                        filled in here{showVaultHints && <>. Type <span className="font-code text-accent">@</span> to reference a vault file</>}.
+                        filled in here.
                     </>
                 }
             >
@@ -733,7 +735,6 @@ function PrintSection({ step, update, showVaultHints }: StepSectionProps) {
                     compact
                     rows={6}
                     profile="legacy-state-nested"
-                    mentions={showVaultHints ? vaultMentions : undefined}
                     value={step.print_content || ''}
                     onChange={(print_content) => update({ print_content })}
                     placeholder={'# Summary\n\nThe analysis result is: {state.analysis_result}'}

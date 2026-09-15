@@ -41,9 +41,12 @@ def captured(monkeypatch):
     """Swap the streaming half out; keep the decision-shaping half real."""
     seen = {}
 
-    def fake_guarded(request, resume_state=None):
+    def fake_guarded(request, resume_state=None, *, expand_mentions):
         seen["request"] = request
         seen["resume_state"] = resume_state
+        # A resume is the member's own turn picked up again: its `@[path]`
+        # mentions read the vault as the first turn's did.
+        assert expand_mentions is True
         async def _empty():
             if False:
                 yield b""

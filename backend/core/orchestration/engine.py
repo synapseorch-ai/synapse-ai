@@ -101,7 +101,19 @@ class OrchestrationEngine:
         #: the engine.
         self._resolved: dict = {}
         self._custom_tools: list | None = None
+        #: The run's `@[path]` reader (core/vault.py), made on first use so an
+        #: engine built in a test needs no settings. One per run: a file ten
+        #: steps mention is read once; a resume builds a new engine and reads
+        #: the file as it is then.
+        self._mentions = None
         self.current_transition = None  # set by _execute_loop before each step
+
+    def mention_reader(self):
+        """The run's `@[path]` reader — see `context.build_step_prompt`."""
+        if self._mentions is None:
+            from core.vault import MentionReader
+            self._mentions = MentionReader()
+        return self._mentions
 
     async def _load_global_variables(self) -> dict:
         """The tenant's global variables, or `{}` — a missing document is not

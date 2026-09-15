@@ -182,17 +182,25 @@ class Mention:
 
     def line(self) -> str:
         """One line for a human reading the log."""
-        if self.outcome == "inlined":
-            if self.reason == "above":
-                return f"@[{self.rel}] — inlined above"
-            return f"@[{self.rel}] — {self.chars:,} chars inlined"
-        return f"@[{self.rel}] — {self.outcome}: {self.reason}"
+        return mention_line(self.summary())
 
     def warning(self) -> str | None:
         """Why the mention was left as typed, or None when it was not."""
         if self.outcome in ("missing", "invalid", "unreadable"):
             return f"@[{self.rel}] — {self.reason}; left as typed"
         return None
+
+
+def mention_line(summary: dict) -> str:
+    """The log line for a mention's `summary()` — the loggers see the event, not the object."""
+    path = summary.get("path", "")
+    outcome = summary.get("outcome", "")
+    reason = summary.get("reason", "")
+    if outcome == "inlined":
+        if reason == "above":
+            return f"@[{path}] — inlined above"
+        return f"@[{path}] — {int(summary.get('chars') or 0):,} chars inlined"
+    return f"@[{path}] — {outcome}: {reason}"
 
 
 class MentionReader:

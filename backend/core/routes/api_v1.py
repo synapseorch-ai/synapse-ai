@@ -109,7 +109,7 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
     error_msg = None
 
     try:
-        async for event in run_react_loop(chat_request, _server):
+        async for event in run_react_loop(chat_request, _server, expand_mentions=True):
             etype = event.get("type", "")
             if etype == "final":
                 final_event = event
@@ -159,7 +159,9 @@ async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require
                 "agent_id": agent["id"],
                 "agent_name": agent["name"],
             })
-            async for event in iter_with_heartbeat(run_react_loop(chat_request, _server)):
+            async for event in iter_with_heartbeat(
+                run_react_loop(chat_request, _server, expand_mentions=True)
+            ):
                 # Heartbeat comments are yielded as raw SSE strings — pass through.
                 if isinstance(event, str):
                     yield event

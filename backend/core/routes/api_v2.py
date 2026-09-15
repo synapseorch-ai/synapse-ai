@@ -530,6 +530,7 @@ async def v2_chat(
         images=body.images,
         webhook_url=body.webhook_url,
         webhook_secret=body.webhook_secret,
+        expand_mentions=True,  # an API key is a member's: `@[path]` reads the vault
         _queue_name=QUEUE_NAME,
         _job_id=f"chat_{session_id}_{int(time.time())}",
     )

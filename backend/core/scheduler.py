@@ -238,18 +238,25 @@ class ScheduleManager:
         from core.agent_logger import AgentLogger
 
         session_id = f"schedule_{s['id']}"
+        # A schedule's prompt is a member's text: its `@[path]` mentions read
+        # the vault, as they do in chat (core/vault.py).
+        from core.vault import MentionReader
+        prompt, mentions = await MentionReader().expand(s.get("prompt", ""))
+        for mention in mentions:
+            if mention.warning():
+                logger.warning("[Scheduler] %s: vault mention %s", s.get("id"), mention.warning())
         agent_log = AgentLogger(
             agent_id=s.get("target_id", ""),
             agent_name=s.get("name", ""),
             session_id=session_id,
             source="schedule",
-            user_message=s.get("prompt", ""),
+            user_message=prompt,
         )
 
         final_response = ""
         try:
             async for event in run_agent_step(
-                message=s.get("prompt", ""),
+                message=prompt,
                 agent_id=s.get("target_id"),
                 session_id=session_id,
                 server_module=self._server_module,
