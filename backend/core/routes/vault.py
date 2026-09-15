@@ -4,8 +4,9 @@ Vault management REST API.
 Handles CRUD operations on the user-managed vault directory (data/vault/ minus the
 auto-generated tool_outputs/ subfolder).  Only .json, .md, and .txt files may be created.
 
-When S3 is configured in scale mode, all operations are redirected to S3 instead of the
-local filesystem.  The local filesystem path remains as the fallback for standalone mode.
+When the blob store has no filesystem — S3 — every operation goes through it, by key,
+with the tenant applied inside the store (`core.storage`).  A store with a directory
+is the vault itself, and the routes work on that directory.
 """
 import json
 import os
@@ -38,16 +39,23 @@ _S3_VAULT_REL = "vault"
 # ---------------------------------------------------------------------------
 
 def _get_storage(source: str = "auto"):
-    """Return S3 client or None based on the caller's source preference.
+    """The object store to go through, or None for the directory.
 
-    source="auto"  → use S3 if configured (existing behaviour)
-    source="s3"    → same as auto (explicit S3 request)
-    source="local" → always use local filesystem, even when S3 is configured
+    source="auto"  → the blob store, when it has no filesystem (S3)
+    source="s3"    → the same
+    source="local" → the directory, even then (the working copy)
+
+    This used to hand back the raw S3 client (`core.s3_storage.get_s3`), whose
+    keys carry no tenant — `<prefix>/vault/…` for everyone, a key space the
+    engine never writes to (it writes `<prefix>/<tenant>/vault/…`) and one
+    shared by every tenant on the deployment. The blob store applies the
+    tenant inside every key, and a call site that forgets cannot.
     """
     if source == "local":
         return None
-    from core.s3_storage import get_s3
-    return get_s3()
+    from core.storage import get_blob_store
+    store = get_blob_store()
+    return None if store.path_for(_S3_VAULT_REL) is not None else store
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +243,7 @@ async def get_vault_tree(source: str = Query("auto")):
     """Return the full directory tree beneath the user vault root."""
     s3 = _get_storage(source)
     if s3:
-        keys = s3.list_keys(_S3_VAULT_REL + "/")
+        keys = s3.list(_S3_VAULT_REL + "/")
         return {"tree": _s3_build_tree(keys), "source": "s3"}
     root = _vault_root()
     return {"tree": _build_tree(root, root), "source": "local"}
@@ -248,7 +256,7 @@ async def search_vault_files(q: str = Query(default="", description="Search quer
     q_lower = q.strip().lower()
 
     if s3:
-        keys = s3.list_keys(_S3_VAULT_REL + "/")
+        keys = s3.list(_S3_VAULT_REL + "/")
         results = []
         for rel_key in keys:
             # rel_key is like "vault/sub/file.md" (relative to bucket prefix)
@@ -293,7 +301,10 @@ async def get_vault_file(path: str = Query(..., description="Relative path to va
     ext = Path(name).suffix.lower()
 
     if s3:
-        content = s3.download_text(_s3_key_for(rel))
+        try:
+            content = s3.get(_s3_key_for(rel))
+        except ValueError:
+            raise HTTPException(status_code=415, detail="Not a text file")
         if content is None:
             raise HTTPException(status_code=404, detail="File not found")
         return {"path": rel, "name": name, "ext": ext, "content": content}
@@ -340,11 +351,9 @@ async def create_vault_file(req: CreateFileRequest):
 
     s3 = _get_storage(req.source)
     if s3:
-        # Check for existing key
-        existing = s3.download_text(_s3_key_for(file_rel))
-        if existing is not None:
+        if s3.exists(_s3_key_for(file_rel)):
             raise HTTPException(status_code=409, detail="File already exists")
-        s3.upload_text(_s3_key_for(file_rel), initial_content)
+        s3.put(_s3_key_for(file_rel), initial_content)
         return {"path": file_rel, "name": name, "ext": suffix, "content": initial_content}
 
     parent = _resolve(req.path) if req.path.strip() else _vault_root()
@@ -380,7 +389,7 @@ async def update_vault_file(req: UpdateFileRequest):
     if s3:
         if suffix not in _ALLOWED_EXTENSIONS:
             raise HTTPException(status_code=400, detail="Cannot edit this file type")
-        s3.upload_text(_s3_key_for(rel), req.content)
+        s3.put(_s3_key_for(rel), req.content)
         return {"status": "ok", "path": rel}
 
     p = _resolve(req.path)
@@ -415,9 +424,11 @@ async def create_vault_folder(req: CreateFolderRequest):
 
     s3 = _get_storage(req.source)
     if s3:
-        # S3 has no real folders; create a .keep placeholder so the folder is visible
+        # S3 has no real folders; a `.keep` marker makes the folder visible.
+        # One byte, never empty: a zero-byte PUT stalls a MinIO connection for
+        # ~30 s on the next PUT (the cloud vault learnt this the hard way).
         placeholder_key = _s3_key_for(f"{folder_rel}/.keep")
-        s3.upload_text(placeholder_key, "")
+        s3.put(placeholder_key, "\n")
         return {"path": folder_rel, "name": name, "type": "folder"}
 
     parent = _resolve(req.path) if req.path.strip() else _vault_root()
@@ -456,9 +467,7 @@ async def delete_vault_item(req: DeleteItemRequest):
         # Delete as a file (idempotent if key doesn't exist)
         s3.delete(_s3_key_for(rel))
         # Also sweep any keys under a same-named folder prefix (recursive delete)
-        folder_prefix_rel = f"{_S3_VAULT_REL}/{rel}/"
-        sub_keys = s3.list_keys(folder_prefix_rel)
-        for sub_key in sub_keys:
+        for sub_key in s3.list(f"{_S3_VAULT_REL}/{rel}/"):
             s3.delete(sub_key)
         return {"status": "ok", "path": rel}
 

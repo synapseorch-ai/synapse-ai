@@ -110,3 +110,58 @@ class TestASiblingIsOutsideTheVault:
         resp = await client.get("/api/vault/file", params={"path": f"sub/../../{sibling.name}/secret.md"})
         assert resp.status_code == 403, resp.text
         assert "not yours" not in resp.text
+
+
+# ── (d) an object store is reached through the tenant's blob store ───────────
+class TestAnObjectStoreIsTheTenants:
+    @pytest.fixture
+    def store(self):
+        s = _Pathless()
+        set_blob_store(s)
+        yield s
+        set_blob_store(None)
+
+    async def test_the_tree_lists_this_tenants_vault_only(self, client, store):
+        store.put("vault/a.md", "mine")
+        store.put("vault/notes/.keep", "\n")
+        store.put("vault/notes/b.md", "mine too")
+        store.put("logs/run_1.log", "not a vault file")
+        store.blobs["other-org/vault/theirs.md"] = "not yours"
+
+        resp = await client.get("/api/vault/tree")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["source"] == "s3"
+        names = {item["name"] for item in body["tree"]}
+        assert names == {"a.md", "notes"}, body
+        assert "theirs.md" not in resp.text and "run_1.log" not in resp.text
+
+    async def test_search_read_write_and_delete_go_through_the_store(self, client, store):
+        me = get_tenant()
+        assert (await client.post("/api/vault/folder", json={"path": "", "name": "notes"})).status_code == 200
+        assert store.blobs[f"{me}/vault/notes/.keep"] == "\n", "a folder marker must never be empty"
+
+        resp = await _create(client, "c.md", content="see", path="notes")
+        assert resp.status_code == 200, resp.text
+        assert store.blobs[f"{me}/vault/notes/c.md"] == "see"
+        assert (await _create(client, "c.md", path="notes")).status_code == 409
+
+        found = (await client.get("/api/vault/search", params={"q": "c.md"})).json()
+        assert found["files"] == [{"name": "c.md", "path": "notes/c.md", "ext": ".md"}]
+
+        assert (await client.put("/api/vault/file", json={"path": "notes/c.md", "content": "seen"})).status_code == 200
+        got = (await client.get("/api/vault/file", params={"path": "notes/c.md"})).json()
+        assert got["content"] == "seen"
+
+        assert (await client.request("DELETE", "/api/vault/item", json={"path": "notes"})).status_code == 200
+        assert not [k for k in store.blobs if k.startswith(f"{me}/vault/notes")]
+
+    async def test_the_root_cannot_be_deleted_here_either(self, client, store):
+        store.put("vault/a.md", "mine")
+        resp = await client.request("DELETE", "/api/vault/item", json={"path": ""})
+        assert resp.status_code == 400
+        assert store.get("vault/a.md") == "mine"
+
+    async def test_a_name_is_one_segment_here_too(self, client, store):
+        assert (await _create(client, "../../x.md")).status_code == 400
+        assert not [k for k in store.blobs if "x.md" in k]
