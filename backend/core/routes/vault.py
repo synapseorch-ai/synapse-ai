@@ -10,6 +10,7 @@ local filesystem.  The local filesystem path remains as the fallback for standal
 import json
 import os
 import shutil
+import unicodedata
 from pathlib import Path
 from posixpath import normpath
 from typing import Optional
@@ -69,6 +70,39 @@ def _safe_rel(rel: str) -> str:
         if part == "..":
             raise HTTPException(status_code=403, detail="Path traversal denied")
     return normalised
+
+
+#: Unicode categories a name may not contain: control, format, surrogate,
+#: private-use, unassigned, and the line and paragraph separators.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def _segment(name: str) -> str:
+    """A file or folder name: exactly one path segment, or a 400.
+
+    It used to be joined under the parent as typed, so `name="../../x.md"`
+    wrote outside the vault (the `.md` suffix check passed). NFC, so the name
+    the tree shows is the name `@[path]` finds; no slash of either kind, no
+    bracket (it would end an `@[…]` early), no leading dot (the tree hides
+    dotfiles, so the file would be invisible), no surrounding whitespace, no
+    control characters, and at most 255 bytes.
+    """
+    name = unicodedata.normalize("NFC", name or "")
+    if (
+        not name
+        or name != name.strip()
+        or name in (".", "..")
+        or any(ch in name for ch in "/\\[]")
+        or name.startswith(".")
+        or any(unicodedata.category(ch) in _REFUSED_CATEGORIES for ch in name)
+        or len(name.encode("utf-8")) > 255
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="A name is one segment: no slashes or brackets, no leading dot, "
+                   "no surrounding spaces or control characters, at most 255 bytes",
+        )
+    return name
 
 
 def _s3_key_for(rel: str) -> str:
@@ -279,12 +313,13 @@ class CreateFileRequest(BaseModel):
 @router.post("/api/vault/file")
 async def create_vault_file(req: CreateFileRequest):
     """Create a new .json, .md, or .txt file in the vault."""
-    suffix = Path(req.name).suffix.lower()
+    name = _segment(req.name)
+    suffix = Path(name).suffix.lower()
     if suffix not in _ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Only {', '.join(_ALLOWED_EXTENSIONS)} files are allowed")
 
     parent_rel = _safe_rel(req.path) if req.path.strip() else ""
-    file_rel = f"{parent_rel}/{req.name}" if parent_rel else req.name
+    file_rel = f"{parent_rel}/{name}" if parent_rel else name
 
     # Provide sensible default content
     initial_content = req.content or ""
@@ -294,7 +329,7 @@ async def create_vault_file(req: CreateFileRequest):
         elif suffix == ".txt":
             initial_content = ""
         else:
-            initial_content = f"# {Path(req.name).stem}\n\n"
+            initial_content = f"# {Path(name).stem}\n\n"
 
     s3 = _get_storage(req.source)
     if s3:
@@ -303,14 +338,14 @@ async def create_vault_file(req: CreateFileRequest):
         if existing is not None:
             raise HTTPException(status_code=409, detail="File already exists")
         s3.upload_text(_s3_key_for(file_rel), initial_content)
-        return {"path": file_rel, "name": req.name, "ext": suffix, "content": initial_content}
+        return {"path": file_rel, "name": name, "ext": suffix, "content": initial_content}
 
     parent = _resolve(req.path) if req.path.strip() else _vault_root()
     if not parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent path is not a directory")
     if _is_excluded(parent):
         raise HTTPException(status_code=403, detail="Cannot create files in excluded directories")
-    target = parent / req.name
+    target = parent / name
     if target.exists():
         raise HTTPException(status_code=409, detail="File already exists")
     try:
@@ -364,32 +399,33 @@ class CreateFolderRequest(BaseModel):
 @router.post("/api/vault/folder")
 async def create_vault_folder(req: CreateFolderRequest):
     """Create a new folder inside the vault."""
-    if req.name in _EXCLUDED:
+    name = _segment(req.name)
+    if name in _EXCLUDED:
         raise HTTPException(status_code=400, detail="Reserved folder name")
 
     parent_rel = _safe_rel(req.path) if req.path.strip() else ""
-    folder_rel = f"{parent_rel}/{req.name}" if parent_rel else req.name
+    folder_rel = f"{parent_rel}/{name}" if parent_rel else name
 
     s3 = _get_storage(req.source)
     if s3:
         # S3 has no real folders; create a .keep placeholder so the folder is visible
         placeholder_key = _s3_key_for(f"{folder_rel}/.keep")
         s3.upload_text(placeholder_key, "")
-        return {"path": folder_rel, "name": req.name, "type": "folder"}
+        return {"path": folder_rel, "name": name, "type": "folder"}
 
     parent = _resolve(req.path) if req.path.strip() else _vault_root()
     if not parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent path is not a directory")
     if _is_excluded(parent):
         raise HTTPException(status_code=403, detail="Cannot create folders in excluded directories")
-    target = parent / req.name
+    target = parent / name
     if target.exists():
         raise HTTPException(status_code=409, detail="Folder already exists")
     try:
         target.mkdir(parents=True)
         root = _vault_root()
         rel = str(target.resolve().relative_to(root.resolve()))
-        return {"path": rel, "name": req.name, "type": "folder"}
+        return {"path": rel, "name": name, "type": "folder"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
