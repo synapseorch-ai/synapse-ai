@@ -442,6 +442,10 @@ async def delete_vault_item(req: DeleteItemRequest):
 
     s3 = _get_storage(req.source)
     if s3:
+        if not rel:
+            # `_safe_rel` answers "" for the root *and* for a traversal — either
+            # way, not something to delete.
+            raise HTTPException(status_code=400, detail="Cannot delete the vault root")
         # Delete as a file (idempotent if key doesn't exist)
         s3.delete(_s3_key_for(rel))
         # Also sweep any keys under a same-named folder prefix (recursive delete)
@@ -452,11 +456,15 @@ async def delete_vault_item(req: DeleteItemRequest):
         return {"status": "ok", "path": rel}
 
     p = _resolve(req.path)
+    root = _vault_root().resolve()
+    if p == root:
+        # An empty path, ".", "./", "../" or "sub/.." all resolved to the root,
+        # and the root is a directory — so this used to `rmtree` the vault.
+        raise HTTPException(status_code=400, detail="Cannot delete the vault root")
     if not p.exists():
         raise HTTPException(status_code=404, detail="Path not found")
     if _is_excluded(p):
         raise HTTPException(status_code=403, detail="Cannot delete system directories")
-    root = _vault_root().resolve()
     rel_parts = p.resolve().relative_to(root).parts
     if len(rel_parts) == 1 and rel_parts[0] in _EXCLUDED:
         raise HTTPException(status_code=403, detail="Cannot delete system directories")

@@ -78,3 +78,22 @@ class TestANameIsOneSegment:
         assert resp.status_code == 200, resp.text
         assert resp.json()["path"] == "notes/q3 plan (draft).md"
         assert (_vault_root() / "notes" / "q3 plan (draft).md").read_text() == "hello"
+
+
+# ── (b) DELETE refuses the root ──────────────────────────────────────────────
+class TestDeleteRefusesTheRoot:
+    @pytest.mark.parametrize("path", ["", "/", ".", "./", "../", "sub/.."],
+                             ids=["empty", "slash", "dot", "dot-slash", "dotdot-slash", "climb-back"])
+    async def test_the_vault_survives(self, client, path):
+        assert (await _create(client, "keep.md")).status_code == 200
+        resp = await client.request("DELETE", "/api/vault/item", json={"path": path})
+        assert resp.status_code == 400, resp.text
+        assert (_vault_root() / "keep.md").exists(), "the vault was deleted"
+
+    async def test_a_file_and_a_folder_still_delete(self, client):
+        await client.post("/api/vault/folder", json={"path": "", "name": "gone"})
+        await _create(client, "a.md", path="gone")
+        await _create(client, "b.md")
+        assert (await client.request("DELETE", "/api/vault/item", json={"path": "b.md"})).status_code == 200
+        assert (await client.request("DELETE", "/api/vault/item", json={"path": "gone"})).status_code == 200
+        assert not (_vault_root() / "b.md").exists() and not (_vault_root() / "gone").exists()
