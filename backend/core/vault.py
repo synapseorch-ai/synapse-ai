@@ -1,6 +1,7 @@
 """
 Vault: Automatically saves large tool outputs to files and provides tools to query them.
-Also resolves @[path] vault file mentions in user messages before they reach the LLM.
+Also resolves `@[path]` vault mentions in prompts — `MentionReader`, below — by
+reading the blob store directly: never a working copy, always the file as it is now.
 
 When any tool returns more than VAULT_THRESHOLD characters, the output is saved to
 the vault and the LLM receives only the file path + metadata. The LLM can then use
@@ -21,12 +22,15 @@ That note used to read "the vault falls back to a local root ... a deliberate
 design decision and not made here". The decision has now been made, because the
 fallback was writing an object-store deployment's vault to the pod's own disk.
 """
+import asyncio
 import json
 import re
+import unicodedata
+from dataclasses import dataclass, field, replace
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from core.vault_backend import get_vault
+from core.vault_backend import VAULT_PREFIX, get_vault
 
 VAULT_THRESHOLD = 100000  # characters (fallback default)
 
@@ -112,48 +116,255 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
 
 
 
-def expand_vault_mentions(message: str) -> str:
+#: A mention: `@[`, then anything up to the closing bracket on the same line.
+MENTION_RE = re.compile(r"@\[([^\]\n]+)\]")
+
+#: A prompt may inline this many times the per-mention cap in total.
+MENTION_TOTAL_FACTOR = 2
+
+#: What the vault stores that no tool reads (download-only, D94). Known by
+#: extension, so a 10 MB PDF is never downloaded to find out that it is one.
+_BINARY_KINDS = {
+    ".pdf": "a PDF",
+    ".png": "a PNG image",
+    ".jpg": "a JPEG image",
+    ".jpeg": "a JPEG image",
+    ".webp": "a WebP image",
+}
+
+#: A private-use character brackets a masked mention. It carries no brace, so
+#: neither the legacy `{state.x}` pass nor `templating.render` can touch one;
+#: and `mention_key` refuses the private-use range, so no vault path holds one.
+_MARK = ""
+_MASKED = re.compile(f"{_MARK}(\\d+){_MARK}")
+
+#: Unicode categories a vault path may not contain: control, format, surrogate,
+#: private-use, unassigned, and the line and paragraph separators.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def mention_key(rel: str) -> str | None:
+    """The blob key for a mention, or None when the text is not a vault path.
+
+    NFC first, so `café.md` typed on a Mac finds the file the vault page
+    saved. Then the refusals: empty, a backslash, a leading slash, an empty or
+    `.` or `..` segment, a bracket (it would have ended the mention), and any
+    control, format, surrogate, private-use, unassigned or line-separator
+    character. What passes is placed under the vault prefix; the store adds
+    the tenant.
     """
-    Replace every @[relative/path] vault mention in the user message with the
-    file's actual content, so the LLM receives the data inline.
+    rel = unicodedata.normalize("NFC", (rel or "").strip())
+    if not rel or "\\" in rel or "[" in rel or "]" in rel or rel.startswith("/"):
+        return None
+    if any(unicodedata.category(ch) in _REFUSED_CATEGORIES for ch in rel):
+        return None
+    if any(part in ("", ".", "..") for part in rel.split("/")):
+        return None
+    return f"{VAULT_PREFIX}/{rel}"
 
-    Example:
-        "Log a job. Config: @[jobs-filepath.json]"
-        →
-        "Log a job. Config: @[jobs-filepath.json]\n<file content here>"
+
+
+@dataclass
+class Mention:
+    """One `@[path]` in a prompt, and what became of it."""
+
+    raw: str                    # as typed, brackets included — what stays when nothing else can
+    rel: str                    # the path, NFC
+    key: str | None             # the blob key, or None when the path was refused
+    outcome: str = "missing"    # inlined | referenced | missing | invalid | unreadable
+    chars: int = 0
+    reason: str = ""
+    text: str | None = field(default=None, repr=False)
+
+    def summary(self) -> dict:
+        """What a run log records about the mention — never its content."""
+        return {"path": self.rel, "chars": self.chars, "outcome": self.outcome, "reason": self.reason}
+
+    def line(self) -> str:
+        """One line for a human reading the log."""
+        if self.outcome == "inlined":
+            if self.reason == "above":
+                return f"@[{self.rel}] — inlined above"
+            return f"@[{self.rel}] — {self.chars:,} chars inlined"
+        return f"@[{self.rel}] — {self.outcome}: {self.reason}"
+
+    def warning(self) -> str | None:
+        """Why the mention was left as typed, or None when it was not."""
+        if self.outcome in ("missing", "invalid", "unreadable"):
+            return f"@[{self.rel}] — {self.reason}; left as typed"
+        return None
+
+
+class MentionReader:
+    """Resolves the `@[path]` mentions of one prompt, chat turn or system prompt.
+
+    It reads the blob store, on a thread — never the materialised working copy
+    that `S3Vault.ensure_local` serves for as long as it exists, which is how
+    an edit made on the vault page was never seen by a warm replica.
+
+    Two shapes. `expand` is for text that is not templated: a chat message.
+    `mask` → render → `fill` is for text that is: each mention becomes a
+    placeholder, the caller renders `{state.x}` and `{{ … }}`, and only then
+    does the file's text go in. So a file that says `{{ global.KEY }}` reaches
+    the model as those words rather than as the secret, and a state value that
+    happens to contain `@[x]` is a value, not a mention.
+
+    Caps: a mention up to `per_mention` characters (the tenant's
+    `vault_threshold`) and a prompt up to `total`; past either, the model gets a
+    reference line naming the file, its size, and the tool that can read it. A
+    binary is a reference line without a download. A file that is missing,
+    unreadable, or not a vault path at all stays exactly as typed — see
+    `Mention.warning`.
+
+    The reads are cached for the reader's life and the budget is counted per
+    call: an orchestration run keeps one reader, so a file ten steps mention is
+    read once, while each step's prompt gets the whole inline budget and the
+    same file twice in one prompt is shown once.
     """
-    def _replace(match: re.Match) -> str:
-        rel = match.group(1).strip()
 
-        # Prevent path traversal
+    def __init__(self, *, per_mention: int | None = None, total: int | None = None):
+        if per_mention is None or total is None:
+            from core.config import load_settings
+            threshold = int(load_settings().get("vault_threshold") or VAULT_THRESHOLD)
+        self.per_mention = per_mention if per_mention is not None else threshold
+        self.total = total if total is not None else threshold * MENTION_TOTAL_FACTOR
+        #: What each key read as, before any cap — kept for the reader's life.
+        self._reads: dict[str, Mention] = {}
+
+    # ── the two shapes ───────────────────────────────────────────────────────
+
+    def mask(self, text: str) -> tuple[str, list[str]]:
+        """Every mention replaced by a placeholder; the mentions, as typed, in order."""
+        raws: list[str] = []
+
+        def _sub(match: re.Match) -> str:
+            raws.append(match.group(0))
+            return f"{_MARK}{len(raws) - 1}{_MARK}"
+
+        return MENTION_RE.sub(_sub, text or ""), raws
+
+    async def fill(self, masked: str, raws: list[str]) -> tuple[str, list[Mention]]:
+        """The placeholders of `mask` swapped for what each mention resolved to."""
+        used = 0
+        shown: set[str] = set()
+        mentions: list[Mention] = []
+        blocks: list[str] = []
+        for raw in raws:
+            m = await self._resolve(raw)
+            if m.outcome == "inlined":
+                if m.key in shown:
+                    m.reason = "above"
+                elif m.chars > self.per_mention:
+                    m.outcome, m.reason = "referenced", f"over the {self.per_mention:,}-char inline limit"
+                elif used + m.chars > self.total:
+                    m.outcome, m.reason = "referenced", f"the prompt's {self.total:,}-char inline budget is used up"
+                else:
+                    used += m.chars
+                    shown.add(m.key)
+                if m.outcome == "referenced":
+                    m.text = None
+            mentions.append(m)
+            blocks.append(self._render(m))
+
+        # One pass, so a file whose text happens to contain a placeholder is
+        # not scanned again once it has been put in.
+        def _sub(match: re.Match) -> str:
+            i = int(match.group(1))
+            return blocks[i] if i < len(blocks) else match.group(0)
+
+        return _MASKED.sub(_sub, masked), mentions
+
+    async def expand(self, text: str) -> tuple[str, list[Mention]]:
+        """`text` with its mentions resolved, for text that is not templated."""
+        masked, raws = self.mask(text)
+        if not raws:
+            return text or "", []
+        return await self.fill(masked, raws)
+
+    # ── resolving ────────────────────────────────────────────────────────────
+
+    async def _resolve(self, raw: str) -> Mention:
+        rel = unicodedata.normalize("NFC", raw[2:-1].strip())
+        key = mention_key(rel)
+        if key is None:
+            return Mention(raw, rel, None, "invalid", reason="not a vault path")
+        cached = self._reads.get(key)
+        if cached is not None:
+            return replace(cached, raw=raw)
+        mention = await self._read(raw, rel, key)
+        # A store that could not be reached is asked again next time; the
+        # other outcomes are what the file is, and hold for the reader's life.
+        if mention.outcome != "unreadable":
+            self._reads[key] = mention
+        return replace(mention)
+
+    async def _read(self, raw: str, rel: str, key: str) -> Mention:
+        from core.storage import get_blob_store
+
+        store = get_blob_store()
+        kind = _BINARY_KINDS.get(PurePosixPath(rel).suffix.lower())
         try:
-            resolved = (_vault_root() / rel).resolve()
-            if not str(resolved).startswith(str(_vault_root().resolve())):
-                return match.group(0)
-        except Exception:
-            return match.group(0)
-
-        content: str | None = None
-
-        # Materialise it if this replica does not have it. One question to the
-        # backend, rather than asking `core.s3_storage` directly and treating a
-        # second answer to "is this cloud" as authoritative.
-        try:
-            resolved = Path(get_vault().ensure_local(resolved))
-        except Exception:
-            pass
-
+            if kind is not None:
+                if not await asyncio.to_thread(store.exists, key):
+                    return Mention(raw, rel, key, "missing", reason="no such vault file")
+                return Mention(raw, rel, key, "referenced",
+                               reason=f"{kind}; binary, download-only, not readable by tools")
+            content = await asyncio.to_thread(store.get, key)
+        except ValueError:
+            # A decode error (`UnicodeDecodeError` is one) — the object is not
+            # text. The store's own key guard also raises ValueError, but a key
+            # from `mention_key` cannot trip it.
+            return Mention(raw, rel, key, "referenced", reason="not a text file; not readable by tools")
+        except Exception as exc:  # noqa: BLE001 — the reason reaches the log, the text stays as typed
+            return Mention(raw, rel, key, "unreadable", reason=f"could not be read: {exc}")
         if content is None:
-            if not resolved.exists() or not resolved.is_file():
-                return match.group(0)
-            try:
-                content = resolved.read_text(encoding="utf-8")
-            except Exception:
-                return match.group(0)
+            return Mention(raw, rel, key, "missing", reason="no such vault file")
+        return Mention(raw, rel, key, "inlined", chars=len(content), text=content)
 
-        return f"@[{rel}]\n```\n{content}\n```"
+    # ── rendering ────────────────────────────────────────────────────────────
 
-    return re.sub(r"@\[([^\]]+)\]", _replace, message)
+    def _render(self, m: Mention) -> str:
+        if m.outcome in ("missing", "invalid", "unreadable"):
+            return m.raw
+        on_disk = _on_disk(m.key)
+        if m.outcome == "referenced":
+            if m.chars:
+                return (f"[vault: {m.rel} — {m.chars:,} chars, {m.reason}; read it with "
+                        f"read_file / read_json / search_files (path \"{m.rel}\"){on_disk}]")
+            return f"[vault: {m.rel} — {m.reason}{on_disk}]"
+        if m.reason == "above":
+            return f"[vault: {m.rel} — inlined above]"
+        fence = _fence_for(m.text or "")
+        return f"[vault: {m.rel} — {m.chars:,} chars{on_disk}]\n{fence}{_info(m.rel)}\n{m.text}\n{fence}"
+
+
+def _on_disk(key: str | None) -> str:
+    """Where the file is on disk, when the vault is a directory.
+
+    An install whose vault is a real directory gives its agents the Filesystem
+    tools, which take paths; the fleet's vault tool takes the key form already
+    in the line. Nothing on an object store.
+    """
+    if not key:
+        return ""
+    from core.storage import get_blob_store
+
+    try:
+        path = get_blob_store().path_for(key)
+    except Exception:  # noqa: BLE001
+        return ""
+    return f"; on disk at {path}" if path is not None else ""
+
+
+def _fence_for(text: str) -> str:
+    """A code fence longer than any run of backticks inside the file."""
+    longest = max((len(m.group(0)) for m in re.finditer(r"`{3,}", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _info(rel: str) -> str:
+    ext = PurePosixPath(rel).suffix[1:].lower()
+    return ext if ext.isalnum() and ext != "txt" else "text"
 
 
 def _safe_path(path: str) -> Path:

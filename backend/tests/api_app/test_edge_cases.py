@@ -38,11 +38,13 @@ class TestApiKeyEdges:
 
 
 class TestVaultTraversal:
-    def test_expand_mentions_blocks_traversal(self):
-        from core.vault import expand_vault_mentions
+    async def test_expand_mentions_blocks_traversal(self):
+        from core.vault import MentionReader
         msg = "read @[../../../../etc/passwd]"
         # Traversal is rejected -> the mention is left untouched (no file content inlined).
-        assert expand_vault_mentions(msg) == msg
+        out, mentions = await MentionReader().expand(msg)
+        assert out == msg
+        assert mentions[0].outcome == "invalid"
 
     async def test_vault_file_traversal_is_handled(self, client):
         resp = await client.get("/api/vault/file", params={"path": "../../../../etc/passwd"})

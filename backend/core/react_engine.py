@@ -12,7 +12,7 @@ import time
 import httpx
 
 from core.config import load_settings, HTTP_TOOL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT
-from core.vault import maybe_vault, expand_vault_mentions
+from core.vault import maybe_vault, MentionReader
 from core.compaction import maybe_compact
 from core.session import (
     _get_session_id, _get_session_state,
@@ -2343,7 +2343,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         return
 
     session_id = _get_session_id(request)
-    user_message = expand_vault_mentions(request.message)
+    user_message, _mentions = await MentionReader().expand(request.message)
 
     # Merge client state
     ss = _get_session_state(session_id)

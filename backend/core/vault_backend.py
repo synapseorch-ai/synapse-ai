@@ -48,6 +48,8 @@ from pathlib import Path
 
 #: Key prefix for everything the vault owns, inside the tenant's key space.
 _PREFIX = "vault"
+#: The same, for callers outside this module (`core/vault.py` builds keys from it).
+VAULT_PREFIX = _PREFIX
 
 
 class LocalVault:

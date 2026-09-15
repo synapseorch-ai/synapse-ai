@@ -71,16 +71,17 @@ class TestVault:
         from core.vault import maybe_vault
         assert maybe_vault("t", "x" * 1000) == "x" * 1000
 
-    def test_expand_vault_mentions_no_mentions(self):
-        from core.vault import expand_vault_mentions
-        assert expand_vault_mentions("plain message") == "plain message"
+    async def test_mention_reader_no_mentions(self):
+        from core.vault import MentionReader
+        out, mentions = await MentionReader().expand("plain message")
+        assert (out, mentions) == ("plain message", [])
 
-    def test_expand_vault_mentions_inlines_file(self):
-        from core.vault import _vault_root, expand_vault_mentions
+    async def test_mention_reader_inlines_file(self):
+        from core.vault import MentionReader, _vault_root
         vd = _vault_root()
         vd.mkdir(parents=True, exist_ok=True)
         (vd / "cfg.txt").write_text("SECRET=42", encoding="utf-8")
-        out = expand_vault_mentions("use @[cfg.txt] please")
+        out, _ = await MentionReader().expand("use @[cfg.txt] please")
         assert "SECRET=42" in out
 
     def test_read_file_chunk(self):
