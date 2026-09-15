@@ -100,7 +100,7 @@ class WorkerServerModule:
         shared: "WorkerServerModule | None" = None,
         disabled_mcp_names: list[str] | None = None,
     ) -> "WorkerServerModule":
-        """The current tenant's MCP: its vault-rooted Filesystem, its own servers.
+        """The current tenant's MCP: the native servers it may use, and its own.
 
         `shared` is folded into the returned module's sessions and router so
         callers see one set. Its sessions are *referenced*, never owned — this
@@ -109,25 +109,15 @@ class WorkerServerModule:
         instance = cls()
         disabled = set(disabled_mcp_names or [])
 
-        # If the vault is an object store, this replica's working copy of it may
-        # be empty — a pod that has never served this tenant, or one that was
-        # replaced. Materialise it before rooting the Filesystem MCP server at
-        # it, or the tenant's own `search_files` reports an empty vault. A no-op
-        # on a plain install, where the directory *is* the vault.
-        from core.vault_backend import get_vault
-
-        vault = get_vault()
-        if getattr(vault, "materialises", False):
-            try:
-                pulled = vault.hydrate()
-                if pulled:
-                    _log.debug(
-                        f"[worker_server_module] materialised {pulled} vault file(s)",
-                    )
-            except Exception as exc:
-                # A cold working copy degrades the vault; it must not stop the
-                # tenant's session set from being built.
-                _log.debug(f"[worker_server_module] vault hydration failed: {exc}")
+        # No vault hydration here. This used to call `get_vault().hydrate()` —
+        # the tenant's *whole* vault, downloaded on the event loop, at every
+        # cold build of a tenant's pool (idle TTL 900 s, per replica) — so that
+        # a Filesystem MCP server rooted at the working copy would see a full
+        # directory. That server is gone: `tools/vault_fs.py` reads the blob
+        # store by key, and so does the `@[path]` reader (core/vault.py). The
+        # working copy is `maybe_vault`'s write-through scratch and nothing
+        # reads it; `hydrate()` stays on the backend for a caller that needs a
+        # directory on purpose.
 
         if shared is not None:
             instance.agent_sessions.update(shared.agent_sessions)
@@ -150,7 +140,7 @@ class WorkerServerModule:
         # `CancelledError`. Best-effort and re-raising: the reason the build
         # stopped is what the caller needs, never a failure from tidying up.
         try:
-            # The Filesystem server, rooted at *this* tenant's vault.
+            # The tenant-scoped native servers (the vault among them, by key).
             await instance._connect_native(
                 _get_native_mcp_servers(_TOOLS_DIR, _BACKEND_ROOT, scope="tenant"),
                 disabled,

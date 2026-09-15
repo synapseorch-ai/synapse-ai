@@ -269,3 +269,31 @@ class TestMaybeVaultUsesTheBackend:
         assert "vault_file" in result
         assert object_store.puts == 1, "the durable copy was not written"
         assert any(k.endswith(".txt") for k in object_store.blobs)
+
+
+class TestAColdPoolBuildDoesNotDownloadTheVault:
+    async def test_build_for_tenant_never_lists_the_vault(self, object_store, monkeypatch):
+        """`hydrate()` pulled a tenant's whole vault onto the replica at every
+        cold pool build — on the event loop, per replica, every idle TTL — for
+        a Filesystem MCP that no longer exists. `tools/vault_fs.py` and the
+        mention reader read the store, so nothing needs the working copy."""
+        from core.scale import worker_server_module as wsm
+
+        lists: list[str] = []
+        original_list = object_store.list
+        object_store.list = lambda prefix="": (lists.append(prefix), original_list(prefix))[1]
+        object_store.put("vault/notes.md", "x")
+
+        monkeypatch.setattr(wsm, "_get_native_mcp_servers", lambda *a, **k: {})
+
+        async def _nothing(self, *a, **k):
+            return None
+
+        monkeypatch.setattr(wsm.WorkerServerModule, "_connect_user_mcp", _nothing)
+        monkeypatch.setattr(wsm.WorkerServerModule, "_attach_memory_store", lambda self: None)
+
+        module = await wsm.WorkerServerModule.build_for_tenant()
+
+        assert module is not None
+        assert lists == [], f"the build listed the vault: {lists}"
+        assert not (get_vault().root / "notes.md").exists(), "a working copy was materialised"
