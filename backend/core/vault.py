@@ -91,21 +91,38 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
     # that is the file. On object storage it is the object, and a failure to
     # store it raises rather than being swallowed — the reference below tells
     # the model the output is saved, and it has to be true.
+    vault = get_vault()
     path = _make_vault_path(tool_name, ext)
-    get_vault().write(path, content)
+    vault.write(path, content)
 
     total_lines = content.count("\n") + 1
+    size = f"Output too large ({len(raw_output):,} chars, {total_lines:,} lines)."
+    if vault.materialises:
+        # On a fleet the model's tools are `tools/vault_fs.py`, which take a
+        # path relative to the vault — the same form `@[path]` uses in a
+        # prompt. The replica's scratch path this used to hand out is a key no
+        # tool accepts, and `read_file_by_lines`/`grep` exist on no worker.
+        reference = path.relative_to(vault.root).as_posix()
+        message = (
+            f"{size} Saved to the vault as {reference}. Instead: read_file with "
+            f"start_line/end_line for a slice, read_json for a slice of a JSON file, "
+            f"or search_files for a value — path \"{reference}\"."
+        )
+    else:
+        # A plain install's agents have the Filesystem tools, which take paths.
+        reference = str(path)
+        message = (
+            f"{size} Saved to vault at: {path}. "
+            f"Instead: use read_file_by_lines with start_line/end_line to read a slice, "
+            f"or grep to search for specific values."
+        )
     return json.dumps({
-        "vault_file": str(path),
+        "vault_file": reference,
         "file_type": ext,
         "size_chars": len(raw_output),
         "total_lines": total_lines,
         "content_preview": content[:500],
-        "message": (
-            f"Output too large ({len(raw_output):,} chars, {total_lines:,} lines). Saved to vault at: {path}. "
-            f"Instead: use read_file_by_lines with start_line/end_line to read a slice, "
-            f"or grep to search for specific values."
-        ),
+        "message": message,
     })
 
 
@@ -141,6 +158,11 @@ _MASKED = re.compile(f"{_MARK}(\\d+){_MARK}")
 #: Unicode categories a vault path may not contain: control, format, surrogate,
 #: private-use, unassigned, and the line and paragraph separators.
 _REFUSED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def binary_kind(rel: str) -> str | None:
+    """What a download-only file is ("a PDF", "a PNG image"), or None for text."""
+    return _BINARY_KINDS.get(PurePosixPath(rel).suffix.lower())
 
 
 def mention_key(rel: str) -> str | None:
@@ -310,7 +332,7 @@ class MentionReader:
         from core.storage import get_blob_store
 
         store = get_blob_store()
-        kind = _BINARY_KINDS.get(PurePosixPath(rel).suffix.lower())
+        kind = binary_kind(rel)
         try:
             if kind is not None:
                 if not await asyncio.to_thread(store.exists, key):

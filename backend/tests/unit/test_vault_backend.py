@@ -270,6 +270,48 @@ class TestMaybeVaultUsesTheBackend:
         assert object_store.puts == 1, "the durable copy was not written"
         assert any(k.endswith(".txt") for k in object_store.blobs)
 
+    def test_the_reference_is_the_vault_tools_path_form(self, object_store, monkeypatch):
+        """On a fleet the model's tools are `tools/vault_fs.py`, which take a
+        path relative to the vault — not the replica's scratch path this used
+        to hand out, and not `read_file_by_lines`/`grep`, which no worker has."""
+        import json
+        from core.config import set_settings_provider, default_settings
+        from core.vault import maybe_vault
+
+        settings = default_settings()
+        settings["vault_enabled"] = True
+        settings["vault_threshold"] = 10
+        set_settings_provider(lambda: settings)
+        try:
+            reference = json.loads(maybe_vault("web_scraper", "x" * 100))
+        finally:
+            set_settings_provider(None)
+
+        assert reference["vault_file"].startswith("tool_outputs/web_scraper_")
+        assert reference["vault_file"].endswith(".txt")
+        assert "/" not in reference["vault_file"].replace("tool_outputs/", "")
+        assert "read_file" in reference["message"] and "search_files" in reference["message"]
+        assert "read_file_by_lines" not in reference["message"]
+        assert reference["vault_file"] in reference["message"]
+
+    def test_a_directory_vault_still_hands_out_the_path(self, local_store, monkeypatch):
+        """A plain install's agents have the Filesystem tools, which take paths."""
+        import json
+        from core.config import set_settings_provider, default_settings
+        from core.vault import maybe_vault, _vault_root
+
+        settings = default_settings()
+        settings["vault_enabled"] = True
+        settings["vault_threshold"] = 10
+        set_settings_provider(lambda: settings)
+        try:
+            reference = json.loads(maybe_vault("web_scraper", "x" * 100))
+        finally:
+            set_settings_provider(None)
+
+        assert reference["vault_file"] == str(_vault_root() / "tool_outputs" / reference["vault_file"].rsplit("/", 1)[-1])
+        assert "read_file_by_lines" in reference["message"]
+
 
 class TestAColdPoolBuildDoesNotDownloadTheVault:
     async def test_build_for_tenant_never_lists_the_vault(self, object_store, monkeypatch):

@@ -21,7 +21,7 @@ This server goes through `core.storage.get_blob_store()` instead. It reads the
 vault itself rather than a copy of it, one implementation serves a local install
 and an object store alike, and there is no Node.
 
-## Tenancy
+## Tenancy, and the vault
 
 **Every key is scoped by `core/storage/base.py::tenant_key`, inside the store.**
 Nothing here adds the tenant, which is deliberate: that module says the prefixing
@@ -32,6 +32,15 @@ The tenant itself arrives on `SYNAPSE_TENANT_ID` and is adopted by
 `core/tool_server.py::bootstrap`, which is why every handler awaits `ready()`
 before touching the store.
 
+**Inside the tenant, this server sees `vault/` and nothing else.** A path the
+model passes is relative to the vault — `notes/q3 plan.md`, `tool_outputs/x.json`
+— exactly what `@[path]` names in a prompt, and it goes through the same guard
+(`core.vault.mention_key`) before the prefix is added. It used to be a key
+relative to the whole tenant, so `list_files("")` listed `logs/`, `memory/` and
+`attachments/`, and `read_file` could open an orchestration log with its
+rendered globals. A binary the vault holds (a PDF, an image — download-only) is
+named as such rather than handed to the model as a decode error.
+
 ## Read-only, for now
 
 `list_files`, `read_file`, `search_files`, `read_json`. No write and no delete.
@@ -40,10 +49,8 @@ agents can still produce files; letting one write arbitrary keys raises quota,
 abuse and metering questions that belong with the document-RAG work rather than
 here.
 
-`prefix` is a first-class argument on the listing and search tools rather than a
-hardcoded vault root, because the next thing to live in this store is per-agent
-RAG material under its own prefix, and a server that can only see one folder
-would have to be rewritten to serve it.
+`prefix` narrows the listing and search tools within the vault (`tool_outputs/`,
+`notes/`); it cannot reach above it.
 """
 
 import asyncio
@@ -90,20 +97,54 @@ def _store():
     return get_blob_store()
 
 
-def _get_text(key: str) -> tuple[str | None, str | None]:
-    """`(content, error)` for one key. Never raises."""
+_BINARY = "binary files are download-only and cannot be read by tools"
+
+
+def _get_text(path: str) -> tuple[str | None, str | None]:
+    """`(content, error)` for one vault path. Never raises."""
+    from core.vault import binary_kind, mention_key
+
+    key = mention_key(path)
+    if key is None:
+        return None, f"Not a vault path: {path}"
+    kind = binary_kind(path)
+    if kind is not None:
+        return None, f"{path} is {kind} — {_BINARY}"
     try:
         raw = _store().get(key)
+    except ValueError:
+        # A decode error (`UnicodeDecodeError` is one): bytes, not text.
+        return None, f"{path} is not a text file — {_BINARY}"
     except Exception as exc:  # noqa: BLE001 — reported to the model, not the log
-        return None, f"Could not read {key}: {exc}"
+        return None, f"Could not read {path}: {exc}"
     if raw is None:
-        return None, f"Not found: {key}"
+        return None, f"Not found: {path}"
     if len(raw) > _MAX_BYTES:
         return None, (
-            f"{key} is {len(raw)} bytes, over the {_MAX_BYTES} limit. "
+            f"{path} is {len(raw)} bytes, over the {_MAX_BYTES} limit. "
             f"Use read_file with a line range."
         )
     return raw, None
+
+
+def _listing(prefix: str) -> tuple[list[str] | None, str | None]:
+    """`(paths, error)`: the vault's files under `prefix`, relative to the vault.
+
+    Folder markers (`.keep`) are the vault page's, not files. A prefix that
+    tries to climb out of the vault is refused rather than resolved.
+    """
+    from core.vault_backend import VAULT_PREFIX
+
+    prefix = (prefix or "").strip().lstrip("/")
+    if any(part == ".." for part in prefix.split("/")):
+        return None, f"Not a vault path: {prefix}"
+    root = f"{VAULT_PREFIX}/"
+    keys = _store().list(root + prefix)
+    paths = [
+        k[len(root):] for k in keys
+        if k.startswith(root) and not (k == f"{root}.keep" or k.endswith("/.keep"))
+    ]
+    return sorted(paths), None
 
 
 def _err(message: str) -> list[types.TextContent]:
@@ -125,7 +166,8 @@ async def list_tools() -> list[types.Tool]:
             name="list_files",
             annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
-                "List files in the vault. Returns keys you can pass to read_file, "
+                "List files in the vault. Returns paths — relative to the vault, the "
+                "same form as @[path] in a prompt — you can pass to read_file, "
                 "read_json or search_files. Use a prefix to narrow the listing."
             ),
             inputSchema={
@@ -133,7 +175,7 @@ async def list_tools() -> list[types.Tool]:
                 "properties": {
                     "prefix": {
                         "type": "string",
-                        "description": "Only list keys starting with this, e.g. 'tool_outputs/'. Empty lists everything.",
+                        "description": "Only list paths starting with this, e.g. 'tool_outputs/'. Empty lists the whole vault.",
                         "default": "",
                     },
                 },
@@ -150,7 +192,7 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The key, as returned by list_files."},
+                    "path": {"type": "string", "description": "The path, relative to the vault, as returned by list_files or named by @[path]."},
                     "start_line": {"type": "integer", "description": "First line. Default 1.", "default": 1},
                     "end_line": {"type": "integer", "description": "Last line, inclusive. Default 200.", "default": 200},
                 },
@@ -168,7 +210,7 @@ async def list_tools() -> list[types.Tool]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Text to look for. Case-insensitive."},
-                    "prefix": {"type": "string", "description": "Only search keys starting with this.", "default": ""},
+                    "prefix": {"type": "string", "description": "Only search paths starting with this.", "default": ""},
                     "context_lines": {"type": "integer", "description": "Lines of context each side. Default 3.", "default": 3},
                 },
                 "required": ["query"],
@@ -184,7 +226,7 @@ async def list_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "The key, as returned by list_files."},
+                    "path": {"type": "string", "description": "The path, relative to the vault, as returned by list_files or named by @[path]."},
                     "offset": {"type": "integer", "description": "Where to start. Default 0.", "default": 0},
                     "limit": {"type": "integer", "description": "How many. Default 50.", "default": 50},
                 },
@@ -208,23 +250,25 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     try:
         if name == "list_files":
             prefix = str(arguments.get("prefix", "") or "")
-            keys = _store().list(prefix)
-            return _ok({
-                "prefix": prefix,
-                "count": len(keys),
-                "truncated": len(keys) > _LIST_LIMIT,
-                "files": sorted(keys)[:_LIST_LIMIT],
-            })
-
-        if name == "read_file":
-            key = str(arguments.get("path", "") or "")
-            if not key:
-                return _err("path is required")
-            text, error = _get_text(key)
+            paths, error = _listing(prefix)
             if error:
                 return _err(error)
             return _ok({
-                "path": key,
+                "prefix": prefix,
+                "count": len(paths),
+                "truncated": len(paths) > _LIST_LIMIT,
+                "files": paths[:_LIST_LIMIT],
+            })
+
+        if name == "read_file":
+            path = str(arguments.get("path", "") or "")
+            if not path:
+                return _err("path is required")
+            text, error = _get_text(path)
+            if error:
+                return _err(error)
+            return _ok({
+                "path": path,
                 **slice_lines(
                     text,
                     int(arguments.get("start_line", 1) or 1),
@@ -239,41 +283,43 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             prefix = str(arguments.get("prefix", "") or "")
             context = int(arguments.get("context_lines", 3) or 3)
 
-            keys = sorted(_store().list(prefix))
-            searched = keys[:_SEARCH_FILE_LIMIT]
+            paths, error = _listing(prefix)
+            if error:
+                return _err(error)
+            searched = paths[:_SEARCH_FILE_LIMIT]
 
             # Concurrently, and on threads, because `BlobStore.get` is
             # synchronous and each call is a network round trip on S3. Done
             # serially this loop is the tool call's whole latency budget.
             gate = asyncio.Semaphore(_SEARCH_CONCURRENCY)
 
-            async def _scan(key: str) -> dict | None:
+            async def _scan(path: str) -> dict | None:
                 async with gate:
-                    text, error = await asyncio.to_thread(_get_text, key)
+                    text, error = await asyncio.to_thread(_get_text, path)
                 if error or not text:
-                    # A key that cannot be read is skipped rather than fatal: one
-                    # oversized or deleted object must not lose the matches in
-                    # every other file.
+                    # A file that cannot be read is skipped rather than fatal: one
+                    # oversized, binary or deleted object must not lose the
+                    # matches in every other file.
                     return None
                 found = search_text(text, query, context)
-                return {"path": key, **found} if found["matches_found"] else None
+                return {"path": path, **found} if found["matches_found"] else None
 
-            hits = [h for h in await asyncio.gather(*(_scan(k) for k in searched)) if h]
+            hits = [h for h in await asyncio.gather(*(_scan(p) for p in searched)) if h]
 
             return _ok({
                 "query": query,
                 "prefix": prefix,
                 "files_searched": len(searched),
-                "files_skipped": max(0, len(keys) - _SEARCH_FILE_LIMIT),
+                "files_skipped": max(0, len(paths) - _SEARCH_FILE_LIMIT),
                 "files_with_matches": len(hits),
                 "results": hits,
             })
 
         if name == "read_json":
-            key = str(arguments.get("path", "") or "")
-            if not key:
+            path = str(arguments.get("path", "") or "")
+            if not path:
                 return _err("path is required")
-            text, error = _get_text(key)
+            text, error = _get_text(path)
             if error:
                 return _err(error)
             offset = int(arguments.get("offset", 0) or 0)
@@ -281,20 +327,20 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             try:
                 doc = json.loads(text)
             except json.JSONDecodeError as exc:
-                return _err(f"{key} is not valid JSON: {exc}")
+                return _err(f"{path} is not valid JSON: {exc}")
 
             if isinstance(doc, list):
                 return _ok({
-                    "path": key, "root": "array", "total": len(doc),
+                    "path": path, "root": "array", "total": len(doc),
                     "offset": offset, "items": doc[offset:offset + limit],
                 })
             if isinstance(doc, dict):
                 keys_slice = list(doc.keys())[offset:offset + limit]
                 return _ok({
-                    "path": key, "root": "object", "total": len(doc),
+                    "path": path, "root": "object", "total": len(doc),
                     "offset": offset, "items": {k: doc[k] for k in keys_slice},
                 })
-            return _ok({"path": key, "root": "scalar", "value": doc})
+            return _ok({"path": path, "root": "scalar", "value": doc})
 
         return _err(f"Unknown tool: {name}")
     except Exception as exc:  # noqa: BLE001 — the model gets the reason

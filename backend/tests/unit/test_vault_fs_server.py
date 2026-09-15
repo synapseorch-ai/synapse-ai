@@ -83,10 +83,10 @@ async def test_listing_cannot_see_another_tenants_files(vault):
     is what makes that safe rather than lucky.
     """
     with tenant_scope("org-a"):
-        vault.put("secret.txt", "org a's private notes")
+        vault.put("vault/secret.txt", "org a's private notes")
 
     with tenant_scope("org-b"):
-        vault.put("mine.txt", "org b's own file")
+        vault.put("vault/mine.txt", "org b's own file")
         listing = await _call("list_files", {})
 
     assert listing["files"] == ["mine.txt"], listing
@@ -98,7 +98,7 @@ async def test_read_and_search_go_through_the_store_not_a_path(vault):
     """A key, not a directory — so this works where there is no filesystem."""
     body = "alpha\nbeta\ngamma\ndelta\n"
     with tenant_scope("org-a"):
-        vault.put("notes.txt", body)
+        vault.put("vault/notes.txt", body)
 
         chunk = await _call("read_file", {"path": "notes.txt", "start_line": 2, "end_line": 3})
         assert chunk["content"] == "beta\ngamma"
@@ -159,7 +159,7 @@ async def test_search_reads_the_store_concurrently(vault, monkeypatch):
 
     with tenant_scope("org-a"):
         for i in range(32):
-            vault.put(f"f{i:02d}.txt", f"line one\nneedle {i}\n")
+            vault.put(f"vault/f{i:02d}.txt", f"line one\nneedle {i}\n")
 
         in_flight = 0
         peak = 0
@@ -184,21 +184,21 @@ async def test_search_reads_the_store_concurrently(vault, monkeypatch):
 
 @pytest.mark.anyio
 async def test_a_key_cannot_escape_the_tenants_prefix(vault):
-    """Traversal is refused by the store, which is where the guard belongs.
+    """Traversal is refused before the store is asked.
 
-    `tools/vault_fs.py` does no path validation of its own and should not: it
-    passes the key straight to the blob store, and the store is the single place
-    tenancy is applied. This proves the arrangement holds end to end rather than
-    trusting that it does.
+    The tool's paths are relative to the vault (`vault/` inside the tenant's
+    key space) and go through the same guard as `@[path]` in a prompt
+    (`core.vault.mention_key`); the store applies the tenant underneath. Two
+    guards, and this proves the first one holds end to end.
     """
     with tenant_scope("other-org"):
-        vault.put("secret.txt", "not yours")
+        vault.put("vault/secret.txt", "not yours")
 
     with tenant_scope("org-a"):
-        answer = await _call("read_file", {"path": "../other-org/secret.txt"})
+        answer = await _call("read_file", {"path": "../other-org/vault/secret.txt"})
 
     assert "error" in answer
-    assert "escapes" in answer["error"], answer
+    assert "not a vault path" in answer["error"].lower(), answer
     assert "not yours" not in json.dumps(answer)
 
 
@@ -260,3 +260,74 @@ async def test_serve_adopts_the_tenant_before_it_starts_the_bootstrap_task():
         "serve() started the server without adopting the tenant first; "
         f"the serving task saw {seen}"
     )
+
+
+@pytest.mark.anyio
+async def test_the_tool_sees_the_vault_and_nothing_else_of_the_tenant(vault):
+    """F20: keys used to be relative to the whole tenant, so `list_files("")`
+    reached `logs/`, `memory/` and `attachments/`, and `read_file` could open an
+    orchestration log — rendered globals included."""
+    with tenant_scope("org-a"):
+        vault.put("vault/notes.md", "in the vault")
+        vault.put("vault/tool_outputs/crawl.json", "[1]")
+        vault.put("logs/orchestration/run_1.log", "STRIPE_KEY=sk_live_secret")
+        vault.put("memory/agent/index.json", "{}")
+
+        listing = await _call("list_files", {})
+        assert sorted(listing["files"]) == ["notes.md", "tool_outputs/crawl.json"], listing
+
+        narrowed = await _call("list_files", {"prefix": "tool_outputs/"})
+        assert narrowed["files"] == ["tool_outputs/crawl.json"]
+
+        as_a_key = await _call("read_file", {"path": "logs/orchestration/run_1.log"})
+        assert "error" in as_a_key and "Not found" in as_a_key["error"]
+
+        traversal = await _call("read_file", {"path": "../logs/orchestration/run_1.log"})
+        assert "error" in traversal and "not a vault path" in traversal["error"].lower()
+
+        found = await _call("search_files", {"query": "STRIPE_KEY"})
+        assert found["files_with_matches"] == 0
+
+    assert "sk_live_secret" not in json.dumps([listing, as_a_key, traversal, found])
+
+
+@pytest.mark.anyio
+async def test_a_folder_marker_is_not_a_file(vault):
+    with tenant_scope("org-a"):
+        vault.put("vault/.keep", "\n")
+        vault.put("vault/notes/.keep", "\n")
+        vault.put("vault/notes/a.md", "a")
+        listing = await _call("list_files", {})
+    assert listing["files"] == ["notes/a.md"]
+
+
+@pytest.mark.anyio
+async def test_a_binary_says_so_instead_of_a_decode_error(vault):
+    """D94: the vault stores PDFs and images, download-only; a tool asked for
+    one used to hand the model `'utf-8' codec can't decode byte …`."""
+    with tenant_scope("org-a"):
+        path = vault.path_for("vault/report.pdf")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"%PDF-1.4 " + b"\x00" * 16)
+        blob = vault.path_for("vault/blob.dat")
+        blob.write_bytes(b"\xff\xfe\x00junk")
+
+        pdf = await _call("read_file", {"path": "report.pdf"})
+        assert pdf["error"] == "report.pdf is a PDF \u2014 binary files are download-only and cannot be read by tools"
+
+        as_json = await _call("read_json", {"path": "report.pdf"})
+        assert "download-only" in as_json["error"]
+
+        blob_answer = await _call("read_file", {"path": "blob.dat"})
+        assert "not a text file" in blob_answer["error"] and "codec" not in blob_answer["error"]
+
+
+@pytest.mark.anyio
+async def test_the_tools_path_is_the_mentions_path(vault):
+    """What `@[notes/q3 plan.md]` names in a prompt is what `read_file` takes:
+    one form, so the reference line the reader writes for a file it did not
+    inline is a path the tool accepts as it is."""
+    with tenant_scope("org-a"):
+        vault.put("vault/notes/q3 plan.md", "# Q3\n\nplan\n")
+        answer = await _call("read_file", {"path": "notes/q3 plan.md"})
+    assert answer["content"].startswith("# Q3")
