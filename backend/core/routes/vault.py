@@ -174,10 +174,17 @@ def _vault_root() -> Path:
 
 
 def _resolve(rel: str) -> Path:
+    """The path inside the vault, or a 403.
+
+    A string-prefix check let a sibling through: `vault2/` starts with
+    `vault`, so `sub/../../vault2/secret.md` resolved outside the vault and
+    passed. The check is on path components now.
+    """
     root = _vault_root()
     clean = rel.lstrip("/").lstrip("./")
     resolved = (root / clean).resolve()
-    if not str(resolved).startswith(str(root.resolve())):
+    root_resolved = root.resolve()
+    if resolved != root_resolved and root_resolved not in resolved.parents:
         raise HTTPException(status_code=403, detail="Path traversal denied")
     return resolved
 

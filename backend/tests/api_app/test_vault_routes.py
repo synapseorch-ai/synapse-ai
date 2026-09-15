@@ -97,3 +97,16 @@ class TestDeleteRefusesTheRoot:
         assert (await client.request("DELETE", "/api/vault/item", json={"path": "b.md"})).status_code == 200
         assert (await client.request("DELETE", "/api/vault/item", json={"path": "gone"})).status_code == 200
         assert not (_vault_root() / "b.md").exists() and not (_vault_root() / "gone").exists()
+
+
+# ── (c) a sibling whose name starts with the vault's is outside it ──────────
+class TestASiblingIsOutsideTheVault:
+    async def test_a_climb_into_a_sibling_is_refused(self, client):
+        root = _vault_root()
+        sibling = root.parent / (root.name + "2")
+        sibling.mkdir(parents=True, exist_ok=True)
+        (sibling / "secret.md").write_text("not yours", encoding="utf-8")
+
+        resp = await client.get("/api/vault/file", params={"path": f"sub/../../{sibling.name}/secret.md"})
+        assert resp.status_code == 403, resp.text
+        assert "not yours" not in resp.text
