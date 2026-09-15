@@ -13,9 +13,12 @@ Provides:
 from __future__ import annotations
 
 import datetime
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from core import templating as _templating
 
 if TYPE_CHECKING:
     from core.models_orchestration import StepConfig, OrchestrationRun
@@ -627,6 +630,36 @@ def _format_context_value(
     return f"### {key}\nSource: {source}\n{val_str}"
 
 
+#: The step prompt's two reference families in one pattern: `{{ … }}` (group 1,
+#: `templating.REF`) and the older `{state.x}` (group 2). The double-brace
+#: alternative comes first, so an unspaced `{{state.x}}` is a double-brace
+#: reference rather than a `{state.x}` wrapped in braces (F3).
+_TASK_REF = re.compile(rf"{_templating.REF.pattern}|\{{state\.(\w+)\}}")
+
+
+def _fill_task_template(template: str, shared_state: dict, global_variables: dict) -> str:
+    """`{{ global.x }}`, `{{ state.x }}` and the older `{state.x}` — in one pass.
+
+    One pass, because two were a leak (F19): the `{state.x}` pass wrote a state
+    value into the text and `templating.render` then read that value as a
+    template, so a crawled page or a model answer holding `{{ global.KEY }}`
+    reached the next step — and the run log — as the secret. A `re.sub` never
+    scans what it inserted, so a value is a value whichever family put it
+    there: a state value holding `{{ global.KEY }}` or `{state.x}`, or a global
+    value holding either, reaches the model as those words. The semantics are
+    otherwise unchanged: `{state.x}` is `str()` of the value, `{{ … }}` is
+    `templating`'s (JSON for an object), and an unknown reference stays visible.
+    """
+    context = {"global": global_variables, "state": shared_state}
+
+    def _sub(match: re.Match) -> str:
+        if match.group(1) is not None:
+            return _templating.render(match.group(0), context)
+        return str(shared_state.get(match.group(2), match.group(0)))
+
+    return _TASK_REF.sub(_sub, template)
+
+
 def build_origin_aware_context(
     step: "StepConfig",
     run: "OrchestrationRun",
@@ -646,7 +679,6 @@ def build_origin_aware_context(
       system_prompt_prefix iteration banner PREPENDED to the system prompt
                            on re-runs (execution_number > 1); empty otherwise
     """
-    import re
     sections: list[str] = []
     is_rerun = transition.execution_number > 1
 
@@ -894,26 +926,23 @@ def build_origin_aware_context(
     # ------------------------------------------------------------------
     # Section: TASK (first run) / ORIGINAL TASK reference (re-run)
     # ------------------------------------------------------------------
-    # The step's template, or the run's input when it has none — unless the
-    # caller (`build_step_prompt`) hands the template in with its `@[path]`
-    # mentions already masked.
+    # The step's template — handed in by `build_step_prompt` with its `@[path]`
+    # mentions already masked — rendered in one pass (`_fill_task_template`):
+    # `{state.x}`, `{{ state.x }}` and `{{ global.x }}`, the double-brace family
+    # shared with tools and system prompts (core/templating.py). A step with no
+    # template takes the run's input as typed: the input is a value, not a
+    # template (D97, as D95 ruled for `@[path]`), so text that an agent, a
+    # channel or a parent run put there is never rendered.
     if prompt_template is None:
-        prompt_template = step.prompt_template or run.shared_state.get("user_input", "")
-
-    # Replace {state.key} references
-    def replace_ref(match):
-        k = match.group(1)
-        return str(run.shared_state.get(k, f"{{state.{k}}}"))
-
-    task_text = re.sub(r"\{state\.(\w+)\}", replace_ref, prompt_template)
-    # `{{ global.key }}` and `{{ state.key }}` — the double-brace family shared
-    # with tools and system prompts (core/templating.py). Unknown references
-    # stay visible rather than vanishing.
-    from core import templating as _templating
-    task_text = _templating.render(
-        task_text,
-        {"global": getattr(engine, "global_variables", None) or {}, "state": run.shared_state},
-    )
+        prompt_template = step.prompt_template
+    if prompt_template:
+        task_text = _fill_task_template(
+            prompt_template,
+            run.shared_state,
+            getattr(engine, "global_variables", None) or {},
+        )
+    else:
+        task_text = str(run.shared_state.get("user_input") or "")
 
     if is_rerun:
         task_header = "## ORIGINAL TASK (reference only)"
