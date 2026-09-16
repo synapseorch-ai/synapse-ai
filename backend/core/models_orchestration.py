@@ -198,6 +198,16 @@ class Orchestration(BaseModel):
     max_total_cost_usd: float | None = None
     timeout_minutes: int = ORCH_GLOBAL_TIMEOUT_MIN
 
+    #: Stop a run when a step's text will not become the type its state key
+    #: declares. Off by default, and deliberately: until the engine began
+    #: reading `state_schema.type` at all, every type value in every
+    #: orchestration was metadata nobody was ever held to — 21% of runs on the
+    #: dev stack held something that contradicted one, the AI builder's own
+    #: among them. Enforcing unverified annotations by default fails good runs.
+    #: Only a failed *text* conversion stops a run: a value that is simply of
+    #: another type is a wrong schema, which warns and carries on.
+    strict_state_types: bool = False
+
     trigger: str = "manual"  # "manual" | "scheduled"
 
     #: The rubric every run of this orchestration is scored against

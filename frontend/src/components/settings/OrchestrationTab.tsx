@@ -1976,6 +1976,25 @@ function BottomPanel({
                             />
                         </div>
                         <div className="col-span-3">
+                            <label className="flex items-start gap-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    className="mt-0.5"
+                                    checked={!!draft.strict_state_types}
+                                    onChange={(e) => setDraft({ ...draft, strict_state_types: e.target.checked })}
+                                />
+                                <span>
+                                    <span className="text-xs text-zinc-400 block">Stop on a state type mismatch</span>
+                                    <span className="text-[11px] text-zinc-600 block mt-0.5">
+                                        A step&apos;s output is read as the type its state key declares —
+                                        JSON text becomes a list or an object. Off, a step whose text will
+                                        not convert leaves the text in place and warns. On, the run stops
+                                        there instead of carrying on with the wrong shape.
+                                    </span>
+                                </span>
+                            </label>
+                        </div>
+                        <div className="col-span-3">
                             <label className="text-xs text-zinc-400 block mb-1">Score runs against</label>
                             <select
                                 className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"

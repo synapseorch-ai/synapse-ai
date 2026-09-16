@@ -411,8 +411,11 @@ class OrchestrationEngine:
                 # the next step reads are the declared one. Skipped on `failed`:
                 # a step that did not finish has nothing to say, and a run that
                 # has already failed does not need a second line of noise.
+                unconvertible: list[tuple[str, str]] = []
                 if run.status != "failed":
-                    for warning in self._type_written_state(run, step, state_before):
+                    typing_warnings, unconvertible = self._type_written_state(
+                        run, step, state_before)
+                    for warning in typing_warnings:
                         if logger:
                             logger.log_event(warning)
                         yield warning
@@ -443,6 +446,28 @@ class OrchestrationEngine:
                     "step_name": step.name,
                     "duration_seconds": step_duration,
                 }
+
+                # `strict_state_types`: text that would not become the type its
+                # key declares stops the run — here, after the step is recorded
+                # and announced, because the step itself completed. A history
+                # that quietly loses it is a worse record than one saying "this
+                # ran, and the run stopped because of what it wrote".
+                if unconvertible and self.orch.strict_state_types:
+                    run.status = "failed"
+                    named = ", ".join(f"'{k}' ({t})" for k, t in unconvertible)
+                    error = (
+                        f"Step '{step.name}' wrote text that will not become the "
+                        f"declared type of {named}. Stopped because this "
+                        f"orchestration has strict state types on."
+                    )
+                    if logger:
+                        logger.run_end("failed")
+                    yield {"type": "orchestration_error", "error": error}
+                    try:
+                        await state.checkpoint()
+                    except Exception as ckpt_err:
+                        _log.warning(f"strict-type checkpoint failed: {ckpt_err}")
+                    break
 
                 # Resolve next step
                 next_step_id, extra_events = self._resolve_next(step, run)
@@ -889,13 +914,20 @@ class OrchestrationEngine:
 
     def _type_written_state(
         self, run: OrchestrationRun, step: StepConfig, before: dict
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[tuple[str, str]]]:
         """Give the keys this step wrote the type `state_schema` declares.
 
-        Mutates `run.shared_state` in place and returns the `step_warning`
-        events the caller should yield — a plain function rather than a
-        generator so the cancel-scope reasoning around the step's `fail_after`
-        stays exactly as it was, and so this is testable without an engine.
+        Mutates `run.shared_state` in place and returns
+        `(warnings, unconvertible)` — the `step_warning` events the caller
+        should yield, and the `(key, declared type)` pairs whose **text** would
+        not become the declared structure. Only that second list is what `strict_state_types` stops a
+        run for: text that will not parse is a step doing the wrong thing,
+        while a value that is simply of another type is a schema that disagrees
+        with reality, which is worth saying and not worth stopping for.
+
+        A plain function rather than a generator, so the cancel-scope reasoning
+        around the step's `fail_after` stays exactly as it was, and so this is
+        testable without an engine.
 
         The rule, per key this step wrote that the schema declares:
 
@@ -904,6 +936,10 @@ class OrchestrationEngine:
             `_validate_orchestration` is what tells the builder its schema is
             wrong.
           - already the declared type: nothing to do.
+          - `None`: left alone, silently. "Unset" is not a failed conversion.
+            Seventeen of the twenty-three mismatches measured on the dev stack
+            were this one shape — the AI builder's own `_model_override`,
+            declared `str` and None whenever there is no override.
           - a `str` under `list`/`dict`: the same three strategies
             `extract_json` uses (whole text, fenced block, brace matching). One
             result is the value; several are a list of them, which is the
@@ -929,7 +965,7 @@ class OrchestrationEngine:
         """
         schema = self.orch.state_schema or {}
         if not schema:
-            return []
+            return [], []
 
         # Identity, not equality: no deep compare of a large structure, and a
         # list mutated in place is already a list — nothing to coerce.
@@ -941,6 +977,7 @@ class OrchestrationEngine:
             written.add(step.output_key)
 
         warnings: list[dict] = []
+        unconvertible: list[tuple[str, str]] = []
         for key in sorted(written & schema.keys()):
             entry = schema.get(key)
             if not isinstance(entry, dict):
@@ -950,7 +987,7 @@ class OrchestrationEngine:
                 continue
 
             value = run.shared_state.get(key)
-            if matches_declared_type(declared, value):
+            if value is None or matches_declared_type(declared, value):
                 continue
 
             if not isinstance(value, str):
@@ -973,8 +1010,9 @@ class OrchestrationEngine:
             arrived = ("text that is not JSON" if parsed is None
                        else f"text holding {type(parsed).__name__}")
             warnings.append(self._type_warning(step, key, declared, arrived))
+            unconvertible.append((key, declared))
 
-        return warnings
+        return warnings, unconvertible
 
     @staticmethod
     def _type_warning(step: StepConfig, key: str, declared: str, arrived: str) -> dict:

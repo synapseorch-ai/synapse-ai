@@ -649,6 +649,15 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "max_total_turns": {"type": "integer"},
                     "timeout_minutes": {"type": "integer"},
+                    "strict_state_types": {
+                        "type": "boolean",
+                        "description": (
+                            "Stop a run when a step's text will not become the type its "
+                            "state key declares — an llm step answering in prose where the "
+                            "key is declared `list`, say. Off by default: the text stays put "
+                            "and the run log says so. Turn it on only when asked to."
+                        ),
+                    },
                 },
                 "required": ["orch_id"],
             },
@@ -1765,7 +1774,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             if key in args and args[key] is not None:
                 raw_fields[key] = args[key]
         _normalize_state_schema_arg(raw_fields)
-        allowed = {"name", "description", "entry_step_id", "state_schema", "max_total_turns", "timeout_minutes"}
+        allowed = {"name", "description", "entry_step_id", "state_schema",
+                   "max_total_turns", "timeout_minutes", "strict_state_types"}
         fields = {k: v for k, v in raw_fields.items() if k in allowed}
         if not fields:
             return {"error": f"No allowed meta fields to set. Allowed: {sorted(allowed)}"}

@@ -112,6 +112,11 @@ export interface Orchestration {
     max_total_turns: number;
     max_total_cost_usd?: number | null;
     timeout_minutes: number;
+    /** Stop a run when a step's text will not become the type its state key
+     *  declares. Off by default — a type nobody was ever held to is not a
+     *  thing to start failing runs over. A value that is simply of another
+     *  type warns and carries on; only a failed text conversion stops. */
+    strict_state_types?: boolean;
     trigger: 'manual' | 'scheduled';
     /** The rubric every run is scored against. Empty means "not evaluated",
      *  which is the opt-in: binding one is what consents to the judge's cost. */
