@@ -320,3 +320,46 @@ class TestStrictStateTypes:
         assert _errors(events) == []
         assert len(_warnings(events)) == 1
         assert _final_state(events)["tail"] == "ran"
+
+
+class TestUndeclaredVariablesRunAsTheyAre:
+    """A variable a node writes without it ever being declared in shared state.
+
+    People do this all the time — an `output_key` typed straight into a node.
+    Naveen, 2026-09-16: "I need to run it as it is without worrying about the
+    types." Typing only ever looks at keys the schema declares, so an undeclared
+    one is never parsed, never warned about, and cannot stop a run — **even
+    with `strict_state_types` on**, which is the case worth pinning.
+    """
+
+    @staticmethod
+    def _orch(schema):
+        return S.make_orchestration(
+            id="orch_undeclared", entry_step_id="s1",
+            steps=[
+                {"id": "s1", "name": "Prose", "type": "print",
+                 "print_content": "just some text", "output_key": "notes",
+                 "next_step_id": "s2"},
+                {"id": "s2", "name": "Json", "type": "print",
+                 "print_content": '["a", "b"]', "output_key": "items",
+                 "next_step_id": "s3"},
+                {"id": "s3", "name": "Reader", "type": "print",
+                 "print_content": "got {state.notes} / {state.items}",
+                 "output_key": "tail", "next_step_id": None},
+            ],
+            state_schema=schema, strict_state_types=True,
+        )
+
+    @pytest.mark.parametrize("schema", [
+        {},                                          # no shared state declared at all
+        {"something_else": {"type": "list"}},        # a schema, just not these keys
+    ], ids=["no-schema", "other-keys-declared"])
+    async def test_they_run_exactly_as_written_with_strict_on(self, schema):
+        events = await _run(self._orch(schema))
+        state = _final_state(events)
+        # prose stays prose, and JSON text stays text — nothing declared a type
+        assert state["notes"] == "just some text"
+        assert state["items"] == '["a", "b"]'
+        assert state["tail"] == 'got just some text / ["a", "b"]'
+        assert _warnings(events) == []
+        assert _errors(events) == []
