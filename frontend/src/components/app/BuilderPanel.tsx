@@ -13,6 +13,7 @@ import {
     ChevronDown,
     ChevronUp,
     Send,
+    Square,
     Trash2,
     X,
 } from 'lucide-react';
@@ -124,8 +125,15 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
     );
 }
 
-/** A question the run is waiting on — usually the plan, which runs long. */
-function HumanPromptCard({ content }: { content: string }) {
+/**
+ * A question the run is waiting on — usually the plan, which runs long.
+ *
+ * `onStop` on the question still open, and only there. The composer below is
+ * for the answer, so the other way out of a question belongs on the question —
+ * the same pair the run page's own card offers. Without it a build parked on a
+ * question can only be answered, and walking away leaves it paused for good.
+ */
+function HumanPromptCard({ content, onStop }: { content: string; onStop?: () => void }) {
     const [expanded, setExpanded] = useState(false);
     const isLong = content.length > COLLAPSE_THRESHOLD;
     const visible = isLong && !expanded ? `${content.slice(0, COLLAPSE_THRESHOLD)}…` : content;
@@ -149,13 +157,27 @@ function HumanPromptCard({ content }: { content: string }) {
                         : <><ChevronDown size={10} aria-hidden /> Show all of it</>}
                 </button>
             )}
+            {onStop && (
+                <div className="flex items-center justify-end border-t border-warning/30 px-3 py-1.5">
+                    <button
+                        type="button"
+                        onClick={onStop}
+                        className={cn(
+                            'rounded-md px-2 py-0.5 text-[11px] text-danger transition-colors hover:bg-danger-subtle',
+                            focusRing,
+                        )}
+                    >
+                        Stop instead
+                    </button>
+                </div>
+            )}
         </div>
     );
 }
 
 export function BuilderPanel() {
     const {
-        isOpen, entered, close, state, streaming, send, newConversation, canAttach,
+        isOpen, entered, close, state, streaming, send, stop, newConversation, canAttach,
         providers, builderModel, sessionModel, setSessionModel, saveBuilderModel,
     } = useBuilder();
 
@@ -174,6 +196,14 @@ export function BuilderPanel() {
     // `isOpen` stays true for the length of the exit transition — the provider
     // clears it when the card has finished leaving.
     if (!isOpen) return null;
+
+    // Working, not asking: the one composer button is Stop, as it is in chat.
+    // A run parked on a question is not streaming here — the stream ends at the
+    // pause — so that case is the composer's Send plus the card's own way out.
+    const working = streaming && Boolean(state.runId);
+    const openQuestionKey = state.pending
+        ? state.messages.findLast((m) => m.kind === 'human_prompt')?.key
+        : undefined;
 
     const submit = () => {
         const text = input.trim();
@@ -298,7 +328,13 @@ export function BuilderPanel() {
                             );
                         }
                         if (message.kind === 'human_prompt') {
-                            return <HumanPromptCard key={message.key} content={message.content} />;
+                            return (
+                                <HumanPromptCard
+                                    key={message.key}
+                                    content={message.content}
+                                    onStop={message.key === openQuestionKey ? () => void stop() : undefined}
+                                />
+                            );
                         }
                         if (message.role === 'user') {
                             return (
@@ -368,19 +404,41 @@ export function BuilderPanel() {
                                 disabledReason={canAttach ? '' : 'This model cannot read images'}
                                 className="mb-2 p-1.5"
                             />
-                            <button
-                                type="button"
-                                onClick={submit}
-                                disabled={(!input.trim() && !attachments.images.length) || streaming}
-                                aria-label="Send"
-                                className={cn(
-                                    'mb-1.5 mr-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-accent-fg',
-                                    'transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40',
-                                    focusRing,
-                                )}
-                            >
-                                {streaming ? <Spinner size={16} /> : <Send size={15} aria-hidden />}
-                            </button>
+                            {/* One button, in whichever job the moment calls
+                                for — the chat composer's rule. Two would mean
+                                one of them is always dead. */}
+                            {working ? (
+                                <button
+                                    type="button"
+                                    onClick={() => void stop()}
+                                    aria-label="Stop the builder"
+                                    title="Stop"
+                                    className={cn(
+                                        'mb-1.5 mr-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md',
+                                        'border border-border-strong bg-surface text-text',
+                                        'transition-colors hover:border-text-faint hover:bg-surface-2',
+                                        focusRing,
+                                    )}
+                                >
+                                    <Square size={12} className="fill-current" aria-hidden />
+                                </button>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={submit}
+                                    disabled={(!input.trim() && !attachments.images.length) || streaming}
+                                    aria-label={state.pending ? 'Send your answer' : 'Send'}
+                                    className={cn(
+                                        'mb-1.5 mr-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-accent-fg',
+                                        'transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40',
+                                        focusRing,
+                                    )}
+                                >
+                                    {/* Only until the run has an id — after that
+                                        this button is Stop. */}
+                                    {streaming ? <Spinner size={16} /> : <Send size={15} aria-hidden />}
+                                </button>
+                            )}
                         </div>
                     </div>
 

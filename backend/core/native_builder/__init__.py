@@ -9,6 +9,7 @@ The "See how I'm built" modal draws `orchestration.json` on a read-only canvas
 what the customer sees: give a new step a place of its own.
 """
 from .seed import (
+    BUILDER_RUN_PREFIX,
     NATIVE_BUILDER_AGENT_ID,
     NATIVE_BUILDER_ORCH_ID,
     SYSTEM_MARKER,
@@ -23,6 +24,7 @@ __all__ = [
     "bundle_version",
     "NATIVE_BUILDER_ORCH_ID",
     "NATIVE_BUILDER_AGENT_ID",
+    "BUILDER_RUN_PREFIX",
     "SYSTEM_MARKER",
     "STEP_TYPE_CHEATSHEET",
 ]

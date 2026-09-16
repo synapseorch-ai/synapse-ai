@@ -24,8 +24,18 @@ from pydantic import BaseModel
 
 from core.images import checked_images
 from core.models_orchestration import Orchestration
-from core.native_builder import NATIVE_BUILDER_ORCH_ID, bundled_definitions
+from core.native_builder import (
+    BUILDER_RUN_PREFIX,
+    NATIVE_BUILDER_ORCH_ID,
+    bundled_definitions,
+)
 from core.orchestration.engine import OrchestrationEngine
+from core.orchestration.runner import (
+    SENTINEL,
+    _active_tasks,
+    spawn_engine_run,
+    stream_engine_events,
+)
 from core.react_engine import iter_with_heartbeat
 
 router = APIRouter()
@@ -143,17 +153,23 @@ async def reject_unseeable_images(request: BuilderChatRequest) -> None:
         )
 
 
-async def run_builder_stream(request: BuilderChatRequest, server_module):
-    """Drive the builder orchestration, yielding the engine's own events."""
+MISSING_BUILDER = {
+    "type": "orchestration_error",
+    "error": f"The builder orchestration '{NATIVE_BUILDER_ORCH_ID}' is not installed.",
+}
+
+
+async def prepare_builder_run(request: BuilderChatRequest, server_module):
+    """Everything up to the first step: the run's id and the engine's generator.
+
+    Separate from the streaming so the caller can decide *where* the run is
+    spawned, and that turns out to matter — see `builder_chat`.
+    """
     from core.store.resources import get_orchestration
 
     orch_data = await get_orchestration(NATIVE_BUILDER_ORCH_ID)
     if not orch_data:
-        yield {
-            "type": "orchestration_error",
-            "error": f"The builder orchestration '{NATIVE_BUILDER_ORCH_ID}' is not installed.",
-        }
-        return
+        return None
 
     orch = Orchestration.model_validate(orch_data)
     engine = OrchestrationEngine(orch, server_module)
@@ -163,6 +179,10 @@ async def run_builder_stream(request: BuilderChatRequest, server_module):
     # model name, none of it fine for up to 20 MB of image. `global_variables`
     # travels the same way for the same reason.
     engine.images = list(request.images or [])
+
+    # Minted here rather than at the `engine.run` call: the pump is keyed on it,
+    # and so is everything downstream that has to recognise a builder run.
+    run_id = f"{BUILDER_RUN_PREFIX}{uuid.uuid4().hex[:12]}"
 
     initial_state = {
         "user_message": request.message,
@@ -179,26 +199,22 @@ async def run_builder_stream(request: BuilderChatRequest, server_module):
         OrchestrationEngine.MODEL_OVERRIDE_KEY: await _selected_model(request.model),
     }
 
-    async for event in engine.run(
+    return run_id, engine.run(
         initial_input=request.message,
-        run_id=f"builder_{uuid.uuid4().hex[:12]}",
+        run_id=run_id,
         session_id=_session_id(request.client_session_id),
         initial_state=initial_state,
-    ):
-        if not _is_internal(event.get("type", "")):
-            yield event
+    )
 
 
-async def run_builder_resume_stream(run_id: str, human_response: dict, server_module,
-                                    images: list[str] | None = None):
-    """Resume a paused builder run, yielding the engine's own events.
-
-    This used to be a hand-copied near-duplicate of `OrchestrationEngine.resume`
-    that had drifted: it never called `_complete_human_step`, so the approval
-    stayed open in the run's history, and it re-applied the model itself
-    because there was nowhere to carry it. Both are the engine's job now.
-    """
-    async for event in OrchestrationEngine.resume(run_id, human_response, server_module, images):
+async def run_builder_stream(request: BuilderChatRequest, server_module):
+    """The run as a generator, for the chat page's adapter below."""
+    prepared = await prepare_builder_run(request, server_module)
+    if prepared is None:
+        yield dict(MISSING_BUILDER)
+        return
+    run_id, agen = prepared
+    async for event in stream_engine_events(agen, run_id):
         if not _is_internal(event.get("type", "")):
             yield event
 
@@ -232,20 +248,71 @@ def _stream(source) -> StreamingResponse:
     )
 
 
+async def _queue_events(queue):
+    """The pump's queue as the panel's events."""
+    while True:
+        event = await queue.get()
+        if event is SENTINEL:
+            return
+        if not _is_internal(event.get("type", "")):
+            yield event
+
+
+def _one(event: dict) -> StreamingResponse:
+    async def single():
+        yield event
+    return _stream(single())
+
+
+def _refuse_if_active(run_id: str) -> None:
+    """Two pumps for one run would interleave its journal and duplicate its
+    work — the same guard the other resume routes carry."""
+    active = _active_tasks.get(run_id)
+    if active is not None and not active.done():
+        raise HTTPException(status_code=409, detail="Run is already active")
+
+
 @router.post("/api/builder/chat")
 async def builder_chat(request: BuilderChatRequest, http_request: Request):
+    """Start a build and stream it.
+
+    The run is spawned **here**, in the handler, and not inside the response —
+    which is how every other orchestration entry point does it, and the
+    difference is not cosmetic. A task created inside the response body
+    inherits `BaseHTTPMiddleware`'s cancel scope, and that scope is cancelled
+    the moment the browser goes away: measured on a real build, the detached
+    run stalled where it stood with its database connection terminated under
+    it, while the same build spawned from a handler ran on to its question.
+    """
     await reject_unseeable_images(request)
-    return _stream(run_builder_stream(request, http_request.app.state.server_module))
+    prepared = await prepare_builder_run(request, http_request.app.state.server_module)
+    if prepared is None:
+        return _one(dict(MISSING_BUILDER))
+    run_id, agen = prepared
+    _task, queue = spawn_engine_run(agen, run_id)
+    return _stream(_queue_events(queue))
 
 
 @router.post("/api/builder/resume")
 async def builder_resume(request: BuilderResumeRequest, http_request: Request):
-    """Resume a paused builder run after the user answers."""
-    return _stream(
-        run_builder_resume_stream(
-            request.run_id, request.response, http_request.app.state.server_module, request.images
-        )
+    """Resume a paused builder run after the user answers.
+
+    `OrchestrationEngine.resume` directly, and spawned here for the same reason
+    `builder_chat` is. There used to be a hand-copied near-duplicate of the
+    engine's resume in this module, and it had drifted: it never called
+    `_complete_human_step`, so the approval stayed open in the run's history,
+    and it re-applied the model itself because there was nowhere to carry it.
+    Both are the engine's job.
+    """
+    _refuse_if_active(request.run_id)
+    _task, queue = spawn_engine_run(
+        OrchestrationEngine.resume(
+            request.run_id, request.response,
+            http_request.app.state.server_module, request.images,
+        ),
+        request.run_id,
     )
+    return _stream(_queue_events(queue))
 
 
 async def run_builder_stream_compat(request, server_module):

@@ -30,6 +30,12 @@ NATIVE_BUILDER_AGENT_ID = "agent_native_builder"
 #: The value of the `system` marker on every bundled definition.
 SYSTEM_MARKER = "native_builder"
 
+#: Every builder run's id begins with this. It is what tells the rest of the
+#: product that a run belongs to the builder panel — the run id and not the
+#: orchestration id, because a resumed run emits no `orchestration_start` and
+#: so never says which orchestration it is.
+BUILDER_RUN_PREFIX = "builder_"
+
 # Agent IDs that were shipped by earlier versions of the native builder and
 # should be purged on startup. Kept here so stale entries get cleaned up from
 # the store when users upgrade.

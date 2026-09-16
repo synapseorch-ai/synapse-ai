@@ -39,6 +39,13 @@ export const RESOURCE_SAVED_EVENT = 'synapse-resource-saved';
  */
 export const EXIT_MS = 200;
 
+/**
+ * How long Stop waits for the run's own cancel event before it stops waiting.
+ * The run ends at its next step boundary, which is immediate unless a provider
+ * call is holding it — and that is exactly the case Stop exists for.
+ */
+const STOP_GRACE_MS = 5000;
+
 const WELCOME: BuilderMessage = {
     role: 'assistant',
     kind: 'text',
@@ -76,6 +83,11 @@ interface BuilderContextValue {
     state: BuilderState;
     streaming: boolean;
     send: (text: string, images?: string[]) => Promise<void>;
+    /**
+     * End the attached run — the one being built, or the one parked on a
+     * question. Both are the same POST; only who reports it back differs.
+     */
+    stop: () => Promise<void>;
     newConversation: () => void;
     providers: Record<string, ProviderModels>;
     /**
@@ -129,6 +141,14 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         return clientSessionId.current;
     }, []);
     const abortRef = useRef<AbortController | null>(null);
+    /**
+     * The run and the open question, readable from callbacks that must not
+     * re-create themselves every time either changes.
+     */
+    const runIdRef = useRef<string | null>(null);
+    const pendingRef = useRef<BuilderState['pending']>(null);
+    /** Set by `stop`, so an aborted stream reads as stopped rather than as a fault. */
+    const stopRequested = useRef(false);
     //: The pending unmount at the end of the close transition, so `open` can cancel it.
     const exitTimer = useRef<number | null>(null);
 
@@ -187,12 +207,32 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         }, EXIT_MS);
     }, []);
 
+    useEffect(() => {
+        runIdRef.current = state.runId;
+        pendingRef.current = state.pending;
+    }, [state.runId, state.pending]);
+
+    /** Ask the server to end a run. The POST is the whole of it. */
+    const cancelRun = useCallback(async (runId: string) => {
+        const response = await fetch(
+            `/api/orchestrations/runs/${encodeURIComponent(runId)}/cancel`,
+            { method: 'POST' },
+        );
+        if (!response.ok) throw new Error(`The run could not be stopped (${response.status}).`);
+    }, []);
+
     const newConversation = useCallback(() => {
+        // A run parked on a question has nothing else to end it: walking away
+        // leaves it paused for good. A run still *working* is left alone —
+        // stopping it mid-build could strand half of what it was writing, and
+        // the run is detached now, so abandoning its stream does not kill it.
+        const parked = pendingRef.current?.runId;
+        if (parked) void cancelRun(parked).catch(() => undefined);
         abortRef.current?.abort();
         clientSessionId.current = newSessionId();
         setState(emptyBuilderState([WELCOME]));
         setStreaming(false);
-    }, []);
+    }, [cancelRun]);
 
     const announce = useCallback((saved: SavedResource) => {
         window.dispatchEvent(new CustomEvent(RESOURCE_SAVED_EVENT, { detail: saved }));
@@ -290,7 +330,19 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 if (!response.ok) throw new Error(`The builder could not be reached (${response.status}).`);
                 await consume(response);
             } catch (error) {
-                if ((error as Error)?.name !== 'AbortError') {
+                const aborted = (error as Error)?.name === 'AbortError';
+                // Stop gave up waiting for the run's own cancel event. Say so
+                // here, because nothing else will now.
+                if (aborted && stopRequested.current) {
+                    setState((prev) => ({
+                        ...prev,
+                        status: null, pending: null, done: true, error: null,
+                        messages: [
+                            ...prev.messages,
+                            { role: 'assistant', content: 'Stopped.', kind: 'text', key: `stopped-${prev.messages.length}` },
+                        ],
+                    }));
+                } else if (!aborted) {
                     const message = (error as Error)?.message ?? 'Something went wrong.';
                     setState((prev) => ({
                         ...prev,
@@ -304,10 +356,67 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
             } finally {
                 setStreaming(false);
                 abortRef.current = null;
+                stopRequested.current = false;
             }
         },
         [consume, conversationId, sessionModel, state.messages, state.pending, streaming],
     );
+
+    /**
+     * Stop the attached run.
+     *
+     * The POST is what ends it; nothing is aborted first, because cutting the
+     * stream would drop the very event that says what happened. A run being
+     * built is followed by an open stream, so the engine's own cancel arrives
+     * on it and the reducer renders "Stopped." — with the timer below as the
+     * backstop for a run wedged inside a provider call.
+     *
+     * A run parked on a question has **no** open stream: this product ends a
+     * run's stream at the pause rather than holding it (which is why the
+     * composer works here and had to be fixed in the commercial edition). So
+     * nothing will report that cancel, and this says it itself.
+     */
+    const stop = useCallback(async () => {
+        const parked = pendingRef.current;
+        const runId = parked?.runId ?? runIdRef.current;
+        if (!runId) return;
+
+        const following = abortRef.current;
+        stopRequested.current = true;
+        setState((prev) => ({ ...prev, status: 'Stopping…' }));
+        let ended = true;
+        try {
+            await cancelRun(runId);
+        } catch {
+            // Already finished, or unreachable. A run being followed still has
+            // the timer below; a parked one is reported as it went.
+            ended = false;
+        }
+
+        if (!following) {
+            stopRequested.current = false;
+            setState((prev) => ({
+                ...prev,
+                status: null,
+                // The question stays open when the run did: it is still the
+                // one thing this conversation can do.
+                ...(ended ? { pending: null, done: true, error: null } : {}),
+                messages: [
+                    ...prev.messages,
+                    {
+                        role: 'assistant',
+                        content: ended ? 'Stopped.' : '**The run could not be stopped.**',
+                        kind: 'text',
+                        key: `stopped-${prev.messages.length}`,
+                    },
+                ],
+            }));
+            return;
+        }
+        window.setTimeout(() => {
+            if (abortRef.current === following) following.abort();
+        }, STOP_GRACE_MS);
+    }, [cancelRun]);
 
     const saveBuilderModel = useCallback(async (model: string) => {
         const current = await (await fetch('/api/settings')).json();
@@ -329,10 +438,10 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
 
     const value = useMemo(
         () => ({
-            isOpen, entered, open, close, state, streaming, send, newConversation,
+            isOpen, entered, open, close, state, streaming, send, stop, newConversation,
             providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
         }),
-        [isOpen, entered, open, close, state, streaming, send, newConversation,
+        [isOpen, entered, open, close, state, streaming, send, stop, newConversation,
          providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel],
     );
 

@@ -26,6 +26,8 @@ import json
 import time
 from pathlib import Path
 
+from core.native_builder import BUILDER_RUN_PREFIX
+
 #: Blob key. A 200-item ring already rewritten whole on every publish, so it
 #: maps onto put() directly — there is nothing append-shaped about it.
 NOTIFICATIONS_KEY = "notifications.json"
@@ -107,6 +109,13 @@ class NotificationHub:
 
     # ── engine event observer (runner pump) ──────────────────────────────
     async def observe_run_event(self, run_id: str, event: dict):
+        # The AI builder is driven by the same pump as every other run, so its
+        # events arrive here — and none of them is news. The panel shows the
+        # question in the conversation the person is already reading; a bell
+        # item and a toast would say it twice, and the toast lands in the one
+        # corner that already covers a parked run's Answer control.
+        if run_id.startswith(BUILDER_RUN_PREFIX):
+            return
         etype = event.get("type", "")
         if etype == "orchestration_start":
             self._orch_names[run_id] = (

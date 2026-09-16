@@ -234,3 +234,43 @@ class TestEndpoints:
         assert '"title": "fresh"' in chunk
         assert chunk.startswith("id: 2\n")
         await agen.aclose()
+
+
+class TestTheBuilderIsNotAnnounced:
+    """A builder run is driven by the same pump as every other run, so the hub
+    sees its events — and must say nothing about them.
+
+    The panel shows the builder's question in the conversation the person is
+    already looking at. A bell item and a toast for every clarifying question
+    would duplicate that, and the toast lands in the one corner that already
+    covers a parked run's Answer control.
+    """
+
+    async def test_a_builder_run_raises_nothing(self, hub):
+        from core.native_builder import BUILDER_RUN_PREFIX
+
+        run = f"{BUILDER_RUN_PREFIX}9f2c1a"
+        await hub.observe_run_event(run, {"type": "orchestration_start",
+                                          "orchestration_name": "Synapse AI Builder"})
+        await hub.observe_run_event(run, {"type": "human_input_required",
+                                          "prompt": "Which orchestration?"})
+        await hub.observe_run_event(run, {"type": "orchestration_complete",
+                                          "status": "completed"})
+        assert hub.list() == []
+
+    async def test_a_resumed_builder_run_raises_nothing(self, hub):
+        """A resume emits no `orchestration_start`, which is why the run id and
+        not the orchestration id is what this is keyed on."""
+        from core.native_builder import BUILDER_RUN_PREFIX
+
+        run = f"{BUILDER_RUN_PREFIX}9f2c1a"
+        await hub.observe_run_event(run, {"type": "step_start", "orch_step_id": "s1"})
+        await hub.observe_run_event(run, {"type": "orchestration_error", "error": "Cancelled"})
+        assert hub.list() == []
+
+    async def test_every_other_run_is_still_announced(self, hub):
+        await hub.observe_run_event("run_x", {"type": "orchestration_start",
+                                              "orchestration_name": "Nightly brief"})
+        await hub.observe_run_event("run_x", {"type": "orchestration_complete",
+                                              "status": "completed"})
+        assert [i["kind"] for i in hub.list()] == ["run_completed"]

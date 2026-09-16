@@ -7,8 +7,11 @@ including `resource_saved`, which is the whole point of the change.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
+import time
 
 import pytest
 
@@ -616,3 +619,189 @@ class TestTheBuilderKnowsWhatYouMean:
         assert not [e for e in after if e["type"] in ("orchestration_error", "step_error")]
         prompts = "\n".join(str(c.get("prompt_msg", "")) for c in fake_llm.calls)
         assert "{state.current_" not in prompts
+
+
+
+class TestTheRunIsDrivenByThePump:
+    """The builder's run has to be stoppable, and that is a property of how it
+    is driven, not of the panel.
+
+    `core/orchestration/runner.py` says every orchestration entry point goes
+    through it; the builder was the one that did not. It iterated
+    `engine.run(...)` inside the StreamingResponse, so the run never reached
+    `_active_tasks`, `POST /api/orchestrations/runs/{id}/cancel` had no task to
+    cancel, its events were never journalled, and the response task dying —
+    a reload, a closed tab — took the run with it.
+
+    Read `_active_tasks`, never the stream, to find a run that is still going:
+    httpx's ASGITransport buffers a response body whole, so not one frame is
+    readable until the run has ended. The frames are asserted afterwards.
+    """
+
+    @pytest.fixture
+    def gated_llm(self, monkeypatch):
+        """An LLM call that parks until the test lets it go.
+
+        Cancelling a run that has already finished proves nothing, and the fake
+        LLM answers instantly, so the window is held open deliberately rather
+        than raced for.
+        """
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def gate(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return "create"
+
+        import core.llm_providers as _llm
+        import core.react_engine as _re
+        monkeypatch.setattr(_llm, "generate_response", gate, raising=False)
+        monkeypatch.setattr(_re, "llm_generate_response", gate, raising=False)
+        return started, release
+
+    @staticmethod
+    async def _until(predicate, timeout: float = 15.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            await asyncio.sleep(0.02)
+        return False
+
+    @staticmethod
+    def _builder_runs() -> list[str]:
+        from core.orchestration.runner import _active_tasks
+        return [r for r in _active_tasks if r.startswith("builder_")]
+
+    async def _mid_step(self, client, started, events: list[dict]) -> asyncio.Task:
+        """Start a builder run and return once it is inside its first model call."""
+        async def consume():
+            async with client.stream("POST", "/api/builder/chat",
+                                     json={"message": "build something"}) as response:
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        events.append(json.loads(line[6:]))
+
+        reader = asyncio.create_task(consume())
+        assert await self._until(started.is_set), "the run never reached a model call"
+        return reader
+
+    async def test_a_running_builder_is_registered_and_cancellable(
+        self, client, builder, gated_llm
+    ):
+        started, release = gated_llm
+        events: list[dict] = []
+        reader = await self._mid_step(client, started, events)
+        try:
+            running = self._builder_runs()
+            assert running, (
+                "a builder run is inside a model call and the pump's registry is "
+                "empty — POST /api/orchestrations/runs/{id}/cancel has no task to "
+                "cancel, so the panel has nothing to stop"
+            )
+            run_id = running[0]
+
+            cancelled = await client.post(f"/api/orchestrations/runs/{run_id}/cancel")
+            assert cancelled.status_code == 200
+            await asyncio.wait_for(reader, timeout=15)
+        finally:
+            release.set()
+            if not reader.done():
+                reader.cancel()
+
+        assert any(
+            e["type"] == "orchestration_error" and e.get("error") == "Cancelled"
+            for e in events
+        ), [e["type"] for e in events]
+        assert not self._builder_runs(), "the registry still holds a finished run"
+
+    async def test_the_run_outlives_the_browser(self, client, builder, gated_llm):
+        """A reload must not kill a build: the run finishes and stays resumable.
+
+        The task being detached is not enough on its own. Spawn it inside the
+        response body and it inherits `BaseHTTPMiddleware`'s cancel scope, and
+        a real build then stalled where it stood the moment the browser went
+        away — its database connection terminated under it — while reporting
+        `running` for ever. Spawning from the handler is what this pins.
+        """
+        from core.orchestration.runner import _active_tasks
+        from core.orchestration.state import SharedState
+
+        started, release = gated_llm
+        events: list[dict] = []
+        reader = await self._mid_step(client, started, events)
+        running = self._builder_runs()
+        assert running, "the run was never registered, so nothing can outlive anything"
+        run_id = running[0]
+
+        reader.cancel()                     # the browser goes away
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await reader
+        await asyncio.sleep(0.05)
+
+        task = _active_tasks.get(run_id)
+        assert task is not None and not task.done(), (
+            f"'{run_id}' died with the response it was streaming to"
+        )
+
+        release.set()                       # and it carries on without a reader
+        assert await self._until(lambda: run_id not in _active_tasks, timeout=30), (
+            f"'{run_id}' never finished once its reader had gone"
+        )
+        restored = await SharedState.restore(run_id)
+        assert restored.run.status in ("paused", "completed"), restored.run.status
+        assert restored.run.step_history, "the run recorded no completed step"
+
+    async def test_two_pumps_for_one_run_are_refused(self, client, builder, gated_llm):
+        """Two pumps interleave one run's journal and duplicate its work — the
+        guard the other resume routes already carry."""
+        started, release = gated_llm
+        events: list[dict] = []
+        reader = await self._mid_step(client, started, events)
+        try:
+            running = self._builder_runs()
+            assert running, "the run was never registered"
+            second = await client.post(
+                "/api/builder/resume",
+                json={"run_id": running[0], "response": {"answer": "x"}},
+            )
+            assert second.status_code == 409, second.status_code
+        finally:
+            release.set()
+            if not reader.done():
+                reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await reader
+
+    def test_the_route_spawns_the_run_itself(self):
+        """The run is spawned in the handler, not inside the response body.
+
+        Read as a source guard, not as behaviour, because the behaviour cannot
+        be reached from here: httpx's ASGITransport does not reproduce
+        Starlette's `BaseHTTPMiddleware` cancelling a request's scope when the
+        browser disconnects, so both spellings pass every test in this file.
+        Against a real server they differ completely — a run spawned inside the
+        response body inherits that scope and stalls where it stands, database
+        connection terminated under it, reporting `running` for ever.
+        """
+        import ast
+        import inspect
+
+        from core.routes import builder as module
+
+        tree = ast.parse(inspect.getsource(module))
+        spawned = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef)
+            and any(
+                isinstance(call.func, ast.Name) and call.func.id == "spawn_engine_run"
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call)
+            )
+        }
+        for handler in ("builder_chat", "builder_resume"):
+            assert handler in spawned, (
+                f"{handler} does not call spawn_engine_run itself — if the run is "
+                "spawned from inside the streaming response it dies with the browser"
+            )

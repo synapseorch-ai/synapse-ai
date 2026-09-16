@@ -192,6 +192,169 @@ async def check_runbar(browser) -> str:
         drop_fixture(oid)
 
 
+# ── the AI builder ───────────────────────────────────────────────────────────
+
+#: A builder stream, driven from the test rather than from the engine.
+#:
+#: `page.route` cannot help here: it fulfils a response whole, and what has to
+#: be held is a stream that stays OPEN — that is the entire state the panel
+#: gets wrong. So `fetch` is wrapped in the page, `/api/builder/chat` is
+#: answered with a `ReadableStream` this script feeds frame by frame, and every
+#: other call is recorded and passed through. Model-free, instant, free, and it
+#: exercises the real panel, the real reducer and the real network calls.
+BUILDER_STUB = r"""
+window.__calls = [];
+window.__stub = {};
+const _fetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  if (url.includes('/api/builder/chat')) {
+    const body = new ReadableStream({
+      start(c) {
+        window.__stub.push = (event) =>
+          c.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+        window.__stub.close = () => { try { c.close(); } catch (e) {} };
+      },
+    });
+    return Promise.resolve(new Response(body, {
+      status: 200, headers: {'Content-Type': 'text/event-stream'},
+    }));
+  }
+  window.__calls.push({url: url, method: method});
+  return _fetch(input, init);
+};
+"""
+
+PANEL = """() => {
+  const panel = document.querySelector('aside[aria-label="AI builder"]');
+  if (!panel) return {panel: false};
+  const ta = panel.querySelector('textarea');
+  const named = [...panel.querySelectorAll('button')].map((b) => ({
+    label: (b.getAttribute('aria-label') || b.innerText || '').trim().slice(0, 40),
+    disabled: b.disabled,
+  }));
+  return {
+    panel: true,
+    textareaDisabled: ta ? ta.disabled : null,
+    stop: named.filter((b) => /stop/i.test(b.label)).map((b) => b.label),
+    // `innerText` applies `text-transform`, so the label arrives uppercased.
+    parked: /needs your answer/i.test(panel.innerText),
+    buttons: named.map((b) => b.label),
+  };
+}"""
+
+RUN_ID = "builder_uismoke00"
+
+
+async def _open_builder(browser, width=WIDE):
+    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+    await ctx.add_init_script(BUILDER_STUB)
+    page = await ctx.new_page()
+    await page.goto(APP, wait_until="domcontentloaded")
+    await asyncio.sleep(SETTLE + 1.0)
+    await page.get_by_role("button", name="Open the AI builder").click()
+    await asyncio.sleep(0.5)
+    await page.locator('aside[aria-label="AI builder"] textarea').fill("build me something")
+    # Send is disabled until React has seen the change event `fill` dispatches.
+    await page.get_by_role("button", name="Send", exact=True).wait_for()
+    for _ in range(20):
+        if not await page.get_by_role("button", name="Send", exact=True).is_disabled():
+            break
+        await asyncio.sleep(0.1)
+    await page.get_by_role("button", name="Send", exact=True).click()
+    # The stream's controller exists only once the panel has actually called
+    # fetch; pushing a frame before that is a race the panel always wins.
+    for _ in range(40):
+        if await page.evaluate("() => typeof (window.__stub || {}).push === 'function'"):
+            return ctx, page
+        await asyncio.sleep(0.1)
+    raise AssertionError("the panel never sent the message")
+
+
+async def _settle(page, predicate_js: str, tries: int = 40) -> dict:
+    """Poll the panel until it satisfies `predicate_js`, then return its state."""
+    state = {}
+    for _ in range(tries):
+        await asyncio.sleep(0.25)
+        state = await page.evaluate(PANEL)
+        if await page.evaluate(f"(s) => ({predicate_js})(s)", state):
+            return state
+    return state
+
+
+@check
+async def check_builder(browser) -> str:
+    """A build in flight can be stopped; a parked one can be answered or stopped.
+
+    Two states, one panel. While a run works the composer is closed, so the
+    only way out has to be a control — there was none, and a build runs for
+    the best part of a minute. While a run is parked the composer opens (the
+    stream ends at the pause here, unlike the commercial edition), and the
+    other way out belongs on the question itself.
+    """
+    # ── a run in flight ──────────────────────────────────────────────────────
+    ctx, page = await _open_builder(browser)
+    try:
+        await page.evaluate(
+            "(id) => window.__stub.push({type: 'orchestration_start', run_id: id,"
+            " orchestration_id: 'orch_native_builder'})", RUN_ID)
+        await page.evaluate(
+            "() => window.__stub.push({type: 'step_start', orch_step_id: 's1',"
+            " step_name: 'Understand the request'})")
+        state = await _settle(page, "(s) => s.stop.length > 0")
+        if not state.get("stop"):
+            raise AssertionError(
+                "a builder run is streaming and the panel offers no way to stop it "
+                f"(buttons: {state.get('buttons')}); the composer is "
+                f"disabled={state.get('textareaDisabled')}, so there is no way out at all"
+            )
+        await page.get_by_role("button", name=state["stop"][0]).click()
+        cancelled = await _settle(
+            page, f"() => window.__calls.some(c => c.method === 'POST' "
+                  f"&& c.url.includes('/runs/{RUN_ID}/cancel'))")
+        calls = await page.evaluate("() => window.__calls")
+        if not [c for c in calls if c["method"] == "POST" and f"/runs/{RUN_ID}/cancel" in c["url"]]:
+            raise AssertionError(
+                f"Stop was pressed and nothing cancelled the run; calls: {calls}")
+    finally:
+        await ctx.close()
+
+    # ── a run parked on its question ─────────────────────────────────────────
+    ctx, page = await _open_builder(browser)
+    try:
+        await page.evaluate(
+            "(id) => window.__stub.push({type: 'orchestration_start', run_id: id})", RUN_ID)
+        await page.evaluate(
+            "(id) => window.__stub.push({type: 'human_input_required', run_id: id,"
+            " orch_step_id: 's9', prompt: 'Which orchestration did you mean?',"
+            " fields: [{name: 'answer'}]})", RUN_ID)
+        await page.evaluate("() => window.__stub.close()")
+        state = await _settle(page, "(s) => s.parked && s.textareaDisabled === false")
+        if not state.get("parked"):
+            raise AssertionError("the question never rendered")
+        if state.get("textareaDisabled") is not False:
+            raise AssertionError(
+                "the run is parked on its question and the composer is disabled — "
+                "the answer it is asking for cannot be typed")
+        if not state.get("stop"):
+            raise AssertionError(
+                "a run parked on a question offers no way to end it: answering is "
+                f"the only exit and walking away leaves it paused forever "
+                f"(buttons: {state.get('buttons')})")
+        await page.get_by_role("button", name=state["stop"][0]).click()
+        await _settle(page, f"() => window.__calls.some(c => c.method === 'POST' "
+                            f"&& c.url.includes('/runs/{RUN_ID}/cancel'))")
+        calls = await page.evaluate("() => window.__calls")
+        if not [c for c in calls if c["method"] == "POST" and f"/runs/{RUN_ID}/cancel" in c["url"]]:
+            raise AssertionError(
+                f"the parked run was not cancelled when asked; calls: {calls}")
+    finally:
+        await ctx.close()
+
+    return "a build can be stopped in flight and while it waits"
+
+
 # ── runner ───────────────────────────────────────────────────────────────────
 
 async def main() -> int:
