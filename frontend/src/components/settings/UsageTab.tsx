@@ -7,6 +7,7 @@ import {
     AlertTriangle, CheckCircle2, Info, Plus, Save, X, Edit2, Check
 } from 'lucide-react';
 import { Select } from '@/components/ui';
+import { usd } from '@/lib/money';
 
 // -------------------------------------------------------------
 // Types
@@ -115,12 +116,6 @@ const PROVIDER_META: Record<Provider, { label: string; color: string; dot: strin
 // -------------------------------------------------------------
 // Helpers
 // -------------------------------------------------------------
-function fmt$(n: number) {
-    if (n === 0) return '$0.00';
-    if (n < 0.000001) return '<$0.000001';
-    if (n < 0.01) return `$${n.toFixed(6)}`;
-    return `$${n.toFixed(4)}`;
-}
 function fmtK(n: number) {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -190,7 +185,7 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
                 <StatCard
                     icon={DollarSign}
                     label="Saved"
-                    value={fmt$(summary.total_estimated_savings)}
+                    value={usd(summary.total_estimated_savings)}
                     sub="vs. full-rate input"
                     color="#10b981"
                 />
@@ -235,7 +230,7 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
                                 <span className="text-zinc-300 truncate">{m.model}</span>
                                 <span className="text-right text-cyan-400 font-mono">{fmtK(m.cache_read_tokens)}</span>
                                 <span className="text-right text-amber-400 font-mono">{m.response_cache_hits}/{m.requests}</span>
-                                <span className="text-right text-emerald-400 font-mono">{fmt$(m.estimated_savings)}</span>
+                                <span className="text-right text-emerald-400 font-mono">{usd(m.estimated_savings)}</span>
                             </div>
                         ))}
                     </div>
@@ -258,7 +253,7 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
                             <div key={r.run_id} className="grid grid-cols-[1fr_90px_120px] gap-2 px-4 py-2 text-xs hover:bg-row-hover border-b border-border last:border-0 rounded-md">
                                 <span className="text-zinc-400 font-mono truncate">{r.run_id}</span>
                                 <span className="text-right text-cyan-400 font-mono">{fmtK(r.cache_read_tokens)}</span>
-                                <span className="text-right text-emerald-400 font-mono">{fmt$(r.estimated_savings)}</span>
+                                <span className="text-right text-emerald-400 font-mono">{usd(r.estimated_savings)}</span>
                             </div>
                         ))}
                     </div>
@@ -307,7 +302,7 @@ function ModelBar({ stat, maxCost }: { stat: ModelStat; maxCost: number }) {
                 <div><p className="text-xs text-zinc-500">Reqs</p><p className="text-sm font-semibold text-white">{stat.requests}</p></div>
                 <div><p className="text-xs text-zinc-500">Tokens</p><p className="text-sm font-semibold text-white">{fmtK(stat.total_tokens)}</p></div>
                 <div className="min-w-[70px]"><p className="text-xs text-zinc-500">Cost</p>
-                    <p className="text-sm font-semibold" style={{ color: meta.dot }}>{fmt$(stat.estimated_cost)}</p></div>
+                    <p className="text-sm font-semibold" style={{ color: meta.dot }}>{usd(stat.estimated_cost)}</p></div>
             </div>
         </div>
     );
@@ -392,7 +387,7 @@ function SessionRow({ s }: { s: SessionStat }) {
                     <div className="hidden lg:block"><p className="text-xs text-zinc-500">Context</p><p className="font-semibold text-white">{fmtKB(s.context_chars)}</p></div>
                     <div><p className="text-xs text-zinc-500">Tokens</p><p className="font-semibold text-white">{fmtK(s.total_tokens)}</p></div>
                     <div className="min-w-[70px]"><p className="text-xs text-zinc-500">Cost</p>
-                        <p className="font-semibold text-emerald-400">{fmt$(s.estimated_cost)}</p></div>
+                        <p className="font-semibold text-emerald-400">{usd(s.estimated_cost)}</p></div>
                 </div>
                 {open ? <ChevronUp className="w-4 h-4 text-zinc-500 shrink-0" /> : <ChevronDown className="w-4 h-4 text-zinc-500 shrink-0" />}
             </button>
@@ -515,7 +510,7 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                                                 </span>
                                             </td>
                                             <td style={{ background: `${dividerColor}10` }} className="py-2 pr-3 text-right text-xs tabular-nums font-medium text-emerald-400">
-                                                {agentSaved > 0 ? fmt$(agentSaved) : ''}
+                                                {agentSaved > 0 ? usd(agentSaved) : ''}
                                             </td>
                                             <td style={{ background: `${dividerColor}10`, color: `${dividerColor}bb` }} className="py-2 pr-3 text-right text-xs tabular-nums font-medium">
                                                 {callCount} call{callCount !== 1 ? 's' : ''}
@@ -552,13 +547,13 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                                                     className="text-emerald-400 font-medium"
                                                     title={cacheRead > 0 ? `${fmtK(cacheRead)} cached tokens reused` : undefined}
                                                 >
-                                                    {fmt$(savings)}
+                                                    {usd(savings)}
                                                 </span>
                                             ) : (
                                                 <span className="text-zinc-700">--</span>
                                             )}
                                         </td>
-                                        <td className="py-2.5 pr-3 text-right font-medium tabular-nums" style={{ color: metaDot }}>{fmt$(log.estimated_cost)}</td>
+                                        <td className="py-2.5 pr-3 text-right font-medium tabular-nums" style={{ color: metaDot }}>{usd(log.estimated_cost)}</td>
                                     </tr>
                                 </React.Fragment>
                             );
@@ -1017,7 +1012,7 @@ export function UsageTab() {
                     <>
                         {/* Summary Cards */}
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <StatCard icon={DollarSign} label="Total Cost" value={fmt$(summary.total_cost)} sub="estimated USD" color="#10b981" />
+                            <StatCard icon={DollarSign} label="Total Cost" value={usd(summary.total_cost)} sub="estimated USD" color="#10b981" />
                             <StatCard icon={TrendingUp} label="Total Requests" value={summary.total_requests.toLocaleString()} sub="LLM calls" color="#3b82f6" />
                             <StatCard icon={Zap} label="Input Tokens" value={fmtK(summary.total_input_tokens)} sub="prompt tokens" color="#f59e0b" />
                             <StatCard icon={Cpu} label="Output Tokens" value={fmtK(summary.total_output_tokens)} sub="completion tokens" color="#8b5cf6" />

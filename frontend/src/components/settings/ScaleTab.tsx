@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 
 import { Button, Field, Input, Label, Spinner } from '@/components/ui';
+import { usd } from '@/lib/money';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -127,13 +128,6 @@ function formatDuration(startedAt: string | null, endedAt: string | null): strin
     if (secs < 60) return `${secs}s`;
     const mins = Math.floor(secs / 60);
     return `${mins}m ${secs % 60}s`;
-}
-
-function formatCost(usd: number | null): string {
-    if (usd == null) return '—';
-    if (usd === 0) return '$0';
-    if (usd < 0.0001) return '<$0.0001';
-    return `$${usd.toFixed(4)}`;
 }
 
 function copyToClipboard(text: string) {
@@ -793,8 +787,8 @@ export function ScaleTab() {
                 <div className="grid grid-cols-4 gap-3">
                     {[
                         { label: 'Workers Online', value: analytics?.available ? analytics.workers_online : (workers.filter(w => w.status === 'online').length || '—'), color: 'text-success' },
-                        { label: 'Avg Cost / Run', value: analytics?.available ? formatCost(analytics.avg_cost_usd) : '—', color: 'text-text' },
-                        { label: 'Cost Today', value: analytics?.available ? formatCost(analytics.total_cost_usd_today) : '—', color: 'text-text' },
+                        { label: 'Avg Cost / Run', value: analytics?.available ? usd(analytics.avg_cost_usd) : '—', color: 'text-text' },
+                        { label: 'Cost Today', value: analytics?.available ? usd(analytics.total_cost_usd_today) : '—', color: 'text-text' },
                         { label: 'Cache Hit Rate', value: analytics?.available ? `${analytics.cache_hit_rate}%` : '—', color: 'text-accent' },
                     ].map(stat => (
                         <div key={stat.label} className="border border-border p-4 text-center bg-bg rounded-md">
@@ -876,7 +870,7 @@ export function ScaleTab() {
                                     </div>
                                     <div className="flex justify-between">
                                         <span className="text-text-faint">Cost</span>
-                                        <span className="text-text">{formatCost(searchRunDetail.total_cost_usd)}</span>
+                                        <span className="text-text">{usd(searchRunDetail.total_cost_usd)}</span>
                                     </div>
                                     <div className="flex justify-between">
                                         <span className="text-text-faint">Tokens</span>
@@ -901,7 +895,7 @@ export function ScaleTab() {
                                     {searchRunDetail.estimated_savings_usd != null && searchRunDetail.estimated_savings_usd > 0 && (
                                         <div className="flex justify-between">
                                             <span className="text-text-faint">Cache Savings</span>
-                                            <span className="text-success">{formatCost(searchRunDetail.estimated_savings_usd)}</span>
+                                            <span className="text-success">{usd(searchRunDetail.estimated_savings_usd)}</span>
                                         </div>
                                     )}
                                 </div>
@@ -934,7 +928,7 @@ export function ScaleTab() {
                                                 </div>
                                                 <div className="flex items-center gap-3 text-2xs text-text-faint shrink-0">
                                                     <span>{formatDuration(run.started_at, run.ended_at)}</span>
-                                                    <span>{formatCost(run.total_cost_usd)}</span>
+                                                    <span>{usd(run.total_cost_usd)}</span>
                                                 </div>
                                             </div>
                                         ))}
@@ -1004,7 +998,7 @@ export function ScaleTab() {
                                                 <td className="py-2 pr-4 text-text-muted whitespace-nowrap">
                                                     {formatDuration(run.started_at, run.ended_at)}
                                                 </td>
-                                                <td className="py-2 text-text-muted">{formatCost(run.total_cost_usd)}</td>
+                                                <td className="py-2 text-text-muted">{usd(run.total_cost_usd)}</td>
                                             </tr>
                                         ))}
                                     </tbody>

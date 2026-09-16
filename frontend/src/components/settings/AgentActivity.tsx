@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Spinner } from '@/components/ui';
+import { usd } from '@/lib/money';
 import {
     ScrollText, Coins, Workflow, Clock, MessageSquare, Bot, X,
 } from 'lucide-react';
@@ -42,7 +43,6 @@ interface AgentMetrics {
 }
 
 const fmtInt = (n: number) => n.toLocaleString();
-const fmtCost = (n: number) => (n >= 0.01 || n === 0 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`);
 const fmtDate = (s?: string | null) => {
     if (!s) return '—';
     const d = new Date(s);
@@ -167,9 +167,9 @@ function MetricsTab({ agentId }: { agentId: string }) {
         { label: 'Model calls', value: fmtInt(m.calls) },
         { label: 'Tokens in', value: fmtInt(m.input_tokens) },
         { label: 'Tokens out', value: fmtInt(m.output_tokens) },
-        { label: 'Estimated cost', value: fmtCost(m.estimated_cost) },
+        { label: 'Estimated cost', value: usd(m.estimated_cost) },
         { label: 'Cache read', value: fmtInt(m.cache_read_tokens) },
-        { label: 'Cache saved', value: fmtCost(m.estimated_savings) },
+        { label: 'Cache saved', value: usd(m.estimated_savings) },
     ];
 
     return (
@@ -195,7 +195,7 @@ function MetricsTab({ agentId }: { agentId: string }) {
                         <div key={row.model} className="flex items-center justify-between gap-3 p-3">
                             <span className="text-xs text-text font-mono truncate flex-1 min-w-0">{row.model}</span>
                             <span className="text-2xs text-text-faint shrink-0 tabular-nums">
-                                {fmtInt(row.calls)} calls · {fmtInt(row.total_tokens)} tokens · {fmtCost(row.estimated_cost)}
+                                {fmtInt(row.calls)} calls · {fmtInt(row.total_tokens)} tokens · {usd(row.estimated_cost)}
                             </span>
                         </div>
                     ))}

@@ -22,6 +22,7 @@ import {
 import { Card, CardBody, EmptyState, Stat, StatusBadge, TextLink } from '@/components/ui';
 import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
 import { NOTIFICATION_EVENT } from '@/components/notifications/NotificationProvider';
+import { usdCompact } from '@/lib/money';
 
 type Run = {
     run_id: string;
@@ -40,9 +41,6 @@ type Summary = {
     total_estimated_savings?: number;
     by_model: ModelStat[];
 };
-
-const money = (n: number) =>
-    n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${n.toFixed(2)}`;
 
 const compact = (n: number) =>
     n >= 1e9 ? `${(n / 1e9).toFixed(1)}B`
@@ -161,10 +159,10 @@ export function Dashboard() {
             </Card>
 
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                <Stat icon={DollarSign} label="Total spend" value={summary ? money(summary.total_cost) : '—'} hint="all recorded LLM calls" />
+                <Stat icon={DollarSign} label="Total spend" value={summary ? usdCompact(summary.total_cost) : '—'} hint="all recorded LLM calls" />
                 <Stat icon={Activity} label="Requests" value={summary ? summary.total_requests.toLocaleString() : '—'} />
                 <Stat icon={Hash} label="Tokens" value={summary ? compact(summary.total_tokens) : '—'} />
-                <Stat icon={Coins} label="Cache saved" value={summary ? money(summary.total_estimated_savings ?? 0) : '—'} hint="vs uncached pricing" />
+                <Stat icon={Coins} label="Cache saved" value={summary ? usdCompact(summary.total_estimated_savings ?? 0) : '—'} hint="vs uncached pricing" />
             </div>
 
             <div className="grid gap-6 lg:grid-cols-2">
@@ -177,11 +175,11 @@ export function Dashboard() {
                         <CardBody>
                             <ul className="space-y-3">
                                 {models.map(m => (
-                                    <li key={m.model} title={`${m.model} — ${money(m.estimated_cost)}`}>
+                                    <li key={m.model} title={`${m.model} — ${usdCompact(m.estimated_cost)}`}>
                                         <div className="mb-1.5 flex items-baseline justify-between gap-3">
                                             <span className="min-w-0 truncate text-sm text-text-muted">{m.model}</span>
                                             <span className="shrink-0 text-sm tabular-nums text-text">
-                                                {money(m.estimated_cost)}
+                                                {usdCompact(m.estimated_cost)}
                                             </span>
                                         </div>
                                         <div className="h-2 w-full rounded-[4px] bg-surface-2">

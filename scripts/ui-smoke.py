@@ -355,6 +355,107 @@ async def check_builder(browser) -> str:
     return "a build can be stopped in flight and while it waits"
 
 
+# ── money ────────────────────────────────────────────────────────────────────
+
+#: A usage summary with real money in it, none of it a round number of cents.
+#:
+#: Served to the page instead of the backend's, so the check needs no model
+#: call, no provider key and no spend in the store, and asserts the same thing
+#: on any instance. The figures are the ones F41 was reported with
+#: (`total_cost` 0.0041545) plus a per-model row measured at 0.0003255 — both
+#: rendered `$0.00` by a `toFixed(2)`.
+USAGE_STUB = {
+    "total_cost": 0.0041545,
+    "total_input_tokens": 12000, "total_output_tokens": 3000, "total_tokens": 15000,
+    "total_requests": 7, "total_cache_read_tokens": 0, "total_cache_write_tokens": 0,
+    "total_estimated_savings": 0.0009431, "total_response_cache_hits": 0,
+    "by_model": [
+        {"model": "smoke-costly", "provider": "smoke", "requests": 4,
+         "input_tokens": 9000, "output_tokens": 2000, "total_tokens": 11000,
+         "estimated_cost": 0.0038290, "cache_read_tokens": 0, "cache_write_tokens": 0,
+         "estimated_savings": 0.0009431, "response_cache_hits": 0},
+        {"model": "smoke-tiny", "provider": "smoke", "requests": 3,
+         "input_tokens": 3000, "output_tokens": 1000, "total_tokens": 4000,
+         "estimated_cost": 0.0003255, "cache_read_tokens": 0, "cache_write_tokens": 0,
+         "estimated_savings": 0.0, "response_cache_hits": 0},
+    ],
+    "by_session": [], "by_schedule": [],
+}
+
+SERVE_USAGE = """
+window.__usage = %s;
+const _f = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  if (url.includes('/api/usage/summary')) {
+    return Promise.resolve(new Response(JSON.stringify(window.__usage), {
+      status: 200, headers: {'Content-Type': 'application/json'},
+    }));
+  }
+  return _f(input, init);
+};
+"""
+
+
+@check
+async def check_money(browser) -> str:
+    """Money that was spent is never rendered as nothing.
+
+    Home is titled "Where the workspace stands right now", and it read `$0.00`
+    against a model that had cost real money — `toFixed(2)` on anything under
+    half a cent. The Usage screen, reading the same API in the same instant,
+    showed the true figure. A reader had no way to tell "nothing was spent"
+    from "less than half a cent was spent", on the one screen whose job is to
+    say which.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(SERVE_USAGE % json.dumps(USAGE_STUB))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2.0)
+        shown = await page.evaluate(
+            r"""() => {
+              const txt = document.body.innerText;
+              const tile = (label) => {
+                const i = txt.indexOf(label);
+                if (i < 0) return null;
+                const m = txt.slice(i, i + 80).match(/\$[0-9][^\s]*/);
+                return m ? m[0] : null;
+              };
+              return {
+                total: tile('Total spend'),
+                saved: tile('Cache saved'),
+                rows: [...document.querySelectorAll('li')]
+                    .map(li => li.innerText.replace(/\n/g, ' ').trim())
+                    .filter(t => /^smoke-/.test(t)),
+              };
+            }"""
+        )
+    finally:
+        await ctx.close()
+
+    if shown["total"] is None:
+        raise AssertionError("no 'Total spend' tile on /dashboard — did the screen move?")
+    if not shown["rows"]:
+        raise AssertionError(f"the stubbed models never reached 'Spend by model': {shown}")
+
+    zeroed = []
+    if shown["total"] in ("$0.00", "$0"):
+        zeroed.append(f"Total spend shows {shown['total']} for {USAGE_STUB['total_cost']}")
+    if shown["saved"] in ("$0.00", "$0"):
+        zeroed.append(f"Cache saved shows {shown['saved']} for {USAGE_STUB['total_estimated_savings']}")
+    for row, stat in zip(shown["rows"], USAGE_STUB["by_model"]):
+        if row.endswith("$0.00") or row.endswith("$0"):
+            zeroed.append(f"{stat['model']} shows $0.00 for {stat['estimated_cost']}")
+    if zeroed:
+        raise AssertionError(
+            "money that was spent is rendered as nothing on Home — "
+            + "; ".join(zeroed)
+        )
+    return f"Home reports {shown['total']} and every model row truthfully"
+
+
 # ── runner ───────────────────────────────────────────────────────────────────
 
 async def main() -> int:
