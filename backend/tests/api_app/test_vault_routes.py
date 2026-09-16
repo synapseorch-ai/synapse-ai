@@ -165,3 +165,57 @@ class TestAnObjectStoreIsTheTenants:
     async def test_a_name_is_one_segment_here_too(self, client, store):
         assert (await _create(client, "../../x.md")).status_code == 400
         assert not [k for k in store.blobs if "x.md" in k]
+
+
+# ── (e) the engine's own directories survive the page ────────────────────────
+class TestTheEnginesOwnDirectoriesSurvive:
+    """`tool_outputs/`, `playwright/` and `compaction_archives/` are written by
+    the engine, not by a person: vaulted tool output, browser-automation output,
+    and conversation compaction archives. A recursive DELETE on one of them from
+    the Vault screen threw all of it away, because every "excluded" guard in
+    this module read an empty set and was therefore dead.
+
+    Protected from deletion and from being created by hand; deliberately still
+    browsable and readable, and the files inside them are still a person's to
+    delete one by one.
+    """
+
+    ENGINE_DIRS = ["tool_outputs", "playwright", "compaction_archives"]
+
+    @pytest.mark.parametrize("name", ENGINE_DIRS)
+    async def test_the_directory_cannot_be_deleted(self, client, name):
+        root = _vault_root()
+        (root / name).mkdir(parents=True, exist_ok=True)
+        (root / name / "keep.json").write_text('{"kept": true}')
+
+        r = await client.request("DELETE", "/api/vault/item", json={"path": name})
+
+        assert r.status_code == 403, r.text
+        assert (root / name / "keep.json").exists(), "the contents were removed anyway"
+
+    @pytest.mark.parametrize("name", ENGINE_DIRS)
+    async def test_the_name_cannot_be_taken_by_hand(self, client, name):
+        r = await client.post("/api/vault/folder", json={"path": "", "name": name})
+        assert r.status_code == 400, r.text
+
+    async def test_a_file_inside_is_still_the_persons_to_delete(self, client):
+        root = _vault_root()
+        (root / "tool_outputs").mkdir(parents=True, exist_ok=True)
+        (root / "tool_outputs" / "old.json").write_text("{}")
+
+        r = await client.request("DELETE", "/api/vault/item",
+                                 json={"path": "tool_outputs/old.json"})
+
+        assert r.status_code == 200, r.text
+        assert not (root / "tool_outputs" / "old.json").exists()
+
+    async def test_the_tree_still_shows_them(self, client):
+        root = _vault_root()
+        (root / "tool_outputs").mkdir(parents=True, exist_ok=True)
+        (root / "tool_outputs" / "seen.json").write_text("{}")
+
+        r = await client.get("/api/vault/tree")
+
+        assert r.status_code == 200, r.text
+        names = [item["name"] for item in r.json()["tree"]]
+        assert "tool_outputs" in names, "a person can no longer see what a tool saved"

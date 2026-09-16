@@ -27,7 +27,15 @@ def VAULT_USER_DIR() -> Path:
     """The current tenant's vault root, from the blob store."""
     from core.vault import _vault_root
     return _vault_root()
-_EXCLUDED = set()
+#: Directories inside the vault that the engine writes and a person does not:
+#: `tool_outputs/` is every vaulted tool result (`core/vault.py`), `playwright/`
+#: is the Browser Automation server's output (`core/server.py`), and
+#: `compaction_archives/` holds compacted conversations (`core/compaction.py`).
+#: They stay visible and readable — seeing what a tool saved is the point of the
+#: screen — but one recursive DELETE on the folder threw all of it away, so the
+#: folder itself is not a person's to remove or to re-create by hand. The files
+#: inside it still are.
+_ENGINE_OWNED = {"tool_outputs", "playwright", "compaction_archives"}
 _ALLOWED_EXTENSIONS = {".json", ".md", ".txt"}
 
 # S3 key prefix for user vault files (relative to the bucket prefix)
@@ -197,11 +205,14 @@ def _resolve(rel: str) -> Path:
     return resolved
 
 
-def _is_excluded(path: Path) -> bool:
+def _is_engine_owned_dir(path: Path) -> bool:
+    """True for `<vault>/tool_outputs` itself, not for anything inside it."""
     root = _vault_root().resolve()
-    rel = path.resolve().relative_to(root)
-    parts = rel.parts
-    return len(parts) > 0 and parts[0] in _EXCLUDED
+    try:
+        parts = path.resolve().relative_to(root).parts
+    except ValueError:
+        return False
+    return len(parts) == 1 and parts[0] in _ENGINE_OWNED
 
 
 def _build_tree(directory: Path, root: Path) -> list[dict]:
@@ -216,8 +227,6 @@ def _build_tree(directory: Path, root: Path) -> list[dict]:
             continue
         rel_path = str(entry.resolve().relative_to(root.resolve()))
         if entry.is_dir():
-            if entry.name in _EXCLUDED:
-                continue
             items.append({
                 "name": entry.name,
                 "path": rel_path,
@@ -279,7 +288,7 @@ async def search_vault_files(q: str = Query(default="", description="Search quer
     root = _vault_root()
     results: list[dict] = []
     for p in root.rglob("*"):
-        if p.is_file() and not _is_excluded(p):
+        if p.is_file():
             if not q_lower or q_lower in p.name.lower():
                 rel = str(p.resolve().relative_to(root.resolve()))
                 results.append({
@@ -312,8 +321,6 @@ async def get_vault_file(path: str = Query(..., description="Relative path to va
     p = _resolve(path)
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    if _is_excluded(p):
-        raise HTTPException(status_code=403, detail="Access denied")
     try:
         content = p.read_text(encoding="utf-8")
         return {"path": path, "name": p.name, "ext": p.suffix.lower(), "content": content}
@@ -359,8 +366,6 @@ async def create_vault_file(req: CreateFileRequest):
     parent = _resolve(req.path) if req.path.strip() else _vault_root()
     if not parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent path is not a directory")
-    if _is_excluded(parent):
-        raise HTTPException(status_code=403, detail="Cannot create files in excluded directories")
     target = parent / name
     if target.exists():
         raise HTTPException(status_code=409, detail="File already exists")
@@ -395,8 +400,6 @@ async def update_vault_file(req: UpdateFileRequest):
     p = _resolve(req.path)
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    if _is_excluded(p):
-        raise HTTPException(status_code=403, detail="Access denied")
     if p.suffix.lower() not in _ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Cannot edit this file type")
     try:
@@ -416,8 +419,11 @@ class CreateFolderRequest(BaseModel):
 async def create_vault_folder(req: CreateFolderRequest):
     """Create a new folder inside the vault."""
     name = _segment(req.name)
-    if name in _EXCLUDED:
-        raise HTTPException(status_code=400, detail="Reserved folder name")
+    if name in _ENGINE_OWNED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{name}' is where the engine writes — pick another name",
+        )
 
     parent_rel = _safe_rel(req.path) if req.path.strip() else ""
     folder_rel = f"{parent_rel}/{name}" if parent_rel else name
@@ -434,8 +440,6 @@ async def create_vault_folder(req: CreateFolderRequest):
     parent = _resolve(req.path) if req.path.strip() else _vault_root()
     if not parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent path is not a directory")
-    if _is_excluded(parent):
-        raise HTTPException(status_code=403, detail="Cannot create folders in excluded directories")
     target = parent / name
     if target.exists():
         raise HTTPException(status_code=409, detail="Folder already exists")
@@ -464,6 +468,14 @@ async def delete_vault_item(req: DeleteItemRequest):
             # `_safe_rel` answers "" for the root *and* for a traversal — either
             # way, not something to delete.
             raise HTTPException(status_code=400, detail="Cannot delete the vault root")
+        if rel in _ENGINE_OWNED:
+            # The same guard as the local branch: on object storage the sweep
+            # below is what would remove every key under the prefix.
+            raise HTTPException(
+                status_code=403,
+                detail=f"'{rel}' is written by the engine and holds every file it "
+                       "has saved there — delete the files inside it instead",
+            )
         # Delete as a file (idempotent if key doesn't exist)
         s3.delete(_s3_key_for(rel))
         # Also sweep any keys under a same-named folder prefix (recursive delete)
@@ -479,11 +491,12 @@ async def delete_vault_item(req: DeleteItemRequest):
         raise HTTPException(status_code=400, detail="Cannot delete the vault root")
     if not p.exists():
         raise HTTPException(status_code=404, detail="Path not found")
-    if _is_excluded(p):
-        raise HTTPException(status_code=403, detail="Cannot delete system directories")
-    rel_parts = p.resolve().relative_to(root).parts
-    if len(rel_parts) == 1 and rel_parts[0] in _EXCLUDED:
-        raise HTTPException(status_code=403, detail="Cannot delete system directories")
+    if _is_engine_owned_dir(p):
+        raise HTTPException(
+            status_code=403,
+            detail=f"'{p.name}' is written by the engine and holds every file it "
+                   "has saved there — delete the files inside it instead",
+        )
     try:
         if p.is_dir():
             shutil.rmtree(p)
