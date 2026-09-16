@@ -4,6 +4,7 @@ checkpointing, loop guards, and yielding SSE events.
 """
 import asyncio
 import calendar
+import json
 import time
 from typing import AsyncGenerator, Awaitable, Callable
 
@@ -11,8 +12,9 @@ import anyio
 
 from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_STEP_TIMEOUT
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
+from core.state_types import matches_declared_type, normalize_state_type
 from .state import SharedState
-from .steps import STEP_EXECUTORS
+from .steps import STEP_EXECUTORS, extract_all_json
 from .logger import OrchestrationLogger
 
 from core.log import get_logger
@@ -286,6 +288,12 @@ class OrchestrationEngine:
                 "step_type": step.type.value,
             }
 
+            # What shared state looked like before this step ran. The diff
+            # against it is how `_type_written_state` knows which keys this step
+            # wrote — `output_key` alone misses every multi-write step: parallel
+            # branches, merge, a nested orchestration, a loop body.
+            state_before = dict(run.shared_state)
+
             try:
                 # anyio.fail_after installs a cancel scope on the CURRENT task —
                 # unlike asyncio.wait_for which creates a new Task and breaks
@@ -395,6 +403,19 @@ class OrchestrationEngine:
                 if human_input_event is not None:
                     yield human_input_event
                     return
+
+                # A step writes whatever it produced — nearly always text — and
+                # until now `state_schema.type` was read by nothing at run time.
+                # Type it here, before the checkpoint below and before the break
+                # on `completed`, so the value that is persisted and the value
+                # the next step reads are the declared one. Skipped on `failed`:
+                # a step that did not finish has nothing to say, and a run that
+                # has already failed does not need a second line of noise.
+                if run.status != "failed":
+                    for warning in self._type_written_state(run, step, state_before):
+                        if logger:
+                            logger.log_event(warning)
+                        yield warning
 
                 # If END step or timeout set status, break out
                 if run.status in ("completed", "failed"):
@@ -865,6 +886,106 @@ class OrchestrationEngine:
         await state.checkpoint()
         async for event in engine._execute_loop(run, state):
             yield event
+
+    def _type_written_state(
+        self, run: OrchestrationRun, step: StepConfig, before: dict
+    ) -> list[dict]:
+        """Give the keys this step wrote the type `state_schema` declares.
+
+        Mutates `run.shared_state` in place and returns the `step_warning`
+        events the caller should yield — a plain function rather than a
+        generator so the cancel-scope reasoning around the step's `fail_after`
+        stays exactly as it was, and so this is testable without an engine.
+
+        The rule, per key this step wrote that the schema declares:
+
+          - a type we cannot read, or none at all: left alone, silently. The
+            engine never guesses what a value was meant to be;
+            `_validate_orchestration` is what tells the builder its schema is
+            wrong.
+          - already the declared type: nothing to do.
+          - a `str` under `list`/`dict`: the same three strategies
+            `extract_json` uses (whole text, fenced block, brace matching). One
+            result is the value; several are a list of them, which is the
+            reduction that step already makes.
+          - a `str` under `int`/`float`/`bool`: whole-text JSON only. Fenced
+            blocks and brace matching mean nothing for a scalar.
+          - parsed, but into something that still is not the declared type: the
+            text is kept. Storing a dict under a key declared `list` only moves
+            the type error downstream into whatever reads it, and silently
+            replacing a string with a dict is a bigger surprise than leaving
+            it. No wrapping a lone value in a list either — too magical.
+          - would not parse: kept, with a warning naming the key, the declared
+            type and what actually arrived.
+
+        Nothing is emitted when a value is typed successfully: a `step_warning`
+        is a warning, and the typed value is visible in the transcript anyway.
+
+        Known gap, deliberate: a container step's inner writes — a loop body, a
+        parallel branch, a nested orchestration — are typed when the container
+        completes, not between iterations. A body step writing a `list`-declared
+        key therefore still reads it as text on the *next* iteration of the same
+        loop.
+        """
+        schema = self.orch.state_schema or {}
+        if not schema:
+            return []
+
+        # Identity, not equality: no deep compare of a large structure, and a
+        # list mutated in place is already a list — nothing to coerce.
+        written = {
+            key for key, value in run.shared_state.items()
+            if key not in before or before[key] is not value
+        }
+        if step.output_key:
+            written.add(step.output_key)
+
+        warnings: list[dict] = []
+        for key in sorted(written & schema.keys()):
+            entry = schema.get(key)
+            if not isinstance(entry, dict):
+                continue
+            declared = normalize_state_type(entry.get("type"))
+            if declared is None:
+                continue
+
+            value = run.shared_state.get(key)
+            if matches_declared_type(declared, value):
+                continue
+
+            if not isinstance(value, str):
+                warnings.append(self._type_warning(step, key, declared, type(value).__name__))
+                continue
+
+            if declared in ("list", "dict"):
+                found = extract_all_json(value)
+                parsed = found[0] if len(found) == 1 else (found or None)
+            else:
+                try:
+                    parsed = json.loads(value.strip())
+                except (json.JSONDecodeError, ValueError):
+                    parsed = None
+
+            if parsed is not None and matches_declared_type(declared, parsed):
+                run.shared_state[key] = parsed
+                continue
+
+            arrived = ("text that is not JSON" if parsed is None
+                       else f"text holding {type(parsed).__name__}")
+            warnings.append(self._type_warning(step, key, declared, arrived))
+
+        return warnings
+
+    @staticmethod
+    def _type_warning(step: StepConfig, key: str, declared: str, arrived: str) -> dict:
+        return {
+            "type": "step_warning",
+            "orch_step_id": step.id,
+            "message": (
+                f"State key '{key}' is declared {declared} but step '{step.name}' "
+                f"wrote {arrived} — kept as is."
+            ),
+        }
 
     def _init_state(self, user_input: str) -> dict:
         """Initialize shared state from schema defaults + user input."""

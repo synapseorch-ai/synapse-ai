@@ -1742,7 +1742,7 @@ class ExtractJsonStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[Extract JSON] input text ({len(text)} chars)"}
 
-        extracted = self._extract_all_json(text)
+        extracted = extract_all_json(text)
 
         if not extracted:
             result = None
@@ -1763,80 +1763,87 @@ class ExtractJsonStepExecutor:
             "response": json.dumps(result, default=str) if result is not None else "null",
         }
 
-    def _extract_all_json(self, text: str) -> list:
-        """Try multiple strategies to extract JSON from text."""
-        # Strategy 1: Try parsing the entire text as JSON
+
+def extract_all_json(text: str) -> list:
+    """Try multiple strategies to extract JSON from text.
+
+    Module level rather than a method on `ExtractJsonStepExecutor` because
+    the engine needs the same three strategies to type a step's raw output
+    against `state_schema` (F14), and there should be one implementation of
+    "find the JSON in this text" rather than two that drift.
+    """
+    # Strategy 1: Try parsing the entire text as JSON
+    try:
+        parsed = json.loads(text.strip())
+        return [parsed]
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    results = []
+
+    # Strategy 2: Extract from markdown fenced code blocks (```json ... ``` or ``` ... ```)
+    fence_pattern = re.compile(r'```(?:json)?\s*\n(.*?)\n\s*```', re.DOTALL)
+    for match in fence_pattern.finditer(text):
+        content = match.group(1).strip()
         try:
-            parsed = json.loads(text.strip())
-            return [parsed]
+            parsed = json.loads(content)
+            results.append(parsed)
         except (json.JSONDecodeError, ValueError):
             pass
 
-        results = []
-
-        # Strategy 2: Extract from markdown fenced code blocks (```json ... ``` or ``` ... ```)
-        fence_pattern = re.compile(r'```(?:json)?\s*\n(.*?)\n\s*```', re.DOTALL)
-        for match in fence_pattern.finditer(text):
-            content = match.group(1).strip()
-            try:
-                parsed = json.loads(content)
-                results.append(parsed)
-            except (json.JSONDecodeError, ValueError):
-                pass
-
-        if results:
-            return results
-
-        # Strategy 3: Brace/bracket counting to find top-level JSON objects/arrays
-        results = self._extract_by_brace_matching(text)
+    if results:
         return results
 
-    def _extract_by_brace_matching(self, text: str) -> list:
-        """Find top-level {...} and [...] blocks by counting braces."""
-        results = []
-        i = 0
-        n = len(text)
-        while i < n:
-            if text[i] in ('{', '['):
-                open_char = text[i]
-                close_char = '}' if open_char == '{' else ']'
-                depth = 0
-                start = i
-                in_string = False
-                escape_next = False
-                while i < n:
-                    ch = text[i]
-                    if escape_next:
-                        escape_next = False
-                        i += 1
-                        continue
-                    if ch == '\\':
-                        escape_next = True
-                        i += 1
-                        continue
-                    if ch == '"':
-                        in_string = not in_string
-                    elif not in_string:
-                        if ch == open_char:
-                            depth += 1
-                        elif ch == close_char:
-                            depth -= 1
-                            if depth == 0:
-                                candidate = text[start:i + 1]
-                                try:
-                                    parsed = json.loads(candidate)
-                                    results.append(parsed)
-                                except (json.JSONDecodeError, ValueError):
-                                    pass
-                                i += 1
-                                break
+    # Strategy 3: Brace/bracket counting to find top-level JSON objects/arrays
+    results = extract_by_brace_matching(text)
+    return results
+
+def extract_by_brace_matching(text: str) -> list:
+    """Find top-level {...} and [...] blocks by counting braces."""
+    results = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] in ('{', '['):
+            open_char = text[i]
+            close_char = '}' if open_char == '{' else ']'
+            depth = 0
+            start = i
+            in_string = False
+            escape_next = False
+            while i < n:
+                ch = text[i]
+                if escape_next:
+                    escape_next = False
                     i += 1
-                else:
-                    # Unmatched brace, move on
-                    i = start + 1
-            else:
+                    continue
+                if ch == '\\':
+                    escape_next = True
+                    i += 1
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                elif not in_string:
+                    if ch == open_char:
+                        depth += 1
+                    elif ch == close_char:
+                        depth -= 1
+                        if depth == 0:
+                            candidate = text[start:i + 1]
+                            try:
+                                parsed = json.loads(candidate)
+                                results.append(parsed)
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                            i += 1
+                            break
                 i += 1
-        return results
+            else:
+                # Unmatched brace, move on
+                i = start + 1
+        else:
+            i += 1
+    return results
 
 
 def _eval_state_expr(expr: str, state: dict, default=None):

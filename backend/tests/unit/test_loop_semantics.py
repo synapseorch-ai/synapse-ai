@@ -107,6 +107,51 @@ class TestForEach:
         assert _iterations(events) == []
         assert _final_state(events)["tail"] == "done"
 
+    async def test_a_source_written_as_json_text_is_typed_and_iterates(self):
+        """F14, the headline: the upstream step answers in text, the loop runs.
+
+        This is Naveen's run. An llm step returned the perfectly good JSON text
+        `["…", "…"]` into a key declared `list`; the loop got a `str`, warned
+        "not a list — zero iterations", and the rest of the orchestration ran on
+        an empty result. A `print` body stands in for the llm here.
+        """
+        orch = _orch({"loop_over": "state.items"}, after=True)
+        orch["steps"].insert(0, {
+            "id": "writer", "name": "Writer", "type": "print",
+            "print_content": '["a", "b"]', "output_key": "items",
+            "next_step_id": "loop1",
+        })
+        orch["entry_step_id"] = "writer"
+        orch["state_schema"] = {"items": {"type": "list", "default": []}}
+
+        events = await _run(orch)
+        assert _iterations(events) == [1, 2]
+        assert _loop_complete(events)["iterations_completed"] == 2
+        assert not any("not a list" in e.get("message", "") for e in events)
+
+    async def test_empty_array_text_types_to_an_empty_list_and_still_runs_nothing(self):
+        """The caveat, pinned so nobody later reads it as a regression.
+
+        In the screenshot that reopened F14 the model had answered with the
+        literal text `[]` after a 500-retry. Typing turns that into an empty
+        list, which is honest — and the loop still runs zero times, because an
+        empty collection is genuinely empty. F14 removes the type error, not
+        that run's empty result.
+        """
+        orch = _orch({"loop_over": "state.items"}, after=True)
+        orch["steps"].insert(0, {
+            "id": "writer", "name": "Writer", "type": "print",
+            "print_content": "[]", "output_key": "items", "next_step_id": "loop1",
+        })
+        orch["entry_step_id"] = "writer"
+        orch["state_schema"] = {"items": {"type": "list", "default": []}}
+
+        events = await _run(orch)
+        assert _iterations(events) == []
+        assert _final_state(events)["items"] == []
+        # and the misleading line is gone — it was never the real problem
+        assert not any("not a list" in e.get("message", "") for e in events)
+
     async def test_missing_source_warns_rather_than_crashing(self):
         events = await _run(_orch({"loop_over": "state.nope"}))
         assert _iterations(events) == []
