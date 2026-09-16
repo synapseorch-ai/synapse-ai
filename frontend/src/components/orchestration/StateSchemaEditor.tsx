@@ -4,22 +4,19 @@ import { Plus, Trash2 } from 'lucide-react';
 import { Button, Input, Select, Textarea } from '@/components/ui';
 import type { StateSchemaEntry } from '@/types/orchestration';
 
+import {
+    STATE_TYPES,
+    STATE_TYPE_LABELS,
+    nextDefaultForType,
+    normalizeStateType,
+} from './stateTypes';
+
 interface StateSchemaEditorProps {
     schema: Record<string, StateSchemaEntry>;
     onChange: (schema: Record<string, StateSchemaEntry>) => void;
 }
 
-const TYPES = ['string', 'number', 'boolean', 'list', 'dict'];
-
-function emptyDefaultFor(type: string): unknown {
-    switch (type) {
-        case 'number': return 0;
-        case 'boolean': return false;
-        case 'list': return [];
-        case 'dict': return {};
-        default: return '';
-    }
-}
+const TYPE_OPTIONS = STATE_TYPES.map((t) => ({ value: t, label: STATE_TYPE_LABELS[t] }));
 
 export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) {
     const entries = Object.entries(schema);
@@ -30,7 +27,7 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
 
     const addEntry = () => {
         const key = `key_${Date.now()}`;
-        onChange({ ...schema, [key]: { type: 'string', default: '', description: '' } });
+        onChange({ ...schema, [key]: { type: 'str', default: '', description: '' } });
     };
 
     const removeEntry = (key: string) => {
@@ -67,8 +64,12 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
     };
 
     const changeType = (key: string, newType: string) => {
-        // Reset default when type changes to avoid mismatched value/type being saved.
-        onChange({ ...schema, [key]: { ...schema[key], type: newType, default: emptyDefaultFor(newType) } });
+        // Keep a default the new type can still hold; reset only a mismatched one.
+        // This control is also what a person reaches for to fix a key whose type
+        // was unreadable — wiping on every change made that fix destroy the very
+        // value it was meant to save.
+        const next = nextDefaultForType(schema[key]?.default, newType);
+        onChange({ ...schema, [key]: { ...schema[key], type: newType, default: next } });
         const nextBufs = { ...jsonBuffers }; delete nextBufs[key]; setJsonBuffers(nextBufs);
         const nextErrs = { ...jsonErrors }; delete nextErrs[key]; setJsonErrors(nextErrs);
     };
@@ -76,7 +77,9 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
     const handleJsonChange = (key: string, raw: string) => {
         setJsonBuffers({ ...jsonBuffers, [key]: raw });
         try {
-            const parsed = raw.trim() === '' ? (schema[key].type === 'list' ? [] : {}) : JSON.parse(raw);
+            const parsed = raw.trim() === ''
+                ? (normalizeStateType(schema[key].type) === 'list' ? [] : {})
+                : JSON.parse(raw);
             updateEntry(key, { default: parsed });
             setJsonErrors({ ...jsonErrors, [key]: false });
         } catch {
@@ -85,12 +88,16 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
     };
 
     const renderDefaultInput = (key: string, entry: StateSchemaEntry) => {
-        switch (entry.type) {
-            case 'number':
+        switch (normalizeStateType(entry.type)) {
+            case 'int':
+            case 'float':
                 return (
                     <Input
                         size="sm"
                         type="number"
+                        // A whole-number key should not offer a spinner that
+                        // steps into decimals its declared type cannot hold.
+                        step={normalizeStateType(entry.type) === 'int' ? 1 : 'any'}
                         className="font-code"
                         aria-label={`Default for ${key}`}
                         value={entry.default === '' || entry.default == null ? '' : Number(entry.default as number)}
@@ -101,7 +108,7 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
                         placeholder="0"
                     />
                 );
-            case 'boolean':
+            case 'bool':
                 return (
                     <Select
                         size="sm"
@@ -116,12 +123,13 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
                 );
             case 'list':
             case 'dict': {
+                const isList = normalizeStateType(entry.type) === 'list';
                 const buffered = jsonBuffers[key];
                 const display = buffered !== undefined
                     ? buffered
                     : (() => {
-                        try { return JSON.stringify(entry.default ?? (entry.type === 'list' ? [] : {}), null, 2); }
-                        catch { return entry.type === 'list' ? '[]' : '{}'; }
+                        try { return JSON.stringify(entry.default ?? (isList ? [] : {}), null, 2); }
+                        catch { return isList ? '[]' : '{}'; }
                     })();
                 const hasError = !!jsonErrors[key];
                 return (
@@ -133,7 +141,7 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
                             invalid={hasError}
                             value={display}
                             onChange={(e) => handleJsonChange(key, e.target.value)}
-                            placeholder={entry.type === 'list' ? '[]' : '{}'}
+                            placeholder={isList ? '[]' : '{}'}
                             rows={3}
                         />
                         {hasError && (
@@ -169,49 +177,68 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
             {entries.length === 0 && (
                 <div className="text-xs italic text-text-faint">No state keys defined. Steps will still work with implicit state.</div>
             )}
-            {entries.map(([key, entry]) => (
-                <div key={key} className="flex items-start gap-2 rounded-md border border-border bg-surface-2/40 p-2">
-                    <div className="flex-1 space-y-1.5">
-                        <div className="flex gap-2">
+            {entries.map(([key, entry]) => {
+                const declared = normalizeStateType(entry.type);
+                // A stored type we cannot read is shown back rather than replaced by a
+                // guess — rewriting it on render would either dirty the draft merely by
+                // opening it, or save over an AI-builder mistake only a person can judge.
+                const unknownType = declared === null && !!entry.type;
+                return (
+                    <div key={key} className="flex items-start gap-2 rounded-md border border-border bg-surface-2/40 p-2">
+                        <div className="flex-1 space-y-1.5">
+                            <div className="flex gap-2">
+                                <Input
+                                    size="sm"
+                                    className="flex-1 font-code"
+                                    aria-label="Key name"
+                                    value={key}
+                                    onChange={(e) => updateKey(key, e.target.value)}
+                                    placeholder="key_name"
+                                />
+                                <Select
+                                    size="sm"
+                                    className="w-36 shrink-0"
+                                    aria-label={`Type for ${key}`}
+                                    // Radix renders a blank trigger — not the placeholder — for a
+                                    // value matching no option, which is how a stored `str` came to
+                                    // look like an empty box. Carrying the unknown value as its own
+                                    // option makes that impossible; a genuinely missing type falls
+                                    // through to `undefined` and gets the placeholder, as it should.
+                                    value={declared ?? (entry.type || undefined)}
+                                    onChange={(t) => changeType(key, t)}
+                                    options={unknownType
+                                        ? [...TYPE_OPTIONS, { value: entry.type, label: `unknown type \u201C${entry.type}\u201D`, disabled: true }]
+                                        : TYPE_OPTIONS}
+                                />
+                            </div>
+                            {unknownType && (
+                                <p role="alert" className="text-[10px] text-danger">
+                                    “{entry.type}” isn’t a type we know — pick one.
+                                </p>
+                            )}
                             <Input
                                 size="sm"
-                                className="flex-1 font-code"
-                                aria-label="Key name"
-                                value={key}
-                                onChange={(e) => updateKey(key, e.target.value)}
-                                placeholder="key_name"
+                                aria-label={`Description for ${key}`}
+                                value={entry.description}
+                                onChange={(e) => updateEntry(key, { description: e.target.value })}
+                                placeholder="Description…"
                             />
-                            <Select
-                                size="sm"
-                                className="w-24 shrink-0"
-                                aria-label={`Type for ${key}`}
-                                value={entry.type}
-                                onChange={(t) => changeType(key, t)}
-                                options={TYPES.map((t) => ({ value: t, label: t }))}
-                            />
+                            <div className="flex items-center gap-2">
+                                <span className="w-12 shrink-0 text-[10px] uppercase tracking-wider text-text-faint">Default</span>
+                                <div className="min-w-0 flex-1">{renderDefaultInput(key, entry)}</div>
+                            </div>
                         </div>
-                        <Input
-                            size="sm"
-                            aria-label={`Description for ${key}`}
-                            value={entry.description}
-                            onChange={(e) => updateEntry(key, { description: e.target.value })}
-                            placeholder="Description…"
-                        />
-                        <div className="flex items-center gap-2">
-                            <span className="w-12 shrink-0 text-[10px] uppercase tracking-wider text-text-faint">Default</span>
-                            <div className="min-w-0 flex-1">{renderDefaultInput(key, entry)}</div>
-                        </div>
+                        <button
+                            type="button"
+                            aria-label={`Remove ${key}`}
+                            onClick={() => removeEntry(key)}
+                            className="mt-1 text-text-faint transition-colors hover:text-danger"
+                        >
+                            <Trash2 size={12} aria-hidden />
+                        </button>
                     </div>
-                    <button
-                        type="button"
-                        aria-label={`Remove ${key}`}
-                        onClick={() => removeEntry(key)}
-                        className="mt-1 text-text-faint transition-colors hover:text-danger"
-                    >
-                        <Trash2 size={12} aria-hidden />
-                    </button>
-                </div>
-            ))}
+                );
+            })}
         </div>
     );
 }

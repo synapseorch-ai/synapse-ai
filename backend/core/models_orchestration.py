@@ -4,9 +4,10 @@ Defines orchestrations (workflow graphs), steps (nodes), and run state.
 """
 from typing import Any
 from enum import Enum
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_HUMAN_TIMEOUT, ORCH_STEP_TIMEOUT
+from core.state_types import normalize_state_type
 
 
 class StepType(str, Enum):
@@ -167,6 +168,30 @@ class Orchestration(BaseModel):
     steps: list[StepConfig] = []
     entry_step_id: str = ""
     state_schema: dict[str, Any] = {}  # {key: {type, default, description}}
+
+    @field_validator("state_schema")
+    @classmethod
+    def _canonicalise_state_types(cls, schema: Any) -> Any:
+        """Store one spelling of `type` — see core.state_types.
+
+        The editor wrote `string`/`number`/`boolean` and the AI builder wrote
+        `str`/`float`/`bool` for the same thing. Every save path runs through
+        here, so a row saved with either spelling is stored canonically and no
+        migration is needed. A type we cannot read is left exactly as it was:
+        `_validate_orchestration` has to be able to name it back to the builder,
+        and the editor has to be able to show the person what is really stored
+        rather than a guess.
+        """
+        if not isinstance(schema, dict):
+            return schema
+        out: dict[str, Any] = {}
+        for key, entry in schema.items():
+            if isinstance(entry, dict) and "type" in entry:
+                canonical = normalize_state_type(entry["type"])
+                if canonical is not None and canonical != entry["type"]:
+                    entry = {**entry, "type": canonical}
+            out[key] = entry
+        return out
 
     # Global guardrails
     max_total_turns: int = 100

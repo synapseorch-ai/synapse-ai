@@ -706,3 +706,108 @@ class TestAnUnsafeExpressionIsRefusedAtAuthoringTime:
         report = await call("validate_orchestration", {"orch_id": orch_id}, server)
         assert any("Expression problem" in i and "if_condition" in i
                    for i in report.get("issues", [])), report
+
+
+class TestStateSchemaValidation:
+    """`state_schema` was the one part of an orchestration nothing ever looked at.
+
+    A key could carry no type, or a type nobody recognised, and it saved, loaded
+    and ran — the only symptom being a blank dropdown in the editor and, at run
+    time, an engine that had nothing to coerce against.
+    """
+
+    ALLOWED = "Use one of: str, int, float, bool, list, dict."
+
+    @staticmethod
+    def _issues(state_schema):
+        from core.builder_tools import _validate_orchestration
+        return _validate_orchestration({
+            "id": "o", "entry_step_id": "s1", "state_schema": state_schema,
+            "steps": [
+                {"id": "s1", "name": "Say", "type": "print", "print_content": "x",
+                 "output_key": "note", "next_step_id": "end1"},
+                {"id": "end1", "name": "Done", "type": "end"},
+            ],
+        })["issues"]
+
+    def test_a_canonical_schema_raises_nothing(self):
+        assert self._issues({
+            "note": {"type": "str", "default": "", "description": "A note"},
+            "rows": {"type": "list", "default": [], "description": "Rows"},
+            "n": {"type": "int", "default": 0, "description": "A count"},
+        }) == []
+
+    def test_the_editor_spellings_still_pass(self):
+        # Orchestrations saved before the vocabularies were reconciled hold
+        # these. They are aliases, not errors — nothing needs migrating.
+        assert self._issues({
+            "a": {"type": "string", "default": ""},
+            "b": {"type": "number", "default": 0},
+            "c": {"type": "boolean", "default": False},
+        }) == []
+
+    def test_a_key_with_no_type_is_an_issue(self):
+        # What the AI builder actually emitted for `loop_item` / `loop_index`.
+        issues = self._issues({"loop_item": {"description": "The current query."}})
+        assert len(issues) == 1
+        assert "loop_item" in issues[0]
+        assert self.ALLOWED in issues[0]
+
+    def test_a_type_nobody_recognises_is_an_issue(self):
+        issues = self._issues({"n": {"type": "int64", "default": 0}})
+        assert len(issues) == 1
+        assert "int64" in issues[0] and "n" in issues[0]
+        assert self.ALLOWED in issues[0]
+
+    def test_an_entry_that_is_not_an_object_is_an_issue(self):
+        issues = self._issues({"rows": "list"})
+        assert len(issues) == 1
+        assert "rows" in issues[0]
+
+    def test_a_default_that_contradicts_its_type_is_an_issue(self):
+        issues = self._issues({"rows": {"type": "list", "default": "[]"}})
+        assert len(issues) == 1
+        assert "rows" in issues[0] and "list" in issues[0]
+
+    def test_a_missing_default_is_fine(self):
+        # `default` is optional — `_init_state` simply skips a key without one.
+        assert self._issues({"rows": {"type": "list", "description": "Rows"}}) == []
+
+    def test_every_message_carries_the_fix(self):
+        # Both savers cap themselves at two or three repair attempts, so a
+        # message that does not name the allowed set burns the budget and the
+        # saver reports DONE anyway.
+        issues = self._issues({
+            "a": {"description": "no type"},
+            "b": {"type": "frobnicate"},
+        })
+        assert len(issues) == 2
+        assert all(self.ALLOWED in issue for issue in issues)
+
+
+class TestStateSchemaCanonicalisation:
+    """Every save runs `Orchestration.model_validate`, so legacy rows self-heal."""
+
+    @staticmethod
+    def _schema(raw):
+        from core.models_orchestration import Orchestration
+        return Orchestration(id="o", name="O", state_schema=raw).state_schema
+
+    def test_an_editor_spelling_is_stored_canonically(self):
+        assert self._schema({"a": {"type": "string", "default": ""}})["a"]["type"] == "str"
+        assert self._schema({"a": {"type": "boolean", "default": False}})["a"]["type"] == "bool"
+        assert self._schema({"a": {"type": "number", "default": 0}})["a"]["type"] == "float"
+
+    def test_an_unreadable_type_is_left_exactly_as_it_was(self):
+        # So `_validate_orchestration` can still name it, and so the editor can
+        # show the person what is actually stored rather than a guess.
+        assert self._schema({"a": {"type": "frobnicate"}})["a"]["type"] == "frobnicate"
+
+    def test_the_rest_of_the_entry_is_untouched(self):
+        entry = self._schema({"a": {"type": "array", "default": [1], "description": "d"}})["a"]
+        assert entry == {"type": "list", "default": [1], "description": "d"}
+
+    def test_a_non_object_entry_survives_validation(self):
+        # Malformed, and `_validate_orchestration` says so — but loading an
+        # orchestration must not be what fails.
+        assert self._schema({"a": "list"})["a"] == "list"

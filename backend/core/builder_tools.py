@@ -10,6 +10,11 @@ import string
 import time
 from typing import Any
 
+from core.state_types import (
+    CANONICAL_STATE_TYPES,
+    matches_declared_type,
+    normalize_state_type,
+)
 from core.store import collections
 from core.store.resources import load_mcp_servers
 
@@ -2187,6 +2192,8 @@ def _validate_orchestration(orch: dict) -> dict:
       - every step's input_keys are either `user_input` / `user_query` or the
         `output_key` of some step in the orchestration (a key with no writer
         anywhere is meaningless — it can only ever be its schema default)
+      - every state_schema entry declares a type we can read, and its default
+        is of that type
     """
     issues: list[str] = []
     steps = orch.get("steps", []) or []
@@ -2385,6 +2392,33 @@ def _validate_orchestration(orch: dict) -> dict:
             for nxt_id in successors:
                 if nxt_id not in visited:
                     queue.append(nxt_id)
+
+    # ── State schema ─────────────────────────────────────────────────────────
+    # Nothing used to look at `state_schema` at all. A key could carry no type,
+    # or a type nobody recognised, and it saved, loaded and ran — the symptoms
+    # being a blank dropdown in the editor and an engine with nothing to coerce
+    # a step's raw text against. Each message names the allowed set, because
+    # both savers cap themselves at two or three repair attempts: a message
+    # without the fix in it burns that budget and reports DONE anyway.
+    allowed = "Use one of: " + ", ".join(CANONICAL_STATE_TYPES) + "."
+    for key, entry in (orch.get("state_schema") or {}).items():
+        if not isinstance(entry, dict):
+            issues.append(
+                f"State key '{key}' is {type(entry).__name__}, not an object — each key "
+                f"maps to {{type, default, description}}. {allowed}"
+            )
+            continue
+        declared = entry.get("type")
+        canonical = normalize_state_type(declared)
+        if canonical is None:
+            what = f"an unknown type '{declared}'" if declared else "no type"
+            issues.append(f"State key '{key}' has {what}. {allowed}")
+            continue
+        if "default" in entry and not matches_declared_type(canonical, entry["default"]):
+            issues.append(
+                f"State key '{key}' is declared {canonical} but its default is "
+                f"{type(entry['default']).__name__} — change the default or the type."
+            )
 
     return {"ok": not issues, "issues": issues}
 
