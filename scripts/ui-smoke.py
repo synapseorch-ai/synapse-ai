@@ -456,6 +456,110 @@ async def check_money(browser) -> str:
     return f"Home reports {shown['total']} and every model row truthfully"
 
 
+# ── layout ───────────────────────────────────────────────────────────────────
+
+#: Screens to check for a page that scrolls when it should not. Five, because
+#: the defect this exists for was in the app shell and so was on every one.
+LAYOUT_PAGES = ("/dashboard", "/orchestrations", "/agents", "/vault", "/usage")
+
+
+@check
+async def check_layout(browser) -> str:
+    """A full-height page does not scroll, and a tooltip opens by its trigger.
+
+    `Hint` wraps its child in an inline span, deliberately — that is how a
+    tooltip still fires on a disabled button. Around a `fixed` button the span
+    stays behind in the page flow, and after an `h-screen` shell it lands as
+    one 24px line of body text: every page in the app scrolled onto a blank
+    strip. The tooltip anchors to that span too, so the launcher's label opened
+    in the bottom-left corner, half below the window, describing a button in
+    the bottom-right.
+
+    Both halves are asserted, plus the rule underneath them — nothing in the
+    static flow may wrap something fixed — so the next control to reach for
+    `Hint` cannot reintroduce this quietly.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        overflowing, wrappers = [], []
+        for path in LAYOUT_PAGES:
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            found = await page.evaluate(
+                r"""() => {
+                  const doc = document.documentElement;
+                  const over = doc.scrollHeight - window.innerHeight;
+                  // Anything fixed whose ancestor chain is ordinary flow: the
+                  // wrapper keeps a line of the page to itself.
+                  const bad = [];
+                  for (const el of document.querySelectorAll('*')) {
+                    if (getComputedStyle(el).position !== 'fixed') continue;
+                    const p = el.parentElement;
+                    if (!p || p === document.body) continue;
+                    if (getComputedStyle(p).position !== 'static') continue;
+                    const r = p.getBoundingClientRect();
+                    if (r.width === 0 && r.height === 0 && r.top > 0) {
+                      bad.push((el.getAttribute('aria-label') || el.tagName) +
+                               ' inside a static <' + p.tagName.toLowerCase() + '> at y=' + Math.round(r.top));
+                    }
+                  }
+                  return {over, bad};
+                }"""
+            )
+            if found["over"] > 0:
+                overflowing.append(f"{path} by {found['over']}px")
+            wrappers.extend(f"{path}: {b}" for b in found["bad"])
+
+        if overflowing:
+            raise AssertionError(
+                "pages scroll the document onto a blank strip — "
+                + "; ".join(overflowing)
+                + (f" (the culprit: {wrappers[0]})" if wrappers else "")
+            )
+        if wrappers:
+            raise AssertionError(
+                "a zero-sized element in the page flow wraps something fixed, which "
+                "costs a line of every page and anchors its tooltip there — " + wrappers[0]
+            )
+
+        # The launcher's own label, where a person would look for it.
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        launcher = page.locator('button[aria-label="Open the AI builder"]')
+        box = await launcher.bounding_box()
+        if box is None:
+            raise AssertionError("no AI-builder launcher on /dashboard")
+        await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        await asyncio.sleep(1.5)
+        tip = await page.evaluate(
+            r"""() => {
+              const t = document.querySelector('[role="tooltip"]');
+              if (!t) return null;
+              const r = t.getBoundingClientRect();
+              return {x: r.x, y: r.y, right: r.right, bottom: r.bottom,
+                      text: (t.textContent || '').trim()};
+            }"""
+        )
+    finally:
+        await ctx.close()
+
+    if tip is None:
+        raise AssertionError("the launcher offers no tooltip at all")
+    if tip["bottom"] > WIDE[1] or tip["right"] > WIDE[0] or tip["x"] < 0 or tip["y"] < 0:
+        raise AssertionError(
+            f"the launcher's tooltip {tip['text']!r} is outside the window "
+            f"(bottom {round(tip['bottom'])} of {WIDE[1]})"
+        )
+    gap = box["x"] - tip["right"]
+    if gap > 200:
+        raise AssertionError(
+            f"the launcher's tooltip {tip['text']!r} opens {round(gap)}px from the button "
+            f"it describes — it is anchored to something else"
+        )
+    return f"no page scrolls, and the launcher's tooltip opens {round(gap)}px from it"
+
+
 # ── runner ───────────────────────────────────────────────────────────────────
 
 async def main() -> int:

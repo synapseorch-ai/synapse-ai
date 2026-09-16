@@ -17,26 +17,39 @@ export function BuilderLauncher() {
     if (isOpen) return null;
 
     return (
-        <Hint content="Build with AI" side="left">
-            <button
-                type="button"
-                onClick={() => open()}
-                aria-label="Open the AI builder"
-                className={cn(
-                    'fixed bottom-5 right-5 z-40 flex h-11 w-11 items-center justify-center',
-                    'rounded-full border border-border-strong bg-surface text-accent shadow-xl',
-                    'transition-colors hover:bg-row-hover hover:text-accent-hover',
-                    focusRing,
-                )}
-            >
-                <Mark size={22} compact={false} aria-hidden />
-                {streaming && (
-                    <span
-                        className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-accent"
-                        aria-hidden
-                    />
-                )}
-            </button>
-        </Hint>
+        // The wrapper takes the fixed position, not the button. `Hint` wraps
+        // its child in an inline span — deliberately, so a tooltip still fires
+        // on a disabled button — and around a fixed button that span stayed
+        // behind in the page flow. After the `h-screen` shell it landed as one
+        // 24px line of body text, so every page in the app scrolled onto a
+        // blank strip; and the tooltip anchored to the span, opening in the
+        // bottom-left corner half below the window to describe a button in the
+        // bottom-right. `scripts/ui-smoke.py`'s `layout` check fails if
+        // anything in the page flow wraps something fixed again.
+        <div className="fixed bottom-5 right-5 z-40">
+            <Hint content="Build with AI" side="left">
+                <button
+                    type="button"
+                    onClick={() => open()}
+                    aria-label="Open the AI builder"
+                    className={cn(
+                        // `relative`, because the fixed position that used to
+                        // anchor the streaming dot now lives on the wrapper.
+                        'relative flex h-11 w-11 items-center justify-center',
+                        'rounded-full border border-border-strong bg-surface text-accent shadow-xl',
+                        'transition-colors hover:bg-row-hover hover:text-accent-hover',
+                        focusRing,
+                    )}
+                >
+                    <Mark size={22} compact={false} aria-hidden />
+                    {streaming && (
+                        <span
+                            className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-accent"
+                            aria-hidden
+                        />
+                    )}
+                </button>
+            </Hint>
+        </div>
     );
 }
