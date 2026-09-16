@@ -2239,10 +2239,15 @@ function BottomPanel({
                             inline card swallowed the whole tab. */}
                         {humanPrompt && (
                             <div className="sticky bottom-0 z-10 pt-2">
+                                {/* pr-16 keeps Answer out of the bottom-right corner the
+                                    builder launcher owns (44px at a 20px inset, fixed).
+                                    Once the log is long enough this strip reaches the
+                                    foot of the viewport, and the launcher sat on top of
+                                    the one control that answers the run. */}
                                 <button
                                     type="button"
                                     onClick={() => setHumanModalOpen(true)}
-                                    className="group flex w-full items-center gap-2 rounded-lg border border-amber-600/50 bg-zinc-900 px-3 py-2 text-left shadow-[0_-12px_28px_-8px_rgba(0,0,0,0.55)] transition-colors hover:border-amber-500"
+                                    className="group flex w-full items-center gap-2 rounded-lg border border-amber-600/50 bg-zinc-900 py-2 pl-3 pr-16 text-left shadow-[0_-12px_28px_-8px_rgba(0,0,0,0.55)] transition-colors hover:border-amber-500"
                                 >
                                     <span className="relative flex size-2 shrink-0">
                                         <span className="absolute inline-flex size-full animate-ping rounded-full bg-amber-400 opacity-60" aria-hidden />
