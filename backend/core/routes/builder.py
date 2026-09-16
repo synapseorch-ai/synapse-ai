@@ -192,8 +192,8 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module):
         **await _target_state(request.message, request.current_orchestration_id),
         "org_profile": await _workspace_profile(),
         "requirements": "",
-        "human_response": "",
-        "final_orch": {},
+        "human_response": {},
+        "final_orch": "",
         # Applied by the engine on run and re-applied on resume, so the second
         # half of a conversation runs on the model the first half did.
         OrchestrationEngine.MODEL_OVERRIDE_KEY: await _selected_model(request.model),

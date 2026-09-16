@@ -961,7 +961,9 @@ class OrchestrationEngine:
         parallel branch, a nested orchestration — are typed when the container
         completes, not between iterations. A body step writing a `list`-declared
         key therefore still reads it as text on the *next* iteration of the same
-        loop.
+        loop. And a top-level human step's answer is never typed at all:
+        `resume()` writes it before this loop takes its pre-step snapshot, so no
+        step ever counts it as written.
         """
         schema = self.orch.state_schema or {}
         if not schema:

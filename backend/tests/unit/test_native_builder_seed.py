@@ -69,6 +69,62 @@ class TestTheBundle:
                 assert step["output_key"] in schema, f"{step['id']} writes undeclared '{step['output_key']}'"
 
 
+class TestTheSchemaSaysWhatTheStepsWrite:
+    """F52. The builder's `state_schema` was an annotation nobody was held to
+    until F14 started reading it, and four of its types were wrong.
+
+    `final_orch` was declared `dict`, but both savers are told to finish with
+    the exact word `DONE` — so every build that saved logged a typing warning,
+    and with `strict_state_types` on it would have failed right after saving.
+    `human_response`, `review_feedback` and `manage_review` were declared `str`
+    and always hold the answer card's fields.
+    """
+
+    #: What each step kind puts under its `output_key`. Agent, llm and
+    #: evaluator steps write text (an agent's final response, a completion, a
+    #: route label); a human step's answer arrives as the card's fields
+    #: (`BuilderResumeRequest.response: dict`). A tool step is not listed: what
+    #: it writes is whatever that tool returns.
+    WRITES = {"agent": "str", "llm": "str", "evaluator": "str", "human": "dict"}
+
+    def test_every_declared_type_is_what_its_step_writes(self):
+        orch = bundled_definitions()["orchestration"]
+        schema = orch["state_schema"]
+        wrong = []
+        for step in orch["steps"]:
+            key, kind = step.get("output_key"), step["type"]
+            if key and kind in self.WRITES and schema[key]["type"] != self.WRITES[kind]:
+                wrong.append(f"{key} is declared {schema[key]['type']} but "
+                             f"{step['id']} ({kind}) writes {self.WRITES[kind]}")
+        # `resume()` copies every answer to `human_response` as well, whatever
+        # the step's own output_key.
+        if any(s["type"] == "human" for s in orch["steps"]) and schema["human_response"]["type"] != "dict":
+            wrong.append(f"human_response is declared {schema['human_response']['type']} "
+                         f"but resume() writes every answer there")
+        assert not wrong, "; ".join(sorted(set(wrong)))
+
+    def test_a_saver_finishing_with_done_is_not_a_typing_failure(self):
+        import types
+
+        from core.models_orchestration import Orchestration, OrchestrationRun
+        from core.orchestration.engine import OrchestrationEngine
+
+        orch = Orchestration.model_validate(bundled_definitions()["orchestration"])
+        engine = OrchestrationEngine(orch, types.SimpleNamespace(
+            agent_sessions={}, memory_store=None, tool_router={}))
+        run = OrchestrationRun(run_id="builder_f52", orchestration_id=orch.id,
+                               shared_state=engine._init_state("build me something"))
+        before = dict(run.shared_state)
+        run.shared_state["final_orch"] = "DONE"
+
+        warnings, unconvertible = engine._type_written_state(
+            run, engine.step_map["step_save_create"], before)
+
+        assert warnings == []
+        assert unconvertible == []
+        assert run.shared_state["final_orch"] == "DONE"
+
+
 class TestSeeding:
     async def test_it_installs_the_builder(self):
         result = await seed_native_builder()
