@@ -41,6 +41,10 @@ def _iterations(events):
     return [e["iteration"] for e in events if e.get("type") == "loop_iteration"]
 
 
+def _warnings(events):
+    return [e["message"] for e in events if e.get("type") == "step_warning"]
+
+
 def _final_state(events):
     return next(e for e in reversed(events)
                 if e.get("type") == "orchestration_complete")["final_state"]
@@ -78,6 +82,7 @@ class TestForEach:
         state = _final_state(events)
         assert [e["result"] for e in state["seen"]] == ["0:a", "1:b", "2:c"]
         assert _loop_complete(events)["stopped_reason"] == "collection_exhausted"
+        assert _warnings(events) == []
 
     async def test_item_and_index_keys_are_configurable(self):
         orch = _orch(
@@ -91,19 +96,26 @@ class TestForEach:
         state = _final_state(events)
         assert [e["result"] for e in state["seen"]] == ["0=x", "1=y"]
 
-    async def test_empty_collection_runs_zero_iterations(self):
+    async def test_empty_collection_runs_zero_iterations_and_says_so(self):
+        """F51. Zero iterations used to be silent, so a run whose source came
+        back empty read exactly like one that did its work. It says so now —
+        and carries on, because an empty collection is a legitimate answer."""
         events = await _run(_orch({"loop_over": "state.items"}),
                             initial_state={"items": []})
         assert _iterations(events) == []
         assert _loop_complete(events)["iterations_completed"] == 0
+        assert _loop_complete(events)["stopped_reason"] == "empty_collection"
+        assert _warnings(events) == ["loop_over 'state.items' is an empty list — zero iterations"]
         # the run still moves on down the done path
         assert _final_state(events)["tail"] == "done"
 
     async def test_non_list_source_warns_and_runs_zero_iterations(self):
         events = await _run(_orch({"loop_over": "state.items"}),
                             initial_state={"items": "not a list"})
-        warnings = [e["message"] for e in events if e.get("type") == "step_warning"]
-        assert any("not a list" in w for w in warnings)
+        warnings = _warnings(events)
+        # one line naming the real problem, not a second one about emptiness
+        assert len(warnings) == 1 and "not a list" in warnings[0]
+        assert _loop_complete(events)["stopped_reason"] == "empty_collection"
         assert _iterations(events) == []
         assert _final_state(events)["tail"] == "done"
 
@@ -129,14 +141,14 @@ class TestForEach:
         assert _loop_complete(events)["iterations_completed"] == 2
         assert not any("not a list" in e.get("message", "") for e in events)
 
-    async def test_empty_array_text_types_to_an_empty_list_and_still_runs_nothing(self):
-        """The caveat, pinned so nobody later reads it as a regression.
+    async def test_empty_array_text_types_to_an_empty_list_and_says_so(self):
+        """The screenshot that reopened F14, all the way through.
 
-        In the screenshot that reopened F14 the model had answered with the
-        literal text `[]` after a 500-retry. Typing turns that into an empty
-        list, which is honest — and the loop still runs zero times, because an
-        empty collection is genuinely empty. F14 removes the type error, not
-        that run's empty result.
+        The model had answered with the literal text `[]` after a 500-retry.
+        Typing turns that into an empty list, which is honest, and the loop
+        runs zero times, because an empty collection is genuinely empty. F14
+        removed the type error and with it the only line in the log; F51 puts
+        back one that is true. The run still completes — lenient, as D100.
         """
         orch = _orch({"loop_over": "state.items"}, after=True)
         orch["steps"].insert(0, {
@@ -151,6 +163,9 @@ class TestForEach:
         assert _final_state(events)["items"] == []
         # and the misleading line is gone — it was never the real problem
         assert not any("not a list" in e.get("message", "") for e in events)
+        assert _warnings(events) == ["loop_over 'state.items' is an empty list — zero iterations"]
+        assert not any(e.get("type") == "orchestration_error" for e in events)
+        assert _final_state(events)["tail"] == "done"
 
     async def test_missing_source_warns_rather_than_crashing(self):
         events = await _run(_orch({"loop_over": "state.nope"}))

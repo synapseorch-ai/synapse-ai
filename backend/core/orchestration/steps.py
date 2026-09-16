@@ -1245,6 +1245,16 @@ class LoopStepExecutor:
                         resolved = []
                     if isinstance(resolved, (list, tuple)):
                         items = list(resolved)
+                        # An empty source is a legitimate answer, so the run
+                        # carries on — but zero iterations used to be silent,
+                        # and a run whose collection came back empty read
+                        # exactly like one that did its work (F51). Said once,
+                        # here, so a resumed run with an empty snapshot does
+                        # not repeat it.
+                        if not items:
+                            yield {"type": "step_warning", "orch_step_id": step.id,
+                                   "message": f"loop_over '{step.loop_over}' is an "
+                                              f"empty list — zero iterations"}
                     else:
                         yield {"type": "step_warning", "orch_step_id": step.id,
                                "message": f"loop_over '{step.loop_over}' is "
@@ -1264,11 +1274,16 @@ class LoopStepExecutor:
 
             iteration = completed_iterations
             iterations_run = completed_iterations
-            stopped_reason = "count" if mode == "count" else "collection_exhausted"
+            # A for-each that had nothing to iterate is told apart from one that
+            # ran out of items, so the event says which of the two happened.
+            exhausted = ("count" if mode == "count"
+                         else "empty_collection" if mode == "foreach" and not items
+                         else "collection_exhausted")
+            stopped_reason = exhausted
 
             while True:
                 if total is not None and iteration >= total:
-                    stopped_reason = "count" if mode == "count" else "collection_exhausted"
+                    stopped_reason = exhausted
                     break
                 if iteration >= cap:
                     stopped_reason = "max_iterations"
