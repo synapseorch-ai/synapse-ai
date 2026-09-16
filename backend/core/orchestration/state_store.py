@@ -12,7 +12,7 @@ never be opened on their own.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Sequence
 
 from sqlalchemy import select
@@ -45,6 +45,24 @@ _MIRRORED = (
 #: Postgres would coerce a string, SQLite refuses it outright — so the
 #: conversion is explicit rather than left to the driver.
 _TIMESTAMPS = ("started_at", "ended_at")
+
+
+def _iso_utc(value):
+    """A stored timestamp as an unambiguous UTC string.
+
+    SQLite has no timezone type: an aware datetime goes in and a *naive* one
+    comes back, so `isoformat()` would drop the zone and a browser would read
+    the result as local time — a run a minute old rendering as hours old east
+    of UTC. Everything here is stamped in UTC (`engine.run` uses `time.gmtime`),
+    so a naive value means "UTC, marker lost in storage" and is labelled as
+    such. An aware value (Postgres keeps the zone) is converted rather than
+    assumed.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc).isoformat()
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def _to_datetime(value):
@@ -175,8 +193,8 @@ class StoreStateBackend:
                 "run_id": row.run_id,
                 "orchestration_id": row.orchestration_id,
                 "status": row.status,
-                "started_at": row.started_at.isoformat() if row.started_at else None,
-                "ended_at": row.ended_at.isoformat() if row.ended_at else None,
+                "started_at": _iso_utc(row.started_at),
+                "ended_at": _iso_utc(row.ended_at),
                 # Trigger source: "schedule_<id>" (scheduler), a chat session id
                 # (orchestrator agent), or None (manual/API).
                 "session_id": row.session_id,
@@ -209,6 +227,6 @@ def _to_document(row) -> dict:
         "nested_orch_id": row.nested_orch_id,
         "total_tokens_used": row.total_tokens_used or 0,
         "total_cost_usd": row.total_cost_usd or 0.0,
-        "started_at": row.started_at.isoformat() if row.started_at else None,
-        "ended_at": row.ended_at.isoformat() if row.ended_at else None,
+        "started_at": _iso_utc(row.started_at),
+        "ended_at": _iso_utc(row.ended_at),
     }
