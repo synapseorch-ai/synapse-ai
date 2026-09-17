@@ -400,6 +400,18 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
                 raise ValueError(f"Run {run_id} not found in Postgres")
             orch_id = row.orchestration_id
 
+            # Name this worker as the run's owner now, as the other two jobs do at
+            # pickup. The adapter writes it again when the run ends; until then the
+            # row named the worker of the attempt that failed, and the API's boot
+            # sweep would fail a replay in progress under the worker running it (F85).
+            from sqlalchemy import update
+            await session.execute(
+                update(OrchestrationRunDB)
+                .where(OrchestrationRunDB.run_id == run_id)
+                .values(worker_id=_worker_id, job_id=ctx.get("job_id", ""))
+            )
+            await session.commit()
+
         # A second try: the first set the run `running` before its first step,
         # which the engine only resumes when told the attempt that did so is
         # gone. A run that got as far as finishing or pausing stays that way.

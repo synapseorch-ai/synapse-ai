@@ -630,26 +630,10 @@ async def lifespan(app: FastAPI):
 
         # --- Sweep zombie orchestration runs (stale "running" from prior server crash) ---
         try:
-            from core.orchestration.state import SharedState
-            zombie_runs = [r for r in await SharedState.list_runs(limit=200) if r.get("status") == "running"]
-            if zombie_runs:
-                now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                from core.orchestration.journal import FileRunJournal
-                for zr in zombie_runs:
-                    try:
-                        restored = await SharedState.restore(zr["run_id"])
-                        restored.run.status = "failed"
-                        restored.run.ended_at = now_str
-                        await restored.checkpoint()
-                        # Explain the stop to journal replays (reattach UI).
-                        if FileRunJournal.exists(zr["run_id"]):
-                            journal = FileRunJournal(zr["run_id"])
-                            journal.append({"type": "orchestration_error",
-                                            "error": "Server restarted while the run was in progress"})
-                            journal.close()
-                    except Exception:
-                        pass
-                print(f"Swept {len(zombie_runs)} zombie orchestration run(s) (marked failed)")
+            from core.scale.heartbeat import sweep_interrupted_runs
+            swept = await sweep_interrupted_runs()
+            if swept:
+                print(f"Swept {len(swept)} zombie orchestration run(s) (marked failed)")
         except Exception as e:
             print(f"Warning: Zombie run sweep failed: {e}")
 

@@ -244,6 +244,103 @@ class TestARedeliveredAnswerIsNotAppliedTwice:
         assert [h["step_id"] for h in run.step_history] == ["h", "s2", "s3"]
 
 
+async def _running_run(run_id: str, worker_id: str | None) -> None:
+    from core.store import get_store, upsert
+    from core.store.models import OrchestrationRunDB
+    async with (await get_store())() as session:
+        await upsert(session, OrchestrationRunDB, values={
+            "run_id": run_id, "orchestration_id": "orch_x", "status": "running",
+            "current_step_id": "s1", "worker_id": worker_id,
+        }, index_elements=["run_id"])
+        await session.commit()
+
+
+async def _worker_row(worker_id: str, status: str, seconds_ago: float) -> None:
+    from datetime import datetime, timedelta, timezone
+    from core.store import get_store, upsert
+    from core.store.models import WorkerDB
+    async with (await get_store())() as session:
+        await upsert(session, WorkerDB, values={
+            "worker_id": worker_id, "hostname": "h", "address": "", "status": status,
+            "last_heartbeat": datetime.now(timezone.utc) - timedelta(seconds=seconds_ago),
+        }, index_elements=["worker_id"])
+        await session.commit()
+
+
+class TestTheBootSweep:
+    """The API's startup sweep fails only the runs nobody is still running (F85).
+
+    It used to fail every `running` run, in every mode. In scale mode a worker
+    can outlive an API restart and still be executing its run; the sweep marked
+    that run failed under it, and a Replay pressed on the failed run would then
+    run it a second time.
+    """
+
+    async def test_a_run_a_live_worker_owns_is_left_running(self):
+        from core.scale.heartbeat import sweep_interrupted_runs
+        await _worker_row("worker-live", "online", seconds_ago=5)
+        await _running_run("run_owned", "worker-live")
+
+        swept = await sweep_interrupted_runs()
+
+        assert swept == []
+        assert (await _run("run_owned")).status == "running"
+
+    async def test_a_run_whose_worker_went_silent_is_failed(self):
+        from core.scale.heartbeat import sweep_interrupted_runs
+        await _worker_row("worker-silent", "online", seconds_ago=600)
+        await _running_run("run_silent", "worker-silent")
+
+        assert await sweep_interrupted_runs() == ["run_silent"]
+        assert (await _run("run_silent")).status == "failed"
+
+    async def test_a_run_whose_worker_shut_down_is_failed(self):
+        from core.scale.heartbeat import sweep_interrupted_runs
+        await _worker_row("worker-gone", "offline", seconds_ago=5)
+        await _running_run("run_gone", "worker-gone")
+
+        assert await sweep_interrupted_runs() == ["run_gone"]
+
+    async def test_a_run_the_previous_server_ran_itself_is_failed(self):
+        from core.scale.heartbeat import sweep_interrupted_runs
+        await _running_run("run_inproc", None)
+
+        assert await sweep_interrupted_runs() == ["run_inproc"]
+        assert (await _run("run_inproc")).status == "failed"
+
+    async def test_a_replay_names_the_worker_running_it(
+        self, seed_orchestration, agents, worker, fake_redis, monkeypatch,
+    ):
+        """`resume_failed_job` wrote `worker_id` only when it finished, so a
+        replay in progress still named the worker of the attempt that failed —
+        and the sweep would fail it under the worker actually running it."""
+        orch = S.make_orchestration(id="orch_owner", entry_step_id="s1", steps=[
+            _agent("s1", "a1", "s2"), _agent("s2", "a2"),
+        ])
+        await seed_orchestration(**orch)
+        monkeypatch.setattr(worker, "_worker_id", "worker-a")
+        agents.block_once.add("a2")
+        await _interrupted(worker.run_orchestration_job(
+            await _ctx(fake_redis, 1), run_id="run_owner", orch_id="orch_owner", initial_input="go",
+        ), agents)
+
+        monkeypatch.setattr(worker, "_worker_id", "worker-b")
+        agents.block_once.add("a2")
+        job = asyncio.create_task(worker.resume_failed_job(await _ctx(fake_redis, 2), run_id="run_owner"))
+        try:
+            await asyncio.wait_for(agents.started.wait(), 5)
+            from core.store import get_store
+            from core.store.models import OrchestrationRunDB
+            async with (await get_store())() as session:
+                row = await session.get(OrchestrationRunDB, "run_owner")
+            assert row.worker_id == "worker-b"
+            assert row.job_id == "job-2"
+        finally:
+            job.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await job
+
+
 class TestShutdownWaitsForRunningJobs:
     def test_the_worker_waits_before_cancelling(self):
         """Without it SIGTERM cancels every job at once. It has to stay under
