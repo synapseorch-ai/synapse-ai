@@ -13,6 +13,10 @@ services:
       # of this uses.
       - SYNAPSE_DB_URL=postgresql+asyncpg://${POSTGRES_USER:-synapse}:${POSTGRES_PASSWORD:-synapse}@synapse-postgres:5432/${POSTGRES_DB:-synapse}
       - SYNAPSE_BLOB_DIR=/blobs
+      # Scale mode is decided by this at startup. Empty = standalone. With
+      # `--profile scale`, set REDIS_URL=redis://synapse-redis:6379/0 in .env so
+      # the API enqueues to the workers that profile starts.
+      - REDIS_URL=${REDIS_URL:-}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host-gateway:11434}
       - CORS_ORIGINS=http://localhost:${SYNAPSE_FRONTEND_PORT:-3000}
       - SYNAPSE_INTERNAL_TOKEN=${SYNAPSE_INTERNAL_TOKEN}
@@ -106,9 +110,10 @@ services:
     image: redis:7-alpine
     profiles: [scale]
     container_name: synapse-redis
-    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
+    # noeviction: Redis holds the job queue, and an LRU policy evicts queued
+    # jobs under memory pressure. Full memory refuses new work instead.
+    # Not published on the host: the API and workers reach it on the network.
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy noeviction
     volumes:
       - synapse-redis-data:/data
     healthcheck:
@@ -126,7 +131,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     profiles: [scale]
-    container_name: synapse-worker
+    # No container_name and no host port, so `--scale worker=N` works. The
+    # Scale screen reaches each worker's health port over the network.
     # Longer than WORKER_JOB_COMPLETION_WAIT: on stop the worker lets running
     # jobs finish for that long, and Docker's default 10 s would kill it first.
     stop_grace_period: 60s
@@ -134,9 +140,9 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://synapse-redis:6379/0
-      - SCALE_POSTGRES_URL=${SCALE_POSTGRES_URL}
       # The same database the API writes: that is what makes a shared fleet a
-      # fleet rather than a set of processes each holding its own install.
+      # fleet rather than a set of processes each holding its own install. The
+      # scale layer uses it too unless SCALE_POSTGRES_URL names another.
       - SYNAPSE_DB_URL=postgresql+asyncpg://${POSTGRES_USER:-synapse}:${POSTGRES_PASSWORD:-synapse}@synapse-postgres:5432/${POSTGRES_DB:-synapse}
       - SYNAPSE_BLOB_DIR=/blobs
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-10}
@@ -169,77 +175,11 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    ports:
-      - "${WORKER_HEALTH_PORT:-9000}:9000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-    restart: unless-stopped
-    networks:
-      - default
-
-  # ---------------------------------------------------------------------------
-  # Enterprise profile services (Redis Cluster, PgBouncer, Observability)
-  # Usage: docker compose --profile enterprise up
-  # ---------------------------------------------------------------------------
-
-  pgbouncer:
-    image: pgbouncer/pgbouncer:latest
-    profiles: [enterprise]
-    container_name: synapse-pgbouncer
-    environment:
-      - DATABASES_HOST=${POSTGRES_HOST:-postgres}
-      - DATABASES_PORT=${POSTGRES_PORT:-5432}
-      - DATABASES_DBNAME=${POSTGRES_DB:-synapse}
-      - DATABASES_USER=${POSTGRES_USER:-postgres}
-      - DATABASES_PASSWORD=${POSTGRES_PASSWORD:-}
-      - PGBOUNCER_POOL_MODE=transaction
-      - PGBOUNCER_MAX_CLIENT_CONN=10000
-      - PGBOUNCER_DEFAULT_POOL_SIZE=25
-    ports:
-      - "6432:5432"
-    restart: unless-stopped
-    networks:
-      - default
-
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    profiles: [enterprise]
-    container_name: synapse-jaeger
-    ports:
-      - "16686:16686"
-      - "4317:4317"
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-    restart: unless-stopped
-    networks:
-      - default
-
-  prometheus:
-    image: prom/prometheus:latest
-    profiles: [enterprise]
-    container_name: synapse-prometheus
-    volumes:
-      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    ports:
-      - "9090:9090"
-    restart: unless-stopped
-    networks:
-      - default
-
-  grafana:
-    image: grafana/grafana:latest
-    profiles: [enterprise]
-    container_name: synapse-grafana
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-synapse}
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - synapse-grafana-data:/var/lib/grafana
-    ports:
-      - "3001:3000"
     restart: unless-stopped
     networks:
       - default
@@ -254,8 +194,6 @@ volumes:
   synapse-secrets:
     driver: local
   synapse-redis-data:
-    driver: local
-  synapse-grafana-data:
     driver: local
 
 networks:

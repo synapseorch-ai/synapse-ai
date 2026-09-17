@@ -149,11 +149,8 @@ async def test_postgres_connection(request: Request):
         raise HTTPException(400, detail="postgres_url is required")
     try:
         from core.scale.db import build_engine
-        # Normalise to asyncpg
-        if "postgresql+asyncpg" not in pg_url:
-            pg_url = pg_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-            pg_url = pg_url.replace("postgres://", "postgresql+asyncpg://", 1)
-        engine = build_engine(pg_url)
+        from core.store.engine import normalise_db_url
+        engine = build_engine(normalise_db_url(pg_url))
         async with engine.connect() as conn:
             from sqlalchemy import text
             await conn.execute(text("SELECT 1"))

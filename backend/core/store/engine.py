@@ -60,9 +60,21 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 _session_binder: SessionBinder | None = None
 
 
+def normalise_db_url(url: str) -> str:
+    """A plain Postgres URL in the asyncpg dialect the engine drives; any other unchanged.
+
+    `postgresql://` is what every provider hands out and what a Kubernetes
+    secret usually holds; the async engine cannot open it (F59).
+    """
+    for scheme in ("postgresql://", "postgres://"):
+        if url.startswith(scheme):
+            return "postgresql+asyncpg://" + url[len(scheme):]
+    return url
+
+
 def default_url() -> str:
     """The database URL, from the environment or the local SQLite default."""
-    configured = (os.getenv("SYNAPSE_DB_URL") or "").strip()
+    configured = normalise_db_url((os.getenv("SYNAPSE_DB_URL") or "").strip())
     if configured:
         return configured
     _DEFAULT_DIR.mkdir(parents=True, exist_ok=True)

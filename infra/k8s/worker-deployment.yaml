@@ -5,7 +5,7 @@ metadata:
   labels:
     app: synapse-worker
 spec:
-  replicas: 2  # KEDA ScaledObject overrides this
+  replicas: 2
   selector:
     matchLabels:
       app: synapse-worker
@@ -68,3 +68,18 @@ spec:
       # No volumes — see the note in api-deployment.yaml. A worker holds no
       # install of its own: its documents are in Postgres and the tenant content
       # it reads and writes is in S3.
+---
+# Service for health checks
+apiVersion: v1
+kind: Service
+metadata:
+  name: synapse-worker
+  labels:
+    app: synapse-worker
+spec:
+  selector:
+    app: synapse-worker
+  ports:
+    - name: health
+      port: 9000
+      targetPort: 9000

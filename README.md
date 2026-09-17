@@ -84,8 +84,8 @@ Then open `http://localhost:3000`. See the [Docker guide](https://docs.synapseor
 Run unlimited agents and orchestrations concurrently. When you need to go beyond a single process, the distributed scale layer handles the load:
 
 - **Redis Cluster** — job queue, SSE event streams, pub/sub cancellation signals, auto-failover
-- **ARQ worker fleet** — 1 to 100+ independent workers, each running up to 20 concurrent orchestrations; autoscale with KEDA on queue depth
-- **PgBouncer** — multiplexes hundreds of worker connections into a small, stable Postgres pool
+- **ARQ worker fleet** — 1 to 100+ independent workers, each running up to 20 concurrent orchestrations
+- **PgBouncer-compatible** — set `PGBOUNCER_MODE=1` when your own PgBouncer, in transaction mode, sits in front of Postgres
 - **S3 artifact storage** — stream large file outputs directly to AWS S3, Cloudflare R2, or MinIO
 - **Multi-tenant quotas** — per-team or per-customer concurrent run limits with HTTP 429 enforcement
 - **Per-step checkpoint recovery** — worker crashes don't lose jobs; the next worker resumes from the last completed step
@@ -98,7 +98,7 @@ docker pull synapseorchai/synapse-ai-api-server:latest  # stateless API server (
 docker pull synapseorchai/synapse-ai-worker:latest      # worker process (scale mode, run as many as needed)
 ```
 
-The `docker-compose.yml` in the repo spins up the full stack. Production K8s manifests are in `infra/k8s/`.
+The `docker-compose.yml` in the repo spins up the full stack (`--profile scale`, with `REDIS_URL` set in `.env`). Example Kubernetes Deployments for the API and the workers are in `infra/k8s/`.
 
 📖 [**Scale Mode docs →**](https://docs.synapseorch.com/scale/overview)
 

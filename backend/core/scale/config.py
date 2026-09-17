@@ -39,7 +39,7 @@ class ScaleConfig:
     rate_limit_per_tenant_rps: int = 1000
 
     # Observability
-    otlp_endpoint: str = ""          # e.g. http://jaeger:4317
+    otlp_endpoint: str = ""          # e.g. http://otel-collector:4317
     metrics_token: str = ""          # bearer token for /metrics endpoint
 
     # Kubernetes
@@ -70,15 +70,17 @@ def get_scale_config() -> ScaleConfig:
         os.getenv("REDIS_URL")
         or settings.get("redis_url", "")
     )
-    postgres_url = (
+    from core.store.engine import is_sqlite, normalise_db_url
+
+    # The scale layer's Postgres is the engine's own unless told otherwise —
+    # the API and the workers must share one database. A worker handed a blank
+    # SCALE_POSTGRES_URL used to build an engine from "" and crash (F60).
+    engine_url = normalise_db_url((os.getenv("SYNAPSE_DB_URL") or "").strip())
+    postgres_url = normalise_db_url(
         os.getenv("SCALE_POSTGRES_URL")
         or settings.get("scale_postgres_url", "")
+        or ("" if not engine_url or is_sqlite(engine_url) else engine_url)
     )
-
-    # Normalise the Postgres URL to asyncpg dialect
-    if postgres_url and "postgresql+asyncpg" not in postgres_url:
-        postgres_url = postgres_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        postgres_url = postgres_url.replace("postgres://", "postgresql+asyncpg://", 1)
 
     # Redis Cluster is auto-detected from URL scheme
     redis_cluster_mode = redis_url.startswith("redis+cluster://")
