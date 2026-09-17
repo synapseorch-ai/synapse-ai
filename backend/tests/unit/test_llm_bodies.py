@@ -162,11 +162,38 @@ class TestAnthropicBody:
                 self.messages.create = create
 
         monkeypatch.setattr(anthropic, "AsyncAnthropic", _Capturing)
-        plan = reasoning_policy.plan_for("claude-sonnet-4-6", "high", 8192)
-        await llm.call_anthropic("claude-sonnet-4-6", [{"role": "user", "content": "q"}],
+        plan = reasoning_policy.plan_for("claude-sonnet-4-5-20250929", "high", 8192)
+        await llm.call_anthropic("claude-sonnet-4-5-20250929", [{"role": "user", "content": "q"}],
                                  "sys", "key", max_tokens=plan.max_output_tokens, reasoning=plan)
         assert captured["thinking"] == {"type": "enabled", "budget_tokens": plan.budget}
         assert captured["max_tokens"] > plan.budget
+        assert "output_config" not in captured
+
+    @pytest.mark.parametrize("model", ["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-6"])
+    async def test_adaptive_models_get_an_effort_not_a_budget(self, monkeypatch, model):
+        """F9: `budget_tokens` is a 400 on Claude 5 and Opus 4.7/4.8 and
+        deprecated on 4.6; they take adaptive thinking with an effort. Summarized,
+        because the default display is an empty thinking block."""
+        import anthropic
+        from core import reasoning as reasoning_policy
+        captured = {}
+        fake = self._fake_anthropic([SimpleNamespace(type="text", text="ok", name=None, input=None)])
+
+        class _Capturing(fake):
+            def __init__(self, **kw):
+                super().__init__(**kw)
+                inner = self.messages.create
+                async def create(**kwargs):
+                    captured.update(kwargs)
+                    return await inner(**kwargs)
+                self.messages.create = create
+
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", _Capturing)
+        plan = reasoning_policy.plan_for(model, "medium", 8192)
+        await llm.call_anthropic(model, [{"role": "user", "content": "q"}],
+                                 "sys", "key", max_tokens=plan.max_output_tokens, reasoning=plan)
+        assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert captured["output_config"] == {"effort": "medium"}
 
     async def test_non_retryable_api_error_raises_llmerror(self, monkeypatch):
         import anthropic

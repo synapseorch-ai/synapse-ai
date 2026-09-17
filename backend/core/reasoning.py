@@ -70,9 +70,35 @@ _MINIMUM_BUDGET = {
 #:
 #: Deliberately a prefix list and not a regex: a new model in a family we
 #: already support should light up on the day it ships, without an edit here.
+#: Anthropic families that take `thinking: {type: "enabled", budget_tokens}`.
+_BUDGET_CLAUDE = ("claude-3-7", "claude-sonnet-4", "claude-opus-4", "claude-haiku-4")
+
+#: Anthropic models that take adaptive thinking with an effort instead (F9). On
+#: Claude 5 and Opus 4.7/4.8 `budget_tokens` is a 400; on the 4.6 pair it is
+#: deprecated. Matched before `_BUDGET_CLAUDE`, whose `claude-opus-4` would
+#: otherwise claim `claude-opus-4-8`. From the claude-api reference, 2026-09-17.
+_ADAPTIVE_CLAUDE = (
+    "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5",
+    "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6",
+)
+
+#: Of those, the ones that think when `thinking` is omitted — so "off" cannot be
+#: honoured by sending nothing, and the reference advises against disabling it
+#: on Opus 5 (tool calls written as text, leaked tags). "Off" runs at low.
+_THINKS_BY_DEFAULT = ("claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5")
+
+#: How a Claude model on the Anthropic API takes a thinking plan.
+ADAPTIVE = "adaptive"
+BUDGET = "budget"
+
+#: Bedrock-hosted Anthropic, in every cross-region form Bedrock names.
+_BEDROCK_ANTHROPIC = tuple(
+    f"bedrock.{geo}anthropic." for geo in ("", "us.", "eu.", "apac.", "global.")
+)
+
 _NATIVE = (
     # Anthropic — extended thinking arrived with 3.7; nothing before it has one.
-    "claude-3-7", "claude-sonnet-4", "claude-opus-4", "claude-haiku-4",
+    *_BUDGET_CLAUDE, *_ADAPTIVE_CLAUDE,
     # Gemini — 2.5 and everything after.
     "gemini-2.5", "gemini-3",
     # OpenAI reasoning models. gpt-4o and gpt-4.1 have no channel and reject the
@@ -80,10 +106,9 @@ _NATIVE = (
     "o1", "o3", "o4", "gpt-5",
     # xAI and DeepSeek.
     "grok-3-mini", "grok-4", "deepseek-reasoner",
-    # Bedrock-hosted Anthropic and DeepSeek, which carry a region/vendor prefix.
-    "bedrock.anthropic.claude-3-7", "bedrock.anthropic.claude-sonnet-4",
-    "bedrock.anthropic.claude-opus-4", "bedrock.us.anthropic.claude-3-7",
-    "bedrock.us.anthropic.claude-sonnet-4", "bedrock.us.anthropic.claude-opus-4",
+    # Bedrock-hosted Anthropic (budget families only — see `supports_native`)
+    # and DeepSeek, which carry a region/vendor prefix.
+    *(vendor + family for vendor in _BEDROCK_ANTHROPIC for family in _BUDGET_CLAUDE),
     "bedrock.deepseek.r1",
 )
 
@@ -171,7 +196,32 @@ def supports_native(model: str, listed: Any = None) -> bool:
     `settings["reasoning_models"]`; see `GRADED` and `SWITCH`.
     """
     name = (model or "").strip().lower()
+    if name.startswith(_BEDROCK_ANTHROPIC) and _bedrock_claude(name).startswith(_ADAPTIVE_CLAUDE):
+        # Budget-less Claude on Bedrock: `budget_tokens` is refused, and the
+        # Converse shape for adaptive thinking was not documented where F9 was
+        # checked. The prompt convention works; a guessed field would 400.
+        return listed_kind(name, listed) is not None
     return bool(name) and (name.startswith(_NATIVE) or listed_kind(name, listed) is not None)
+
+
+def _bedrock_claude(name: str) -> str:
+    """`bedrock.eu.anthropic.claude-opus-4-8-v1:0` → `claude-opus-4-8-v1:0`."""
+    return name.split("anthropic.", 1)[1] if "anthropic." in name else name
+
+
+def anthropic_thinking(model: str) -> str | None:
+    """`ADAPTIVE` or `BUDGET` for a Claude model on the Anthropic API, else None.
+
+    The policy the Anthropic adapter asks: adaptive models get
+    `thinking: {type: "adaptive"}` and `output_config.effort`; the rest get a
+    `budget_tokens`.
+    """
+    name = (model or "").strip().lower()
+    if name.startswith(_ADAPTIVE_CLAUDE):
+        return ADAPTIVE
+    if name.startswith(_BUDGET_CLAUDE):
+        return BUDGET
+    return None
 
 
 def reasoning_kind(model: str, listed: Any = None) -> str | None:
@@ -224,6 +274,8 @@ def plan_for(
         # prompt convention, and this model would then not think either.
         return None
     if kind == GRADED and resolved == "off":
+        resolved = "low"
+    if resolved == "off" and (model or "").strip().lower().startswith(_THINKS_BY_DEFAULT):
         resolved = "low"
     floor = minimum_budget(model)
 

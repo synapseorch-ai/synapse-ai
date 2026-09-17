@@ -51,13 +51,19 @@ def _load_pricing() -> dict:
 
 
 def _resolve_pricing_entry(model: str, pricing: dict | None = None) -> dict | None:
-    """Look up a model's pricing entry with fuzzy-prefix fallback."""
+    """A model's pricing entry: exact, else the longest key the model starts with.
+
+    Nothing else. The fallback used to accept any key sharing the model's first
+    dash-word, and it was checked before a shorter exact prefix could win — so
+    every unknown `claude-*` cost what Sonnet 4.5 costs and `gpt-5` what
+    `gpt-4.1-mini` does (F63). An unknown model is unpriced; a guess from another
+    family is a wrong number on a usage screen and a cost cap.
+    """
     pricing = pricing if pricing is not None else _load_pricing()
     entry = pricing.get(model)
     if entry is None:
-        # Fuzzy prefix match -- pick the longest prefix that fits
         for key in sorted(pricing.keys(), key=len, reverse=True):
-            if model.startswith(key) or key.startswith(model.split("-")[0]):
+            if model.startswith(key):
                 entry = pricing[key]
                 break
     return entry

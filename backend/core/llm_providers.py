@@ -1133,10 +1133,18 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
     if reasoning is not None:
-        # `max_tokens` above already carries the raised cap from
-        # `core.reasoning.plan_for`, which is what keeps this valid: the API
-        # refuses a budget that is not strictly below it.
-        kwargs["thinking"] = {"type": "enabled", "budget_tokens": reasoning.budget}
+        from core import reasoning as _reasoning_policy
+        if _reasoning_policy.anthropic_thinking(model) == _reasoning_policy.ADAPTIVE:
+            # Claude 5 and Opus/Sonnet 4.6+ (F9): a budget is a 400 or
+            # deprecated there. "summarized", because the default display on
+            # the newer models is an empty thinking block.
+            kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
+            kwargs["output_config"] = {"effort": reasoning.effort}
+        else:
+            # `max_tokens` above already carries the raised cap from
+            # `core.reasoning.plan_for`, which is what keeps this valid: the API
+            # refuses a budget that is not strictly below it.
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": reasoning.budget}
 
     # Decorate with prompt cache markers when enabled and the prefix is large enough.
     if prompt_cache:

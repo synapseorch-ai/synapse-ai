@@ -21,9 +21,26 @@ class TestWhoHasAChannel:
         "gemini-2.5-pro", "gemini-2.5-flash", "gemini-3-flash-preview",
         "o3-mini", "gpt-5", "grok-4", "grok-3-mini", "deepseek-reasoner",
         "bedrock.us.anthropic.claude-sonnet-4-20250514-v1:0",
+        # F9: Claude 5 and the 4.x releases after the table was written, and the
+        # cross-region profiles other than us.
+        "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-opus-4-8",
+        "bedrock.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "bedrock.eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "bedrock.global.anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock.apac.anthropic.claude-3-7-sonnet-20250219-v1:0",
     ])
     def test_native(self, model):
         assert R.supports_native(model)
+
+    @pytest.mark.parametrize("model", [
+        "bedrock.us.anthropic.claude-opus-4-7", "bedrock.anthropic.claude-opus-5",
+        "bedrock.eu.anthropic.claude-sonnet-4-6", "bedrock.global.anthropic.claude-sonnet-5",
+    ])
+    def test_adaptive_claude_on_bedrock_keeps_the_convention(self, model):
+        """These reject `budget_tokens`, and the Converse shape for adaptive
+        thinking is not documented where this was checked — so they keep the
+        prompt convention rather than a request that 400s (F9)."""
+        assert not R.supports_native(model)
 
     @pytest.mark.parametrize("model", [
         # No channel: these reject the parameter rather than ignoring it, which
@@ -184,6 +201,35 @@ class TestTheLadder:
         assert R.normalise(None) == "medium"
         assert R.normalise("HIGH") == "high"
         assert R.plan_for("claude-sonnet-4-6", "aggressive", 8192).effort == "medium"
+
+
+class TestClaudeThinkingModes:
+    """F9: which Claude models take `budget_tokens` and which take adaptive
+    thinking with an effort — from the claude-api reference, not memory."""
+
+    @pytest.mark.parametrize("model", [
+        "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7",
+        "claude-opus-4-6", "claude-sonnet-4-6", "claude-fable-5-1",
+    ])
+    def test_adaptive(self, model):
+        assert R.anthropic_thinking(model) == R.ADAPTIVE
+
+    @pytest.mark.parametrize("model", [
+        "claude-haiku-4-5", "claude-sonnet-4-5-20250929", "claude-opus-4-5-20251101",
+        "claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219",
+    ])
+    def test_budget(self, model):
+        assert R.anthropic_thinking(model) == R.BUDGET
+
+    @pytest.mark.parametrize("model", ["claude-opus-5", "claude-sonnet-5", "claude-fable-5-1"])
+    def test_off_runs_at_low_where_thinking_is_on_by_default(self, model):
+        """Omitting `thinking` runs adaptive on these, and the reference warns
+        against disabling it on Opus 5 — so "off" is the lowest effort."""
+        plan = R.plan_for(model, "off", 8192)
+        assert plan is not None and plan.effort == "low"
+
+    def test_off_is_off_where_omitting_means_no_thinking(self):
+        assert R.plan_for("claude-opus-4-8", "off", 8192) is None
 
 
 class TestModelsThatCannotStopThinking:

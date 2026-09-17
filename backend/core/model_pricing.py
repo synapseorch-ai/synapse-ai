@@ -42,4 +42,18 @@ DEFAULT_MODEL_PRICING: dict[str, dict] = {
     "claude-sonnet-4-6": {"provider": "anthropic", "input_per_1m": 3, "output_per_1m": 15},
     "claude-opus-4-5-20251101": {"provider": "anthropic", "input_per_1m": 5, "output_per_1m": 25},
     "claude-opus-4-6": {"provider": "anthropic", "input_per_1m": 5, "output_per_1m": 25},
+    # F63 (2026-09-17), from the claude-api reference's rate table (cached
+    # 2026-06-24). Undated keys, so a dated id matches by prefix.
+    "claude-opus-4-8": {"provider": "anthropic", "input_per_1m": 5, "output_per_1m": 25},
+    "claude-opus-4-7": {"provider": "anthropic", "input_per_1m": 5, "output_per_1m": 25},
+    "claude-opus-4-5": {"provider": "anthropic", "input_per_1m": 5, "output_per_1m": 25},
+    "claude-sonnet-4-5": {"provider": "anthropic", "input_per_1m": 3, "output_per_1m": 15},
+    "claude-haiku-4-5": {"provider": "anthropic", "input_per_1m": 1, "output_per_1m": 5},
+    "claude-opus-5": {"provider": "anthropic", "input_per_1m": 5, "output_per_1m": 25},
+    "claude-sonnet-5": {"provider": "anthropic", "input_per_1m": 2, "output_per_1m": 10},
+    "claude-fable-5": {"provider": "anthropic", "input_per_1m": 10, "output_per_1m": 50},
+    # Cache reads at $0.25/M, a quarter of the usual tenth of the input rate.
+    "claude-fable-5-1": {
+        "provider": "anthropic", "input_per_1m": 10, "output_per_1m": 50, "cache_read_per_1m": 0.25,
+    },
 }
