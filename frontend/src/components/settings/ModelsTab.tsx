@@ -9,34 +9,39 @@ import React, { useState } from 'react';
 
 type BrandIconProps = { className?: string; style?: React.CSSProperties };
 
+// Every brand mark below is decoration: it sits beside the provider's own name,
+// so an `alt` would make a screen reader read that name twice — and the Local V1
+// Compatible card borrows Ollama's mark, so it read out the wrong name entirely.
+// Keep these silent; the visible label is what names the card (F44).
+
 const OllamaIcon = ({ className }: BrandIconProps) => (
-    <img src="/ollama-icon.svg" className={`${className} theme-adaptive-icon`} alt="Ollama" />
+    <img src="/ollama-icon.svg" className={`${className} theme-adaptive-icon`} alt="" />
 );
 
 const GeminiIcon = ({ className }: BrandIconProps) => (
-    <img src="/google-gemini-icon.svg" className={className} alt="Google Gemini" />
+    <img src="/google-gemini-icon.svg" className={className} alt="" />
 );
 
 const AnthropicIcon = ({ className }: BrandIconProps) => (
-    <img src="/claude-ai-icon.svg" className={className} alt="Anthropic Claude" />
+    <img src="/claude-ai-icon.svg" className={className} alt="" />
 );
 
 const OpenAIIcon = ({ className }: BrandIconProps) => (
-    <img src="/chatgpt-icon.svg" className={className} alt="OpenAI" />
+    <img src="/chatgpt-icon.svg" className={className} alt="" />
 );
 
 const AWSIcon = ({ className }: BrandIconProps) => (
-    <img src="/aws-bedrock-icon.svg" className={className} alt="AWS Bedrock" />
+    <img src="/aws-bedrock-icon.svg" className={className} alt="" />
 );
 
 // xAI Grok — inline SVG X lettermark matching xAI brand
 const GrokIcon = ({ className }: BrandIconProps) => (
-    <img src="/grok-icon.svg" className={className} alt="Grok" />
+    <img src="/grok-icon.svg" className={className} alt="" />
 );
 
 // DeepSeek — inline SVG whale/wave mark
 const DeepSeekIcon = ({ className }: BrandIconProps) => (
-    <img src="/deepseek-logo-icon.svg" className={className} alt="DeepSeek" />
+    <img src="/deepseek-logo-icon.svg" className={className} alt="" />
 );
 
 // CLI Sessions — terminal icon from lucide
@@ -46,7 +51,7 @@ const CliIcon = ({ className }: BrandIconProps) => (
 
 // HuggingFace — yellow circle emoji-mark fallback (no external SVG dependency)
 const HuggingFaceIcon = ({ className, style }: BrandIconProps) => (
-    <span className={className} style={{ ...style, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9em', lineHeight: 1 }} aria-label="HuggingFace">🤗</span>
+    <span className={className} style={{ ...style, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9em', lineHeight: 1 }} aria-hidden="true">🤗</span>
 );
 
 interface ProviderInfo {
@@ -312,7 +317,7 @@ export const ModelsTab = ({
                                         <div>
                                             <span className={`text-sm font-bold ${providerData.available ? 'text-text' : 'text-text-faint'}`}>
                                                 {providerLabel(key)}
-                                            </span>
+                                            </span>{' '}
                                             <span className="text-2xs text-text-faint ml-2">
                                                 {providerData.available
                                                     ? `${modelCount} model${modelCount !== 1 ? 's' : ''}`

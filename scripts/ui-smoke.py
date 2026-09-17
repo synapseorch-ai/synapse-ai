@@ -604,6 +604,31 @@ NAMELESS = r"""
 """
 
 
+#: An icon sitting beside a label is decoration, and a decoration that speaks
+#: says the name twice. Chrome builds a button's name from its contents, so an
+#: `<img alt="Google Gemini">` next to the words "Google Gemini" is announced
+#: "Google Gemini Google Gemini" — and the Local V1 Compatible card, which
+#: borrows Ollama's icon, announced somebody else's name entirely (F44).
+TALKATIVE_ICONS = r"""
+() => {
+  const out = [];
+  for (const el of document.querySelectorAll('button, a[href], [role="button"]')) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    const words = el.innerText.trim();
+    if (!words) continue;              // an icon-only control NEEDS its icon to speak
+    for (const icon of el.querySelectorAll('img, [role="img"], [aria-label]')) {
+      if (icon.closest('[aria-hidden="true"]')) continue;
+      const says = (icon.getAttribute('alt') ?? icon.getAttribute('aria-label') ?? '').trim();
+      if (!says) continue;
+      out.push(JSON.stringify(words.split('\n')[0].slice(0, 40)) + ' also says ' + JSON.stringify(says));
+    }
+  }
+  return out;
+}
+"""
+
+
 @check
 async def check_labels(browser) -> str:
     """Every control a person can reach says what it is.
@@ -615,15 +640,21 @@ async def check_labels(browser) -> str:
     `span` unless it is given `htmlFor`, a `label` with neither `htmlFor` nor a
     wrapped control names nothing, and a toggle built from a `button` and two
     `div`s has no name at all.
+
+    It also asks the opposite question — whether anything says its name twice.
+    A control's name is built from its contents, so a brand icon that kept its
+    `alt` is read out beside the label it illustrates (F44).
     """
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
         nameless: list[str] = []
+        talkative: list[str] = []
         for path in LABEL_PAGES:
             await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
             await asyncio.sleep(SETTLE)
             nameless.extend(f"{path}: {row}" for row in await page.evaluate(NAMELESS))
+            talkative.extend(f"{path}: {row}" for row in await page.evaluate(TALKATIVE_ICONS))
             # The forms live behind the screen's own "New…" button.
             opener = page.get_by_role("button", name=re.compile(r"^(new|add|create)\b", re.I)).first
             try:
@@ -636,7 +667,14 @@ async def check_labels(browser) -> str:
             raise AssertionError(
                 f"{len(nameless)} control(s) with no accessible name — " + "; ".join(nameless[:6])
             )
-        return f"every control on {len(LABEL_PAGES)} screens has a name"
+        if talkative:
+            raise AssertionError(
+                f"{len(talkative)} control(s) announce their icon as well as their label — "
+                + "; ".join(talkative[:6])
+            )
+        return (
+            f"every control on {len(LABEL_PAGES)} screens has a name, and says it once"
+        )
     finally:
         await ctx.close()
 
