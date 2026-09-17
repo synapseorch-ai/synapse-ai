@@ -125,11 +125,13 @@ async def delete_schedule(schedule_id: str):
 
 @router.post("/api/schedules/{schedule_id}/run")
 async def run_schedule_now(schedule_id: str, request: Request):
-    """Manually trigger a schedule immediately (fire-and-forget). Returns a run_id."""
+    """Run a schedule now, as a test (fire-and-forget). Returns the run's id.
+
+    Runs a disabled schedule too, and does not move its next run (F72).
+    """
     mgr = _get_manager(request)
 
-    if not await schedule_store.get(schedule_id):
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
     run_id = await mgr.trigger_now(schedule_id)
+    if run_id is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
     return {"status": "triggered", "schedule_id": schedule_id, "run_id": run_id}

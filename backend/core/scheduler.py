@@ -5,7 +5,6 @@ Restart-proof: next_run_at is persisted so overdue schedules are handled on star
 """
 import asyncio
 import logging
-import time
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -66,6 +65,7 @@ class ScheduleManager:
         self._server_module = None
         self._loop_task: asyncio.Task | None = None
         self._running = False
+        self._manual_runs: set[asyncio.Task] = set()
 
     async def start(self, server_module) -> None:
         """Called from server lifespan. Evaluates overdue schedules and starts the loop."""
@@ -90,17 +90,25 @@ class ScheduleManager:
                 pass
         logger.info("[Scheduler] Stopped")
 
-    async def trigger_now(self, schedule_id: str) -> str:
-        """Manually trigger a schedule immediately. Returns the run_id."""
-        # We return the future run_id by peeking at what the logger will generate.
-        # The actual run_id is set inside _execute_schedule, so we just fire it.
-        task = asyncio.create_task(self._execute_schedule(schedule_id))
-        # Give the coroutine a moment to create the logger and set run_id
-        # But since we can't easily get the run_id back from a fire-and-forget task,
-        # we generate a predictable one for the caller.
-        short_id = schedule_id.replace("sched_", "") if schedule_id.startswith("sched_") else schedule_id
-        run_id = f"schedulerun_{short_id}_{int(time.time() * 1000)}"
-        return run_id
+    async def trigger_now(self, schedule_id: str) -> str | None:
+        """Run a schedule now, as a test. Returns the run id, or None if there is no such schedule.
+
+        Runs whether or not the schedule is enabled, and leaves `next_run_at` and
+        `last_run_at` alone — pressing Run Now is not an occurrence of the
+        schedule. It used to fire the tick's path, which returned at once for a
+        disabled schedule and moved an enabled one's next run, and it returned a
+        run id guessed from the clock rather than the run's (F72). Cloud's Run
+        Now behaves this way already.
+        """
+        s = await schedule_store.get(schedule_id)
+        if not s:
+            return None
+        sched_log = self._schedule_logger(s)
+        task = asyncio.create_task(self._run(s, sched_log))
+        # A task nobody references can be collected mid-run.
+        self._manual_runs.add(task)
+        task.add_done_callback(self._manual_runs.discard)
+        return sched_log.run_id
 
     # -- Internal loop ----------------------------------------------------
 
@@ -195,9 +203,17 @@ class ScheduleManager:
             s.get("name"), schedule_id, s["next_run_at"],
         )
 
-        # Step 2: Create logger
-        from core.schedule_logger import ScheduleLogger
-        sched_log = ScheduleLogger(
+        await self._run(s, self._schedule_logger(s))
+
+        # Record when this occurrence started. One row update — the whole-file
+        # rewrite this used to be clobbered any edit made through the API while
+        # the run was in flight. Only for an occurrence: Run Now is not one.
+        await schedule_store.set_last_run(schedule_id, now)
+
+    @staticmethod
+    def _schedule_logger(s: dict):
+        from core import schedule_logger
+        return schedule_logger.ScheduleLogger(
             schedule_id=s["id"],
             schedule_name=s.get("name", "Unknown"),
             target_type=s.get("target_type", "agent"),
@@ -205,7 +221,8 @@ class ScheduleManager:
             prompt=s.get("prompt", ""),
         )
 
-        started_at = now
+    async def _run(self, s: dict, sched_log) -> None:
+        """Run one schedule invocation end-to-end under `sched_log`'s run id."""
         final_response = ""
         status = "completed"
 
@@ -226,12 +243,7 @@ class ScheduleManager:
             sched_log.run_end(status)
             sched_log.close()
 
-        # Step 3: Record when this run started. One row update — the whole-file
-        # rewrite this used to be clobbered any edit made through the API while
-        # the run was in flight.
-        await schedule_store.set_last_run(schedule_id, started_at)
-
-        # Step 4: Messaging notification
+        # Messaging notification
         if final_response and status == "completed":
             await self._maybe_notify_messaging(s, final_response)
 
