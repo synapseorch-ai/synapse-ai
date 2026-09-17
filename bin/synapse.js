@@ -744,7 +744,12 @@ async function runUninstall() {
 
 const cliArg = process.argv[2];
 
-if (cliArg === 'setup') {
+if (cliArg === '--version' || cliArg === '-V') {
+  // What SECURITY.md asks a reporter to run. Anything unrecognised starts the
+  // server, so without this `synapse --version` did (F80).
+  console.log(`synapse ${require('../package.json').version}`);
+  process.exit(0);
+} else if (cliArg === 'setup') {
   checkPrerequisites();
   fs.mkdirSync(SYNAPSE_HOME, { recursive: true });
   const ollamaAvail = checkCmd('ollama');

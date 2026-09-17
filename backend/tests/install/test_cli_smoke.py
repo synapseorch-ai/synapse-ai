@@ -128,3 +128,35 @@ def test_migrate_imports_a_pre_database_install(clean_install, monkeypatch, caps
     assert "No pre-database install found to import." in run_cli(
         monkeypatch, capsys, "migrate"
     )
+
+
+# ── version ──────────────────────────────────────────────────────────────────
+
+class TestVersion:
+    """`SECURITY.md` asks reporters for `synapse --version`, which did not exist,
+    and the version the upgrade check read came from `pyproject.toml` — absent
+    from a pip install, which therefore reported 0.0.0 (F80)."""
+
+    def test_the_flag_prints_the_version(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["synapse", "--version"])
+        with pytest.raises(SystemExit) as exited:
+            cli.main()
+
+        assert exited.value.code == 0
+        assert capsys.readouterr().out.strip() == f"synapse {cli._get_current_version()}"
+
+    def test_a_source_checkout_reads_pyproject(self):
+        import tomllib
+        pyproject = tomllib.loads((cli.ROOT_DIR / "pyproject.toml").read_text())
+        assert cli._get_current_version() == pyproject["project"]["version"]
+
+    def test_a_pip_install_reads_the_installed_package(self, monkeypatch, tmp_path):
+        import importlib.metadata as metadata
+        monkeypatch.setattr(cli, "ROOT_DIR", tmp_path)       # no pyproject.toml beside the package
+        monkeypatch.setattr(metadata, "version", lambda dist: "9.8.7" if dist == "synapse-orch-ai" else None)
+
+        assert cli._get_current_version() == "9.8.7"
+
+    def test_the_npm_wrapper_does_not_start_the_server_for_it(self):
+        source = (cli.ROOT_DIR / "bin" / "synapse.js").read_text()
+        assert "cliArg === '--version'" in source

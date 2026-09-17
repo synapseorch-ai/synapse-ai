@@ -1022,7 +1022,13 @@ def _status_command():
 
 
 def _get_current_version() -> str:
-    """Read the version string from pyproject.toml."""
+    """This install's version.
+
+    A source checkout reads `pyproject.toml`, which is the truth there even when
+    an older copy is also pip-installed. A pip install has no `pyproject.toml`
+    beside the package — the wheel does not ship it — so it reads the installed
+    distribution's metadata; it used to report 0.0.0 (F80).
+    """
     try:
         content = (ROOT_DIR / "pyproject.toml").read_text(encoding="utf-8")
         for line in content.splitlines():
@@ -1031,7 +1037,12 @@ def _get_current_version() -> str:
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
     except Exception:
         pass
-    return "0.0.0"
+    try:
+        from importlib.metadata import version
+
+        return version("synapse-orch-ai") or "0.0.0"
+    except Exception:
+        return "0.0.0"
 
 
 def _parse_version(v: str) -> tuple:
@@ -1796,6 +1807,8 @@ def main():
     _warn_if_not_on_path()
     _warn_versions()
     parser = argparse.ArgumentParser(prog="synapse", description="Manage Synapse server (backend + frontend)")
+    # What SECURITY.md asks a reporter to run (F80).
+    parser.add_argument("--version", action="version", version=f"synapse {_get_current_version()}")
     sub = parser.add_subparsers(dest="cmd")
 
     p_start = sub.add_parser("start", help="Start backend and frontend")
