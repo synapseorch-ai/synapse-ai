@@ -12,8 +12,10 @@ from _fakes.fake_pg import fake_session_factory
 
 
 @pytest.fixture
-def v2(scale_app, monkeypatch):
-    """scale_app + a working fake PG factory + a neutralized metrics counter."""
+async def v2(scale_app, monkeypatch, seed_agent):
+    """scale_app + a working fake PG factory + a neutralized metrics counter,
+    and `agent_1`, which chat now looks up before it queues (F69)."""
+    await seed_agent(id="agent_1", name="Agent One")
     scale_app.state.pg_session_factory = fake_session_factory()
     import core.scale.metrics as metrics
     monkeypatch.setattr(metrics, "record_run_enqueued", lambda **k: None, raising=False)

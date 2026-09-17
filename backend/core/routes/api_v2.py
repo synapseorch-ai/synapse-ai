@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.images import checked_images
+
 from core.api_key_middleware import require_api_key
 from core.scale.config import QUEUE_NAME
 from core.tenancy import get_tenant
@@ -35,7 +37,6 @@ router = APIRouter()
 class V2OrchestrationRunRequest(BaseModel):
     message: str = ""
     session_id: str | None = None
-    priority: int = 0
     webhook_url: str | None = None
     webhook_secret: str | None = None
     # No `tenant_id`. It was accepted from the request body and written onto
@@ -55,9 +56,11 @@ class V2ChatRequest(BaseModel):
     agent: str | None = None
     session_id: str | None = None
     images: list[str] = []
-    priority: int = 0
     webhook_url: str | None = None
     webhook_secret: str | None = None
+
+    # Refused here with a 422, not inside the worker's ChatRequest (F69).
+    _check_images = checked_images()
 
 
 # ---------------------------------------------------------------------------
@@ -517,12 +520,18 @@ async def v2_chat(
     redis = _require_scale_mode(request)
     arq_redis = _get_arq_redis(request)
 
+    # Resolved here, the way v1 resolves it, so an unknown agent is a 404 rather
+    # than a queued job that fails — and a name reaches the worker as the id it
+    # looks agents up by (F69).
+    from core.routes.api_v1 import _agent_or_error
+    agent = await _agent_or_error(body.agent)
+
     session_id = body.session_id or _new_session_id()
 
     await arq_redis.enqueue_job(
         "run_agent_chat_job",
         session_id=session_id,
-        agent_id=body.agent,
+        agent_id=agent["id"],
         message=body.message,
         images=body.images,
         webhook_url=body.webhook_url,

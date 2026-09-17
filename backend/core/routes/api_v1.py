@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.api_key_middleware import require_api_key
+from core.images import checked_images
 
 router = APIRouter()
 log = logging.getLogger("api_v1")
@@ -36,6 +37,9 @@ class V1ChatRequest(BaseModel):
     session_id: str | None = None     # for conversation continuity (auto-generated if omitted)
     images: list[str] = []            # optional base64 images
 
+    # A malformed image is the caller's 422, not a 500 raised building the request (F69).
+    _check_images = checked_images()
+
 
 class V1OrchestrationRunRequest(BaseModel):
     message: str = ""
@@ -47,29 +51,41 @@ class V1ResumeRequest(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-async def _resolve_agent_for_api(agent_identifier: str | None) -> dict | None:
-    """Find agent by name (case-insensitive) or ID. Falls back to first agent."""
+def _is_system_agent(agent: dict) -> bool:
+    """The AI builder's own agents — seeded, not the workspace's to call."""
+    return bool(agent.get("system")) or agent.get("type") == "builder"
+
+
+async def _api_agents() -> list[dict]:
     from core.routes.agents import load_user_agents
-    agents = await load_user_agents()
-    if not agents:
-        return None
+    return [a for a in await load_user_agents() if not _is_system_agent(a)]
+
+
+async def _resolve_agent_for_api(agent_identifier: str | None) -> dict | None:
+    """The agent an API call names: an exact id, else an exact name in any case.
+
+    With no identifier, the workspace's first agent. None when there is no such
+    agent. It used to fall back to a partial name match and then to the first
+    agent — so a misspelled name ran a different agent, and on a fresh install
+    the first agent was one of the AI builder's own (F69).
+    """
+    agents = await _api_agents()
     if not agent_identifier:
-        return agents[0]
-    # Exact ID match
+        return agents[0] if agents else None
     by_id = next((a for a in agents if a["id"] == agent_identifier), None)
     if by_id:
         return by_id
-    # Case-insensitive name match
     lower = agent_identifier.lower()
-    by_name = next((a for a in agents if a["name"].lower() == lower), None)
-    if by_name:
-        return by_name
-    # Partial name match
-    partial = next((a for a in agents if lower in a["name"].lower()), None)
-    if partial:
-        return partial
-    # Fallback to first agent
-    return agents[0]
+    return next((a for a in agents if (a.get("name") or "").lower() == lower), None)
+
+
+async def _agent_or_error(agent_identifier: str | None) -> dict:
+    agent = await _resolve_agent_for_api(agent_identifier)
+    if agent is not None:
+        return agent
+    if agent_identifier:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_identifier}' not found")
+    raise HTTPException(status_code=400, detail="No agents configured")
 
 
 def _build_chat_request(body: V1ChatRequest, agent: dict) -> "ChatRequest":
@@ -118,9 +134,7 @@ def _format_sse_event(event: dict) -> str:
 @router.post("/chat")
 async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_key)):
     """Synchronous chat — returns only the final response."""
-    agent = await _resolve_agent_for_api(body.agent)
-    if not agent:
-        raise HTTPException(status_code=400, detail="No agents configured")
+    agent = await _agent_or_error(body.agent)
 
     import core.server as _server
     if not _server.agent_sessions:
@@ -170,9 +184,7 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
 @router.post("/chat/stream")
 async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require_api_key)):
     """SSE streaming chat — returns all events."""
-    agent = await _resolve_agent_for_api(body.agent)
-    if not agent:
-        raise HTTPException(status_code=400, detail="No agents configured")
+    agent = await _agent_or_error(body.agent)
 
     import core.server as _server
     if not _server.agent_sessions:
@@ -428,7 +440,7 @@ async def v1_orchestration_resume(
     step_history = []
     shared_state = {}
     status = "running"
-    _allowed_statuses = {"running", "paused", "completed", "failed"}
+    _allowed_statuses = {"running", "paused", "completed", "failed", "cancelled"}
 
     try:
         # Through the runner pump so the resumed run is journaled and
@@ -554,8 +566,7 @@ async def v1_orchestration_resume_stream(
 @router.get("/agents")
 async def v1_list_agents(key_record: dict = Depends(require_api_key)):
     """List all configured agents (id, name, type, capabilities)."""
-    from core.routes.agents import load_user_agents
-    agents = await load_user_agents()
+    agents = await _api_agents()
     return [
         {
             "id": a["id"],
@@ -571,8 +582,7 @@ async def v1_list_agents(key_record: dict = Depends(require_api_key)):
 @router.get("/agents/{agent_id}")
 async def v1_get_agent(agent_id: str, key_record: dict = Depends(require_api_key)):
     """Get details for a specific agent."""
-    from core.routes.agents import load_user_agents
-    agents = await load_user_agents()
+    agents = await _api_agents()
     agent = next((a for a in agents if a["id"] == agent_id), None)
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
@@ -604,26 +614,18 @@ async def v1_list_orchestrations(key_record: dict = Depends(require_api_key)):
 
 @router.get("/orchestrations/{orch_id}")
 async def v1_get_orchestration(orch_id: str, key_record: dict = Depends(require_api_key)):
-    """Get details for a specific orchestration including step definitions."""
+    """The orchestration's definition — its steps and how they connect.
+
+    It used to answer in a shape the definitions stopped having (`label`,
+    `depends_on`, `edges`), so every step came back unlabelled and unconnected
+    (F69). Validated, so what comes back is the model's current fields and
+    not whatever older keys a stored document still carries.
+    """
+    from core.models_orchestration import Orchestration
     from core.routes.orchestrations import load_orchestrations
     orchs = await load_orchestrations()
     orch = next((o for o in orchs if o["id"] == orch_id), None)
     if not orch:
         raise HTTPException(status_code=404, detail=f"Orchestration '{orch_id}' not found")
-    return {
-        "id": orch["id"],
-        "name": orch.get("name", ""),
-        "description": orch.get("description", ""),
-        "steps": [
-            {
-                "id": s.get("id", ""),
-                "label": s.get("label", ""),
-                "type": s.get("type", ""),
-                "agent_id": s.get("agent_id", ""),
-                "depends_on": s.get("depends_on", []),
-            }
-            for s in orch.get("steps", [])
-        ],
-        "edges": orch.get("edges", []),
-    }
+    return Orchestration.model_validate(orch).model_dump(mode="json")
 
