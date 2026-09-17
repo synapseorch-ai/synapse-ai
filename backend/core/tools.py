@@ -110,12 +110,6 @@ class ToolHints:
     declared: bool = False
     trusted: bool = True
 
-    @property
-    def cacheable(self) -> bool:
-        """Safe to serve a previous result for. Read-only and idempotent, and
-        not reaching an outside world that could have changed underneath."""
-        return self.declared and self.read_only and self.idempotent and not self.open_world
-
 
 #: Appended to a tool's description so the model knows what a call costs.
 #: Deterministic by construction — the tools array sits inside the prompt

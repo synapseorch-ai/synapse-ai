@@ -1,13 +1,14 @@
 """
 Caching layer for the orchestration and agent system.
 
-Three sub-modules:
+Two sub-modules:
 - prompt_cache: provider-payload decorators (Anthropic cache_control, etc.)
-- tool_cache:   memoization for deterministic MCP/builder/custom tool results
 - response_cache: exact + semantic cache for LLM responses (skips AGENT steps)
 
-All caches are opt-in per step via StepConfig.cache_* and globally via settings.
+There is no tool-result cache. One existed; it served exactly one tool
+(`collect_data`), and a hit skipped marking the reply as a form (F67). A
+tool's result is whatever the tool returns now.
 """
-from core.cache import prompt_cache, tool_cache, response_cache, store
+from core.cache import prompt_cache, response_cache, store
 
-__all__ = ["prompt_cache", "tool_cache", "response_cache", "store"]
+__all__ = ["prompt_cache", "response_cache", "store"]

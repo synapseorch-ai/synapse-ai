@@ -1,5 +1,5 @@
 """
-Unit tests for the cache layer (prompt_cache, tool_cache, response_cache, store).
+Unit tests for the cache layer (prompt_cache, response_cache, store).
 
 Run with:
     python -m pytest backend/tests/unit/test_cache.py -v
@@ -143,42 +143,6 @@ def test_prompt_cache_global_toggle_default():
     assert cache_enabled({}) is True
     assert cache_enabled({"prompt_cache_enabled": False}) is False
     assert cache_enabled({"prompt_cache_enabled": True}) is True
-
-
-# ── tool_cache ─────────────────────────────────────────────────────────────
-
-def test_tool_cache_only_deterministic():
-    from core.cache import tool_cache
-    assert tool_cache.is_cacheable("code_search") is True
-    assert tool_cache.is_cacheable("pdf_parser") is True
-    assert tool_cache.is_cacheable("bash") is False
-    assert tool_cache.is_cacheable("sql_agent") is False
-    assert tool_cache.is_cacheable("nonexistent_tool") is False
-
-
-def test_tool_cache_set_get_hit():
-    from core.cache import tool_cache
-    args = {"query": "foo bar", "limit": 10}
-    assert tool_cache.get("code_search", args) is None
-    tool_cache.set("code_search", args, "search results here", ttl_seconds=60)
-    assert tool_cache.get("code_search", args) == "search results here"
-
-
-def test_tool_cache_session_scope():
-    """personal_details is session-scoped — different sessions, different cache."""
-    from core.cache import tool_cache
-    args = {"key": "address"}
-    tool_cache.set("personal_details", args, "alice's address", session_id="sess_alice")
-    tool_cache.set("personal_details", args, "bob's address", session_id="sess_bob")
-    assert tool_cache.get("personal_details", args, session_id="sess_alice") == "alice's address"
-    assert tool_cache.get("personal_details", args, session_id="sess_bob") == "bob's address"
-
-
-def test_tool_cache_side_effectful_silently_ignored():
-    from core.cache import tool_cache
-    # Setting on a non-deterministic tool is a no-op; get returns None.
-    tool_cache.set("bash", {"cmd": "ls"}, "/tmp output")
-    assert tool_cache.get("bash", {"cmd": "ls"}) is None
 
 
 # ── response_cache (exact match only — semantic path needs a live MemoryStore) ─

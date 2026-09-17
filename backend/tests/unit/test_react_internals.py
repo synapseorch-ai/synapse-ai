@@ -1,6 +1,6 @@
 """
-Internal ReAct paths: auto-compaction firing inside the loop, deterministic
-tool-cache hits, and orchestration input-key context chaining.
+Internal ReAct paths: auto-compaction firing inside the loop, a tool result
+never served from a cache, and orchestration input-key context chaining.
 """
 import types
 
@@ -36,19 +36,63 @@ class TestCompaction:
         assert any(e.get("type") == "final" for e in events)
 
 
-class TestToolCacheHit:
-    async def test_deterministic_tool_cache_hit(self, fake_llm):
-        from core.cache import tool_cache
-        # Pre-seed a cache entry for a deterministic (cacheable) tool.
-        tool_cache.set("code_search", {"query": "widgets"}, "CACHED SEARCH RESULT", ttl_seconds=300)
+class _FormSession:
+    """An MCP session serving `collect_data`, counting calls."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def send_ping(self):
+        return None
+
+    async def call_tool(self, name, args, read_timeout_seconds=None):
+        import json
+        self.calls += 1
+        form = {"title": "Details", "fields": [{"name": "email", "type": "text"}]}
+        return types.SimpleNamespace(content=[types.SimpleNamespace(text=json.dumps(form))])
+
+
+class TestNoToolResultIsServedTwice:
+    async def test_the_same_form_asked_for_twice_is_a_form_both_times(self, fake_llm):
+        """F67: the tool cache served `collect_data` — the one tool its hand list
+        and the real tool names agreed on — and a hit skipped the step that
+        marks the reply as a form, so the second person asked got text instead.
+        The cache is gone; every call reaches the tool."""
+        from core.react_engine import run_agent_step
+        session = _FormSession()
+        server = types.SimpleNamespace(
+            agent_sessions={"forms": session}, memory_store=None,
+            tool_router={"collect_data": ("forms", "collect_data")},
+        )
         agent = S.make_agent(tools=["all"], skip_default_tools=True)
-        fake_llm.script([tool_call("code_search", query="widgets"), "wrapped up"])
-        events = [ev async for ev in __import__("core.react_engine", fromlist=["run_agent_step"]).run_agent_step(
-            message="find widgets", agent_id=agent["id"], session_id="s_cache",
-            server_module=_server(), agent_override=agent,
-            tools_override=[_tool_schema("code_search")], max_turns=3)]
-        results = [e for e in events if e.get("type") in ("tool_result", "tool_cache_hit")]
-        assert any("CACHED SEARCH RESULT" in e.get("preview", "") for e in results)
+
+        finals = []
+        for conversation in ("s_form_1", "s_form_2"):
+            fake_llm.script([tool_call("collect_data", title="Details"), "Please fill this in."])
+            events = [ev async for ev in run_agent_step(
+                message="ask for their email", agent_id=agent["id"], session_id=conversation,
+                server_module=server, agent_override=agent,
+                tools_override=[_tool_schema("collect_data")], max_turns=3)]
+            finals.append(next(e for e in reversed(events) if e.get("type") == "final"))
+
+        assert [f.get("intent") for f in finals] == ["collect_data", "collect_data"]
+        assert session.calls == 2
+        assert not any(e.get("type") == "tool_cache_hit" for e in events)
+
+
+class TestTheStepStillCarriesTheCacheFields:
+    def test_a_step_saved_with_the_old_toggle_round_trips(self):
+        """Nothing reads them since F67, but the synced step panel still writes
+        them until batch 3 removes the toggle. A field dropped from the model
+        would vanish from every orchestration on its next save."""
+        from core.models_orchestration import StepConfig
+        step = StepConfig.model_validate({
+            "id": "s", "name": "S", "type": "agent",
+            "cache_tools_enabled": False, "cache_tool_ttl_seconds": 60,
+        })
+        dumped = step.model_dump()
+        assert dumped["cache_tools_enabled"] is False
+        assert dumped["cache_tool_ttl_seconds"] == 60
 
 
 class TestOrchestrationContextChain:
