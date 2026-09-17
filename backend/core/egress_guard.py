@@ -64,6 +64,17 @@ class MalformedUrl(BlockedEgress):
     """
 
 
+class BlockedAddress(BlockedEgress):
+    """The host resolves into a range this guard refuses — loopback, private
+    space, link-local, CGNAT. The one refusal `EGRESS_ALLOW_HOSTS` can lift,
+    so the one a caller may say that about (F78). `host` is what was asked for.
+    """
+
+    def __init__(self, message: str, host: str):
+        super().__init__(message)
+        self.host = host
+
+
 class UnresolvedHost(BlockedEgress):
     """The host could not be resolved, so nothing is known about where it points.
 
@@ -162,7 +173,7 @@ async def check_host(host: str) -> None:
             # `host` is echoed because the caller supplied it. The addresses
             # it resolved to are not: that is internal topology, and reading
             # it back is exactly what an attacker is probing for.
-            raise BlockedEgress(f"{host} resolves to a blocked range: {reason}")
+            raise BlockedAddress(f"{host} resolves to a blocked range: {reason}", host)
 
 
 async def check_url(url: str) -> None:

@@ -334,3 +334,50 @@ class TestTheToolStepSendsWhatTheTenantResolved:
             set_resource_provider(None)
 
         assert outbound.calls[0]["headers"]["Authorization"] == "Bearer resolved"
+
+
+class TestARefusalSaysHowToAllowIt:
+    """The shipped n8n URL is `http://localhost:5678`, so every n8n tool call was
+    refused with "localhost resolves to a blocked range: loopback" and nothing
+    said the refusal can be lifted (F78). A self-hosted install is told the
+    setting; a multi-tenant deployment, whose customers cannot set environment
+    variables, is not."""
+
+    class _NeverCalled:
+        async def request(self, **kwargs):
+            raise AssertionError("the request was sent anyway")
+
+    async def test_the_host_and_the_variable_are_named(self, monkeypatch):
+        from core import http_tool
+        from core.egress_guard import BlockedEgress
+        monkeypatch.delenv("EGRESS_ALLOW_HOSTS", raising=False)
+
+        with pytest.raises(BlockedEgress) as refused:
+            await http_tool.send(self._NeverCalled(),
+                                 {"url": "http://localhost:5678/webhook/x", "method": "POST"}, {}, {})
+
+        assert "EGRESS_ALLOW_HOSTS" in str(refused.value)
+        assert "localhost" in str(refused.value)
+        assert "blocked range" in str(refused.value)
+
+    async def test_not_where_nobody_can_set_it(self, monkeypatch):
+        from core import http_tool, tenancy
+        from core.egress_guard import BlockedEgress
+        monkeypatch.delenv("EGRESS_ALLOW_HOSTS", raising=False)
+        monkeypatch.setattr(tenancy, "_multi_tenant", True)
+
+        with pytest.raises(BlockedEgress) as refused:
+            await http_tool.send(self._NeverCalled(),
+                                 {"url": "http://localhost:5678/webhook/x", "method": "POST"}, {}, {})
+
+        assert "EGRESS_ALLOW_HOSTS" not in str(refused.value)
+
+    async def test_a_scheme_refusal_names_no_variable(self):
+        """No setting allows a file:// URL, so none is suggested."""
+        from core import http_tool
+        from core.egress_guard import BlockedEgress
+
+        with pytest.raises(BlockedEgress) as refused:
+            await http_tool.send(self._NeverCalled(), {"url": "file:///etc/passwd", "method": "GET"}, {}, {})
+
+        assert "EGRESS_ALLOW_HOSTS" not in str(refused.value)

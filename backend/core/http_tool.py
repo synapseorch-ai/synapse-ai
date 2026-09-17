@@ -167,6 +167,21 @@ async def send(
     request = build_request(tool, args, global_variables)
     try:
         await egress_guard.check_url(request["url"])
+    except egress_guard.BlockedAddress as exc:
+        # Say how to allow it where somebody can. The shipped n8n URL is
+        # localhost, so without this every n8n call was refused with nothing
+        # saying the refusal can be lifted (F78). Not in a multi-tenant
+        # deployment: its customers cannot set the operator's environment, and
+        # loopback on a shared fleet must stay shut.
+        from core import tenancy
+
+        if tenancy.is_multi_tenant():
+            raise
+        raise egress_guard.BlockedAddress(
+            f"{exc}. If this install is meant to call it, add {exc.host} to the "
+            f"EGRESS_ALLOW_HOSTS environment variable and restart.",
+            exc.host,
+        ) from None
     except (egress_guard.UnresolvedHost, egress_guard.MalformedUrl):
         # Neither of these names a destination, so neither is ours to refuse.
         # A host this machine cannot resolve is somebody else's network — the
