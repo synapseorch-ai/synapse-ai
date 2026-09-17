@@ -204,11 +204,23 @@ class MessagingManager:
     # Agent Runner
     # ------------------------------------------------------------------ #
 
-    async def run_agent(self, message: str, agent_id: str, session_id: str) -> str:
+    async def run_agent(
+        self, message: str, agent_id: str, session_id: str, channel_id: Optional[str] = None,
+    ) -> str:
         """
         Run an agent's ReAct loop and return the final text response.
+
+        An Orchestrator agent runs its orchestration instead (F71): the reply is
+        the orchestration's answer, its error, or where it paused.
         """
-        from core.react_engine import run_agent_step
+        from core.react_engine import resolve_agent_for_run, run_agent_step
+        try:
+            agent = await resolve_agent_for_run(agent_id)
+        except Exception:
+            agent = None
+        if agent and agent.get("type") == "orchestrator":
+            return await self._run_orchestrator(agent, message, session_id, channel_id)
+
         final_response = ""
         try:
             async for event in run_agent_step(
@@ -224,6 +236,50 @@ class MessagingManager:
         except Exception as e:
             logger.error("[Manager] run_agent error (agent=%s): %s", agent_id, e)
             final_response = f"⚠️ Error: {e}"
+        return final_response
+
+    async def _run_orchestrator(
+        self, agent: dict, message: str, session_id: str, channel_id: Optional[str],
+    ) -> str:
+        from core.react_engine import run_orchestrator_agent
+
+        final_response = ""
+        error: Optional[str] = None
+        failed = False
+        paused: Optional[dict] = None
+        try:
+            async for event in run_orchestrator_agent(
+                agent, message, self.server_module, session_id=session_id,
+            ):
+                etype = event.get("type")
+                if etype == "final":
+                    final_response = event.get("response", "")
+                elif etype == "orchestration_error":
+                    error = str(event.get("error") or "the orchestration failed")
+                elif etype == "error":
+                    error = str(event.get("message") or "the orchestration failed")
+                elif etype == "orchestration_complete" and event.get("status") in ("failed", "cancelled"):
+                    # A step failure ends this way; the reason is in `final`.
+                    failed = True
+                elif etype == "human_input_required":
+                    paused = event
+        except Exception as e:
+            logger.error("[Manager] orchestrator agent %s failed: %s", agent.get("id"), e)
+            error = str(e)
+
+        if error:
+            return f"⚠️ Error: {error}"
+        if failed:
+            return f"⚠️ {final_response or 'The workflow failed.'}"
+        if paused:
+            if channel_id and paused.get("channel_id") == channel_id:
+                # The step asked its question in this channel already, and a
+                # reply here answers it (F54). Saying it twice would be noise.
+                return ""
+            return (
+                f"⏸ {paused.get('prompt') or 'The workflow is waiting for input.'}\n\n"
+                f"Answer it in SynapseOrch (run {paused.get('run_id')})."
+            )
         return final_response
 
     # ------------------------------------------------------------------ #

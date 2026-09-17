@@ -81,6 +81,8 @@ class ScheduleLogger:
         self.run_id = f"schedulerun_{short_id}_{int(time.time() * 1000)}"
         self.path = _logs_dir() / f"{self.run_id}.log"
         self._start_time = time.time()
+        #: Set when the run stops on a human step, so it is logged paused, not completed.
+        self.paused = False
 
         prompt_preview = prompt[:300] + "..." if len(prompt) > 300 else prompt
         self._write(f"""
@@ -157,6 +159,8 @@ class ScheduleLogger:
     def log_event(self, event: dict):
         """Process an SSE event and write relevant info to the log."""
         etype = event.get("type", "")
+        if etype == "human_input_required":
+            self.paused = True
 
         if etype == "_log_prompt":
             prompt = event.get("prompt", "")

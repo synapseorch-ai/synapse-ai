@@ -2294,6 +2294,57 @@ async def run_agent_step(
     yield {"type": "final", "response": final_response, "intent": last_intent, "data": last_data, "tool_name": tool_name}
 
 
+async def run_orchestrator_agent(
+    agent: dict,
+    message: str,
+    server_module,
+    *,
+    session_id: str | None = None,
+    run_id: str | None = None,
+):
+    """Run an Orchestrator agent's orchestration, yielding the engine's events.
+
+    The one routing every entry point uses — chat, a messaging channel, an agent
+    schedule. Only chat used to have it; a channel and a schedule called
+    `run_agent_step`, so the agent chatted instead of running its workflow
+    (F71). `run_id` lets a schedule run the orchestration under its own run id.
+    """
+    orch_id = agent.get("orchestration_id")
+    if not orch_id:
+        yield {"type": "error", "message": "Orchestrator agent has no orchestration_id configured"}
+        return
+    try:
+        from core.models_orchestration import Orchestration
+        from core.orchestration.engine import OrchestrationEngine
+        from core.orchestration.runner import stream_engine_events
+        from core.scale.context import resolve_orchestration
+
+        orch_data = await resolve_orchestration(orch_id)
+        if not orch_data:
+            yield {"type": "error", "message": f"Orchestration '{orch_id}' not found"}
+            return
+        orch = Orchestration.model_validate(orch_data)
+        engine = OrchestrationEngine(orch, server_module)
+        run_id = run_id or f"run_{orch_id}_{int(time.time() * 1000)}"
+        # Route through the shared runner, exactly as the editor's run endpoint
+        # does: the engine holds anyio cancel scopes across yields, so it must be
+        # advanced from a single task no matter how the caller consumes us
+        # (issue #356). It also registers the run for cancel/reconnect.
+        async for event in stream_engine_events(
+            engine.run(message, run_id, session_id=session_id), run_id
+        ):
+            yield event
+    except Exception as e:
+        yield {"type": "error", "message": f"Orchestration error: {e}"}
+
+
+async def resolve_agent_for_run(agent_id: str | None) -> dict | None:
+    """The agent a run names — Postgres first (worker mode), the store otherwise."""
+    from core.scale.context import resolve_agent as _ctx_resolve_agent
+    resolved = await _ctx_resolve_agent(agent_id) if agent_id else None
+    return resolved if resolved is not None else await _resolve_agent_by_id(agent_id)
+
+
 async def run_react_loop(request, server_module, should_stop=None, *,
                          progress_events: bool = False, resume_state: dict | None = None,
                          expand_mentions: bool = False):
@@ -2359,38 +2410,11 @@ async def run_react_loop(request, server_module, should_stop=None, *,
 
     # --- Orchestrator delegation ---
     if active_agent.get("type") == "orchestrator":
-        orch_id = active_agent.get("orchestration_id")
-        if orch_id:
-            try:
-                from core.models_orchestration import Orchestration
-                from core.orchestration.engine import OrchestrationEngine
-                from core.orchestration.runner import stream_engine_events
-                from core.scale.context import resolve_orchestration
-
-                orch_data = await resolve_orchestration(orch_id)
-                if orch_data:
-                    orch = Orchestration.model_validate(orch_data)
-                    engine = OrchestrationEngine(orch, server_module)
-                    run_id = f"run_{orch_id}_{int(time.time() * 1000)}"
-                    # Route through the shared runner, exactly as the editor's
-                    # run endpoint does: the engine holds anyio cancel scopes
-                    # across yields, so it must be advanced from a single task
-                    # no matter how the SSE layer consumes us (issue #356).
-                    # It also registers the run for cancel/reconnect.
-                    async for event in stream_engine_events(
-                        engine.run(user_message, run_id, session_id=session_id), run_id
-                    ):
-                        yield event
-                    return
-                else:
-                    yield {"type": "error", "message": f"Orchestration '{orch_id}' not found"}
-                    return
-            except Exception as e:
-                yield {"type": "error", "message": f"Orchestration error: {e}"}
-                return
-        else:
-            yield {"type": "error", "message": "Orchestrator agent has no orchestration_id configured"}
-            return
+        async for event in run_orchestrator_agent(
+            active_agent, user_message, server_module, session_id=session_id,
+        ):
+            yield event
+        return
 
     # --- Standard single-agent ReAct loop ---
     from core.agent_logger import AgentLogger

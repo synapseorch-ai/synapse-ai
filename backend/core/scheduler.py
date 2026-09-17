@@ -214,6 +214,9 @@ class ScheduleManager:
                 final_response = await self._run_agent_schedule(s, sched_log)
             else:
                 final_response = await self._run_orchestration_schedule(s, sched_log)
+            # A run that stopped on a human step is waiting, not finished.
+            if getattr(sched_log, "paused", False):
+                status = "paused"
 
         except Exception as e:
             logger.error("[Scheduler] Schedule '%s' failed: %s", s.get("name"), e)
@@ -245,6 +248,30 @@ class ScheduleManager:
         for mention in mentions:
             if mention.warning():
                 logger.warning("[Scheduler] %s: vault mention %s", s.get("id"), mention.warning())
+        # An Orchestrator agent runs its orchestration, under this schedule run's
+        # id so the run id Run Now returns is the run's (F71).
+        from core.react_engine import resolve_agent_for_run, run_orchestrator_agent
+        try:
+            agent = await resolve_agent_for_run(s.get("target_id"))
+        except Exception:
+            agent = None
+        if agent and agent.get("type") == "orchestrator":
+            final_response = ""
+            error = None
+            async for event in run_orchestrator_agent(
+                agent, prompt, self._server_module, session_id=session_id, run_id=sched_log.run_id,
+            ):
+                sched_log.log_event(event)
+                if event.get("type") == "final":
+                    final_response = event.get("response", "")
+                elif event.get("type") in ("orchestration_error", "error"):
+                    error = event.get("error") or event.get("message") or "orchestration failed"
+                elif event.get("type") == "orchestration_complete" and event.get("status") in ("failed", "cancelled"):
+                    error = error or f"orchestration {event.get('status')}"
+            if error:
+                raise RuntimeError(error)
+            return final_response
+
         agent_log = AgentLogger(
             agent_id=s.get("target_id", ""),
             agent_name=s.get("name", ""),
@@ -252,6 +279,7 @@ class ScheduleManager:
             source="schedule",
             user_message=prompt,
         )
+
 
         final_response = ""
         try:
