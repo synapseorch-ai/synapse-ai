@@ -80,6 +80,7 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
       <form onSubmit={handleSubmit} className="space-y-4">
         {!hasFields && (
           <textarea
+            aria-label="Your response"
             value={defaultText}
             onChange={(e) => setDefaultText(e.target.value)}
             className="w-full bg-zinc-900 border border-zinc-700 text-white px-4 py-2 text-sm focus:outline-none focus:border-white transition-colors resize-none rounded-md"
@@ -92,7 +93,7 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
           
           return (
             <div key={idx}>
-              <label className="block text-sm font-medium text-zinc-300 mb-2">
+              <label htmlFor={`collect-${key}`} className="block text-sm font-medium text-zinc-300 mb-2">
                 {field.label}
               </label>
 
@@ -120,6 +121,7 @@ export function CollectDataForm({ data, onSubmit, onCancel }: CollectDataFormPro
                 </div>
               ) : (
                 <input
+                  id={`collect-${key}`}
                   type={
                     field.type === 'text' || field.type === 'email' || field.type === 'phone'
                       ? field.type

@@ -27,6 +27,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -561,6 +562,84 @@ async def check_layout(browser) -> str:
 
 
 # ── runner ───────────────────────────────────────────────────────────────────
+
+#: Screens whose controls are checked for a name. Every settings tab plus the
+#: three screens with a form of their own; the create forms are opened where a
+#: "New…" button leads to one.
+LABEL_PAGES = (
+    "/", "/agents", "/orchestrations", "/schedules", "/tools", "/vault", "/runs",
+    "/evals", "/mcp-servers", "/skills",
+    "/settings/general", "/settings/models", "/settings/agents", "/settings/widgets",
+    "/settings/databases", "/settings/schedules", "/settings/messaging", "/settings/scale",
+    "/settings/memory", "/settings/api-keys", "/settings/integrations", "/settings/custom-tools",
+)
+
+#: What the browser itself says a control is called. Not a static rule: a label
+#: can be a `span` that only looks like one, a `sr-only` checkbox with a
+#: decorative wrapper, or text hidden at this breakpoint — none of which a
+#: linter sees, and all of which were in the app (F42).
+NAMELESS = r"""
+() => {
+  const named = (el) => {
+    if (el.getAttribute('aria-label')?.trim()) return true;
+    const by = el.getAttribute('aria-labelledby');
+    if (by && by.split(/\s+/).some(id => document.getElementById(id)?.innerText?.trim())) return true;
+    if (el.labels && el.labels.length && [...el.labels].some(l => l.innerText.trim())) return true;
+    if (el.closest('label') && el.closest('label').innerText.trim()) return true;
+    if (el.getAttribute('title')?.trim()) return true;
+    if (el.tagName === 'BUTTON' && el.innerText.trim()) return true;
+    return false;
+  };
+  const out = [];
+  for (const el of document.querySelectorAll(
+      'input:not([type=hidden]), select, textarea, button, [contenteditable="true"]')) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;   // not on this screen
+    if (named(el)) continue;
+    out.push((el.getAttribute('placeholder') || el.tagName.toLowerCase())
+             + ' — ' + el.outerHTML.slice(0, 70).replace(/\s+/g, ' '));
+  }
+  return out;
+}
+"""
+
+
+@check
+async def check_labels(browser) -> str:
+    """Every control a person can reach says what it is.
+
+    A screen reader announces an unlabelled input as "edit text", and a
+    placeholder disappears the moment someone types — so a form of them is a
+    form nobody can re-read. This walks the app and asks the page, because the
+    cases that were actually in it are invisible to a linter: `Label` renders a
+    `span` unless it is given `htmlFor`, a `label` with neither `htmlFor` nor a
+    wrapped control names nothing, and a toggle built from a `button` and two
+    `div`s has no name at all.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        nameless: list[str] = []
+        for path in LABEL_PAGES:
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            nameless.extend(f"{path}: {row}" for row in await page.evaluate(NAMELESS))
+            # The forms live behind the screen's own "New…" button.
+            opener = page.get_by_role("button", name=re.compile(r"^(new|add|create)\b", re.I)).first
+            try:
+                await opener.click(timeout=2000)
+            except Exception:
+                continue
+            await asyncio.sleep(1.2)
+            nameless.extend(f"{path} (create form): {row}" for row in await page.evaluate(NAMELESS))
+        if nameless:
+            raise AssertionError(
+                f"{len(nameless)} control(s) with no accessible name — " + "; ".join(nameless[:6])
+            )
+        return f"every control on {len(LABEL_PAGES)} screens has a name"
+    finally:
+        await ctx.close()
+
 
 async def main() -> int:
     global APP, API

@@ -598,8 +598,9 @@ export const MessagingTab = () => {
 
                         {/* Common fields */}
                         <div className="space-y-1">
-                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Channel Name</label>
+                            <label htmlFor="messaging-channel-name" className="text-[10px] font-bold text-zinc-500 uppercase">Channel Name</label>
                             <input
+                                id="messaging-channel-name"
                                 type="text"
                                 value={draft.name}
                                 onChange={e => setDraft({ ...draft, name: e.target.value })}
@@ -744,8 +745,9 @@ export const MessagingTab = () => {
                                             </p>
                                         ) : (
                                             <div className="space-y-1">
-                                                <label className="text-[10px] font-bold text-zinc-500 uppercase">Delivery URL</label>
+                                                <label htmlFor="messaging-delivery-url" className="text-[10px] font-bold text-zinc-500 uppercase">Delivery URL</label>
                                                 <input
+                                                    id="messaging-delivery-url"
                                                     readOnly
                                                     value={webhookUrl}
                                                     onFocus={e => e.currentTarget.select()}
@@ -803,8 +805,9 @@ export const MessagingTab = () => {
                                                   note: 'Used to verify Meta webhook. Set the same value in your Meta App settings.' },
                                             ].map(f => (
                                                 <div key={f.key} className="space-y-1">
-                                                    <label className="text-[10px] font-bold text-zinc-500 uppercase">{f.label}</label>
+                                                    <label htmlFor={`messaging-cred-${f.key}`} className="text-[10px] font-bold text-zinc-500 uppercase">{f.label}</label>
                                                     <input
+                                                        id={`messaging-cred-${f.key}`}
                                                         type={f.secret ? 'password' : 'text'}
                                                         value={draft.credentials[f.key] || ''}
                                                         onChange={e => updateCred(f.key, e.target.value)}
@@ -858,8 +861,9 @@ export const MessagingTab = () => {
                                 <div className="space-y-3">
                                     {CREDENTIAL_FIELDS[draft.platform]?.map(f => (
                                         <div key={f.key} className="space-y-1">
-                                            <label className="text-[10px] font-bold text-zinc-500 uppercase">{f.label}</label>
+                                            <label htmlFor="messaging-f-label-2" className="text-[10px] font-bold text-zinc-500 uppercase">{f.label}</label>
                                             <input
+                                                id="messaging-f-label-2"
                                                 type={f.secret ? 'password' : 'text'}
                                                 value={draft.credentials[f.key] || ''}
                                                 onChange={e => updateCred(f.key, e.target.value)}

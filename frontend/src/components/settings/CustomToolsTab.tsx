@@ -228,6 +228,7 @@ export const CustomToolsTab = ({
                         <div className="flex items-center gap-4">
                             <button
                                 onClick={() => { setDraftTool(null); setToolBuilderMode('config'); }}
+                                aria-label="Close the tool editor"
                                 className="text-text-faint hover:text-text"
                             >
                                 <X className="h-5 w-5" />
@@ -344,6 +345,7 @@ export const CustomToolsTab = ({
                                         value={newGroupName}
                                         onChange={e => setNewGroupName(e.target.value)}
                                         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); createGroup(); } }}
+                                        aria-label="New group name"
                                         placeholder="New group name…"
                                         className="w-44 bg-surface border border-border p-2 text-xs text-text focus:border-border-strong focus:outline-none rounded-md"
                                     />
@@ -479,6 +481,7 @@ export const CustomToolsTab = ({
                                     <div key={row.id} className="flex gap-2 items-center">
                                         <input
                                             type="text"
+                                            aria-label={`Header ${idx + 1} name`}
                                             placeholder="Key (e.g. Authorization)"
                                             value={row.key}
                                             onChange={e => {
@@ -502,6 +505,7 @@ export const CustomToolsTab = ({
                                         />
                                         <button
                                             onClick={() => setHeaderRows(headerRows.filter(r => r.id !== row.id))}
+                                            aria-label={`Remove header ${idx + 1}`}
                                             className="p-2 text-text-faint hover:text-danger transition-colors"
                                         >
                                             <Trash className="h-4 w-4" />

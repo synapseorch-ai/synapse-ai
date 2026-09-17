@@ -324,6 +324,7 @@ export function EvalsScreen() {
                                     <div key={index} className="flex gap-2">
                                         <Input
                                             className="w-40"
+                                            aria-label={`Criterion ${index + 1} name`}
                                             value={criterion.name}
                                             placeholder="Sources"
                                             onChange={(e) => {
@@ -334,6 +335,7 @@ export function EvalsScreen() {
                                         />
                                         <Input
                                             className="flex-1"
+                                            aria-label={`Criterion ${index + 1} guidance`}
                                             value={criterion.guidance ?? ""}
                                             placeholder="At least three cited URLs"
                                             onChange={(e) => {
@@ -702,6 +704,7 @@ function GoldenSets({
                             <div key={index} className="flex gap-2">
                                 <Input
                                     className="w-40"
+                                    aria-label={`Case ${index + 1} name`}
                                     placeholder="Label"
                                     value={c.name}
                                     onChange={(e) => {
@@ -712,6 +715,7 @@ function GoldenSets({
                                 />
                                 <Input
                                     className="flex-1"
+                                    aria-label={`Case ${index + 1} input`}
                                     placeholder="The input this case sends"
                                     value={c.input}
                                     onChange={(e) => {

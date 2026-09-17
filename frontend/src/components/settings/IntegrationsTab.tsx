@@ -338,8 +338,9 @@ export const IntegrationsTab = ({
                 </div>
                 <div className="p-6 space-y-6">
                     <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">n8n URL</label>
+                        <label htmlFor="integrations-n8n-url" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">n8n URL</label>
                         <input
+                            id="integrations-n8n-url"
                             type="text"
                             value={n8nUrl}
                             onChange={(e) => setN8nUrl(e.target.value)}
@@ -349,8 +350,9 @@ export const IntegrationsTab = ({
                         <p className="text-xs text-zinc-600">Defaults to localhost for local dev. Use your production n8n base URL in deployment.</p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">n8n API Key</label>
+                        <label htmlFor="integrations-n8n-api-key" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">n8n API Key</label>
                         <input
+                            id="integrations-n8n-api-key"
                             type="password"
                             value={n8nApiKey}
                             onChange={(e) => setN8nApiKey(e.target.value)}

@@ -242,8 +242,9 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
 
                 <div className="space-y-4">
                     <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Repo Name</label>
+                        <label htmlFor="repos-repo-name" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Repo Name</label>
                         <input
+                            id="repos-repo-name"
                             type="text"
                             value={draftRepo.name || ''}
                             onChange={e => setDraftRepo({ ...draftRepo, name: e.target.value })}
@@ -253,8 +254,9 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Absolute Directory Path</label>
+                        <label htmlFor="repos-absolute-directory-path" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Absolute Directory Path</label>
                         <input
+                            id="repos-absolute-directory-path"
                             type="text"
                             value={draftRepo.path || ''}
                             onChange={e => setDraftRepo({ ...draftRepo, path: e.target.value })}
@@ -264,8 +266,9 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Interconnection Description</label>
+                        <label htmlFor="repos-interconnection-description" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Interconnection Description</label>
                         <textarea
+                            id="repos-interconnection-description"
                             value={draftRepo.description || ''}
                             onChange={e => setDraftRepo({ ...draftRepo, description: e.target.value })}
                             className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono min-h-[80px] rounded-md"
@@ -333,8 +336,9 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
 
                             {/* ── Included Patterns ───────────────────────────────── */}
                             <div className="space-y-2">
-                                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Included File Types</label>
+                                <label htmlFor="repos-included-file-types" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Included File Types</label>
                                 <textarea
+                                    id="repos-included-file-types"
                                     value={includedText}
                                     onChange={e => setIncludedText(e.target.value)}
                                     className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono min-h-[60px] rounded-md"

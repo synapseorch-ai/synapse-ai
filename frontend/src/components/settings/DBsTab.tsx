@@ -139,8 +139,9 @@ export function DBsTab() {
                 <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Name</label>
+                            <label htmlFor="db-name" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Name</label>
                             <input
+                                id="db-name"
                                 type="text"
                                 value={draftConfig.name || ''}
                                 onChange={(e) => setDraftConfig({ ...draftConfig, name: e.target.value })}
@@ -160,8 +161,9 @@ export function DBsTab() {
                         </div>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Connection String</label>
+                        <label htmlFor="db-connection-string" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Connection String</label>
                         <input
+                            id="db-connection-string"
                             type="text"
                             value={draftConfig.connection_string || ''}
                             onChange={(e) => setDraftConfig({ ...draftConfig, connection_string: e.target.value })}
@@ -172,8 +174,9 @@ export function DBsTab() {
                         <p className="text-[10px] text-zinc-600">e.g. postgresql://user:pass@localhost:5432/mydb — stored locally, never sent externally.</p>
                     </div>
                     <div className="space-y-2">
-                        <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Description</label>
+                        <label htmlFor="db-description" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Description</label>
                         <textarea
+                            id="db-description"
                             value={draftConfig.description || ''}
                             onChange={(e) => setDraftConfig({ ...draftConfig, description: e.target.value })}
                             className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono min-h-[80px] rounded-md"

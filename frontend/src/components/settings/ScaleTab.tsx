@@ -256,7 +256,7 @@ const ScaleDocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void
                         <BookOpen className="w-4 h-4 text-text-muted" />
                         <h2 className="text-sm uppercase font-bold text-text tracking-wider">Scale Deployment Guide</h2>
                     </div>
-                    <button onClick={onClose} className="text-text-faint hover:text-text transition-colors">
+                    <button onClick={onClose} aria-label="Close the deployment guide" className="text-text-faint hover:text-text transition-colors">
                         <X className="w-4 h-4" />
                     </button>
                 </div>
@@ -807,11 +807,12 @@ export function ScaleTab() {
 
                     {/* Search bar */}
                     <div className="border border-border p-4">
-                        <Label className="mb-3 block">Search by Run ID or Session ID</Label>
+                        <Label htmlFor="scale-run-search" className="mb-3 block">Search by Run ID or Session ID</Label>
                         <div className="flex gap-2">
                             <div className="relative flex-1">
                                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-faint" />
                                 <Input
+                                    id="scale-run-search"
                                     type="text"
                                     placeholder="run_abc_1234567890 or sess_xyz..."
                                     className="w-full bg-surface border border-border-strong text-text text-sm pl-8 pr-3 py-2 font-mono focus:outline-none focus:border-text-faint rounded-md"
@@ -1075,7 +1076,7 @@ export function ScaleTab() {
                     <div className="border border-border p-4">
                         <div className="flex items-center justify-between mb-3">
                             <Label>Failed Jobs (DLQ)</Label>
-                            <button onClick={loadDlq} className="text-text-faint hover:text-text-muted transition-colors">
+                            <button onClick={loadDlq} aria-label="Refresh the failed jobs list" className="text-text-faint hover:text-text-muted transition-colors">
                                 {dlqLoading ? <Spinner size={12} /> : <RefreshCw className="h-3 w-3" />}
                             </button>
                         </div>
@@ -1321,7 +1322,8 @@ export function ScaleTab() {
                     )}
 
                     <div className="flex gap-2 mt-4 pt-4 border-t border-border">
-                        <Input type="text" placeholder="http://10.0.0.5:9000"
+                        <Input
+                                aria-label="Worker address" type="text" placeholder="http://10.0.0.5:9000"
                             className="flex-1 font-mono"
                             value={newWorkerAddress} onChange={e => setNewWorkerAddress(e.target.value)} />
                         <button disabled={!newWorkerAddress}

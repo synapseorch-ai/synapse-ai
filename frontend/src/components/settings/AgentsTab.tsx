@@ -333,8 +333,9 @@ export const AgentsTab = ({
 
                 {aiBuilderOpen && (
                     <div className="mb-3 p-3 border border-dashed border-accent/40 bg-accent-subtle space-y-2 rounded-md">
-                        <p className="text-2xs text-accent font-bold uppercase">Build with AI</p>
+                        <p id="agent-ai-builder-label" className="text-2xs text-accent font-bold uppercase">Build with AI</p>
                         <textarea
+                            aria-labelledby="agent-ai-builder-label"
                             value={aiBuilderDesc}
                             onChange={e => setAiBuilderDesc(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); buildAgentWithAI(); } }}

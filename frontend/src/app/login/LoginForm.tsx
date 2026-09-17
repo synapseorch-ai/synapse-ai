@@ -49,10 +49,11 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
 
                 <form onSubmit={handleSubmit} className="space-y-4">
                     <div className="space-y-1.5">
-                        <label className="text-[11px] uppercase font-bold text-zinc-500 tracking-widest">
+                        <label htmlFor="login-username" className="text-[11px] uppercase font-bold text-zinc-500 tracking-widest">
                             Username
                         </label>
                         <input
+                            id="login-username"
                             type="text"
                             value={username}
                             onChange={e => setUsername(e.target.value)}
@@ -67,10 +68,11 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
                     </div>
 
                     <div className="space-y-1.5">
-                        <label className="text-[11px] uppercase font-bold text-zinc-500 tracking-widest">
+                        <label htmlFor="login-password" className="text-[11px] uppercase font-bold text-zinc-500 tracking-widest">
                             Password
                         </label>
                         <input
+                            id="login-password"
                             type="password"
                             value={password}
                             onChange={e => setPassword(e.target.value)}

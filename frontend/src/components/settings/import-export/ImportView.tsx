@@ -559,8 +559,9 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
                 </div>
                 <div className="p-4">
                   <div className="flex items-center gap-3">
-                    <label className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">Bearer Token</label>
+                    <label htmlFor={`import-bearer-${m.name}`} className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">Bearer Token</label>
                     <input
+                        id={`import-bearer-${m.name}`}
                       type="password"
                       value={mcpTokens[m.name] || ""}
                       onChange={e => setMcpTokens(prev => ({ ...prev, [m.name]: e.target.value }))}
@@ -588,8 +589,9 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
                 <div className="p-4 space-y-3">
                   {Object.keys(m.env || {}).map(key => (
                     <div key={key} className="flex items-center gap-3">
-                      <label className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">{key}</label>
+                      <label htmlFor={`import-secret-${key}`} className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">{key}</label>
                       <input
+                          id={`import-secret-${key}`}
                         type="password"
                         value={mcpSecrets[m.name]?.[key] || ""}
                         onChange={e => setMcpSecrets(prev => ({ ...prev, [m.name]: { ...(prev[m.name] || {}), [key]: e.target.value } }))}
@@ -618,8 +620,9 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
                 <div className="p-4 space-y-3">
                   {Object.keys(t.headers || {}).map(key => (
                     <div key={key} className="flex items-center gap-3">
-                      <label className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">{key}</label>
+                      <label htmlFor={`import-secret-2-${key}`} className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">{key}</label>
                       <input
+                          id={`import-secret-2-${key}`}
                         type="password"
                         value={toolSecrets[t.name]?.[key] || ""}
                         onChange={e => setToolSecrets(prev => ({ ...prev, [t.name]: { ...(prev[t.name] || {}), [key]: e.target.value } }))}

@@ -1621,12 +1621,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                     {/* Name + description. The step palette lives inside the canvas. */}
                     <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 shrink-0">
                         <input
+                            aria-label="Orchestration name"
                             className="bg-transparent border-b border-zinc-700 text-zinc-200 text-sm font-medium px-1 py-0.5 outline-none focus:border-accent w-64"
                             value={draft.name}
                             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                             placeholder="Orchestration name"
                         />
                         <input
+                            aria-label="Orchestration description"
                             className="bg-transparent border-b border-zinc-700 text-zinc-400 text-xs px-1 py-0.5 outline-none focus:border-accent flex-1 mr-6"
                             value={draft.description}
                             onChange={(e) => setDraft({ ...draft, description: e.target.value })}
@@ -1947,8 +1949,9 @@ function BottomPanel({
                 {activeSection === 'guardrails' && (
                     <div className="grid grid-cols-3 gap-4">
                         <div>
-                            <label className="text-xs text-zinc-400 block mb-1">Max Total Turns</label>
+                            <label htmlFor="orch-max-turns" className="text-xs text-zinc-400 block mb-1">Max Total Turns</label>
                             <input
+                                id="orch-max-turns"
                                 type="number"
                                 className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
                                 value={draft.max_total_turns}
@@ -1956,8 +1959,9 @@ function BottomPanel({
                             />
                         </div>
                         <div>
-                            <label className="text-xs text-zinc-400 block mb-1">Timeout (minutes)</label>
+                            <label htmlFor="orch-timeout" className="text-xs text-zinc-400 block mb-1">Timeout (minutes)</label>
                             <input
+                                id="orch-timeout"
                                 type="number"
                                 className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
                                 value={draft.timeout_minutes}
@@ -1965,8 +1969,9 @@ function BottomPanel({
                             />
                         </div>
                         <div>
-                            <label className="text-xs text-zinc-400 block mb-1">Max Cost (USD)</label>
+                            <label htmlFor="orch-max-cost" className="text-xs text-zinc-400 block mb-1">Max Cost (USD)</label>
                             <input
+                                id="orch-max-cost"
                                 type="number"
                                 step="0.01"
                                 className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
@@ -1995,8 +2000,9 @@ function BottomPanel({
                             </label>
                         </div>
                         <div className="col-span-3">
-                            <label className="text-xs text-zinc-400 block mb-1">Score runs against</label>
+                            <label htmlFor="orch-rubric" className="text-xs text-zinc-400 block mb-1">Score runs against</label>
                             <select
+                                id="orch-rubric"
                                 className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
                                 value={draft.rubric_id ?? ''}
                                 onChange={(e) => setDraft({ ...draft, rubric_id: e.target.value })}
@@ -2057,6 +2063,7 @@ function BottomPanel({
                         {(runStatus === 'idle' || runStatus === 'completed' || runStatus === 'failed' || runStatus === 'cancelled') && (
                             <div className="flex gap-2">
                                 <input
+                                    aria-label="Initial input for this run"
                                     className="flex-1 bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-xs text-zinc-200 outline-none"
                                     value={runInput}
                                     onChange={(e) => setRunInput(e.target.value)}
@@ -2311,6 +2318,7 @@ function BottomPanel({
                                 </div>
                                 <input
                                     autoFocus
+                                    aria-label="Your answer"
                                     className="w-full rounded-md border border-amber-700/40 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 outline-none transition-colors placeholder:text-zinc-500 focus:border-amber-500"
                                     value={humanResponse}
                                     onChange={(e) => setHumanResponse(e.target.value)}

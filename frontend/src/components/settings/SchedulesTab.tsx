@@ -548,8 +548,9 @@ export const SchedulesTab = () => {
 
                             {/* Name */}
                             <div>
-                                <label className="block text-xs text-zinc-400 mb-1.5 font-semibold">Name <span className="text-red-400">*</span></label>
+                                <label htmlFor="sched-name" className="block text-xs text-zinc-400 mb-1.5 font-semibold">Name <span className="text-red-400">*</span></label>
                                 <input
+                                    id="sched-name"
                                     value={form.name}
                                     onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                                     placeholder="e.g. Daily Sales Report"
@@ -559,8 +560,9 @@ export const SchedulesTab = () => {
 
                             {/* Description */}
                             <div>
-                                <label className="block text-xs text-zinc-400 mb-1.5 font-semibold">Description</label>
+                                <label htmlFor="sched-description" className="block text-xs text-zinc-400 mb-1.5 font-semibold">Description</label>
                                 <input
+                                    id="sched-description"
                                     value={form.description}
                                     onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
                                     placeholder="Optional short description"
@@ -606,11 +608,12 @@ export const SchedulesTab = () => {
 
                             {/* Prompt */}
                             <div>
-                                <label className="block text-xs text-zinc-400 mb-1.5 font-semibold">
+                                <label htmlFor="sched-prompt" className="block text-xs text-zinc-400 mb-1.5 font-semibold">
                                     Prompt <span className="text-red-400">*</span>
                                     <span className="ml-2 font-normal text-zinc-600">What should the agent do each time it runs?</span>
                                 </label>
                                 <textarea
+                                    id="sched-prompt"
                                     value={form.prompt}
                                     onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))}
                                     placeholder="e.g. Generate a daily summary of yesterday's sales data and highlight any anomalies."
@@ -646,6 +649,7 @@ export const SchedulesTab = () => {
                                     <div className="flex items-center gap-3">
                                         <span className="text-xs text-zinc-400 shrink-0">Run every</span>
                                         <input
+                                            aria-label="Run every"
                                             type="number"
                                             min={1}
                                             value={form.interval_value ?? 30}
@@ -704,11 +708,12 @@ export const SchedulesTab = () => {
 
                                     {/* Expression input */}
                                     <div>
-                                        <label className="block text-xs text-zinc-500 mb-1.5">
+                                        <label htmlFor="sched-cron" className="block text-xs text-zinc-500 mb-1.5">
                                             Cron expression
                                             <span className="ml-2 text-zinc-700">minute hour day-of-month month day-of-week</span>
                                         </label>
                                         <input
+                                            id="sched-cron"
                                             value={form.cron_expression ?? ''}
                                             onChange={e => setForm(f => ({ ...f, cron_expression: e.target.value }))}
                                             placeholder="0 9 * * *"
@@ -749,8 +754,11 @@ export const SchedulesTab = () => {
 
                             {/* Enabled toggle */}
                             <div className="flex items-center gap-3">
-                                <label className="text-xs text-zinc-400 font-semibold">Enabled</label>
+                                <span className="text-xs text-zinc-400 font-semibold">Enabled</span>
                                 <button
+                                    role="switch"
+                                    aria-checked={form.enabled}
+                                    aria-label="Enabled"
                                     onClick={() => setForm(f => ({ ...f, enabled: !f.enabled }))}
                                     className="text-zinc-400 hover:text-white transition-colors"
                                 >

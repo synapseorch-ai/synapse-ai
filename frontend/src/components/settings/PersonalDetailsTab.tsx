@@ -33,8 +33,9 @@ export const PersonalDetailsTab = ({
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-2">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">First Name</label>
+                <label htmlFor="personaldetails-first-name" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">First Name</label>
                 <input
+                    id="personaldetails-first-name"
                     type="text"
                     value={pdFirstName}
                     onChange={(e) => setPdFirstName(e.target.value)}
@@ -43,8 +44,9 @@ export const PersonalDetailsTab = ({
                 />
             </div>
             <div className="space-y-2">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Last Name</label>
+                <label htmlFor="personaldetails-last-name" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Last Name</label>
                 <input
+                    id="personaldetails-last-name"
                     type="text"
                     value={pdLastName}
                     onChange={(e) => setPdLastName(e.target.value)}
@@ -53,8 +55,9 @@ export const PersonalDetailsTab = ({
                 />
             </div>
             <div className="space-y-2">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Email</label>
+                <label htmlFor="personaldetails-email" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Email</label>
                 <input
+                    id="personaldetails-email"
                     type="email"
                     value={pdEmail}
                     onChange={(e) => setPdEmail(e.target.value)}
@@ -63,8 +66,9 @@ export const PersonalDetailsTab = ({
                 />
             </div>
             <div className="space-y-2">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Phone Number</label>
+                <label htmlFor="personaldetails-phone-number" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Phone Number</label>
                 <input
+                    id="personaldetails-phone-number"
                     type="tel"
                     value={pdPhone}
                     onChange={(e) => setPdPhone(e.target.value)}
@@ -82,8 +86,9 @@ export const PersonalDetailsTab = ({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
-                    <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Address 1</label>
+                    <label htmlFor="personaldetails-address-1" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Address 1</label>
                     <input
+                        id="personaldetails-address-1"
                         type="text"
                         value={pdAddress1}
                         onChange={(e) => setPdAddress1(e.target.value)}
@@ -92,8 +97,9 @@ export const PersonalDetailsTab = ({
                     />
                 </div>
                 <div className="space-y-2">
-                    <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Address 2</label>
+                    <label htmlFor="personaldetails-address-2" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Address 2</label>
                     <input
+                        id="personaldetails-address-2"
                         type="text"
                         value={pdAddress2}
                         onChange={(e) => setPdAddress2(e.target.value)}
@@ -102,8 +108,9 @@ export const PersonalDetailsTab = ({
                     />
                 </div>
                 <div className="space-y-2">
-                    <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">City</label>
+                    <label htmlFor="personaldetails-city" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">City</label>
                     <input
+                        id="personaldetails-city"
                         type="text"
                         value={pdCity}
                         onChange={(e) => setPdCity(e.target.value)}
@@ -112,8 +119,9 @@ export const PersonalDetailsTab = ({
                     />
                 </div>
                 <div className="space-y-2">
-                    <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">State</label>
+                    <label htmlFor="personaldetails-state" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">State</label>
                     <input
+                        id="personaldetails-state"
                         type="text"
                         value={pdState}
                         onChange={(e) => setPdState(e.target.value)}
@@ -122,8 +130,9 @@ export const PersonalDetailsTab = ({
                     />
                 </div>
                 <div className="space-y-2">
-                    <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Zipcode</label>
+                    <label htmlFor="personaldetails-zipcode" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Zipcode</label>
                     <input
+                        id="personaldetails-zipcode"
                         type="text"
                         value={pdZipcode}
                         onChange={(e) => setPdZipcode(e.target.value)}

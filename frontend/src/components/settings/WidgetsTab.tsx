@@ -308,8 +308,9 @@ export const WidgetsTab = () => {
                         </div>
 
                         <div>
-                            <Label>Allowed sites</Label>
+                            <Label htmlFor="widget-allowed-sites">Allowed sites</Label>
                             <Input
+                                id="widget-allowed-sites"
                                 value={selected.allowed_origins.join('  ')}
                                 onChange={(e) =>
                                     draft({
@@ -338,19 +339,19 @@ export const WidgetsTab = () => {
 
                         <div className="grid grid-cols-2 gap-3">
                             <div>
-                                <Label>Header title</Label>
-                                <Input value={selected.title}
+                                <Label htmlFor="widget-title">Header title</Label>
+                                <Input id="widget-title" value={selected.title}
                                     onChange={(e) => draft({ title: e.target.value })} />
                             </div>
                             <div>
-                                <Label>Greeting</Label>
-                                <Input value={selected.greeting}
+                                <Label htmlFor="widget-greeting">Greeting</Label>
+                                <Input id="widget-greeting" value={selected.greeting}
                                     onChange={(e) => draft({ greeting: e.target.value })} />
                             </div>
                         </div>
 
                         <div>
-                            <Label>Accent colour</Label>
+                            <Label htmlFor="widget-accent">Accent colour</Label>
                             <div className="flex items-center gap-2 flex-wrap">
                                 {PRESET_ACCENTS.map((hex) => (
                                     <button
@@ -364,6 +365,7 @@ export const WidgetsTab = () => {
                                     />
                                 ))}
                                 <Input
+                                    id="widget-accent"
                                     value={selected.accent}
                                     onChange={(e) => draft({ accent: e.target.value })}
                                     className="w-28 font-code"
@@ -428,8 +430,8 @@ export const WidgetsTab = () => {
                                 ]}
                                 onChange={(position) => draft({ position })} />
                             <div>
-                                <Label>Messages per day</Label>
-                                <Input type="number" value={String(selected.daily_message_cap)}
+                                <Label htmlFor="widget-daily-cap">Messages per day</Label>
+                                <Input id="widget-daily-cap" type="number" value={String(selected.daily_message_cap)}
                                     onChange={(e) => draft({ daily_message_cap: Number(e.target.value) })} />
                             </div>
                         </div>
@@ -487,13 +489,14 @@ export const WidgetsTab = () => {
                         </p>
                     )}
                     <div>
-                        <Label>Name</Label>
-                        <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+                        <Label htmlFor="widget-new-name">Name</Label>
+                        <Input id="widget-new-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
                             placeholder="Support chat" />
                     </div>
                     <div>
-                        <Label>Agent</Label>
+                        <Label htmlFor="widget-new-agent">Agent</Label>
                         <select
+                            id="widget-new-agent"
                             value={form.agent_id}
                             onChange={(e) => setForm({ ...form, agent_id: e.target.value })}
                             className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm text-text"
@@ -503,8 +506,9 @@ export const WidgetsTab = () => {
                         </select>
                     </div>
                     <div>
-                        <Label>Allowed sites</Label>
+                        <Label htmlFor="widget-new-allowed-sites">Allowed sites</Label>
                         <Input
+                            id="widget-new-allowed-sites"
                             value={form.allowed_origins}
                             onChange={(e) => setForm({ ...form, allowed_origins: e.target.value })}
                             placeholder="https://acme.com  *.acme.com"
@@ -537,6 +541,7 @@ const Choice = ({ label, value, options, onChange }: {
     <div>
         <Label>{label}</Label>
         <select
+            aria-label={label}
             value={value}
             onChange={(e) => onChange(e.target.value)}
             className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm text-text"

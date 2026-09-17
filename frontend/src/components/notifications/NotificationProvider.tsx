@@ -198,6 +198,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                         <span className="flex-1 min-w-0 truncate">{t.message}</span>
                         <button
                             onClick={() => setToasts(prev => prev.filter(x => x.key !== t.key))}
+                            aria-label="Dismiss this notification"
                             className="shrink-0 opacity-60 hover:opacity-100"
                         >
                             <X size={13} />

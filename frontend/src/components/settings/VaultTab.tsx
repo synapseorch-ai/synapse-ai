@@ -198,10 +198,11 @@ function CreateDialog({
                     )}
 
                     <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-zinc-500 uppercase">
+                        <label htmlFor="vault-type-file-file-name-folder-n" className="text-[10px] font-bold text-zinc-500 uppercase">
                             {type === 'file' ? 'File Name' : 'Folder Name'}
                         </label>
                         <input
+                            id="vault-type-file-file-name-folder-n"
                             autoFocus
                             type="text"
                             value={name}

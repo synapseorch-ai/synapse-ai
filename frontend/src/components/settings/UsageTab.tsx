@@ -784,6 +784,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                                         <span className="text-zinc-500 text-xs">$</span>
                                         <input
                                             type="number" min="0" step="0.001"
+                                            aria-label={`${model} input price per million tokens`}
                                             value={entry.input_per_1m}
                                             onChange={e => update(model, 'input_per_1m', e.target.value)}
                                             className="w-20 bg-zinc-800 border border-border text-white text-xs px-2 py-1 text-right focus:outline-none focus:border-border-strong transition-colors rounded-md"
@@ -793,6 +794,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                                         <span className="text-zinc-500 text-xs">$</span>
                                         <input
                                             type="number" min="0" step="0.001"
+                                            aria-label={`${model} output price per million tokens`}
                                             value={entry.output_per_1m}
                                             onChange={e => update(model, 'output_per_1m', e.target.value)}
                                             className="w-20 bg-zinc-800 border border-border text-white text-xs px-2 py-1 text-right focus:outline-none focus:border-border-strong transition-colors rounded-md"
@@ -811,6 +813,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                                     {useCustomModel ? (
                                         <input
                                             autoFocus
+                                            aria-label="New model id"
                                             placeholder="model-id (e.g. my-custom-model)"
                                             value={newModel}
                                             onChange={e => setNewModel(e.target.value)}
@@ -842,14 +845,14 @@ function PricingEditor({ initialPricing, onSaved }: {
                                     )}
                                     <div className="flex items-center gap-1 justify-end">
                                         <span className="text-zinc-500 text-xs">$</span>
-                                        <input placeholder="0.000" value={newIn} onChange={e => setNewIn(e.target.value)}
+                                        <input aria-label="New model input price per million tokens" placeholder="0.000" value={newIn} onChange={e => setNewIn(e.target.value)}
                                             type="number" min="0" step="0.001"
                                             className="w-20 bg-zinc-800 border border-border-strong text-white text-xs px-2 py-1.5 text-right focus:outline-none focus:border-accent transition-colors placeholder:text-zinc-600 rounded-md"
                                         />
                                     </div>
                                     <div className="flex items-center gap-1 justify-end">
                                         <span className="text-zinc-500 text-xs">$</span>
-                                        <input placeholder="0.000" value={newOut} onChange={e => setNewOut(e.target.value)}
+                                        <input aria-label="New model output price per million tokens" placeholder="0.000" value={newOut} onChange={e => setNewOut(e.target.value)}
                                             type="number" min="0" step="0.001"
                                             className="w-20 bg-zinc-800 border border-border-strong text-white text-xs px-2 py-1.5 text-right focus:outline-none focus:border-accent transition-colors placeholder:text-zinc-600 rounded-md"
                                         />

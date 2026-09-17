@@ -22,16 +22,18 @@ export const DataLabTab = ({
         <div className="space-y-6 overflow-y-auto pr-2">
             <div className="space-y-4">
                 <div className="space-y-1">
-                    <label className="text-[10px] uppercase font-bold text-zinc-500">Domain / Topic</label>
-                    <input type="text" value={dlTopic} onChange={e => setDlTopic(e.target.value)}
+                    <label htmlFor="datalab-domain-topic" className="text-[10px] uppercase font-bold text-zinc-500">Domain / Topic</label>
+                    <input
+                        id="datalab-domain-topic" type="text" value={dlTopic} onChange={e => setDlTopic(e.target.value)}
                         className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none rounded-md"
                         placeholder="e.g. Medical Assistant, Python Coding Tutor" />
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                        <label className="text-[10px] uppercase font-bold text-zinc-500">Count</label>
-                        <input type="number" value={dlCount} onChange={e => setDlCount(parseInt(e.target.value))}
+                        <label htmlFor="datalab-count" className="text-[10px] uppercase font-bold text-zinc-500">Count</label>
+                        <input
+                            id="datalab-count" type="number" value={dlCount} onChange={e => setDlCount(parseInt(e.target.value))}
                             className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none rounded-md"
                             min={1} max={100} />
                     </div>
@@ -50,14 +52,16 @@ export const DataLabTab = ({
                 </div>
 
                 <div className="space-y-1">
-                    <label className="text-[10px] uppercase font-bold text-zinc-500">Target Persona (System Prompt)</label>
-                    <textarea value={dlSystemPrompt} onChange={e => setDlSystemPrompt(e.target.value)}
+                    <label htmlFor="datalab-target-persona-system-prompt" className="text-[10px] uppercase font-bold text-zinc-500">Target Persona (System Prompt)</label>
+                    <textarea
+                        id="datalab-target-persona-system-prompt" value={dlSystemPrompt} onChange={e => setDlSystemPrompt(e.target.value)}
                         className="w-full h-24 bg-zinc-900 border border-zinc-800 p-3 text-xs font-mono text-zinc-300 focus:border-white focus:outline-none resize-none rounded-md" />
                 </div>
 
                 <div className="space-y-1">
-                    <label className="text-[10px] uppercase font-bold text-zinc-500">Edge Cases & Constraints</label>
-                    <textarea value={dlEdgeCases} onChange={e => setDlEdgeCases(e.target.value)}
+                    <label htmlFor="datalab-edge-cases-constraints" className="text-[10px] uppercase font-bold text-zinc-500">Edge Cases & Constraints</label>
+                    <textarea
+                        id="datalab-edge-cases-constraints" value={dlEdgeCases} onChange={e => setDlEdgeCases(e.target.value)}
                         className="w-full h-24 bg-zinc-900 border border-zinc-800 p-3 text-xs font-mono text-zinc-300 focus:border-white focus:outline-none resize-none rounded-md"
                         placeholder="e.g. 'If user asks for illegal advice, politely refuse.' or 'Always include code comments.'" />
                 </div>

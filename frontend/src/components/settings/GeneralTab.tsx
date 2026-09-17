@@ -174,6 +174,9 @@ export function GeneralTab({
                         <p className="text-xs text-text-faint mt-0.5">When enabled, tool outputs exceeding the threshold are saved to a vault file instead of flooding the context.</p>
                     </div>
                     <button
+                        role="switch"
+                        aria-checked={vaultEnabled}
+                        aria-label="Large response handling"
                         onClick={() => setVaultEnabled(!vaultEnabled)}
                         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${vaultEnabled ? 'bg-accent' : 'bg-surface-2'}`}
                     >
@@ -215,6 +218,9 @@ export function GeneralTab({
                         </p>
                     </div>
                     <button
+                        role="switch"
+                        aria-checked={autoCompactEnabled}
+                        aria-label="Auto context compaction"
                         onClick={() => setAutoCompactEnabled(!autoCompactEnabled)}
                         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${autoCompactEnabled ? 'bg-accent' : 'bg-surface-2'}`}
                     >
@@ -259,6 +265,9 @@ export function GeneralTab({
                         </p>
                     </div>
                     <button
+                        role="switch"
+                        aria-checked={allowDbWrite}
+                        aria-label="Database write access"
                         onClick={() => setAllowDbWrite(!allowDbWrite)}
                         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${allowDbWrite ? 'bg-warning' : 'bg-surface-2'}`}
                     >
@@ -301,6 +310,9 @@ export function GeneralTab({
                         </p>
                     </div>
                     <button
+                        role="switch"
+                        aria-checked={embedCode}
+                        aria-label="Code repository indexing"
                         onClick={handleEmbedToggle}
                         disabled={embedChecking}
                         className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${embedCode ? 'bg-accent' : 'bg-surface-2'} ${embedChecking ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -550,6 +562,9 @@ export function GeneralTab({
                         </p>
                     </div>
                     <button
+                        role="switch"
+                        aria-checked={transformRuntime === 'host'}
+                        aria-label="Run Transform steps on the host"
                         onClick={() => {
                             if (transformRuntime === 'docker') {
                                 setShowHostRuntimeModal(true);
@@ -623,6 +638,9 @@ export function GeneralTab({
                         <p className="text-xs text-text-faint mt-0.5">Protect Synapse with a username and password.</p>
                     </div>
                     <button
+                        role="switch"
+                        aria-checked={loginEnabled}
+                        aria-label="Require login"
                         onClick={() => {
                             if (!loginEnabled) {
                                 setShowLoginForm(true);

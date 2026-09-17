@@ -20,8 +20,9 @@ export const DatabaseTab = ({ sqlConnectionString, setSqlConnectionString, onSav
 
         <div className="space-y-4">
             <div className="space-y-2">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Connection String (SQLAlchemy URL)</label>
+                <label htmlFor="database-connection-string-sqlalchemy" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Connection String (SQLAlchemy URL)</label>
                 <input
+                    id="database-connection-string-sqlalchemy"
                     type="password"
                     value={sqlConnectionString}
                     onChange={(e) => setSqlConnectionString(e.target.value)}

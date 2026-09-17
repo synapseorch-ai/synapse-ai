@@ -75,9 +75,9 @@ export const VariablesTab = () => {
                     </div>
                     {rows.map((row, idx) => (
                         <div key={row.id} className="grid grid-cols-[1fr_2fr_auto] gap-2 items-center">
-                            <Input value={row.key} placeholder="api_base" spellCheck={false} autoComplete="off"
+                            <Input value={row.key} aria-label={`Variable ${idx + 1} name`} placeholder="api_base" spellCheck={false} autoComplete="off"
                                 onChange={(e) => { const next = [...rows]; next[idx] = { ...row, key: e.target.value }; setRows(next); }} />
-                            <Input value={row.value} placeholder="https://api.acme.com" autoComplete="off"
+                            <Input value={row.value} aria-label={`Variable ${idx + 1} value`} placeholder="https://api.acme.com" autoComplete="off"
                                 onChange={(e) => { const next = [...rows]; next[idx] = { ...row, value: e.target.value }; setRows(next); }} />
                             <button type="button" aria-label={`Remove ${row.key || 'variable'}`} onClick={() => setRows(rows.filter((r) => r.id !== row.id))}
                                 className="p-1.5 text-text-faint hover:text-danger rounded-md">

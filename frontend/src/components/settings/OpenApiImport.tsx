@@ -142,8 +142,9 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
             {/* Options */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                    <label className="text-xs font-bold uppercase tracking-wider text-zinc-400">Base URL override <span className="text-zinc-600 normal-case font-normal">(optional)</span></label>
+                    <label htmlFor="openapiimport-base-url-override-optional" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Base URL override <span className="text-zinc-600 normal-case font-normal">(optional)</span></label>
                     <input
+                        id="openapiimport-base-url-override-optional"
                         value={baseUrl}
                         onChange={e => setBaseUrl(e.target.value)}
                         placeholder="https://api.example.com/v1"
@@ -151,8 +152,9 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                     />
                 </div>
                 <div>
-                    <label className="text-xs font-bold uppercase tracking-wider text-zinc-400">Name prefix <span className="text-zinc-600 normal-case font-normal">(optional)</span></label>
+                    <label htmlFor="openapiimport-name-prefix-optional" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Name prefix <span className="text-zinc-600 normal-case font-normal">(optional)</span></label>
                     <input
+                        id="openapiimport-name-prefix-optional"
                         value={namePrefix}
                         onChange={e => setNamePrefix(e.target.value)}
                         placeholder="petstore"
@@ -160,8 +162,9 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                     />
                 </div>
                 <div className="md:col-span-2">
-                    <label className="text-xs font-bold uppercase tracking-wider text-zinc-400">Group <span className="text-zinc-600 normal-case font-normal">(one per import — the agent picker shows it as one row; defaults to the spec&apos;s title)</span></label>
+                    <label htmlFor="openapiimport-group-one-per-import-the-age" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Group <span className="text-zinc-600 normal-case font-normal">(one per import — the agent picker shows it as one row; defaults to the spec&apos;s title)</span></label>
                     <input
+                        id="openapiimport-group-one-per-import-the-age"
                         value={groupName}
                         onChange={e => setGroupName(e.target.value)}
                         placeholder="Pet Store API"

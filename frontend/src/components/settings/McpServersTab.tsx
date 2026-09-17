@@ -460,13 +460,13 @@ export const McpServersTab = ({
                                 </div>
                                 {draftMcpServer.env.map((env, i) => (
                                     <div key={i} className="flex gap-2">
-                                        <input type="text" placeholder="KEY" value={env.key}
+                                        <input type="text" aria-label={`Variable ${i + 1} name`} placeholder="KEY" value={env.key}
                                             onChange={e => updateEnvVar(i, 'key', e.target.value)}
                                             className="flex-1 bg-surface border border-border p-2 text-xs text-text font-mono focus:border-border-strong focus:outline-none rounded-md" />
-                                        <input type="text" placeholder="VALUE" value={env.value}
+                                        <input type="text" aria-label={`Variable ${i + 1} value`} placeholder="VALUE" value={env.value}
                                             onChange={e => updateEnvVar(i, 'value', e.target.value)}
                                             className="flex-[2] bg-surface border border-border p-2 text-xs text-text font-mono focus:border-border-strong focus:outline-none rounded-md" />
-                                        <button onClick={() => removeEnvVar(i)} className="p-2 text-text-faint hover:text-danger">
+                                        <button onClick={() => removeEnvVar(i)} aria-label={`Remove variable ${i + 1}`} className="p-2 text-text-faint hover:text-danger">
                                             <Trash className="h-4 w-4" />
                                         </button>
                                     </div>

@@ -360,6 +360,7 @@ function ToolApprovalCard({
             <input
               value={reason}
               onChange={(e) => setReason(e.target.value)}
+              aria-label="Reason for refusing"
               placeholder="Why not? (optional — the agent reads this and works around it)"
               disabled={disabled}
               className="mt-3 w-full bg-zinc-950 border border-zinc-800 px-3 py-2 text-[13px] text-zinc-200 placeholder:text-zinc-600 rounded-md focus:border-amber-700/60 focus:outline-none disabled:opacity-50"
@@ -510,9 +511,11 @@ function WelcomeScreen({ agentName, onPrompt, onNavigate, showExamplesBanner, on
 
         {/* Dot indicators */}
         <div className="flex items-center justify-center gap-1.5 mt-3">
-          {TIPS.map((_, i) => (
+          {TIPS.map((tip, i) => (
             <button
               key={i}
+              aria-label={`Show tip ${i + 1}: ${tip.title}`}
+              aria-current={i === activeIdx}
               onClick={() => { setActiveIdx(i); setIsPaused(true); setTimeout(() => setIsPaused(false), 6000); }}
               className={`transition-all duration-300 rounded-full cursor-pointer ${i === activeIdx ? 'w-5 h-1.5 bg-zinc-300' : 'w-1.5 h-1.5 bg-zinc-700 hover:bg-accent-hover0'}`}
             />
