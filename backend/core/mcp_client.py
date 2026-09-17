@@ -292,7 +292,7 @@ def _make_oauth_provider(
     return OAuthClientProvider(
         server_url=url,
         client_metadata=OAuthClientMetadata(
-            client_name="Synapse AI",
+            client_name="SynapseOrch",
             redirect_uris=[AnyUrl(OAUTH_CALLBACK_URL)],
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],

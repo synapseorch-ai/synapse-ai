@@ -177,3 +177,14 @@ class TestPersisting:
 
         mcp_oauth.set_token_persister(persist)
         assert await mcp_oauth.refresh_and_persist(FULL) == "at_new"
+
+
+def test_the_client_registers_under_the_products_name():
+    """It registered as "Synapse AI" — the old name, shown on every provider's
+    consent screen (F74). A registration already stored is reused as it is,
+    so a server keeps the old name until it is disconnected and connected again."""
+    from core.mcp_client import _make_oauth_provider
+
+    provider = _make_oauth_provider("vercel", "https://mcp.example.com/mcp")
+
+    assert provider.context.client_metadata.client_name == "SynapseOrch"
