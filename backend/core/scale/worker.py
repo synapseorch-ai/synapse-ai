@@ -788,6 +788,11 @@ async def worker_startup(ctx: dict) -> None:
     # rather than opening a second, SQLite one.
     set_store(session_factory)
 
+    # The vault, run logs and notifications on the bucket when one is configured
+    # — the store every API server and worker must share (F57).
+    from core.storage import install_configured_blob_store
+    install_configured_blob_store()
+
     # A human step that names a channel asks its question there when the run
     # pauses on this worker (F54). REST only: a worker holds no adapters.
     from core.messaging.manager import send_human_prompt

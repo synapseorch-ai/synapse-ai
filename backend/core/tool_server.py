@@ -157,7 +157,7 @@ def _diagnostic(message: str) -> None:
 
 
 async def bootstrap() -> None:
-    """Adopt the tenant and point `load_settings()` at the store.
+    """Adopt the tenant, point `load_settings()` at the store, install the blob store.
 
     Never raises. A tool server that cannot reach the database is still useful —
     most of its tools do not need it — and failing to start would take the whole
@@ -201,6 +201,17 @@ async def bootstrap() -> None:
         await settings_runtime.refresh()
     except Exception as exc:  # noqa: BLE001 — see the docstring
         _diagnostic(f"[tool_server] settings unavailable, using defaults: {exc}")
+
+    try:
+        # After the settings, which can name the bucket. The parent's store is
+        # a module global and does not cross the fork: without this a vault
+        # tool on object storage read this process's local disk — an empty
+        # vault (F57, measured on a fleet).
+        from core.storage import install_configured_blob_store
+
+        install_configured_blob_store()
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        _diagnostic(f"[tool_server] object store unavailable, vault is local: {exc}")
 
 
 # ── Serving, without the handshake waiting on a database ─────────────────────

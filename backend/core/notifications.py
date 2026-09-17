@@ -49,6 +49,15 @@ class NotificationHub:
         self._server_module = None
 
     # ── persistence ──────────────────────────────────────────────────────
+    def reload(self):
+        """Read the ring again from the blob store.
+
+        The hub is built at import, before the server installs its blob store,
+        so what `__init__` read was the default directory's copy.
+        """
+        self._items = self._load()
+        self._next_id = (self._items[-1]["id"] + 1) if self._items else 1
+
     def _load(self) -> list[dict]:
         try:
             from core.storage import get_blob_store

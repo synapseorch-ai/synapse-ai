@@ -114,6 +114,9 @@ def _isolate_run_checkpoints(tmp_path, monkeypatch):
     # would slowly fill a developer's working tree with cached LLM responses.
     monkeypatch.setenv("SYNAPSE_BLOB_DIR", str(tmp_path / "blobs"))
     monkeypatch.setattr(blob_mod, "_store", None)
+    # A developer's own bucket would otherwise become every test's blob store
+    # wherever a process installs the configured one (F57).
+    monkeypatch.delenv("S3_BUCKET", raising=False)
 
     # Scratch too — logs and run-event journals are appended there before being
     # published, and the default sits inside the repo.

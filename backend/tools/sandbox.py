@@ -12,6 +12,12 @@ module also `mkdir`'d at import, quietly recreating `backend/data`. Nothing
 raised: the Docker `-v` mount below is `.exists()`-guarded, so the container
 simply came up without its `/data` mount. Per call rather than cached because
 the path carries the tenant, and one process serves many.
+
+**Every vault write, read, listing and delete goes through `get_vault()`**
+(`core/vault_backend.py`), so on object storage the store is the vault and the
+directory a working copy of it. This module used to keep its own S3 mirror —
+copies of its writes under `vault/{path}` with no tenant in the key, read back
+only by itself — beside the blob store everything else used (F57).
 """
 
 from mcp.server import Server
@@ -32,6 +38,13 @@ def _vault_root() -> Path:
     from core.vault import _vault_root as blob_vault_root
 
     return blob_vault_root()
+
+
+def _vault():
+    """The current tenant's vault backend — asked per call, like the root."""
+    from core.vault_backend import get_vault
+
+    return get_vault()
 
 
 MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB read cap
@@ -92,79 +105,6 @@ def _deep_merge(base: dict, patch: dict) -> dict:
         else:
             base[key] = value
     return base
-
-
-# ── S3 helpers (scale mode only; all are fire-and-forget / best-effort) ──────
-
-def _s3_rel(target: Path) -> str | None:
-    """Vault-relative path for constructing S3 keys (e.g. 'reports/q1.json')."""
-    try:
-        return str(target.resolve().relative_to(_vault_root().resolve()))
-    except ValueError:
-        return None
-
-
-def _s3_upload(target: Path, content: str) -> None:
-    """Upload content to S3 at vault/{rel}. Never raises."""
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if s3:
-            rel = _s3_rel(target)
-            if rel:
-                s3.upload_text(f"vault/{rel}", content)
-    except Exception:
-        pass
-
-
-def _s3_ensure_local(target: Path) -> bool:
-    """If target is missing locally, download from S3 and write it. Returns True if now available."""
-    if target.exists():
-        return True
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if not s3:
-            return False
-        rel = _s3_rel(target)
-        if not rel:
-            return False
-        content = s3.download_text(f"vault/{rel}")
-        if content is None:
-            return False
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return True
-    except Exception:
-        return False
-
-
-def _s3_delete(target: Path) -> None:
-    """Delete from S3. Never raises."""
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if s3:
-            rel = _s3_rel(target)
-            if rel:
-                s3.delete(f"vault/{rel}")
-    except Exception:
-        pass
-
-
-def _s3_list_rels(subdir_rel: str) -> list[str]:
-    """Return vault-relative paths of all objects in S3 under the given subdirectory."""
-    try:
-        from core.s3_storage import get_s3
-        s3 = get_s3()
-        if not s3:
-            return []
-        prefix = f"vault/{subdir_rel}/" if subdir_rel else "vault/"
-        keys = s3.list_keys(prefix) or []
-        # list_keys returns rel-keys that still include the "vault/" prefix
-        return [k[len("vault/"):] for k in keys if k.startswith("vault/") and not k.endswith("/")]
-    except Exception:
-        return []
 
 
 # ── tool definitions ─────────────────────────────────────────────────────
@@ -427,8 +367,8 @@ def _handle_create(args: dict) -> list[TextContent]:
     if target is None:
         return _err("Path escapes the vault directory")
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
+    vault = _vault()
+    if vault.ensure_local(target).exists():
         return _err(f"File already exists: {target}. Use vault_write to overwrite.")
 
     if target.suffix == ".json":
@@ -437,8 +377,7 @@ def _handle_create(args: dict) -> list[TextContent]:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    target.write_text(content, encoding="utf-8")
-    _s3_upload(target, content)
+    vault.write(target, content)
     return _ok({"path": str(target), "size": len(content), "created": True})
 
 
@@ -446,8 +385,7 @@ def _handle_read(args: dict) -> list[TextContent]:
     target = _resolve(args.get("path", ""))
     if target is None:
         return _err("Invalid path or path escapes the vault")
-    if not target.exists():
-        _s3_ensure_local(target)
+    _vault().ensure_local(target)
     if not target.exists():
         return _err(f"File not found: {target}")
     if target.is_dir():
@@ -466,16 +404,13 @@ def _handle_write(args: dict) -> list[TextContent]:
     if target is None:
         return _err("Invalid path or path escapes the vault")
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-
     if target.suffix == ".json":
         try:
             content = json.dumps(json.loads(content), indent=2)
         except (json.JSONDecodeError, TypeError):
             pass
 
-    target.write_text(content, encoding="utf-8")
-    _s3_upload(target, content)
+    _vault().write(target, content)
     return _ok({"path": str(target), "size": len(content), "written": True})
 
 
@@ -483,8 +418,8 @@ def _handle_patch(args: dict) -> list[TextContent]:
     target = _resolve(args.get("path", ""))
     if target is None:
         return _err("Invalid path or path escapes the vault")
-    if not target.exists():
-        _s3_ensure_local(target)
+    vault = _vault()
+    vault.ensure_local(target)
     if not target.exists():
         return _err(f"File not found: {target}")
 
@@ -511,8 +446,7 @@ def _handle_patch(args: dict) -> list[TextContent]:
             return _err("Cannot merge: incompatible types (both must be objects or both arrays)")
 
         content = json.dumps(existing, indent=2)
-        target.write_text(content, encoding="utf-8")
-        _s3_upload(target, content)
+        vault.write(target, content)
         return _ok({"path": str(target), "content": content, "patched": True})
 
     elif find_str is not None:
@@ -521,8 +455,7 @@ def _handle_patch(args: dict) -> list[TextContent]:
         if find_str not in content:
             return _err(f"Text '{find_str[:80]}' not found in file")
         content = content.replace(find_str, replace_str, 1)
-        target.write_text(content, encoding="utf-8")
-        _s3_upload(target, content)
+        vault.write(target, content)
         return _ok({"path": str(target), "content": content, "patched": True})
 
     return _err("Provide either 'merge' (for JSON) or 'find'+'replace' (for text)")
@@ -537,37 +470,23 @@ def _handle_list(args: dict) -> list[TextContent]:
     if base is None:
         return _err("Path escapes the vault directory")
 
-    files = []
-    seen_rels: set[str] = set()
+    # Everything the vault holds under the directory, not only what this
+    # process has materialised.
+    _vault().hydrate(subdir)
 
+    files = []
     if base.exists():
         for item in sorted(base.rglob("*")):
             if not item.is_file():
                 continue
             if ext_filter and item.suffix != ext_filter:
                 continue
-            rel = str(item.relative_to(root))
-            seen_rels.add(rel)
             files.append({
                 "name": item.name,
                 "path": str(item),
-                "relative": rel,
+                "relative": str(item.relative_to(root)),
                 "size": item.stat().st_size,
             })
-
-    # Merge S3-only files (present in S3 but not on this worker's local disk)
-    for rel in _s3_list_rels(subdir):
-        if ext_filter and not rel.endswith(ext_filter):
-            continue
-        if rel in seen_rels:
-            continue
-        s3_local = root / rel
-        files.append({
-            "name": s3_local.name,
-            "path": str(s3_local),
-            "relative": rel,
-            "size": 0,
-        })
 
     return _ok({"directory": str(base), "count": len(files), "files": files})
 
@@ -579,23 +498,12 @@ def _handle_delete(args: dict) -> list[TextContent]:
     if target.is_dir():
         return _err("Cannot delete directories. Delete files individually.")
 
+    vault = _vault()
+    vault.ensure_local(target)
     if not target.exists():
-        # File may exist only in S3 (written by another worker)
-        rel = _s3_rel(target)
-        if not rel:
-            return _err(f"File not found: {target}")
-        try:
-            from core.s3_storage import get_s3
-            s3 = get_s3()
-            if s3 and s3.download_text(f"vault/{rel}") is not None:
-                s3.delete(f"vault/{rel}")
-                return _ok({"path": str(target), "deleted": True})
-        except Exception:
-            pass
         return _err(f"File not found: {target}")
 
-    target.unlink()
-    _s3_delete(target)
+    vault.forget(target)
     return _ok({"path": str(target), "deleted": True})
 
 

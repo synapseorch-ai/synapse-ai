@@ -457,6 +457,15 @@ async def lifespan(app: FastAPI):
     settings_runtime.install_provider()
     await settings_runtime.refresh()
 
+    # The blob store, once the settings that can name a bucket are readable and
+    # before anything below writes a blob (F57).
+    try:
+        from core.storage import install_configured_blob_store
+        if install_configured_blob_store():
+            print("Blob store: S3")
+    except Exception as e:
+        print(f"Warning: S3 blob store not installed, using the local directory: {e}")
+
     # The rate card. Adds only the models the table is missing, so an edited
     # price is never reverted by a restart — and loads the snapshot that
     # calculate_cost() reads synchronously on the per-turn path.
@@ -642,6 +651,7 @@ async def lifespan(app: FastAPI):
             import core.server as _server_mod
             from core.notifications import hub as _notification_hub
             from core.orchestration.runner import event_observers as _event_observers
+            _notification_hub.reload()  # built at import, before the blob store
             _notification_hub.configure(_server_mod)
             if _notification_hub.observe_run_event not in _event_observers:
                 _event_observers.append(_notification_hub.observe_run_event)
