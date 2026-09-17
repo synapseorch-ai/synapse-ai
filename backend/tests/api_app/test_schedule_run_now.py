@@ -17,7 +17,7 @@ from core.store import schedules as schedule_store
 
 
 @pytest.fixture
-def manager(test_app, monkeypatch):
+async def manager(test_app, monkeypatch):
     import core.react_engine as re_mod
     import core.schedule_logger as logger_mod
     from core.scheduler import ScheduleManager
@@ -41,7 +41,9 @@ def manager(test_app, monkeypatch):
     mgr = ScheduleManager()
     mgr._server_module = test_app.state.server_module
     test_app.state.schedule_manager = mgr
-    return runs
+    yield runs
+    # The run is fire-and-forget; let it finish inside this test's event loop.
+    await asyncio.gather(*mgr._manual_runs, return_exceptions=True)
 
 
 async def _schedule(sid, enabled, next_run_at=None):
