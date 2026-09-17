@@ -66,6 +66,13 @@ def get_scale_config() -> ScaleConfig:
     except Exception:
         settings = {}
 
+    # `os.getenv(key, fallback)` returns an EMPTY value rather than the fallback,
+    # and compose passes `S3_BUCKET=${S3_BUCKET:-}` and friends — so an unset
+    # variable shadowed a value saved on the Scale screen (F57/F60). `or` is the
+    # whole fix: empty means "not configured here".
+    def env(key: str, saved: str = "", default: str = "") -> str:
+        return (os.getenv(key) or "").strip() or saved or default
+
     redis_url = (
         os.getenv("REDIS_URL")
         or settings.get("redis_url", "")
@@ -100,13 +107,13 @@ def get_scale_config() -> ScaleConfig:
         pubsub_event_ttl=int(os.getenv("PUBSUB_EVENT_TTL", "3600")),
         max_global_queue_depth=int(os.getenv("MAX_GLOBAL_QUEUE_DEPTH", "1000000")),
         rate_limit_per_tenant_rps=int(os.getenv("RATE_LIMIT_PER_TENANT_RPS", "1000")),
-        otlp_endpoint=os.getenv("OTLP_ENDPOINT", settings.get("otlp_endpoint", "")),
+        otlp_endpoint=env("OTLP_ENDPOINT", settings.get("otlp_endpoint", "")),
         metrics_token=os.getenv("METRICS_TOKEN", ""),  # read by /api/v2/metrics from the env
         k8s_mode=bool(int(os.getenv("K8S_MODE", "0"))),
-        s3_bucket=os.getenv("S3_BUCKET", settings.get("s3_bucket", "")),
-        s3_region=os.getenv("S3_REGION", settings.get("s3_region", "us-east-1")),
-        s3_prefix=os.getenv("S3_PREFIX", settings.get("s3_prefix", "synapse")),
-        s3_access_key_id=os.getenv("S3_ACCESS_KEY_ID", settings.get("s3_access_key_id", "")),
-        s3_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY", settings.get("s3_secret_access_key", "")),
-        s3_endpoint_url=os.getenv("S3_ENDPOINT_URL", settings.get("s3_endpoint_url", "")),
+        s3_bucket=env("S3_BUCKET", settings.get("s3_bucket", "")),
+        s3_region=env("S3_REGION", settings.get("s3_region", "us-east-1")),
+        s3_prefix=env("S3_PREFIX", settings.get("s3_prefix", "synapse")),
+        s3_access_key_id=env("S3_ACCESS_KEY_ID", settings.get("s3_access_key_id", "")),
+        s3_secret_access_key=env("S3_SECRET_ACCESS_KEY", settings.get("s3_secret_access_key", "")),
+        s3_endpoint_url=env("S3_ENDPOINT_URL", settings.get("s3_endpoint_url", "")),
     )

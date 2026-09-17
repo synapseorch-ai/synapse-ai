@@ -100,3 +100,61 @@ class TestKubernetesManifests:
         docs = list(yaml.safe_load_all((ROOT / "infra/k8s/worker-deployment.yaml").read_text()))
         assert any(d and d.get("kind") == "Service" and d["metadata"]["name"] == "synapse-worker"
                    for d in docs)
+
+
+class TestAnEmptyVariableIsNotAnAnswer:
+    """`docker-compose.yml` passes `S3_BUCKET=${S3_BUCKET:-}` and friends, so a
+    worker's environment holds the key with an empty value. `os.getenv(key,
+    fallback)` returns that empty string rather than the fallback, so an empty
+    variable shadowed a bucket saved on the Scale screen: the API wrote to S3
+    and the worker to its own disk (found writing the docs for F57/F60)."""
+
+    def test_a_bucket_saved_in_settings_is_used(self, monkeypatch):
+        import core.config as core_config
+        from core.scale.config import get_scale_config
+        monkeypatch.setenv("S3_BUCKET", "")
+        monkeypatch.setenv("S3_ENDPOINT_URL", "")
+        monkeypatch.setattr(core_config, "load_settings",
+                            lambda *a, **k: {"s3_bucket": "saved-bucket",
+                                             "s3_endpoint_url": "http://minio:9000"})
+
+        cfg = get_scale_config()
+
+        assert cfg.s3_bucket == "saved-bucket"
+        assert cfg.s3_endpoint_url == "http://minio:9000"
+
+    def test_an_empty_redis_url_is_standalone(self, monkeypatch):
+        from core.scale.config import get_scale_config
+        monkeypatch.setenv("REDIS_URL", "")
+
+        assert get_scale_config().scale_mode is False
+
+
+class TestTheWorkersMemoryStore:
+    """It was built only when `SCALE_POSTGRES_URL` was set — a presence check on
+    a value it never used — so a worker sharing the API's database (the default
+    since F60) silently had no agent memory."""
+
+    def test_it_follows_the_database_the_worker_uses(self, monkeypatch):
+        import core.memory as memory_mod
+        from core.scale.worker_server_module import WorkerServerModule
+        built = []
+        monkeypatch.setattr(memory_mod, "MemoryStore", lambda *a, **k: built.append(1) or object())
+        monkeypatch.delenv("SCALE_POSTGRES_URL", raising=False)
+        monkeypatch.setenv("SYNAPSE_DB_URL", "postgresql://u:p@db:5432/synapse")
+
+        WorkerServerModule()._attach_memory_store()
+
+        assert built == [1]
+
+    def test_but_not_on_sqlite(self, monkeypatch):
+        import core.memory as memory_mod
+        from core.scale.worker_server_module import WorkerServerModule
+        built = []
+        monkeypatch.setattr(memory_mod, "MemoryStore", lambda *a, **k: built.append(1) or object())
+        monkeypatch.delenv("SCALE_POSTGRES_URL", raising=False)
+        monkeypatch.setenv("SYNAPSE_DB_URL", "sqlite+aiosqlite:////tmp/x.db")
+
+        WorkerServerModule()._attach_memory_store()
+
+        assert built == []

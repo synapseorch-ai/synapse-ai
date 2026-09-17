@@ -410,9 +410,13 @@ class WorkerServerModule:
             return
 
         try:
-            import os
-            pg_url = os.getenv("SCALE_POSTGRES_URL", "")
-            if pg_url:
+            # The database this worker actually uses, which since F60 is the
+            # engine's own unless SCALE_POSTGRES_URL names another. It used to
+            # check that variable was *present*, without using its value, so a
+            # worker sharing the API's database had no memory at all.
+            from core.scale.config import get_scale_config
+
+            if get_scale_config().postgres_url:
                 from core.memory import MemoryStore
                 self.memory_store = MemoryStore()
         except Exception:
