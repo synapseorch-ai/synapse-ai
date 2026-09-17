@@ -482,6 +482,9 @@ class ToolStepExecutor:
                     mode=mode,
                     current_model=model,
                     current_settings=settings,
+                    # The workspace's effort, as an agent without its own gets
+                    # (F77); passing nothing meant "medium" whatever it said.
+                    reasoning_effort=settings.get("reasoning_effort"),
                     session_id=run.session_id,
                     agent_id=step.agent_id or "tool_step",
                     source="orchestration",
@@ -773,6 +776,7 @@ class EvaluatorStepExecutor:
                 mode=eval_mode,
                 current_model=eval_model,
                 current_settings=settings,
+                reasoning_effort=settings.get("reasoning_effort"),  # F77
                 session_id=run.session_id,
                 agent_id=step.agent_id or "evaluator",
                 source="orchestration",
@@ -1686,6 +1690,7 @@ class LLMStepExecutor:
                 mode=mode,
                 current_model=model,
                 current_settings=settings,
+                reasoning_effort=settings.get("reasoning_effort"),  # F77
                 session_id=run.session_id,
                 agent_id=step.agent_id or "llm_step",
                 source="orchestration",
