@@ -223,55 +223,12 @@ async def run_orchestration_job(
         return {"status": final_status, "run_id": run_id}
 
     except Exception as exc:
-        tb = traceback.format_exc()
-        _log.debug(f"[worker] run_orchestration_job ERROR {run_id}: {exc}\n{tb}")
-
-        # Update run status in Postgres to failed
-        try:
-            async with session_factory() as session:
-                from sqlalchemy import update
-                from core.scale.models_db import OrchestrationRunDB
-                await session.execute(
-                    update(OrchestrationRunDB)
-                    .where(OrchestrationRunDB.run_id == run_id)
-                    .values(
-                        status="failed",
-                        ended_at=datetime.now(timezone.utc),
-                    )
-                )
-                await session.commit()
-        except Exception:
-            pass
-
-        # Publish error event so SSE clients get notified
-        try:
-            from core.scale.pubsub import RunEventPublisher
-            publisher = RunEventPublisher(redis, run_id)
-            await publisher.publish({"type": "orchestration_error", "error": str(exc)})
-            await publisher.publish_done()
-        except Exception:
-            pass
-
-        # On final retry, write to DLQ
-        attempt = ctx.get("job_try", 1)
-        max_tries = int(os.getenv("WORKER_MAX_RETRIES", "3"))
-        if attempt >= max_tries:
-            await _write_dlq(
-                session_factory=session_factory,
-                run_id=run_id,
-                orch_id=orch_id,
-                job_function="run_orchestration_job",
-                job_payload={
-                    "run_id": run_id,
-                    "orch_id": orch_id,
-                    "initial_input": initial_input,
-                },
-                error_message=str(exc),
-                error_traceback=tb,
-                attempt_count=attempt,
-            )
-
-        raise  # ARQ will retry
+        # The engine records a step's failure itself and the job ends normally,
+        # so reaching here means the job died outside it: the orchestration is
+        # gone, the store or Redis failed. ARQ does not retry an exception —
+        # only `Retry` or a cancellation — so this is the job's last try.
+        await _dead_job(ctx, "run_orchestration_job", run_id, orch_id, exc)
+        raise
 
     finally:
         if leased:
@@ -305,6 +262,7 @@ async def resume_orchestration_job(
     redis = ctx["redis"]
     session_factory = ctx["session_factory"]
     leased = False
+    orch_id: str | None = None
 
     try:
         # This tenant's MCP session set, from the bounded pool. It merges the
@@ -397,33 +355,7 @@ async def resume_orchestration_job(
         return {"status": final_status, "run_id": run_id}
 
     except Exception as exc:
-        _log.debug(f"[worker] resume_orchestration_job ERROR {run_id}: {exc}")
-
-        # Mirror run_orchestration_job: mark failed in Postgres so it doesn't stay "paused"
-        try:
-            async with session_factory() as session:
-                from sqlalchemy import update
-                from core.scale.models_db import OrchestrationRunDB
-                await session.execute(
-                    update(OrchestrationRunDB)
-                    .where(OrchestrationRunDB.run_id == run_id)
-                    .values(
-                        status="failed",
-                        ended_at=datetime.now(timezone.utc),
-                    )
-                )
-                await session.commit()
-        except Exception:
-            pass
-
-        try:
-            from core.scale.pubsub import RunEventPublisher
-            _pub = RunEventPublisher(redis, run_id)
-            await _pub.publish({"type": "orchestration_error", "error": str(exc)})
-            await _pub.publish_done()
-        except Exception:
-            pass
-
+        await _dead_job(ctx, "resume_orchestration_job", run_id, orch_id, exc)
         raise
 
     finally:
@@ -447,6 +379,8 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
     redis = ctx["redis"]
     session_factory = ctx["session_factory"]
     leased = False
+
+    orch_id: str | None = None
 
     try:
         # This tenant's MCP session set, from the bounded pool. It merges the
@@ -495,16 +429,7 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
         return {"status": final_status, "run_id": run_id}
 
     except Exception as exc:
-        _log.debug(f"[worker] resume_failed_job ERROR {run_id}: {exc}")
-        # The adapter raises on a refused resume rather than recording it as
-        # finished, so the stream needs its end from here.
-        try:
-            from core.scale.pubsub import RunEventPublisher
-            _pub = RunEventPublisher(redis, run_id)
-            await _pub.publish({"type": "orchestration_error", "error": str(exc)})
-            await _pub.publish_done()
-        except Exception:
-            pass
+        await _dead_job(ctx, "resume_failed_job", run_id, orch_id, exc)
         raise
 
     finally:
@@ -1152,29 +1077,82 @@ async def _deliver_webhook_for_run(
         _log.debug(f"[worker] webhook delivery failed for {run_id}: {e}")
 
 
+async def _dead_job(ctx: dict, job_function: str, run_id: str, orch_id: str | None, exc: Exception) -> None:
+    """Record a job that died outside the engine: run failed, stream ended, dead-lettered.
+
+    Every step is best-effort — this runs while an exception is on its way to
+    ARQ, and a second failure here must not replace it.
+
+    The run keeps its position (`current_step_id` is not touched), so retrying
+    the dead letter resumes it. A run that had already completed is left
+    alone: the resume that raised was refused because there was nothing to do.
+    """
+    session_factory = ctx["session_factory"]
+    tb = traceback.format_exc()
+    _log.warning(f"[worker] {job_function} died for run {run_id}: {exc}")
+
+    try:
+        async with session_factory() as session:
+            from sqlalchemy import update
+            from core.scale.models_db import OrchestrationRunDB
+            await session.execute(
+                update(OrchestrationRunDB)
+                .where(OrchestrationRunDB.run_id == run_id)
+                .where(OrchestrationRunDB.status != "completed")
+                .values(status="failed", ended_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
+    except Exception:
+        pass
+
+    try:
+        from core.scale.pubsub import RunEventPublisher
+        publisher = RunEventPublisher(ctx["redis"], run_id)
+        await publisher.publish({"type": "orchestration_error", "error": str(exc)})
+        await publisher.publish_done()
+    except Exception:
+        pass
+
+    await _write_dlq(
+        session_factory=session_factory,
+        run_id=run_id,
+        orch_id=orch_id,
+        job_function=job_function,
+        error_message=str(exc),
+        error_traceback=tb,
+        attempt_count=ctx.get("job_try", 1),
+    )
+
+
 async def _write_dlq(
     session_factory,
     run_id: str,
-    orch_id: str,
+    orch_id: str | None,
     job_function: str,
-    job_payload: dict,
     error_message: str,
     error_traceback: str,
     attempt_count: int,
 ) -> None:
-    """Write a failed job to the dead letter queue table."""
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    """Write a dead job to the dead-letter queue table, under the job's tenant.
+
+    The payload is the run and nothing else: retrying resumes the run
+    (`resume_failed_job`), whose input is already in its row — so no input, and
+    no webhook secret, sits in this table.
+    """
+    from sqlalchemy import insert
     from core.scale.models_db import DeadLetterQueueDB
 
     now = datetime.now(timezone.utc)
     try:
         async with session_factory() as session:
             await session.execute(
-                pg_insert(DeadLetterQueueDB).values(
+                insert(DeadLetterQueueDB).values(
+                    id=uuid.uuid4(),
+                    tenant_id=get_tenant(),
                     run_id=run_id,
                     orchestration_id=orch_id,
                     job_function=job_function,
-                    job_payload=job_payload,
+                    job_payload={"run_id": run_id, "orch_id": orch_id},
                     error_message=error_message,
                     error_traceback=error_traceback,
                     attempt_count=attempt_count,
@@ -1184,4 +1162,4 @@ async def _write_dlq(
             )
             await session.commit()
     except Exception as e:
-        _log.debug(f"[worker] failed to write DLQ: {e}")
+        _log.warning(f"[worker] failed to write DLQ for run {run_id}: {e}")

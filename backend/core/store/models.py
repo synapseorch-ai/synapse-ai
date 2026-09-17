@@ -616,7 +616,10 @@ class WorkerDB(Base):
 # ---------------------------------------------------------------------------
 
 class DeadLetterQueueDB(Base):
-    """Jobs that exhausted their retries.
+    """Jobs that died outside the engine — see `core.scale.worker._dead_job`.
+
+    A run that fails at a step is not here: the engine records it and the job
+    ends normally. Retrying an entry resumes its run (`resume_failed_job`).
 
     ``job_payload`` is a run's input, so these rows are tenant data even though
     the queue itself is fleet infrastructure. Without ``tenant_id`` an operator

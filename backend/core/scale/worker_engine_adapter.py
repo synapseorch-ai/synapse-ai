@@ -104,7 +104,8 @@ class WorkerEngineAdapter:
         """
         Run the orchestration and publish events to Redis.
         Returns the final status string.
-        Raises on unrecoverable error (ARQ will retry).
+        Raises on an error outside the engine; the job dead-letters it (a step
+        failure is recorded by the engine and returned as `failed`).
 
         `images` are the attachments this run starts with, given to steps that
         set `pass_images`. They are set on the engine and deliberately not put
@@ -399,7 +400,10 @@ class WorkerEngineAdapter:
         """Persist the final run status, ended_at, worker attribution, and cost/tokens to Postgres.
 
         `keep_position` leaves current_step_id alone — a cancelled run is
-        resumable from where it stopped, a finished one has nowhere to go.
+        resumable from where it stopped, a finished one has nowhere to go. A
+        failed run keeps it too: the engine left it on the failed step, and
+        clearing it here gave Replay (`resume_failed`) nothing to re-run, so a
+        replayed fleet run "completed" having run nothing.
         """
         from datetime import datetime, timezone
         try:
@@ -411,7 +415,7 @@ class WorkerEngineAdapter:
                     "ended_at": datetime.now(timezone.utc),
                     "waiting_for_human": False,
                 }
-                if not keep_position:
+                if not (keep_position or status == "failed"):
                     values["current_step_id"] = None
                 if self._worker_id:
                     values["worker_id"] = self._worker_id

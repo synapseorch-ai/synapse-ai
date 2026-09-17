@@ -291,7 +291,8 @@ async def queue_stats(request: Request):
             async with session_factory() as session:
                 r = await session.execute(
                     select(func.count()).select_from(DeadLetterQueueDB).where(
-                        DeadLetterQueueDB.resolved == False  # noqa: E712
+                        DeadLetterQueueDB.tenant_id == get_tenant(),
+                        DeadLetterQueueDB.resolved == False,  # noqa: E712
                     )
                 )
                 dlq_count = r.scalar() or 0
@@ -323,6 +324,7 @@ async def list_dlq(request: Request):
     async with session_factory() as session:
         result = await session.execute(
             select(DeadLetterQueueDB)
+            .where(DeadLetterQueueDB.tenant_id == get_tenant())
             .where(DeadLetterQueueDB.resolved == False)  # noqa: E712
             .order_by(DeadLetterQueueDB.last_failed_at.desc())
             .limit(50)
@@ -345,41 +347,74 @@ async def list_dlq(request: Request):
 
 @router.post("/scale/dlq/{dlq_id}/retry")
 async def retry_dlq_job(dlq_id: str, request: Request):
-    """Re-enqueue a DLQ job and mark it as resolved."""
+    """Resume a dead job's run, and mark the dead letter resolved once it is queued.
+
+    A dead letter is a job that died outside the engine (see `_dead_job`), and
+    the run it left is `failed` at the step it had reached. Retrying resumes
+    it there with `resume_failed_job`. It used to re-enqueue the original job
+    with the run id, orchestration id and input, which started the run again
+    from its entry step over its own checkpoint.
+    """
     session_factory = getattr(request.app.state, "pg_session_factory", None)
     arq_redis = getattr(request.app.state, "arq_redis", None)
     if not session_factory or not arq_redis:
         raise HTTPException(503, detail="Scale mode not available")
 
-    from sqlalchemy import select, update
-    from core.scale.models_db import DeadLetterQueueDB
+    import time
     import uuid as _uuid
+    from sqlalchemy import select, update
+    from core.scale.models_db import DeadLetterQueueDB, OrchestrationRunDB
+
+    try:
+        entry_id = _uuid.UUID(dlq_id)
+    except ValueError:
+        raise HTTPException(404, detail="DLQ entry not found")
 
     async with session_factory() as session:
-        result = await session.execute(
+        row = (await session.execute(
             select(DeadLetterQueueDB).where(
-                DeadLetterQueueDB.id == _uuid.UUID(dlq_id)
+                DeadLetterQueueDB.id == entry_id,
+                DeadLetterQueueDB.tenant_id == get_tenant(),
             )
-        )
-        row = result.scalar_one_or_none()
+        )).scalar_one_or_none()
+        run = None
+        if row and row.run_id:
+            run = (await session.execute(
+                select(OrchestrationRunDB).where(
+                    OrchestrationRunDB.run_id == row.run_id,
+                    OrchestrationRunDB.tenant_id == get_tenant(),
+                )
+            )).scalar_one_or_none()
 
     if not row:
         raise HTTPException(404, detail="DLQ entry not found")
 
-    # Re-enqueue the original job. One queue: any worker can take it.
-    payload = row.job_payload or {}
-    await arq_redis.enqueue_job(row.job_function, **payload, _queue_name=QUEUE_NAME)
+    if run is None or not run.current_step_id:
+        raise HTTPException(
+            409,
+            detail="This run never reached a step, so there is nothing to resume — start it again.",
+        )
+    if run.status not in ("failed", "cancelled"):
+        raise HTTPException(409, detail=f"The run is {run.status}; only a failed or cancelled run can be resumed.")
 
-    # Mark as resolved
+    job = await arq_redis.enqueue_job(
+        "resume_failed_job",
+        run_id=run.run_id,
+        _queue_name=QUEUE_NAME,
+        _job_id=f"retry_{run.run_id}_{int(time.time() * 1000)}",
+    )
+    if job is None:
+        raise HTTPException(409, detail="A retry of this run is already queued.")
+
     async with session_factory() as session:
         await session.execute(
             update(DeadLetterQueueDB)
-            .where(DeadLetterQueueDB.id == _uuid.UUID(dlq_id))
+            .where(DeadLetterQueueDB.id == entry_id)
             .values(resolved=True)
         )
         await session.commit()
 
-    return {"status": "re-enqueued", "dlq_id": dlq_id}
+    return {"status": "re-enqueued", "dlq_id": dlq_id, "run_id": run.run_id}
 
 
 # ---------------------------------------------------------------------------
