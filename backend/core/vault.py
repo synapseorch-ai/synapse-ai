@@ -114,7 +114,7 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
         message = (
             f"{size} Saved to vault at: {path}. "
             f"Instead: use read_file_by_lines with start_line/end_line to read a slice, "
-            f"or grep to search for specific values."
+            f"or grep_file to search for specific values."
         )
     return json.dumps({
         "vault_file": reference,

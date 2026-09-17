@@ -32,6 +32,13 @@ DEFAULT_TOOLS_BY_TYPE = {
         "grep",
         "glob",
         "read_file_by_lines",         # read specific line range from any file
+        # The vault tool's own two (`tools/vault_fs.py`) — the only file tools a
+        # fleet worker has, whose `read_file`/`search_files` are named above —
+        # and `file_reader`'s real grep, which a vaulted output's reference
+        # names. `grep` above is served by no server (F21).
+        "list_files",
+        "read_json",
+        "grep_file",
     },
     "code": {
         "search_codebase",
@@ -625,12 +632,7 @@ You have access to the following tools:
 
 **CODE & FILE NAVIGATION:**
 {_embed_tools_desc}
-- **`grep`** — search for a pattern inside a file or across all files in a folder. Pass a file path to search that file, or a folder path to search all files within it. Use `file_pattern` to filter by extension (e.g. `*.py`, `*.ts`).
-- **`glob`** — discover file paths by pattern (e.g. `**/*.py`, `src/**/*.ts`).
-- **`read_file`** — read an entire file. Use when you already know the path and the file is small. For large files, prefer `read_file_by_lines` or `grep`.
-- **`read_file_by_lines`** — read a specific line range from a file (1-indexed, inclusive). Ideal when you know approximately where the relevant content is.
-
-If you already know the file path, read it directly — no need to search first. Prefer `grep` or `read_file_by_lines` over reading entire files when you only need a specific section.
+If you already know a file's path, read it directly — no need to search first. When you only need part of a large file, read a line range or search inside it rather than reading all of it; the tools above say which of theirs do that.
 
 ### RESPONSE FORMAT INSTRUCTIONS
 If you need to use a specific tool from the list above, you MUST respond with **ONLY** a valid JSON object in the following format:
@@ -662,7 +664,7 @@ If you do not need to use a tool, reply in plain text.
         + tools_section
         + """
 **VAULT (LARGE OUTPUT HANDLING):**
-When a tool's output exceeds the character limit, it is automatically saved to a vault file. You will receive a JSON reference containing the vault file path, file type, size, and total line count — instead of the raw output. To access the data: use `grep` to search for specific values within the vault file, or use `read_file_by_lines` with `start_line`/`end_line` to read a slice. Do NOT use `read_file` on vault files — they are too large and will be re-vaulted.
+When a tool's output exceeds the character limit, it is automatically saved to a vault file. You will receive a JSON reference containing the vault file path, file type, size, and total line count — instead of the raw output. Its `message` names the path to use and the tools that read a slice of it or search it; follow that rather than reading the whole file, which would only be saved to the vault again.
 
 **TASK LIST (`update_tasks`):**
 Your task list is shown to the user live — it is how they watch you work. For any multi-step job (3+ distinct actions), call `update_tasks` FIRST to write the plan, then keep it true: exactly one task `in_progress` at a time, mark a task `completed` the moment it is done (never batch updates), and mark a task `cancelled` if it turns out not to apply. Every call must contain the FULL list — it replaces the previous one. Skip the task list for trivial single-step requests. You will not be able to finish while tasks are still open: complete them or cancel them before giving your final response. `update_tasks` only records the plan — it cannot fetch data or act; make progress with real tools between updates.

@@ -81,6 +81,18 @@ class ToolRouter(dict):
         self[key] = (session_key or namespace, tool_name)
         return key
 
+    def register_beside(self, namespace: str, tool_name: str) -> str:
+        """Register `tool_name`, taking its bare name only if no server has it.
+
+        For a server whose tool names collide with a native one's by design. The
+        Node Filesystem server answers to `read_file` and `search_files`, which
+        are the vault tool's (`tools/vault_fs.py`); it connected later and, last
+        registration winning, took them — so on the single-process product an
+        agent's `read_file` of a vault path went to a server that reads absolute
+        paths (F79). Its tools stay reachable by their namespaced key.
+        """
+        return self.register(namespace, tool_name, alias=self.resolve(tool_name) is None)
+
     def __setitem__(self, key, value) -> None:
         super().__setitem__(key, value)
         # The bare name is the second element of the value tuple at every

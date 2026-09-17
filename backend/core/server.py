@@ -295,7 +295,9 @@ async def _connect_filesystem_mcp(label: str = "started") -> None:
         # log spam on every /api/tools/available poll.
         agent_sessions["Filesystem"] = session
         for tool in tools.tools:
-            tool_router.register("Filesystem", tool.name)
+            # Beside the vault, never over it (F79): its `read_file` and
+            # `search_files` keep their bare names.
+            tool_router.register_beside("Filesystem", tool.name)
         print(f"Filesystem MCP server {label} ({len(tools.tools)} tools registered).")
     except Exception as e:
         print(f"Failed to start Filesystem MCP server: {e}")
