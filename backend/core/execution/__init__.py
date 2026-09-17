@@ -19,7 +19,7 @@ done.
 from .docker_runner import DOCKER_IMAGE, DockerRunner
 from .host_runner import HostRunner
 from .runner import RUNNER_ENV, CodeRunner, describe_runner, get_runner, register_runner
-from .scripts import wrap_args, wrap_transform
+from .scripts import declared_globals, wrap_args, wrap_transform
 from .types import ExecRequest, ExecResult, ExecUnsupported, Network
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
     "ExecUnsupported",
     "HostRunner",
     "Network",
+    "declared_globals",
     "describe_runner",
     "get_runner",
     "register_runner",

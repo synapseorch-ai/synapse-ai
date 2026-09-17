@@ -17,9 +17,32 @@ def _embed(payload: Any) -> str:
     return json.dumps(payload, default=str).replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
 
 
-def wrap_args(code: str, args: dict[str, Any]) -> str:
-    """A custom Python tool: the call's arguments arrive as `_args`."""
-    return f'import json\n_args = json.loads("""{_embed(args)}""")\n\n' + code
+def wrap_args(
+    code: str, args: dict[str, Any], globals_: dict[str, Any] | None = None
+) -> str:
+    """A custom Python tool: the call's arguments arrive as `_args`, and the
+    globals the tool declares as `_globals` (empty when it declares none)."""
+    return (
+        f'import json\n_args = json.loads("""{_embed(args)}""")\n'
+        f'_globals = json.loads("""{_embed(globals_ or {})}""")\n\n'
+    ) + code
+
+
+def declared_globals(tool: dict[str, Any], variables: dict[str, Any]) -> dict[str, Any]:
+    """The workspace variables a Python tool names in `globals`, and no others.
+
+    **This is the only way a variable reaches customer code** (F28, D104). The
+    arguments a model writes are never rendered with `{{ global.* }}` — they
+    were, in both the TOOL-step and the agent branch, so a prompt-injected page
+    could name any variable and have its plaintext (a secret, on a hosted
+    deployment) handed to code running with internet access. A tool now says
+    which it needs, the person who wrote it decides, and a declared name that is
+    not set is simply absent.
+    """
+    names = tool.get("globals") or []
+    if not isinstance(names, list):
+        return {}
+    return {name: variables[name] for name in names if isinstance(name, str) and name in variables}
 
 
 #: `state.key` reads a key, as it does in a condition, a prompt and `{{state.key}}`.

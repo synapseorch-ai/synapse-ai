@@ -625,23 +625,20 @@ class ToolStepExecutor:
         tool called by an agent must behave identically. Both are now one call
         to `core.execution`, which is what stopped them drifting.
         """
-        from core import templating as _templating
         from core import variables as _variables
-        from core.execution import ExecRequest, Network, get_runner, wrap_args
+        from core.execution import ExecRequest, Network, declared_globals, get_runner, wrap_args
         from core.vault import _vault_root
 
         python_code = tool.get("code", "")
         if not python_code.strip():
             raise ValueError("Python tool has no code defined.")
 
-        # `{{global.key}}` inside an argument. The globals are not injected —
-        # see the agent-side branch for why.
-        rendered_args = _templating.render_mapping(
-            dict(tool_args), {"global": await _variables.load()}
-        )
+        # The arguments go in as written — a model wrote them — and only the
+        # globals the tool declares go in beside them (F28, `declared_globals`).
+        granted = declared_globals(tool, await _variables.load()) if tool.get("globals") else {}
 
         result = await get_runner().run(ExecRequest(
-            code=wrap_args(python_code, rendered_args),
+            code=wrap_args(python_code, tool_args, granted),
             network=Network.INTERNET,
             timeout_s=30,
             vault_path=_vault_root(),

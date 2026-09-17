@@ -2019,18 +2019,15 @@ async def run_agent_step(
                                 if not python_code.strip():
                                     raise ValueError("Python tool has no code defined.")
 
-                                # `{{global.key}}` inside an argument, rendered
-                                # the way the HTTP branch below renders one.
-                                # The globals themselves are deliberately NOT
-                                # handed to the sandbox: on a hosted deployment
-                                # a variable marked secret resolves to its real
-                                # value, and injecting the whole document would
-                                # hand every one of them to customer code as a
-                                # side effect of a template syntax.
-                                from core import templating as _templating
-                                _py_args = _templating.render_mapping(
-                                    dict(tool_args), {"global": _global_variables}
-                                )
+                                # The arguments go in as the model wrote them,
+                                # never rendered: `{{ global.X }}` in one used to
+                                # hand X's plaintext to customer code. Only the
+                                # globals the tool declares go in, as `_globals`
+                                # (F28, `declared_globals`) — never the whole
+                                # document, whose secrets resolve to real values
+                                # on a hosted deployment.
+                                from core.execution import declared_globals as _declared_globals
+                                _granted = _declared_globals(target_tool, _global_variables)
 
                                 # The tenant's vault, read-only at /data. From
                                 # the blob store, not __file__ — the vault left
@@ -2040,7 +2037,7 @@ async def run_agent_step(
                                 from core.vault import _vault_root
 
                                 _result = await _get_runner().run(_ExecRequest(
-                                    code=_wrap_args(python_code, _py_args),
+                                    code=_wrap_args(python_code, tool_args, _granted),
                                     network=_Network.INTERNET,
                                     timeout_s=30,
                                     vault_path=_vault_root(),

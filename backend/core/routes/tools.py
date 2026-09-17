@@ -370,6 +370,9 @@ async def build_docker_sandbox():
 class PythonTestRequest(BaseModel):
     code: str
     args: Optional[dict] = None
+    #: The globals the tool declares, so the Test button hands the code the same
+    #: `_globals` a run will (F28).
+    globals: Optional[list[str]] = None
     timeout: Optional[int] = 30
 
 
@@ -389,7 +392,15 @@ async def test_python_tool(req: PythonTestRequest):
     passes its test and then behaves differently in a run — on a deployment
     where the two runtimes are not even the same kind of thing.
     """
-    from core.execution import ExecRequest, ExecUnsupported, Network, get_runner, wrap_args
+    from core import variables
+    from core.execution import (
+        ExecRequest,
+        ExecUnsupported,
+        Network,
+        declared_globals,
+        get_runner,
+        wrap_args,
+    )
 
     if not req.code or not req.code.strip():
         raise HTTPException(status_code=400, detail="No code provided")
@@ -398,7 +409,13 @@ async def test_python_tool(req: PythonTestRequest):
 
     try:
         result = await get_runner().run(ExecRequest(
-            code=wrap_args(req.code, req.args or {}),
+            code=wrap_args(
+                req.code,
+                req.args or {},
+                declared_globals({"globals": req.globals}, await variables.load())
+                if req.globals
+                else {},
+            ),
             network=Network.INTERNET,
             timeout_s=timeout,
             memory_mb=int(MEMORY_LIMIT.rstrip("m")),

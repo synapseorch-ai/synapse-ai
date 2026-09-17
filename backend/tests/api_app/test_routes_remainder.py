@@ -50,6 +50,33 @@ class TestToolAndSettingReads:
         resp = await client.get("/api/tools/python/packages")
         assert resp.status_code < 500
 
+    async def test_the_test_button_hands_the_code_its_declared_globals(self, client):
+        """F28: a run gives a Python tool only the globals it declares, as
+        `_globals`; the Test button has to give the same, or a tool passes its
+        test and fails its run."""
+        from core import variables
+        from core.execution import ExecResult, register_runner
+
+        seen = []
+
+        class _Recording:
+            async def run(self, request):
+                seen.append(request.code)
+                return ExecResult(exit_code=0, stdout="{}", stderr="")
+
+        await variables.save({"API_KEY": "the-key", "PAYROLL_TOKEN": "never-this"})
+        register_runner(_Recording())
+        try:
+            resp = await client.post("/api/tools/python/test", json={
+                "code": "print('{}')", "args": {"q": "x"}, "globals": ["API_KEY"],
+            })
+        finally:
+            register_runner(None)
+
+        assert resp.status_code == 200, resp.text
+        assert '"API_KEY": "the-key"' in seen[0]
+        assert "never-this" not in seen[0]
+
     async def test_check_embed(self, client):
         resp = await client.get("/api/settings/check-embed")
         assert resp.status_code < 500
