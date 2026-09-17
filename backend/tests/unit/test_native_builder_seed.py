@@ -351,3 +351,24 @@ class TestTheBuilderKnowsItsTarget:
         blob = json.dumps(bundled_definitions())
         placeholders = set(re.findall(r"\{\{?\s*state\.(\w+)", blob))
         assert not (placeholders & added), placeholders & added
+
+
+class TestTheSummaryHasSomethingToName:
+    """F53 (D104): the closing summary read `final_orch` as "Orchestration built or
+    changed", but that key holds the saver's closing word — `DONE`. Two of three
+    measured summaries could only say "the orchestration" was saved. The plan it
+    built from and the orchestration it changed are already in state; the summary
+    reads them. Through `input_keys`, not placeholders (see the target tests)."""
+
+    def _summarize(self):
+        steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+        return steps["step_summarize"]
+
+    def test_it_reads_the_plan_and_the_target(self):
+        keys = set(self._summarize()["input_keys"])
+        assert {"final_orch", "manage_result", "plan_draft", "current_orchestration_name"} <= keys
+
+    def test_it_is_not_told_the_closing_word_is_the_orchestration(self):
+        prompt = self._summarize()["prompt_template"]
+        assert "Orchestration built or changed:\n{state.final_orch}" not in prompt
+        assert "plan_draft" in prompt and "current_orchestration_name" in prompt

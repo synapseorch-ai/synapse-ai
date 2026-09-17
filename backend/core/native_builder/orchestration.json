@@ -709,7 +709,7 @@
             "name": "Summarise Result",
             "type": "llm",
             "agent_id": null,
-            "prompt_template": "The Synapse AI Builder has just finished. Exactly one of these two is filled in.\n\nOrchestration built or changed:\n{state.final_orch}\n\nWorkspace changes made:\n{state.manage_result}\n\nWrite a short, friendly 2–3 sentence confirmation for the user, describing whichever one actually happened. Name what was created or changed. If an orchestration was saved, give its name and say it is ready to use. Do not mention the empty one.",
+            "prompt_template": "The Synapse AI Builder has just finished. Exactly one of these two is filled in.\n\nOrchestration work — the saver's closing word (DONE, or DONE with the reason it stopped):\n{state.final_orch}\n\nWorkspace changes made:\n{state.manage_result}\n\nWrite a short, friendly 2–3 sentence confirmation for the user, describing whichever one actually happened. If an orchestration was built or changed, name it: plan_draft (the approved plan) names a new one, and current_orchestration_name is the one that was changed — both are in the context below. Say it is ready to use, unless the closing word gives a reason it stopped; then say what did not finish. For workspace changes, name what was created or changed. Do not mention the empty one.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -723,7 +723,12 @@
             "human_fields": [],
             "human_channel_id": null,
             "human_timeout_seconds": 3600,
-            "input_keys": ["final_orch", "manage_result"],
+            "input_keys": [
+                "final_orch",
+                "manage_result",
+                "plan_draft",
+                "current_orchestration_name"
+            ],
             "output_key": "summary",
             "forced_tool": null,
             "max_turns": 1,
