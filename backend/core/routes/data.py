@@ -459,13 +459,10 @@ async def get_models():
             return False, [], []
         models = _cli_custom_models("anthropic_cli_models", "cli.claude.") + [
             "cli.claude.claude-sonnet-4-6",
-            "cli.claude.claude-sonnet-4-6-thinking",
             "cli.claude.claude-opus-4-6",
-            "cli.claude.claude-opus-4-6-thinking",
             "cli.claude.claude-haiku-4-5-20251001",
             "cli.claude.claude-sonnet-4-5-20250929",
             "cli.claude.claude-opus-4-5-20251101",
-            "cli.claude.claude-opus-4-5-20251101-thinking",
             "cli.claude"
         ]
         return True, models, []

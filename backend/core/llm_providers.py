@@ -493,7 +493,8 @@ def _bearer_auth_handler(api_key: str):
 
 # Maps cli.* model names to their CLI binary + flags
 _CLI_COMMANDS: dict[str, list[str]] = {
-    "cli.claude":   ["claude", "-p", "--allowedTools", ""],
+    # JSON so the answer and the error flag can be read reliably (F65).
+    "cli.claude":   ["claude", "-p", "--output-format", "json", "--allowedTools", ""],
     "cli.gemini":   ["gemini", "--prompt", ""],
     # `instructions` (codex's system-prompt slot) is set per-call in
     # call_cli_provider — never left empty, since some accounts reject an empty
@@ -560,18 +561,23 @@ async def call_cli_provider(
     sys_prompt: str | None = None,
     messages: list[dict] | None = None,
     timeout: float = _CLI_TIMEOUT,
-    cli_session_id: str | None = None,
-) -> tuple[str, int, int, str | None]:
+    effort: str | None = None,
+) -> tuple[str, int, int]:
     """Spawn a local CLI binary, feed it the full context, and return the response.
+
+    Every call is a fresh CLI session. The whole transcript is already in
+    `full_prompt`, so resuming the CLI's own session would send the history
+    twice; the resume code that tried never worked anyway (F65).
 
     Args:
         cli_model: One of 'cli.claude', 'cli.gemini', 'cli.codex', 'cli.copilot'
         full_prompt: Complete flat-text prompt (system + tools + transcript)
         timeout: Seconds before we kill the process and raise LLMError
-        cli_session_id: Existing CLI session ID to resume (passed via --resume).
+        effort: The agent's or workspace's `reasoning_effort` — `cli.claude`
+            sends it as `--effort`. The CLI has no "off", so off and None are low.
 
     Returns:
-        (response_text, estimated_input_tokens, estimated_output_tokens, new_session_id)
+        (response_text, estimated_input_tokens, estimated_output_tokens)
 
     Raises:
         LLMError: on timeout, auth failure, binary not found, or empty output
@@ -600,27 +606,24 @@ async def call_cli_provider(
 
     cmd = base_cmd.copy()
 
-    # ── Session Resume ──
-    # If a previous CLI session ID exists for this agent+session, continue it.
-    if cli_session_id:
-        cmd.extend(["--resume", cli_session_id])
-
     # ── Dynamic Model & Options Parsing ──
-    if variant:
-        if base_cli == "cli.claude":
-            # Extract base model by removing any thinking suffixes
-            clean_variant = variant.replace('-thinking', '').replace('-max', '').replace('-high', '')
-            cmd.extend(["--model", clean_variant])
+    if base_cli == "cli.claude":
+        # The effort is the agent's or the workspace's setting. It used to be
+        # read off a model-name suffix, which sent `low` for a plain model and
+        # `medium` for `-max` (F65). A stored id with an old suffix still names
+        # its model; the suffix itself is ignored.
+        from core import reasoning as _reasoning
+        level = _reasoning.normalise(effort, fallback="low")
+        cmd.extend(["--effort", "low" if level == "off" else level])
+        if variant:
+            model_name = variant
+            for suffix in ("-thinking", "-max", "-high"):
+                if model_name.endswith(suffix):
+                    model_name = model_name[: -len(suffix)]
+            cmd.extend(["--model", model_name])
 
-            # Thinking / Effort overrides
-            if "-thinking" in variant or "-max" in variant:
-                cmd.extend(["--effort", "medium"])
-            elif "-high" in variant:
-                cmd.extend(["--effort", "high"])
-            else:
-                cmd.extend(["--effort", "low"])
-
-        elif base_cli == "cli.gemini":
+    elif variant:
+        if base_cli == "cli.gemini":
             if "pro" in variant:
                 cmd.extend(["--model", "pro"])
             elif "flash" in variant:
@@ -791,37 +794,32 @@ async def call_cli_provider(
             raw = stdout_b.decode("utf-8", errors="replace")
         clean = ANSI_ESCAPE.sub("", raw).strip()
 
-        # ── Session ID extraction & response unwrapping ──
-        new_session_id: str | None = None
+        # ── Response unwrapping ──
         if base_cli == "cli.claude":
-            # Claude CLI with --output-format json returns a structured object.
-            # Extract result text and session_id from it.
+            # `--output-format json` returns one result object: the answer is
+            # `result`, and `is_error` says whether it is one.
             try:
                 import json as _json
                 obj = _json.loads(clean)
-                new_session_id = obj.get("session_id")
+            except Exception:
+                obj = None  # not JSON — treat clean as plain text
+            if isinstance(obj, dict):
                 extracted = obj.get("result", "")
                 if isinstance(extracted, str) and extracted.strip():
                     clean = extracted.strip()
-                # Propagate JSON-level auth errors before the generic check below.
-                # Gate on the structured is_error flag and scan only the message
-                # fields — not the stringified whole object — so unrelated keys
-                # can't trip a false positive.
-                err_text = " ".join(str(obj.get(k, "")) for k in ("result", "error", "subtype"))
-                if obj.get("is_error") and _match_auth(err_text):
-                    raise LLMError(
-                        f"CLI provider '{cli_model}' authentication failure.\n"
-                        f"Run 'claude' in your terminal to re-authenticate.\n"
-                        f"Details: {str(obj)[:300]}"
-                    )
-            except LLMError:
-                raise
-            except Exception:
-                pass  # not JSON or parse error — treat clean as plain text
-        else:
-            # Best-effort session ID extraction for gemini, codex, copilot
-            sid_match = re.search(r"session[_\-]?id[:\s]+([a-zA-Z0-9_\-]{8,})", clean, re.IGNORECASE)
-            new_session_id = sid_match.group(1) if sid_match else None
+                if obj.get("is_error"):
+                    # Scan only the message fields — not the stringified whole
+                    # object — so unrelated keys can't trip a false positive.
+                    err_text = " ".join(str(obj.get(k, "")) for k in ("result", "error", "subtype"))
+                    if _match_auth(err_text):
+                        raise LLMError(
+                            f"CLI provider '{cli_model}' authentication failure.\n"
+                            f"Run 'claude' in your terminal to re-authenticate.\n"
+                            f"Details: {str(obj)[:300]}"
+                        )
+                    # An error is not an answer: returned as one, the run would
+                    # carry on with the error text as the model's reply.
+                    raise LLMError(f"CLI provider '{cli_model}' failed: {err_text.strip()[:300]}")
 
         # Auth failure check (also catches plain-text "Not logged in" from claude).
         # `clean` is the model's normal stdout on success, so only treat it as an
@@ -851,7 +849,7 @@ async def call_cli_provider(
 
         input_est = usage_tracker.estimate_tokens_from_text(full_prompt)
         output_est = usage_tracker.estimate_tokens_from_text(clean)
-        return clean, input_est, output_est, new_session_id
+        return clean, input_est, output_est
 
     except LLMError:
         raise
@@ -3004,24 +3002,13 @@ async def generate_response_ex(
                 tools=tools,
             )
 
-            # Load the existing CLI session ID for this agent+session (if any)
-            from core.session import get_cli_session_id, save_cli_session_id
-            _provider_key = detect_provider_from_model(current_model)
-            _existing_cli_sid = await get_cli_session_id(
-                session_id or "default", agent_id, _provider_key
-            ) if session_id else None
-
-            result_text, input_tokens, output_tokens, new_cli_sid = await call_cli_provider(
+            result_text, input_tokens, output_tokens = await call_cli_provider(
                 cli_model=current_model,
                 full_prompt=cli_full_prompt,
                 sys_prompt=augmented_system,
                 messages=messages_for_cli,
-                cli_session_id=_existing_cli_sid,
+                effort=reasoning_effort,
             )
-
-            # Persist the CLI session ID so the next turn resumes the same session
-            if new_cli_sid and session_id:
-                await save_cli_session_id(session_id, agent_id, _provider_key, new_cli_sid)
 
         except LLMError:
             raise

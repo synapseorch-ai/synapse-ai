@@ -1152,13 +1152,10 @@ def _detect_claude_cli():
         return []
     return [
         "cli.claude.claude-sonnet-4-6",
-        "cli.claude.claude-sonnet-4-6-thinking",
         "cli.claude.claude-opus-4-6",
-        "cli.claude.claude-opus-4-6-thinking",
         "cli.claude.claude-haiku-4-5-20251001",
         "cli.claude.claude-sonnet-4-5-20250929",
         "cli.claude.claude-opus-4-5-20251101",
-        "cli.claude.claude-opus-4-5-20251101-thinking",
         "cli.claude",
     ]
 
