@@ -181,7 +181,6 @@ class Settings(BaseModel):
     max_global_queue_depth: int = 1_000_000
     rate_limit_per_tenant_rps: int = 1000
     pgbouncer_mode: bool = False
-    num_queue_shards: int = 1
 
 
 class PersonalAddress(BaseModel):

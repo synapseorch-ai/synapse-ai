@@ -148,7 +148,6 @@ services:
       # every tenant's config and credentials, handed to the Filesystem MCP
       # server. Unset, that server is rooted at the tenant's vault, which is
       # what it was always meant to expose.
-      - NUM_QUEUE_SHARDS=${NUM_QUEUE_SHARDS:-1}
       - PGBOUNCER_MODE=${PGBOUNCER_MODE:-0}
       - K8S_MODE=0
       - S3_BUCKET=${S3_BUCKET:-}

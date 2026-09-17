@@ -203,7 +203,6 @@ _DEFAULTS = {
         "max_global_queue_depth": 1_000_000,
         "rate_limit_per_tenant_rps": 1000,
         "pgbouncer_mode": False,
-        "num_queue_shards": 1,
 }
 
 

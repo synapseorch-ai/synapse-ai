@@ -29,7 +29,6 @@ class ScaleConfig:
 
     # Queue settings
     worker_concurrency: int = 10
-    num_queue_shards: int = 1        # Number of ARQ queue shards for Redis Cluster
 
     # Retention
     runs_retention_days: int = 90
@@ -92,14 +91,15 @@ def get_scale_config() -> ScaleConfig:
         scale_mode=scale_mode,
         pgbouncer_mode=bool(int(os.getenv("PGBOUNCER_MODE", "0"))),
         redis_cluster_mode=redis_cluster_mode,
-        worker_concurrency=int(os.getenv("WORKER_CONCURRENCY", str(settings.get("worker_concurrency", 10)))),
-        num_queue_shards=int(os.getenv("NUM_QUEUE_SHARDS", "1")),
+        # Environment only, like ARQ's own `max_jobs` (`WorkerSettings`) — a saved
+        # value would be advertised on the workers table and never run (F58).
+        worker_concurrency=int(os.getenv("WORKER_CONCURRENCY", "10")),
         runs_retention_days=int(os.getenv("RUNS_RETENTION_DAYS", "90")),
         pubsub_event_ttl=int(os.getenv("PUBSUB_EVENT_TTL", "3600")),
         max_global_queue_depth=int(os.getenv("MAX_GLOBAL_QUEUE_DEPTH", "1000000")),
         rate_limit_per_tenant_rps=int(os.getenv("RATE_LIMIT_PER_TENANT_RPS", "1000")),
         otlp_endpoint=os.getenv("OTLP_ENDPOINT", settings.get("otlp_endpoint", "")),
-        metrics_token=os.getenv("METRICS_TOKEN", settings.get("metrics_token", "")),
+        metrics_token=os.getenv("METRICS_TOKEN", ""),  # read by /api/v2/metrics from the env
         k8s_mode=bool(int(os.getenv("K8S_MODE", "0"))),
         s3_bucket=os.getenv("S3_BUCKET", settings.get("s3_bucket", "")),
         s3_region=os.getenv("S3_REGION", settings.get("s3_region", "us-east-1")),

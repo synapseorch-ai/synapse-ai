@@ -18,18 +18,25 @@ router = APIRouter()
 # Config
 # ---------------------------------------------------------------------------
 
+#: Settings the Scale screen shows that only the environment sets, and the
+#: variable that does. Saving one used to change nothing while the screen showed
+#: the saved value as the one in effect (F58).
+ENV_ONLY = {
+    "worker_concurrency": "WORKER_CONCURRENCY",
+    "pgbouncer_mode": "PGBOUNCER_MODE",
+    "max_global_queue_depth": "MAX_GLOBAL_QUEUE_DEPTH",
+    "rate_limit_per_tenant_rps": "RATE_LIMIT_PER_TENANT_RPS",
+    "metrics_token": "METRICS_TOKEN",
+}
+
+
 class ScaleConfigUpdate(BaseModel):
+    """What the screen may save. Fields in `ENV_ONLY` are still accepted — the
+    screen posts its whole form — and not saved."""
     redis_url: str = ""
     scale_postgres_url: str = ""
     scale_mode_enabled: bool = False
-    worker_concurrency: int = 10
     otlp_endpoint: str = ""
-    metrics_token: str = ""
-    max_global_queue_depth: int = 1_000_000
-    rate_limit_per_tenant_rps: int = 1000
-    pgbouncer_mode: bool = False
-    redis_cluster_mode: bool = False
-    num_queue_shards: int = 1
     # S3 storage
     s3_bucket: str = ""
     s3_region: str = "us-east-1"
@@ -42,18 +49,22 @@ class ScaleConfigUpdate(BaseModel):
 @router.get("/scale/config")
 async def get_scale_config_route():
     from core.config import load_settings
+    from core.scale.config import get_scale_config
     settings = load_settings()
+    cfg = get_scale_config()
     return {
         "redis_url": settings.get("redis_url", ""),
         "scale_postgres_url": settings.get("scale_postgres_url", ""),
         "scale_mode_enabled": settings.get("scale_mode_enabled", False),
-        "worker_concurrency": settings.get("worker_concurrency", 10),
         "otlp_endpoint": settings.get("otlp_endpoint", ""),
-        "metrics_token": settings.get("metrics_token", ""),
-        "max_global_queue_depth": settings.get("max_global_queue_depth", 1_000_000),
-        "rate_limit_per_tenant_rps": settings.get("rate_limit_per_tenant_rps", 1000),
-        "pgbouncer_mode": settings.get("pgbouncer_mode", False),
-        "num_queue_shards": settings.get("num_queue_shards", 1),
+        # In effect, from the environment — see ENV_ONLY.
+        "worker_concurrency": cfg.worker_concurrency,
+        "pgbouncer_mode": cfg.pgbouncer_mode,
+        "max_global_queue_depth": cfg.max_global_queue_depth,
+        "rate_limit_per_tenant_rps": cfg.rate_limit_per_tenant_rps,
+        "metrics_token": "",
+        "metrics_token_set": bool(cfg.metrics_token),
+        "env_only": ENV_ONLY,
         "s3_bucket": settings.get("s3_bucket", ""),
         "s3_region": settings.get("s3_region", "us-east-1"),
         "s3_prefix": settings.get("s3_prefix", "synapse"),
@@ -71,13 +82,7 @@ async def update_scale_config_route(body: ScaleConfigUpdate):
         "redis_url": body.redis_url,
         "scale_postgres_url": body.scale_postgres_url,
         "scale_mode_enabled": body.scale_mode_enabled,
-        "worker_concurrency": body.worker_concurrency,
         "otlp_endpoint": body.otlp_endpoint,
-        "metrics_token": body.metrics_token,
-        "max_global_queue_depth": body.max_global_queue_depth,
-        "rate_limit_per_tenant_rps": body.rate_limit_per_tenant_rps,
-        "pgbouncer_mode": body.pgbouncer_mode,
-        "num_queue_shards": body.num_queue_shards,
         "s3_bucket": body.s3_bucket,
         "s3_region": body.s3_region,
         "s3_prefix": body.s3_prefix,
@@ -254,7 +259,6 @@ async def queue_stats(request: Request):
     cfg = get_scale_config()
 
     # ARQ stores pending jobs in a Redis sorted set (ZSET), not a list.
-    # Sum across all shards when num_queue_shards > 1.
     queued = 0
     try:
         queued = await redis.zcard(QUEUE_NAME) or 0
