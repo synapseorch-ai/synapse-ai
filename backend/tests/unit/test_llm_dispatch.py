@@ -29,6 +29,11 @@ class TestCloudDispatch:
         ("gemini-2.0", "call_gemini"),
         ("grok-2", "call_grok"),
         ("deepseek-chat", "call_deepseek"),
+        # F62: OpenAI's reasoning models are not `gpt*`, and fell through to Ollama.
+        ("o3-mini", "call_openai"),
+        ("o4-mini", "call_openai"),
+        ("o1", "call_openai"),
+        ("chatgpt-4o-latest", "call_openai"),
     ])
     async def test_routes_to_provider(self, monkeypatch, model, fn):
         monkeypatch.setattr(_llm_mod, fn, _stub_call(text=f"{fn} said hi"))
@@ -165,3 +170,19 @@ class TestMemoryContext:
         await _REAL_GENERATE("hi", "BASE", "cloud", "claude-x", {"anthropic_key": "x"},
                              memory_context_text="REMEMBER THIS")
         assert "BASE" in seen["system"] and "REMEMBER THIS" in seen["system"]
+
+
+class TestOpenAIReasoningModelsAreOpenAI:
+    """F62: only `gpt*` was OpenAI, so `o1`/`o3`/`o4-mini` routed to Ollama at
+    127.0.0.1 — on a fleet, an ordinary-looking "Local Agent Error" as the step's
+    output."""
+
+    @pytest.mark.parametrize("model", ["o1", "o3", "o3-mini", "o4-mini", "chatgpt-4o-latest"])
+    def test_detected_as_openai(self, model):
+        assert _llm_mod.detect_mode_from_model(model) == "cloud"
+        assert _llm_mod.detect_provider_from_model(model) == "openai"
+
+    @pytest.mark.parametrize("model", ["orca-mini", "openchat", "olmo2", "llama3"])
+    def test_a_local_model_starting_with_o_stays_local(self, model):
+        assert _llm_mod.detect_mode_from_model(model) == "local"
+        assert _llm_mod.detect_provider_from_model(model) == "ollama"

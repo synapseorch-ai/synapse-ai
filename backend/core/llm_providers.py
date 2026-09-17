@@ -277,6 +277,16 @@ def _ollama_base_url(settings: dict | None = None) -> str:
 OLLAMA_MODEL = "llama3"
 
 
+_OPENAI_REASONING_RE = re.compile(r"o\d")
+
+
+def _is_openai_model(m: str) -> bool:
+    """`gpt*`, `chatgpt*`, and the o-series reasoning models (`o1`, `o3-mini`,
+    `o4-mini`…). Only `gpt*` used to count, so the o-series fell through to
+    Ollama (F62). `o` + a digit, not a bare `o`, so `orca-mini` stays local."""
+    return m.startswith(("gpt", "chatgpt")) or bool(_OPENAI_REASONING_RE.match(m))
+
+
 def detect_mode_from_model(model_name: str) -> str:
     """Detect the provider mode from a model name prefix.
 
@@ -289,7 +299,7 @@ def detect_mode_from_model(model_name: str) -> str:
     m = model_name.lower()
     if m.startswith("cli."):
         return "cli"
-    if m.startswith("gpt"):
+    if _is_openai_model(m):
         return "cloud"
     if m.startswith("claude"):
         return "cloud"
@@ -330,7 +340,7 @@ def detect_provider_from_model(model_name: str) -> str:
         return "github_copilot_cli"
     if m.startswith("cli."):
         return "cli"
-    if m.startswith("gpt"):
+    if _is_openai_model(m):
         return "openai"
     if m.startswith("claude"):
         return "anthropic"
@@ -2820,7 +2830,7 @@ async def generate_response_ex(
                 messages.extend(history_messages)
             messages.append({"role": "user", "content": prompt_msg})
 
-            if current_model.startswith("gpt"):
+            if _is_openai_model(current_model.lower()):
                 result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_openai(
                     current_model,
                     [{"role": "system", "content": augmented_system}] + messages,
