@@ -216,3 +216,68 @@ class TestHuggingFaceGuard:
         with pytest.raises(Exception):
             await llm.call_huggingface(
                 "hf.nonexistent/model", [{"role": "user", "content": "q"}], "sys", {})
+
+
+class TestAnInferenceProfileIsAModel:
+    """F66: `bedrock_inference_profile` replaced every `bedrock.*` model with the
+    profile, so an agent that picked Claude on Bedrock ran whatever the profile
+    served — with Claude's reasoning payload. A profile is a model now: picked
+    as one, sent as one; the workspace setting is not applied."""
+
+    def _recording(self, monkeypatch, error=None):
+        sent = []
+
+        class _FakeBedrock:
+            def converse(self, **kwargs):
+                sent.append(kwargs["modelId"])
+                if error is not None:
+                    raise error
+                return {"output": {"message": {"content": [{"text": "ok"}]}},
+                        "usage": {"inputTokens": 1, "outputTokens": 1}}
+
+            def invoke_model(self, **kwargs):
+                raise AssertionError("no InvokeModel fallback for an on-demand refusal")
+
+        monkeypatch.setattr(llm, "_make_aws_client", lambda *a, **k: _FakeBedrock())
+        return sent
+
+    async def test_the_model_picked_is_the_model_called(self, monkeypatch):
+        sent = self._recording(monkeypatch)
+        await llm.call_bedrock(
+            "bedrock.us.anthropic.claude-sonnet-4-5-20250929-v1:0", [{"role": "user", "content": "q"}],
+            "sys", "us-east-1", {"bedrock_inference_profile": "us.amazon.nova-pro-v1:0"})
+        assert sent == ["us.anthropic.claude-sonnet-4-5-20250929-v1:0"]
+
+    async def test_an_application_profile_arn_is_sent_as_picked(self, monkeypatch):
+        sent = self._recording(monkeypatch)
+        arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123"
+        await llm.call_bedrock(f"bedrock.{arn}", [{"role": "user", "content": "q"}], "sys", "us-east-1", {})
+        assert sent == [arn]
+
+    async def test_the_on_demand_refusal_names_the_profile_a_workspace_had_stored(self, monkeypatch):
+        """The note for a stored value: the setting stopped doing anything, so
+        the error that follows says which model to pick instead."""
+        self._recording(monkeypatch, _client_error(
+            "ValidationException",
+            "Invocation of model ID anthropic.claude-sonnet-4-5-20250929-v1:0 with on-demand throughput "
+            "isn't supported. Retry your request with the ID or ARN of an inference profile that contains this model.",
+        ))
+        with pytest.raises(llm.LLMError) as exc:
+            await llm.call_bedrock(
+                "bedrock.anthropic.claude-sonnet-4-5-20250929-v1:0", [{"role": "user", "content": "q"}],
+                "sys", "us-east-1", {"bedrock_inference_profile": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"})
+        message = str(exc.value)
+        assert "pick an inference profile as the model" in message
+        assert "bedrock.us.anthropic.claude-sonnet-4-5-20250929-v1:0" in message
+        assert "no longer applied" in message
+
+    async def test_the_on_demand_refusal_without_a_stored_profile(self, monkeypatch):
+        self._recording(monkeypatch, _client_error(
+            "ValidationException",
+            "Invocation of model ID anthropic.claude-sonnet-4-5 with on-demand throughput isn't supported.",
+        ))
+        with pytest.raises(llm.LLMError) as exc:
+            await llm.call_bedrock("bedrock.anthropic.claude-sonnet-4-5", [{"role": "user", "content": "q"}],
+                                   "sys", "us-east-1", {})
+        assert "pick an inference profile as the model" in str(exc.value)
+        assert "no longer applied" not in str(exc.value)

@@ -1580,8 +1580,10 @@ def ask_llm(cfg):
             model_id = ask("Enter Bedrock model ID manually")
         else:
             model_id = ask_choice("Select model", models)
-        cfg["bedrock_inference_profile"] = model_id
-        cfg["model"] = model_id
+        # The picked model is the workspace model, prefixed so it routes to
+        # Bedrock (bare, it went to Ollama). An inference profile is picked the
+        # same way; the workspace-wide profile override is gone (F66).
+        cfg["model"] = f"bedrock.{model_id.removeprefix('bedrock.')}"
 
     ok(f"Provider configured. Model: {cfg.get('model', '(not set)')}")
 

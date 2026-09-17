@@ -91,9 +91,11 @@ _THINKS_BY_DEFAULT = ("claude-opus-5", "claude-sonnet-5", "claude-fable-5", "cla
 ADAPTIVE = "adaptive"
 BUDGET = "budget"
 
-#: Bedrock-hosted Anthropic, in every cross-region form Bedrock names.
+#: Bedrock-hosted Anthropic, in every cross-region form Bedrock names — the
+#: geos cloud's catalog sync matches. An inference profile is picked as a model
+#: (F66), so a jp. profile has to read like its us. twin.
 _BEDROCK_ANTHROPIC = tuple(
-    f"bedrock.{geo}anthropic." for geo in ("", "us.", "eu.", "apac.", "global.")
+    f"bedrock.{geo}anthropic." for geo in ("", "us.", "eu.", "apac.", "jp.", "au.", "ca.", "global.")
 )
 
 _NATIVE = (

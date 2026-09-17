@@ -38,6 +38,95 @@ def _bedrock_management_get(path: str, region: str, api_key: str, params: dict |
         return _json.loads(resp.read())
 
 
+def _bedrock_foundation_summaries(settings: dict, region: str, api_key: str) -> list[dict]:
+    """Every foundation model the account can see, as Bedrock describes them."""
+    if api_key:
+        # API key auth: direct HTTPS — boto3 does not apply bearer tokens to the
+        # Bedrock management (control-plane) API.
+        return _bedrock_management_get("/foundation-models", region, api_key).get("modelSummaries", []) or []
+    client = _make_aws_client("bedrock", region, settings)
+    return client.list_foundation_models().get("modelSummaries", []) or []
+
+
+def _bedrock_profile_summaries(settings: dict, region: str, api_key: str) -> list[dict]:
+    """Every inference profile the account can see, all pages."""
+    summaries: list[dict] = []
+    next_token = None
+    client = None if api_key else _make_aws_client("bedrock", region, settings)
+    while True:
+        if api_key:
+            params = {"nextToken": next_token} if next_token else None
+            resp = _bedrock_management_get("/inference-profiles", region, api_key, params)
+        else:
+            resp = client.list_inference_profiles(**({"nextToken": next_token} if next_token else {}))
+        summaries.extend(s for s in resp.get("inferenceProfileSummaries") or [] if isinstance(s, dict))
+        next_token = resp.get("nextToken")
+        if not next_token:
+            return summaries
+
+
+def _parse_profile_summaries(summaries) -> list[dict]:
+    profiles = []
+    for s in summaries or []:
+        if not isinstance(s, dict):
+            continue
+        profiles.append(
+            {
+                "id": s.get("inferenceProfileId") or s.get("id") or "",
+                "arn": s.get("inferenceProfileArn") or s.get("arn") or "",
+                "name": s.get("inferenceProfileName") or s.get("name") or "",
+                "status": s.get("status") or "",
+                "type": s.get("type") or "",
+            }
+        )
+    return profiles
+
+
+def _bedrock_models(settings: dict, region: str, api_key: str) -> tuple[list[str], list[str]]:
+    """Bedrock's pickable (chat, embedding) models: foundation models and inference profiles.
+
+    A profile is a model you pick (F66): `bedrock.<id>` for a system-defined one
+    (`us.anthropic.…`), `bedrock.<arn>` for an application profile, whose short
+    id Bedrock does not accept as a model id. It lands on the embedding side
+    when the model it routes to is an embedding model. A foundation model
+    Bedrock says has no on-demand throughput is left out — invoking it bare
+    fails on every call, and its profile is listed instead.
+
+    Profiles are best effort: an identity that may list models but not
+    profiles still gets its models.
+    """
+    foundation = _bedrock_foundation_summaries(settings, region, api_key)
+    try:
+        profiles = _bedrock_profile_summaries(settings, region, api_key)
+    except Exception as e:
+        print(f"Bedrock inference profiles not listed: {type(e).__name__}: {e}")
+        profiles = []
+
+    embedding_arns = {m.get("modelArn") for m in foundation if "EMBEDDING" in (m.get("outputModalities") or [])}
+    chat: list[str] = []
+    embed: list[str] = []
+
+    for m in foundation:
+        model_id = m.get("modelId")
+        if not model_id:
+            continue
+        inference_types = m.get("inferenceTypesSupported")
+        if inference_types is not None and "ON_DEMAND" not in inference_types:
+            continue
+        (embed if "EMBEDDING" in (m.get("outputModalities") or []) else chat).append(f"bedrock.{model_id}")
+
+    for p in profiles:
+        if (p.get("status") or "ACTIVE") != "ACTIVE":
+            continue
+        ref = p.get("inferenceProfileArn") if p.get("type") == "APPLICATION" else p.get("inferenceProfileId")
+        if not ref:
+            continue
+        routed = {m.get("modelArn") for m in p.get("models") or [] if isinstance(m, dict)}
+        (embed if routed and routed <= embedding_arns else chat).append(f"bedrock.{ref}")
+
+    return list(dict.fromkeys(chat)), list(dict.fromkeys(embed))
+
+
 # --- Synthetic Data ---
 
 @router.post("/api/synthetic/generate")
@@ -347,25 +436,7 @@ async def get_models():
             api_key = (settings.get("bedrock_api_key") or "").strip()
 
             def _list():
-                summaries = []
-                if api_key:
-                    # API key auth: use direct HTTPS — boto3 does not apply bearer tokens
-                    # to the Bedrock management (control-plane) API.
-                    data = _bedrock_management_get("/foundation-models", region, api_key)
-                    summaries = data.get("modelSummaries", []) or []
-                else:
-                    c = _make_aws_client("bedrock", region, settings)
-                    resp = c.list_foundation_models()
-                    summaries = resp.get("modelSummaries", []) or []
-                chat = []
-                embed = []
-                for m in summaries:
-                    mid = f"bedrock.{m['modelId']}"
-                    if "EMBEDDING" in m.get("outputModalities", []):
-                        embed.append(mid)
-                    else:
-                        chat.append(mid)
-                return chat, embed
+                return _bedrock_models(settings, region, api_key)
 
             chat, embed = await asyncio.to_thread(_list)
             return True, chat if chat else BEDROCK_FALLBACK, embed if embed else ["bedrock.amazon.titan-embed-text-v1"]
@@ -682,28 +753,14 @@ async def get_models():
 
 @router.get("/api/bedrock/models")
 async def get_bedrock_models():
-    """Lists Bedrock foundation models."""
+    """Lists Bedrock models: foundation models and inference profiles (see `_bedrock_models`)."""
     settings = load_settings()
     region = (settings.get("aws_region") or "us-east-1").strip() or "us-east-1"
     api_key = (settings.get("bedrock_api_key") or "").strip()
 
     def _list_models_sync():
-        summaries = []
-        if api_key:
-            # API key (ABSK / bedrock-api-key format): use direct HTTPS bearer auth.
-            # The Bedrock management API does not support AWS_BEARER_TOKEN_BEDROCK via boto3.
-            data = _bedrock_management_get("/foundation-models", region, api_key)
-            summaries = data.get("modelSummaries", []) or []
-        else:
-            client = _make_aws_client("bedrock", region, settings)
-            resp = client.list_foundation_models()
-            summaries = resp.get("modelSummaries", []) or []
-        models: list[str] = []
-        for s in summaries:
-            model_id = s.get("modelId")
-            if model_id:
-                models.append(f"bedrock.{model_id}")
-        return sorted(set(models))
+        chat, embed = _bedrock_models(settings, region, api_key)
+        return sorted(set(chat + embed))
 
     try:
         models = await asyncio.to_thread(_list_models_sync)
@@ -723,50 +780,8 @@ async def get_bedrock_inference_profiles():
     region = (settings.get("aws_region") or "us-east-1").strip() or "us-east-1"
     api_key = (settings.get("bedrock_api_key") or "").strip()
 
-    def _parse_profile_summaries(summaries) -> list[dict]:
-        profiles = []
-        for s in summaries or []:
-            if not isinstance(s, dict):
-                continue
-            profiles.append(
-                {
-                    "id": s.get("inferenceProfileId") or s.get("id") or "",
-                    "arn": s.get("inferenceProfileArn") or s.get("arn") or "",
-                    "name": s.get("inferenceProfileName") or s.get("name") or "",
-                    "status": s.get("status") or "",
-                    "type": s.get("type") or "",
-                }
-            )
-        return profiles
-
     def _list_profiles_sync():
-        profiles = []
-        next_token = None
-
-        if api_key:
-            # API key (ABSK / bedrock-api-key format): use direct HTTPS bearer auth.
-            # The Bedrock management API does not support AWS_BEARER_TOKEN_BEDROCK via boto3.
-            while True:
-                params = {"nextToken": next_token} if next_token else None
-                resp = _bedrock_management_get("/inference-profiles", region, api_key, params)
-                print(f"Fetched {len(resp.get('inferenceProfileSummaries', []))} profiles from Bedrock")
-                profiles.extend(_parse_profile_summaries(resp.get("inferenceProfileSummaries")))
-                next_token = resp.get("nextToken")
-                if not next_token:
-                    break
-        else:
-            client = _make_aws_client("bedrock", region, settings)
-            while True:
-                kwargs: dict = {}
-                if next_token:
-                    kwargs["nextToken"] = next_token
-                resp = client.list_inference_profiles(**kwargs)
-                print(f"Fetched {len(resp.get('inferenceProfileSummaries', []))} profiles from Bedrock")
-                profiles.extend(_parse_profile_summaries(resp.get("inferenceProfileSummaries")))
-                next_token = resp.get("nextToken")
-                if not next_token:
-                    break
-
+        profiles = _parse_profile_summaries(_bedrock_profile_summaries(settings, region, api_key))
         return sorted(profiles, key=lambda p: (p.get("name") or p.get("arn") or p.get("id") or ""))
 
     try:

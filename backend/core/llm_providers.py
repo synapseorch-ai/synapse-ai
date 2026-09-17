@@ -2282,6 +2282,26 @@ def _converse_unsupported(code: str, message: str) -> bool:
     return code == "ValidationException" and "support" in message.lower()
 
 
+def _bedrock_needs_profile(model_id: str, settings: dict) -> str:
+    """The on-demand refusal, saying what to pick — and naming a workspace's stored profile.
+
+    `bedrock_inference_profile` stopped being applied (F66). A workspace that
+    relied on it gets this error on its next call, so the message names the
+    profile it had stored as the model to pick instead.
+    """
+    message = (
+        f"Bedrock model '{model_id}' has no on-demand throughput: pick an inference profile as the "
+        "model instead (the us./eu./apac./global. variant, or an application profile's ARN)."
+    )
+    stored = (settings.get("bedrock_inference_profile") or "").strip().removeprefix("bedrock.")
+    if stored:
+        message += (
+            f" This workspace has the inference profile '{stored}' stored, which is no longer applied "
+            f"to every Bedrock model — bedrock.{stored} is the model to pick."
+        )
+    return message
+
+
 async def call_bedrock(model_id, messages, system, region, settings, images=None, prompt_cache: bool = True,
                        max_tokens: int | None = None, reasoning=None):
     """Call AWS Bedrock with 5-attempt exponential backoff retry loop.
@@ -2303,13 +2323,13 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
     # We strip the 'bedrock.' prefix if present
     real_model_id = model_id.replace("bedrock.", "")
 
-    # Some Bedrock models require an inference profile (no on-demand throughput).
+    # The model picked is the model called. An inference profile is picked as
+    # a model (`bedrock.us.anthropic.…`, or an application profile's ARN) —
+    # discovery lists them. The workspace `bedrock_inference_profile` used to
+    # replace every Bedrock model with itself, whatever the agent picked, and
+    # with the picked model's reasoning payload (F66). It is no longer applied;
+    # a stored value is only named in the on-demand refusal below.
     invocation_model_id = real_model_id
-    inference_profile = (settings.get("bedrock_inference_profile") or "").strip()
-    if inference_profile:
-        if inference_profile.startswith("bedrock."):
-            inference_profile = inference_profile.replace("bedrock.", "", 1)
-        invocation_model_id = inference_profile
 
     bedrock = _make_aws_client("bedrock-runtime", region, settings)
     bedrock_api_key = _normalize_bedrock_api_key(settings)
@@ -2443,11 +2463,10 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                 except Exception as converse_err:
                     msg_str = str(converse_err)
                     code, message = _bedrock_error(converse_err)
+                    # Before `_converse_unsupported`: this refusal's text says
+                    # "supported", which would send it to the InvokeModel fallback.
                     if "on-demand throughput" in msg_str:
-                        raise LLMError(
-                            "Bedrock model requires an inference profile (no on-demand throughput). "
-                            "Set Bedrock Inference Profile in settings, or pick a different model."
-                        )
+                        raise LLMError(_bedrock_needs_profile(real_model_id, settings))
                     # Auth failures: raise immediately — InvokeModel also requires SigV4
                     # and won't help when bearer token auth fails.
                     if "AccessDeniedException" in msg_str or "HTTP 403" in msg_str or "Invalid API Key" in msg_str:
@@ -3341,8 +3360,8 @@ async def _embed_bedrock(texts: list[str], model: str, settings: dict) -> list[l
                 _log.error(
                     f"Bedrock embedding — model '{real_model_id}' not found in "
                     f"region '{region}'. Ensure the model is enabled in the AWS console "
-                    f"and, if it requires on-demand throughput via an inference profile, "
-                    f"set 'Bedrock Inference Profile' in Settings.\nOriginal error: {e}"
+                    f"and, if it has no on-demand throughput, pick its inference profile "
+                    f"(bedrock.us.…) as the embedding model.\nOriginal error: {e}"
                 )
             else:
                 _log.error(f"Bedrock embedding failed for '{real_model_id}': {e}")

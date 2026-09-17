@@ -28,6 +28,11 @@ class TestWhoHasAChannel:
         "bedrock.eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
         "bedrock.global.anthropic.claude-sonnet-4-20250514-v1:0",
         "bedrock.apac.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        # F66: a profile is picked as a model, so every geo Bedrock names reads
+        # like its us. twin.
+        "bedrock.jp.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "bedrock.au.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "bedrock.ca.anthropic.claude-haiku-4-5-20251001-v1:0",
     ])
     def test_native(self, model):
         assert R.supports_native(model)

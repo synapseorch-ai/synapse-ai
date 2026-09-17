@@ -126,8 +126,11 @@ class Settings(BaseModel):
     # removes the sandbox security boundary).
     transform_runtime: str = "docker"
     bedrock_api_key: str = ""  # e.g. ABSK... (Amazon Bedrock API key)
-    # Optional: required for some Bedrock models that don't support on-demand throughput.
-    # Can be an inference profile ID or full ARN.
+    # Read by nothing but the Bedrock on-demand refusal, which names a stored
+    # value as the model to pick (F66): an inference profile is picked as a
+    # model now. Kept until the Models screens stop writing it (F-list batches
+    # 2 and 4) — dropped here, a stored value would still be served and could
+    # no longer be cleared.
     bedrock_inference_profile: str = ""
     # Optional: embedding model used for long-term memory when mode == bedrock
     embedding_model: str = ""
