@@ -275,23 +275,38 @@ class WorkerEngineAdapter:
         return final_status
 
     @_cancel_guarded
-    async def resume_failed(self) -> str:
-        """Resume a failed or cancelled run."""
-        engine = self._build_engine()
-        final_status = "completed"
+    async def resume_failed(
+        self, *, interrupted: bool = False, images: list[str] | None = None,
+    ) -> str:
+        """Resume a failed or cancelled run — or, `interrupted`, one whose job was stopped mid-run.
+
+        Raises when the engine refuses or cannot find the orchestration. This
+        used to fall through to `completed`, so a refused resume was recorded
+        as a finished run that had run nothing.
+        """
+        final_status = None
+        refusal = None
 
         async for event in OrchestrationEngine.resume_failed(
             run_id=self._run_id,
             server_module=self._server_module,
+            interrupted=interrupted,
+            images=images,
         ):
             await self._publisher.publish(event)
 
             if event.get("type") == "orchestration_complete":
                 final_status = event.get("status", "completed")
+            elif event.get("type") == "orchestration_error" and refusal is None:
+                refusal = event.get("error")
 
             if event.get("type") == "human_input_required":
+                await self._sync_paused_state(event)
                 await self._publisher.publish_paused()
                 return "paused"
+
+        if final_status is None:
+            raise RuntimeError(refusal or f"Run {self._run_id} could not be resumed")
 
         await self._sync_final_state(final_status)
         await self._publisher.publish_done()

@@ -131,6 +131,28 @@ async def run_orchestration_job(
         # is this tenant's, not whoever's was current at worker startup.
         server_module = await mcp_pool.acquire()
         leased = True
+
+        # A second try means the first was stopped mid-run (see `_redelivered`).
+        # Decided before the upsert below, which would mark a finished run
+        # `running` again.
+        redelivery = "fresh"
+        if ctx.get("job_try", 1) > 1:
+            prior = await _load_run_row(session_factory, run_id)
+            redelivery = _redelivered(prior)
+            _log.info(
+                f"[worker] run {run_id}: job handed out again (try {ctx['job_try']}) — "
+                f"{redelivery}" + (f" from step {prior.current_step_id}" if redelivery == "resume" else "")
+            )
+            if redelivery == "done":
+                if webhook_url and prior.status != "paused":
+                    await _deliver_webhook_for_run(
+                        run_id=run_id,
+                        session_factory=session_factory,
+                        webhook_url=webhook_url,
+                        webhook_secret=webhook_secret,
+                    )
+                return {"status": prior.status, "run_id": run_id}
+
         # Mark run as picked up in Postgres (UPSERT so DLQ retries work even
         # without a pre-existing row created by the V2 API enqueue path).
         async with session_factory() as session:
@@ -179,12 +201,15 @@ async def run_orchestration_job(
             worker_id=_worker_id,
             job_id=ctx.get("job_id", ""),
         )
-        final_status = await adapter.run(
-            initial_input=initial_input,
-            session_id=session_id,
-            initial_state=initial_state,
-            images=images,
-        )
+        if redelivery == "resume":
+            final_status = await adapter.resume_failed(interrupted=True, images=images)
+        else:
+            final_status = await adapter.run(
+                initial_input=initial_input,
+                session_id=session_id,
+                initial_state=initial_state,
+                images=images,
+            )
 
         # Deliver webhook if requested
         if webhook_url and final_status != "paused":
@@ -303,6 +328,21 @@ async def resume_orchestration_job(
             orch_id = row.orchestration_id
             _log.debug(f"[resume] 📋 loaded run from DB: orch_id={orch_id} status={row.status} current_step_id={row.current_step_id} waiting_for_human={row.waiting_for_human}")
 
+        # A second try whose first got as far as checkpointing past the human
+        # step must not apply the answer again: `adapter.resume` writes it into
+        # whatever step the run is on and skips that step. While the answer has
+        # not reached a checkpoint the run still looks paused, and the answer
+        # is applied as the first try would have.
+        redelivery = "answer"
+        if ctx.get("job_try", 1) > 1 and not _awaits_answer(row):
+            redelivery = _redelivered(row)
+            _log.info(
+                f"[worker] run {run_id}: answer job handed out again (try {ctx['job_try']}) — "
+                f"{redelivery}" + (f" from step {row.current_step_id}" if redelivery == "resume" else "")
+            )
+            if redelivery == "done":
+                return {"status": row.status, "run_id": run_id}
+
         orch = await _load_orchestration(session_factory, orch_id)
         _log.debug(f"[resume] 📦 orchestration loaded from Postgres: id={orch.id} name={orch.name} steps={len(orch.steps)}")
 
@@ -339,8 +379,11 @@ async def resume_orchestration_job(
             worker_id=_worker_id,
             job_id=ctx.get("job_id", ""),
         )
-        _log.debug(f"[resume] 🔄 calling adapter.resume() ...")
-        final_status = await adapter.resume(human_response=human_response, images=images)
+        if redelivery == "resume":
+            final_status = await adapter.resume_failed(interrupted=True, images=images)
+        else:
+            _log.debug(f"[resume] 🔄 calling adapter.resume() ...")
+            final_status = await adapter.resume(human_response=human_response, images=images)
         _log.debug(f"[resume] 🏁 adapter.resume() returned final_status={final_status}")
 
         if webhook_url and final_status != "paused":
@@ -423,6 +466,15 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
                 raise ValueError(f"Run {run_id} not found in Postgres")
             orch_id = row.orchestration_id
 
+        # A second try: the first set the run `running` before its first step,
+        # which the engine only resumes when told the attempt that did so is
+        # gone. A run that got as far as finishing or pausing stays that way.
+        interrupted = ctx.get("job_try", 1) > 1
+        if interrupted:
+            _log.info(f"[worker] run {run_id}: resume job handed out again (try {ctx['job_try']}), status {row.status}")
+            if row.status in ("completed", "paused"):
+                return {"status": row.status, "run_id": run_id}
+
         orch = await _load_orchestration(session_factory, orch_id)
 
         from core.scale.pubsub import RunEventPublisher
@@ -437,12 +489,22 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
             session_factory=session_factory,
             redis_client=redis,
             worker_id=_worker_id,
+            job_id=ctx.get("job_id", ""),
         )
-        final_status = await adapter.resume_failed()
+        final_status = await adapter.resume_failed(interrupted=interrupted)
         return {"status": final_status, "run_id": run_id}
 
     except Exception as exc:
         _log.debug(f"[worker] resume_failed_job ERROR {run_id}: {exc}")
+        # The adapter raises on a refused resume rather than recording it as
+        # finished, so the stream needs its end from here.
+        try:
+            from core.scale.pubsub import RunEventPublisher
+            _pub = RunEventPublisher(redis, run_id)
+            await _pub.publish({"type": "orchestration_error", "error": str(exc)})
+            await _pub.publish_done()
+        except Exception:
+            pass
         raise
 
     finally:
@@ -914,6 +976,14 @@ class WorkerSettings:
     max_jobs = int(os.getenv("WORKER_CONCURRENCY", "10"))
     job_timeout = int(os.getenv("WORKER_JOB_TIMEOUT", "3600"))
     max_tries = int(os.getenv("WORKER_MAX_RETRIES", "3"))
+    # On SIGTERM, stop taking jobs and give running ones this long to finish
+    # before cancelling them. Unset, every job was cancelled at once. A job
+    # still running at the end is cancelled, handed out again, and resumes
+    # from its checkpoint (`_redelivered`). Keep it under the orchestrator's
+    # grace period — k8s `terminationGracePeriodSeconds`, compose's
+    # `stop_grace_period` — or SIGKILL lands first, and a killed job is not
+    # handed out again until its in-progress key expires, about an hour.
+    job_completion_wait = int(os.getenv("WORKER_JOB_COMPLETION_WAIT", "45"))
     on_startup = worker_startup
     on_shutdown = worker_shutdown
     redis_settings = _build_redis_settings()
@@ -939,6 +1009,52 @@ async def _load_orchestration(session_factory, orch_id: str):
         raise ValueError(f"Orchestration '{orch_id}' not found in Postgres. Run Sync first.")
 
     return Orchestration.model_validate(row.definition)
+
+
+async def _load_run_row(session_factory, run_id: str):
+    """The run row as the last attempt left it, or None."""
+    from sqlalchemy import select
+    from core.scale.models_db import OrchestrationRunDB
+
+    async with session_factory() as session:
+        result = await session.execute(
+            select(OrchestrationRunDB).where(OrchestrationRunDB.run_id == run_id)
+        )
+        return result.scalar_one_or_none()
+
+
+def _redelivered(row) -> str:
+    """What a job handed out a second time does with the run: fresh, resume or done.
+
+    ARQ runs a job again only when the previous attempt was cancelled (a worker
+    shutting down) or killed, so the run is wherever that attempt's last
+    checkpoint left it:
+
+    * **done** — it finished, paused for a person, was cancelled by one, or
+      failed at a step. Running it again would repeat what it did; a failed
+      step is retried by a person (Replay), not by a restart.
+    * **resume** — it holds a position (`current_step_id`) and is `running`,
+      or `failed` by the API's startup sweep, which adds no history entry.
+    * **fresh** — no row, or no position: nothing ran.
+    """
+    if row is None:
+        return "fresh"
+    history = row.step_history or []
+    if row.status in ("completed", "cancelled", "paused") or row.waiting_for_human:
+        return "done"
+    if row.status == "failed" and history and history[-1].get("status") == "failed":
+        return "done"
+    return "resume" if row.current_step_id else "fresh"
+
+
+def _awaits_answer(row) -> bool:
+    """True while a paused run's answer has not reached a checkpoint.
+
+    The human step's `paused` history entry is closed by the resume that
+    applies the answer, and first persisted at the next step boundary.
+    """
+    history = row.step_history or []
+    return bool(row.waiting_for_human or (history and history[-1].get("status") == "paused"))
 
 
 async def _load_chat_history(session_factory, session_id: str, agent_id: str | None) -> list:

@@ -127,6 +127,9 @@ services:
       dockerfile: Dockerfile.worker
     profiles: [scale]
     container_name: synapse-worker
+    # Longer than WORKER_JOB_COMPLETION_WAIT: on stop the worker lets running
+    # jobs finish for that long, and Docker's default 10 s would kill it first.
+    stop_grace_period: 60s
     env_file:
       - .env
     environment:
@@ -139,6 +142,7 @@ services:
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-10}
       - WORKER_JOB_TIMEOUT=${WORKER_JOB_TIMEOUT:-3600}
       - WORKER_MAX_RETRIES=${WORKER_MAX_RETRIES:-3}
+      - WORKER_JOB_COMPLETION_WAIT=${WORKER_JOB_COMPLETION_WAIT:-45}
       - WORKER_HEALTH_PORT=9000
       # WORKER_FILESYSTEM_PATHS is deliberately unset. It used to be /data —
       # every tenant's config and credentials, handed to the Filesystem MCP

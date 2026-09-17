@@ -565,13 +565,21 @@ class OrchestrationEngine:
 
     @classmethod
     async def resume_failed(
-        cls, run_id: str, server_module
+        cls, run_id: str, server_module, *, interrupted: bool = False,
+        images: list[str] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Resume a failed or cancelled orchestration from where it stopped.
 
         For failed runs: the failed step's history entry is removed so it re-executes.
         For cancelled runs: resumes from current_step_id (which was never started).
         All state accumulated by prior steps is preserved.
+
+        `interrupted` also accepts a run still marked `running`: one whose job
+        was stopped mid-run (a worker shutting down) and handed out again. Its
+        in-flight step never reached `step_history`, so it re-executes from
+        `current_step_id` like a cancelled run's. Only a caller that knows the
+        previous attempt is gone may say so — a live run is `running` too.
+        `images` are the attachments the job still carries; nothing persists them.
 
         Mid-node continuity: agent/loop/parallel executors checkpoint private
         progress keys in shared_state (_step_progress_*, _loop_progress_*,
@@ -585,7 +593,8 @@ class OrchestrationEngine:
         restored = await SS.restore(run_id)
         run = restored.run
 
-        if run.status not in ("failed", "cancelled"):
+        recoverable = ("failed", "cancelled", "running") if interrupted else ("failed", "cancelled")
+        if run.status not in recoverable:
             yield {"type": "orchestration_error", "error": f"Run is not recoverable (status={run.status})"}
             return
 
@@ -598,6 +607,7 @@ class OrchestrationEngine:
         orch = Orchestration.model_validate(orch_data)
         apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
         engine = cls(orch, server_module)
+        engine.images = list(images or [])
         engine.global_variables = await engine._load_global_variables()
         engine.agent_names = await engine._load_agent_names()
 
