@@ -63,14 +63,25 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail="No agents connected")
 
     final_event = None
+    pause = None
     async for event in run_react_loop(request, _server, expand_mentions=True):
         if event["type"] == "final":
             final_event = event
+        elif event["type"] == "human_input_required":
+            from core.routes.api_v1 import _pause_of
+            pause = _pause_of(event)
         elif event["type"] == "error":
             return ChatResponse(response=event["message"], intent="chat", data=None, tool_name=None)
         elif event["type"] == "orchestration_error":
             # An orchestrator agent failed — same outcome, different event shape.
             return ChatResponse(response=event["error"], intent="chat", data=None, tool_name=None)
+
+    if not final_event and pause:
+        # Stopped for a person, not finished (F68): a tool call awaiting approval
+        # or an orchestration paused on a human step.
+        status = pause.pop("status")
+        prompt = pause.pop("prompt")
+        return ChatResponse(response=prompt, intent=status, data=pause, tool_name=None)
 
     if not final_event:
         return ChatResponse(response="I completed the requested actions.", intent="chat", data=None, tool_name=None)

@@ -84,6 +84,30 @@ def _build_chat_request(body: V1ChatRequest, agent: dict) -> "ChatRequest":
     )
 
 
+def _pause_of(event: dict) -> dict | None:
+    """What a chat turn that stopped for a person reports, or None (F68).
+
+    A `human_input_required` ends the turn with nothing after it: either a tool
+    call whose policy is `confirm` (the call has not run) or an orchestrator
+    agent's orchestration pausing on a human step. There is no v1 route to
+    answer either yet; saying so beats reporting the turn as done.
+    """
+    if event.get("type") != "human_input_required":
+        return None
+    if event.get("kind") == "tool_approval":
+        return {
+            "status": "awaiting_approval",
+            "prompt": event.get("prompt") or "",
+            "pending_call": {
+                "tool_name": event.get("tool_name"),
+                "tool_args": event.get("tool_args") or {},
+                "category": event.get("category") or "",
+                "approval_id": event.get("approval_id") or "",
+            },
+        }
+    return {"status": "paused", "prompt": event.get("prompt") or "", "run_id": event.get("run_id")}
+
+
 def _format_sse_event(event: dict) -> str:
     """Format an event dict as an SSE data line."""
     return f"data: {json.dumps(event, default=str)}\n\n"
@@ -107,12 +131,15 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
 
     final_event = None
     error_msg = None
+    pause = None
 
     try:
         async for event in run_react_loop(chat_request, _server, expand_mentions=True):
             etype = event.get("type", "")
             if etype == "final":
                 final_event = event
+            elif _pause_of(event):
+                pause = _pause_of(event)
             elif etype in ("error", "orchestration_error"):
                 # orchestration_error is what an orchestrator agent fails with.
                 error_msg = event.get("message") or event.get("error") or "Unknown error"
@@ -124,16 +151,20 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
         log.error("[v1/chat] Agent error for session=%s: %s", chat_request.session_id, error_msg)
         raise HTTPException(status_code=500, detail="The agent encountered an error processing your request.")
 
-    response_text = "I completed the requested actions."
-    if final_event:
-        response_text = final_event.get("response", response_text)
-
-    return {
-        "response": response_text,
+    identity = {
         "agent_id": agent["id"],
         "agent_name": agent["name"],
         "session_id": chat_request.session_id,
     }
+    if pause and not final_event:
+        prompt = pause.pop("prompt")
+        return {"response": prompt, **pause, **identity}
+
+    response_text = "I completed the requested actions."
+    if final_event:
+        response_text = final_event.get("response", response_text)
+
+    return {"response": response_text, "status": "completed", **identity}
 
 
 @router.post("/chat/stream")
@@ -203,6 +234,14 @@ async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require
                         "type": "response",
                         "content": event.get("response", ""),
                         "intent": event.get("intent", "chat"),
+                        "session_id": chat_request.session_id,
+                    })
+                    yield _format_sse_event({"type": "done"})
+
+                elif _pause_of(event):
+                    pause = _pause_of(event)
+                    yield _format_sse_event({
+                        "type": pause.pop("status"), **pause,
                         "session_id": chat_request.session_id,
                     })
                     yield _format_sse_event({"type": "done"})
