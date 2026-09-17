@@ -28,6 +28,7 @@ Why /chat is gated even though it is not under /api/:
   (frontend/src/app/api/chat/**), which already sends X-Synapse-Internal via
   backendHeaders(), so gating it is transparent to the UI.
 """
+import ipaddress
 import os
 import re
 
@@ -35,9 +36,12 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# Direct-peer addresses treated as local. We deliberately check request.client
-# (the immediate TCP peer), NOT X-Forwarded-For, which is attacker-spoofable.
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+# Addresses treated as local. We check request.client rather than reading
+# X-Forwarded-For ourselves — but note what request.client is: uvicorn's default
+# `proxy_headers` trusts 127.0.0.1 (the Next proxy) and substitutes the address
+# that proxy forwards, taking the rightmost untrusted hop, so a header a remote
+# caller sets does not survive it.
+_LOOPBACK_NAMES = frozenset({"localhost"})
 
 # Root-mounted routes that are internal despite not living under /api/.
 # Matched as exact path or path-prefixed segment so /chat and /chat/stream are
@@ -46,8 +50,24 @@ _INTERNAL_ROOT_PREFIXES = ("/chat",)
 
 
 def _is_loopback(request: Request) -> bool:
+    """Whether the caller is this machine, however its address is spelled.
+
+    Parsed rather than string-compared (F12): a Windows browser reaching WSL2's
+    Next proxy is forwarded as `::ffff:127.0.0.1`, an IPv4-mapped IPv6 address,
+    and the string check refused every `/api/*` call it made. Anything that does
+    not parse is not loopback.
+    """
     client = request.client
-    return bool(client) and client.host in _LOOPBACK_HOSTS
+    if not client or not client.host:
+        return False
+    if client.host in _LOOPBACK_NAMES:
+        return True
+    try:
+        address = ipaddress.ip_address(client.host)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped or address).is_loopback
 
 
 def _is_internal_root_route(path: str) -> bool:
