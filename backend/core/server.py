@@ -67,7 +67,6 @@ from core.profiling import TimingMiddleware
 from core.internal_auth import InternalTokenMiddleware
 
 # Configuration
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = "llama3"
 
 # On Windows, npx is a .cmd file and must be invoked as "npx.cmd" for subprocess

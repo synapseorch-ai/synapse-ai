@@ -13,7 +13,7 @@ from pydantic import BaseModel
 import httpx
 
 from core.config import load_settings
-from core.llm_providers import _make_aws_client, is_openai_chat_model
+from core.llm_providers import _make_aws_client, _ollama_base_url, is_openai_chat_model
 from core.session import session_state, clear_all_chat_sessions
 from services.synthetic_data import generate_synthetic_data, SyntheticDataRequest, current_job, DATASETS_PREFIX
 
@@ -297,7 +297,7 @@ async def get_models():
     async def fetch_ollama() -> tuple[bool, list[str], list[str]]:
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.get(f"{os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434')}/api/tags", timeout=3.0)
+                r = await client.get(f"{_ollama_base_url(settings)}/api/tags", timeout=3.0)
                 if r.status_code == 200:
                     models = [f"ollama.{m['name']}" for m in r.json().get("models", [])]
                     # Simple heuristic: models with 'embed' in name are likely for embeddings

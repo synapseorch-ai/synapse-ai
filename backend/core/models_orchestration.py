@@ -197,7 +197,8 @@ class Orchestration(BaseModel):
 
     # Global guardrails
     max_total_turns: int = 100
-    max_total_cost_usd: float | None = None
+    # `max_total_cost_usd` was here and read by nothing (F76). A document that
+    # still carries it validates: unknown keys are ignored.
     timeout_minutes: int = ORCH_GLOBAL_TIMEOUT_MIN
 
     #: Stop a run when a step's text will not become the type its state key

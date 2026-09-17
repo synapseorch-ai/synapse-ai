@@ -426,7 +426,6 @@ async function runSetupWizard(ollamaAvailable) {
       bedrock_inference_profile: '',
       aws_region: 'us-east-1',
       coding_agent_enabled: true,
-      report_agent_enabled: true,
       backend_port: BACKEND_PORT,
       frontend_port: FRONTEND_PORT,
     };

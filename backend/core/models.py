@@ -84,7 +84,6 @@ class Repo(BaseModel):
     last_indexed: str | None = None
     status: str = "pending" # pending | indexing | indexed | error
     file_count: int = 0
-    embedding_model_provider: str = "gemini"
     error_message: str | None = None
 
 class AgentActiveRequest(BaseModel):
@@ -141,10 +140,14 @@ class Settings(BaseModel):
     sql_connection_string: str = ""
     n8n_url: str = "http://localhost:5678"
     n8n_api_key: str = ""
-    n8n_table_id: str = ""
     global_config: dict[str, str] = {}
     vault_enabled: bool = True
     vault_threshold: int = 100000
+    # Read by core/cache/prompt_cache.py. Missing here, so it could not be
+    # changed through the settings route (F76).
+    prompt_cache_enabled: bool = True
+    # Where Ollama answers; empty uses the OLLAMA_BASE_URL env var (F76).
+    ollama_base_url: str = ""
     auto_compact_enabled: bool = False
     auto_compact_threshold: int = 100000
     allow_db_write: bool = False  # If False, only SELECT/SHOW/DESCRIBE queries allowed
@@ -154,7 +157,8 @@ class Settings(BaseModel):
     tool_policy_defaults: dict[str, str] = {}
     embed_code: bool = False  # If False, search_codebase is disabled and postgres not required
     bash_allowed_dirs: list[str] = []  # Extra dirs the bash tool can run commands in (repos + vault always included)
-    report_agent_enabled: bool = True
+    # An install choice: read once at startup to start the code indexer
+    # (core/server.py), so changing it takes a restart. Asked by the installer.
     coding_agent_enabled: bool = True
     messaging_enabled: bool = True
     # Public HTTPS base a platform can reach this deployment at (a domain or a

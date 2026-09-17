@@ -3073,7 +3073,7 @@ async def generate_response_ex(
                         # below covers that case, so this is safe to send blind.
                         _chat_body["think"] = _reasoning_plan.enabled
                     response = await client.post(
-                        f"{_ollama_base_url()}/api/chat",
+                        f"{_ollama_base_url(current_settings)}/api/chat",
                         json=_chat_body,
                         timeout=180.0
                     )
@@ -3121,7 +3121,7 @@ async def generate_response_ex(
                             prompt_for_generate = f"Conversation so far:\n{prior}\n\nUser: {prompt_msg}".strip()
 
                     response = await client.post(
-                        f"{_ollama_base_url()}/api/generate",
+                        f"{_ollama_base_url(current_settings)}/api/generate",
                         json={
                             "model": _ollama_model,
                             "prompt": prompt_for_generate,
@@ -3237,7 +3237,7 @@ async def embed_batch(texts: list[str], model: str, settings: dict) -> list[list
     elif provider == "bedrock":
         return await _embed_bedrock(texts, model, settings)
     elif provider == "ollama":
-        return await _embed_ollama(texts, model)
+        return await _embed_ollama(texts, model, settings)
     else:
         _log.debug(f"Unknown provider '{provider}' for embedding model '{model}'")
         return [[0.0] * 768 for _ in range(len(texts))]
@@ -3375,15 +3375,15 @@ async def _embed_bedrock(texts: list[str], model: str, settings: dict) -> list[l
     return embeddings
 
 
-async def _embed_ollama(texts: list[str], model: str) -> list[list[float]]:
+async def _embed_ollama(texts: list[str], model: str, settings: dict | None = None) -> list[list[float]]:
     model = model[len("ollama."):] if model.startswith("ollama.") else model
-    url = f"{_ollama_base_url()}/api/embed"
+    url = f"{_ollama_base_url(settings)}/api/embed"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(url, json={"model": model, "input": texts})
             if resp.status_code != 200:
                 # Fallback for older Ollama versions
-                url_legacy = f"{_ollama_base_url()}/api/embeddings"
+                url_legacy = f"{_ollama_base_url(settings)}/api/embeddings"
                 embeddings = []
                 for t in texts:
                     r = await client.post(url_legacy, json={"model": model, "prompt": t})

@@ -150,7 +150,8 @@ _DEFAULTS = {
         "sql_connection_string": "",
         "n8n_url": "http://localhost:5678",
         "n8n_api_key": "",
-        "n8n_table_id": "",
+        # Empty uses the OLLAMA_BASE_URL env var.
+        "ollama_base_url": "",
         "global_config": {},
         "vault_enabled": True,
         "vault_threshold": 100000,
@@ -174,8 +175,8 @@ _DEFAULTS = {
         # is `allow` everywhere, deliberately: a closed default would change the
         # behaviour of every agent already running on upgrade.
         "tool_policy_defaults": {},
+        # An install choice, read at startup — see core/models.py.
         "coding_agent_enabled": True,
-        "report_agent_enabled": True,
         "messaging_enabled": True,
         "messaging_webhook_base_url": "",
         "embed_code": False,

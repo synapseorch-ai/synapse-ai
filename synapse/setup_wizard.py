@@ -51,12 +51,10 @@ DEFAULT_SETTINGS = {
     "local_compatible_embed_models": "",
     "n8n_url": "http://localhost:5678",
     "n8n_api_key": "",
-    "n8n_table_id": "",
     "global_config": {},
     "vault_enabled": True,
     "vault_threshold": 100000,
     "coding_agent_enabled": True,
-    "report_agent_enabled": True,
     "backend_port": 8765,
     "frontend_port": 3000,
 }

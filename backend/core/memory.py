@@ -51,7 +51,12 @@ class MemoryStore:
             # Default: Use Ollama for embeddings (best-effort)
             import ollama
 
-            response = ollama.embeddings(model=self.model, prompt=text)
+            from core.config import load_settings
+            from core.llm_providers import _ollama_base_url
+
+            # The setting, not only the ollama library's own OLLAMA_HOST (F76).
+            client = ollama.Client(host=_ollama_base_url(load_settings()))
+            response = client.embeddings(model=self.model, prompt=text)
             return response["embedding"]
         except Exception as e:
             print(f"Error getting embedding from Ollama: {e}")
