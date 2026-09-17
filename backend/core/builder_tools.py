@@ -1884,9 +1884,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "inputSchema": input_schema,
             "group": group_id,
         }
+        # Stored as `body`, the key `http_tool` and both tool editors use. It was
+        # stored under the parameter's own name, so the template never reached
+        # the request and the bare arguments went out instead (F2).
         body_template = args.get("body_template")
         if body_template:
-            tool["body_template"] = body_template
+            tool["body"] = body_template
         await save_tool(tool)
         _emit(events, "tool", "created", name, name, tool)
         return {"status": "created", "id": name, "name": name}

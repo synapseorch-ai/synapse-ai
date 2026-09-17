@@ -101,8 +101,11 @@ def build_request(
     url, consumed = render_url(url, args, global_variables)
     headers = templating.render_mapping(dict(tool.get("headers") or {}), context, bare="args")
 
+    # `body_template` is where the AI builder stored the template before F2; a
+    # tool saved then still sends it.
+    template = tool.get("body") or tool.get("body_template") or ""
     body, body_consumed = templating.request_body(
-        tool.get("body"), args, {"global": global_variables}
+        template, args, {"global": global_variables}
     )
     consumed |= body_consumed
 
@@ -116,7 +119,7 @@ def build_request(
         }
         return request
 
-    if not (tool.get("body") or "").strip():
+    if not template.strip():
         # No template: the arguments, minus the ones the URL already took.
         body = {k: v for k, v in args.items() if k not in consumed}
     if isinstance(body, str):

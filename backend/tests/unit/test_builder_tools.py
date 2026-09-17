@@ -255,6 +255,29 @@ class TestCustomTools:
         assert tool["headers"]["Authorization"] == "Bearer {{ global.TOKEN }}"
         assert tool["inputSchema"]["required"] == ["project"]
 
+    async def test_a_body_template_is_the_body_the_tool_sends(self, server):
+        """F2: the builder stored `body_template` and the executor reads `body`, so
+        the template was dropped and the bare arguments went out instead."""
+        await call("create_http_tool", {
+            "name": "open_ticket",
+            "description": "Open a support ticket",
+            "url": "https://api.example.com/tickets",
+            "method": "POST",
+            "body_template": '{"ticket": {"summary": "{{ title }}"}}',
+        }, server)
+
+        from core import http_tool
+        from core.routes.tools import load_custom_tools
+        tool = (await load_custom_tools())[0]
+        request = http_tool.build_request(tool, {"title": "Printer on fire"}, {})
+        assert request["json"] == {"ticket": {"summary": "Printer on fire"}}
+
+    def test_a_tool_saved_with_the_old_key_still_sends_its_template(self):
+        """Builder-made tools saved before F2's fix hold `body_template`."""
+        from core import http_tool
+        tool = {"method": "POST", "url": "https://api.example.com/t", "body_template": '{"x": "{{ a }}"}'}
+        assert http_tool.build_request(tool, {"a": "1"}, {})["json"] == {"x": "1"}
+
     @pytest.mark.parametrize("url", [
         "http://169.254.169.254/latest/meta-data/",  # the cloud metadata endpoint
         "http://127.0.0.1:8000/api/settings",        # our own API
