@@ -2181,22 +2181,27 @@ async def _bedrock_converse_direct(
     return await asyncio.to_thread(_run)
 
 
-_THINK_TAG_RE = re.compile(r"<think>(.*?)</think>\s*", re.DOTALL | re.IGNORECASE)
+_THINK_TAG_RE = re.compile(r"<(think(?:ing)?)>(.*?)</\1>\s*", re.DOTALL | re.IGNORECASE)
 
 
 def _split_think_tags(text: str) -> tuple[str, str]:
-    """Pull `<think>...</think>` out of a reply into (text, reasoning).
+    """Pull `<think>...</think>` and `<thinking>...</thinking>` out of a reply
+    into (text, reasoning).
 
     Local reasoning models — qwen3, deepseek-r1, anything served raw by Ollama
-    or llama.cpp — write their thinking inline in these tags. Nothing parsed
-    them, so the tags and everything in them were shown to the person as the
-    agent's answer. Ollama's own `thinking` field is preferred where the server
-    is new enough to send it; this is the fallback for where it is not, and for
-    an OpenAI-compatible endpoint in front of the same model.
+    or llama.cpp — write their thinking inline in `<think>`; Amazon Nova writes
+    it in `<thinking>`. Nothing parsed them, so the tags and everything in them
+    were shown to the person as the agent's answer. Ollama's own `thinking`
+    field is preferred where the server is new enough to send it; this is the
+    fallback for where it is not.
+
+    `generate_response_ex` applies it once, after every provider, not per branch
+    (F32): Nova reaches the engine through the model gateway and through an
+    own-key Bedrock, and the per-branch version covered neither.
     """
-    if not text or "<think>" not in text.lower():
+    if not text or "<think" not in text.lower():
         return text, ""
-    thoughts = [m.strip() for m in _THINK_TAG_RE.findall(text) if m.strip()]
+    thoughts = [m[1].strip() for m in _THINK_TAG_RE.findall(text) if m[1].strip()]
     return _THINK_TAG_RE.sub("", text).strip(), "\n".join(thoughts).strip()
 
 
@@ -3046,6 +3051,13 @@ async def generate_response_ex(
 
             except Exception as e:
                 return LLMResult(f"Local Agent Error: {e}")
+
+    # ── Inline thinking tags, whichever provider answered (F32) ──────────────
+    # Folded into `reasoning` rather than dropped: the loop shows it as the
+    # model's thinking, and a step never writes it into state as the answer.
+    result_text, _inline_reasoning = _split_think_tags(result_text)
+    if _inline_reasoning:
+        _reasoning = f"{_reasoning}\n{_inline_reasoning}".strip() if _reasoning else _inline_reasoning
 
     # ── Log usage (fire-and-forget, never raises) ────────────────────────────
     try:

@@ -311,6 +311,35 @@ class TestThinkTags:
         from core.llm_providers import _split_think_tags
         assert _split_think_tags("plain answer") == ("plain answer", "")
 
+    def test_novas_thinking_tags_are_folded_too(self):
+        """F32: Amazon Nova spells them `<thinking>`, which the `<think>` check missed."""
+        from core.llm_providers import _split_think_tags
+        text, reasoning = _split_think_tags(
+            "<thinking>The user wants a count.</thinking>\n\nThere are 3."
+        )
+        assert text == "There are 3."
+        assert reasoning == "The user wants a count."
+
+    async def test_every_provider_folds_them_not_only_ollama(self, monkeypatch):
+        """F32: only the Ollama branch split inline tags, so Nova on the gateway
+        (and on an own-key Bedrock) showed its thinking as the answer — in chat,
+        and written into state by an LLM or evaluator step."""
+        from core import llm_providers as llm
+        from core import usage_tracker
+
+        async def gateway(model, messages, system, settings, **kwargs):
+            return llm.LLMResult("<thinking>check the ledger</thinking>Your balance is $4.")
+
+        async def no_usage(**_kwargs):
+            return None
+
+        monkeypatch.setattr(llm, "call_model_gateway", gateway)
+        monkeypatch.setattr(usage_tracker, "log_usage", no_usage)
+
+        result = await llm.generate_response_ex("q", "s", "cloud", "synapse.nova-pro-v1-0", {})
+        assert result.text == "Your balance is $4."
+        assert result.reasoning == "check the ledger"
+
 
 class TestTheSystemPromptStopsAskingTwice:
     def test_a_native_model_is_told_not_to_write_markers(self):
