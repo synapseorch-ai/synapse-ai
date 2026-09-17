@@ -2174,9 +2174,10 @@ async def _bedrock_converse_direct(
                 **({'additionalModelRequestFields': additional} if additional else {}),
             )
         except botocore.exceptions.ClientError as e:
-            status = e.response.get('ResponseMetadata', {}).get('HTTPStatusCode', 0)
-            msg = e.response.get('Error', {}).get('Message', str(e))
-            raise RuntimeError(f"HTTP {status}: {msg}") from e
+            # Re-raised as it came: the error code is what `call_bedrock` decides
+            # on (F6). This used to become `RuntimeError(f"HTTP {status}: …")`,
+            # which no rule could tell apart.
+            raise
 
     return await asyncio.to_thread(_run)
 
@@ -2232,12 +2233,46 @@ def _extract_bedrock_content(message: dict) -> tuple[str, str]:
     return "\n".join(text_parts).strip(), "\n".join(thought_parts).strip()
 
 
+#: Bedrock errors worth another attempt — the model gateway's own set
+#: (`api/gateway/bedrock.py`), so the two paths to the same service agree.
+#: Decided by **error code**, never by HTTP status: throttling and quota errors
+#: do not share one status, and a 400 is as often a refusal as a quota.
+_BEDROCK_RETRYABLE_CODES = frozenset({
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "ServiceQuotaExceededException",
+    "ModelNotReadyException",
+    "ServiceUnavailableException",
+    "InternalServerException",
+})
+
+
+def _bedrock_error(exc: BaseException) -> tuple[str, str]:
+    """(code, message) of a Bedrock client error, or ("", "") for anything else
+    — a dropped connection, a timeout — which stays retryable."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return "", ""
+    error = response.get("Error") or {}
+    return str(error.get("Code") or ""), str(error.get("Message") or "")
+
+
+def _converse_unsupported(code: str, message: str) -> bool:
+    """Bedrock's answer for a model with no Converse API — the one case the
+    InvokeModel fallback exists for. The wording is Bedrock's and not a contract,
+    so it is matched loosely."""
+    return code == "ValidationException" and "support" in message.lower()
+
+
 async def call_bedrock(model_id, messages, system, region, settings, images=None, prompt_cache: bool = True,
                        max_tokens: int | None = None, reasoning=None):
     """Call AWS Bedrock with 5-attempt exponential backoff retry loop.
 
-    Prefers the Converse API (standardized); falls back to InvokeModel for older models.
-    Raises LLMError on final failure after all retries.
+    Prefers the Converse API (standardized); falls back to InvokeModel only for a
+    model Bedrock says has no Converse API. Retries only what
+    `_BEDROCK_RETRYABLE_CODES` names, plus errors with no code at all (a dropped
+    connection); anything Bedrock refused raises `LLMError` at once, naming the
+    code (F6).
 
     Returns:
         (response_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
@@ -2389,6 +2424,7 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                                      (), _reasoning)
                 except Exception as converse_err:
                     msg_str = str(converse_err)
+                    code, message = _bedrock_error(converse_err)
                     if "on-demand throughput" in msg_str:
                         raise LLMError(
                             "Bedrock model requires an inference profile (no on-demand throughput). "
@@ -2401,8 +2437,14 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                             f"Bedrock authentication failed: {converse_err}. "
                             "Check your API key or IAM credentials in Settings."
                         )
-                    _log.debug(f"Bedrock converse failed (attempt {attempt}), falling back to invoke_model: {converse_err}")
-                    # Fall through to InvokeModel (for older models not on Converse API)
+                    if not _converse_unsupported(code, message):
+                        # Retryable or refused, the outer handler decides — but
+                        # never by trying an Anthropic-shaped InvokeModel payload
+                        # against a model that has Converse. That turned a
+                        # throttle into a second request and replaced the real
+                        # error with the fallback's.
+                        raise
+                    _log.debug(f"Bedrock model has no Converse API (attempt {attempt}), using invoke_model: {converse_err}")
                     resp = await _invoke_model_call()
                     response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
                     content = response_body.get("content") or []
@@ -2419,6 +2461,9 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
         except LLMError:
             raise  # Non-retryable (config error)
         except Exception as e:
+            code, message = _bedrock_error(e)
+            if code and code not in _BEDROCK_RETRYABLE_CODES:
+                raise LLMError(f"Bedrock refused the request ({code}): {message or e}") from e
             last_error = str(e)
             _log.warning(f"⚠️ Bedrock error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
