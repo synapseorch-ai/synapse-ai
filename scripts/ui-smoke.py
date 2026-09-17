@@ -561,6 +561,91 @@ async def check_layout(browser) -> str:
     return f"no page scrolls, and the launcher's tooltip opens {round(gap)}px from it"
 
 
+# ── phone ────────────────────────────────────────────────────────────────────
+
+#: The five shell screens the `layout` check uses, plus the one page that is not
+#: built on `Screen` — which is where both phone-width defects actually were.
+PHONE_PAGES = LAYOUT_PAGES + ("/kitchen-sink", "/settings/models", "/settings/scale")
+
+#: Two questions the rendered page answers and a stylesheet cannot.
+#:
+#: Sideways: not "is anything wider than the viewport" — content inside a scroll
+#: container is, legitimately — but "does the page itself move when pushed".
+#:
+#: Stranded: the shell's <main> is `overflow-hidden` by design, so a screen that
+#: does not bring its own scroller has its overflow silently cut off instead of
+#: scrolled. That is content a person cannot reach by any gesture.
+PHONE_OVERFLOW = r"""
+() => {
+  window.scrollTo(2000, 0);
+  const sideways = Math.round(window.scrollX);
+  window.scrollTo(0, 0);
+  const main = document.querySelector('main');
+  let stranded = 0;
+  if (main && getComputedStyle(main).overflowY === 'hidden') {
+    stranded = Math.max(0, main.scrollHeight - main.clientHeight);
+  }
+  let blame = null;
+  if (sideways) {
+    const vw = document.documentElement.clientWidth;
+    // An in-flow box is clipped by any overflow ancestor; an absolutely
+    // positioned one only by an ancestor that is also its containing block.
+    const clipped = (el) => {
+      const absolute = getComputedStyle(el).position === 'absolute';
+      for (let p = el.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+        const o = getComputedStyle(p);
+        if (!/(auto|scroll|hidden|clip)/.test(o.overflowX)) continue;
+        if (!absolute || o.position !== 'static') return true;
+      }
+      return false;
+    };
+    for (const el of document.querySelectorAll('*')) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.right <= vw + 1 || clipped(el)) continue;
+      blame = el.tagName.toLowerCase() + '.' +
+              (el.className?.baseVal ?? el.className ?? '').toString().split(/\s+/).slice(0, 3).join('.') +
+              ' reaching ' + Math.round(r.right) + 'px';
+      break;
+    }
+  }
+  return {sideways, stranded, blame};
+}
+"""
+
+
+@check
+async def check_phone(browser) -> str:
+    """At phone width a page does not slide sideways, and none of it is stranded.
+
+    Both halves were real on /kitchen-sink. It slid 242px, and not because
+    anything visible was too wide: an `sr-only` table header is absolutely
+    positioned, and the scroll container it sits in was not a positioned
+    ancestor, so 1px of invisible text was placed against the document. And
+    3,498px of the page could not be reached at all, because the shell's main
+    is `overflow-hidden` and that page brought no scroller of its own.
+
+    Asked by pushing the page rather than by measuring boxes: content inside a
+    scroll container is wider than the viewport on purpose.
+    """
+    ctx = await browser.new_context(viewport={"width": PHONE[0], "height": PHONE[1]})
+    page = await ctx.new_page()
+    try:
+        bad: list[str] = []
+        for path in PHONE_PAGES:
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            r = await page.evaluate(PHONE_OVERFLOW)
+            if r["sideways"]:
+                bad.append(f"{path} slides {r['sideways']}px sideways ({r['blame'] or 'cause not isolated'})")
+            if r["stranded"]:
+                bad.append(f"{path} strands {r['stranded']}px inside an overflow-hidden main")
+        if bad:
+            raise AssertionError("; ".join(bad))
+        return f"{len(PHONE_PAGES)} screens at {PHONE[0]}px: none slides, none stranded"
+    finally:
+        await ctx.close()
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of

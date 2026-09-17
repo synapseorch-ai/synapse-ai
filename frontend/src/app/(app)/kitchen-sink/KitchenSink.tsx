@@ -132,7 +132,12 @@ export function KitchenSink() {
 
   return (
     <TooltipProvider>
-      <div className="mx-auto w-full max-w-[88rem] space-y-8 px-8 py-7">
+      {/* The shell's <main> is `overflow-hidden` and every other screen brings
+          its own scroller (the kit's `Screen`). This page does not use `Screen`
+          — it is demonstrating the primitives, header included — so it has to
+          own the scroller itself, or 3,498px of it is simply unreachable. */}
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto w-full max-w-[88rem] space-y-8 px-8 py-7">
         <PageHeader
           title="Kitchen sink"
           description="Every primitive in the design system, in the states you cannot reach by clicking around the product."
@@ -243,7 +248,9 @@ export function KitchenSink() {
           </CardBody>
           <CardFooter>
             <Muted>Footers hold what a form does next.</Muted>
-            <div className="flex gap-2">
+            {/* wrap: five buttons in a row are wider than a phone, and a row
+                that cannot wrap takes the whole document sideways with it */}
+            <div className="flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => setModal(true)}>
                 Open modal
               </Button>
@@ -439,6 +446,7 @@ export function KitchenSink() {
           tone={toast.tone}
           onDismiss={() => setToast((t) => ({ ...t, message: "" }))}
         />
+        </div>
       </div>
     </TooltipProvider>
   );

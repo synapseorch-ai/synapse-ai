@@ -336,6 +336,26 @@ body {
   transition: background-color 0.2s, color 0.2s;
 }
 
+/*
+ * Wide content scrolls inside its own container; the page body never does.
+ * The kit's Table has always asked for this class (components/ui/table.tsx),
+ * which is shared with the other product — where this rule already lived. Here
+ * it did not, so a table wider than the screen pushed the whole document
+ * sideways instead of scrolling (F82). Top level on purpose: inside
+ * `@layer utilities` Tailwind tree-shakes a class it cannot see used.
+ */
+.scroll-x {
+  overflow-x: auto;
+  /*
+   * A scroll container must also be a containing block, or it does not contain
+   * what it scrolls. An `sr-only` cell header is `position: absolute`, so with
+   * no positioned ancestor it is placed against the document instead — the kit
+   * Table's "Actions" header sat at x=641 inside a container 278px wide and
+   * took the whole page sideways with it, 1px of invisible text at a time.
+   */
+  position: relative;
+}
+
 @layer utilities {
 
   /* Scrollbar override */
