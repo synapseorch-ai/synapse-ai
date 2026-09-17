@@ -561,6 +561,59 @@ async def check_layout(browser) -> str:
     return f"no page scrolls, and the launcher's tooltip opens {round(gap)}px from it"
 
 
+# ── headers ──────────────────────────────────────────────────────────────────
+
+#: Reachable only by typing the URL, so it appears in no rail and a crawl of
+#: the links would miss it — which is exactly how it went unnoticed that it
+#: was announcing itself as another screen (F45).
+UNLISTED_SCREENS = ("/settings/datalab",)
+
+
+@check
+async def check_headers(browser) -> str:
+    """No screen wears another screen's name.
+
+    A settings tab with no nav entry fell back to General's entry, so
+    /settings/datalab rendered the title "General" and General's blurb, and
+    offered no way out of Settings either. Nothing failed: the page was
+    complete, correct and about a different screen. Titles are collected from
+    every tab the rail offers plus the ones it does not, and a title that
+    appears twice is the fallback firing.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/settings/general", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        offered = await page.evaluate(
+            "() => [...new Set([...document.querySelectorAll('a[href^=\"/settings/\"]')]"
+            ".map(a => a.getAttribute('href')))]"
+        )
+        seen: dict[str, str] = {}
+        clash: list[str] = []
+        homeless: list[str] = []
+        for path in list(offered) + list(UNLISTED_SCREENS):
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await asyncio.sleep(1.0)
+            title = await page.evaluate("() => document.querySelector('h1')?.innerText?.trim() ?? ''")
+            if not title:
+                homeless.append(f"{path}: no title at all")
+            elif title in seen:
+                clash.append(f"{path} calls itself {title!r}, which is {seen[title]}")
+            else:
+                seen[title] = path
+            if not await page.evaluate(
+                "() => [...document.querySelectorAll('a,button')]"
+                ".some(e => /close/i.test(e.getAttribute('aria-label') || ''))"
+            ):
+                homeless.append(f"{path}: no way out of settings")
+        if clash or homeless:
+            raise AssertionError("; ".join(clash + homeless))
+        return f"{len(seen)} settings screens, each with its own name and an exit"
+    finally:
+        await ctx.close()
+
+
 # ── runner ───────────────────────────────────────────────────────────────────
 
 #: Screens whose controls are checked for a name. Every settings tab plus the

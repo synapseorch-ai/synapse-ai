@@ -13,7 +13,7 @@
  */
 import {
     Braces,
-    ArrowLeftRight, BookOpen, Bot, Clock, Cloud, Cpu, Database, DollarSign, Eraser, LayoutDashboard,
+    ArrowLeftRight, BookOpen, Bot, Clock, Cloud, Cpu, Database, DollarSign, Eraser, FlaskConical, LayoutDashboard,
     FolderGit2, Gauge, Globe, Key, LayoutGrid, LifeBuoy, MessageSquare, MessagesSquare,
     ScrollText, Server, Shield, Target, Vault, Workflow, Wrench,
     type LucideIcon,
@@ -27,6 +27,12 @@ export type NavEntry = {
     id: string;
     label: string;
     href: string;
+    /**
+     * Reachable by URL, but not offered in the rail. An entry is still a real
+     * entry: it carries its own title and blurb, so the screen it names does
+     * not borrow another screen's header (F45).
+     */
+    hidden?: boolean;
     /** One line, shown under the title by <Screen>. Never a template. */
     blurb: string;
     icon: LucideIcon;
@@ -190,6 +196,11 @@ export const SETTINGS_NAV: NavGroup[] = [
                 id: 'support', label: 'Help & Docs', href: '/settings/support', icon: LifeBuoy,
                 blurb: 'Documentation, FAQs, and where to get help.',
             },
+            {
+                id: 'datalab', label: 'Data Lab', href: '/settings/datalab', icon: FlaskConical,
+                hidden: true,
+                blurb: 'Generate synthetic training datasets from a topic and a system prompt.',
+            },
         ],
     },
 ];
@@ -197,14 +208,6 @@ export const SETTINGS_NAV: NavGroup[] = [
 // Re-exported from a dependency-free module so next.config.ts can import the
 // same list without pulling React in. See src/lib/moved-routes.ts.
 export { MOVED_TABS } from './moved-routes';
-
-/**
- * Tabs SettingsView still renders that deliberately have no nav entry. `datalab`
- * was absent from both of the old tab lists too — reachable only by typing the
- * URL. Listed here so the settings route lets it through instead of treating it
- * as a typo.
- */
-export const UNLISTED_TABS: readonly string[] = ['datalab'];
 
 const ALL_ENTRIES: NavEntry[] = [...PRIMARY_NAV, ...SETTINGS_NAV].flatMap(g => g.items);
 
@@ -218,7 +221,10 @@ export function isSettingsEntry(id: string): boolean {
     return SETTINGS_NAV.some(g => g.items.some(i => i.id === id));
 }
 
-/** Drop entries whose flag is off. `flags` is the /api/settings payload subset. */
+/**
+ * Drop entries whose flag is off, and entries that are reachable only by URL.
+ * `flags` is the /api/settings payload subset.
+ */
 export function visibleItems(items: NavEntry[], flags: Partial<Record<NavFlag, boolean>>): NavEntry[] {
-    return items.filter(e => !e.flag || flags[e.flag]);
+    return items.filter(e => !e.hidden && (!e.flag || flags[e.flag]));
 }

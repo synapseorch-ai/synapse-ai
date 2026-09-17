@@ -438,6 +438,12 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     // rail and the settings sub-nav. This replaces
     //   `Manage your agent's {activeTab} configuration.`
     // which rendered for twenty different screens, "api_keys" included.
+    //
+    // The fallback is unreachable from the route, which redirects a tab with no
+    // entry — and that is the point: a tab reachable only by URL still needs an
+    // entry of its own, or it borrows this one's title and blurb. `datalab` did,
+    // and announced itself as "General" (F45). A tab rendered below without an
+    // entry above lands here, so it is a fallback and not a default.
     const nav = navEntryFor(activeTab) ?? navEntryFor('general')!;
 
     return (

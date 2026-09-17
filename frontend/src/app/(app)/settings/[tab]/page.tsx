@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 
 import { SettingsView } from '@/components/SettingsView';
-import { UNLISTED_TABS, navEntryFor } from '@/lib/nav';
+import { navEntryFor } from '@/lib/nav';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +15,7 @@ export default async function SettingsPage(props: {
     // The eight moved URLs are redirected at the routing layer by
     // next.config.ts, so they never reach this component. Anything else that
     // isn't a real tab is a typo — send it to the settings landing page.
-    if (!navEntryFor(tab) && !UNLISTED_TABS.includes(tab)) redirect('/settings/general');
+    if (!navEntryFor(tab)) redirect('/settings/general');
 
     const subTab = typeof searchParams.tab === 'string' ? searchParams.tab : undefined;
     return <SettingsView initialTab={tab} initialSubTab={subTab} />;
