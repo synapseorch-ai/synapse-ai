@@ -397,12 +397,8 @@ async def retry_dlq_job(dlq_id: str, request: Request):
     if run.status not in ("failed", "cancelled"):
         raise HTTPException(409, detail=f"The run is {run.status}; only a failed or cancelled run can be resumed.")
 
-    job = await arq_redis.enqueue_job(
-        "resume_failed_job",
-        run_id=run.run_id,
-        _queue_name=QUEUE_NAME,
-        _job_id=f"retry_{run.run_id}_{int(time.time() * 1000)}",
-    )
+    from core.scale.replay import queue_replay
+    job = await queue_replay(getattr(request.app.state, "redis", None) or arq_redis, arq_redis, run.run_id)
     if job is None:
         raise HTTPException(409, detail="A retry of this run is already queued.")
 

@@ -438,10 +438,83 @@ async def get_run_status(run_id: str):
         raise HTTPException(status_code=404, detail="Run not found")
 
 
+async def _worker_run_row(request: Request, run_id: str):
+    """The run's row when a worker ran it and the scale layer is up, else None.
+
+    A run a worker ran has `worker_id` set; its state is in the store, so any
+    worker can pick it up again, and it goes back to the fleet rather than
+    running inside this process.
+    """
+    redis = getattr(request.app.state, "redis", None)
+    arq_redis = getattr(request.app.state, "arq_redis", None)
+    pg_session_factory = getattr(request.app.state, "pg_session_factory", None)
+    if not (redis and arq_redis and pg_session_factory):
+        return None
+    from sqlalchemy import select
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+    async with pg_session_factory() as session:
+        row = (await session.execute(
+            select(
+                OrchestrationRunDB.worker_id,
+                OrchestrationRunDB.status,
+                OrchestrationRunDB.current_step_id,
+            ).where(
+                OrchestrationRunDB.run_id == run_id,
+                OrchestrationRunDB.tenant_id == get_tenant(),
+            )
+        )).one_or_none()
+    return row if row is not None and row.worker_id else None
+
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+
 @router.post("/api/orchestrations/runs/{run_id}/resume")
 async def resume_failed_run(run_id: str, request: Request):
-    """Resume a failed or cancelled orchestration from where it stopped. Returns SSE stream."""
+    """Resume a failed or cancelled orchestration from where it stopped. Returns SSE stream.
+
+    A run a worker ran is replayed by a worker: `resume_failed_job` is queued
+    and the stream is bridged from Redis. It used to be resumed in this process
+    whatever ran it, beside the fleet and outside its limits and its cancel
+    signal (F61).
+    """
     server_module = request.app.state.server_module
+
+    worker_run = await _worker_run_row(request, run_id)
+    if worker_run is not None:
+        if worker_run.status not in ("failed", "cancelled"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"The run is {worker_run.status}; only a failed or cancelled run can be replayed.",
+            )
+        if not worker_run.current_step_id:
+            raise HTTPException(
+                status_code=409,
+                detail="This run never reached a step, so there is nothing to resume — start it again.",
+            )
+        redis = request.app.state.redis
+        # Bridge from the stream's tail: it still holds the failed attempt's
+        # `done`, and a bridge that read from the start would stop there.
+        key = f"synapse:run:{run_id}:events"
+        tail = await redis.xrevrange(key, "+", "-", count=1)
+        start = tail[0][0] if tail else "0"
+        start = start.decode() if isinstance(start, bytes) else start
+
+        from core.scale.replay import queue_replay
+        if await queue_replay(redis, request.app.state.arq_redis, run_id) is None:
+            raise HTTPException(status_code=409, detail="A replay of this run is already queued.")
+
+        from core.scale import event_bridge
+        return StreamingResponse(
+            event_bridge.stream_run_events(redis, run_id, start),
+            media_type="text/event-stream",
+            headers=_SSE_HEADERS,
+        )
 
     # Two pumps for one run would interleave its journal and duplicate work.
     active = _active_tasks.get(run_id)
@@ -505,24 +578,14 @@ async def submit_human_input(run_id: str, request: Request):
     if redis and arq_redis and pg_session_factory:
         # Check if this is a V2 run (has worker_id set in Postgres)
         try:
-            from sqlalchemy import select
-            from core.store.models import OrchestrationRunDB
-            async with pg_session_factory() as session:
-                result = await session.execute(
-                    select(OrchestrationRunDB.worker_id).where(
-                        OrchestrationRunDB.run_id == run_id
-                    )
-                )
-                row = result.one_or_none()
+            row = await _worker_run_row(request, run_id)
 
-            if row and row.worker_id:
-                # V2 run: publish to Redis and enqueue the resume job. One
+            if row is not None:
+                # V2 run: enqueue the resume job, the answer as its argument. One
                 # queue — the run's state is in the store, so any worker can
                 # resume it, not only the one that paused it.
-                from core.scale.pubsub import publish_human_input
                 from core.scale.config import QUEUE_NAME as _queue_name
                 resp = human_response if isinstance(human_response, dict) else {"response": human_response}
-                await publish_human_input(redis, run_id, resp)
 
                 await arq_redis.enqueue_job(
                     "resume_orchestration_job",

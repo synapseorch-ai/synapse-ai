@@ -287,3 +287,110 @@ class TestRetryingADeadLetter:
 
         assert [r["id"] for r in listed] == [ours]
         assert (await client.post(f"/api/scale/dlq/{theirs}/retry")).status_code == 404
+
+
+# ── Replay on a run a worker ran (F61) ───────────────────────────────────────
+
+async def _worker_run(run_id: str, status: str, current_step_id: str | None = "s2") -> None:
+    from core.store import get_store, upsert
+    from core.store.models import OrchestrationRunDB
+    async with (await get_store())() as session:
+        await upsert(session, OrchestrationRunDB, values={
+            "run_id": run_id, "orchestration_id": "orch_x", "status": status,
+            "current_step_id": current_step_id, "worker_id": "worker-a",
+        }, index_elements=["run_id"])
+        await session.commit()
+
+
+@pytest.fixture
+def bridged(monkeypatch):
+    """The SSE bridge, recording where it was asked to start.
+
+    The real one reads the stream until a `done`; through ASGITransport, which
+    buffers a response whole, that is a request that never returns.
+    """
+    import core.scale.event_bridge as bridge
+    calls = []
+
+    async def fake(redis_client, run_id, last_event_id="0"):
+        calls.append((run_id, last_event_id))
+        yield 'data: {"type": "done"}\n\n'
+
+    monkeypatch.setattr(bridge, "stream_run_events", fake)
+    return calls
+
+
+class TestReplayingAWorkerRun:
+    """Replay on a run a worker ran queues `resume_failed_job` (F61).
+
+    It used to resume the run inside the API process whatever ran it — so on a
+    fleet the replay ran beside the workers, outside their pool, their limits
+    and their cancel signal, while `resume_failed_job` sat registered and was
+    never enqueued.
+    """
+
+    async def test_queues_the_resume_for_a_worker(self, client, dlq_app, bridged, fake_redis):
+        await _worker_run("run_w", "failed")
+        await fake_redis.xadd("synapse:run:run_w:events", {"data": '{"type": "done"}'})
+        tail = (await fake_redis.xrevrange("synapse:run:run_w:events", "+", "-", count=1))[0][0]
+
+        resp = await client.post("/api/orchestrations/runs/run_w/resume")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        args, kwargs = dlq_app.state.arq_redis.enqueue_job.call_args
+        assert args[0] == "resume_failed_job"
+        assert kwargs["run_id"] == "run_w"
+        assert kwargs["_job_id"].startswith("retry_run_w_")
+        # From the tail: the failed attempt's `done` would end the stream at once.
+        tail = tail.decode() if isinstance(tail, bytes) else tail
+        assert bridged == [("run_w", tail)]
+
+    async def test_a_cancelled_runs_stop_signal_does_not_stop_the_replay(
+        self, client, dlq_app, bridged, fake_redis,
+    ):
+        await _worker_run("run_c", "cancelled")
+        await fake_redis.set("synapse:cancel:run_c", "1")
+
+        assert (await client.post("/api/orchestrations/runs/run_c/resume")).status_code == 200
+        assert await fake_redis.get("synapse:cancel:run_c") is None
+
+    async def test_the_stop_signal_stays_while_a_resume_it_exists_to_stop_is_queued(
+        self, client, dlq_app, bridged, fake_redis,
+    ):
+        from core.scale.config import QUEUE_NAME
+        await _worker_run("run_q", "cancelled")
+        await fake_redis.set("synapse:cancel:run_q", "1")
+        await fake_redis.zadd(QUEUE_NAME, {"resume_run_q_123": 1})
+
+        assert (await client.post("/api/orchestrations/runs/run_q/resume")).status_code == 200
+        assert await fake_redis.get("synapse:cancel:run_q") is not None
+
+    async def test_a_run_still_running_is_refused(self, client, dlq_app, bridged):
+        await _worker_run("run_r", "running")
+
+        resp = await client.post("/api/orchestrations/runs/run_r/resume")
+
+        assert resp.status_code == 409
+        dlq_app.state.arq_redis.enqueue_job.assert_not_awaited()
+
+    async def test_a_run_that_never_reached_a_step_is_refused(self, client, dlq_app, bridged):
+        await _worker_run("run_n", "failed", current_step_id=None)
+
+        resp = await client.post("/api/orchestrations/runs/run_n/resume")
+
+        assert resp.status_code == 409
+        dlq_app.state.arq_redis.enqueue_job.assert_not_awaited()
+
+
+class TestAnAnswerLeavesNoRedisKey:
+    async def test_the_human_input_key_is_not_written(self, client, dlq_app, bridged, fake_redis):
+        """`synapse:human_input:{run}` was written on every answer and read by
+        nothing — the answer travels as the resume job's argument."""
+        await _worker_run("run_h", "paused")
+
+        resp = await client.post("/api/orchestrations/runs/run_h/human-input", json={"response": {"ok": True}})
+
+        assert resp.status_code == 200, resp.text
+        assert dlq_app.state.arq_redis.enqueue_job.call_args[0][0] == "resume_orchestration_job"
+        assert await fake_redis.keys("synapse:human_input:*") == []

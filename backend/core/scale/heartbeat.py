@@ -1,6 +1,6 @@
 """
 Worker heartbeat — runs in the background on each worker process.
-Updates Postgres workers table and publishes to Redis pub/sub every N seconds.
+Updates the workers table every N seconds; the Scale screen reads it.
 """
 import asyncio
 import time
@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.scale.pubsub import publish_worker_heartbeat
 from core.store import upsert
 from core.store.models import WorkerDB
 
@@ -21,7 +20,6 @@ async def run_heartbeat(
     worker_id: str,
     address: str,
     hostname: str,
-    redis_client,
     session_factory,
     get_active_jobs_fn,          # callable() -> int — returns current active job count
     max_jobs: int = 10,
@@ -57,9 +55,6 @@ async def run_heartbeat(
                     update=["status", "active_jobs", "max_jobs", "last_heartbeat", "mcp_disabled"],
                 )
                 await session.commit()
-
-            # Publish to Redis pub/sub for real-time UI updates
-            await publish_worker_heartbeat(redis_client, worker_id, active, max_jobs)
 
         except asyncio.CancelledError:
             raise

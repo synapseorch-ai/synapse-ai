@@ -839,7 +839,6 @@ async def worker_startup(ctx: dict) -> None:
             worker_id=_worker_id,
             address=_worker_address,
             hostname=socket.gethostname(),
-            redis_client=redis,
             session_factory=session_factory,
             get_active_jobs_fn=_get_active_jobs,
             max_jobs=cfg.worker_concurrency,

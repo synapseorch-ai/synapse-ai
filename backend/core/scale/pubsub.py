@@ -4,9 +4,7 @@ Redis Streams + key-based pub/sub for the scale layer.
 Channel/key conventions:
   synapse:run:{run_id}:events     Redis Stream — worker publishes SSE events; API server reads
   synapse:cancel:{run_id}         Redis SET key (1h TTL) — API server sets; worker polls
-  synapse:human_input:{run_id}    Redis SET key (1h TTL) — API server sets; worker polls
   synapse:chat:{session_id}:events Redis Stream — worker publishes chat SSE events
-  synapse:workers:heartbeat       Pub/Sub channel — workers publish heartbeat blobs
 """
 import json
 import time
@@ -148,55 +146,3 @@ async def is_chat_cancelled(redis_client, session_id: str) -> bool:
 
 async def clear_chat_cancellation(redis_client, session_id: str) -> None:
     await redis_client.delete(_chat_cancel_key(session_id))
-
-
-# ---------------------------------------------------------------------------
-# Human-in-the-loop helpers (API server → worker via Redis key)
-# ---------------------------------------------------------------------------
-
-async def publish_human_input(
-    redis_client,
-    run_id: str,
-    response: dict,
-    ttl: int = 3600,
-) -> None:
-    key = f"synapse:human_input:{run_id}"
-    await redis_client.set(key, json.dumps(response, default=str), ex=ttl)
-
-
-async def get_human_input(
-    redis_client,
-    run_id: str,
-    poll_interval: float = 0.5,
-    timeout: float = 3600.0,
-) -> dict | None:
-    """Poll for human input. Returns the response dict or None on timeout."""
-    key = f"synapse:human_input:{run_id}"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        import asyncio
-        val = await redis_client.get(key)
-        if val:
-            await redis_client.delete(key)
-            return json.loads(val)
-        await asyncio.sleep(poll_interval)
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Worker heartbeat
-# ---------------------------------------------------------------------------
-
-async def publish_worker_heartbeat(
-    redis_client,
-    worker_id: str,
-    active_jobs: int,
-    max_jobs: int,
-) -> None:
-    payload = json.dumps({
-        "worker_id": worker_id,
-        "active_jobs": active_jobs,
-        "max_jobs": max_jobs,
-        "ts": time.time(),
-    })
-    await redis_client.publish("synapse:workers:heartbeat", payload)

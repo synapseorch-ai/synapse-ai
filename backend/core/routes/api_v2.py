@@ -410,7 +410,7 @@ async def v2_resume_run(
     _: dict = Depends(require_api_key),
 ):
     """Enqueue a resume job for a paused run (after human input)."""
-    redis = _require_scale_mode(request)
+    _require_scale_mode(request)
     arq_redis = _get_arq_redis(request)
     sf = _get_pg_session_factory(request)
 
@@ -433,14 +433,11 @@ async def v2_resume_run(
     # run, because the run's state is in the store rather than on the disk of
     # whichever process happened to start it.
     queue_name = QUEUE_NAME
-    # Publish human input to Redis so workers polling for it can pick it up
-    from core.scale.pubsub import publish_human_input
+    # The answer travels as the resume job's argument.
     resp = body.response
     if isinstance(resp, str):
         resp = {"response": resp}
-    await publish_human_input(redis, run_id, resp)
 
-    # Enqueue resume job to the correct shard queue
     await arq_redis.enqueue_job(
         "resume_orchestration_job",
         run_id=run_id,
