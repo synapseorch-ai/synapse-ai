@@ -1492,9 +1492,10 @@ class LoopStepExecutor:
 class HumanStepExecutor:
     """Pause execution and request human input.
 
-    If the step has a human_channel_id configured, the prompt is also sent
-    to that messaging channel. Whichever responds first — the messaging app
-    or the browser UI — wins. The later response is silently discarded.
+    If the step has a human_channel_id configured, the engine posts the prompt
+    to that messaging channel when the run pauses, and a reply there answers
+    it (`core/orchestration/human_prompts.py`). Whichever answer arrives first
+    resumes the run; a second is refused because the run is no longer waiting.
     """
 
     async def execute(
@@ -1524,26 +1525,7 @@ class HumanStepExecutor:
                     agent_context = str(run.shared_state[okey])
                     break
 
-        # If a messaging channel is configured, arm a Future so the messaging
-        # adapter can resolve it when the user replies there.
         channel_id = step.human_channel_id
-        if channel_id:
-            messaging_manager = getattr(
-                getattr(engine.server_module, "app", None),
-                "state", None,
-            )
-            if messaging_manager:
-                messaging_manager = getattr(messaging_manager, "messaging_manager", None)
-            if messaging_manager:
-                asyncio.create_task(
-                    messaging_manager.wait_for_human_input(
-                        run_id=run.run_id,
-                        step_id=step.id,
-                        channel_id=channel_id,
-                        prompt=prompt,
-                        timeout=step.human_timeout_seconds,
-                    )
-                )
 
         yield {
             "type": "human_input_required",

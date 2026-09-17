@@ -13,6 +13,7 @@ import anyio
 from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_STEP_TIMEOUT
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
 from core.state_types import matches_declared_type, normalize_state_type
+from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .logger import OrchestrationLogger
@@ -361,11 +362,25 @@ class OrchestrationEngine:
                                     ),
                                     "output_key": step.output_key,
                                 })
+                                # The channel this pause waits on, so a reply
+                                # there can find the run (F54). A nested pause
+                                # carries its sub-step's channel up to here.
+                                if event.get("channel_id"):
+                                    run.shared_state[HUMAN_CHANNEL_KEY] = event["channel_id"]
+                                else:
+                                    run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
                                 await state.checkpoint()
                                 if logger:
                                     logger.step_end(step.id, "paused")
                                     logger.run_end("paused")
                                     await logger.aclose()
+                                # Asked once, by the run whose human step it is:
+                                # a parent forwarding a nested pause does not
+                                # ask again.
+                                if event.get("channel_id") and not event.get("nested_run_id"):
+                                    await announce_human_prompt(
+                                        run.run_id, event["channel_id"], event.get("prompt") or "",
+                                    )
                                 # Break exits the async-for and then the
                                 # fail_after scope cleanly in this task.
                                 # The event is yielded below, outside the scope,
@@ -654,6 +669,9 @@ class OrchestrationEngine:
         _log.debug(f"[engine.resume] ▶ restoring state from JSON checkpoint for run_id={run_id}")
         restored = await SS.restore(run_id)
         run = restored.run
+        # Answered: no longer waiting on a channel. Written at the next checkpoint;
+        # a nested step that pauses again records its channel again.
+        run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
         _log.debug(f"[engine.resume] 📋 restored run: orch_id={run.orchestration_id} status={run.status} current_step_id={run.current_step_id} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}")
 
         # Load the orchestration definition
@@ -836,6 +854,10 @@ class OrchestrationEngine:
             if sub_event.get("type") == "human_input_required":
                 run.nested_run_id = sub_event.get("nested_run_id") or nested_run_id
                 run.nested_orch_id = sub_event.get("nested_orch_id") or nested_orch_id
+                if sub_event.get("channel_id"):
+                    run.shared_state[HUMAN_CHANNEL_KEY] = sub_event["channel_id"]
+                else:
+                    run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
                 state = SharedState(run)
                 await state.checkpoint()
                 yield {

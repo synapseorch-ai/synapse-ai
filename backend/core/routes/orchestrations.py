@@ -438,35 +438,6 @@ async def get_run_status(run_id: str):
         raise HTTPException(status_code=404, detail="Run not found")
 
 
-async def _worker_run_row(request: Request, run_id: str):
-    """The run's row when a worker ran it and the scale layer is up, else None.
-
-    A run a worker ran has `worker_id` set; its state is in the store, so any
-    worker can pick it up again, and it goes back to the fleet rather than
-    running inside this process.
-    """
-    redis = getattr(request.app.state, "redis", None)
-    arq_redis = getattr(request.app.state, "arq_redis", None)
-    pg_session_factory = getattr(request.app.state, "pg_session_factory", None)
-    if not (redis and arq_redis and pg_session_factory):
-        return None
-    from sqlalchemy import select
-    from core.store.models import OrchestrationRunDB
-    from core.tenancy import get_tenant
-    async with pg_session_factory() as session:
-        row = (await session.execute(
-            select(
-                OrchestrationRunDB.worker_id,
-                OrchestrationRunDB.status,
-                OrchestrationRunDB.current_step_id,
-            ).where(
-                OrchestrationRunDB.run_id == run_id,
-                OrchestrationRunDB.tenant_id == get_tenant(),
-            )
-        )).one_or_none()
-    return row if row is not None and row.worker_id else None
-
-
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
     "X-Accel-Buffering": "no",
@@ -485,7 +456,8 @@ async def resume_failed_run(run_id: str, request: Request):
     """
     server_module = request.app.state.server_module
 
-    worker_run = await _worker_run_row(request, run_id)
+    from core.orchestration.answers import worker_run_row
+    worker_run = await worker_run_row(request.app.state, run_id)
     if worker_run is not None:
         if worker_run.status not in ("failed", "cancelled"):
             raise HTTPException(
@@ -549,93 +521,49 @@ async def resume_failed_run(run_id: str, request: Request):
 async def submit_human_input(run_id: str, request: Request):
     """Submit human input and resume the orchestration. Returns SSE stream.
 
-    For V2 (distributed) runs the response is published to Redis and a
-    resume job is enqueued to ARQ — no in-process engine is started.
-    For V1 (in-process) runs the existing behaviour is unchanged.
+    A run a worker ran is resumed by a worker (`resume_orchestration_job`) and
+    its stream bridged from Redis; any other run is resumed in this process.
+    The same path answers a reply in the step's messaging channel
+    (`core/orchestration/answers.py`), and a run no longer waiting — answered
+    there first — is refused.
     """
     body = await request.json()
     human_response = body.get("response", {})
-    step_id = body.get("step_id", "")  # optional, sent by frontend
 
-    server_module = request.app.state.server_module
-
-    # Try to resolve messaging Future (first-wins)
-    messaging_manager = getattr(request.app.state, "messaging_manager", None)
-    if messaging_manager and step_id:
-        key = f"{run_id}:{step_id}"
-        response_text = ""
-        if isinstance(human_response, dict):
-            response_text = " ".join(str(v) for v in human_response.values())
-        else:
-            response_text = str(human_response)
-        messaging_manager.resolve_human_input_by_key(key, response_text)
-
-    # --- V2 distributed path: detect via Postgres run row ---
-    redis = getattr(request.app.state, "redis", None)
-    arq_redis = getattr(request.app.state, "arq_redis", None)
-    pg_session_factory = getattr(request.app.state, "pg_session_factory", None)
-
-    if redis and arq_redis and pg_session_factory:
-        # Check if this is a V2 run (has worker_id set in Postgres)
-        try:
-            row = await _worker_run_row(request, run_id)
-
-            if row is not None:
-                # V2 run: enqueue the resume job, the answer as its argument. One
-                # queue — the run's state is in the store, so any worker can
-                # resume it, not only the one that paused it.
-                from core.scale.config import QUEUE_NAME as _queue_name
-                resp = human_response if isinstance(human_response, dict) else {"response": human_response}
-
-                await arq_redis.enqueue_job(
-                    "resume_orchestration_job",
-                    run_id=run_id,
-                    human_response=resp,
-                    _queue_name=_queue_name,
-                    _job_id=f"resume_{run_id}_{int(time.time())}",
-                )
-
-                # Return SSE stream bridged from Redis
-                from core.scale.event_bridge import stream_run_events
-                return StreamingResponse(
-                    stream_run_events(redis, run_id, "0"),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "X-Accel-Buffering": "no",
-                        "Connection": "keep-alive",
-                    },
-                )
-        except Exception:
-            pass  # Fall through to in-process V1 path
-
-    # --- V1 in-process path (unchanged) ---
-    # Two pumps for one run would interleave its journal and duplicate work.
-    active = _active_tasks.get(run_id)
-    if active is not None and not active.done():
-        raise HTTPException(status_code=409, detail="Run is already active")
-
-    from core.orchestration.engine import OrchestrationEngine
-
-    _task, queue = spawn_engine_run(
-        OrchestrationEngine.resume(run_id, human_response, server_module), run_id
+    from core.orchestration.answers import (
+        RunAlreadyActive, RunNotWaiting, answer_paused_run,
     )
+    try:
+        answered = await answer_paused_run(request.app.state, run_id, human_response)
+    except RunAlreadyActive:
+        raise HTTPException(status_code=409, detail="Run is already active")
+    except RunNotWaiting as exc:
+        if exc.status is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        raise HTTPException(
+            status_code=409,
+            detail=f"The run is {exc.status} and is not waiting for an answer.",
+        )
+
+    if answered.on_fleet:
+        from core.scale import event_bridge
+        return StreamingResponse(
+            event_bridge.stream_run_events(request.app.state.redis, run_id, "0"),
+            media_type="text/event-stream",
+            headers=_SSE_HEADERS,
+        )
 
     async def event_stream():
         # Heartbeats keep the stream warm during long LLM/compaction steps so a
         # busy-but-alive run is not mistaken for a dropped connection.
-        async for chunk in drain_queue_with_heartbeat(queue, SENTINEL):
+        async for chunk in drain_queue_with_heartbeat(answered.queue, SENTINEL):
             yield chunk
         yield "data: {\"type\": \"done\"}\n\n"
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
+        headers=_SSE_HEADERS,
     )
 
 

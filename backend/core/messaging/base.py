@@ -222,7 +222,7 @@ class MessagingAdapter(ABC):
     ) -> None:
         """
         Route an incoming message through the agent's ReAct loop.
-        Also checks if this message resolves a pending human-step Future.
+        A reply to a run waiting on this channel answers that run instead.
 
         `send` replaces `send_message` for this one exchange — a webhook
         transport that must answer through a delivery-specific route (Discord's
@@ -237,18 +237,13 @@ class MessagingAdapter(ABC):
         # Track most recent chat_id for proactive schedule notifications
         self._last_chat_id = chat_id
 
-        # -- 1. Check for human-step future waiting on this channel ------
-        # If an orchestration is paused waiting for human input on this channel,
-        # resolve it with the user's message (first-wins -- manager handles dedup).
-        resolved = await self.manager.try_resolve_human_input(
-            channel_id=self.channel_id,
-            response=user_text,
-        )
-        if resolved:
-            await send(
-                chat_id,
-                "? Response received. Resuming the workflow..."
-            )
+        # -- 1. A run waiting on this channel for an answer ---------------
+        # A human step that names this channel asked its question here; the
+        # reply answers the newest run waiting on it, the way the app's Answer
+        # control does.
+        answered = await self.manager.answer_from_channel(self.channel_id, user_text)
+        if answered:
+            await send(chat_id, "✅ Answer received — resuming the workflow.")
             return
 
         # -- 2. Determine active agent ------------------------------------

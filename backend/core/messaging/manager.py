@@ -6,10 +6,9 @@ Responsibilities:
 - Start/stop adapters for enabled channels
 - Provide the adapter registry to HTTP routes (Teams/WhatsApp webhooks)
 - Manage per-chat active agent selection (multi-agent mode)
-- Handle human-step Future resolution (first-response-wins)
+- Answer a paused run from a reply in the channel its human step names
 - Provide agent runner function used by all adapters
 """
-import asyncio
 import logging
 from typing import Any, Optional
 
@@ -48,11 +47,6 @@ class MessagingManager:
 
         # channel_id → {chat_id → agent_id}  (active agent per conversation)
         self._active_agents: dict[str, dict[str, str]] = {}
-
-        # Human-step futures: f"{run_id}:{step_id}" → asyncio.Future
-        self._human_futures: dict[str, asyncio.Future] = {}
-        # Reverse map: channel_id → future_key (so adapter can resolve by channel)
-        self._channel_to_future: dict[str, str] = {}
 
         # WebHook-mode adapter registries
         self._teams_adapters: dict[str, Any] = {}       # channel_id → TeamsAdapter
@@ -233,79 +227,28 @@ class MessagingManager:
         return final_response
 
     # ------------------------------------------------------------------ #
-    # Human-Step Integration (first-response-wins)
+    # Human steps: a reply in the channel answers the run waiting on it
     # ------------------------------------------------------------------ #
 
-    async def wait_for_human_input(
-        self,
-        run_id: str,
-        step_id: str,
-        channel_id: str,
-        prompt: str,
-        timeout: int = 3600,
-    ) -> str:
-        """
-        Register a Future for this (run_id, step_id) pair, send the prompt
-        to the messaging channel, and wait for the first response.
-        Raises asyncio.TimeoutError if no response arrives within `timeout` seconds.
-        """
-        key = f"{run_id}:{step_id}"
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future = loop.create_future()
-        self._human_futures[key] = future
-        self._channel_to_future[channel_id] = key
+    async def answer_from_channel(self, channel_id: str, text: str) -> Optional[str]:
+        """Answer the newest run waiting on this channel with `text`.
 
-        # Send the prompt to the channel
-        adapter = self._adapters.get(channel_id)
-        if adapter:
-            try:
-                # Find a chat_id to send to — for now broadcast to the most recent.
-                # In practice, the orchestration should store the initiating chat_id.
-                # Simplification: send to the channel's default agent's last known chat.
-                # For Teams/WhatsApp webhook channels we can't proactively send without
-                # a stored conversation reference; log a warning.
-                logger.info(
-                    "[Manager] Human step paused, waiting for input on channel %s",
-                    channel_id,
-                )
-            except Exception as e:
-                logger.warning("[Manager] Could not notify channel %s: %s", channel_id, e)
+        Returns the run id answered, or None when no run is waiting here (the
+        message is then an ordinary chat message). Resumed the way the app's
+        Answer control resumes it — on the fleet for a run a worker ran.
+        """
+        run_id = await find_run_waiting_on(channel_id)
+        if run_id is None:
+            return None
+        from core.orchestration.answers import RunAlreadyActive, RunNotWaiting, answer_paused_run
 
+        app = getattr(self.server_module, "app", None)
         try:
-            return await asyncio.wait_for(future, timeout=timeout)
-        finally:
-            self._human_futures.pop(key, None)
-            self._channel_to_future.pop(channel_id, None)
-
-    async def try_resolve_human_input(
-        self,
-        channel_id: str,
-        response: str,
-    ) -> bool:
-        """
-        Try to resolve a pending human-step Future for this channel.
-        Returns True if a future was found and resolved (this call wins).
-        Returns False if no future was pending (treat as normal chat message).
-        """
-        key = self._channel_to_future.get(channel_id)
-        if not key:
-            return False
-        return self.resolve_human_input_by_key(key, response)
-
-    def resolve_human_input_by_key(self, key: str, response: str) -> bool:
-        """
-        Resolve a future by its f"{run_id}:{step_id}" key.
-        First call wins — subsequent calls are no-ops.
-        Returns True if this call won the race.
-        """
-        future = self._human_futures.get(key)
-        if future is None or future.done():
-            return False
-        try:
-            future.set_result(response)
-            return True
-        except asyncio.InvalidStateError:
-            return False
+            await answer_paused_run(app.state, run_id, text)
+        except (RunNotWaiting, RunAlreadyActive):
+            # Answered a moment ago by someone else, in the app or here.
+            return None
+        return run_id
 
     # ------------------------------------------------------------------ #
     # Webhook-mode adapter registries (Teams, WhatsApp)
@@ -328,3 +271,87 @@ class MessagingManager:
 
     def get_whatsapp_adapter(self, channel_id: str):
         return self._whatsapp_adapters.get(channel_id)
+
+
+#: How far back a reply looks for a run waiting on its channel.
+WAITING_RUNS_SCANNED = 50
+
+
+async def find_run_waiting_on(channel_id: str) -> Optional[str]:
+    """The newest run paused on a question that is waiting on `channel_id`.
+
+    The engine records the channel in the run's state when a human step pauses
+    (`core/orchestration/human_prompts.py`), on the top-level run for a nested
+    step too — so this reads the store, and works whichever process ran the
+    run and across a restart. Sub-runs are skipped: the top-level run is the
+    one an answer resumes.
+    """
+    from sqlalchemy import select
+
+    from core.orchestration.human_prompts import HUMAN_CHANNEL_KEY
+    from core.orchestration.state_store import _is_structural
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        rows = (await s.execute(
+            select(OrchestrationRunDB.run_id, OrchestrationRunDB.shared_state)
+            .where(OrchestrationRunDB.tenant_id == get_tenant())
+            .where(OrchestrationRunDB.status == "paused")
+            .where(OrchestrationRunDB.waiting_for_human.is_(True))
+            .order_by(OrchestrationRunDB.created_at.desc())
+            .limit(WAITING_RUNS_SCANNED)
+        )).all()
+    for run_id, state in rows:
+        if _is_structural(run_id or ""):
+            continue
+        if (state or {}).get(HUMAN_CHANNEL_KEY) == channel_id:
+            return run_id
+    return None
+
+
+async def send_human_prompt(
+    channel_id: str,
+    prompt: str,
+    run_id: str,
+    manager: Optional["MessagingManager"] = None,
+) -> None:
+    """Post a paused human step's question into its channel.
+
+    Installed as the engine's prompt sender by the API server and by the
+    worker's startup (`set_human_prompt_sender`). Goes to the conversation run
+    notifications use — the channel's `notify_chat_id`, else the last one
+    spoken in — over the platform's REST API, so a worker with no adapter can
+    send it. Teams and WhatsApp have no REST sender; they are reached through
+    the running adapter when this is the API process, and not otherwise.
+    """
+    from core.config import load_settings
+    from core.messaging import senders
+
+    if not (load_settings() or {}).get("messaging_enabled", False):
+        return
+    channel = await channel_store.get_channel(channel_id)
+    if not channel or not channel.get("enabled", True):
+        logger.warning("[Manager] run %s: channel %s is missing or disabled; question not sent", run_id, channel_id)
+        return
+    adapter = manager.get_adapter(channel_id) if manager else None
+    conversation = (
+        channel.get("notify_chat_id")
+        or channel.get("default_conversation_id")
+        or getattr(adapter, "_last_chat_id", None)
+    )
+    if not conversation:
+        logger.warning(
+            "[Manager] run %s: nobody has written in channel %s yet, so there is no conversation "
+            "to ask in; question not sent", run_id, channel_id,
+        )
+        return
+    text = f"⏸ {prompt}\n\nReply here to answer."
+    platform = channel.get("platform", "")
+    if senders.supports_rest_send(platform):
+        await senders.send(platform, channel.get("credentials") or {}, conversation, text)
+    elif adapter is not None:
+        await adapter.send_message(conversation, text)
+    else:
+        logger.warning("[Manager] run %s: %s has no sender in this process; question not sent", run_id, platform)

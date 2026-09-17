@@ -1,0 +1,128 @@
+"""
+Answering a paused run — from the browser or from a messaging channel.
+
+One implementation for both, so a channel reply resumes a run exactly the way
+the app's Answer control does (F54): a run a worker ran goes back to the fleet
+as `resume_orchestration_job`, with the answer as the job's argument; any other
+run is resumed in this process.
+
+**A run is answered once.** A run that is not paused on a question is refused
+(`RunNotWaiting`): the browser and a channel can both answer the same question,
+and before this the engine had no such guard — a second answer was written into
+whatever step the run had reached by then.
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+from dataclasses import dataclass
+from typing import Any, Optional
+
+
+class RunNotWaiting(Exception):
+    """The run is not paused on a question. `status` is None when there is no such run."""
+
+    def __init__(self, run_id: str, status: Optional[str]):
+        self.run_id = run_id
+        self.status = status
+        super().__init__(
+            f"Run {run_id} not found" if status is None
+            else f"Run {run_id} is {status} and is not waiting for an answer"
+        )
+
+
+class RunAlreadyActive(Exception):
+    """An in-process pump is already driving this run."""
+
+
+@dataclass
+class Answered:
+    #: True when a worker will resume the run; its events are on the run's Redis stream.
+    on_fleet: bool
+    #: The in-process run's event queue, when resumed here.
+    queue: Optional[asyncio.Queue] = None
+
+
+async def worker_run_row(app_state: Any, run_id: str):
+    """The run's row when a worker ran it and the scale layer is up, else None.
+
+    A run a worker ran has `worker_id` set; its state is in the store, so any
+    worker can pick it up again, and it goes back to the fleet rather than
+    running inside the API process.
+    """
+    redis = getattr(app_state, "redis", None)
+    arq_redis = getattr(app_state, "arq_redis", None)
+    pg_session_factory = getattr(app_state, "pg_session_factory", None)
+    if not (redis and arq_redis and pg_session_factory):
+        return None
+    from sqlalchemy import select
+
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async with pg_session_factory() as session:
+        row = (await session.execute(
+            select(
+                OrchestrationRunDB.worker_id,
+                OrchestrationRunDB.status,
+                OrchestrationRunDB.current_step_id,
+                OrchestrationRunDB.waiting_for_human,
+            ).where(
+                OrchestrationRunDB.run_id == run_id,
+                OrchestrationRunDB.tenant_id == get_tenant(),
+            )
+        )).one_or_none()
+    return row if row is not None and row.worker_id else None
+
+
+def _waiting(status: Optional[str], waiting_for_human: Any) -> bool:
+    return status == "paused" and bool(waiting_for_human)
+
+
+async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answered:
+    """Resume `run_id` with `response`, on the fleet or in this process.
+
+    Raises `RunNotWaiting` for a run that is not paused on a question and
+    `RunAlreadyActive` when this process is already running it.
+    """
+    try:
+        row = await worker_run_row(app_state, run_id)
+    except Exception:  # noqa: BLE001 — the store for the fleet is unreachable; treat as local
+        row = None
+
+    if row is not None:
+        if not _waiting(row.status, row.waiting_for_human):
+            raise RunNotWaiting(run_id, row.status)
+        from core.scale.config import QUEUE_NAME
+
+        resp = response if isinstance(response, dict) else {"response": response}
+        await app_state.arq_redis.enqueue_job(
+            "resume_orchestration_job",
+            run_id=run_id,
+            human_response=resp,
+            _queue_name=QUEUE_NAME,
+            _job_id=f"resume_{run_id}_{int(time.time())}",
+        )
+        return Answered(on_fleet=True)
+
+    from core.orchestration.runner import _active_tasks, spawn_engine_run
+    from core.orchestration.state import SharedState
+
+    # Two pumps for one run would interleave its journal and duplicate work.
+    active = _active_tasks.get(run_id)
+    if active is not None and not active.done():
+        raise RunAlreadyActive(run_id)
+
+    try:
+        run = (await SharedState.restore(run_id)).run
+    except FileNotFoundError:
+        raise RunNotWaiting(run_id, None)
+    if not _waiting(run.status, run.waiting_for_human):
+        raise RunNotWaiting(run_id, run.status)
+
+    from core.orchestration.engine import OrchestrationEngine
+
+    _task, queue = spawn_engine_run(
+        OrchestrationEngine.resume(run_id, response, app_state.server_module), run_id
+    )
+    return Answered(on_fleet=False, queue=queue)

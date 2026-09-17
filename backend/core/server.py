@@ -726,6 +726,18 @@ async def lifespan(app: FastAPI):
         else:
             app.state.messaging_manager = None
 
+        # A human step that names a channel asks its question there (F54). The
+        # sender reads `messaging_enabled` per send, so it is installed either way.
+        try:
+            import functools
+            from core.messaging.manager import send_human_prompt
+            from core.orchestration.human_prompts import set_human_prompt_sender
+            set_human_prompt_sender(functools.partial(
+                send_human_prompt, manager=getattr(app.state, "messaging_manager", None),
+            ))
+        except Exception as e:
+            print(f"Warning: human-step channel prompts disabled: {e}")
+
         # --- Initialize Schedule Manager ---
         try:
             from core.scheduler import ScheduleManager

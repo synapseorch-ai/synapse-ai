@@ -788,6 +788,12 @@ async def worker_startup(ctx: dict) -> None:
     # rather than opening a second, SQLite one.
     set_store(session_factory)
 
+    # A human step that names a channel asks its question there when the run
+    # pauses on this worker (F54). REST only: a worker holds no adapters.
+    from core.messaging.manager import send_human_prompt
+    from core.orchestration.human_prompts import set_human_prompt_sender
+    set_human_prompt_sender(send_human_prompt)
+
     # Redis client (already provided by ARQ as ctx["redis"])
     redis = ctx["redis"]
 

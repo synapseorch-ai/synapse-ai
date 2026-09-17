@@ -292,12 +292,14 @@ class TestRetryingADeadLetter:
 # ── Replay on a run a worker ran (F61) ───────────────────────────────────────
 
 async def _worker_run(run_id: str, status: str, current_step_id: str | None = "s2") -> None:
+    """A run row a worker wrote; a `paused` one is waiting for an answer."""
     from core.store import get_store, upsert
     from core.store.models import OrchestrationRunDB
     async with (await get_store())() as session:
         await upsert(session, OrchestrationRunDB, values={
             "run_id": run_id, "orchestration_id": "orch_x", "status": status,
             "current_step_id": current_step_id, "worker_id": "worker-a",
+            "waiting_for_human": status == "paused",
         }, index_elements=["run_id"])
         await session.commit()
 
