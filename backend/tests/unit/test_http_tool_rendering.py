@@ -289,3 +289,48 @@ class TestEgressAtTheMomentOfTheCall:
             {"url": "https://nothing-here.invalid/api", "method": "GET"}, {}, {},
         )
         assert sent["url"] == "https://nothing-here.invalid/api"
+
+
+class TestTheToolStepSendsWhatTheTenantResolved:
+    """F1: a TOOL step executed from the store's raw rows, not the resolved ones.
+
+    On a hosted deployment a tool header is stored as a `synsec://` reference and
+    the resource provider resolves it — the agent path and the TOOL step's own
+    schema lookup both ask the provider. The call itself re-read the store, so the
+    reference went to the server as the header's value.
+    """
+
+    async def test_the_header_is_the_resolved_value_not_the_reference(self, outbound):
+        from types import SimpleNamespace
+
+        from core.orchestration.steps import ToolStepExecutor
+        from core.scale.context import set_resource_provider
+
+        stored = {
+            "name": "post_thing", "description": "t", "tool_type": "http", "method": "POST",
+            "url": "https://api.test/things", "headers": {"Authorization": "synsec://tool:post_thing:authorization"},
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+        await save_tools([stored])
+
+        class _Resolves:
+            async def resolve_agent(self, agent_id):
+                return None
+
+            async def resolve_orchestration(self, orch_id):
+                return None
+
+            async def resolve_custom_tools(self):
+                return [{**stored, "headers": {"Authorization": "Bearer resolved"}}]
+
+            async def resolve_mcp_servers(self):
+                return []
+
+        engine = SimpleNamespace(server_module=SimpleNamespace(tool_router={}, agent_sessions={}))
+        set_resource_provider(_Resolves())
+        try:
+            await ToolStepExecutor()._execute_tool("post_thing", {"note": "n"}, engine)
+        finally:
+            set_resource_provider(None)
+
+        assert outbound.calls[0]["headers"]["Authorization"] == "Bearer resolved"

@@ -602,9 +602,12 @@ class ToolStepExecutor:
                     actual_tool_name, tool_args, read_timeout_seconds=timedelta(seconds=MCP_TOOL_CALL_TIMEOUT)
                 )
                 return result.content[0].text if result.content else ""
-        # Custom tools — Python or HTTP
-        from core.routes.tools import load_custom_tools
-        custom_tools = await load_custom_tools()
+        # Custom tools — Python or HTTP. The run's resolved list, the one the
+        # schema lookup above already used: the store's raw rows carry a hosted
+        # deployment's `synsec://` references, which went to the server as the
+        # header's value (F1).
+        from .resolved import run_custom_tools
+        custom_tools = await run_custom_tools(engine)
         target_tool = next((t for t in custom_tools if t["name"] == tool_name), None)
         if target_tool:
             tool_type = target_tool.get("tool_type", "http")
@@ -681,13 +684,6 @@ class ToolStepExecutor:
 
         _, text = http_tool.decode(resp, tool)
         return text
-
-    async def _load_custom_tools(self) -> list:
-        try:
-            from core.scale.context import resolve_custom_tools
-            return await resolve_custom_tools()
-        except Exception:
-            return []
 
 
 
