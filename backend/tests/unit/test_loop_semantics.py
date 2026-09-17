@@ -33,6 +33,19 @@ def _host_transforms(monkeypatch):
                         lambda: {"transform_runtime": "host", "model": "mistral"})
 
 
+def _reporting_failure(orch_dict):
+    """An engine whose Transform steps report a failure without raising."""
+    from core.models_orchestration import StepType
+
+    class ReportsFailure:
+        async def execute(self, step, run, engine):
+            yield {"type": "step_error", "orch_step_id": step.id, "error": "boom"}
+
+    engine = _engine(orch_dict)
+    engine.executors = {**engine.executors, StepType.TRANSFORM: ReportsFailure()}
+    return engine
+
+
 def _loop_complete(events):
     return next(e for e in events if e.get("type") == "loop_complete")
 
@@ -242,9 +255,30 @@ class TestBreak:
 
 
 class TestAccounting:
-    async def test_a_failing_body_step_contributes_no_result(self, monkeypatch):
+    async def test_a_failing_body_step_contributes_no_result(self):
         """A step that fails every iteration must not have whatever its output
-        key already held recorded as that iteration's result."""
+        key already held recorded as that iteration's result.
+
+        The body reports its failure with `step_error` and does not raise — the
+        shape a nested orchestration's forwarded failure takes. It used to be a
+        raising Transform, which fails the whole run since F70 (see the test
+        below), so the loop's own accounting needs a step that fails and lets
+        the loop go on."""
+        orch = _orch(
+            {"loop_count": 3},
+            body={"id": "body", "name": "Body", "type": "transform",
+                  "transform_code": "unused", "output_key": "risky", "next_step_id": None},
+        )
+        events = await _run(orch, initial_state={"risky": "STALE"}, engine=_reporting_failure(orch))
+
+        assert _iterations(events) == [1, 2, 3]
+        assert any(e.get("type") == "step_error" for e in events)
+        state = _final_state(events)
+        # Not three copies of "STALE" dressed up as iteration results.
+        assert state["risky"] == "STALE"
+
+    async def test_a_body_transform_that_raises_fails_the_run(self, monkeypatch):
+        """F70: a raising Transform fails its run, inside a loop body too."""
         _host_transforms(monkeypatch)
         orch = _orch(
             {"loop_count": 3},
@@ -254,11 +288,10 @@ class TestAccounting:
         )
         events = await _run(orch, initial_state={"risky": "STALE"})
 
-        assert _iterations(events) == [1, 2, 3]
-        assert any(e.get("type") == "step_error" for e in events)
-        state = _final_state(events)
-        # Not three copies of "STALE" dressed up as iteration results.
-        assert state["risky"] == "STALE"
+        assert _iterations(events) == [1]
+        complete = next(e for e in reversed(events) if e.get("type") == "orchestration_complete")
+        assert complete["status"] == "failed"
+        assert not any(e.get("orch_step_id") == "after" for e in events)
 
     async def test_a_timing_out_body_step_also_contributes_nothing(self, monkeypatch):
         _host_transforms(monkeypatch)
@@ -273,8 +306,7 @@ class TestAccounting:
         assert _iterations(events) == [1, 2]
         assert _final_state(events)["risky"] == "STALE"
 
-    async def test_loop_summary_omits_steps_that_produced_nothing(self, monkeypatch):
-        _host_transforms(monkeypatch)
+    async def test_loop_summary_omits_steps_that_produced_nothing(self):
         orch = S.make_orchestration(
             id="orch_loopsum", entry_step_id="loop1",
             steps=[
@@ -284,11 +316,10 @@ class TestAccounting:
                 {"id": "good", "name": "Good", "type": "print",
                  "print_content": "ok", "output_key": "good_out", "next_step_id": None},
                 {"id": "bad", "name": "Bad", "type": "transform",
-                 "transform_code": "raise ValueError('boom')",
-                 "output_key": "bad_out", "timeout_seconds": 30, "next_step_id": None},
+                 "transform_code": "unused", "output_key": "bad_out", "next_step_id": None},
             ],
         )
-        events = await _run(orch, initial_state={"bad_out": "STALE"})
+        events = await _run(orch, initial_state={"bad_out": "STALE"}, engine=_reporting_failure(orch))
         summary = _final_state(events)["summary"]
         assert "Good" in summary
         assert "Bad" not in summary

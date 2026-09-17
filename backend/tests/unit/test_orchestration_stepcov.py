@@ -142,6 +142,54 @@ class TestTransformStep:
         assert "step_warning" in _types(events)
 
 
+class TestAFailingStepFailsTheRun:
+    """F70: a Transform that raises, and a Tool step whose tool does not
+    resolve, used to yield `step_error` and let the run carry on to the next
+    step — while a Tool step whose tool call failed ended the run. One rule
+    now: the step failed, so the run did."""
+
+    async def test_a_transform_that_raises(self, monkeypatch):
+        import core.config as config
+        from core.orchestration.state import SharedState
+        monkeypatch.setattr(config, "load_settings",
+                            lambda: {"transform_runtime": "host", "model": "mistral"})
+        orch = S.make_orchestration(
+            id="orch_transform_raises", entry_step_id="t",
+            steps=[{"id": "t", "name": "Boom", "type": "transform",
+                    "transform_code": "raise ValueError('boom')",
+                    "output_key": "out", "timeout_seconds": 30, "next_step_id": "p"},
+                   {"id": "p", "name": "After", "type": "print", "print_content": "after",
+                    "output_key": "after", "next_step_id": None}],
+        )
+        events = await _run(orch)
+
+        complete = [e for e in events if e.get("type") == "orchestration_complete"][-1]
+        assert complete["status"] == "failed"
+        assert not any(e.get("orch_step_id") == "p" for e in events)
+        run = (await SharedState.restore("run_orch_transform_raises")).run
+        assert [(h["step_id"], h["status"]) for h in run.step_history] == [("t", "failed")]
+        assert "Transform error:" in run.step_history[-1]["error"]
+        assert "boom" in run.step_history[-1]["error"]
+
+    async def test_a_tool_step_whose_tool_does_not_exist(self):
+        from core.orchestration.state import SharedState
+        orch = S.make_orchestration(
+            id="orch_tool_missing", entry_step_id="tl",
+            steps=[{"id": "tl", "name": "Call", "type": "tool", "forced_tool": "no_such_tool",
+                    "output_key": "out", "next_step_id": "p"},
+                   {"id": "p", "name": "After", "type": "print", "print_content": "after",
+                    "output_key": "after", "next_step_id": None}],
+        )
+        events = await _run(orch)
+
+        complete = [e for e in events if e.get("type") == "orchestration_complete"][-1]
+        assert complete["status"] == "failed"
+        assert not any(e.get("orch_step_id") == "p" for e in events)
+        run = (await SharedState.restore("run_orch_tool_missing")).run
+        assert run.step_history[-1]["status"] == "failed"
+        assert "no_such_tool" in run.step_history[-1]["error"]
+
+
 class TestLoopAndParallel:
     async def test_loop_runs_body_multiple_times(self, fake_llm):
         fake_llm.set_default("iter")

@@ -439,9 +439,12 @@ class ToolStepExecutor:
         tool_name = step.forced_tool
         tool_obj = await resolve_one_tool(engine.server_module, tool_name, active_agent, custom_tools)
         if not tool_obj:
-            yield {"type": "step_error", "orch_step_id": step.id,
-                   "error": f"Tool '{tool_name}' not found in available tools"}
-            return
+            # Failed the way a tool call that fails is, below: the step's own
+            # line says why (the engine's stream message is sanitised), and the
+            # run stops here rather than carrying on without it.
+            message = f"Tool '{tool_name}' not found in available tools"
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
 
         # Build evaluator-style prompt: ask LLM to output JSON tool call (no tools= API param)
         tool_schema_str = str(tool_obj.inputSchema)
@@ -1578,7 +1581,14 @@ class TransformStepExecutor:
                 "result": str(result) if result is not None else None,
             }
         except Exception as e:
-            yield {"type": "step_error", "orch_step_id": step.id, "error": f"Transform error: {e}"}
+            # Raised so the engine fails the run, as it does for every other
+            # step that cannot finish. It used to yield `step_error` and return,
+            # and the next step ran on state this one never wrote. The step's
+            # own line carries the real error, as a Tool step's failure does —
+            # the engine's stream message is sanitised.
+            message = f"Transform error: {e}"
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message) from e
 
     def _parse_script_output(self, stdout_text: str):
         """Parse the JSON output of the wrapped script. Falls back to plain text."""

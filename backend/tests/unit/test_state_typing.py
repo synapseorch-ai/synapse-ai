@@ -190,7 +190,7 @@ class TestFailedSteps:
         orch = S.make_orchestration(
             id="orch_typing_fail", entry_step_id="s1",
             steps=[{"id": "s1", "name": "Nope", "type": "tool",
-                    "tool_name": "does_not_exist", "output_key": "rows",
+                    "forced_tool": "does_not_exist", "output_key": "rows",
                     "next_step_id": None}],
             state_schema={"rows": {"type": "list", "default": []}},
         )
