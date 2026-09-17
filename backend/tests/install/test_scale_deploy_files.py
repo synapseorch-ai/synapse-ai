@@ -37,17 +37,17 @@ def _env(service: dict) -> dict:
 
 class TestTheDatabaseUrl:
     @pytest.mark.parametrize("given", [
-        "postgresql://u:p@db:5432/synapse",
-        "postgres://u:p@db:5432/synapse",
+        "postgresql://db.internal:5432/synapse",
+        "postgres://db.internal:5432/synapse",
     ])
     def test_a_plain_postgres_url_is_driven_async(self, monkeypatch, given):
         from core.store.engine import default_url
         monkeypatch.setenv("SYNAPSE_DB_URL", given)
 
-        assert default_url() == "postgresql+asyncpg://u:p@db:5432/synapse"
+        assert default_url() == "postgresql+asyncpg://db.internal:5432/synapse"
 
     @pytest.mark.parametrize("given", [
-        "postgresql+asyncpg://u:p@db:5432/synapse",
+        "postgresql+asyncpg://db.internal:5432/synapse",
         "sqlite+aiosqlite:////tmp/x.db",
     ])
     def test_other_urls_are_untouched(self, monkeypatch, given):
@@ -59,9 +59,9 @@ class TestTheDatabaseUrl:
     def test_the_scale_layer_uses_the_engines_postgres_when_not_told_otherwise(self, monkeypatch):
         from core.scale.config import get_scale_config
         monkeypatch.delenv("SCALE_POSTGRES_URL", raising=False)
-        monkeypatch.setenv("SYNAPSE_DB_URL", "postgresql://u:p@db:5432/synapse")
+        monkeypatch.setenv("SYNAPSE_DB_URL", "postgresql://db.internal:5432/synapse")
 
-        assert get_scale_config().postgres_url == "postgresql+asyncpg://u:p@db:5432/synapse"
+        assert get_scale_config().postgres_url == "postgresql+asyncpg://db.internal:5432/synapse"
 
     def test_not_a_sqlite_file(self, monkeypatch):
         from core.scale.config import get_scale_config
@@ -141,7 +141,7 @@ class TestTheWorkersMemoryStore:
         built = []
         monkeypatch.setattr(memory_mod, "MemoryStore", lambda *a, **k: built.append(1) or object())
         monkeypatch.delenv("SCALE_POSTGRES_URL", raising=False)
-        monkeypatch.setenv("SYNAPSE_DB_URL", "postgresql://u:p@db:5432/synapse")
+        monkeypatch.setenv("SYNAPSE_DB_URL", "postgresql://db.internal:5432/synapse")
 
         WorkerServerModule()._attach_memory_store()
 
