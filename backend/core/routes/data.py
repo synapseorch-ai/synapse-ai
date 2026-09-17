@@ -13,7 +13,7 @@ from pydantic import BaseModel
 import httpx
 
 from core.config import load_settings
-from core.llm_providers import _make_aws_client
+from core.llm_providers import _make_aws_client, is_openai_chat_model
 from core.session import session_state, clear_all_chat_sessions
 from services.synthetic_data import generate_synthetic_data, SyntheticDataRequest, current_job, DATASETS_PREFIX
 
@@ -320,9 +320,7 @@ async def get_models():
                 if r.status_code == 200:
                     data = r.json().get("data", [])
                     chat_models = sorted(set(
-                        m["id"] for m in data
-                        if m.get("id", "").startswith(("gpt-4", "gpt-3.5"))
-                        and "instruct" not in m.get("id", "")
+                        m["id"] for m in data if is_openai_chat_model(m.get("id", ""))
                     ), reverse=True)
                     embed_models = sorted(set(
                         m["id"] for m in data if "embedding" in m.get("id", "")

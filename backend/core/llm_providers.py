@@ -287,6 +287,27 @@ def _is_openai_model(m: str) -> bool:
     return m.startswith(("gpt", "chatgpt")) or bool(_OPENAI_REASONING_RE.match(m))
 
 
+#: OpenAI ids that are not chat-completions models. Audio, image, realtime,
+#: speech, transcription, moderation, search and embedding models have their own
+#: endpoints, and the `-pro`, `codex` and `deep-research` models are served only
+#: by the Responses API — `call_openai` posts to chat/completions, so listing one
+#: offers a model that fails on every call.
+_OPENAI_NOT_CHAT_RE = re.compile(
+    r"tts|transcribe|whisper|realtime|audio|image|dall-e|embedding|moderation|search"
+    r"|instruct|codex|deep-research|(?:^|-)pro(?:-|$)"
+)
+
+
+def is_openai_chat_model(model_id: str) -> bool:
+    """An OpenAI model this engine can chat with — what the model list offers (F62).
+
+    The same family test the router uses, so a listed model is always routed to
+    OpenAI, minus the ids chat-completions cannot serve.
+    """
+    m = model_id.lower()
+    return _is_openai_model(m) and not _OPENAI_NOT_CHAT_RE.search(m)
+
+
 def detect_mode_from_model(model_name: str) -> str:
     """Detect the provider mode from a model name prefix.
 
