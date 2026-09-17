@@ -307,3 +307,24 @@ class TestUsageSummaryCarriesCacheReads:
         run = next(r for r in summary["by_session"] if r.get("run_id") == "r1")
         assert run["cache_read_tokens"] == 170
         assert run["cache_write_tokens"] == 20
+
+
+class TestProvidersWithoutNativeToolsGetThemInThePrompt:
+    """A local HuggingFace model is called with no `tools=` (it has no native
+    tool calling), so its tools have to be in the prompt — as for Bedrock and
+    the CLIs. `hf` was missing from that list, so an HF agent was never told
+    it had any tools (F64)."""
+
+    @pytest.mark.parametrize("model", ["hf.Qwen/Qwen2.5-7B-Instruct", "bedrock.amazon.nova-pro-v1:0"])
+    async def test_the_tool_is_described_in_the_system_prompt(self, fake_llm, model):
+        await _drive(_agent(model=model), fake_llm, [tool_call("my_tool", x=1), "done"])
+
+        system = fake_llm.calls[0]["sys_prompt"]
+        assert "### TOOLS" in system
+        assert "my_tool" in system
+
+    async def test_the_tool_call_it_writes_back_runs(self, fake_llm):
+        events = await _drive(_agent(model="hf.Qwen/Qwen2.5-7B-Instruct"), fake_llm,
+                              [tool_call("my_tool", x=1), "done"])
+
+        assert any(e.get("type") == "tool_result" and "OUT(my_tool" in str(e) for e in events)

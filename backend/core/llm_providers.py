@@ -2618,8 +2618,10 @@ async def call_huggingface(
         system: System instruction text.
         settings: User settings dict. Reads `huggingface_token` (for gated models)
                   and `huggingface_max_new_tokens` (default 1024).
-        tools: Ignored with a warning — native tool calling varies by model and
-               is left to the caller to inject via prompt text if needed.
+        tools: Not passed to the model — native tool calling varies by model.
+               The engine describes the tools in the system prompt instead
+               (`inject_tools_in_prompt` in react_engine) and parses the calls
+               from the reply, as for Bedrock and the CLIs.
         images: Ignored — vision is model-specific and not supported in this MVP.
 
     Returns:
@@ -2630,11 +2632,6 @@ async def call_huggingface(
     if not model_id:
         raise LLMError("HuggingFace provider: empty model name after 'hf.' prefix.")
 
-    if tools:
-        _log.warning(
-            f"⚠️ HF provider received {len(tools)} tool(s) but does not support "
-            f"native tool calling. Inject tool descriptions into the system prompt if needed.",
-        )
     if images:
         _log.warning(
             f"⚠️ HF provider received {len(images)} image(s) but vision is not "

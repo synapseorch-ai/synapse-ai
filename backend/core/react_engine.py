@@ -919,7 +919,9 @@ async def run_agent_step(
     # Only inject tools into the system prompt for providers without native tool calling.
     # Cloud (Anthropic/OpenAI/Gemini/Grok/DeepSeek) and local Ollama receive tools via
     # the API tools= param, so injecting them into the system prompt is redundant.
-    inject_tools_in_prompt = mode in ("cli", "bedrock")
+    # A local HuggingFace model has no tools= at all; without `hf` here it was
+    # never told it had any (F64).
+    inject_tools_in_prompt = mode in ("cli", "bedrock", "hf")
 
     # Aggregate tools & build system prompt
     if tools_override is not None:
