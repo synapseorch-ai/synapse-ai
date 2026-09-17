@@ -630,7 +630,9 @@ async def run_agent_chat_job(
                 elif etype == "tool_execution":
                     tool_calls_summary.append({
                         "tool": event.get("tool_name"),
-                        "args": event.get("tool_args"),
+                        # `args` is what the loop sends; `tool_args` was
+                        # never set, so every summary carried null (F81).
+                        "args": event.get("args"),
                     })
                 elif etype == "done":
                     total_cost = event.get("total_cost_usd", 0.0)

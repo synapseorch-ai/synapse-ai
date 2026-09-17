@@ -165,6 +165,11 @@ def build_execution_trace(events: list[dict]) -> dict:
     """
     Extract a structured trace from the SSE events emitted by run_agent_step().
     Keeps tool names/args/result-previews and the final response — NOT full outputs.
+
+    Reads both spellings: the agent loop's own `tool_execution` + `args` and
+    `tool_result` + `preview`, and the `tool_call` + `tool_input` shape the TOOL
+    and nested-orchestration steps synthesise. Only the second was read, so
+    every agent step's memory held no tool calls (F81).
     """
     tool_calls: list[dict] = []
     tools_used: list[str] = []
@@ -174,16 +179,16 @@ def build_execution_trace(events: list[dict]) -> dict:
     for event in events:
         etype = event.get("type", "")
 
-        if etype == "tool_call":
+        if etype in ("tool_call", "tool_execution"):
             name = event.get("tool_name") or event.get("tool") or ""
-            args = event.get("tool_input") or event.get("arguments") or {}
+            args = event.get("tool_input") or event.get("arguments") or event.get("args") or {}
             if name and name not in tools_used:
                 tools_used.append(name)
             tool_calls.append({"name": name, "args": args})
 
         elif etype == "tool_result":
             # Attach result preview to the last recorded call for this tool
-            result_raw = str(event.get("result") or event.get("output") or "")
+            result_raw = str(event.get("result") or event.get("output") or event.get("preview") or "")
             preview = result_raw[:300] + ("..." if len(result_raw) > 300 else "")
             if tool_calls:
                 tool_calls[-1]["result_preview"] = preview
