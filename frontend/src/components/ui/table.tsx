@@ -88,7 +88,11 @@ export function Table({
 }) {
   return (
     // The scroll container, so wide content never makes the page body scroll.
-    <div className="scroll-x">
+    // `relative` because a scroll container must also contain what it scrolls:
+    // an `sr-only` header cell is `position: absolute`, and with no positioned
+    // ancestor it is placed against the page — cloud's staff tables slid
+    // sideways 125px at phone width for an "Actions" header nobody can see (F34).
+    <div className="scroll-x relative">
       <table
         style={{ ...DENSITY[density], minWidth }}
         className={cn("w-full border-collapse text-left", className)}
