@@ -49,16 +49,44 @@ export function findFreePosition(steps: StepConfig[]): { x: number; y: number } 
     return { x: maxX + 280, y: yAtMaxX };
 }
 
-/** Append a step; the first step of an empty graph becomes the entry point. */
+/**
+ * A step whose only way on is `next_step_id` — the kinds that route by a map,
+ * a condition, cases or a loop body, and the end, are not. One definition for
+ * the panel's Next-step field and the palette's auto-link.
+ */
+export function isLinearStep(step: StepConfig): boolean {
+    return step.type !== 'end' && step.type !== 'evaluator' && step.type !== 'loop' && step.type !== 'if_else' && step.type !== 'switch';
+}
+
+/** `step` with `key` added to its input keys — what drawing an edge has always done. */
+export function withInputKey(step: StepConfig, key: string | undefined): StepConfig {
+    if (!key) return step;
+    const existing = step.input_keys || [];
+    return existing.includes(key) ? step : { ...step, input_keys: [...existing, key] };
+}
+
+/**
+ * Append a step; the first step of an empty graph becomes the entry point.
+ *
+ * With `after` — the step selected when the palette was used — a linear step
+ * that has nowhere to go yet goes to the new one, and hands it its output key,
+ * as drawing that edge would. Adding steps in a row then builds a chain; before
+ * this, four steps added one after another ran as one (F47). A step that
+ * already has a next step, or routes some other way, is left alone.
+ */
 export function addStepToGraph(
     orch: Orchestration,
     type: StepType,
     position?: { x: number; y: number },
+    after?: string | null,
 ): { orchestration: Orchestration; step: StepConfig } {
-    const step = newStep(type, position ?? findFreePosition(orch.steps));
+    const from = after ? orch.steps.find((s) => s.id === after) : undefined;
+    const link = !!from && isLinearStep(from) && !from.next_step_id;
+    let step = newStep(type, position ?? findFreePosition(orch.steps));
+    if (link) step = withInputKey(step, from.output_key);
     const orchestration = {
         ...orch,
-        steps: [...orch.steps, step],
+        steps: [...orch.steps.map((s) => (link && s.id === from.id ? { ...s, next_step_id: step.id } : s)), step],
         entry_step_id: orch.entry_step_id || step.id,
     };
     return { orchestration, step };

@@ -24,7 +24,7 @@ import {
 } from '@/components/ui';
 import type { Orchestration, StepConfig, StepType } from '@/types/orchestration';
 import { STEP_TYPE_META } from '@/types/orchestration';
-import { collectStateKeys, hasTypeSpecificConfig } from './graph';
+import { collectStateKeys, hasTypeSpecificConfig, isLinearStep } from './graph';
 import { validateOrchestration } from './validate';
 import { KeyChips, StepTargetSelect, intOrUndefined, type StepSectionProps } from './panel/shared';
 import { STEP_SECTIONS } from './panel/steps';
@@ -144,7 +144,7 @@ export function StepConfigPanel({
         availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration, readOnly,
     };
     const TypeSection = STEP_SECTIONS[step.type];
-    const isLinear = step.type !== 'end' && step.type !== 'evaluator' && step.type !== 'loop' && step.type !== 'if_else' && step.type !== 'switch';
+    const isLinear = isLinearStep(step);
 
     return (
         <aside

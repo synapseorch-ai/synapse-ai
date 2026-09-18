@@ -1795,6 +1795,61 @@ async def check_canvasfit(browser) -> str:
     return "every step clear of the palette, on open and after Fit view"
 
 
+@check
+async def check_palettelink(browser) -> str:
+    """A step added from the palette follows the step that is selected.
+
+    The palette only appended: four steps added one after another ran as one,
+    the first completing and the run ending, while the editor said only
+    "Unreachable from the entry point" (F47). Now a selected linear step with
+    no next step points at the new one and hands it its output key, so adding
+    steps in a row builds a chain. Read from what Save actually sends.
+    """
+    oid = f"orch_uismoke_link_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid, 1))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+
+    def on_request(req):
+        if req.method == "POST" and req.url.endswith("/api/orchestrations"):
+            try:
+                sent.append(json.loads(req.post_data or "{}"))
+            except ValueError:
+                pass
+
+    page.on("request", on_request)
+    try:
+        await open_step(page, oid, "Step 1")
+        palette = page.locator(".react-flow__panel.top.left")
+        for _ in range(2):
+            await palette.get_by_role("button", name="Print", exact=True).click()
+            await asyncio.sleep(0.4)
+        await page.get_by_role("button", name=re.compile(r"^Save")).first.click()
+        await asyncio.sleep(1.5)
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if not sent:
+        raise AssertionError("Save sent nothing")
+    steps = {s["id"]: s for s in sent[-1]["steps"]}
+    first = steps[f"{oid}_s0"]
+    added = [s for s in sent[-1]["steps"] if s["id"] != first["id"]]
+    if len(added) != 2:
+        raise AssertionError(f"expected two added steps, saved {len(added)}")
+    a, b = added
+    problems = []
+    if first.get("next_step_id") != a["id"]:
+        problems.append(f"Step 1's next step is {first.get('next_step_id')!r}, not the step added after it")
+    if "out_0" not in (a.get("input_keys") or []):
+        problems.append(f"the added step's input keys are {a.get('input_keys')!r} — Step 1's output key is not among them")
+    if a.get("next_step_id") != b["id"]:
+        problems.append("the second added step does not follow the first")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "two steps added from the palette chain on from the selected step"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

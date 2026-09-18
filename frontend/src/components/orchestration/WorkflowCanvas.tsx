@@ -21,7 +21,7 @@ import { Maximize, Minus, Plus, Wand2 } from 'lucide-react';
 import { canvasFlags } from './canvasFlags';
 import { StepNode } from './StepNode';
 import { PALETTE_CLEARANCE_PX, StepPalette, STEP_DRAG_TYPE, usePaletteCollapsed } from './StepPalette';
-import { addStepToGraph, clearEdgeLink, removeStepFromGraph, ROUTE_COLORS, type EdgeLink } from './graph';
+import { addStepToGraph, clearEdgeLink, removeStepFromGraph, ROUTE_COLORS, withInputKey, type EdgeLink } from './graph';
 import { layoutPositions } from './layout';
 import { validateOrchestration } from './validate';
 import { STEP_TYPE_META } from '@/types/orchestration';
@@ -403,12 +403,7 @@ export function WorkflowCanvas({
                 }
 
                 // --- TARGET step: auto-append source's output_key to input_keys ---
-                if (s.id === connection.target && sourceStep.output_key) {
-                    const existingKeys = s.input_keys || [];
-                    if (!existingKeys.includes(sourceStep.output_key)) {
-                        return { ...s, input_keys: [...existingKeys, sourceStep.output_key] };
-                    }
-                }
+                if (s.id === connection.target) return withInputKey(s, sourceStep.output_key);
 
                 return s;
             });
@@ -451,11 +446,11 @@ export function WorkflowCanvas({
 
     const addStep = useCallback(
         (type: StepType, position?: { x: number; y: number }) => {
-            const { orchestration: next, step } = addStepToGraph(orchestration, type, position);
+            const { orchestration: next, step } = addStepToGraph(orchestration, type, position, selectedStepId);
             onUpdateOrchestration(next);
             selectStep(step.id);
         },
-        [orchestration, onUpdateOrchestration, selectStep]
+        [orchestration, onUpdateOrchestration, selectStep, selectedStepId]
     );
 
     const onDragOver = useCallback((event: React.DragEvent) => {
