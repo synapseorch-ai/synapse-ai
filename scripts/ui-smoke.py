@@ -1116,6 +1116,22 @@ async def check_scale(browser) -> str:
             problems.append("the guide says WORKER_MAX_RETRIES counts retries before the DLQ")
         if "NUM_QUEUE_SHARDS" in guide:
             problems.append("the guide still documents NUM_QUEUE_SHARDS")
+        # S3 became real in batch 1C: a configured bucket is the whole blob
+        # store, installed when each process starts, and nothing already on
+        # local disk is carried across (F57).
+        if "S3_PREFIX" not in guide:
+            problems.append("the guide does not list S3_PREFIX, which the environment honours")
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.3)
+        await page.get_by_role("button", name=re.compile("^Storage \\(S3\\)")).first.click()
+        await asyncio.sleep(0.4)
+        storage = (await page.evaluate("""() => [...document.querySelectorAll('button')]
+            .filter(b => (b.textContent || '').trim().startsWith('Storage (S3)'))
+            .map(b => b.parentElement.innerText).join(' ')""")).lower()
+        if "restart" not in storage:
+            problems.append("the S3 section does not say a bucket takes effect on restart")
+        if "not copied" not in storage:
+            problems.append("the S3 section does not say files already on disk stay there")
     finally:
         await ctx.close()
     if problems:

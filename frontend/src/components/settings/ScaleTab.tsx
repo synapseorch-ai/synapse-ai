@@ -343,7 +343,7 @@ const ScaleDocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void
                                 <span className="text-text-faint font-bold shrink-0 mt-0.5">○ Optional</span>
                                 <div>
                                     <p className="text-text font-bold">S3 (or compatible)</p>
-                                    <p className="text-text-faint mt-0.5">When configured, vault files and execution logs are stored in S3 and shared across all workers. Without it, each worker uses local disk — fine for single-worker setups.</p>
+                                    <p className="text-text-faint mt-0.5">When configured, the vault, tool outputs and run logs are stored in S3, and every worker reads the same files. Without it, each process uses its own disk (<span className="font-mono">SYNAPSE_BLOB_DIR</span>) — fine on one machine; across several hosts that directory has to be shared.</p>
                                 </div>
                             </div>
                         </div>
@@ -446,6 +446,7 @@ kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.13.0/keda
                                     {[
                                         ['S3_BUCKET', 'my-synapse-bucket'],
                                         ['S3_REGION', 'us-east-1'],
+                                        ['S3_PREFIX', 'synapse — every key is stored under <prefix>/<tenant>/'],
                                         ['S3_ACCESS_KEY_ID', 'AKIA... (blank = use IAM role)'],
                                         ['S3_SECRET_ACCESS_KEY', ''],
                                         ['S3_ENDPOINT_URL', 'https://... (MinIO / R2 / etc.)'],
@@ -657,7 +658,7 @@ export function ScaleTab() {
                 setSaveMsg(detail.detail || `Save failed (${res.status}).`);
                 return;
             }
-            setSaveMsg('Saved. Restart the server to apply Redis/Postgres changes.');
+            setSaveMsg('Saved. Restart the server and every worker to apply Redis, Postgres or S3 changes.');
         } catch {
             setSaveMsg('Save failed.');
         } finally {
@@ -1241,7 +1242,7 @@ export function ScaleTab() {
             </CollapsibleSection>
 
             <CollapsibleSection sectionKey="s3" title="Storage (S3)" icon={Cloud}
-                subtitle="When configured, vault files and run logs are stored in S3 — shared across all workers."
+                subtitle="When a bucket is set, the vault, tool outputs and run logs live in S3, and every worker reads the same files."
                 expanded={expandedConfigs.s3} onToggle={() => toggleSection('s3')}
             >
                 <div className="space-y-4 mt-4">
@@ -1295,6 +1296,16 @@ export function ScaleTab() {
                         )}
                     </div>
                     <p className="text-2xs text-text-faint">Leave Access Key / Secret blank to use IAM role or environment credentials.</p>
+                    {/* F57: the bucket became the real blob store in batch 1C. It is
+                        chosen when each process starts, and reads go to it alone. */}
+                    <div className="flex items-start gap-2 text-2xs text-warning border border-warning/40 bg-warning-subtle rounded-md px-3 py-2">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-px" aria-hidden />
+                        <p>
+                            A bucket takes effect when the server and every worker restart. Files already on
+                            local disk are not copied: after the switch the vault starts empty in S3, and what
+                            was there stays in <span className="font-mono">SYNAPSE_BLOB_DIR</span> until uploaded again.
+                        </p>
+                    </div>
                 </div>
             </CollapsibleSection>
 
