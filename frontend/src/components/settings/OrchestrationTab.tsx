@@ -78,7 +78,6 @@ const EMPTY_ORCHESTRATION: Orchestration = {
     entry_step_id: '',
     state_schema: {},
     max_total_turns: 100,
-    max_total_cost_usd: null,
     timeout_minutes: 30,
     trigger: 'manual',
     rubric_id: '',
@@ -1973,18 +1972,10 @@ function BottomPanel({
                                 onChange={(e) => setDraft({ ...draft, timeout_minutes: parseInt(e.target.value) || 30 })}
                             />
                         </div>
-                        <div>
-                            <label htmlFor="orch-max-cost" className="text-xs text-zinc-400 block mb-1">Max Cost (USD)</label>
-                            <input
-                                id="orch-max-cost"
-                                type="number"
-                                step="0.01"
-                                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
-                                value={draft.max_total_cost_usd ?? ''}
-                                onChange={(e) => setDraft({ ...draft, max_total_cost_usd: e.target.value ? parseFloat(e.target.value) : null })}
-                                placeholder="No limit"
-                            />
-                        </div>
+                        {/* No "Max Cost (USD)": nothing ever enforced it, and batch 1C
+                            deleted it from the engine. A cap that does not cap is
+                            worse than none — whoever set it expected a runaway run
+                            to stop (F76). */}
                         <div className="col-span-3">
                             <label className="flex items-start gap-2 cursor-pointer">
                                 <input

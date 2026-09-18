@@ -1336,6 +1336,38 @@ async def check_mcppresets(browser) -> str:
     return f"{len(MCP_PRESET_AUTH)} remote presets leave the token empty and say how they authenticate"
 
 
+# ── guardrails ───────────────────────────────────────────────────────────────
+
+@check
+async def check_guardrails(browser) -> str:
+    """An orchestration's guardrails are the ones the engine enforces.
+
+    "Max Cost (USD)" sat beside Max Total Turns and Timeout as though it were
+    the same kind of thing. Nothing ever read it: batch 1C deleted the field
+    from the engine for that reason. A cap that does not cap is worse than
+    none — a person who set it believed a runaway run would stop (F76).
+    """
+    oid = f"orch_uismoke_guard_{int(time.time())}"
+    api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 1.0)
+        await page.get_by_role("button", name="Guardrails", exact=True).first.click()
+        await asyncio.sleep(0.8)
+        turns = await page.get_by_label("Max Total Turns").count()
+        cost = await page.get_by_label(re.compile("max cost", re.I)).count()
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if not turns:
+        raise AssertionError("the Guardrails tab did not open (no Max Total Turns)")
+    if cost:
+        raise AssertionError("Guardrails still offers Max Cost (USD), which nothing enforces")
+    return "Guardrails offers turns and a timeout, and no cost cap that does nothing"
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of
