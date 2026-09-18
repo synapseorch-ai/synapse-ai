@@ -14,6 +14,8 @@ import { ReactFlowProvider } from '@xyflow/react';
 import { WorkflowCanvas } from '../orchestration/WorkflowCanvas';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
+import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
+import { humanAnswer, initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -82,6 +84,11 @@ const EMPTY_ORCHESTRATION: Orchestration = {
     trigger: 'manual',
     rubric_id: '',
 };
+
+/** A human step's declared fields off the wire — anything else is no fields (F75). */
+function fieldList(raw: unknown): HumanField[] {
+    return Array.isArray(raw) ? (raw as HumanField[]) : [];
+}
 
 export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId?: string; initialOrchId?: string } = {}) {
     // --- Orchestration list ---
@@ -166,6 +173,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     const [humanPrompt, setHumanPrompt] = useState<string | null>(null);
     const [humanContext, setHumanContext] = useState<string | null>(null);
     const [humanResponse, setHumanResponse] = useState('');
+    // The step's declared fields, when it has any — answered as a form keyed by
+    // name, like every other place a human step is answered (F75). Set with the
+    // prompt at each place a question arrives; ignored while there is none.
+    const [humanFields, setHumanFields] = useState<HumanField[]>([]);
+    const [humanValues, setHumanValues] = useState<HumanValues>({});
     const abortRef = useRef<AbortController | null>(null);
     // Mirrors `runId` so the streamSSE catch / wake handler can read the live run
     // id without a stale closure. Timestamp of the last byte (incl. heartbeats)
@@ -486,6 +498,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 if (data.waiting_for_human && data.human_prompt) {
                     setHumanPrompt(data.human_prompt);
                     setHumanContext(data.human_context || null);
+                    setHumanFields(fieldList(data.human_fields));
+                    setHumanValues(initialHumanValues(fieldList(data.human_fields)));
                 }
             }
         } catch { /* ignore */ }
@@ -858,6 +872,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                     if (data.waiting_for_human && data.human_prompt) {
                         setHumanPrompt(data.human_prompt);
                         setHumanContext(data.human_context || null);
+                        setHumanFields(fieldList(data.human_fields));
+                        setHumanValues(initialHumanValues(fieldList(data.human_fields)));
                     }
                     setRunLog(prev => [...prev, '[Reconnected — run is waiting for your input]']);
                     return;
@@ -1140,6 +1156,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 if (data.orch_step_id) setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'paused' }));
                 setHumanPrompt(data.prompt || 'Please provide input:');
                 setHumanContext(data.agent_context || null);
+                setHumanFields(fieldList(data.fields));
+                setHumanValues(initialHumanValues(fieldList(data.fields)));
                 setRunLog(prev => [...prev, line('pause', 'Waiting for human input…')]);
                 break;
 
@@ -1258,7 +1276,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
             return next;
         });
         setRunLog(prev => [...prev, `Human response submitted`]);
-        const response = humanResponse;
+        const response = humanFields.length ? humanAnswer(humanFields, humanValues) : humanResponse;
         setHumanResponse('');
 
         streamSSE(`/api/orchestrations/runs/${runId}/human-input`, { response });
@@ -1688,6 +1706,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                             humanContext={humanContext}
                             humanResponse={humanResponse}
                             setHumanResponse={setHumanResponse}
+                            humanFields={humanFields}
+                            humanValues={humanValues}
+                            setHumanValues={setHumanValues}
                             onSubmitHuman={submitHumanInput}
                             onOpenResponseModal={setResponseModal}
                             runId={runId}
@@ -1829,6 +1850,7 @@ function ResponseModal({ stepName, stepType, content, onClose }: { stepName: str
 function BottomPanel({
     draft, setDraft, runStatus, liveActivity, runLog, runInput, setRunInput, onStartRun,
     humanPrompt, humanContext, humanResponse, setHumanResponse, onSubmitHuman, onOpenResponseModal,
+    humanFields, humanValues, setHumanValues,
     runId, onResumeRun, pastRuns, onRestoreRun, rubrics,
 }: {
     draft: Orchestration;
@@ -1843,6 +1865,9 @@ function BottomPanel({
     humanContext: string | null;
     humanResponse: string;
     setHumanResponse: (v: string) => void;
+    humanFields: HumanField[];
+    humanValues: HumanValues;
+    setHumanValues: (v: HumanValues) => void;
     onSubmitHuman: () => void;
     onOpenResponseModal: (entry: { step_name: string; step_type?: string; content: string }) => void;
     runId: string | null;
@@ -2292,7 +2317,7 @@ function BottomPanel({
                             footer={
                                 <>
                                     <Button variant="secondary" onClick={() => setHumanModalOpen(false)}>Later</Button>
-                                    <Button onClick={onSubmitHuman} disabled={!humanResponse.trim()}>Submit</Button>
+                                    <Button onClick={onSubmitHuman} disabled={!humanFields.length && !humanResponse.trim()}>Submit</Button>
                                 </>
                             }
                         >
@@ -2312,15 +2337,19 @@ function BottomPanel({
                                         }}
                                     >{humanPrompt}</ReactMarkdown>
                                 </div>
-                                <input
-                                    autoFocus
-                                    aria-label="Your answer"
-                                    className="w-full rounded-md border border-amber-700/40 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 outline-none transition-colors placeholder:text-zinc-500 focus:border-amber-500"
-                                    value={humanResponse}
-                                    onChange={(e) => setHumanResponse(e.target.value)}
-                                    placeholder="Your response…"
-                                    onKeyDown={(e) => { if (e.key === 'Enter') onSubmitHuman(); }}
-                                />
+                                {humanFields.length > 0 ? (
+                                    <HumanFieldsForm fields={humanFields} values={humanValues} onChange={setHumanValues} idPrefix="orch-answer" />
+                                ) : (
+                                    <input
+                                        autoFocus
+                                        aria-label="Your answer"
+                                        className="w-full rounded-md border border-amber-700/40 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 outline-none transition-colors placeholder:text-zinc-500 focus:border-amber-500"
+                                        value={humanResponse}
+                                        onChange={(e) => setHumanResponse(e.target.value)}
+                                        placeholder="Your response…"
+                                        onKeyDown={(e) => { if (e.key === 'Enter') onSubmitHuman(); }}
+                                    />
+                                )}
                             </div>
                         </Modal>
 

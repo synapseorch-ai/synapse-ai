@@ -5,6 +5,7 @@ import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap
 
 import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';
+import { HumanStepAnswer } from '@/components/HumanStepAnswer';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { useRegisterNavGuard } from '@/components/app/NavGuard';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
@@ -1748,10 +1749,17 @@ export default function Home() {
                 Human Input Required
               </div>
               <Markdown className="mb-4">{msg.content}</Markdown>
-              <CollectDataForm
-                data={{ ...msg.data, fields: msg.data?.fields || [] }}
-                onSubmit={(values) => handleHumanInputSubmit(msg.data?.run_id, msg.data?.orch_step_id, values)}
-              />
+              {Array.isArray(msg.data?.fields) && msg.data.fields.length > 0 ? (
+                <HumanStepAnswer
+                  fields={msg.data.fields}
+                  onSubmit={(answer) => handleHumanInputSubmit(msg.data?.run_id, msg.data?.orch_step_id, answer)}
+                />
+              ) : (
+                <CollectDataForm
+                  data={{ ...msg.data, fields: [] }}
+                  onSubmit={(values) => handleHumanInputSubmit(msg.data?.run_id, msg.data?.orch_step_id, values)}
+                />
+              )}
               {msg.data?.channel_id && (
                 <div className="mt-2 text-[11px] text-text-faint font-mono">
                   📲 Notification sent to messaging channel

@@ -18,6 +18,7 @@ import {
     type StepSectionProps,
 } from './shared';
 import { PythonEditor } from './PythonEditor';
+import { HUMAN_FIELD_TYPES, humanFieldType } from '../humanFields';
 
 /* ── shared toggles ─────────────────────────────────────────────────────── */
 
@@ -551,12 +552,6 @@ function LoopSection({ step, update, otherSteps }: StepSectionProps) {
     );
 }
 
-const FIELD_TYPES = [
-    { value: 'string', label: 'Text' },
-    { value: 'number', label: 'Number' },
-    { value: 'boolean', label: 'Yes / No' },
-];
-
 function HumanSection({ step, update }: StepSectionProps) {
     const [channels, setChannels] = useState<any[]>([]);
 
@@ -619,13 +614,18 @@ function HumanSection({ step, update }: StepSectionProps) {
                                 size="sm"
                                 aria-label={`Field ${idx + 1} type`}
                                 className="w-28 shrink-0"
-                                value={field.type || 'string'}
+                                // One table for every form that shows a field (F75). A stored
+                                // spelling it knows (`text`) reads as its type without being
+                                // rewritten; one it does not is shown as itself, never blank.
+                                value={humanFieldType(field.type) ?? field.type}
                                 onChange={(type) => {
                                     const next = [...fields];
                                     next[idx] = { ...field, type };
                                     update({ human_fields: next });
                                 }}
-                                options={FIELD_TYPES}
+                                options={humanFieldType(field.type) === null
+                                    ? [...HUMAN_FIELD_TYPES, { value: field.type!, label: `unknown type \u201C${field.type}\u201D`, disabled: true }]
+                                    : HUMAN_FIELD_TYPES}
                             />
                             <button
                                 type="button"

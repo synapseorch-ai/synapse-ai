@@ -1993,6 +1993,130 @@ async def check_cachetoggle(browser) -> str:
     return "Caching offers the response cache, and no tool cache"
 
 
+# ── a human step's fields ────────────────────────────────────────────────────
+
+#: What the AI builder itself writes (`textarea`), a flag, and a type nobody
+#: knows — the three shapes the forms disagreed on (F75).
+HUMAN_FIELDS = [
+    {"name": "notes", "type": "textarea", "label": "Notes"},
+    {"name": "approved", "type": "boolean", "label": "Approved?"},
+    {"name": "when", "type": "weird", "label": "When"},
+]
+HUMAN_ANSWER = {"notes": "looks fine", "approved": True, "when": "friday"}
+
+HUMAN_CHAT_STUB = r"""
+const _fetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  if (url.includes('/api/chat/stream')) {
+    const body = new ReadableStream({
+      start(c) {
+        const send = (e) => c.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(e) + '\n\n'));
+        send({type: 'human_input_required', prompt: 'Review the draft.', run_id: 'run_uismoke_fields',
+              orch_step_id: 'approve', fields: FIELDS});
+        c.close();
+      },
+    });
+    return Promise.resolve(new Response(body, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+  }
+  if (url.includes('/api/orchestrations/runs/run_uismoke_fields/human-input')) {
+    window.__answer = JSON.parse(init.body);
+    return Promise.resolve(new Response('', {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+  }
+  return _fetch(input, init);
+};
+"""
+
+
+async def fill_human_fields(scope) -> None:
+    """Answer HUMAN_FIELDS the way a person would, by their labels."""
+    await scope.get_by_role("textbox", name="Notes", exact=True).fill(HUMAN_ANSWER["notes"])
+    await scope.get_by_role("checkbox", name="Approved?", exact=True).check()
+    await scope.get_by_role("textbox", name="When", exact=True).fill(HUMAN_ANSWER["when"])
+
+
+@check
+async def check_humanfields(browser) -> str:
+    """A human step's fields mean the same thing in the editor and in every answer form.
+
+    Four forms had four ideas of a field (F75). The canvas offered three types
+    and showed the builder's own `textarea` as a blank box; the orchestration
+    screen ignored the fields and took one line of text; chat keyed the answer
+    by each field's *label* and rendered a yes/no as a text box — while the
+    engine, cloud's run page and a channel reply key it by *name*, which is
+    what a later step reads (`{state.approval.approved}`).
+    """
+    oid = f"orch_uismoke_fields_{int(time.time())}"
+    orch = human_gate_orchestration(oid)
+    orch["steps"][-1]["human_fields"] = HUMAN_FIELDS
+    api("/api/orchestrations", "POST", orch)
+    problems: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and "/human-input" in r.url else None)
+    try:
+        # The editor: every stored type reads as something.
+        await open_step(page, oid, "Approve")
+        shown = [
+            (await page.get_by_role("combobox", name=f"Field {i + 1} type").inner_text()).strip()
+            for i in range(len(HUMAN_FIELDS))
+        ]
+        for field, text in zip(HUMAN_FIELDS, shown):
+            if not text:
+                problems.append(f"the editor shows {field['type']!r} as a blank type")
+        # The orchestration screen: run it, answer it, read what went out.
+        await page.keyboard.press("Escape")
+        await page.get_by_role("button", name="Run", exact=True).click()
+        for _ in range(25):
+            await asyncio.sleep(1.0)
+            if await page.get_by_text("Waiting for your input").count():
+                break
+        await page.get_by_text("Waiting for your input").first.click()
+        await asyncio.sleep(0.6)
+        dialog = page.get_by_role("dialog")
+        try:
+            await fill_human_fields(dialog)
+            await dialog.get_by_role("button", name="Submit", exact=True).click()
+            await asyncio.sleep(1.5)
+            got = sent[-1].get("response") if sent else None
+            if got != HUMAN_ANSWER:
+                problems.append(f"the orchestration screen answered {got!r}, not {HUMAN_ANSWER!r}")
+        except Exception as e:
+            problems.append(f"the orchestration screen's answer form has no field per declared field ({type(e).__name__})")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+
+    # Chat, fed the same question by a stubbed stream.
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(HUMAN_CHAT_STUB.replace("FIELDS", json.dumps(HUMAN_FIELDS)))
+    page = await ctx.new_page()
+    try:
+        await page.goto(APP, wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        box = page.locator("main textarea").last
+        await box.fill("start the review")
+        await box.press("Enter")
+        await asyncio.sleep(1.5)
+        try:
+            form = page.locator("form", has=page.get_by_role("textbox", name="Notes", exact=True)).last
+            await fill_human_fields(form)
+            await form.get_by_role("button", name="Submit").click()
+            await asyncio.sleep(1.0)
+            got = (await page.evaluate("() => window.__answer || null") or {}).get("response")
+            if got != HUMAN_ANSWER:
+                problems.append(f"chat answered {got!r}, not {HUMAN_ANSWER!r}")
+        except Exception as e:
+            problems.append(f"chat's answer form has no field per declared field ({type(e).__name__})")
+    finally:
+        await ctx.close()
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "the editor, the orchestration screen and chat agree on every field, keyed by name"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
