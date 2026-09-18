@@ -1368,6 +1368,60 @@ async def check_guardrails(browser) -> str:
     return "Guardrails offers turns and a timeout, and no cost cap that does nothing"
 
 
+# ── reasoning effort ─────────────────────────────────────────────────────────
+
+@check
+async def check_effort(browser) -> str:
+    """A Claude CLI agent's reasoning effort can be set, and offers no false Off.
+
+    Since F65 `cli.claude` passes the agent's effort as `--effort`. The editor
+    shows its reasoning control only for models the server lists as taking one,
+    and the Claude CLI was not on that list — so the setting that had just
+    started working could not be reached. It has no "off" either: the engine
+    runs off as low, so an Off button there would mean Low.
+
+    Needs the Claude CLI on this machine, because that is what lists its models;
+    without it there is nothing to show, and the check says so rather than
+    passing quietly.
+    """
+    models = api("/api/models")
+    claude = sorted(m for m in models.get("all_available", []) if m.startswith("cli.claude."))
+    if not claude:
+        return "skipped — no Claude CLI on this machine, so no cli.claude model to open"
+    aid = "agent_uismoke_effort"
+    api("/api/agents", "POST", {**_agent(aid, "UI smoke CLI"), "model": claude[0],
+                                "reasoning_effort": "off"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": 1200})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        await page.get_by_text("UI smoke CLI", exact=True).first.click()
+        await asyncio.sleep(1.0)
+        levels = await page.evaluate("""() => {
+          const label = [...document.querySelectorAll('label, span, p')]
+            .find(e => (e.textContent || '').trim() === 'Reasoning');
+          if (!label) return null;
+          return [...label.parentElement.querySelectorAll('button')].map(b => ({
+            name: (b.textContent || '').trim().toLowerCase(), pressed: b.getAttribute('aria-pressed')}));
+        }""")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if levels is None:
+        raise AssertionError(f"{claude[0]} takes an effort and the editor offers no reasoning control")
+    names = [lv["name"] for lv in levels]
+    if "off" in names:
+        raise AssertionError(f"{claude[0]} is offered Off, which runs as Low")
+    pressed = [lv["name"] for lv in levels if lv["pressed"] == "true"]
+    if pressed != ["low"]:
+        raise AssertionError(f"a stored 'off' shows as {pressed}, but it runs as low")
+    return f"{claude[0]}: effort offered as {'/'.join(names)}, and a stored off shows as the low it runs at"
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of

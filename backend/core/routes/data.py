@@ -13,7 +13,7 @@ from pydantic import BaseModel
 import httpx
 
 from core.config import load_settings
-from core.llm_providers import _make_aws_client, _ollama_base_url, is_openai_chat_model
+from core.llm_providers import _make_aws_client, _ollama_base_url, cli_takes_effort, is_openai_chat_model
 from core.session import session_state, clear_all_chat_sessions
 from services.synthetic_data import generate_synthetic_data, SyntheticDataRequest, current_job, DATASETS_PREFIX
 
@@ -736,7 +736,12 @@ async def get_models():
         "all_available": all_available,
         "local": ollama_chat,
         "cloud": cloud_models,
-        "reasoning_capable": sorted({m for m in all_available if supports_native(m)}),
+        # A Claude CLI model is on it too: it takes the agent's effort as
+        # `--effort` (F65), though it has no reasoning channel of its own.
+        "reasoning_capable": sorted({m for m in all_available if supports_native(m) or cli_takes_effort(m)}),
+        # The CLI has no "off" — the engine runs off as low — so the screen
+        # offers no Off for these rather than one that quietly means Low.
+        "reasoning_without_off": sorted({m for m in all_available if cli_takes_effort(m)}),
         # Which of them can actually see an attachment. Served for the same
         # reason as the line above: the alternative is a second copy of the
         # list in TypeScript, wrong the first time only one of them is updated.

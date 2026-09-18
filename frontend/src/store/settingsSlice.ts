@@ -4,7 +4,7 @@ export interface SettingsState {
     agents: any[];
     mcpServers: any[];
     customTools: any[];
-    models: { local: string[], cloud: string[], providers: Record<string, any>, reasoning_capable?: string[] };
+    models: { local: string[], cloud: string[], providers: Record<string, any>, reasoning_capable?: string[], reasoning_without_off?: string[] };
     loading: boolean;
     initialized: boolean;
 }

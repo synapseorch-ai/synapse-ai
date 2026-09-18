@@ -33,6 +33,9 @@ interface AgentsTabProps {
      *  capability table would be wrong the first time a family ships and only
      *  one of them was updated. */
     reasoningCapable?: string[];
+    /** Of those, the ones with no "off" — the Claude CLI, which runs off as low.
+     *  Served for the same reason as the list above. */
+    reasoningWithoutOff?: string[];
     defaultModel?: string;
     loadingAgents?: boolean;
 }
@@ -42,7 +45,7 @@ import React, { useState, useEffect } from 'react';
 export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
     draftAgent, setDraftAgent, loadDraftAgent, guard, availableCapabilities, loadingCapabilities = false, customTools,
-    onDeleteAgent, providers, reasoningCapable, defaultModel, loadingAgents = false
+    onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, defaultModel, loadingAgents = false
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const [repos, setRepos] = useState<any[]>([]);
@@ -599,8 +602,17 @@ export const AgentsTab = ({
                                             <div className="space-y-1">
                                                 <Label className="block">Reasoning</Label>
                                                 <div className="flex gap-1">
-                                                    {(['off', 'low', 'medium', 'high'] as const).map(level => {
-                                                        const active = (draftAgent.reasoning_effort || 'medium') === level;
+                                                    {/* No Off where the model has none: an Off that
+                                                        quietly runs as Low is the "set and ignored"
+                                                        reading this control exists to avoid (F65). */}
+                                                    {((reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '')
+                                                        ? (['low', 'medium', 'high'] as const)
+                                                        : (['off', 'low', 'medium', 'high'] as const)
+                                                    ).map(level => {
+                                                        const stored = draftAgent.reasoning_effort || 'medium';
+                                                        const shown = stored === 'off' && (reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '')
+                                                            ? 'low' : stored;
+                                                        const active = shown === level;
                                                         return (
                                                             <button
                                                                 key={level}

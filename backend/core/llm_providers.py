@@ -504,6 +504,22 @@ _CLI_COMMANDS: dict[str, list[str]] = {
     "cli.copilot":  ["copilot", "-p"],
 }
 
+#: The CLIs that take an effort level. Only Claude Code has one (`--effort`,
+#: below); the others take none. Served by the Models route, so the agent
+#: editor offers a reasoning control for exactly these models (F65).
+CLI_EFFORT_BASES = ("cli.claude",)
+
+
+def cli_takes_effort(model: str) -> bool:
+    """Whether an agent's reasoning effort reaches this CLI model at all.
+
+    Such a CLI has no "off" either — `call_cli_provider` runs off as low — so
+    the route also serves these as the models whose control has no Off.
+    """
+    name = (model or "").strip().lower()
+    return any(name == base or name.startswith(base + ".") for base in CLI_EFFORT_BASES)
+
+
 # Seconds to wait for a CLI process before giving up
 _CLI_TIMEOUT = 300.0
 

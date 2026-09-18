@@ -116,6 +116,7 @@ export function AgentsScreen() {
                 onDeleteAgent={(id: string) => setConfirmDelete(id)}
                 providers={models.providers || {}}
                 reasoningCapable={models.reasoning_capable || []}
+                reasoningWithoutOff={models.reasoning_without_off || []}
                 defaultModel={defaultModel}
                 loadingAgents={loading}
             />
