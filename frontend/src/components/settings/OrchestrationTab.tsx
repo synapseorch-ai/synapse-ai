@@ -184,7 +184,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     const pendingStepResultRef = useRef<Map<string, { step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string }>>(new Map());
     const [responseModal, setResponseModal] = useState<{ step_name: string; step_type?: string; content: string } | null>(null);
     const [confirmDeleteOrchId, setConfirmDeleteOrchId] = useState<string | null>(null);
-    const { open: openBuilder } = useBuilder();
+    const { open: openBuilder, setCurrentOrchestration } = useBuilder();
     // Set when the builder saved the orchestration being edited while the draft
     // had unsaved changes — the user chooses which version survives.
     const [builderSavedOrch, setBuilderSavedOrch] = useState<any | null>(null);
@@ -1344,6 +1344,17 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     // and the panel explains — all from the same validate.ts pass.
     const validation = draft ? validateOrchestration(draft, agents) : null;
 
+    // The builder's "this one" is whatever this screen is showing, for exactly
+    // as long as it is showing it — including across a client-side navigation,
+    // which leaves the panel open and used to leave the old answer with it.
+    const realOrchId = selectedOrchId && orchestrations.some(o => o.id === selectedOrchId)
+        ? selectedOrchId
+        : null;
+    useEffect(() => {
+        setCurrentOrchestration(realOrchId);
+        return () => setCurrentOrchestration(null);
+    }, [realOrchId, setCurrentOrchestration]);
+
     useBuilderShortcuts({
         enabled: !!draft,
         undo,
@@ -1404,13 +1415,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                         <Plus size={14} /> New
                     </button>
                     <button
-                        onClick={() => openBuilder({
-                            // Only a real saved id — not the temp draft one.
-                            currentOrchestrationId:
-                                selectedOrchId && orchestrations.some(o => o.id === selectedOrchId)
-                                    ? selectedOrchId
-                                    : null,
-                        })}
+                        onClick={() => openBuilder()}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent hover:bg-accent-hover text-accent-fg transition-colors"
                     >
                         <Mark size={14} /> Build with AI

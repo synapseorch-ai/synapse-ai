@@ -788,6 +788,81 @@ async def check_phone(browser) -> str:
         await ctx.close()
 
 
+# ── builder context ──────────────────────────────────────────────────────────
+
+#: Enough of a stream to let the panel finish a turn without a model call.
+#: Named apart from BUILDER_STUB, which is an init script: one clobbered the
+#: other and Playwright injected this as JavaScript.
+BUILDER_TURN = (
+    'data: {"type":"assistant_message","content":"ok"}\n\n'
+    'data: {"type":"done"}\n\n'
+)
+
+
+@check
+async def check_builderctx(browser) -> str:
+    """A builder message names the orchestration the person is actually on.
+
+    "Build with AI" on an orchestration screen tells the builder which one, so
+    that "add a step to this" has a referent. That answer was kept in a ref
+    that only ever got written when a caller passed one — and the app-wide
+    launcher passes nothing, while a new conversation cleared everything else.
+    So after one build on an orchestration, every later message named it: from
+    another screen, and in a conversation started to talk about something else.
+
+    Driven through the app with the builder POST stubbed, so it costs no model
+    call, and read off the request body rather than off the screen — the id is
+    never rendered anywhere (F17).
+    """
+    oid = f"orch_uismoke_ctx_{int(time.time())}"
+    api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    sent: list[str | None] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        async def stub(route):
+            try:
+                body = json.loads(route.request.post_data or "{}")
+            except Exception:
+                body = {}
+            sent.append(body.get("current_orchestration_id"))
+            await route.fulfill(status=200, content_type="text/event-stream", body=BUILDER_TURN)
+        await page.route("**/api/builder/chat", stub)
+
+        async def say(text: str):
+            box = page.locator("textarea").last
+            await box.fill(text)
+            await box.press("Enter")
+            await asyncio.sleep(1.5)
+
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2.0)
+        await page.get_by_role("button", name="Build with AI").first.click()
+        await asyncio.sleep(1.2)
+        await say("one")                       # on the orchestration: names it
+        # Client-side navigation, the way a person moves. A hard load would
+        # remount the provider and the ref would look innocent.
+        await page.click('a[href="/agents"]')
+        await asyncio.sleep(SETTLE)
+        await say("two")                       # a different screen: names nothing
+        await page.get_by_role("button", name="Start a new conversation").first.click()
+        await asyncio.sleep(1.2)
+        await say("three")                     # a new conversation: names nothing
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if len(sent) != 3:
+        raise AssertionError(f"expected 3 builder turns, saw {len(sent)}: {sent}")
+    if sent[0] != oid:
+        raise AssertionError(f"Build with AI on {oid} sent {sent[0]!r} — it should name that one")
+    stale = [w for w, got in zip(("from another screen", "in a new conversation"), sent[1:]) if got]
+    if stale:
+        raise AssertionError(
+            f"the builder still named {sent[1] or sent[2]!r} " + " and ".join(stale)
+        )
+    return "a build names its orchestration, and only while it is the one open"
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of

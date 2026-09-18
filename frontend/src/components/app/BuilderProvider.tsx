@@ -73,6 +73,14 @@ interface OpenOptions {
 interface BuilderContextValue {
     isOpen: boolean;
     /**
+     * Declare the orchestration a screen is showing, for as long as it shows
+     * it. The builder needs a referent for "add a step to this one", and the
+     * only honest source is the screen that is open: an answer stored when the
+     * panel was opened outlives the screen that gave it, and the app-wide
+     * launcher never had one to give (F17). Pass null on the way out.
+     */
+    setCurrentOrchestration: (id: string | null) => void;
+    /**
      * True once the panel should be in its open position — one frame after
      * `isOpen`, and false for the length of the exit while `isOpen` is still
      * true. The panel reads this to transition; nothing else needs it.
@@ -178,7 +186,14 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         return () => { cancelled = true; };
     }, []);
 
+    const setCurrentOrchestration = useCallback((id: string | null) => {
+        currentOrchestrationId.current = id;
+    }, []);
+
     const open = useCallback((options?: OpenOptions) => {
+        // An explicit answer still wins, for a caller that opens the panel about
+        // something other than what it is showing. Everything else comes from
+        // whichever screen has registered itself.
         if (options && 'currentOrchestrationId' in options) {
             currentOrchestrationId.current = options.currentOrchestrationId ?? null;
         }
@@ -440,9 +455,11 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         () => ({
             isOpen, entered, open, close, state, streaming, send, stop, newConversation,
             providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
+            setCurrentOrchestration,
         }),
         [isOpen, entered, open, close, state, streaming, send, stop, newConversation,
-         providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel],
+         providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
+         setCurrentOrchestration],
     );
 
     return <BuilderContext.Provider value={value}>{children}</BuilderContext.Provider>;
