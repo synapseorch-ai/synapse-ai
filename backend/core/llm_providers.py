@@ -494,7 +494,11 @@ def _bearer_auth_handler(api_key: str):
 # Maps cli.* model names to their CLI binary + flags
 _CLI_COMMANDS: dict[str, list[str]] = {
     # JSON so the answer and the error flag can be read reliably (F65).
-    "cli.claude":   ["claude", "-p", "--output-format", "json", "--allowedTools", ""],
+    # `--tools ""` empties Claude Code's built-in tool set: the agent's tools
+    # are written into the prompt and run by the engine. It used to send
+    # `--allowedTools ""`, a permission allow-list — which in -p mode still
+    # left the tools that need no permission, file reads among them (F98).
+    "cli.claude":   ["claude", "-p", "--output-format", "json", "--tools", ""],
     "cli.gemini":   ["gemini", "--prompt", ""],
     # `instructions` (codex's system-prompt slot) is set per-call in
     # call_cli_provider — never left empty, since some accounts reject an empty
@@ -684,8 +688,8 @@ async def call_cli_provider(
         else:
             if base_cli == "cli.claude" and sys_prompt:
                 # Write sys_prompt to a temp file and pass via --system-prompt-file.
-                # --no-tools (added above) ensures Claude Code's native tools are stripped so
-                # only our XML emulation is active.
+                # `--tools ""` (in _CLI_COMMANDS) strips Claude Code's own tools, so only
+                # the tools written into this prompt are active.
                 temp_sys_prompt_file = tempfile.NamedTemporaryFile(
                     mode="w", suffix=".md", prefix="claude_sys_prompt_", delete=False,
                     encoding="utf-8", dir=_tmp_dir

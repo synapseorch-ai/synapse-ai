@@ -81,6 +81,33 @@ def _flag(argv, name):
     return argv[argv.index(name) + 1] if name in argv else None
 
 
+class TestClaudeCliHasNoToolsOfItsOwn:
+    """F98: the engine writes the agent's tools into the prompt and runs them
+    itself, so Claude Code's own tools must not be there at all.
+
+    It was spawned with `--allowedTools ""`. That flag is a permission
+    allow-list, not the tool set: in `-p` mode a tool that needs no permission
+    — reading and searching files — was still available, so a `cli.claude`
+    agent could read the host's files while the engine believed it had only the
+    tools it had written into the prompt. `--tools ""` is the flag that empties
+    the built-in set (`claude --help`, 2.1.261: 'Use "" to disable all tools').
+    """
+
+    async def test_the_built_in_tool_set_is_empty(self, claude):
+        from core.llm_providers import call_cli_provider
+
+        await call_cli_provider("cli.claude.claude-opus-4-6", "hi", effort="low")
+
+        assert _flag(claude["argv"], "--tools") == ""
+
+    async def test_it_does_not_lean_on_the_permission_list(self, claude):
+        from core.llm_providers import call_cli_provider
+
+        await call_cli_provider("cli.claude.claude-opus-4-6", "hi", effort="low")
+
+        assert "--allowedTools" not in claude["argv"]
+
+
 class TestClaudeCli:
     """`cli.claude.<model>` with no suffix sent `--effort low` and `-max` sent
     `medium`; no `--output-format json` was sent, so the session id the resume
