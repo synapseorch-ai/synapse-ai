@@ -1031,6 +1031,98 @@ async def check_toolglobals(browser) -> str:
             + (f"; {added} declared through the picker" if added else "; no variable to pick here"))
 
 
+# ── scale ────────────────────────────────────────────────────────────────────
+
+#: Settings the scale layer reads from the environment only. The screen may
+#: show them; saving one never changed anything (F58).
+SCALE_ENV_ONLY = {
+    "Worker Concurrency": "WORKER_CONCURRENCY",
+    "Max Global Queue Depth": "MAX_GLOBAL_QUEUE_DEPTH",
+    "Rate Limit": "RATE_LIMIT_PER_TENANT_RPS",
+    "Metrics Token": "METRICS_TOKEN",
+    "PgBouncer": "PGBOUNCER_MODE",
+}
+
+#: One dead letter whose run never reached a step — the retry route's 409.
+DLQ_ENTRY = [{"id": "dlq_uismoke", "run_id": "run_uismoke_dlq", "job_id": "j1",
+              "error_message": "Redis went away", "attempt_count": 1,
+              "created_at": "2026-09-18T00:00:00Z", "resolved": False}]
+DLQ_409 = "This run never reached a step, so there is nothing to resume — start it again."
+
+
+@check
+async def check_scale(browser) -> str:
+    """The Scale screen offers only what saving can change, and says why not.
+
+    Five fields are read by the scale layer from the environment alone. The
+    screen rendered each as an ordinary input, and a Save reported success
+    while nothing changed: 37 typed into Worker Concurrency, 10 still in
+    effect. Queue Shards named a setting that no longer exists; Register posted
+    to a route that never existed (405); the setup guide said WORKER_MAX_RETRIES
+    counts retries before the dead-letter queue, which stopped being true when
+    a dead job began to be dead-lettered on its first try; and the dead-letter
+    retry button threw away the route's 409 — "this run never reached a step"
+    — and redrew the list as though it had worked (F58).
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": 1400})
+    page = await ctx.new_page()
+    problems: list[str] = []
+    try:
+        await page.route("**/api/scale/dlq", lambda r: asyncio.ensure_future(
+            r.fulfill(status=200, content_type="application/json", body=json.dumps(DLQ_ENTRY))))
+        await page.route("**/api/scale/dlq/*/retry", lambda r: asyncio.ensure_future(
+            r.fulfill(status=409, content_type="application/json", body=json.dumps({"detail": DLQ_409}))))
+        await page.goto(f"{APP}/settings/scale", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        sections = ("Redis Connection", "Postgres", "Workers", "Observability")
+        for title in sections:
+            await page.get_by_role("button", name=re.compile(f"^{title}")).first.click()
+            await asyncio.sleep(0.3)
+        editable = await page.evaluate("""() => [...document.querySelectorAll('input')]
+            .filter(i => !i.disabled && !i.readOnly && i.getBoundingClientRect().width > 0)
+            .map(i => (i.labels && i.labels[0] && i.labels[0].innerText.split('\\n')[0])
+                      || i.getAttribute('aria-label') || '')""")
+        # The configuration sections only: the deployment guide sits in the DOM
+        # too, and its text would answer for a field that says nothing itself.
+        # innerText applies text-transform, so everything compares lowercased.
+        text = (await page.evaluate("""(titles) => [...document.querySelectorAll('button')]
+            .filter(b => titles.some(t => (b.textContent || '').trim().startsWith(t)))
+            .map(b => b.parentElement.innerText).join('\\n')""", list(sections))).lower()
+        for label, env in SCALE_ENV_ONLY.items():
+            if any(label.lower() in e.lower() for e in editable):
+                problems.append(f"{label} is editable, and saving it changes nothing")
+            if env.lower() not in text:
+                problems.append(f"{label} does not say it comes from {env}")
+        if any("queue shards" in e.lower() for e in editable) or "queue shards" in text:
+            problems.append("Queue Shards is still offered")
+        if await page.get_by_role("button", name=re.compile("register", re.I)).count():
+            problems.append("Register is still offered (POSTs a route that does not exist)")
+
+        retry = page.get_by_role("button", name=re.compile(r"^retry", re.I)).first
+        if not await retry.count():
+            problems.append("the dead-letter retry button has no name")
+        else:
+            await retry.click()
+            await asyncio.sleep(1.2)
+            if DLQ_409.split(",")[0] not in await page.evaluate("() => document.body.innerText"):
+                problems.append("a refused retry (409) says nothing")
+
+        await page.get_by_role("button", name=re.compile("deploy docs", re.I)).first.click()
+        await asyncio.sleep(0.6)
+        await page.get_by_role("button", name=re.compile("^Environment Variables Reference")).first.click()
+        await asyncio.sleep(0.6)
+        guide = await page.evaluate("() => document.body.innerText")
+        if "before sending to DLQ" in guide:
+            problems.append("the guide says WORKER_MAX_RETRIES counts retries before the DLQ")
+        if "NUM_QUEUE_SHARDS" in guide:
+            problems.append("the guide still documents NUM_QUEUE_SHARDS")
+    finally:
+        await ctx.close()
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "only saveable settings are editable; environment ones name their variable"
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of

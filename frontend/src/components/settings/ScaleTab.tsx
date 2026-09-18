@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback } from 'react';
 import {
-    CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertTriangle,
+    CheckCircle2, XCircle, RefreshCw, Trash2, AlertTriangle,
     Activity, Server, Database, Zap, Eye, Cloud,
     ChevronDown, ChevronRight, Search, Copy, BarChart3, BookOpen, X,
 } from 'lucide-react';
@@ -15,6 +15,10 @@ import { usd } from '@/lib/money';
 // ---------------------------------------------------------------------------
 
 interface ScaleConfig {
+    /** True when METRICS_TOKEN is set. The token itself is never sent (F58). */
+    metrics_token_set?: boolean;
+    /** Field → environment variable, for the settings only the environment sets. */
+    env_only?: Record<string, string>;
     redis_url: string;
     scale_postgres_url: string;
     scale_mode_enabled: boolean;
@@ -24,7 +28,6 @@ interface ScaleConfig {
     max_global_queue_depth: number;
     rate_limit_per_tenant_rps: number;
     pgbouncer_mode: boolean;
-    num_queue_shards: number;
     s3_bucket: string;
     s3_region: string;
     s3_prefix: string;
@@ -107,7 +110,6 @@ const DEFAULT_CONFIG: ScaleConfig = {
     max_global_queue_depth: 1000000,
     rate_limit_per_tenant_rps: 1000,
     pgbouncer_mode: false,
-    num_queue_shards: 1,
     s3_bucket: '',
     s3_region: 'us-east-1',
     s3_prefix: 'synapse',
@@ -191,6 +193,25 @@ function CollapsibleSection({
                 </div>
             )}
         </div>
+    );
+}
+
+/**
+ * A setting the scale layer reads from the environment and nowhere else. It is
+ * shown — the value in effect is worth knowing — but not as an input: saving
+ * one used to report success while nothing changed (F58). The route names the
+ * variable in its `env_only` map, so this never restates it.
+ */
+function EnvValue({ label, value, envVar, hint }: {
+    label: string; value: string; envVar?: string; hint?: React.ReactNode;
+}) {
+    return (
+        <Field label={label} hint={<>
+            Set by <span className="font-mono text-text-muted">{envVar ?? 'the environment'}</span> in the
+            environment; change it there and restart. {hint}
+        </>}>
+            <Input readOnly value={value} className="font-mono bg-surface-2 text-text-muted cursor-default" />
+        </Field>
     );
 }
 
@@ -409,9 +430,8 @@ kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.13.0/keda
                                     {[
                                         ['WORKER_CONCURRENCY', '10 — max parallel jobs per worker'],
                                         ['WORKER_JOB_TIMEOUT', '3600 — seconds before a job times out'],
-                                        ['WORKER_MAX_RETRIES', '3 — retries before sending to DLQ'],
+                                        ['WORKER_MAX_RETRIES', '3 — times a job cut off by a stopping worker is handed out again; each resumes from its checkpoint'],
                                         ['WORKER_HEALTH_PORT', '9000 — HTTP health endpoint port'],
-                                        ['NUM_QUEUE_SHARDS', '1 — increase for Redis Cluster'],
                                     ].map(([k, v]) => (
                                         <div key={k} className="flex gap-3 py-1.5 border-b border-border/50">
                                             <span className="text-text shrink-0 w-44">{k}</span>
@@ -501,7 +521,6 @@ export function ScaleTab() {
     // Workers
     const [workers, setWorkers] = useState<WorkerInfo[]>([]);
     const [workerHealthResults, setWorkerHealthResults] = useState<Record<string, any>>({});
-    const [newWorkerAddress, setNewWorkerAddress] = useState('');
 
     // Queue stats
     const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
@@ -510,6 +529,7 @@ export function ScaleTab() {
     const [dlqEntries, setDlqEntries] = useState<DLQEntry[]>([]);
     const [dlqLoading, setDlqLoading] = useState(false);
     const [retryingDlq, setRetryingDlq] = useState<string | null>(null);
+    const [dlqRefused, setDlqRefused] = useState<{ id: string; message: string } | null>(null);
     const [expandedDlq, setExpandedDlq] = useState<string | null>(null);
 
 
@@ -622,11 +642,21 @@ export function ScaleTab() {
         setIsSaving(true);
         setSaveMsg('');
         try {
-            await fetch('/api/scale/config', {
+            // Only what saving can change. The environment-only settings and the
+            // route's own annotations are left out rather than sent to be ignored.
+            const envOnly = new Set(Object.keys(config.env_only ?? {}));
+            const body = Object.fromEntries(Object.entries(config).filter(
+                ([k]) => !envOnly.has(k) && k !== 'env_only' && k !== 'metrics_token_set'));
+            const res = await fetch('/api/scale/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config),
+                body: JSON.stringify(body),
             });
+            if (!res.ok) {
+                const detail = await res.json().catch(() => ({}));
+                setSaveMsg(detail.detail || `Save failed (${res.status}).`);
+                return;
+            }
             setSaveMsg('Saved. Restart the server to apply Redis/Postgres changes.');
         } catch {
             setSaveMsg('Save failed.');
@@ -713,8 +743,17 @@ export function ScaleTab() {
 
     const retryDlq = async (dlqId: string) => {
         setRetryingDlq(dlqId);
+        setDlqRefused(null);
         try {
-            await fetch(`/api/scale/dlq/${dlqId}/retry`, { method: 'POST' });
+            const res = await fetch(`/api/scale/dlq/${dlqId}/retry`, { method: 'POST' });
+            // The route refuses a run that never reached a step, one that is not
+            // failed or cancelled, and one already queued — each with the reason.
+            // Redrawing the list as though it had worked hid all three (F58).
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                setDlqRefused({ id: dlqId, message: body.detail || `The retry was refused (${res.status}).` });
+                return;
+            }
             loadDlq();
         } finally {
             setRetryingDlq(null);
@@ -1093,10 +1132,15 @@ export function ScaleTab() {
                                                 <p className="font-mono text-2xs text-text-muted truncate">{entry.run_id || entry.id}</p>
                                                 <p className="text-2xs text-danger truncate mt-0.5">{entry.error_message}</p>
                                                 <p className="text-2xs text-text-faint">{entry.attempt_count} attempts</p>
+                                                {dlqRefused?.id === entry.id && (
+                                                    <p role="alert" className="text-2xs text-warning mt-1">{dlqRefused.message}</p>
+                                                )}
                                             </div>
                                             <button
                                                 onClick={() => retryDlq(entry.id)}
                                                 disabled={retryingDlq === entry.id}
+                                                aria-label={`Retry ${entry.run_id || entry.id}`}
+                                                title="Resume this run from the step it failed at"
                                                 className="text-2xs border border-border-strong px-2 py-1 text-text-faint hover:text-text disabled:opacity-40 shrink-0 transition-colors"
                                             >
                                                 {retryingDlq === entry.id ? <Spinner size={12} /> : <RefreshCw className="h-3 w-3" />}
@@ -1147,23 +1191,16 @@ export function ScaleTab() {
                             <p className="text-xs text-text-faint mt-0.5">Route V2 API calls through Redis ARQ workers instead of in-process execution.</p>
                         </div>
                         <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" className="sr-only peer" {...toggle('scale_mode_enabled')} />
+                            <input type="checkbox" role="switch" aria-label="Enable scale mode" className="sr-only peer" {...toggle('scale_mode_enabled')} />
                             <div className="w-11 h-6 bg-surface-2 rounded-full peer peer-checked:bg-accent transition-colors" />
                             <div className="absolute left-1 top-1 bg-text peer-checked:bg-accent-fg w-4 h-4 rounded-full transition-all peer-checked:translate-x-5" />
                         </label>
                     </div>
 
                     <div className="grid grid-cols-2 gap-4 pt-2">
-                        <div>
-                                                        <Field label="Queue Shards" hint="Use &gt;1 for Redis Cluster shard-aware routing.">
-                                <Input type="number" min="1" max="64" {...field('num_queue_shards')} />
-                            </Field>
-                        </div>
-                        <div>
-                                                        <Field label="Worker Concurrency" hint="Max parallel jobs per worker process.">
-                                <Input type="number" min="1" max="100" {...field('worker_concurrency')} />
-                            </Field>
-                        </div>
+                        <EnvValue label="Worker Concurrency" value={String(config.worker_concurrency)}
+                            envVar={config.env_only?.worker_concurrency}
+                            hint="Max parallel jobs per worker process." />
                     </div>
                 </div>
             </CollapsibleSection>
@@ -1191,19 +1228,13 @@ export function ScaleTab() {
                                 {pgStatus.msg}
                             </p>
                         )}
-                        <p className="text-2xs text-text-faint mt-1.5">Separate from the embed-code Postgres. PgBouncer: enable the toggle below and point to PgBouncer port.</p>
+                        <p className="text-2xs text-text-faint mt-1.5">Separate from the embed-code Postgres. Behind PgBouncer, point this at the PgBouncer port.</p>
                     </div>
 
-                    <div className="flex items-center justify-between py-3 border-t border-border">
-                        <div>
-                            <p className="text-sm text-text font-medium">PgBouncer Mode</p>
-                            <p className="text-xs text-text-faint mt-0.5">Use NullPool (required when Postgres URL points to PgBouncer in transaction mode).</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" className="sr-only peer" {...toggle('pgbouncer_mode')} />
-                            <div className="w-11 h-6 bg-surface-2 rounded-full peer peer-checked:bg-accent transition-colors" />
-                            <div className="absolute left-1 top-1 bg-text peer-checked:bg-accent-fg w-4 h-4 rounded-full transition-all peer-checked:translate-x-5" />
-                        </label>
+                    <div className="pt-3 border-t border-border max-w-xs">
+                        <EnvValue label="PgBouncer Mode" value={config.pgbouncer_mode ? 'On' : 'Off'}
+                            envVar={config.env_only?.pgbouncer_mode}
+                            hint="Uses NullPool, which PgBouncer in transaction mode requires." />
                     </div>
 
                 </div>
@@ -1275,8 +1306,8 @@ export function ScaleTab() {
                     {workers.length === 0 ? (
                         <div className="text-center py-8 border border-border border-dashed">
                             <Server className="h-8 w-8 text-text-faint mx-auto mb-3" />
-                            <p className="text-sm text-text-faint">No workers registered.</p>
-                            <p className="text-xs text-text-faint mt-1">Deploy <span className="font-mono text-text-muted">Dockerfile.worker</span> and register its health endpoint below.</p>
+                            <p className="text-sm text-text-faint">No workers have reported in.</p>
+                            <p className="text-xs text-text-faint mt-1">A worker appears here on its first heartbeat. Start one from <span className="font-mono text-text-muted">Dockerfile.worker</span>, pointed at the same Redis and database.</p>
                         </div>
                     ) : (
                         <div className="space-y-2 mb-4">
@@ -1321,22 +1352,9 @@ export function ScaleTab() {
                         </div>
                     )}
 
-                    <div className="flex gap-2 mt-4 pt-4 border-t border-border">
-                        <Input
-                                aria-label="Worker address" type="text" placeholder="http://10.0.0.5:9000"
-                            className="flex-1 font-mono"
-                            value={newWorkerAddress} onChange={e => setNewWorkerAddress(e.target.value)} />
-                        <button disabled={!newWorkerAddress}
-                            onClick={() => {
-                                fetch('/api/scale/workers', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ address: newWorkerAddress }),
-                                }).then(() => { setNewWorkerAddress(''); loadWorkers(); });
-                            }}
-                            className="flex items-center gap-2 px-4 py-2 text-xs font-bold uppercase tracking-wider border border-border-strong text-text-muted hover:text-text hover:border-text-faint disabled:opacity-40 transition-colors">
-                            <Plus className="h-3 w-3" /> Register
-                        </button>
+                    {/* No Register: workers write their own row on each heartbeat, and
+                        the address form posted to a route that never existed (F58). */}
+                    <div className="flex justify-end mt-4 pt-4 border-t border-border">
                         <button onClick={loadWorkers} aria-label="Refresh workers" title="Refresh workers" className="p-2 text-text-faint hover:text-text transition-colors">
                             <RefreshCw className="h-4 w-4" />
                         </button>
@@ -1354,22 +1372,18 @@ export function ScaleTab() {
                             <Input type="text" placeholder="http://jaeger:4317" className="font-mono" {...field('otlp_endpoint')} />
                         </Field>
                     </div>
-                    <div>
-                                                <Field label="Metrics Token" hint={<>Prometheus scrapes <span className="font-mono text-text-muted">GET /metrics</span> with this as a Bearer token.</>}>
-                            <Input type="password" placeholder="Bearer token for /metrics endpoint" className="font-mono" {...field('metrics_token')} />
-                        </Field>
+                    <div className="max-w-xs">
+                        <EnvValue label="Metrics Token" value={config.metrics_token_set ? 'Set' : 'Not set'}
+                            envVar={config.env_only?.metrics_token}
+                            hint={<>The API serves <span className="font-mono text-text-muted">GET /api/v2/metrics</span> with it as a Bearer token.</>} />
                     </div>
                     <div className="grid grid-cols-2 gap-4">
-                        <div>
-                                                        <Field label="Max Global Queue Depth" hint="Returns 503 when exceeded (backpressure).">
-                                <Input type="number" {...field('max_global_queue_depth')} />
-                            </Field>
-                        </div>
-                        <div>
-                                                        <Field label="Rate Limit (req/s per tenant)" hint="Returns 429 when exceeded.">
-                                <Input type="number" {...field('rate_limit_per_tenant_rps')} />
-                            </Field>
-                        </div>
+                        <EnvValue label="Max Global Queue Depth" value={String(config.max_global_queue_depth)}
+                            envVar={config.env_only?.max_global_queue_depth}
+                            hint="Returns 503 when exceeded (backpressure)." />
+                        <EnvValue label="Rate Limit (req/s per tenant)" value={String(config.rate_limit_per_tenant_rps)}
+                            envVar={config.env_only?.rate_limit_per_tenant_rps}
+                            hint="Returns 429 when exceeded." />
                     </div>
                 </div>
             </CollapsibleSection>
