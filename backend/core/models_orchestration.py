@@ -139,12 +139,9 @@ class StepConfig(BaseModel):
     cache_semantic_enabled: bool = False
     cache_response_ttl_seconds: int = 3600
     cache_response_threshold: float = 0.95
-    # Accepted and stored, read by nothing: the tool cache they configured was
-    # removed (F67). Kept so stored orchestrations and the step panel, which
-    # still writes them until its toggle goes (F-list batch 3), round-trip
-    # through a save — a dropped field would silently vanish from the document.
-    cache_tools_enabled: bool = True
-    cache_tool_ttl_seconds: int = 3600
+    # `cache_tools_enabled` / `cache_tool_ttl_seconds` were here: the tool cache
+    # they configured was removed (F67) and the panel's toggle went with batch 3.
+    # A document that still carries them validates — unknown keys are ignored.
 
     # On re-invocation (evaluator feedback or loop), include every prior turn's
     # inputs/tools/output in the prompt instead of only the last attempt.

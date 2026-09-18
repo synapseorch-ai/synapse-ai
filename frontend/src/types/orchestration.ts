@@ -79,9 +79,6 @@ export interface StepConfig {
     cache_semantic_enabled?: boolean;
     cache_response_ttl_seconds?: number;
     cache_response_threshold?: number;
-    // Tool memoization (default on for tools in the deterministic registry)
-    cache_tools_enabled?: boolean;
-    cache_tool_ttl_seconds?: number;
 
     // On re-invocation, include every prior turn (inputs/tools/output) in the prompt.
     include_full_history?: boolean;

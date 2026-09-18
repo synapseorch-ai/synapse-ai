@@ -80,19 +80,20 @@ class TestNoToolResultIsServedTwice:
         assert not any(e.get("type") == "tool_cache_hit" for e in events)
 
 
-class TestTheStepStillCarriesTheCacheFields:
-    def test_a_step_saved_with_the_old_toggle_round_trips(self):
-        """Nothing reads them since F67, but the synced step panel still writes
-        them until batch 3 removes the toggle. A field dropped from the model
-        would vanish from every orchestration on its next save."""
+class TestTheCacheFieldsAreGone:
+    def test_a_step_saved_with_the_old_toggle_still_loads(self):
+        """Nothing has read them since F67, and batch 3 removed the step
+        panel's toggle, their last writer — so the fields went too. A stored
+        orchestration that still carries them loads (unknown keys are
+        ignored), and its next save drops them."""
         from core.models_orchestration import StepConfig
         step = StepConfig.model_validate({
             "id": "s", "name": "S", "type": "agent",
             "cache_tools_enabled": False, "cache_tool_ttl_seconds": 60,
         })
         dumped = step.model_dump()
-        assert dumped["cache_tools_enabled"] is False
-        assert dumped["cache_tool_ttl_seconds"] == 60
+        assert "cache_tools_enabled" not in dumped
+        assert "cache_tool_ttl_seconds" not in dumped
 
 
 class TestOrchestrationContextChain:

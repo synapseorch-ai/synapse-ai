@@ -1962,6 +1962,37 @@ async def check_historyflag(browser) -> str:
     return "the box shows the engine's default, and unticking saves false"
 
 
+@check
+async def check_cachetoggle(browser) -> str:
+    """The step panel offers no tool cache: there is none.
+
+    The engine's tool-result cache was removed in batch 1B — it cached one
+    tool, and wrongly (F67). The panel kept "Cache deterministic tools" and its
+    TTL, a switch wired to nothing.
+    """
+    oid = f"orch_uismoke_cache_{int(time.time())}"
+    orch = laid_out_orchestration(oid, 1)
+    orch["steps"][0].update({"type": "llm", "name": "Write", "prompt_template": "Say hi."})
+    api("/api/orchestrations", "POST", orch)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await open_step(page, oid, "Write")
+        panel = page.locator('aside[aria-label="Step configuration"]')
+        await panel.get_by_role("button", name=re.compile(r"^Caching")).click()
+        await asyncio.sleep(0.5)
+        responses = await panel.get_by_role("checkbox", name="Cache LLM responses").count()
+        tools = await panel.get_by_text(re.compile("cache deterministic tools", re.I)).count()
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if not responses:
+        raise AssertionError("the Caching section did not open (no Cache LLM responses)")
+    if tools:
+        raise AssertionError("the panel still offers 'Cache deterministic tools', which nothing reads")
+    return "Caching offers the response cache, and no tool cache"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

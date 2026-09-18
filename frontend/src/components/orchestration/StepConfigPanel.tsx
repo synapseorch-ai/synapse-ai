@@ -336,23 +336,18 @@ export function StepConfigPanel({
 }
 
 /**
- * Cache controls: response cache + deterministic tool memoization.
+ * Cache controls: the response cache.
  *
  * Response cache is silently disabled for AGENT steps — skipping a ReAct loop
- * would let shared_state diverge from what the LLM "saw". Tool memoization is
- * safe everywhere because only tools in the DETERMINISTIC_TOOLS registry are
- * eligible (bash, sql_agent, web_scraper, sandbox are skipped at the backend).
+ * would let shared_state diverge from what the LLM "saw". There is no tool
+ * cache: the engine's was removed (F67) and its toggle with it.
  */
 function CacheSection({ step, update, readOnly = false }: { step: StepConfig; update: (patch: Partial<StepConfig>) => void; readOnly?: boolean }) {
     const responseCacheAllowed = step.type !== 'agent';
     const responseEnabled = !!step.cache_responses_enabled;
     const semanticEnabled = !!step.cache_semantic_enabled;
-    const toolCacheEnabled = step.cache_tools_enabled !== false; // default on
 
-    const summary = [
-        responseEnabled ? 'responses on' : null,
-        toolCacheEnabled ? 'tools on' : null,
-    ].filter(Boolean).join(' · ') || 'off';
+    const summary = responseEnabled ? 'responses on' : 'off';
 
     return (
         <Section title="Caching" summary={summary} className="[&>button]:px-3 [&>button]:py-2.5 [&>div>div]:px-3">
@@ -413,31 +408,6 @@ function CacheSection({ step, update, readOnly = false }: { step: StepConfig; up
                     <p className="text-[11px] leading-relaxed text-text-faint">
                         Response cache is disabled for agent steps — skipping the ReAct loop would diverge shared state.
                     </p>
-                )}
-
-                <label className="flex cursor-pointer items-start gap-2">
-                    <Checkbox
-                        className="mt-0.5"
-                        checked={toolCacheEnabled}
-                        onChange={(checked) => update({ cache_tools_enabled: checked ? undefined : false })}
-                        label="Cache deterministic tools"
-                    />
-                    <span className="text-xs text-text">
-                        Cache deterministic tools
-                        <span className="mt-0.5 block text-[10px] text-text-faint">
-                            Memoize results from <span className="font-code">code_search</span>, <span className="font-code">pdf_parser</span>,{' '}
-                            <span className="font-code">xlsx_parser</span>, <span className="font-code">time</span>,{' '}
-                            <span className="font-code">collect_data</span>, etc. Side-effectful tools (bash, sql_agent, web_scraper) are never cached.
-                        </span>
-                    </span>
-                </label>
-                {toolCacheEnabled && (
-                    <div className="pl-6">
-                        <Field label="TTL (seconds)">
-                            <Input size="sm" type="number" value={step.cache_tool_ttl_seconds ?? ''} placeholder="3600"
-                                onChange={(e) => update({ cache_tool_ttl_seconds: intOrUndefined(e.target.value) })} />
-                        </Field>
-                    </div>
                 )}
             </Frozen>
         </Section>
