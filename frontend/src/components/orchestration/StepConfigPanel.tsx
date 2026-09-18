@@ -63,6 +63,13 @@ interface StepConfigPanelProps {
      * both sends a person to a setting that does not exist.
      */
     codeRunnerNote?: string;
+    /**
+     * Look, don't touch — for a person who may read the orchestration but not
+     * change it (a cloud viewer). The fields show what is set and take no input;
+     * sections still open, so nothing is hidden; there is no Delete step and no
+     * "Set as entry point"; and `onUpdate` is never called, whatever reaches it.
+     */
+    readOnly?: boolean;
 }
 
 const SELF_HOSTED_RUNNER_NOTE =
@@ -76,9 +83,11 @@ const MAX_WIDTH = 640;
 export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
     availableModels, orchestration, showVaultHints = true, canRunCode = true,
-    codeRunnerNote = SELF_HOSTED_RUNNER_NOTE,
+    codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, readOnly = false,
 }: StepConfigPanelProps) {
-    const update = (patch: Partial<StepConfig>) => onUpdate({ ...step, ...patch });
+    const update = (patch: Partial<StepConfig>) => {
+        if (!readOnly) onUpdate({ ...step, ...patch });
+    };
     const otherSteps = allStepIds.filter((s) => s.id !== step.id);
     const meta = STEP_TYPE_META[step.type];
 
@@ -132,7 +141,7 @@ export function StepConfigPanel({
     const sectionProps: StepSectionProps = {
         step, update, otherSteps, agents,
         availableModels: availableModels || [],
-        availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration,
+        availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration, readOnly,
     };
     const TypeSection = STEP_SECTIONS[step.type];
     const isLinear = step.type !== 'end' && step.type !== 'evaluator' && step.type !== 'loop' && step.type !== 'if_else' && step.type !== 'switch';
@@ -179,94 +188,104 @@ export function StepConfigPanel({
                     </div>
                 )}
 
-                {/* Identity */}
-                <Field label="Name">
-                    <Input size="sm" value={step.name} onChange={(e) => update({ name: e.target.value })} />
-                </Field>
-                <Field label="Type">
-                    <Select
-                        size="sm"
-                        aria-label="Step type"
-                        value={step.type}
-                        onChange={(t) => changeType(t as StepType)}
-                        options={STEP_TYPES.map((t) => ({
-                            value: t,
-                            label: STEP_TYPE_META[t].label,
-                            hint: t === 'transform' && !canRunCode
-                                ? 'Runs Python — available on Team and Business.'
-                                : STEP_TYPE_META[t].blurb,
-                            // Never disable the type this step already is: a
-                            // workflow that arrived with a transform must stay
-                            // openable and editable, not become a step whose own
-                            // type is unselectable in its own picker.
-                            disabled: t === 'transform' && !canRunCode && step.type !== 'transform',
-                        }))}
-                    />
-                </Field>
-                {isEntry ? (
-                    <Badge tone="success">Entry point</Badge>
-                ) : (
-                    <Button size="sm" variant="ghost" onClick={onSetEntry}>Set as entry point</Button>
+                {readOnly && (
+                    <p className="text-xs text-text-muted">View only — your role can read this step, not change it.</p>
                 )}
 
-                {/* Type-specific behavior */}
-                <hr className="border-border" />
-                {/* The orchestration's state keys, for the prompts' `{{` suggestions. */}
-                <TemplateScope state={stateKeys}>
-                    <TypeSection {...sectionProps} />
-                </TemplateScope>
+                <Frozen readOnly={readOnly} className="space-y-4">
+                    {/* Identity */}
+                    <Field label="Name">
+                        <Input size="sm" value={step.name} onChange={(e) => update({ name: e.target.value })} />
+                    </Field>
+                    <Field label="Type">
+                        <Select
+                            size="sm"
+                            aria-label="Step type"
+                            value={step.type}
+                            onChange={(t) => changeType(t as StepType)}
+                            options={STEP_TYPES.map((t) => ({
+                                value: t,
+                                label: STEP_TYPE_META[t].label,
+                                hint: t === 'transform' && !canRunCode
+                                    ? 'Runs Python — available on Team and Business.'
+                                    : STEP_TYPE_META[t].blurb,
+                                // Never disable the type this step already is: a
+                                // workflow that arrived with a transform must stay
+                                // openable and editable, not become a step whose own
+                                // type is unselectable in its own picker.
+                                disabled: t === 'transform' && !canRunCode && step.type !== 'transform',
+                            }))}
+                        />
+                    </Field>
+                    {isEntry ? (
+                        <Badge tone="success">Entry point</Badge>
+                    ) : (
+                        !readOnly && <Button size="sm" variant="ghost" onClick={onSetEntry}>Set as entry point</Button>
+                    )}
 
-                {/* Data flow — not for end nodes */}
+                    {/* Type-specific behavior */}
+                    <hr className="border-border" />
+                    {/* The orchestration's state keys, for the prompts' `{{` suggestions. */}
+                    <TemplateScope state={stateKeys}>
+                        <TypeSection {...sectionProps} />
+                    </TemplateScope>
+
+                    {/* Data flow — not for end nodes */}
+                    {step.type !== 'end' && (
+                        <>
+                            <hr className="border-border" />
+                            <Field
+                                label="Input keys"
+                                hint={stateKeys.length > 0 ? 'Click a key to add it, or type a custom one.' : undefined}
+                            >
+                                <KeyChips
+                                    value={step.input_keys || []}
+                                    onChange={(input_keys) => update({ input_keys: input_keys.length ? input_keys : undefined })}
+                                    suggestions={stateKeys}
+                                />
+                            </Field>
+                            <Field label="Output key" hint="Where this step's result lands in shared state.">
+                                <Input
+                                    size="sm"
+                                    className="font-code"
+                                    value={step.output_key || ''}
+                                    onChange={(e) => update({ output_key: e.target.value || undefined })}
+                                    placeholder="analysis_result"
+                                />
+                            </Field>
+                            {isLinear && (
+                                <Field label="Next step">
+                                    <StepTargetSelect
+                                        aria-label="Next step"
+                                        value={step.next_step_id}
+                                        onChange={(id) => update({ next_step_id: id })}
+                                        otherSteps={otherSteps}
+                                    />
+                                </Field>
+                            )}
+                            {step.type === 'loop' && (
+                                <Field label="Done path" hint="After all iterations complete.">
+                                    <StepTargetSelect
+                                        aria-label="Done path"
+                                        value={step.next_step_id}
+                                        onChange={(id) => update({ next_step_id: id })}
+                                        otherSteps={otherSteps}
+                                    />
+                                </Field>
+                            )}
+                        </>
+                    )}
+                </Frozen>
+
                 {step.type !== 'end' && (
                     <>
-                        <hr className="border-border" />
-                        <Field
-                            label="Input keys"
-                            hint={stateKeys.length > 0 ? 'Click a key to add it, or type a custom one.' : undefined}
-                        >
-                            <KeyChips
-                                value={step.input_keys || []}
-                                onChange={(input_keys) => update({ input_keys: input_keys.length ? input_keys : undefined })}
-                                suggestions={stateKeys}
-                            />
-                        </Field>
-                        <Field label="Output key" hint="Where this step's result lands in shared state.">
-                            <Input
-                                size="sm"
-                                className="font-code"
-                                value={step.output_key || ''}
-                                onChange={(e) => update({ output_key: e.target.value || undefined })}
-                                placeholder="analysis_result"
-                            />
-                        </Field>
-                        {isLinear && (
-                            <Field label="Next step">
-                                <StepTargetSelect
-                                    aria-label="Next step"
-                                    value={step.next_step_id}
-                                    onChange={(id) => update({ next_step_id: id })}
-                                    otherSteps={otherSteps}
-                                />
-                            </Field>
-                        )}
-                        {step.type === 'loop' && (
-                            <Field label="Done path" hint="After all iterations complete.">
-                                <StepTargetSelect
-                                    aria-label="Done path"
-                                    value={step.next_step_id}
-                                    onChange={(id) => update({ next_step_id: id })}
-                                    otherSteps={otherSteps}
-                                />
-                            </Field>
-                        )}
-
-                        {/* Guardrails */}
+                        {/* Guardrails — the section still opens for a viewer; its fields do not take input. */}
                         <Section
                             title="Guardrails"
                             summary={`${step.max_turns ?? '—'} turns · ${step.timeout_seconds ?? '—'}s`}
                             className="[&>button]:px-3 [&>button]:py-2.5 [&>div>div]:px-3"
                         >
-                            <div className="space-y-3">
+                            <Frozen readOnly={readOnly} className="space-y-3">
                                 <div className="grid grid-cols-2 gap-2">
                                     <Field label="Max turns">
                                         <Input size="sm" type="number" value={step.max_turns ?? ''} placeholder="15"
@@ -281,20 +300,22 @@ export function StepConfigPanel({
                                     <Input size="sm" type="number" value={step.max_iterations ?? ''} placeholder="3"
                                         onChange={(e) => update({ max_iterations: intOrUndefined(e.target.value) })} />
                                 </Field>
-                            </div>
+                            </Frozen>
                         </Section>
 
-                        <CacheSection step={step} update={update} />
+                        <CacheSection step={step} update={update} readOnly={readOnly} />
                     </>
                 )}
             </div>
 
             {/* Footer */}
-            <div className="border-t border-border p-3">
-                <Button size="sm" variant="ghost" className="w-full text-danger hover:text-danger" onClick={onDelete}>
-                    Delete step
-                </Button>
-            </div>
+            {!readOnly && (
+                <div className="border-t border-border p-3">
+                    <Button size="sm" variant="ghost" className="w-full text-danger hover:text-danger" onClick={onDelete}>
+                        Delete step
+                    </Button>
+                </div>
+            )}
 
             <ConfirmDialog
                 open={pendingType !== null}
@@ -319,7 +340,7 @@ export function StepConfigPanel({
  * safe everywhere because only tools in the DETERMINISTIC_TOOLS registry are
  * eligible (bash, sql_agent, web_scraper, sandbox are skipped at the backend).
  */
-function CacheSection({ step, update }: { step: StepConfig; update: (patch: Partial<StepConfig>) => void }) {
+function CacheSection({ step, update, readOnly = false }: { step: StepConfig; update: (patch: Partial<StepConfig>) => void; readOnly?: boolean }) {
     const responseCacheAllowed = step.type !== 'agent';
     const responseEnabled = !!step.cache_responses_enabled;
     const semanticEnabled = !!step.cache_semantic_enabled;
@@ -332,7 +353,7 @@ function CacheSection({ step, update }: { step: StepConfig; update: (patch: Part
 
     return (
         <Section title="Caching" summary={summary} className="[&>button]:px-3 [&>button]:py-2.5 [&>div>div]:px-3">
-            <div className="space-y-3">
+            <Frozen readOnly={readOnly} className="space-y-3">
                 {responseCacheAllowed ? (
                     <div className="space-y-2">
                         <label className="flex cursor-pointer items-start gap-2">
@@ -415,7 +436,21 @@ function CacheSection({ step, update }: { step: StepConfig; update: (patch: Part
                         </Field>
                     </div>
                 )}
-            </div>
+            </Frozen>
         </Section>
+    );
+}
+
+/**
+ * A disabled `<fieldset>` when read-only — every native control inside stops
+ * taking input at once, Radix triggers included (they are buttons), while the
+ * text stays readable. Kept inside a Section's body rather than around the
+ * Section, so a viewer can still open it.
+ */
+function Frozen({ readOnly, className, children }: { readOnly: boolean; className?: string; children: React.ReactNode }) {
+    return (
+        <fieldset disabled={readOnly} className={['m-0 min-w-0 border-0 p-0', className].filter(Boolean).join(' ')}>
+            {children}
+        </fieldset>
     );
 }

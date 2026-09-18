@@ -14,12 +14,17 @@ import {
 interface StateSchemaEditorProps {
     schema: Record<string, StateSchemaEntry>;
     onChange: (schema: Record<string, StateSchemaEntry>) => void;
+    /** Look, don't touch — a cloud viewer reads the schema; no key can be added, changed or removed. */
+    readOnly?: boolean;
 }
 
 const TYPE_OPTIONS = STATE_TYPES.map((t) => ({ value: t, label: STATE_TYPE_LABELS[t] }));
 
-export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) {
+export function StateSchemaEditor({ schema, onChange: write, readOnly = false }: StateSchemaEditorProps) {
     const entries = Object.entries(schema);
+    const onChange = (next: Record<string, StateSchemaEntry>) => {
+        if (!readOnly) write(next);
+    };
     // Raw JSON text buffers for list/dict editors, keyed by entry key.
     // Lets users type freely while we only commit valid JSON to the schema.
     const [jsonBuffers, setJsonBuffers] = useState<Record<string, string>>({});
@@ -170,9 +175,11 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
         <div className="space-y-2">
             <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wider text-text-muted">State Schema</span>
-                <Button size="sm" variant="ghost" onClick={addEntry}>
-                    <Plus size={12} aria-hidden /> Add key
-                </Button>
+                {!readOnly && (
+                    <Button size="sm" variant="ghost" onClick={addEntry}>
+                        <Plus size={12} aria-hidden /> Add key
+                    </Button>
+                )}
             </div>
             {entries.length === 0 && (
                 <div className="text-xs italic text-text-faint">No state keys defined. Steps will still work with implicit state.</div>
@@ -184,7 +191,7 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
                 // opening it, or save over an AI-builder mistake only a person can judge.
                 const unknownType = declared === null && !!entry.type;
                 return (
-                    <div key={key} className="flex items-start gap-2 rounded-md border border-border bg-surface-2/40 p-2">
+                    <fieldset key={key} disabled={readOnly} className="m-0 flex min-w-0 items-start gap-2 rounded-md border border-border bg-surface-2/40 p-2">
                         <div className="flex-1 space-y-1.5">
                             <div className="flex gap-2">
                                 <Input
@@ -228,15 +235,17 @@ export function StateSchemaEditor({ schema, onChange }: StateSchemaEditorProps) 
                                 <div className="min-w-0 flex-1">{renderDefaultInput(key, entry)}</div>
                             </div>
                         </div>
-                        <button
-                            type="button"
-                            aria-label={`Remove ${key}`}
-                            onClick={() => removeEntry(key)}
-                            className="mt-1 text-text-faint transition-colors hover:text-danger"
-                        >
-                            <Trash2 size={12} aria-hidden />
-                        </button>
-                    </div>
+                        {!readOnly && (
+                            <button
+                                type="button"
+                                aria-label={`Remove ${key}`}
+                                onClick={() => removeEntry(key)}
+                                className="mt-1 text-text-faint transition-colors hover:text-danger"
+                            >
+                                <Trash2 size={12} aria-hidden />
+                            </button>
+                        )}
+                    </fieldset>
                 );
             })}
         </div>

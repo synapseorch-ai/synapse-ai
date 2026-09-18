@@ -27,6 +27,11 @@ export interface StepSectionProps {
     /** Where a transform's code runs, in this product's words. See `StepConfigPanel`. */
     codeRunnerNote: string;
     orchestration?: Orchestration;
+    /**
+     * Look, don't touch. The panel's fieldset disables every native control; this
+     * reaches the one it cannot — the code editor, which is `contenteditable`.
+     */
+    readOnly?: boolean;
 }
 
 /** Neutral explainer block — replaces the per-type rainbow of tinted boxes. */

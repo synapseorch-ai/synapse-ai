@@ -687,7 +687,7 @@ function HumanSection({ step, update }: StepSectionProps) {
     );
 }
 
-function TransformSection({ step, update, codeRunnerNote }: StepSectionProps) {
+function TransformSection({ step, update, codeRunnerNote, readOnly }: StepSectionProps) {
     return (
         <div className="space-y-2">
             <Note>
@@ -700,6 +700,7 @@ function TransformSection({ step, update, codeRunnerNote }: StepSectionProps) {
                 <PythonEditor
                     key={step.id}
                     height={240}
+                    readOnly={readOnly}
                     value={step.transform_code || ''}
                     onChange={(code) => update({ transform_code: code })}
                 />
