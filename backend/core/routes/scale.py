@@ -69,9 +69,24 @@ async def get_scale_config_route():
         "s3_region": settings.get("s3_region", "us-east-1"),
         "s3_prefix": settings.get("s3_prefix", "synapse"),
         "s3_access_key_id": settings.get("s3_access_key_id", ""),
-        "s3_secret_access_key": settings.get("s3_secret_access_key", ""),
+        # Write-only, like the metrics token: reported as set or not, never
+        # echoed. The screen posts its whole form back, so the POST treats an
+        # empty secret as "unchanged" (F95).
+        "s3_secret_access_key": "",
+        "s3_secret_access_key_set": bool(settings.get("s3_secret_access_key")),
         "s3_endpoint_url": settings.get("s3_endpoint_url", ""),
     }
+
+
+def _s3_secret(key_id: str, sent: str) -> str:
+    """The secret to keep, given what a form sent. The secret is never read back
+    to the screen, so an empty one means "unchanged" — except with no key id,
+    where it is cleared: `SynapseS3` uses a secret only beside a key id, and a
+    secret left behind after switching to role credentials is a liability."""
+    from core.config import load_settings
+    if not key_id:
+        return ""
+    return sent or load_settings().get("s3_secret_access_key", "")
 
 
 @router.post("/scale/config")
@@ -87,7 +102,7 @@ async def update_scale_config_route(body: ScaleConfigUpdate):
         "s3_region": body.s3_region,
         "s3_prefix": body.s3_prefix,
         "s3_access_key_id": body.s3_access_key_id,
-        "s3_secret_access_key": body.s3_secret_access_key,
+        "s3_secret_access_key": _s3_secret(body.s3_access_key_id, body.s3_secret_access_key),
         "s3_endpoint_url": body.s3_endpoint_url,
     })
     # Invalidate the S3 singleton so the new config is picked up immediately
@@ -119,7 +134,8 @@ async def test_s3_connection(body: S3TestRequest):
         region=body.s3_region,
         prefix=body.s3_prefix,
         access_key_id=body.s3_access_key_id,
-        secret_access_key=body.s3_secret_access_key,
+        # The screen no longer holds the stored secret, so it tests with that one.
+        secret_access_key=_s3_secret(body.s3_access_key_id, body.s3_secret_access_key),
         endpoint_url=body.s3_endpoint_url,
     )
     return client.test_connection()

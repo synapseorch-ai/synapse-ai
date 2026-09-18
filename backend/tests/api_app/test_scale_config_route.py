@@ -87,3 +87,72 @@ class TestQueueShardsAreGone:
         from core.models import Settings
         assert "num_queue_shards" not in default_settings()
         assert "num_queue_shards" not in Settings.model_fields
+
+
+class TestTheS3SecretIsWriteOnly:
+    """F95: the Scale screen read the secret access key back in plaintext.
+
+    GET echoed `s3_secret_access_key`, and the screen posted the whole object
+    back on every save — so masking it on the way out would have saved the mask
+    over the real value on the way back in. An empty secret therefore means
+    "unchanged"; a new one replaces it; and clearing the access key id clears
+    it, since the client uses a secret only beside a key id (`SynapseS3`).
+    """
+
+    SECRET = "uismoke-s3-secret-not-real"
+
+    async def _save(self, client, **fields):
+        body = {"s3_bucket": "bucket", "s3_access_key_id": "AKIAUISMOKE", **fields}
+        assert (await client.post("/api/scale/config", json=body)).status_code == 200
+
+    def _stored(self):
+        from core.config import load_settings
+        return load_settings().get("s3_secret_access_key", "")
+
+    async def test_it_is_never_echoed(self, client, clean_env):
+        await self._save(client, s3_secret_access_key=self.SECRET)
+
+        body = (await client.get("/api/scale/config")).json()
+
+        assert self.SECRET not in str(body)
+        assert body["s3_secret_access_key_set"] is True
+
+    async def test_saving_without_it_keeps_it(self, client, clean_env):
+        await self._save(client, s3_secret_access_key=self.SECRET)
+        await self._save(client, s3_secret_access_key="")
+        await self._save(client)
+
+        assert self._stored() == self.SECRET
+
+    async def test_a_new_one_replaces_it(self, client, clean_env):
+        await self._save(client, s3_secret_access_key=self.SECRET)
+        await self._save(client, s3_secret_access_key="a-different-secret")
+
+        assert self._stored() == "a-different-secret"
+
+    async def test_clearing_the_key_id_clears_it(self, client, clean_env):
+        await self._save(client, s3_secret_access_key=self.SECRET)
+        await self._save(client, s3_access_key_id="", s3_secret_access_key="")
+
+        assert self._stored() == ""
+        assert (await client.get("/api/scale/config")).json()["s3_secret_access_key_set"] is False
+
+    async def test_the_connection_test_uses_the_stored_one(self, client, clean_env, monkeypatch):
+        import core.s3_storage as s3
+        seen: dict = {}
+
+        class Recorder:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+            def test_connection(self):
+                return {"ok": True}
+
+        monkeypatch.setattr(s3, "SynapseS3", Recorder)
+        await self._save(client, s3_secret_access_key=self.SECRET)
+
+        resp = await client.post("/api/scale/test-s3", json={
+            "s3_bucket": "bucket", "s3_access_key_id": "AKIAUISMOKE", "s3_secret_access_key": ""})
+
+        assert resp.status_code == 200
+        assert seen["secret_access_key"] == self.SECRET

@@ -17,6 +17,8 @@ import { usd } from '@/lib/money';
 interface ScaleConfig {
     /** True when METRICS_TOKEN is set. The token itself is never sent (F58). */
     metrics_token_set?: boolean;
+    /** True when an S3 secret is stored. The secret itself is never sent (F95). */
+    s3_secret_access_key_set?: boolean;
     /** Field → environment variable, for the settings only the environment sets. */
     env_only?: Record<string, string>;
     redis_url: string;
@@ -647,7 +649,8 @@ export function ScaleTab() {
             // route's own annotations are left out rather than sent to be ignored.
             const envOnly = new Set(Object.keys(config.env_only ?? {}));
             const body = Object.fromEntries(Object.entries(config).filter(
-                ([k]) => !envOnly.has(k) && k !== 'env_only' && k !== 'metrics_token_set'));
+                ([k]) => !envOnly.has(k) && k !== 'env_only' && k !== 'metrics_token_set'
+                    && k !== 's3_secret_access_key_set'));
             const res = await fetch('/api/scale/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1270,8 +1273,15 @@ export function ScaleTab() {
                             </Field>
                         </div>
                         <div>
-                                                        <Field label="Secret Access Key">
-                                <Input type="password" placeholder="••••••••" className="font-mono" {...field('s3_secret_access_key')} />
+                                                        <Field label="Secret Access Key"
+                                hint={config.s3_secret_access_key_set
+                                    ? 'Stored, and never shown. Leave empty to keep it.'
+                                    : undefined}>
+                                {/* Write-only (F95): the route no longer reads it back,
+                                    and an empty field keeps what is stored. */}
+                                <Input type="password" autoComplete="new-password"
+                                    placeholder={config.s3_secret_access_key_set ? '•••••••• stored' : '••••••••'}
+                                    className="font-mono" {...field('s3_secret_access_key')} />
                             </Field>
                         </div>
                     </div>
@@ -1295,7 +1305,7 @@ export function ScaleTab() {
                             </p>
                         )}
                     </div>
-                    <p className="text-2xs text-text-faint">Leave Access Key / Secret blank to use IAM role or environment credentials.</p>
+                    <p className="text-2xs text-text-faint">Leave the Access Key ID blank to use an IAM role or environment credentials — saving without one also clears a stored secret.</p>
                     {/* F57: the bucket became the real blob store in batch 1C. It is
                         chosen when each process starts, and reads go to it alone. */}
                     <div className="flex items-start gap-2 text-2xs text-warning border border-warning/40 bg-warning-subtle rounded-md px-3 py-2">

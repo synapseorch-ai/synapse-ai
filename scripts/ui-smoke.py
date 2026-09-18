@@ -1128,6 +1128,13 @@ async def check_scale(browser) -> str:
         storage = (await page.evaluate("""() => [...document.querySelectorAll('button')]
             .filter(b => (b.textContent || '').trim().startsWith('Storage (S3)'))
             .map(b => b.parentElement.innerText).join(' ')""")).lower()
+        # The secret access key is write-only (F95): whatever is stored, the
+        # screen is never given it. Read off the field, not the route's promise.
+        secret_value = await page.get_by_label("Secret Access Key").input_value()
+        if secret_value:
+            problems.append("the S3 secret access key is read back into the screen")
+        if "s3_secret_access_key_set" not in api("/api/scale/config"):
+            problems.append("the route does not say whether an S3 secret is stored")
         if "restart" not in storage:
             problems.append("the S3 section does not say a bucket takes effect on restart")
         if "not copied" not in storage:
