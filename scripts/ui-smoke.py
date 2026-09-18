@@ -1686,6 +1686,48 @@ async def check_fieldnames(browser) -> str:
     return f"{seen} described fields, each named by its label alone"
 
 
+# ── a human step's prompt ────────────────────────────────────────────────────
+
+@check
+async def check_humanprompt(browser) -> str:
+    """A human step's prompt is edited like the engine fills it: `{state.key}` only.
+
+    It was a plain textarea while every other prompt was the markdown editor,
+    so it offered no keys at all. The engine fills a human prompt with its own
+    single-brace pass and never renders `{{ }}` — deliberately: the prompt can
+    be posted to a messaging channel, where a workspace variable would leak.
+    So `{s` must offer the run's state and `{{` must offer nothing (F5, D104).
+    """
+    oid = f"orch_uismoke_human_{int(time.time())}"
+    api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await open_step(page, oid, "Approve")
+        box = page.get_by_role("textbox", name="Prompt for human", exact=True)
+        if not await box.count():
+            raise AssertionError("no textbox named 'Prompt for human' on the human step's panel")
+        if await box.get_attribute("aria-autocomplete") != "list":
+            raise AssertionError("the human prompt is a plain textarea — it offers no state keys")
+        await box.click()
+        await page.keyboard.press("End")
+        await page.keyboard.type(" {s")
+        await asyncio.sleep(0.5)
+        offered = await page.get_by_role("listbox", name="Suggestions").get_by_role("option").all_inner_texts()
+        if not any("line_" in o for o in offered):
+            raise AssertionError(f"typing {{s offered {offered!r}, not the run's state keys")
+        await page.keyboard.press("Escape")
+        await page.keyboard.type(" {{ ")
+        await asyncio.sleep(0.5)
+        doubled = await page.get_by_role("listbox", name="Suggestions").count()
+        if doubled:
+            raise AssertionError("typing {{ opened suggestions — a human prompt never renders {{ }}")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    return f"{{s offers {len(offered)} state key(s); {{{{ offers nothing"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

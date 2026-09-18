@@ -550,7 +550,7 @@ const FIELD_TYPES = [
     { value: 'boolean', label: 'Yes / No' },
 ];
 
-function HumanSection({ step, update, stateKeys }: StepSectionProps) {
+function HumanSection({ step, update }: StepSectionProps) {
     const [channels, setChannels] = useState<any[]>([]);
 
     useEffect(() => {
@@ -565,16 +565,30 @@ function HumanSection({ step, update, stateKeys }: StepSectionProps) {
 
     return (
         <div className="space-y-3">
-            <Field label="Prompt for human" hint={<>Use <span className="font-code">{'{state.key}'}</span> for context.</>}>
-                <Textarea
-                    size="sm"
+            <Field
+                label="Prompt for human"
+                composite
+                hint={
+                    <>
+                        {/* The engine fills a human prompt with its own single-brace pass and never
+                            renders `{{ }}` — on purpose: the prompt can be posted to a messaging
+                            channel, where a workspace variable would leak (D104). */}
+                        Use <span className="font-code">{'{state.key}'}</span> for context —
+                        type <span className="font-code">{'{s'}</span> to pick a key. <span className="font-code">{'{{ }}'}</span> is not
+                        filled in here.
+                    </>
+                }
+            >
+                <MarkdownEditor
+                    key={step.id}
+                    compact
                     rows={3}
+                    profile="legacy-state"
                     value={step.human_prompt || ''}
-                    onChange={(e) => update({ human_prompt: e.target.value })}
+                    onChange={(human_prompt) => update({ human_prompt })}
                     placeholder="What should the user decide?"
                 />
             </Field>
-            <StateKeyHelper stateKeys={stateKeys} onInsert={(token) => update({ human_prompt: (step.human_prompt || '') + `{${token}}` })} />
 
             <div className="space-y-1.5">
                 <span className="block text-sm font-medium text-text">
