@@ -29,13 +29,21 @@ const CATEGORY_ORDER: StepCategory[] = ['Core', 'Logic', 'Data', 'I/O'];
 /** The dataTransfer key the canvas' onDrop reads. */
 export const STEP_DRAG_TYPE = 'application/x-synapse-step-type';
 
+/**
+ * How far the open palette reaches into the canvas: `w-56` plus its Panel's
+ * `m-2`, plus the air fit-view leaves on every other side. The canvas fits the
+ * graph to the right of this, or step 1 opens under the palette (F31).
+ */
+export const PALETTE_CLEARANCE_PX = 224 + 8 + 24;
+
+/** Whether the palette is folded to its "Steps" button — shared with the canvas's fit-view. */
+export function usePaletteCollapsed() {
+    return usePersisted<'0' | '1'>('orch-palette-collapsed', (raw) => (raw === '1' ? '1' : '0'), '0');
+}
+
 export function StepPalette({ onAdd }: { onAdd: (type: StepType) => void }) {
     const [query, setQuery] = useState('');
-    const [collapsed, setCollapsed] = usePersisted<'0' | '1'>(
-        'orch-palette-collapsed',
-        (raw) => (raw === '1' ? '1' : '0'),
-        '0',
-    );
+    const [collapsed, setCollapsed] = usePaletteCollapsed();
 
     const groups = useMemo(() => {
         const q = query.trim().toLowerCase();

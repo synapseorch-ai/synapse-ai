@@ -20,7 +20,7 @@ import '@xyflow/react/dist/style.css';
 import { Maximize, Minus, Plus, Wand2 } from 'lucide-react';
 import { canvasFlags } from './canvasFlags';
 import { StepNode } from './StepNode';
-import { StepPalette, STEP_DRAG_TYPE } from './StepPalette';
+import { PALETTE_CLEARANCE_PX, StepPalette, STEP_DRAG_TYPE, usePaletteCollapsed } from './StepPalette';
 import { addStepToGraph, clearEdgeLink, removeStepFromGraph, ROUTE_COLORS, type EdgeLink } from './graph';
 import { layoutPositions } from './layout';
 import { validateOrchestration } from './validate';
@@ -54,6 +54,8 @@ function subscribeCoarse(onChange: () => void) {
 const readCoarse = () => window.matchMedia(COARSE).matches;
 const serverCoarse = () => false;
 const NO_ISSUES: Record<string, StepIssue[]> = {};
+/** Fit-view's air on each side, as a fraction of the canvas. */
+const FIT_PADDING = 0.15;
 
 const nodeTypes: NodeTypes = {
     stepNode: StepNode as any,
@@ -313,6 +315,16 @@ export function WorkflowCanvas({
     const coarsePointer = useSyncExternalStore(subscribeCoarse, readCoarse, serverCoarse);
     const flags = canvasFlags({ readOnly, showPalette, coarsePointer });
     const selectStep = onSelectStep ?? noop;
+    const [paletteCollapsed] = usePaletteCollapsed();
+    // The open palette floats over the canvas's left edge; every fit leaves it
+    // that much room, or the first step opens underneath it (F31).
+    const fitPadding = useMemo(
+        () =>
+            flags.palette && paletteCollapsed !== '1'
+                ? { top: FIT_PADDING, right: FIT_PADDING, bottom: FIT_PADDING, left: `${PALETTE_CLEARANCE_PX}px` as const }
+                : FIT_PADDING,
+        [flags.palette, paletteCollapsed]
+    );
 
     // A preview has no draft to fix, and its agents may be local ids the
     // validator would call missing.
@@ -343,8 +355,8 @@ export function WorkflowCanvas({
     useEffect(() => {
         if (fittedForRef.current === orchestration.id) return;
         fittedForRef.current = orchestration.id;
-        window.requestAnimationFrame(() => fitView({ padding: 0.15 }));
-    }, [orchestration.id, fitView]);
+        window.requestAnimationFrame(() => fitView({ padding: fitPadding }));
+    }, [orchestration.id, fitView, fitPadding]);
 
     const onConnect = useCallback(
         (connection: Connection) => {
@@ -472,8 +484,8 @@ export function WorkflowCanvas({
             return pos ? { ...s, position_x: pos.x, position_y: pos.y } : s;
         });
         onUpdateOrchestration({ ...orchestration, steps: updatedSteps });
-        window.requestAnimationFrame(() => fitView({ padding: 0.15, duration: 300 }));
-    }, [getNodes, computedEdges, orchestration, onUpdateOrchestration, fitView]);
+        window.requestAnimationFrame(() => fitView({ padding: fitPadding, duration: 300 }));
+    }, [getNodes, computedEdges, orchestration, onUpdateOrchestration, fitView, fitPadding]);
 
     const onNodeClick = useCallback(
         (_: any, node: Node) => {
@@ -521,6 +533,7 @@ export function WorkflowCanvas({
                 // an unescaped underscore in an arbitrary variant is a space.
                 className={flags.panOnDrag ? undefined : String.raw`[&_.react-flow\_\_pane]:!touch-auto`}
                 fitView
+                fitViewOptions={{ padding: fitPadding }}
                 minZoom={flags.minZoom}
                 maxZoom={2}
                 snapToGrid={flags.snapToGrid}
@@ -582,7 +595,7 @@ export function WorkflowCanvas({
                     </button>
                     <button
                         type="button"
-                        onClick={() => fitView({ padding: 0.15, duration: 300 })}
+                        onClick={() => fitView({ padding: fitPadding, duration: 300 })}
                         title="Fit the whole graph in view"
                         aria-label="Fit view"
                         className={canvasButtonCls}

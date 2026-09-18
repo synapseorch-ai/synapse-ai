@@ -1728,6 +1728,73 @@ async def check_humanprompt(browser) -> str:
     return f"{{s offers {len(offered)} state key(s); {{{{ offers nothing"
 
 
+# ── the palette and the graph ────────────────────────────────────────────────
+
+def laid_out_orchestration(oid: str, n: int = 3) -> dict:
+    """`n` print steps in a row, 280 px apart — how Tidy up and the builder place them."""
+    steps = [{
+        "id": f"{oid}_s{i}",
+        "name": f"Step {i + 1}",
+        "type": "print",
+        "print_content": f"step {i + 1}",
+        "next_step_id": f"{oid}_s{i + 1}" if i < n - 1 else None,
+        "output_key": f"out_{i}",
+        "position_x": 280 * i,
+        "position_y": 0,
+    } for i in range(n)]
+    return {
+        "id": oid, "name": "ui-smoke laid out", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "steps": steps, "entry_step_id": steps[0]["id"], "state_schema": {}, "trigger": "manual",
+    }
+
+
+NODES_UNDER_PALETTE = r"""
+() => {
+  const pal = document.querySelector('.react-flow__panel.top.left');
+  if (!pal) return {palette: false, hits: []};
+  const p = pal.getBoundingClientRect();
+  const hits = [];
+  for (const n of document.querySelectorAll('.react-flow__node')) {
+    const r = n.getBoundingClientRect();
+    const overlap = r.left < p.right && r.right > p.left && r.top < p.bottom && r.bottom > p.top;
+    if (overlap) hits.push(`${n.innerText.split('\n')[0]} at x ${Math.round(r.left)}–${Math.round(r.right)}, palette to ${Math.round(p.right)}`);
+  }
+  return {palette: true, hits};
+}
+"""
+
+
+@check
+async def check_canvasfit(browser) -> str:
+    """Fitting the graph leaves room for the step palette that floats over it.
+
+    Fit-view used the whole canvas, and the palette is drawn on top of its left
+    edge, so an orchestration opened with its first step under the palette —
+    and a click on that step pressed the palette (F31). Checked on open and on
+    the Fit view button, with the palette open (its default).
+    """
+    oid = f"orch_uismoke_fit_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 1.0)
+        opened = await page.evaluate(NODES_UNDER_PALETTE)
+        await page.get_by_role("button", name="Fit view").click()
+        await asyncio.sleep(0.8)
+        refit = await page.evaluate(NODES_UNDER_PALETTE)
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if not opened["palette"]:
+        raise AssertionError("no step palette on the canvas")
+    problems = [f"on open: {h}" for h in opened["hits"]] + [f"after Fit view: {h}" for h in refit["hits"]]
+    if problems:
+        raise AssertionError("steps under the palette — " + "; ".join(problems))
+    return "every step clear of the palette, on open and after Fit view"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
