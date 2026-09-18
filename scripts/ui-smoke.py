@@ -1850,6 +1850,52 @@ async def check_palettelink(browser) -> str:
     return "two steps added from the palette chain on from the selected step"
 
 
+@check
+async def check_ctrls(browser) -> str:
+    """Ctrl+S saves from inside a field, and the browser's "Save page" never opens.
+
+    The editor's shortcut handler returned early for any focused input, so
+    Ctrl+S while typing a name did nothing at all — no save, and nothing stopped
+    the browser saving the page instead (F48). Read from the keydown's own
+    `defaultPrevented` and from what the save sent.
+    """
+    oid = f"orch_uismoke_ctrls_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid, 1))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and r.url.endswith("/api/orchestrations") else None)
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 1.0)
+        await page.evaluate(r"""() => { window.__saveKey = null;
+            window.addEventListener('keydown', (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's')
+                    setTimeout(() => { window.__saveKey = e.defaultPrevented; });
+            }, true); }""")
+        name = page.get_by_role("textbox", name="Orchestration name", exact=True)
+        await name.click()
+        await page.keyboard.press("End")
+        await page.keyboard.type(" renamed")
+        await page.keyboard.press("Control+s")
+        await asyncio.sleep(1.5)
+        prevented = await page.evaluate("() => window.__saveKey")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    problems = []
+    if prevented is not True:
+        problems.append(f"the keydown was not prevented ({prevented!r}) — the browser saves the page")
+    if not sent:
+        problems.append("nothing was saved")
+    elif not str(sent[-1].get("name", "")).endswith(" renamed"):
+        problems.append(f"the save carried the name {sent[-1].get('name')!r}, not the one being typed")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "Ctrl+S in the name field saves the name being typed"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

@@ -17,7 +17,7 @@
  *   must never carry you into a different orchestration's history.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Orchestration } from '@/types/orchestration';
 
 const MAX_HISTORY = 100;
@@ -117,9 +117,16 @@ export function useDraftHistory(coalesceMs = 800) {
 }
 
 /**
- * Builder keyboard shortcuts: undo/redo/duplicate/save. Ignores keystrokes
- * that belong to a focused field — Cmd+Z inside an input is the input's own
- * undo, and CodeMirror owns its keymap entirely.
+ * Builder keyboard shortcuts: undo/redo/duplicate/save. Undo, redo and
+ * duplicate ignore keystrokes that belong to a focused field — Cmd+Z inside an
+ * input is the input's own undo, and CodeMirror owns its keymap entirely.
+ *
+ * **Save is the exception**: it works from inside a field. Returning early
+ * there meant Ctrl+S while typing a name did nothing — and nothing stopped the
+ * browser's own "Save page" either (F48). A focused input is blurred first,
+ * because some commit on blur (cloud's `InlineEdit`, the panel's
+ * `LocalInput`), and the save runs a task later through a ref, so it reads the
+ * draft that commit produced rather than the one this handler closed over.
  */
 export function useBuilderShortcuts({
     enabled,
@@ -134,14 +141,33 @@ export function useBuilderShortcuts({
     onDuplicate?: () => void;
     onSave?: () => void;
 }) {
+    const saveRef = useRef(onSave);
+    useLayoutEffect(() => {
+        saveRef.current = onSave;
+    });
+
     useEffect(() => {
         if (!enabled) return;
         const handler = (e: KeyboardEvent) => {
-            const target = e.target as HTMLElement | null;
-            if (target?.closest('input, textarea, select, [contenteditable="true"], .cm-editor')) return;
             const mod = e.metaKey || e.ctrlKey;
             if (!mod) return;
             const key = e.key.toLowerCase();
+            if (key === 's' && onSave) {
+                e.preventDefault();
+                const field = document.activeElement;
+                if (field instanceof HTMLElement && field.matches('input, textarea, select')) {
+                    field.blur();
+                    window.setTimeout(() => {
+                        saveRef.current?.();
+                        if (field.isConnected) field.focus();
+                    }, 0);
+                } else {
+                    onSave();
+                }
+                return;
+            }
+            const target = e.target as HTMLElement | null;
+            if (target?.closest('input, textarea, select, [contenteditable="true"], .cm-editor')) return;
             if (key === 'z') {
                 e.preventDefault();
                 if (e.shiftKey) redo();
@@ -152,9 +178,6 @@ export function useBuilderShortcuts({
             } else if (key === 'd' && onDuplicate) {
                 e.preventDefault();
                 onDuplicate();
-            } else if (key === 's' && onSave) {
-                e.preventDefault();
-                onSave();
             }
         };
         window.addEventListener('keydown', handler);
