@@ -143,6 +143,7 @@ async def check_runbar(browser) -> str:
     """
     oid = f"orch_uismoke_{int(time.time())}"
     api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    gaps: list[int | None] = []
     try:
         for width in (WIDE, PHONE):
             ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
@@ -175,7 +176,13 @@ async def check_runbar(browser) -> str:
                     if (el.closest('button[aria-label="Open the AI builder"]')) return 'the AI-builder launcher';
                     return bar.contains(el) ? 'the strip' : el.tagName.toLowerCase();
                   });
-                  return {found: true, hits, box: {x: Math.round(r.x), y: Math.round(r.y),
+                  // The toast host owns the other end of the same corner. It is
+                  // parked high enough to clear both the launcher and this strip,
+                  // and it stacks upward, so its lowest edge is the whole story.
+                  const host = document.querySelector('.fixed.bottom-20.right-6');
+                  const h = host && host.getBoundingClientRect();
+                  const toastGap = h && h.height ? Math.round(r.top - h.bottom) : null;
+                  return {found: true, hits, toastGap, box: {x: Math.round(r.x), y: Math.round(r.y),
                           w: Math.round(r.width), h: Math.round(r.height)}};
                 }"""
             )
@@ -188,7 +195,17 @@ async def check_runbar(browser) -> str:
                     f"at {width[0]}px the Answer control at {verdict['box']} is covered by "
                     f"{covered[0]} — a person pressing Answer presses that instead"
                 )
-        return "Answer is clickable at 1600 and 400"
+            gap = verdict["toastGap"]
+            if gap is not None and gap < 0:
+                raise AssertionError(
+                    f"at {width[0]}px a toast overlaps the Answer strip by {-gap}px (F46)"
+                )
+            gaps.append(gap)
+        seen = [g for g in gaps if g is not None]
+        return (
+            "Answer is clickable at 1600 and 400"
+            + (f", and a toast clears the strip by {min(seen)}px" if seen else "")
+        )
     finally:
         drop_fixture(oid)
 
