@@ -11,10 +11,11 @@
  * the code (2026-09-14). `CodeEditor` reads `onChange` fresh on every change.
  */
 
-import { useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
 import { Play, ChevronDown, ChevronUp, Terminal, Package, AlertCircle, CheckCircle2 } from 'lucide-react';
 
-import { CodeEditor, Spinner } from '@/components/ui';
+import { CodeEditor, Combobox, Spinner, Tag } from '@/components/ui';
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 
 export interface PythonDraftTool {
@@ -25,6 +26,13 @@ export interface PythonDraftTool {
     code: string;
     inputSchema: any;
     schemaParams?: any[];
+    /**
+     * Workspace variables this tool may read, handed to the code as `_globals`.
+     * The only way a Python tool receives one: arguments the model writes are
+     * never filled in with variables, because a prompt-injected page could name
+     * any key (F28, batch 1A). A name declared but not set arrives absent.
+     */
+    globals?: string[];
 }
 
 interface PythonToolEditorProps {
@@ -42,6 +50,7 @@ const PACKAGES = [
 ];
 
 const DEFAULT_CODE = `# _args contains all tool arguments as a Python dict
+# _globals holds the workspace variables this tool declares (below the schema)
 # Use print() — stdout becomes the tool result
 # JSON output is recommended: the agent can parse it
 import json
@@ -95,6 +104,21 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
     } | null>(null);
     const [testLoading, setTestLoading] = useState(false);
     const [testError, setTestError] = useState<string | null>(null);
+    // Names only. The route returns values too; this editor never holds them.
+    const [variableNames, setVariableNames] = useState<string[]>([]);
+    useEffect(() => {
+        let cancelled = false;
+        fetch('/api/settings/variables')
+            .then(r => (r.ok ? r.json() : { values: {} }))
+            .then(d => { if (!cancelled) setVariableNames(Object.keys(d?.values ?? {}).sort()); })
+            .catch(() => undefined);
+        return () => { cancelled = true; };
+    }, []);
+    const declared = draft.globals ?? [];
+    const declare = (name: string) =>
+        onChange({ ...draft, globals: [...declared.filter(n => n !== name), name] });
+    const undeclare = (name: string) =>
+        onChange({ ...draft, globals: declared.filter(n => n !== name) });
     // Exactly the draft: a fallback here would put the starter code back the moment
     // someone cleared the editor. Switching to Python seeds it instead.
     const code = draft.code ?? '';
@@ -134,7 +158,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
             const res = await fetch('/api/tools/python/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code: draft.code, args, timeout: 30 }),
+                body: JSON.stringify({ code: draft.code, args, timeout: 30, globals: declared }),
             });
             if (!res.ok) {
                 const err = await res.json();
@@ -173,7 +197,8 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                 <p className="text-[11px] text-text-faint leading-relaxed">
                     Code runs in a <span className="text-accent font-mono">Docker sandbox</span> (512MB RAM, 1 CPU, internet enabled).
                     Vault files are mounted at <span className="font-mono text-accent">/data/</span>.
-                    Arguments are injected as <span className="font-mono text-accent">_args</span> (dict).
+                    Arguments are injected as <span className="font-mono text-accent">_args</span> (dict),
+                    and the variables it declares as <span className="font-mono text-accent">_globals</span>.
                     <span className="font-mono text-zinc-400"> print()</span> stdout becomes the tool result.
                 </p>
                 {showPackages && (
@@ -232,6 +257,44 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                     placeholder='{"type": "object", "properties": {"query": {"type": "string", "description": "The input query"}}}'
                     aria-label="Input schema (JSON)"
                 />
+            </div>
+
+            {/* ── Declared globals ─────────────────────────────────────────── */}
+            <div className="space-y-2">
+                <p id="py-globals-label" className="text-[10px] uppercase font-bold text-text-faint">
+                    Variables this tool can read
+                </p>
+                <p className="text-[11px] text-text-faint leading-relaxed">
+                    Each arrives in <span className="font-mono text-accent">_globals</span>, as{' '}
+                    <span className="font-mono">_globals[&quot;NAME&quot;]</span>. Nothing else does: arguments
+                    the agent writes are never filled in with variables. One declared but not set is simply absent.
+                </p>
+                {declared.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5" aria-labelledby="py-globals-label">
+                        {declared.map(name => (
+                            <Tag key={name} onRemove={() => undeclare(name)}>
+                                {variableNames.length && !variableNames.includes(name) ? `${name} (not set)` : name}
+                            </Tag>
+                        ))}
+                    </div>
+                )}
+                {variableNames.some(n => !declared.includes(n)) ? (
+                    <Combobox
+                        value={undefined}
+                        onChange={declare}
+                        options={variableNames.filter(n => !declared.includes(n)).map(n => ({ value: n, label: n }))}
+                        placeholder="Add a variable…"
+                        searchPlaceholder="Search variables…"
+                        aria-label="Add a variable this tool can read"
+                        size="sm"
+                        className="max-w-xs"
+                    />
+                ) : (
+                    <p className="text-[11px] text-text-faint">
+                        {variableNames.length ? 'Every workspace variable is declared. ' : 'No workspace variables yet. '}
+                        <Link href="/settings/variables" className="text-accent hover:underline">Settings › Variables</Link>
+                    </p>
+                )}
             </div>
 
             {/* ── Test Runner ──────────────────────────────────────────────── */}

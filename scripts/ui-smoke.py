@@ -938,6 +938,99 @@ async def check_delegate(browser) -> str:
         await ctx.close()
 
 
+# ── tool globals ─────────────────────────────────────────────────────────────
+
+#: A Python tool that reads one workspace variable. Model-written arguments are
+#: never rendered with globals any more; a tool receives exactly the ones it
+#: declares, as `_globals` (F28's engine half, batch 1A).
+GLOBALS_TOOL = {
+    "name": "uismoke_globals_tool", "generalName": "UI smoke globals tool",
+    "description": "reads one declared global", "tool_type": "python",
+    "code": "import json\nprint(json.dumps(sorted(_globals)))\n",
+    "inputSchema": {"type": "object", "properties": {}}, "schemaParams": [],
+    "globals": ["UISMOKE_KEY"],
+}
+
+
+@check
+async def check_toolglobals(browser) -> str:
+    """A Python tool's declared globals can be seen, kept and tested.
+
+    Since the engine stopped rendering model-written arguments, the only way a
+    Python tool receives a workspace variable is to declare it — and the editor
+    had no field for that, so no tool built in the app could receive one. Worse,
+    the save path rebuilt the tool from a list of fields that did not include
+    `globals`, so a tool given its declaration anywhere else (the API, the AI
+    builder) lost it the next time anyone opened it and pressed Save (F28).
+
+    The Test run is read off its request body rather than executed: it runs in
+    a Docker sandbox this check has no business needing.
+    """
+    api("/api/tools/custom", "POST", GLOBALS_TOOL)
+    saved: list[dict] = []
+    tested: list[dict] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        async def test_stub(route):
+            try:
+                tested.append(json.loads(route.request.post_data or "{}"))
+            except Exception:
+                tested.append({})
+            await route.fulfill(status=200, content_type="application/json",
+                                body='{"stdout": "[]", "stderr": "", "exit_code": 0}')
+        await page.route("**/api/tools/python/test", test_stub)
+        page.on("request", lambda r: saved.append(json.loads(r.post_data or "{}"))
+                if r.method == "POST" and r.url.endswith("/api/tools/custom") else None)
+
+        await page.goto(f"{APP}/tools", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        card = page.locator("div.group", has_text=GLOBALS_TOOL["generalName"]).first
+        await card.get_by_role("button", name=re.compile(r"^edit$", re.I)).click()
+        await asyncio.sleep(1.5)
+        # "(not set)" is appended on an instance that has no such variable.
+        shown = await page.get_by_role("button", name=re.compile(r"^Remove UISMOKE_KEY")).count()
+        # Declare one more through the picker, when the workspace has one to offer.
+        # The check never writes variables itself: that route replaces them all.
+        added = None
+        # The kit's Combobox opens from a Radix popover trigger, which is a button.
+        picker = page.get_by_role("button", name="Add a variable this tool can read")
+        if await picker.count():
+            await picker.click()
+            await asyncio.sleep(0.5)
+            option = page.get_by_role("option").first
+            added = (await option.inner_text()).strip()
+            await option.click()
+            await asyncio.sleep(0.5)
+        # The editor's test button is called "Run".
+        await page.get_by_role("button", name="Run", exact=True).first.click()
+        await asyncio.sleep(1.2)
+        await page.get_by_role("button", name=re.compile(r"^save", re.I)).first.click()
+        await asyncio.sleep(2.0)
+    finally:
+        await ctx.close()
+        stored = [t for t in api("/api/tools/custom") if t.get("name") == GLOBALS_TOOL["name"]]
+        try:
+            api(f"/api/tools/custom/{GLOBALS_TOOL['name']}", "DELETE")
+        except Exception:
+            pass
+    problems = []
+    if not shown:
+        problems.append("the editor does not show the global the tool declares")
+    want = ["UISMOKE_KEY"] + ([added] if added else [])
+    if not saved or saved[-1].get("globals") != want:
+        problems.append(f"Save sent globals={saved[-1].get('globals', '<absent>') if saved else '<no save>'},"
+                        f" wanted {want}")
+    if not stored or stored[0].get("globals") != want:
+        problems.append("opening the tool and pressing Save erased its declaration")
+    if not tested or tested[-1].get("globals") != want:
+        problems.append(f"Test ran with globals={tested[-1].get('globals', '<absent>') if tested else '<no test>'}, not what a run gets")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("a declared global is shown, survives Save, and reaches Test"
+            + (f"; {added} declared through the picker" if added else "; no variable to pick here"))
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of

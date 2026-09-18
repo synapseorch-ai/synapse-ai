@@ -104,6 +104,10 @@ export function ToolsScreen() {
                     code: draftTool.code,
                     inputSchema: draftTool.inputSchema || { type: "object", properties: {} },
                     schemaParams: draftTool.schemaParams || [],
+                    // Picked field by field, so a field left off this list is
+                    // erased on every save — which is what happened to a tool's
+                    // declared globals, set anywhere but here (F28).
+                    globals: draftTool.globals || [],
                 },
                 "Python tool saved successfully",
             );
