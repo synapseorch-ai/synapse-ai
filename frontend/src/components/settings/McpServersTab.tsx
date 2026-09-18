@@ -64,7 +64,17 @@ interface Preset {
     env?: Record<string, string>;
     // remote
     url?: string;
-    token?: string;
+    /**
+     * How the server authenticates. A preset never fills the token: a
+     * non-empty token skips OAuth, and these used to pre-fill the *names* of
+     * environment variables (SLACK_CLIENT_ID, FIGMA_PERSONAL_ACCESS_TOKEN), so
+     * Slack and Figma — both OAuth — went out with a bearer token that was not
+     * one (F74). Taken from the commercial edition's catalog, which was probed.
+     */
+    auth?: 'oauth' | 'bearer' | 'none';
+    /** For `bearer`: what token, and where to make one. */
+    tokenHint?: string;
+    tokenUrl?: string;
 }
 
 const STDIO_PRESETS: Preset[] = [
@@ -72,14 +82,18 @@ const STDIO_PRESETS: Preset[] = [
 ];
 
 const REMOTE_PRESETS: Preset[] = [
-    { server_type: 'remote', name: 'Vercel', url: 'https://mcp.vercel.com', label: 'Vercel' },
-    { server_type: 'remote', name: 'Github', url: 'https://api.githubcopilot.com/mcp/', label: 'GitHub Copilot', token: 'GITHUB_PERSONAL_ACCESS_TOKEN' },
-    { server_type: 'remote', name: 'slack', url: 'https://mcp.slack.com/mcp', label: 'Slack', token: 'SLACK_CLIENT_ID' },
-    { server_type: 'remote', name: 'notion', url: 'https://mcp.notion.com/mcp', label: 'Notion' },
-    { server_type: 'remote', name: 'Jira', url: 'https://mcp.atlassian.com/v1/mcp', label: 'Jira' },
+    { server_type: 'remote', name: 'Vercel', url: 'https://mcp.vercel.com', label: 'Vercel', auth: 'oauth' },
+    {
+        server_type: 'remote', name: 'Github', url: 'https://api.githubcopilot.com/mcp/', label: 'GitHub Copilot', auth: 'bearer',
+        tokenHint: 'A GitHub personal access token with access to the repositories you want reachable.',
+        tokenUrl: 'https://github.com/settings/personal-access-tokens',
+    },
+    { server_type: 'remote', name: 'slack', url: 'https://mcp.slack.com/mcp', label: 'Slack', auth: 'oauth' },
+    { server_type: 'remote', name: 'notion', url: 'https://mcp.notion.com/mcp', label: 'Notion', auth: 'oauth' },
+    { server_type: 'remote', name: 'Jira', url: 'https://mcp.atlassian.com/v1/mcp', label: 'Jira', auth: 'oauth' },
     { server_type: 'remote', name: 'Zapier', url: 'https://mcp.zapier.com/api/mcp/mcp', label: 'Zapier' },
-    { server_type: 'remote', name: 'Figma', url: 'https://mcp.figma.com/mcp', label: 'Figma', token: 'FIGMA_PERSONAL_ACCESS_TOKEN' },
-    { server_type: 'remote', name: 'Fetch', url: 'https://remote.mcpservers.org/fetch/mcp', label: 'Fetch' },
+    { server_type: 'remote', name: 'Figma', url: 'https://mcp.figma.com/mcp', label: 'Figma', auth: 'oauth' },
+    { server_type: 'remote', name: 'Fetch', url: 'https://remote.mcpservers.org/fetch/mcp', label: 'Fetch', auth: 'none' },
 ];
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -165,6 +179,8 @@ export const McpServersTab = ({
     // ── Refresh ────────────────────────────────────────────────────────────────
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [tokenVisible, setTokenVisible] = useState(true);
+    // The preset last applied, while its URL is still the one in the form.
+    const [appliedPreset, setAppliedPreset] = useState<Preset | null>(null);
 
     const refreshServers = async (silent = false) => {
         if (!silent) setIsRefreshing(true);
@@ -250,8 +266,9 @@ export const McpServersTab = ({
             args: p.args || '',
             env,
             url: p.url || '',
-            token: p.token || '',
+            token: '',
         });
+        setAppliedPreset(p);
     };
 
     // ── Env var helpers ────────────────────────────────────────────────────────
@@ -482,7 +499,8 @@ export const McpServersTab = ({
                                     onChange={e => setDraftMcpServer({ ...draftMcpServer, url: e.target.value })}
                                     className={monoInputCls} placeholder="https://mcp.example.com/mcp" />
                                 <p className="text-2xs text-text-faint">
-                                    Leave token empty to use OAuth (browser will open). Fill token for PAT-based servers (Figma, GitHub).
+                                    Leave the token empty to sign in with OAuth (a browser window opens). Fill it only for a
+                                    server that takes a personal access token.
                                 </p>
                             </div>
                             <div className="space-y-2">
@@ -497,7 +515,7 @@ export const McpServersTab = ({
                                         value={draftMcpServer.token}
                                         onChange={e => setDraftMcpServer({ ...draftMcpServer, token: e.target.value })}
                                         className={`${monoInputCls} pr-10`}
-                                        placeholder="ghp_... or fig_... or leave empty"
+                                        placeholder="ghp_... or leave empty"
                                     />
                                     <button
                                         type="button"
@@ -510,6 +528,22 @@ export const McpServersTab = ({
                                             : <Eye className="h-4 w-4" />}
                                     </button>
                                 </div>
+                                {appliedPreset && appliedPreset.url === draftMcpServer.url && appliedPreset.auth && (
+                                    <p className="text-2xs text-text-faint leading-relaxed">
+                                        {appliedPreset.auth === 'oauth' && <>
+                                            {appliedPreset.label} signs you in with OAuth: leave the token empty, and a browser
+                                            window opens when you connect.
+                                        </>}
+                                        {appliedPreset.auth === 'bearer' && <>
+                                            {appliedPreset.label} needs a token. {appliedPreset.tokenHint}{' '}
+                                            {appliedPreset.tokenUrl && (
+                                                <a href={appliedPreset.tokenUrl} target="_blank" rel="noopener noreferrer"
+                                                    className="text-accent underline underline-offset-2">Create one</a>
+                                            )}
+                                        </>}
+                                        {appliedPreset.auth === 'none' && <>{appliedPreset.label} needs no account.</>}
+                                    </p>
+                                )}
                             </div>
                         </>
                     )}

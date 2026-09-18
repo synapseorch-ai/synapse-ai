@@ -1286,6 +1286,56 @@ async def check_unsaved(browser) -> str:
     return "an unsaved edit is kept or discarded on purpose, on switch and on leave"
 
 
+# ── MCP presets ──────────────────────────────────────────────────────────────
+
+#: How each remote preset authenticates, from the commercial edition's catalog,
+#: whose entries were probed live (tools/list, and RFC 8414 metadata for OAuth).
+MCP_PRESET_AUTH = {"GitHub Copilot": "bearer", "Slack": "oauth", "Figma": "oauth",
+                   "Notion": "oauth", "Vercel": "oauth"}
+
+
+@check
+async def check_mcppresets(browser) -> str:
+    """A preset leaves the token empty, and says what to put there when it wants one.
+
+    A non-empty token skips OAuth. The Slack and Figma presets pre-filled the
+    names of environment variables — SLACK_CLIENT_ID, FIGMA_PERSONAL_ACCESS_TOKEN
+    — into the token field, so both went out as a bearer token that was not one,
+    and never reached the sign-in both servers actually use. GitHub's filled in
+    a variable name too, where a real token belongs (F74).
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": 1200})
+    page = await ctx.new_page()
+    problems: list[str] = []
+    try:
+        await page.goto(f"{APP}/mcp-servers", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        opener = page.get_by_role("button", name=re.compile(r"^(add|new|connect)", re.I)).first
+        if await opener.count():
+            await opener.click()
+            await asyncio.sleep(0.8)
+        await page.get_by_role("button", name=re.compile(r"Remote \(URL\)")).first.click()
+        await asyncio.sleep(0.5)
+        token = page.locator("#mcp-token")
+        for label, auth in MCP_PRESET_AUTH.items():
+            await page.get_by_role("button", name=label, exact=True).first.click()
+            await asyncio.sleep(0.4)
+            value = await token.input_value()
+            if value:
+                problems.append(f"{label} pre-fills the token with {value!r}"
+                                + (" and so skips its OAuth sign-in" if auth == "oauth" else ""))
+            form = (await page.evaluate("() => document.querySelector('main').innerText")).lower()
+            if auth == "bearer" and "with access to the repositories" not in form:
+                problems.append(f"{label} wants a token and does not say which")
+            if auth == "oauth" and f"{label.lower()} signs you in with oauth" not in form:
+                problems.append(f"{label} signs in with OAuth and the form does not say so")
+    finally:
+        await ctx.close()
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return f"{len(MCP_PRESET_AUTH)} remote presets leave the token empty and say how they authenticate"
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of
