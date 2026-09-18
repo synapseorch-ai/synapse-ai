@@ -193,10 +193,10 @@ export const LogsTab = () => {
                     Schedule Logs
                 </button>
                 <div className="ml-auto flex items-center gap-3">
-                    <span className="text-xs text-zinc-600">{logs.length} log{logs.length !== 1 ? 's' : ''}</span>
+                    <span className="text-xs text-text-faint">{logs.length} log{logs.length !== 1 ? 's' : ''}</span>
                     <button
                         onClick={() => fetchLogs()}
-                        className="p-2 text-zinc-500 hover:text-white hover:bg-surface-2 transition-colors"
+                        className="p-2 text-text-faint hover:text-white hover:bg-surface-2 transition-colors"
                         title="Refresh"
                     >
                         <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -207,7 +207,7 @@ export const LogsTab = () => {
             {/* Secondary filter -- only shown when there are multiple unique names */}
             {uniqueIds.length > 1 && (
                 <div className="flex items-center gap-3 px-6 py-2 border-b border-border shrink-0 bg-zinc-900/40">
-                    <span className="text-[11px] text-zinc-600 shrink-0">Filter</span>
+                    <span className="text-[11px] text-text-faint shrink-0">Filter</span>
                     <Combobox
                         value={filterById}
                         onChange={setFilterById}
@@ -232,9 +232,9 @@ export const LogsTab = () => {
                 {/* Left: log list */}
                 <div className="w-80 border-r border-border overflow-y-auto shrink-0 flex flex-col">
                     {loading && logs.length === 0 ? (
-                        <div className="flex items-center justify-center h-32 text-zinc-600 text-xs">Loading...</div>
+                        <div className="flex items-center justify-center h-32 text-text-faint text-xs">Loading...</div>
                     ) : logs.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-40 gap-3 text-zinc-700">
+                        <div className="flex flex-col items-center justify-center h-40 gap-3 text-text-faint">
                             <ScrollText className="h-8 w-8" />
                             <p className="text-xs">No logs yet</p>
                         </div>
@@ -249,7 +249,7 @@ export const LogsTab = () => {
                                 return (
                                     <div key={sid} className="border-b border-border last:border-b-0">
                                         <div className="bg-surface-2 px-4 py-2 border-b border-border flex flex-col gap-0.5">
-                                            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">{sessionDisplayName}</span>
+                                            <span className="text-[10px] font-bold text-text-faint uppercase tracking-wider">{sessionDisplayName}</span>
                                             {sessionInput && (
                                                 <span className="text-[10px] text-zinc-400 truncate italic">"{sessionInput}"</span>
                                             )}
@@ -280,21 +280,21 @@ export const LogsTab = () => {
                                                         <span className="text-xs text-white font-semibold leading-tight truncate">{name}</span>
                                                         <button
                                                             onClick={(e) => deleteLog(log.run_id, e)}
-                                                            className="opacity-0 group-hover:opacity-100 p-0.5 text-zinc-600 hover:text-red-400 transition-all shrink-0 mt-0.5"
+                                                            className="opacity-0 group-hover:opacity-100 p-0.5 text-text-faint hover:text-red-400 transition-all shrink-0 mt-0.5"
                                                             title="Delete log"
                                                         >
                                                             <Trash2 className="h-3 w-3" />
                                                         </button>
                                                     </div>
                                                     {subtitle && (
-                                                        <span className="text-[10px] text-zinc-500 truncate">{subtitle}</span>
+                                                        <span className="text-[10px] text-text-faint truncate">{subtitle}</span>
                                                     )}
                                                     <div className="flex items-center justify-between">
                                                         {log.started_at && (
-                                                            <span className="text-[10px] text-zinc-600">{log.started_at}</span>
+                                                            <span className="text-[10px] text-text-faint">{log.started_at}</span>
                                                         )}
                                                         {log.file_size_kb !== undefined && (
-                                                            <span className="text-[10px] text-zinc-700">{log.file_size_kb}KB</span>
+                                                            <span className="text-[10px] text-text-faint">{log.file_size_kb}KB</span>
                                                         )}
                                                     </div>
                                                 </div>
@@ -308,7 +308,7 @@ export const LogsTab = () => {
                                 <button
                                     onClick={() => fetchLogs(true)}
                                     disabled={loading}
-                                    className="w-full py-4 text-xs text-zinc-500 hover:text-white hover:bg-surface-2 transition-colors disabled:opacity-50"
+                                    className="w-full py-4 text-xs text-text-faint hover:text-white hover:bg-surface-2 transition-colors disabled:opacity-50"
                                 >
                                     {loading ? 'Loading more...' : 'Load More'}
                                 </button>
@@ -320,7 +320,7 @@ export const LogsTab = () => {
                 {/* Right: log content */}
                 <div className="flex-1 overflow-hidden bg-zinc-950">
                     {contentLoading ? (
-                        <div className="flex items-center justify-center h-full text-zinc-600 text-xs">
+                        <div className="flex items-center justify-center h-full text-text-faint text-xs">
                             Loading log...
                         </div>
                     ) : content ? (
@@ -328,7 +328,7 @@ export const LogsTab = () => {
                             {renderLogContent(content)}
                         </div>
                     ) : (
-                        <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-700">
+                        <div className="flex flex-col items-center justify-center h-full gap-3 text-text-faint">
                             <ScrollText className="h-10 w-10" />
                             <p className="text-xs">Select a log to view its contents</p>
                         </div>

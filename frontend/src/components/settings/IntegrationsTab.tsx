@@ -126,12 +126,12 @@ export const IntegrationsTab = ({
                         <button
                             onClick={fetchCredInfo}
                             disabled={loading}
-                            className="p-1 text-zinc-600 hover:text-zinc-400 transition-colors"
+                            className="p-1 text-text-faint hover:text-zinc-400 transition-colors"
                             title="Refresh status"
                         >
                             <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
                         </button>
-                        <span className={`text-xs px-2 py-1 bg-zinc-900 border border-zinc-800 ${isConnected ? 'text-green-400' : 'text-zinc-500'} rounded-md`}>
+                        <span className={`text-xs px-2 py-1 bg-zinc-900 border border-zinc-800 ${isConnected ? 'text-green-400' : 'text-text-faint'} rounded-md`}>
                             {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
                         </span>
                     </div>
@@ -151,11 +151,11 @@ export const IntegrationsTab = ({
 
                                 <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-[11px]">
                                     <div>
-                                        <p className="text-zinc-600 uppercase tracking-wider mb-0.5">Client ID</p>
+                                        <p className="text-text-faint uppercase tracking-wider mb-0.5">Client ID</p>
                                         <p className="font-mono text-zinc-300">{credInfo?.client_id ?? '—'}</p>
                                     </div>
                                     <div>
-                                        <p className="text-zinc-600 uppercase tracking-wider mb-0.5">Project</p>
+                                        <p className="text-text-faint uppercase tracking-wider mb-0.5">Project</p>
                                         <p className="font-mono text-zinc-300">{credInfo?.project_id || '—'}</p>
                                     </div>
                                 </div>
@@ -169,7 +169,7 @@ export const IntegrationsTab = ({
                                             href="/auth/login"
                                             target="_blank"
                                             rel="noreferrer"
-                                            className="ml-auto text-[10px] text-zinc-500 hover:text-zinc-300 underline decoration-dotted"
+                                            className="ml-auto text-[10px] text-text-faint hover:text-zinc-300 underline decoration-dotted"
                                             title="Re-authenticate with Google"
                                         >
                                             Reconnect
@@ -183,7 +183,7 @@ export const IntegrationsTab = ({
                                     </div>
                                 ) : (
                                     <div className="mt-3 pt-3 border-t border-zinc-800 space-y-2">
-                                        <p className="text-[11px] text-zinc-500">
+                                        <p className="text-[11px] text-text-faint">
                                             OAuth credentials are ready. Click below to authenticate your Google account.
                                         </p>
                                         <a
@@ -196,7 +196,7 @@ export const IntegrationsTab = ({
                                             Connect Google Account
                                             <ExternalLink className="h-3 w-3 opacity-60" />
                                         </a>
-                                        <p className="text-[10px] text-zinc-600">
+                                        <p className="text-[10px] text-text-faint">
                                             This opens a Google sign-in page. After completing, return here and refresh.
                                         </p>
                                     </div>
@@ -207,7 +207,7 @@ export const IntegrationsTab = ({
                             <div>
                                 <button
                                     onClick={() => setShowReupload(v => !v)}
-                                    className="flex items-center gap-2 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
+                                    className="flex items-center gap-2 text-[11px] text-text-faint hover:text-zinc-300 transition-colors"
                                 >
                                     {showReupload ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                                     Replace / Re-upload credentials.json
@@ -223,7 +223,7 @@ export const IntegrationsTab = ({
                                         />
                                         <p className={`text-[10px] ${pasteStatus === 'saved' ? 'text-green-500' :
                                                 pasteStatus === 'error' ? 'text-red-500' :
-                                                    pasteStatus === 'saving' ? 'text-zinc-400' : 'text-zinc-700'
+                                                    pasteStatus === 'saving' ? 'text-zinc-400' : 'text-text-faint'
                                             }`}>
                                             {pasteStatus === 'saved' ? '✓ Credentials saved — refreshing…' :
                                                 pasteStatus === 'error' ? '✗ Failed to save credentials.' :
@@ -238,7 +238,7 @@ export const IntegrationsTab = ({
                             <div>
                                 <button
                                     onClick={() => setShowTokenImport(v => !v)}
-                                    className="text-[11px] text-zinc-600 hover:text-zinc-400 underline decoration-dotted transition-colors"
+                                    className="text-[11px] text-text-faint hover:text-zinc-400 underline decoration-dotted transition-colors"
                                 >
                                     Advanced: Import existing Token JSON (Skip OAuth)
                                 </button>
@@ -259,18 +259,18 @@ export const IntegrationsTab = ({
                         <div className="space-y-5">
                             <div className="text-center py-4 px-4">
                                 <div className="relative inline-block mb-3">
-                                    <Shield className="h-8 w-8 text-zinc-700 mx-auto" />
+                                    <Shield className="h-8 w-8 text-text-faint mx-auto" />
                                     <XCircle className="h-4 w-4 text-red-500 absolute -bottom-1 -right-1" />
                                 </div>
                                 <h3 className="text-base text-white font-bold mb-1">Google Workspace Setup</h3>
-                                <p className="text-xs text-zinc-500 max-w-sm mx-auto mb-4">
+                                <p className="text-xs text-text-faint max-w-sm mx-auto mb-4">
                                     Google Workspace tools are powered by the Google Workspace MCP server.
                                     Upload your OAuth credentials below to enable it.
                                 </p>
 
                                 <div className="text-left text-[10px] bg-black p-4 border border-zinc-800 mb-5 max-w-md mx-auto overflow-y-auto max-h-[300px] rounded-md">
                                     <p className="font-bold text-zinc-300 mb-2">Quick Setup Guide:</p>
-                                    <ol className="list-decimal pl-4 space-y-1.5 text-zinc-500">
+                                    <ol className="list-decimal pl-4 space-y-1.5 text-text-faint">
                                         <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Google Cloud Console</a> &amp; create a Project.</li>
                                         <li>Enable <em>Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, People APIs</em> — <a href="https://console.cloud.google.com/flows/enableapi?apiid=gmail.googleapis.com,drive.googleapis.com,calendar-json.googleapis.com,docs.googleapis.com,sheets.googleapis.com,slides.googleapis.com,forms.googleapis.com,tasks.googleapis.com,people.googleapis.com" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">one-click enable APIs →</a></li>
                                         <li>Create OAuth Client ID — use this direct link: <a href="https://console.cloud.google.com/auth/clients/create" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Create OAuth Client →</a> and choose <strong className="text-zinc-300">Web application</strong>.</li>
@@ -296,7 +296,7 @@ export const IntegrationsTab = ({
                                         />
                                         <p className={`mt-1 text-[10px] ${pasteStatus === 'saved' ? 'text-green-500' :
                                                 pasteStatus === 'error' ? 'text-red-500' :
-                                                    pasteStatus === 'saving' ? 'text-zinc-400' : 'text-zinc-700'
+                                                    pasteStatus === 'saving' ? 'text-zinc-400' : 'text-text-faint'
                                             }`}>
                                             {pasteStatus === 'saved' ? '✓ Saved — refreshing status…' :
                                                 pasteStatus === 'error' ? '✗ Invalid JSON or save failed.' :
@@ -308,7 +308,7 @@ export const IntegrationsTab = ({
 
                                 {/* Token Import */}
                                 <details className="group appearance-none">
-                                    <summary className="cursor-pointer text-xs font-bold text-zinc-500 hover:text-white mt-2 list-none flex items-center gap-2">
+                                    <summary className="cursor-pointer text-xs font-bold text-text-faint hover:text-white mt-2 list-none flex items-center gap-2">
                                         <span className="underline decoration-dotted decoration-zinc-700 hover:decoration-zinc-500">Advanced: Import existing Token JSON (Skip OAuth)</span>
                                     </summary>
                                     <div className="mt-2">
@@ -332,13 +332,13 @@ export const IntegrationsTab = ({
                         <div className={`h-2 w-2 ${n8nApiKey ? 'bg-green-500' : 'bg-red-500'}`} />
                         <span className="text-sm font-bold text-zinc-400">n8n</span>
                     </div>
-                    <span className={`text-xs px-2 py-1 bg-zinc-900 border border-zinc-800 ${n8nApiKey ? 'text-green-400' : 'text-zinc-500'} rounded-md`}>
+                    <span className={`text-xs px-2 py-1 bg-zinc-900 border border-zinc-800 ${n8nApiKey ? 'text-green-400' : 'text-text-faint'} rounded-md`}>
                         {n8nApiKey ? 'CONFIGURED' : 'NOT CONFIGURED'}
                     </span>
                 </div>
                 <div className="p-6 space-y-6">
                     <div className="space-y-2">
-                        <label htmlFor="integrations-n8n-url" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">n8n URL</label>
+                        <label htmlFor="integrations-n8n-url" className="text-xs uppercase font-bold text-text-faint tracking-wider">n8n URL</label>
                         <input
                             id="integrations-n8n-url"
                             type="text"
@@ -347,10 +347,10 @@ export const IntegrationsTab = ({
                             className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
                             placeholder="http://localhost:5678"
                         />
-                        <p className="text-xs text-zinc-600">Defaults to localhost for local dev. Use your production n8n base URL in deployment.</p>
+                        <p className="text-xs text-text-faint">Defaults to localhost for local dev. Use your production n8n base URL in deployment.</p>
                     </div>
                     <div className="space-y-2">
-                        <label htmlFor="integrations-n8n-api-key" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">n8n API Key</label>
+                        <label htmlFor="integrations-n8n-api-key" className="text-xs uppercase font-bold text-text-faint tracking-wider">n8n API Key</label>
                         <input
                             id="integrations-n8n-api-key"
                             type="password"
@@ -359,7 +359,7 @@ export const IntegrationsTab = ({
                             className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
                             placeholder="X-N8N-API-KEY"
                         />
-                        <p className="text-xs text-zinc-600">Used server-side to list workflows and derive webhook URLs.</p>
+                        <p className="text-xs text-text-faint">Used server-side to list workflows and derive webhook URLs.</p>
                     </div>
 
                     <div className="pt-2 flex justify-end">

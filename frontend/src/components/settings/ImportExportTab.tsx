@@ -35,19 +35,19 @@ export function ImportExportTab({ defaultView, onImportSuccess, onNavigate }: { 
       <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 p-1 w-fit rounded-md">
         <button
           onClick={() => setView("export")}
-          className={`flex items-center gap-1.5 px-5 py-2 text-xs font-bold transition-colors ${view === "export" ? "bg-accent text-accent-fg" : "text-zinc-500 hover:text-white"}`}
+          className={`flex items-center gap-1.5 px-5 py-2 text-xs font-bold transition-colors ${view === "export" ? "bg-accent text-accent-fg" : "text-text-faint hover:text-white"}`}
         >
           <Download className="h-3.5 w-3.5" /> Export
         </button>
         <button
           onClick={() => { setView("import"); setPreloadedBundle(null); }}
-          className={`flex items-center gap-1.5 px-5 py-2 text-xs font-bold transition-colors ${view === "import" ? "bg-accent text-accent-fg" : "text-zinc-500 hover:text-white"}`}
+          className={`flex items-center gap-1.5 px-5 py-2 text-xs font-bold transition-colors ${view === "import" ? "bg-accent text-accent-fg" : "text-text-faint hover:text-white"}`}
         >
           <Upload className="h-3.5 w-3.5" /> Import
         </button>
         <button
           onClick={() => setView("examples")}
-          className={`flex items-center gap-1.5 px-5 py-2 text-xs font-bold transition-colors ${view === "examples" ? "bg-accent text-accent-fg" : "text-zinc-500 hover:text-white"}`}
+          className={`flex items-center gap-1.5 px-5 py-2 text-xs font-bold transition-colors ${view === "examples" ? "bg-accent text-accent-fg" : "text-text-faint hover:text-white"}`}
         >
           <Sparkles className="h-3.5 w-3.5" /> Examples
         </button>

@@ -110,9 +110,9 @@ export function ExportView() {
     return (
       <div className="space-y-4">
         <div className="p-8 text-center border border-dashed border-zinc-800 bg-zinc-900/30 rounded-md">
-          <Package className="h-8 w-8 mx-auto text-zinc-700 mb-3" />
+          <Package className="h-8 w-8 mx-auto text-text-faint mb-3" />
           <p className="text-zinc-400 text-sm font-bold">Export your configurations</p>
-          <p className="text-zinc-600 text-xs mt-1">Select orchestrations, agents, MCP servers, and tools to export as a portable bundle</p>
+          <p className="text-text-faint text-xs mt-1">Select orchestrations, agents, MCP servers, and tools to export as a portable bundle</p>
           <button
             onClick={loadData}
             disabled={loading}
@@ -155,12 +155,12 @@ export function ExportView() {
       </div>
 
       {(data.orchestrations.length + data.agents.length + data.mcp_servers.length + data.custom_tools.length) === 0 && (
-        <p className="text-zinc-600 text-sm text-center py-4">Nothing to export yet — add orchestrations, agents, MCP servers, or tools first.</p>
+        <p className="text-text-faint text-sm text-center py-4">Nothing to export yet — add orchestrations, agents, MCP servers, or tools first.</p>
       )}
 
       {total > 0 && (
         <div className="border border-zinc-800 bg-zinc-900/40 p-5 space-y-4 rounded-md">
-          <h4 className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">Export File</h4>
+          <h4 className="text-[10px] uppercase font-bold tracking-wider text-text-faint">Export File</h4>
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -169,10 +169,10 @@ export function ExportView() {
               className={`${inputCls} flex-1`}
               placeholder="synapse_export"
             />
-            <span className="text-zinc-600 text-sm font-mono">.json</span>
+            <span className="text-text-faint text-sm font-mono">.json</span>
           </div>
           <div className="flex items-center justify-between gap-4 pt-1">
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-text-faint">
               <span className="text-white font-bold">{total}</span> item{total !== 1 ? "s" : ""} selected
               {selOrch.size > 0 && ` · ${selOrch.size} orchestration${selOrch.size !== 1 ? "s" : ""}`}
               {selAgent.size > 0 && ` · ${selAgent.size} agent${selAgent.size !== 1 ? "s" : ""}`}

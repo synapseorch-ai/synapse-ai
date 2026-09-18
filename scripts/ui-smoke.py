@@ -561,6 +561,131 @@ async def check_layout(browser) -> str:
     return f"no page scrolls, and the launcher's tooltip opens {round(gap)}px from it"
 
 
+# ── contrast ─────────────────────────────────────────────────────────────────
+
+#: Both themes, because the defect this exists for was reported as a light-mode
+#: one and was in fact in both: the light palette is an inversion of the dark
+#: one, so it inherits the dark one's mistakes exactly.
+CONTRAST_PAGES = (
+    "/", "/agents", "/orchestrations", "/schedules", "/tools", "/vault", "/runs",
+    "/evals", "/mcp-servers", "/skills", "/kitchen-sink",
+    "/settings/general", "/settings/models", "/settings/scale", "/settings/widgets",
+    "/settings/messaging", "/settings/memory", "/settings/api-keys",
+)
+
+#: Known, owned, and deliberately not fixed here. `--danger` is one token doing
+#: two jobs — it is the colour of 60 pieces of danger *text* on a dark ground
+#: and the ground of 18 danger *buttons* under white text — and no single value
+#: serves both. Splitting it changes the kit, which is synced to the other
+#: product, so it belongs to the synced-UI batch and not to this one. Anything
+#: not named here is a regression.
+#: Matched on the colours themselves, not on class names: a class attribute is
+#: long, generated and truncated, while the pair of colours IS the defect.
+CONTRAST_WAIVED = (
+    ("#ffffff", "#f87171",
+     "white on --danger: one token is the colour of 60 pieces of danger text on a "
+     "dark ground and the ground of 18 danger buttons under white text, and no "
+     "single value serves both. Splitting it changes the kit, which is synced."),
+)
+
+#: Contrast as the browser computes it, not as the stylesheet claims it.
+#:
+#: Colours are resolved by painting them, because Tailwind v4 emits lab()/oklch()
+#: and a hand-written rgb() parser silently reads those as black — which invents
+#: failures and hides real ones. Decorative and disabled elements are skipped:
+#: an aria-hidden icon is not text, and WCAG exempts a disabled control.
+CONTRAST = r"""
+() => {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 1;
+  const g = cv.getContext('2d', {willReadFrequently: true});
+  const cache = new Map();
+  const rgba = (s) => {
+    if (cache.has(s)) return cache.get(s);
+    g.clearRect(0,0,1,1); g.fillStyle = '#000'; g.fillStyle = s;
+    g.clearRect(0,0,1,1); g.fillRect(0,0,1,1);
+    const d = g.getImageData(0,0,1,1).data;
+    const v = {rgb:[d[0],d[1],d[2]], a: d[3]/255};
+    cache.set(s, v); return v;
+  };
+  const lum = (c) => {
+    const [r,gg,b] = c.map(v => { v/=255; return v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); });
+    return 0.2126*r + 0.7152*gg + 0.0722*b;
+  };
+  const over = (fg, bg) => fg.rgb.map((v,i) => v*fg.a + bg[i]*(1-fg.a));
+  const bgOf = (el) => {
+    for (let p = el; p; p = p.parentElement) {
+      const c = rgba(getComputedStyle(p).backgroundColor);
+      if (c.a >= 0.999) return c.rgb;
+      if (c.a > 0) return over(c, p.parentElement ? bgOf(p.parentElement) : [255,255,255]);
+    }
+    return [255,255,255];
+  };
+  const hex = (c) => '#' + c.map(v => Math.round(v).toString(16).padStart(2,'0')).join('');
+  const out = [];
+  for (const el of document.querySelectorAll('*')) {
+    if (![...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim())) continue;
+    if (el.closest('[aria-hidden="true"]')) continue;          // decoration, not text
+    if (el.closest(':disabled, [disabled], [aria-disabled="true"]')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden' || +cs.opacity === 0) continue;
+    const bg = bgOf(el);
+    const f = lum(over(rgba(cs.color), bg)), b = lum(bg);
+    const ratio = (Math.max(f,b) + 0.05) / (Math.min(f,b) + 0.05);
+    const px = parseFloat(cs.fontSize), bold = parseInt(cs.fontWeight, 10) >= 700;
+    const need = (px >= 24 || (px >= 18.66 && bold)) ? 3.0 : 4.5;
+    if (ratio + 0.005 < need) out.push({
+      ratio: +ratio.toFixed(2), need, tag: el.tagName.toLowerCase(),
+      fg: hex(over(rgba(cs.color), bg)), bg: hex(bg),
+      cls: (el.className?.baseVal ?? el.className ?? '').toString().slice(0, 70),
+      txt: (el.textContent || '').trim().replace(/\s+/g,' ').slice(0, 30)});
+  }
+  return out;
+}
+"""
+
+
+@check
+async def check_contrast(browser) -> str:
+    """Text meets AA against what is actually painted behind it, in both themes.
+
+    Light mode is built by inverting the dark ramp, so a colour the inversion
+    layer forgot keeps its dark-mode value on a light ground: amber-200 body
+    text on the inverted amber-950 tint read 1.2:1, which is not faint text but
+    no text. The same reading also showed the reported "light mode" fault was
+    in both themes — raw zinc-600 was 2.46:1 light and 2.58:1 dark — and that
+    the --text-faint token itself missed AA in dark on its own page ground.
+    """
+    bad: list[str] = []
+    for theme in ("light", "dark"):
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        await ctx.add_init_script(
+            f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}"
+        )
+        page = await ctx.new_page()
+        try:
+            for path in CONTRAST_PAGES:
+                await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                for row in await page.evaluate(CONTRAST):
+                    if any(row["fg"] == fg and row["bg"] == bg
+                           for fg, bg, _ in CONTRAST_WAIVED):
+                        continue
+                    bad.append(
+                        f"{theme} {path}: {row['ratio']}:1 (needs {row['need']}) "
+                        f"{row['fg']} on {row['bg']} — {row['txt'][:24]!r}"
+                    )
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError(f"{len(bad)} under AA — " + "; ".join(bad[:5]))
+    return (
+        f"{len(CONTRAST_PAGES)} screens in both themes meet AA"
+        f" ({len(CONTRAST_WAIVED)} waived, owned by the synced-UI batch)"
+    )
+
+
 # ── phone ────────────────────────────────────────────────────────────────────
 
 #: The five shell screens the `layout` check uses, plus the one page that is not

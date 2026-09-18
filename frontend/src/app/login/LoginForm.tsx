@@ -44,12 +44,12 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
             <div className="w-full max-w-sm space-y-8">
                 <div>
                     <h1 className="text-2xl font-bold text-white tracking-tight">Synapse AI</h1>
-                    <p className="text-zinc-500 text-sm mt-1">Sign in to continue</p>
+                    <p className="text-text-faint text-sm mt-1">Sign in to continue</p>
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
                     <div className="space-y-1.5">
-                        <label htmlFor="login-username" className="text-[11px] uppercase font-bold text-zinc-500 tracking-widest">
+                        <label htmlFor="login-username" className="text-[11px] uppercase font-bold text-text-faint tracking-widest">
                             Username
                         </label>
                         <input
@@ -68,7 +68,7 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
                     </div>
 
                     <div className="space-y-1.5">
-                        <label htmlFor="login-password" className="text-[11px] uppercase font-bold text-zinc-500 tracking-widest">
+                        <label htmlFor="login-password" className="text-[11px] uppercase font-bold text-text-faint tracking-widest">
                             Password
                         </label>
                         <input
@@ -100,7 +100,7 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
                     </button>
                 </form>
 
-                <p className="text-xs text-zinc-600 text-center">
+                <p className="text-xs text-text-faint text-center">
                     Forgot your password?{' '}
                     Run{' '}
                     <code className="text-zinc-400 bg-zinc-900 px-1.5 py-0.5 font-code text-[11px]">

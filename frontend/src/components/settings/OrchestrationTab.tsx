@@ -51,8 +51,8 @@ const LINE_META: Record<LineTone, { icon: React.FC<{ size?: number; className?: 
     info:     { icon: Info,            cls: 'text-zinc-400' },
     warn:     { icon: AlertTriangle,   cls: 'text-amber-400' },
     compact:  { icon: Minimize2,       cls: 'text-zinc-400' },
-    branch:   { icon: CornerDownRight, cls: 'text-zinc-500 pl-2' },
-    muted:    { icon: Info,            cls: 'text-zinc-500' },
+    branch:   { icon: CornerDownRight, cls: 'text-text-faint pl-2' },
+    muted:    { icon: Info,            cls: 'text-text-faint' },
 };
 
 type RunStepStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed';
@@ -328,7 +328,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 ? { dot: 'bg-yellow-400', label: 'Needs input', text: 'text-yellow-300' }
                 : { dot: 'bg-yellow-400', label: 'Paused', text: 'text-yellow-300' };
             case 'completed': return { dot: 'bg-green-500', label: 'Completed', text: 'text-zinc-400' };
-            case 'cancelled': return { dot: 'bg-zinc-500', label: 'Cancelled', text: 'text-zinc-500' };
+            case 'cancelled': return { dot: 'bg-zinc-500', label: 'Cancelled', text: 'text-text-faint' };
             default: return { dot: 'bg-red-500', label: 'Failed', text: 'text-red-300' };
         }
     };
@@ -338,7 +338,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     // the fact worth seeing from across the table.
     const runScoreMeta = (run: RunSummary): { text: string; title: string } => {
         if (run.score === null || run.score === undefined) {
-            return { text: 'text-zinc-600', title: 'Not scored' };
+            return { text: 'text-text-faint', title: 'Not scored' };
         }
         if (run.score_regression) {
             return { text: 'text-red-300', title: 'Scored below expectation' };
@@ -348,7 +348,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         return { text: 'text-red-300', title: 'Scored poorly' };
     };
 
-    const thCls = 'px-4 py-2 text-[10px] font-medium uppercase tracking-wider text-zinc-500 whitespace-nowrap';
+    const thCls = 'px-4 py-2 text-[10px] font-medium uppercase tracking-wider text-text-faint whitespace-nowrap';
     const tdCls = 'px-4 py-2.5 text-xs';
 
     const renderRunsTable = (rows: RunSummary[], empty: string) => (
@@ -372,7 +372,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                     <tbody>
                         {rows.length === 0 ? (
                             <tr>
-                                <td colSpan={10} className="px-4 py-10 text-center text-xs text-zinc-600 italic">
+                                <td colSpan={10} className="px-4 py-10 text-center text-xs text-text-faint italic">
                                     {empty}
                                 </td>
                             </tr>
@@ -394,22 +394,22 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                     </td>
                                     <td className={`${tdCls} text-zinc-200 max-w-[220px]`}>
                                         <span className="block truncate">{orchNameOf(run.orchestration_id)}</span>
-                                        <span className="block text-[10px] text-zinc-600 truncate">{run.run_id}</span>
+                                        <span className="block text-[10px] text-text-faint truncate">{run.run_id}</span>
                                     </td>
                                     <td className={`${tdCls} max-w-[200px]`}>
                                         {stepName ? (
-                                            <span className={`block truncate ${isLive ? 'text-zinc-300' : 'text-zinc-500'}`}>
+                                            <span className={`block truncate ${isLive ? 'text-zinc-300' : 'text-text-faint'}`}>
                                                 {stepName}
                                             </span>
-                                        ) : <span className="text-zinc-600">—</span>}
+                                        ) : <span className="text-text-faint">—</span>}
                                     </td>
-                                    <td className={`${tdCls} text-zinc-500 max-w-[160px]`}>
+                                    <td className={`${tdCls} text-text-faint max-w-[160px]`}>
                                         <span className="block truncate">{triggerOf(run)}</span>
                                     </td>
                                     <td className={`${tdCls} text-right text-zinc-400 whitespace-nowrap`}>
                                         {run.steps_completed ?? 0} step{(run.steps_completed ?? 0) === 1 ? '' : 's'}
                                     </td>
-                                    <td className={`${tdCls} text-right text-zinc-500 whitespace-nowrap`}>
+                                    <td className={`${tdCls} text-right text-text-faint whitespace-nowrap`}>
                                         {run.total_cost_usd ? `$${run.total_cost_usd.toFixed(4)}` : '—'}
                                     </td>
                                     <td className={`${tdCls} text-right whitespace-nowrap`}>
@@ -422,14 +422,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                                 : run.score.toFixed(1)}
                                         </span>
                                     </td>
-                                    <td className={`${tdCls} text-right text-zinc-500 whitespace-nowrap`}>
+                                    <td className={`${tdCls} text-right text-text-faint whitespace-nowrap`}>
                                         {run.started_at ? new Date(run.started_at).toLocaleString() : '—'}
                                     </td>
-                                    <td className={`${tdCls} text-right text-zinc-500 whitespace-nowrap`}>
+                                    <td className={`${tdCls} text-right text-text-faint whitespace-nowrap`}>
                                         {fmtDuration(run.started_at, run.ended_at)}
                                     </td>
                                     <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                        <span className="text-[11px] text-zinc-600 group-hover:text-zinc-300 transition-colors">
+                                        <span className="text-[11px] text-text-faint group-hover:text-zinc-300 transition-colors">
                                             View →
                                         </span>
                                     </td>
@@ -1469,7 +1469,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
             {activeRuns.filter(r => r.run_id !== runId).length > 0 && (
                 <div className="px-4 py-2 border-b border-zinc-800 bg-zinc-900/60 shrink-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs text-zinc-500 flex items-center gap-1">
+                        <span className="text-xs text-text-faint flex items-center gap-1">
                             <Radio size={11} className="text-blue-400 animate-pulse" /> Active runs:
                         </span>
                         {activeRuns.filter(r => r.run_id !== runId).map(run => {
@@ -1484,7 +1484,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                         run.status === 'running' ? 'bg-blue-400 animate-pulse' : 'bg-yellow-400'
                                     }`} />
                                     <span className="text-zinc-300">{orch?.name ?? run.orchestration_id}</span>
-                                    <span className="text-zinc-500">{run.status === 'paused' ? '· waiting for input' : '· running'}</span>
+                                    <span className="text-text-faint">{run.status === 'paused' ? '· waiting for input' : '· running'}</span>
                                 </button>
                             );
                         })}
@@ -1511,7 +1511,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                         className={`px-4 py-2.5 text-xs font-medium border-b -mb-px transition-colors ${
                                             landingTab === t.id
                                                 ? 'text-zinc-100 border-zinc-100'
-                                                : 'text-zinc-500 border-transparent hover:text-zinc-300'
+                                                : 'text-text-faint border-transparent hover:text-zinc-300'
                                         }`}
                                     >
                                         {t.label}
@@ -1552,7 +1552,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                         <tbody>
                                             {visibleOrchestrations.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={5} className="px-4 py-10 text-center text-xs text-zinc-600 italic">
+                                                    <td colSpan={5} className="px-4 py-10 text-center text-xs text-text-faint italic">
                                                         {orchQuery
                                                             ? `No orchestrations match “${orchQuery}”.`
                                                             : 'No orchestrations yet — create one or build with AI.'}
@@ -1570,7 +1570,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                                         <td className={`${tdCls} text-zinc-200 font-medium whitespace-nowrap max-w-[240px]`}>
                                                             <span className="block truncate">{o.name}</span>
                                                         </td>
-                                                        <td className={`${tdCls} text-zinc-500 max-w-[380px]`}>
+                                                        <td className={`${tdCls} text-text-faint max-w-[380px]`}>
                                                             <span className="block truncate">{o.description || '—'}</span>
                                                         </td>
                                                         <td className={`${tdCls} text-right text-zinc-400 whitespace-nowrap`}>
@@ -1580,14 +1580,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                                             {lastRun && lastMeta ? (
                                                                 <span className="inline-flex items-center gap-1.5 justify-end">
                                                                     <span className={`w-1.5 h-1.5 rounded-full ${lastMeta.dot}`} />
-                                                                    <span className="text-zinc-500">
+                                                                    <span className="text-text-faint">
                                                                         {lastRun.started_at ? new Date(lastRun.started_at).toLocaleString() : lastMeta.label}
                                                                     </span>
                                                                 </span>
-                                                            ) : <span className="text-zinc-600">never</span>}
+                                                            ) : <span className="text-text-faint">never</span>}
                                                         </td>
                                                         <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                                            <span className="text-[11px] text-zinc-600 group-hover:text-zinc-300 transition-colors">
+                                                            <span className="text-[11px] text-text-faint group-hover:text-zinc-300 transition-colors">
                                                                 Open →
                                                             </span>
                                                         </td>
@@ -1777,7 +1777,7 @@ function ResponseModal({ stepName, stepType, content, onClose }: { stepName: str
                     <div className="flex items-center gap-2">
                         <Bot size={14} className="text-blue-400" />
                         <span className="text-sm font-semibold text-zinc-100">{stepName}</span>
-                        <span className="text-xs text-zinc-500">— full response</span>
+                        <span className="text-xs text-text-faint">— full response</span>
                     </div>
                     <div className="flex items-center gap-1">
                         <button
@@ -1905,7 +1905,7 @@ function BottomPanel({
                         className={`px-4 py-2 text-xs font-medium capitalize transition-colors ${
                             activeSection === section
                                 ? 'text-blue-400 border-b-2 border-blue-400'
-                                : 'text-zinc-500 hover:text-zinc-300'
+                                : 'text-text-faint hover:text-zinc-300'
                         }`}
                     >
                         {section === 'state' ? 'State Schema' : section === 'guardrails' ? 'Guardrails' : 'Run Log'}
@@ -1924,12 +1924,12 @@ function BottomPanel({
                     className={`px-4 py-2 text-xs font-medium transition-colors ${
                         activeSection === 'recent'
                             ? 'text-blue-400 border-b-2 border-blue-400'
-                            : 'text-zinc-500 hover:text-zinc-300'
+                            : 'text-text-faint hover:text-zinc-300'
                     }`}
                 >
                     Recent Runs
                     {pastRuns.length > 0 && (
-                        <span className="ml-1.5 text-[10px] bg-zinc-700 text-zinc-400 rounded-md px-1.5 py-0.5">
+                        <span className="ml-1.5 text-[10px] bg-surface-2 text-text-muted rounded-md px-1.5 py-0.5">
                             {pastRuns.length}
                         </span>
                     )}
@@ -1990,7 +1990,7 @@ function BottomPanel({
                                 />
                                 <span>
                                     <span className="text-xs text-zinc-400 block">Stop on a state type mismatch</span>
-                                    <span className="text-[11px] text-zinc-600 block mt-0.5">
+                                    <span className="text-[11px] text-text-faint block mt-0.5">
                                         A step&apos;s output is read as the type its state key declares —
                                         JSON text becomes a list or an object. Off, a step whose text will
                                         not convert leaves the text in place and warns. On, the run stops
@@ -2012,7 +2012,7 @@ function BottomPanel({
                                     <option key={r.id} value={r.id}>{r.name}</option>
                                 ))}
                             </select>
-                            <div className="text-[11px] text-zinc-600 mt-1">
+                            <div className="text-[11px] text-text-faint mt-1">
                                 {draft.rubric_id
                                     ? 'Every run is judged when it finishes. The judge is a model call, billed like any other.'
                                     : 'Pick a rubric to have an LLM judge score every run and flag regressions. Rubrics are written on the Evals screen.'}
@@ -2025,7 +2025,7 @@ function BottomPanel({
                 {activeSection === 'recent' && (
                     <div className="space-y-1">
                         {pastRuns.length === 0 ? (
-                            <div className="text-zinc-600 italic text-xs">No runs yet.</div>
+                            <div className="text-text-faint italic text-xs">No runs yet.</div>
                         ) : (
                             pastRuns.slice(0, 20).map(r => (
                                 <div key={r.run_id} className="flex items-center gap-2 text-[11px] py-1 px-2 rounded-md bg-zinc-800/50">
@@ -2036,9 +2036,9 @@ function BottomPanel({
                                         r.status === 'paused'    ? 'bg-yellow-400' : 'bg-blue-400 animate-pulse'
                                     }`} />
                                     <span className="text-zinc-400 truncate flex-1" title={r.run_id}>{r.run_id}</span>
-                                    <span className="text-zinc-500 capitalize">{r.status}</span>
+                                    <span className="text-text-faint capitalize">{r.status}</span>
                                     {r.started_at && (
-                                        <span className="text-zinc-600 text-[10px]">
+                                        <span className="text-text-faint text-[10px]">
                                             {new Date(r.started_at).toLocaleTimeString()}
                                         </span>
                                     )}
@@ -2092,7 +2092,7 @@ function BottomPanel({
                         {/* Log output */}
                         <div ref={logRef} className="font-mono text-[11px] text-zinc-400 space-y-0.5">
                             {runLog.length === 0 ? (
-                                <div className="text-zinc-600 italic">No run output yet. Click Run to start.</div>
+                                <div className="text-text-faint italic">No run output yet. Click Run to start.</div>
                             ) : (
                                 runLog.map((entry, i) => {
                                     if (typeof entry !== 'string') {
@@ -2121,7 +2121,7 @@ function BottomPanel({
                                                         <summary className="cursor-pointer list-none">
                                                             <Wrench size={11} className="mr-1 inline-block align-[-1px]" aria-hidden />
                                                             {entry.tool_name}
-                                                            {entry.step_name && <span className="text-zinc-500 text-[10px]"> · {entry.step_name}</span>}
+                                                            {entry.step_name && <span className="text-text-faint text-[10px]"> · {entry.step_name}</span>}
                                                         </summary>
                                                         <pre className="font-code bg-zinc-800/50 p-1 rounded-md mt-0.5 text-[10px] text-zinc-300 overflow-x-auto whitespace-pre-wrap">
                                                             {JSON.stringify(entry.args, null, 2)}
@@ -2132,7 +2132,7 @@ function BottomPanel({
                                         }
                                         if (entry.kind === 'tool_result') {
                                             return (
-                                                <div key={i} className="flex items-start gap-1.5 pl-4 text-[10px] text-zinc-500">
+                                                <div key={i} className="flex items-start gap-1.5 pl-4 text-[10px] text-text-faint">
                                                     <CornerDownRight size={10} className="mt-[2px] shrink-0" aria-hidden />
                                                     <span className="min-w-0 flex-1">{entry.preview.slice(0, 200)}{entry.preview.length > 200 ? '…' : ''}</span>
                                                 </div>
@@ -2155,7 +2155,7 @@ function BottomPanel({
                                                         <span className={`text-[10px] font-semibold uppercase tracking-wider ${labelColor}`}>
                                                             {entry.step_name}
                                                         </span>
-                                                        <span className="text-[9px] text-zinc-600 uppercase tracking-wide">
+                                                        <span className="text-[9px] text-text-faint uppercase tracking-wide">
                                                             {typeLabel}
                                                         </span>
                                                     </div>
@@ -2170,7 +2170,7 @@ function BottomPanel({
                                                         <span className="min-w-0 flex-1 leading-relaxed text-zinc-300">
                                                             {preview}{isTruncated ? '\u2026' : ''}
                                                         </span>
-                                                        <span className="ml-1 flex shrink-0 items-center gap-1 self-center whitespace-nowrap text-[10px] text-zinc-500 opacity-0 transition-opacity group-hover:opacity-100">
+                                                        <span className="ml-1 flex shrink-0 items-center gap-1 self-center whitespace-nowrap text-[10px] text-text-faint opacity-0 transition-opacity group-hover:opacity-100">
                                                             <ExternalLink size={10} aria-hidden />
                                                             View full
                                                         </span>
@@ -2185,7 +2185,7 @@ function BottomPanel({
                                                     <div className="flex items-center gap-1.5 mb-1">
                                                         <ListTodo size={11} className="text-accent shrink-0" aria-hidden />
                                                         <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Tasks</span>
-                                                        <span className="text-[9px] text-zinc-600">
+                                                        <span className="text-[9px] text-text-faint">
                                                             {done}/{entry.tasks.length} done{entry.step_name ? ` · ${entry.step_name}` : ''}
                                                         </span>
                                                     </div>
@@ -2197,14 +2197,14 @@ function BottomPanel({
                                                                 ) : t.status === 'in_progress' ? (
                                                                     <CircleDot size={11} className="mt-[2px] shrink-0 text-accent" aria-hidden />
                                                                 ) : t.status === 'cancelled' ? (
-                                                                    <CircleX size={11} className="mt-[2px] shrink-0 text-zinc-600" aria-hidden />
+                                                                    <CircleX size={11} className="mt-[2px] shrink-0 text-text-faint" aria-hidden />
                                                                 ) : (
-                                                                    <Circle size={11} className="mt-[2px] shrink-0 text-zinc-600" aria-hidden />
+                                                                    <Circle size={11} className="mt-[2px] shrink-0 text-text-faint" aria-hidden />
                                                                 )}
                                                                 <span className={
-                                                                    t.status === 'completed' ? 'text-zinc-500 line-through' :
+                                                                    t.status === 'completed' ? 'text-text-faint line-through' :
                                                                     t.status === 'in_progress' ? 'text-zinc-200' :
-                                                                    t.status === 'cancelled' ? 'text-zinc-600 line-through' :
+                                                                    t.status === 'cancelled' ? 'text-text-faint line-through' :
                                                                     'text-zinc-400'
                                                                 }>{t.content}</span>
                                                             </li>
@@ -2219,12 +2219,12 @@ function BottomPanel({
                                             return (
                                                 <div key={i} className="pl-2 my-0.5">
                                                     <details>
-                                                        <summary className={`cursor-pointer list-none text-[10px] ${isReasoning ? 'text-sky-400/80' : 'text-zinc-500'}`}>
+                                                        <summary className={`cursor-pointer list-none text-[10px] ${isReasoning ? 'text-sky-400/80' : 'text-text-faint'}`}>
                                                             {isReasoning
                                                                 ? <Brain size={10} className="mr-1 inline-block align-[-1px]" aria-hidden />
                                                                 : <MessageSquare size={10} className="mr-1 inline-block align-[-1px]" aria-hidden />}
                                                             {firstLine}{entry.content.length > firstLine.length ? '…' : ''}
-                                                            {entry.step_name && <span className="text-zinc-600"> · {entry.step_name}</span>}
+                                                            {entry.step_name && <span className="text-text-faint"> · {entry.step_name}</span>}
                                                         </summary>
                                                         <div className="mt-0.5 bg-zinc-800/40 border border-zinc-800 rounded-md p-2 text-[10px] text-zinc-400 whitespace-pre-wrap max-h-64 overflow-y-auto">
                                                             {entry.content}
@@ -2280,7 +2280,7 @@ function BottomPanel({
                                         <span className="relative inline-flex size-2 rounded-full bg-amber-400" aria-hidden />
                                     </span>
                                     <span className="shrink-0 text-xs font-semibold text-amber-300">Waiting for your input</span>
-                                    <span className="min-w-0 flex-1 truncate text-[11px] text-amber-200/70">{humanPrompt}</span>
+                                    <span className="min-w-0 flex-1 truncate text-[11px] text-amber-200">{humanPrompt}</span>
                                     <span className="shrink-0 rounded-md bg-amber-500 px-2.5 py-1 text-[11px] font-medium text-zinc-950 transition-colors group-hover:bg-amber-400">
                                         Answer
                                     </span>

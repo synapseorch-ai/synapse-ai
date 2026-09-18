@@ -56,10 +56,10 @@ function ThoughtCollapsible({ thoughts, stepName }: { thoughts: string[]; stepNa
           {parsedThoughts.map((entry, i) => (
             <div key={i} className="px-3 py-2 text-[12px] font-mono leading-5">
               {parsedThoughts.length > 1 && (
-                <span className="text-zinc-600 text-[10px] mr-2">Turn {i + 1}</span>
+                <span className="text-text-faint text-[10px] mr-2">Turn {i + 1}</span>
               )}
               {entry.type === 'tool_call' ? (
-                <span className="text-zinc-600">→ Called: {entry.toolName}</span>
+                <span className="text-text-faint">→ Called: {entry.toolName}</span>
               ) : (
                 <span className="text-zinc-400 whitespace-pre-wrap break-words">{entry.text}</span>
               )}
@@ -116,10 +116,10 @@ function StepDivider({ stepName, stepType }: { stepName: string; stepType?: stri
   return (
     <div className="flex items-center gap-3 my-1 px-1">
       <div className="h-px flex-1 bg-gradient-to-r from-transparent to-zinc-800" />
-      <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-widest text-zinc-500 shrink-0">
+      <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-widest text-text-faint shrink-0">
         <span>{icon}</span>
         <span>{stepName}</span>
-        {stepType && <span className="text-zinc-700">· {stepType}</span>}
+        {stepType && <span className="text-text-faint">· {stepType}</span>}
       </div>
       <div className="h-px flex-1 bg-gradient-to-l from-transparent to-zinc-800" />
     </div>
@@ -223,7 +223,7 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
         )}
         <button
           onClick={() => { navigator.clipboard.writeText(msg.content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-          className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-zinc-800/60 hover:bg-zinc-700/80 text-zinc-500 hover:text-zinc-200"
+          className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-zinc-800/60 hover:bg-zinc-700/80 text-text-faint hover:text-zinc-200"
           title="Copy response"
         >
           {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
@@ -354,7 +354,7 @@ function ToolApprovalCard({
         )}
 
         {answered ? (
-          <p className="mt-3 text-[12px] text-zinc-500">Answered.</p>
+          <p className="mt-3 text-[12px] text-text-faint">Answered.</p>
         ) : (
           <>
             <input
@@ -383,7 +383,7 @@ function ToolApprovalCard({
                 Refuse
               </button>
             </div>
-            <p className="mt-2 text-[11px] text-zinc-600">
+            <p className="mt-2 text-[11px] text-text-faint">
               Allowing applies to this call and these arguments only.
             </p>
           </>
@@ -433,7 +433,7 @@ function WelcomeScreen({ agentName, onPrompt, onNavigate, showExamplesBanner, on
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-[12px] font-bold text-text tracking-wide">Get started in seconds</p>
-                  <p className="text-[11px] text-accent/80 font-mono break-words">Pre-built agents, orchestrations &amp; MCP servers — ready to explore</p>
+                  <p className="text-[11px] text-accent font-mono break-words">Pre-built agents, orchestrations &amp; MCP servers — ready to explore</p>
                 </div>
               </div>
               <button
@@ -449,7 +449,7 @@ function WelcomeScreen({ agentName, onPrompt, onNavigate, showExamplesBanner, on
             <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
               <div className="flex items-center gap-1.5 flex-wrap justify-center sm:justify-start">
                 {['Web research agent', 'Multi-step orchestration', 'MCP Servers'].map(label => (
-                  <span key={label} className="px-2 py-0.5 text-[10px] font-mono text-accent bg-accent/20 border border-accent/40 rounded-sm">
+                  <span key={label} className="px-2 py-0.5 text-[10px] font-mono text-accent bg-accent/10 border border-accent/40 rounded-sm">
                     {label}
                   </span>
                 ))}
@@ -470,12 +470,12 @@ function WelcomeScreen({ agentName, onPrompt, onNavigate, showExamplesBanner, on
       {/* Greeting */}
       <div className="mb-2 flex items-center gap-2">
         <div className="h-1.5 w-1.5 rounded-full bg-green-400 shadow-[0_0_8px_#4ade80] animate-pulse" />
-        <span className="text-[11px] font-mono uppercase tracking-[0.2em] text-zinc-500">{agentName}&nbsp;· Ready</span>
+        <span className="text-[11px] font-mono uppercase tracking-[0.2em] text-text-faint">{agentName}&nbsp;· Ready</span>
       </div>
       <h2 className="text-3xl md:text-4xl font-bold text-zinc-100 tracking-tight mb-1 text-center">
         What can I help you Achieve?
       </h2>
-      <p className="text-zinc-500 text-sm mb-10 text-center font-mono">
+      <p className="text-text-faint text-sm mb-10 text-center font-mono">
         Synapse AI — Agents that work together to get things done
       </p>
 
@@ -1706,7 +1706,7 @@ export default function Home() {
     // ── A quiet line: something the loop did, not something anyone said ──
     if (msg.msgType === 'note') {
       return (
-        <div key={idx} className="flex items-center gap-2 max-w-4xl py-0.5 pl-11 text-[11px] text-zinc-600 font-sans">
+        <div key={idx} className="flex items-center gap-2 max-w-4xl py-0.5 pl-11 text-[11px] text-text-faint font-sans">
           <span className="h-px w-4 bg-zinc-800 shrink-0" aria-hidden />
           <span className="min-w-0">{msg.content}</span>
         </div>
@@ -1738,7 +1738,7 @@ export default function Home() {
                 onSubmit={(values) => handleHumanInputSubmit(msg.data?.run_id, msg.data?.orch_step_id, values)}
               />
               {msg.data?.channel_id && (
-                <div className="mt-2 text-[11px] text-zinc-500 font-mono">
+                <div className="mt-2 text-[11px] text-text-faint font-mono">
                   📲 Notification sent to messaging channel
                 </div>
               )}
@@ -1783,7 +1783,7 @@ export default function Home() {
                   aria-label="Edit this message and send it again"
                   title="Edit and send again"
                   className={cn(
-                    "absolute -left-9 top-3 p-1.5 rounded-md text-zinc-600 transition-all",
+                    "absolute -left-9 top-3 p-1.5 rounded-md text-text-faint transition-all",
                     "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                     "hover:text-zinc-300 hover:bg-zinc-800",
                   )}
@@ -1869,12 +1869,12 @@ export default function Home() {
             {/* Session List */}
             <div className="flex-1 overflow-y-auto custom-scrollbar">
               {sessionsLoading && sessions.length === 0 && (
-                <div className="flex items-center justify-center py-10 text-zinc-500 text-xs">Loading...</div>
+                <div className="flex items-center justify-center py-10 text-text-faint text-xs">Loading...</div>
               )}
               {!sessionsLoading && sessions.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-10 gap-2">
-                  <Clock className="h-8 w-8 text-zinc-700" />
-                  <span className="text-xs text-zinc-500">No chat history yet</span>
+                  <Clock className="h-8 w-8 text-text-faint" />
+                  <span className="text-xs text-text-faint">No chat history yet</span>
                 </div>
               )}
               {sessions.map(s => (
@@ -1891,16 +1891,16 @@ export default function Home() {
                     <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-white" />
                   )}
                   <div className="flex items-start justify-between gap-2 mb-1">
-                    <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-mono truncate">
+                    <span className="text-[10px] uppercase tracking-wider text-text-faint font-mono truncate">
                       {s.agent_id || 'default'}
                     </span>
                     <div className="flex items-center gap-1 shrink-0">
-                      <span className="text-[10px] text-zinc-600 font-mono">
+                      <span className="text-[10px] text-text-faint font-mono">
                         {formatRelativeTime(s.last_updated)}
                       </span>
                       <button
                         onClick={(e) => handleDeleteSession(e, s)}
-                        className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-400 text-zinc-600 transition-all"
+                        className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-400 text-text-faint transition-all"
                         title="Delete session"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -1911,11 +1911,11 @@ export default function Home() {
                     {s.first_user_message || '(no messages)'}
                   </p>
                   {s.last_response && (
-                    <p className="text-[11px] text-zinc-500 mt-1 truncate">
+                    <p className="text-[11px] text-text-faint mt-1 truncate">
                       ↩ {s.last_response.slice(0, 80)}{s.last_response.length > 80 ? '…' : ''}
                     </p>
                   )}
-                  <div className="text-[10px] text-zinc-700 mt-1 font-mono">
+                  <div className="text-[10px] text-text-faint mt-1 font-mono">
                     {s.turn_count} turn{s.turn_count !== 1 ? 's' : ''}
                   </div>
                 </div>
@@ -1994,7 +1994,7 @@ export default function Home() {
                         : [];
 
                       if (visibleAgents.length === 0) {
-                        return <div className="text-xs text-zinc-500 italic px-3 py-2">No agents detected.</div>;
+                        return <div className="text-xs text-text-faint italic px-3 py-2">No agents detected.</div>;
                       }
 
                       return visibleAgents.map(([id, info]) => {
@@ -2089,7 +2089,7 @@ export default function Home() {
 
                       {isThinking && (
                         <div className="flex items-baseline gap-0.5 max-w-2xl">
-                          <span className="text-xs text-zinc-500 font-mono truncate">💭 {thinkingPreview || 'Thinking'}</span>
+                          <span className="text-xs text-text-faint font-mono truncate">💭 {thinkingPreview || 'Thinking'}</span>
                           <span className="flex gap-0.5 items-end pb-0.5 ml-0.5">
                             <span className="inline-block w-0.5 h-0.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '0ms', animationDuration: '1s' }}></span>
                             <span className="inline-block w-0.5 h-0.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '150ms', animationDuration: '1s' }}></span>
@@ -2147,7 +2147,7 @@ export default function Home() {
                   type="button"
                   onClick={() => setTurnOutcome(null)}
                   aria-label="Dismiss"
-                  className="shrink-0 p-1 rounded-md text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  className="shrink-0 p-1 rounded-md text-text-faint hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -2183,7 +2183,7 @@ export default function Home() {
               <AttachmentChips images={attachedImages} onRemove={attachments.remove} />
 
               <div className="flex items-end gap-1.5">
-              <div className="pl-4 pr-2 py-4 text-zinc-500 shrink-0">
+              <div className="pl-4 pr-2 py-4 text-text-faint shrink-0">
                 <Terminal className={cn("h-4 w-4", isLoading ? "animate-pulse text-green-500" : "")} />
               </div>
               <textarea
@@ -2254,7 +2254,7 @@ export default function Home() {
               </div>
             </form>
             <div className="text-center mt-2">
-              <p className="text-xs text-zinc-500 uppercase tracking-widest font-mono">
+              <p className="text-xs text-text-faint uppercase tracking-widest font-mono">
                 Synapses that connect agents
               </p>
             </div>

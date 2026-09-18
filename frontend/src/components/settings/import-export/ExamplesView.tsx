@@ -82,8 +82,8 @@ export function ExamplesView({ onLoadBundle }: ExamplesViewProps) {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <Spinner size={24} className="text-zinc-500" />
-        <span className="ml-3 text-sm text-zinc-500">Loading example packs…</span>
+        <Spinner size={24} className="text-text-faint" />
+        <span className="ml-3 text-sm text-text-faint">Loading example packs…</span>
       </div>
     );
   }
@@ -107,7 +107,7 @@ export function ExamplesView({ onLoadBundle }: ExamplesViewProps) {
         <Sparkles className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />
         <div>
           <p className="text-sm font-bold text-zinc-200">Example Packs</p>
-          <p className="text-[11px] text-zinc-500 mt-0.5 leading-relaxed">
+          <p className="text-[11px] text-text-faint mt-0.5 leading-relaxed">
             Curated collections of agents, orchestrations, and MCP servers. Select a pack to preview what will be imported before committing.
           </p>
         </div>
@@ -179,8 +179,8 @@ export function ExamplesView({ onLoadBundle }: ExamplesViewProps) {
 
       {packs.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16">
-          <PackageOpen className="h-10 w-10 text-zinc-700 mb-3" />
-          <p className="text-sm text-zinc-500">No example packs available.</p>
+          <PackageOpen className="h-10 w-10 text-text-faint mb-3" />
+          <p className="text-sm text-text-faint">No example packs available.</p>
         </div>
       )}
     </div>

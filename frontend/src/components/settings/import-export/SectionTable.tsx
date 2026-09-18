@@ -30,7 +30,7 @@ export function SectionTable<T>({
       >
         <Icon className="h-4 w-4 text-zinc-400" />
         <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">{title}</span>
-        <span className="ml-auto flex items-center gap-2 text-[10px] text-zinc-600 font-mono">
+        <span className="ml-auto flex items-center gap-2 text-[10px] text-text-faint font-mono">
           {selectedCount}/{items.length}
           {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
         </span>
@@ -69,13 +69,13 @@ export function SectionTable<T>({
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-bold text-zinc-200">{getLabel(item)}</span>
                     {isLocked && (
-                      <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 text-zinc-500 tracking-wider rounded-md">
+                      <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 text-text-faint tracking-wider rounded-md">
                         auto
                       </span>
                     )}
                   </div>
-                  {desc && <p className="text-xs text-zinc-500 mt-0.5 line-clamp-1">{desc}</p>}
-                  <p className="text-[10px] text-zinc-700 font-mono mt-0.5">{getId(item)}</p>
+                  {desc && <p className="text-xs text-text-faint mt-0.5 line-clamp-1">{desc}</p>}
+                  <p className="text-[10px] text-text-faint font-mono mt-0.5">{getId(item)}</p>
                 </div>
               </div>
             );

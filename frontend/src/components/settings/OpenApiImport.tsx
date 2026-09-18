@@ -108,14 +108,14 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
             {/* Header */}
             <div className="flex items-center justify-between pb-4 border-b border-zinc-800">
                 <div className="flex items-center gap-3">
-                    <button onClick={onClose} className="text-zinc-500 hover:text-white">
+                    <button onClick={onClose} className="text-text-faint hover:text-white">
                         <X className="h-5 w-5" />
                     </button>
                     <div>
                         <h3 className="text-lg font-bold text-white flex items-center gap-2">
                             <Import className="h-5 w-5" /> Import from OpenAPI / Swagger
                         </h3>
-                        <p className="text-zinc-500 text-sm">
+                        <p className="text-text-faint text-sm">
                             Paste or upload an OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML) to generate HTTP tools.
                         </p>
                     </div>
@@ -142,7 +142,7 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
             {/* Options */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                    <label htmlFor="openapiimport-base-url-override-optional" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Base URL override <span className="text-zinc-600 normal-case font-normal">(optional)</span></label>
+                    <label htmlFor="openapiimport-base-url-override-optional" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Base URL override <span className="text-text-faint normal-case font-normal">(optional)</span></label>
                     <input
                         id="openapiimport-base-url-override-optional"
                         value={baseUrl}
@@ -152,7 +152,7 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                     />
                 </div>
                 <div>
-                    <label htmlFor="openapiimport-name-prefix-optional" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Name prefix <span className="text-zinc-600 normal-case font-normal">(optional)</span></label>
+                    <label htmlFor="openapiimport-name-prefix-optional" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Name prefix <span className="text-text-faint normal-case font-normal">(optional)</span></label>
                     <input
                         id="openapiimport-name-prefix-optional"
                         value={namePrefix}
@@ -162,7 +162,7 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                     />
                 </div>
                 <div className="md:col-span-2">
-                    <label htmlFor="openapiimport-group-one-per-import-the-age" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Group <span className="text-zinc-600 normal-case font-normal">(one per import — the agent picker shows it as one row; defaults to the spec&apos;s title)</span></label>
+                    <label htmlFor="openapiimport-group-one-per-import-the-age" className="text-xs font-bold uppercase tracking-wider text-zinc-400">Group <span className="text-text-faint normal-case font-normal">(one per import — the agent picker shows it as one row; defaults to the spec&apos;s title)</span></label>
                     <input
                         id="openapiimport-group-one-per-import-the-age"
                         value={groupName}
@@ -172,7 +172,7 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                     />
                 </div>
                 <div className="md:col-span-2">
-                    <label className="text-xs font-bold uppercase tracking-wider text-zinc-400">Auth header <span className="text-zinc-600 normal-case font-normal">(optional — applied to every tool)</span></label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-zinc-400">Auth header <span className="text-text-faint normal-case font-normal">(optional — applied to every tool)</span></label>
                     <div className="flex gap-2 mt-1">
                         <input
                             value={authKey}
@@ -214,10 +214,10 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                             {allSelected ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
                             {preview.length} operation{preview.length === 1 ? '' : 's'} found
                         </button>
-                        <span className="text-[10px] text-zinc-500 uppercase font-bold">{selectedCount} selected</span>
+                        <span className="text-[10px] text-text-faint uppercase font-bold">{selectedCount} selected</span>
                     </div>
                     {preview.length === 0 ? (
-                        <div className="py-6 text-center text-zinc-600 italic text-sm border border-dashed border-zinc-800">
+                        <div className="py-6 text-center text-text-faint italic text-sm border border-dashed border-zinc-800">
                             No operations found in this spec.
                         </div>
                     ) : (
@@ -228,14 +228,14 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                                     onClick={() => toggle(t.name)}
                                     className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-zinc-900/60"
                                 >
-                                    {selected[t.name] ? <CheckSquare className="h-4 w-4 text-emerald-400 shrink-0" /> : <Square className="h-4 w-4 text-zinc-600 shrink-0" />}
+                                    {selected[t.name] ? <CheckSquare className="h-4 w-4 text-emerald-400 shrink-0" /> : <Square className="h-4 w-4 text-text-faint shrink-0" />}
                                     <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md shrink-0 ${
                                         t.method === 'GET' ? 'bg-sky-900/40 text-sky-300 border border-sky-800' :
                                         t.method === 'DELETE' ? 'bg-red-900/40 text-red-300 border border-red-800' :
                                         'bg-amber-900/30 text-amber-300 border border-amber-800/60'
                                     }`}>{t.method}</span>
                                     <span className="font-mono text-xs text-zinc-300 truncate">{t.name}</span>
-                                    <span className="font-mono text-[10px] text-zinc-600 truncate ml-auto">{t.url}</span>
+                                    <span className="font-mono text-[10px] text-text-faint truncate ml-auto">{t.url}</span>
                                 </button>
                             ))}
                         </div>

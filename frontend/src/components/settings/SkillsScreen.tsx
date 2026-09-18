@@ -237,7 +237,7 @@ export function SkillsScreen() {
                                         </div>
                                         <p className="mt-1 text-xs text-zinc-400 line-clamp-2">{skill.description}</p>
                                         {skill.path && (
-                                            <p className="mt-1 text-[10px] text-zinc-600 font-mono truncate" title={skill.path}>{skill.path}</p>
+                                            <p className="mt-1 text-[10px] text-text-faint font-mono truncate" title={skill.path}>{skill.path}</p>
                                         )}
                                     </div>
                                     <div className="flex shrink-0 items-center gap-1">

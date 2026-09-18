@@ -154,7 +154,7 @@ const StatusBadge = ({ status, lastError }: { status?: string; lastError?: strin
         </span>
     );
     return (
-        <span className="flex items-center gap-1 text-[10px] font-bold text-zinc-500 bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded-md">
+        <span className="flex items-center gap-1 text-[10px] font-bold text-text-faint bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded-md">
             <Square className="h-2.5 w-2.5" /> STOPPED
         </span>
     );
@@ -424,7 +424,7 @@ export const MessagingTab = () => {
                         <button
                             onClick={fetchChannels}
                             title="Refresh"
-                            className="p-1.5 text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
+                            className="p-1.5 text-text-faint hover:text-white hover:bg-zinc-800 transition-colors"
                         >
                             <RefreshCw className={`h-3 w-3 ${refreshing ? 'animate-spin' : ''}`} />
                         </button>
@@ -440,7 +440,7 @@ export const MessagingTab = () => {
 
                 <div className="space-y-2 flex-1 overflow-y-auto modern-scrollbar">
                     {channels.length === 0 && (
-                        <div className="p-6 text-center text-zinc-600 text-xs border border-dashed border-zinc-800">
+                        <div className="p-6 text-center text-text-faint text-xs border border-dashed border-zinc-800">
                             <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-20" />
                             No channels configured yet.<br />Click + to add one.
                         </div>
@@ -461,7 +461,7 @@ export const MessagingTab = () => {
                                     </div>
                                     <div className="flex-1 min-w-0">
                                         <div className="text-xs font-bold text-white truncate">{ch.name}</div>
-                                        <div className="text-[10px] text-zinc-500 truncate">
+                                        <div className="text-[10px] text-text-faint truncate">
                                             {(() => {
                                                 const ids = ch.agent_ids?.length
                                                     ? ch.agent_ids
@@ -487,7 +487,7 @@ export const MessagingTab = () => {
                                         </button>
                                         <button
                                             onClick={e => { e.stopPropagation(); setConfirmDeleteId(ch.id || null); }}
-                                            className="p-1 text-zinc-600 hover:text-red-400 transition-colors"
+                                            className="p-1 text-text-faint hover:text-red-400 transition-colors"
                                         >
                                             <Trash className="h-3 w-3" />
                                         </button>
@@ -500,7 +500,7 @@ export const MessagingTab = () => {
 
                 {/* ── Run notifications channel ─────────────────────── */}
                 <div className="mt-3 pt-3 border-t border-zinc-800">
-                    <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block mb-1.5">
+                    <label className="text-[10px] font-bold text-text-faint uppercase tracking-wider block mb-1.5">
                         Run notifications
                     </label>
                     <Select
@@ -514,7 +514,7 @@ export const MessagingTab = () => {
                             ...channels.filter(ch => ch.id).map(ch => ({ value: ch.id as string, label: ch.name })),
                         ]}
                     />
-                    <p className="text-[10px] text-zinc-600 mt-1 leading-relaxed">
+                    <p className="text-[10px] text-text-faint mt-1 leading-relaxed">
                         Mirror orchestration notifications (needs input, completed, failed)
                         to this channel&apos;s notify chat.
                     </p>
@@ -522,7 +522,7 @@ export const MessagingTab = () => {
 
                 {/* ── Public address for webhook-mode channels ───────── */}
                 <div className="mt-3 pt-3 border-t border-zinc-800">
-                    <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider block mb-1.5">
+                    <label className="text-[10px] font-bold text-text-faint uppercase tracking-wider block mb-1.5">
                         Webhook address
                     </label>
                     <div className="flex gap-1">
@@ -537,7 +537,7 @@ export const MessagingTab = () => {
                             className="flex-1 min-w-0 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-[10px] text-white font-mono focus:border-white focus:outline-none rounded-md"
                         />
                     </div>
-                    <p className="text-[10px] text-zinc-600 mt-1 leading-relaxed">
+                    <p className="text-[10px] text-text-faint mt-1 leading-relaxed">
                         Where platforms deliver messages for channels in webhook mode. A public
                         HTTPS address for this backend — a tunnel URL works for local testing.
                     </p>
@@ -578,7 +578,7 @@ export const MessagingTab = () => {
 
                         {/* Platform picker */}
                         <div className="space-y-2">
-                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Platform</label>
+                            <label className="text-[10px] font-bold text-text-faint uppercase">Platform</label>
                             <div className="grid grid-cols-5 gap-2">
                                 {PLATFORMS.map(p => (
                                     <button
@@ -587,7 +587,7 @@ export const MessagingTab = () => {
                                         className={`flex flex-col items-center gap-1 p-3 border text-xs font-bold transition-all
                                             ${draft.platform === p.id
                                                 ? `${p.color} border-current`
-                                                : 'bg-black border-zinc-800 text-zinc-500 hover:border-zinc-600'}`}
+                                                : 'bg-black border-zinc-800 text-text-faint hover:border-zinc-600'}`}
                                     >
                                         <img src={p.icon} alt={p.label} className="h-6 w-6 object-contain" />
                                         {p.label}
@@ -598,7 +598,7 @@ export const MessagingTab = () => {
 
                         {/* Common fields */}
                         <div className="space-y-1">
-                            <label htmlFor="messaging-channel-name" className="text-[10px] font-bold text-zinc-500 uppercase">Channel Name</label>
+                            <label htmlFor="messaging-channel-name" className="text-[10px] font-bold text-text-faint uppercase">Channel Name</label>
                             <input
                                 id="messaging-channel-name"
                                 type="text"
@@ -612,19 +612,19 @@ export const MessagingTab = () => {
                         {/* ── Agents on this channel ─────────────────────── */}
                         <div className="space-y-2">
                             <div>
-                                <label className="text-[10px] font-bold text-zinc-500 uppercase">Agents</label>
-                                <p className="text-[10px] text-zinc-500 mt-1 leading-relaxed">
+                                <label className="text-[10px] font-bold text-text-faint uppercase">Agents</label>
+                                <p className="text-[10px] text-text-faint mt-1 leading-relaxed">
                                     Who answers messages arriving here. A channel can front several
                                     agents; the one marked <strong className="text-zinc-300">default</strong> takes
                                     a plain message.
                                 </p>
                             </div>
                             {!draft.id ? (
-                                <p className="text-[10px] text-zinc-600 p-3 border border-dashed border-zinc-800 rounded-md">
+                                <p className="text-[10px] text-text-faint p-3 border border-dashed border-zinc-800 rounded-md">
                                     Save the channel first — agents are assigned to it once it exists.
                                 </p>
                             ) : agents.length === 0 ? (
-                                <p className="text-[10px] text-zinc-600 p-3 border border-dashed border-zinc-800 rounded-md">
+                                <p className="text-[10px] text-text-faint p-3 border border-dashed border-zinc-800 rounded-md">
                                     No agents configured yet. Create one under Settings → Agents.
                                 </p>
                             ) : (
@@ -687,7 +687,7 @@ export const MessagingTab = () => {
                                 <label htmlFor="multi-agent-toggle" className="text-xs font-bold text-white cursor-pointer block leading-tight">
                                     Multi-Agent Mode
                                 </label>
-                                <p className="text-[10px] text-zinc-500 mt-1.5 leading-relaxed">
+                                <p className="text-[10px] text-text-faint mt-1.5 leading-relaxed">
                                     When enabled, people in the chat can switch between the agents
                                     assigned above using <code className="font-code bg-zinc-800 px-1">/agent &lt;name&gt;</code>,
                                     and list them with <code className="font-code bg-zinc-800 px-1">/agents</code>.
@@ -707,8 +707,8 @@ export const MessagingTab = () => {
                         {MODE_CHOICE_PLATFORMS.includes(draft.platform) && (
                             <div className="space-y-2">
                                 <div>
-                                    <label className="text-[10px] font-bold text-zinc-500 uppercase">Delivery</label>
-                                    <p className="text-[10px] text-zinc-500 mt-1 leading-relaxed">
+                                    <label className="text-[10px] font-bold text-text-faint uppercase">Delivery</label>
+                                    <p className="text-[10px] text-text-faint mt-1 leading-relaxed">
                                         How messages reach Synapse. Polling holds a connection open to the
                                         platform and needs no public address. Webhook holds nothing — the
                                         platform posts to you — which is what a multi-replica deployment
@@ -727,7 +727,7 @@ export const MessagingTab = () => {
                                                 ${(draft.mode || 'polling') === opt.v ? 'bg-zinc-900 border-white' : 'bg-black border-zinc-800 hover:border-zinc-600'}`}
                                         >
                                             <div className="font-bold text-white">{opt.label}</div>
-                                            <div className="text-zinc-500 mt-1">{opt.desc}</div>
+                                            <div className="text-text-faint mt-1">{opt.desc}</div>
                                         </button>
                                     ))}
                                 </div>
@@ -740,12 +740,12 @@ export const MessagingTab = () => {
                                                 the channel cannot register with {platformMeta?.label}.
                                             </p>
                                         ) : !draft.id ? (
-                                            <p className="text-[10px] text-zinc-500">
+                                            <p className="text-[10px] text-text-faint">
                                                 The delivery URL appears here once the channel is saved.
                                             </p>
                                         ) : (
                                             <div className="space-y-1">
-                                                <label htmlFor="messaging-delivery-url" className="text-[10px] font-bold text-zinc-500 uppercase">Delivery URL</label>
+                                                <label htmlFor="messaging-delivery-url" className="text-[10px] font-bold text-text-faint uppercase">Delivery URL</label>
                                                 <input
                                                     id="messaging-delivery-url"
                                                     readOnly
@@ -753,7 +753,7 @@ export const MessagingTab = () => {
                                                     onFocus={e => e.currentTarget.select()}
                                                     className="w-full bg-black border border-zinc-800 p-2.5 text-[10px] text-zinc-300 font-mono rounded-md"
                                                 />
-                                                <p className="text-[9px] text-zinc-600">
+                                                <p className="text-[9px] text-text-faint">
                                                     {draft.platform === 'telegram'
                                                         ? 'Registered with Telegram automatically on Save & Connect.'
                                                         : `Paste this into your ${platformMeta?.label} app configuration.`}
@@ -761,7 +761,7 @@ export const MessagingTab = () => {
                                             </div>
                                         )}
                                         {draft.platform === 'slack' && (
-                                            <p className="text-[9px] text-zinc-600">
+                                            <p className="text-[9px] text-text-faint">
                                                 Webhook mode does not need the app-level token (xapp-…) — that is
                                                 Socket Mode&apos;s, and Socket Mode is the polling option.
                                             </p>
@@ -773,7 +773,7 @@ export const MessagingTab = () => {
 
                         {/* Platform-specific credentials */}
                         <div className="space-y-3">
-                            <label className="text-[10px] font-bold text-zinc-500 uppercase">Credentials — {platformMeta?.label}</label>
+                            <label className="text-[10px] font-bold text-text-faint uppercase">Credentials — {platformMeta?.label}</label>
 
                             {/* WhatsApp special UI */}
                             {draft.platform === 'whatsapp' ? (
@@ -791,7 +791,7 @@ export const MessagingTab = () => {
                                                     ${waMode === opt.v ? 'bg-zinc-900 border-white' : 'bg-black border-zinc-800 hover:border-zinc-600'} rounded-md`}
                                             >
                                                 <div className="font-bold text-white">{opt.label}</div>
-                                                <div className="text-zinc-500 mt-1">{opt.desc}</div>
+                                                <div className="text-text-faint mt-1">{opt.desc}</div>
                                             </button>
                                         ))}
                                     </div>
@@ -805,7 +805,7 @@ export const MessagingTab = () => {
                                                   note: 'Used to verify Meta webhook. Set the same value in your Meta App settings.' },
                                             ].map(f => (
                                                 <div key={f.key} className="space-y-1">
-                                                    <label htmlFor={`messaging-cred-${f.key}`} className="text-[10px] font-bold text-zinc-500 uppercase">{f.label}</label>
+                                                    <label htmlFor={`messaging-cred-${f.key}`} className="text-[10px] font-bold text-text-faint uppercase">{f.label}</label>
                                                     <input
                                                         id={`messaging-cred-${f.key}`}
                                                         type={f.secret ? 'password' : 'text'}
@@ -814,7 +814,7 @@ export const MessagingTab = () => {
                                                         placeholder={f.placeholder}
                                                         className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none font-mono rounded-md"
                                                     />
-                                                    {f.note && <p className="text-[9px] text-zinc-600">{f.note}</p>}
+                                                    {f.note && <p className="text-[9px] text-text-faint">{f.note}</p>}
                                                 </div>
                                             ))}
                                         </div>
@@ -861,7 +861,7 @@ export const MessagingTab = () => {
                                 <div className="space-y-3">
                                     {CREDENTIAL_FIELDS[draft.platform]?.map(f => (
                                         <div key={f.key} className="space-y-1">
-                                            <label htmlFor="messaging-f-label-2" className="text-[10px] font-bold text-zinc-500 uppercase">{f.label}</label>
+                                            <label htmlFor="messaging-f-label-2" className="text-[10px] font-bold text-text-faint uppercase">{f.label}</label>
                                             <input
                                                 id="messaging-f-label-2"
                                                 type={f.secret ? 'password' : 'text'}
@@ -871,7 +871,7 @@ export const MessagingTab = () => {
                                                 className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none font-mono rounded-md"
                                             />
                                             {f.note && (
-                                                <p className="text-[9px] text-zinc-600 flex items-center gap-1">
+                                                <p className="text-[9px] text-text-faint flex items-center gap-1">
                                                     <Info className="h-2.5 w-2.5" /> {f.note}
                                                 </p>
                                             )}
@@ -895,8 +895,8 @@ export const MessagingTab = () => {
                                     <ol className="space-y-2">
                                         {guide.steps.map((s, i) => (
                                             <li key={i} className="flex gap-2 text-[10px] text-zinc-400">
-                                                <span className="text-zinc-600 font-bold flex-shrink-0">{s.startsWith('---') ? '' : `${i + 1}.`}</span>
-                                                <span className={s.startsWith('---') ? 'text-zinc-700 border-t border-zinc-800 w-full pt-1' : ''}>{s}</span>
+                                                <span className="text-text-faint font-bold flex-shrink-0">{s.startsWith('---') ? '' : `${i + 1}.`}</span>
+                                                <span className={s.startsWith('---') ? 'text-text-faint border-t border-zinc-800 w-full pt-1' : ''}>{s}</span>
                                             </li>
                                         ))}
                                     </ol>
@@ -916,7 +916,7 @@ export const MessagingTab = () => {
                         )}
                     </div>
                 ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-zinc-600 space-y-4 py-20">
+                    <div className="h-full flex flex-col items-center justify-center text-text-faint space-y-4 py-20">
                         <MessageSquare className="h-12 w-12 opacity-20" />
                         <p className="text-sm">Select a channel or create a new one.</p>
                     </div>

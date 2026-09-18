@@ -315,9 +315,9 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
         onClick={() => fileRef.current?.click()}
         className={`flex flex-col items-center justify-center border border-dashed py-14 px-8 cursor-pointer transition-colors ${dragging ? "border-white bg-zinc-800" : "border-zinc-700 bg-zinc-900/30 hover:border-zinc-500 hover:bg-zinc-900/60"} rounded-md`}
       >
-        <Upload className="h-8 w-8 text-zinc-600 mb-3" />
+        <Upload className="h-8 w-8 text-text-faint mb-3" />
         <p className="text-zinc-300 text-sm font-bold">Drop your export file here</p>
-        <p className="text-zinc-600 text-xs mt-1">or click to browse · JSON files only</p>
+        <p className="text-text-faint text-xs mt-1">or click to browse · JSON files only</p>
         <input ref={fileRef} type="file" accept=".json" className="sr-only" onChange={e => { const f = e.target.files?.[0]; if (f) parseFile(f); e.target.value = ""; }} />
       </div>
       {parseError && (
@@ -343,11 +343,11 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
           <Package className="h-4 w-4 text-zinc-400 flex-shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-zinc-200">Bundle loaded</p>
-            <p className="text-[10px] text-zinc-600 font-mono">
+            <p className="text-[10px] text-text-faint font-mono">
               v{bundle.version || "1.0"} · {bundle.exported_at ? new Date(bundle.exported_at).toLocaleString() : "unknown date"}
             </p>
           </div>
-          <button onClick={reset} className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors underline underline-offset-2">Change file</button>
+          <button onClick={reset} className="text-xs text-text-faint hover:text-zinc-300 transition-colors underline underline-offset-2">Change file</button>
         </div>
 
         {googleDependentAgents.length > 0 && googleStatus?.is_connected === false && (
@@ -448,8 +448,8 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
         ) : (
           /* No explicit models → neutral info */
           <div className="flex items-start gap-3 p-3.5 border border-zinc-800 bg-zinc-900/40 rounded-md">
-            <Cpu className="h-3.5 w-3.5 text-zinc-500 flex-shrink-0 mt-0.5" />
-            <p className="text-zinc-500 text-xs leading-relaxed">
+            <Cpu className="h-3.5 w-3.5 text-text-faint flex-shrink-0 mt-0.5" />
+            <p className="text-text-faint text-xs leading-relaxed">
               No explicit model overrides found — agents &amp; orchestration steps will use your global default model.
             </p>
           </div>
@@ -548,18 +548,18 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
 
         {relevantMcpWithTokens.length > 0 && (
           <div className="space-y-3">
-            <h4 className="text-[10px] uppercase font-bold tracking-wider text-zinc-500 flex items-center gap-2">
+            <h4 className="text-[10px] uppercase font-bold tracking-wider text-text-faint flex items-center gap-2">
               <Server className="h-3 w-3" /> Remote MCP Server Tokens
             </h4>
             {relevantMcpWithTokens.map(m => (
               <div key={m.name} className="border border-zinc-800">
                 <div className="px-4 py-2.5 bg-zinc-900 flex items-center gap-2">
                   <span className="text-sm font-bold text-zinc-200">{m.label || m.name}</span>
-                  <span className="text-[10px] text-zinc-600 font-mono">{m.url}</span>
+                  <span className="text-[10px] text-text-faint font-mono">{m.url}</span>
                 </div>
                 <div className="p-4">
                   <div className="flex items-center gap-3">
-                    <label htmlFor={`import-bearer-${m.name}`} className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">Bearer Token</label>
+                    <label htmlFor={`import-bearer-${m.name}`} className="text-[10px] uppercase font-bold text-text-faint font-mono w-36 flex-shrink-0 truncate">Bearer Token</label>
                     <input
                         id={`import-bearer-${m.name}`}
                       type="password"
@@ -577,19 +577,19 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
 
         {relevantMcp.length > 0 && (
           <div className="space-y-3">
-            <h4 className="text-[10px] uppercase font-bold tracking-wider text-zinc-500 flex items-center gap-2">
+            <h4 className="text-[10px] uppercase font-bold tracking-wider text-text-faint flex items-center gap-2">
               <Server className="h-3 w-3" /> MCP Server Environment Variables
             </h4>
             {relevantMcp.map(m => (
               <div key={m.name} className="border border-zinc-800">
                 <div className="px-4 py-2.5 bg-zinc-900 flex items-center gap-2">
                   <span className="text-sm font-bold text-zinc-200">{m.label || m.name}</span>
-                  <span className="text-[10px] text-zinc-600 font-mono">{m.name}</span>
+                  <span className="text-[10px] text-text-faint font-mono">{m.name}</span>
                 </div>
                 <div className="p-4 space-y-3">
                   {Object.keys(m.env || {}).map(key => (
                     <div key={key} className="flex items-center gap-3">
-                      <label htmlFor={`import-secret-${key}`} className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">{key}</label>
+                      <label htmlFor={`import-secret-${key}`} className="text-[10px] uppercase font-bold text-text-faint font-mono w-36 flex-shrink-0 truncate">{key}</label>
                       <input
                           id={`import-secret-${key}`}
                         type="password"
@@ -608,19 +608,19 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
 
         {relevantTools.length > 0 && (
           <div className="space-y-3">
-            <h4 className="text-[10px] uppercase font-bold tracking-wider text-zinc-500 flex items-center gap-2">
+            <h4 className="text-[10px] uppercase font-bold tracking-wider text-text-faint flex items-center gap-2">
               <Wrench className="h-3 w-3" /> Custom Tool Headers
             </h4>
             {relevantTools.map(t => (
               <div key={t.name} className="border border-zinc-800">
                 <div className="px-4 py-2.5 bg-zinc-900 flex items-center gap-2">
                   <span className="text-sm font-bold text-zinc-200">{t.generalName || t.name}</span>
-                  <span className="text-[10px] text-zinc-600 font-mono">{t.name}</span>
+                  <span className="text-[10px] text-text-faint font-mono">{t.name}</span>
                 </div>
                 <div className="p-4 space-y-3">
                   {Object.keys(t.headers || {}).map(key => (
                     <div key={key} className="flex items-center gap-3">
-                      <label htmlFor={`import-secret-2-${key}`} className="text-[10px] uppercase font-bold text-zinc-600 font-mono w-36 flex-shrink-0 truncate">{key}</label>
+                      <label htmlFor={`import-secret-2-${key}`} className="text-[10px] uppercase font-bold text-text-faint font-mono w-36 flex-shrink-0 truncate">{key}</label>
                       <input
                           id={`import-secret-2-${key}`}
                         type="password"
@@ -687,8 +687,8 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
             return (
               <div key={key}>
                 <div className="flex items-center gap-2 px-4 py-2.5 bg-zinc-900">
-                  <Icon className="h-3.5 w-3.5 text-zinc-500" />
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">{label}</span>
+                  <Icon className="h-3.5 w-3.5 text-text-faint" />
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-text-faint">{label}</span>
                 </div>
                 {items.map((item, i) => {
                   const st = item.status;
@@ -736,7 +736,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
         {results.mcp_servers?.some(m => m.status === "disconnected") && (
           <div className="flex items-start gap-3 p-4 border border-zinc-800 bg-zinc-900/40 rounded-md">
             <AlertTriangle className="h-4 w-4 text-yellow-500 flex-shrink-0 mt-0.5" />
-            <p className="text-zinc-500 text-xs leading-relaxed">
+            <p className="text-text-faint text-xs leading-relaxed">
               Some MCP servers could not connect automatically. Go to the{" "}
               <span className="text-zinc-300 font-bold">MCP Servers</span> tab and click{" "}
               <span className="text-zinc-300 font-bold">Retry</span> to connect them.

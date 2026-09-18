@@ -179,7 +179,7 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
             <div className="flex items-center gap-2">
                 <Zap className="w-4 h-4 text-emerald-400" />
                 <h2 className="text-sm font-semibold text-white tracking-wide">Cache Analytics</h2>
-                <span className="text-xs text-zinc-600">prompt + response cache savings</span>
+                <span className="text-xs text-text-faint">prompt + response cache savings</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <StatCard
@@ -219,7 +219,7 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
                 if (activeModels.length === 0) return null;
                 return (
                     <div className="border border-border divide-y divide-border">
-                        <div className="grid grid-cols-[1fr_90px_90px_120px] gap-2 px-4 py-2 text-[10px] text-zinc-500 uppercase tracking-wider bg-zinc-950/40">
+                        <div className="grid grid-cols-[1fr_90px_90px_120px] gap-2 px-4 py-2 text-[10px] text-text-faint uppercase tracking-wider bg-zinc-950/40">
                             <span>Model</span>
                             <span className="text-right">Cache reads</span>
                             <span className="text-right">Resp hits</span>
@@ -244,7 +244,7 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
                 if (activeRuns.length === 0) return null;
                 return (
                     <div className="border border-border">
-                        <div className="grid grid-cols-[1fr_90px_120px] gap-2 px-4 py-2 text-[10px] text-zinc-500 uppercase tracking-wider bg-zinc-950/40 border-b border-border">
+                        <div className="grid grid-cols-[1fr_90px_120px] gap-2 px-4 py-2 text-[10px] text-text-faint uppercase tracking-wider bg-zinc-950/40 border-b border-border">
                             <span>Top orchestration runs by savings</span>
                             <span className="text-right">Cache reads</span>
                             <span className="text-right">Saved</span>
@@ -271,14 +271,14 @@ function StatCard({ icon: Icon, label, value, sub, color }: {
             <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"
                 style={{ background: `radial-gradient(ellipse at top left, ${color}10 0%, transparent 70%)` }} />
             <div className="flex items-center justify-between">
-                <span className="text-xs text-zinc-500 font-medium tracking-wider uppercase">{label}</span>
+                <span className="text-xs text-text-faint font-medium tracking-wider uppercase">{label}</span>
                 <div className="p-2" style={{ background: `${color}18` }}>
                     <Icon className="w-4 h-4" style={{ color }} />
                 </div>
             </div>
             <div>
                 <p className="text-2xl font-bold tracking-tight text-white">{value}</p>
-                {sub && <p className="text-xs text-zinc-500 mt-0.5">{sub}</p>}
+                {sub && <p className="text-xs text-text-faint mt-0.5">{sub}</p>}
             </div>
         </div>
     );
@@ -299,9 +299,9 @@ function ModelBar({ stat, maxCost }: { stat: ModelStat; maxCost: number }) {
                 </div>
             </div>
             <div className="flex gap-6 text-right shrink-0">
-                <div><p className="text-xs text-zinc-500">Reqs</p><p className="text-sm font-semibold text-white">{stat.requests}</p></div>
-                <div><p className="text-xs text-zinc-500">Tokens</p><p className="text-sm font-semibold text-white">{fmtK(stat.total_tokens)}</p></div>
-                <div className="min-w-[70px]"><p className="text-xs text-zinc-500">Cost</p>
+                <div><p className="text-xs text-text-faint">Reqs</p><p className="text-sm font-semibold text-white">{stat.requests}</p></div>
+                <div><p className="text-xs text-text-faint">Tokens</p><p className="text-sm font-semibold text-white">{fmtK(stat.total_tokens)}</p></div>
+                <div className="min-w-[70px]"><p className="text-xs text-text-faint">Cost</p>
                     <p className="text-sm font-semibold" style={{ color: meta.dot }}>{usd(stat.estimated_cost)}</p></div>
             </div>
         </div>
@@ -383,13 +383,13 @@ function SessionRow({ s }: { s: SessionStat }) {
                     )}
                 </div>
                 <div className="flex items-center gap-5 text-right shrink-0 text-sm">
-                    <div className="hidden md:block"><p className="text-xs text-zinc-500">Turns</p><p className="font-semibold text-white">{s.requests}</p></div>
-                    <div className="hidden lg:block"><p className="text-xs text-zinc-500">Context</p><p className="font-semibold text-white">{fmtKB(s.context_chars)}</p></div>
-                    <div><p className="text-xs text-zinc-500">Tokens</p><p className="font-semibold text-white">{fmtK(s.total_tokens)}</p></div>
-                    <div className="min-w-[70px]"><p className="text-xs text-zinc-500">Cost</p>
+                    <div className="hidden md:block"><p className="text-xs text-text-faint">Turns</p><p className="font-semibold text-white">{s.requests}</p></div>
+                    <div className="hidden lg:block"><p className="text-xs text-text-faint">Context</p><p className="font-semibold text-white">{fmtKB(s.context_chars)}</p></div>
+                    <div><p className="text-xs text-text-faint">Tokens</p><p className="font-semibold text-white">{fmtK(s.total_tokens)}</p></div>
+                    <div className="min-w-[70px]"><p className="text-xs text-text-faint">Cost</p>
                         <p className="font-semibold text-emerald-400">{usd(s.estimated_cost)}</p></div>
                 </div>
-                {open ? <ChevronUp className="w-4 h-4 text-zinc-500 shrink-0" /> : <ChevronDown className="w-4 h-4 text-zinc-500 shrink-0" />}
+                {open ? <ChevronUp className="w-4 h-4 text-text-faint shrink-0" /> : <ChevronDown className="w-4 h-4 text-text-faint shrink-0" />}
             </button>
 
             {open && (
@@ -397,7 +397,7 @@ function SessionRow({ s }: { s: SessionStat }) {
                     {/* Session metadata */}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 px-4 py-3 border-b border-border text-xs">
                         <div>
-                            <p className="text-zinc-500 mb-1">{(isOrch || isSched) && (s.agents_used?.length ?? 0) > 1 ? 'Agents' : 'Agent'}</p>
+                            <p className="text-text-faint mb-1">{(isOrch || isSched) && (s.agents_used?.length ?? 0) > 1 ? 'Agents' : 'Agent'}</p>
                             {(isOrch || isSched) && (s.agents_used?.length ?? 0) > 1
                                 ? <div className="flex flex-wrap gap-1">
                                     {s.agents_used!.map(a => (
@@ -413,25 +413,25 @@ function SessionRow({ s }: { s: SessionStat }) {
                                 : <p className="text-zinc-300 font-mono truncate">{s.agent_id}</p>
                             }
                         </div>
-                        <div><p className="text-zinc-500 mb-1">Models</p>
+                        <div><p className="text-text-faint mb-1">Models</p>
                             <div className="flex flex-wrap gap-1">
                                 {s.models_used.map(m => <span key={m} className="bg-zinc-800 text-zinc-300 px-1.5 py-0.5 text-xs truncate max-w-[100px]">{m}</span>)}
                             </div>
                         </div>
-                        <div><p className="text-zinc-500 mb-1">In / Out</p><p className="text-zinc-300">{fmtK(s.input_tokens)} / {fmtK(s.output_tokens)}</p></div>
-                        <div><p className="text-zinc-500 mb-1">Last Active</p><p className="text-zinc-300">{fmtDate(s.last_ts)}</p></div>
+                        <div><p className="text-text-faint mb-1">In / Out</p><p className="text-zinc-300">{fmtK(s.input_tokens)} / {fmtK(s.output_tokens)}</p></div>
+                        <div><p className="text-text-faint mb-1">Last Active</p><p className="text-zinc-300">{fmtDate(s.last_ts)}</p></div>
                     </div>
 
                     {/* Per-turn context breakdown */}
                     <div className="px-4 pt-3 pb-4">
-                        <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-4">Per-Turn Breakdown</p>
+                        <p className="text-xs font-semibold text-text-faint uppercase tracking-wider mb-4">Per-Turn Breakdown</p>
                         {loadingLogs && (
-                            <div className="flex items-center gap-2 py-4 text-zinc-600 text-xs">
+                            <div className="flex items-center gap-2 py-4 text-text-faint text-xs">
                                 <RefreshCw className="w-3 h-3 animate-spin" /> Loading turns...
                             </div>
                         )}
                         {!loadingLogs && logs.length === 0 && (
-                            <p className="text-zinc-600 text-xs py-3">No detailed logs found for this session.</p>
+                            <p className="text-text-faint text-xs py-3">No detailed logs found for this session.</p>
                         )}
                         {!loadingLogs && logs.length > 0 && (
                             <TurnTable
@@ -456,17 +456,17 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
             <table className="w-full text-xs">
                 <thead>
                     <tr className="border-b border-border">
-                        <th className="text-left py-2 pr-3 pl-3 text-zinc-500 font-medium">#</th>
-                        <th className="text-left py-2 pr-3 text-zinc-500 font-medium">Time</th>
-                        <th className="text-left py-2 pr-3 text-zinc-500 font-medium">Model</th>
-                        <th className="text-left py-2 pr-4 text-zinc-500 font-medium">Tool</th>
-                        <th className="text-right py-2 pr-3 text-zinc-500 font-medium">Context</th>
-                        <th className="text-right py-2 pr-3 text-zinc-500 font-medium">&Delta; Context</th>
-                        <th className="text-right py-2 pr-3 text-zinc-500 font-medium">In</th>
-                        <th className="text-right py-2 pr-3 text-zinc-500 font-medium">Out</th>
-                        <th className="text-right py-2 pr-3 text-zinc-500 font-medium">Latency</th>
-                        <th className="text-right py-2 pr-3 text-zinc-500 font-medium">Saved</th>
-                        <th className="text-right py-2 pr-3 text-zinc-500 font-medium">Cost</th>
+                        <th className="text-left py-2 pr-3 pl-3 text-text-faint font-medium">#</th>
+                        <th className="text-left py-2 pr-3 text-text-faint font-medium">Time</th>
+                        <th className="text-left py-2 pr-3 text-text-faint font-medium">Model</th>
+                        <th className="text-left py-2 pr-4 text-text-faint font-medium">Tool</th>
+                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Context</th>
+                        <th className="text-right py-2 pr-3 text-text-faint font-medium">&Delta; Context</th>
+                        <th className="text-right py-2 pr-3 text-text-faint font-medium">In</th>
+                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Out</th>
+                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Latency</th>
+                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Saved</th>
+                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Cost</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -518,25 +518,25 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                                         </tr>
                                     )}
                                     <tr className="border-b border-border last:border-0 hover:bg-white/[0.02] transition-colors rounded-md">
-                                        <td className="py-2.5 pr-3 pl-3 text-zinc-600 tabular-nums">{i + 1}</td>
-                                        <td className="py-2.5 pr-3 text-zinc-500 whitespace-nowrap tabular-nums">{fmtTime(log.timestamp)}</td>
+                                        <td className="py-2.5 pr-3 pl-3 text-text-faint tabular-nums">{i + 1}</td>
+                                        <td className="py-2.5 pr-3 text-text-faint whitespace-nowrap tabular-nums">{fmtTime(log.timestamp)}</td>
                                         <td className="py-2.5 pr-3 font-mono max-w-[140px]">
                                             <span className="text-zinc-300 truncate block" title={log.model}>{log.model}</span>
                                         </td>
                                         <td className="py-2.5 pr-4 max-w-[130px]">
                                             {log.tool_name
                                                 ? <span className="text-sky-400 font-mono truncate block" title={log.tool_name}>{log.tool_name}</span>
-                                                : <span className="text-zinc-700">--</span>}
+                                                : <span className="text-text-faint">--</span>}
                                         </td>
                                         <td className="py-2.5 pr-3 text-right text-zinc-300 tabular-nums">{fmtKB(log.context_chars)}</td>
                                         <td className="py-2.5 pr-3 text-right tabular-nums">
-                                            <span className={delta > 0 ? 'text-amber-400 font-medium' : 'text-zinc-600'}>
+                                            <span className={delta > 0 ? 'text-amber-400 font-medium' : 'text-text-faint'}>
                                                 {delta > 0 ? `+${fmtKB(delta)}` : '--'}
                                             </span>
                                         </td>
                                         <td className="py-2.5 pr-3 text-right text-zinc-400 tabular-nums">{fmtK(log.input_tokens)}</td>
                                         <td className="py-2.5 pr-3 text-right text-zinc-400 tabular-nums">{fmtK(log.output_tokens)}</td>
-                                        <td className="py-2.5 pr-3 text-right text-zinc-500 tabular-nums">{log.latency_seconds.toFixed(1)}s</td>
+                                        <td className="py-2.5 pr-3 text-right text-text-faint tabular-nums">{log.latency_seconds.toFixed(1)}s</td>
                                         <td className="py-2.5 pr-3 text-right tabular-nums">
                                             {respHit ? (
                                                 <span className="inline-flex items-center gap-1 text-amber-400 font-medium" title="Response cache hit — LLM call skipped">
@@ -550,7 +550,7 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                                                     {usd(savings)}
                                                 </span>
                                             ) : (
-                                                <span className="text-zinc-700">--</span>
+                                                <span className="text-text-faint">--</span>
                                             )}
                                         </td>
                                         <td className="py-2.5 pr-3 text-right font-medium tabular-nums" style={{ color: metaDot }}>{usd(log.estimated_cost)}</td>
@@ -572,8 +572,8 @@ function CompactionRow({ log, idx }: { log: IndexedLog; idx: number }) {
     const charsAfter = log.chars_after ?? 0;
     return (
         <tr className="border-b border-cyan-900/30 bg-cyan-950/20 hover:bg-cyan-950/30 transition-colors">
-            <td className="py-2.5 pr-3 pl-3 text-zinc-600 tabular-nums">{idx + 1}</td>
-            <td className="py-2.5 pr-3 text-zinc-500 whitespace-nowrap tabular-nums">{fmtTime(log.timestamp)}</td>
+            <td className="py-2.5 pr-3 pl-3 text-text-faint tabular-nums">{idx + 1}</td>
+            <td className="py-2.5 pr-3 text-text-faint whitespace-nowrap tabular-nums">{fmtTime(log.timestamp)}</td>
             <td colSpan={2} className="py-2.5 pr-4">
                 <span className="inline-flex items-center gap-1.5 text-cyan-400 font-semibold text-xs">
                     <span>🗜</span>
@@ -581,15 +581,15 @@ function CompactionRow({ log, idx }: { log: IndexedLog; idx: number }) {
                     <span className="text-[10px] text-cyan-600 font-normal border border-cyan-800/50 px-1.5 py-0.5 bg-cyan-950/60 rounded-md">{stage}</span>
                 </span>
             </td>
-            <td className="py-2.5 pr-3 text-right text-zinc-500 tabular-nums text-xs">{fmtKB(charsAfter)}</td>
+            <td className="py-2.5 pr-3 text-right text-text-faint tabular-nums text-xs">{fmtKB(charsAfter)}</td>
             <td className="py-2.5 pr-3 text-right tabular-nums">
                 <span className="text-emerald-400 font-medium text-xs">-{fmtKB(charsBefore - charsAfter)}</span>
             </td>
             <td colSpan={3} className="py-2.5 pr-3 text-right text-cyan-400 font-semibold tabular-nums text-xs">
                 -{reductionPct}%
             </td>
-            <td className="py-2.5 pr-3 text-right text-zinc-700 text-xs">--</td>
-            <td className="py-2.5 pr-3 text-right text-zinc-700 text-xs">--</td>
+            <td className="py-2.5 pr-3 text-right text-text-faint text-xs">--</td>
+            <td className="py-2.5 pr-3 text-right text-text-faint text-xs">--</td>
         </tr>
     );
 }
@@ -702,7 +702,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                 <div className="flex items-center gap-3">
                     <Info className="w-4 h-4 text-zinc-400" />
                     <span className="text-sm font-semibold text-white">Pricing Reference</span>
-                    <span className="text-xs text-zinc-500">-- edit rates used for cost calculation (USD / 1M tokens)</span>
+                    <span className="text-xs text-text-faint">-- edit rates used for cost calculation (USD / 1M tokens)</span>
                 </div>
                 <div className="flex items-center gap-3">
                     {saveMsg && (
@@ -729,7 +729,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                         <button key={p} onClick={() => setActiveProvider(p)}
                             className={`px-4 py-3 text-xs font-medium whitespace-nowrap border-b-2 transition-colors ${isActive
                                 ? 'border-white text-white'
-                                : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}>
+                                : 'border-transparent text-text-faint hover:text-zinc-300'}`}>
                             {meta ? (
                                 <span className="flex items-center gap-1.5">
                                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.dot }} />
@@ -755,17 +755,17 @@ function PricingEditor({ initialPricing, onSaved }: {
                                 <div className="flex items-center gap-2">
                                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.dot }} />
                                     <span className={`text-xs font-semibold uppercase tracking-wider ${meta.text}`}>{meta.label}</span>
-                                    <span className="text-xs text-zinc-600">({models.length} models)</span>
+                                    <span className="text-xs text-text-faint">({models.length} models)</span>
                                 </div>
                                 <button onClick={() => openAddForm(provider)}
-                                    className="flex items-center gap-1 text-xs text-zinc-500 hover:text-white transition-colors">
+                                    className="flex items-center gap-1 text-xs text-text-faint hover:text-white transition-colors">
                                     <Plus className="w-3 h-3" /> Add model
                                 </button>
                             </div>
 
                             {/* Column headers */}
                             {models.length > 0 && (
-                                <div className="grid grid-cols-[1fr_130px_130px_36px] gap-2 px-5 py-1.5 text-xs text-zinc-600 border-b border-border">
+                                <div className="grid grid-cols-[1fr_130px_130px_36px] gap-2 px-5 py-1.5 text-xs text-text-faint border-b border-border">
                                     <span>Model ID</span>
                                     <span className="text-right">Input / 1M tokens</span>
                                     <span className="text-right">Output / 1M tokens</span>
@@ -781,7 +781,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                                         {(entry as any)._new && <span className="ml-2 text-emerald-500 text-[10px]">NEW</span>}
                                     </span>
                                     <div className="flex items-center gap-1 justify-end">
-                                        <span className="text-zinc-500 text-xs">$</span>
+                                        <span className="text-text-faint text-xs">$</span>
                                         <input
                                             type="number" min="0" step="0.001"
                                             aria-label={`${model} input price per million tokens`}
@@ -791,7 +791,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                                         />
                                     </div>
                                     <div className="flex items-center gap-1 justify-end">
-                                        <span className="text-zinc-500 text-xs">$</span>
+                                        <span className="text-text-faint text-xs">$</span>
                                         <input
                                             type="number" min="0" step="0.001"
                                             aria-label={`${model} output price per million tokens`}
@@ -801,7 +801,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                                         />
                                     </div>
                                     <button onClick={() => removeModel(model)}
-                                        className="text-zinc-600 hover:text-red-400 transition-colors flex items-center justify-center">
+                                        className="text-text-faint hover:text-red-400 transition-colors flex items-center justify-center">
                                         <X className="w-3.5 h-3.5" />
                                     </button>
                                 </div>
@@ -844,14 +844,14 @@ function PricingEditor({ initialPricing, onSaved }: {
                                         />
                                     )}
                                     <div className="flex items-center gap-1 justify-end">
-                                        <span className="text-zinc-500 text-xs">$</span>
+                                        <span className="text-text-faint text-xs">$</span>
                                         <input aria-label="New model input price per million tokens" placeholder="0.000" value={newIn} onChange={e => setNewIn(e.target.value)}
                                             type="number" min="0" step="0.001"
                                             className="w-20 bg-zinc-800 border border-border-strong text-white text-xs px-2 py-1.5 text-right focus:outline-none focus:border-accent transition-colors placeholder:text-zinc-600 rounded-md"
                                         />
                                     </div>
                                     <div className="flex items-center gap-1 justify-end">
-                                        <span className="text-zinc-500 text-xs">$</span>
+                                        <span className="text-text-faint text-xs">$</span>
                                         <input aria-label="New model output price per million tokens" placeholder="0.000" value={newOut} onChange={e => setNewOut(e.target.value)}
                                             type="number" min="0" step="0.001"
                                             className="w-20 bg-zinc-800 border border-border-strong text-white text-xs px-2 py-1.5 text-right focus:outline-none focus:border-accent transition-colors placeholder:text-zinc-600 rounded-md"
@@ -1002,11 +1002,11 @@ export function UsageTab() {
                 {!loading && summary && summary.total_requests === 0 && (
                     <div className="flex flex-col items-center justify-center py-20 gap-4 text-center">
                         <div className="p-4 bg-zinc-900 border border-border rounded-md">
-                            <BarChart3 className="w-8 h-8 text-zinc-600" />
+                            <BarChart3 className="w-8 h-8 text-text-faint" />
                         </div>
                         <div>
                             <p className="text-zinc-400 font-medium">No usage data yet</p>
-                            <p className="text-zinc-600 text-sm mt-1">Send a chat message to start tracking costs</p>
+                            <p className="text-text-faint text-sm mt-1">Send a chat message to start tracking costs</p>
                         </div>
                     </div>
                 )}
@@ -1028,7 +1028,7 @@ export function UsageTab() {
                             <div className="flex items-center gap-2 mb-5">
                                 <BarChart3 className="w-4 h-4 text-zinc-400" />
                                 <h2 className="text-sm font-semibold text-white tracking-wide">Cost by Model</h2>
-                                <span className="text-xs text-zinc-600">sorted by spend</span>
+                                <span className="text-xs text-text-faint">sorted by spend</span>
                             </div>
                             {summary.by_model.map(stat => (
                                 <ModelBar key={stat.model} stat={stat} maxCost={maxModelCost} />
@@ -1042,9 +1042,9 @@ export function UsageTab() {
                                 <div className="flex items-center gap-2">
                                     <Clock className="w-4 h-4 text-zinc-400" />
                                     <h2 className="text-sm font-semibold text-white tracking-wide">Session History</h2>
-                                    <span className="text-xs text-zinc-600">{sessions.length} sessions -- click to expand per-turn breakdown</span>
+                                    <span className="text-xs text-text-faint">{sessions.length} sessions -- click to expand per-turn breakdown</span>
                                 </div>
-                                <div className="flex items-center gap-3 text-xs text-zinc-500 flex-wrap">
+                                <div className="flex items-center gap-3 text-xs text-text-faint flex-wrap">
                                     <span className="flex items-center gap-1.5"><Zap className="w-3 h-3 text-emerald-400" /> Chat</span>
                                     <span className="flex items-center gap-1.5"><Activity className="w-3 h-3 text-accent" /> Orchestration</span>
                                     <span className="flex items-center gap-1.5"><Clock className="w-3 h-3 text-sky-400" /> Schedule</span>
@@ -1054,7 +1054,7 @@ export function UsageTab() {
 
                             {/* Filter bar */}
                             <div className="flex items-center gap-3 mb-5 pb-4 border-b border-border">
-                                <span className="text-xs text-zinc-500 shrink-0">Filter by</span>
+                                <span className="text-xs text-text-faint shrink-0">Filter by</span>
                                 <Select
                                     value={sessionFilter}
                                     onChange={v => {
@@ -1072,7 +1072,7 @@ export function UsageTab() {
                                     ]}
                                 />
 
-                                <span className="text-xs text-zinc-600 ml-auto">
+                                <span className="text-xs text-text-faint ml-auto">
                                     {finalSessions.length} result{finalSessions.length !== 1 ? 's' : ''}
                                 </span>
                             </div>
@@ -1080,7 +1080,7 @@ export function UsageTab() {
                             {pagedSessions.map((s, i) => <SessionRow key={`${s.session_id}-${s.run_id || ''}-${i}`} s={s} />)}
 
                             {pagedSessions.length === 0 && (
-                                <div className="flex flex-col items-center justify-center py-10 gap-2 text-zinc-700">
+                                <div className="flex flex-col items-center justify-center py-10 gap-2 text-text-faint">
                                     <BarChart3 className="w-6 h-6" />
                                     <p className="text-xs">No sessions match the selected filter</p>
                                 </div>
@@ -1104,8 +1104,8 @@ export function UsageTab() {
                 )}
 
                 {/* Disclaimer */}
-                <div className="flex items-start gap-3 p-4 bg-zinc-900/40 border border-border text-xs text-zinc-500 rounded-md">
-                    <CheckCircle2 className="w-4 h-4 text-zinc-600 shrink-0 mt-0.5" />
+                <div className="flex items-start gap-3 p-4 bg-zinc-900/40 border border-border text-xs text-text-faint rounded-md">
+                    <CheckCircle2 className="w-4 h-4 text-text-faint shrink-0 mt-0.5" />
                     <div>
                         <p className="font-medium text-zinc-400 mb-1">About cost estimates</p>
                         <p>

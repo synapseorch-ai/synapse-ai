@@ -26,14 +26,14 @@ export const PersonalDetailsTab = ({
                 <Shield className="h-5 w-5" />
                 Personal Details
             </h3>
-            <p className="text-zinc-500 text-sm mt-1">
+            <p className="text-text-faint text-sm mt-1">
                 Saved details the agent can use when completing workflows.
             </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-2">
-                <label htmlFor="personaldetails-first-name" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">First Name</label>
+                <label htmlFor="personaldetails-first-name" className="text-xs uppercase font-bold text-text-faint tracking-wider">First Name</label>
                 <input
                     id="personaldetails-first-name"
                     type="text"
@@ -44,7 +44,7 @@ export const PersonalDetailsTab = ({
                 />
             </div>
             <div className="space-y-2">
-                <label htmlFor="personaldetails-last-name" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Last Name</label>
+                <label htmlFor="personaldetails-last-name" className="text-xs uppercase font-bold text-text-faint tracking-wider">Last Name</label>
                 <input
                     id="personaldetails-last-name"
                     type="text"
@@ -55,7 +55,7 @@ export const PersonalDetailsTab = ({
                 />
             </div>
             <div className="space-y-2">
-                <label htmlFor="personaldetails-email" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Email</label>
+                <label htmlFor="personaldetails-email" className="text-xs uppercase font-bold text-text-faint tracking-wider">Email</label>
                 <input
                     id="personaldetails-email"
                     type="email"
@@ -66,7 +66,7 @@ export const PersonalDetailsTab = ({
                 />
             </div>
             <div className="space-y-2">
-                <label htmlFor="personaldetails-phone-number" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Phone Number</label>
+                <label htmlFor="personaldetails-phone-number" className="text-xs uppercase font-bold text-text-faint tracking-wider">Phone Number</label>
                 <input
                     id="personaldetails-phone-number"
                     type="tel"
@@ -81,12 +81,12 @@ export const PersonalDetailsTab = ({
         <div className="border border-zinc-800 bg-zinc-900/20 p-6 space-y-6 rounded-md">
             <div>
                 <div className="text-sm font-bold text-white">Address</div>
-                <div className="text-xs text-zinc-500">Used when a workflow needs a billing or mailing address.</div>
+                <div className="text-xs text-text-faint">Used when a workflow needs a billing or mailing address.</div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
-                    <label htmlFor="personaldetails-address-1" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Address 1</label>
+                    <label htmlFor="personaldetails-address-1" className="text-xs uppercase font-bold text-text-faint tracking-wider">Address 1</label>
                     <input
                         id="personaldetails-address-1"
                         type="text"
@@ -97,7 +97,7 @@ export const PersonalDetailsTab = ({
                     />
                 </div>
                 <div className="space-y-2">
-                    <label htmlFor="personaldetails-address-2" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Address 2</label>
+                    <label htmlFor="personaldetails-address-2" className="text-xs uppercase font-bold text-text-faint tracking-wider">Address 2</label>
                     <input
                         id="personaldetails-address-2"
                         type="text"
@@ -108,7 +108,7 @@ export const PersonalDetailsTab = ({
                     />
                 </div>
                 <div className="space-y-2">
-                    <label htmlFor="personaldetails-city" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">City</label>
+                    <label htmlFor="personaldetails-city" className="text-xs uppercase font-bold text-text-faint tracking-wider">City</label>
                     <input
                         id="personaldetails-city"
                         type="text"
@@ -119,7 +119,7 @@ export const PersonalDetailsTab = ({
                     />
                 </div>
                 <div className="space-y-2">
-                    <label htmlFor="personaldetails-state" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">State</label>
+                    <label htmlFor="personaldetails-state" className="text-xs uppercase font-bold text-text-faint tracking-wider">State</label>
                     <input
                         id="personaldetails-state"
                         type="text"
@@ -130,7 +130,7 @@ export const PersonalDetailsTab = ({
                     />
                 </div>
                 <div className="space-y-2">
-                    <label htmlFor="personaldetails-zipcode" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Zipcode</label>
+                    <label htmlFor="personaldetails-zipcode" className="text-xs uppercase font-bold text-text-faint tracking-wider">Zipcode</label>
                     <input
                         id="personaldetails-zipcode"
                         type="text"

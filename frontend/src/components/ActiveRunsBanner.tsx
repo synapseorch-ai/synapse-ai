@@ -67,7 +67,7 @@ export function ActiveRunsBanner({ pollMs = 10000 }: { pollMs?: number }) {
     return (
         <div className="px-4 py-1.5 border-b border-zinc-800 bg-zinc-900/70 backdrop-blur-sm">
             <div className="w-full md:max-w-5xl mx-auto flex items-center gap-2 flex-wrap">
-                <span className="text-[11px] text-zinc-500 flex items-center gap-1 uppercase tracking-wider">
+                <span className="text-[11px] text-text-faint flex items-center gap-1 uppercase tracking-wider">
                     <Radio size={11} className="text-blue-400 animate-pulse" /> Orchestrations
                 </span>
                 {runs.map(run => (
@@ -87,7 +87,7 @@ export function ActiveRunsBanner({ pollMs = 10000 }: { pollMs?: number }) {
                         <span className="text-zinc-300 truncate max-w-[180px]">
                             {orchNames[run.orchestration_id] ?? run.orchestration_id}
                         </span>
-                        <span className={run.status === 'paused' ? 'text-amber-400' : 'text-zinc-500'}>
+                        <span className={run.status === 'paused' ? 'text-amber-400' : 'text-text-faint'}>
                             {run.status === 'paused' ? 'needs input' : 'running'}
                         </span>
                     </button>

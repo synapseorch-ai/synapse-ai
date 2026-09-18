@@ -214,7 +214,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
         }
     };
 
-    if (isLoading) return <div className="p-8 text-center text-zinc-500">Loading…</div>;
+    if (isLoading) return <div className="p-8 text-center text-text-faint">Loading…</div>;
 
     /* ── Form view ─────────────────────────────────────────────────────── */
     if (draftRepo !== null) {
@@ -237,12 +237,12 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                         <FolderGit2 className="h-5 w-5" />
                         {draftRepo.id ? 'Edit Repo' : 'Add New Repo'}
                     </h3>
-                    <p className="text-zinc-500 text-sm mt-1">Configure codebase indexing settings.</p>
+                    <p className="text-text-faint text-sm mt-1">Configure codebase indexing settings.</p>
                 </div>
 
                 <div className="space-y-4">
                     <div className="space-y-2">
-                        <label htmlFor="repos-repo-name" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Repo Name</label>
+                        <label htmlFor="repos-repo-name" className="text-xs uppercase font-bold text-text-faint tracking-wider">Repo Name</label>
                         <input
                             id="repos-repo-name"
                             type="text"
@@ -254,7 +254,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                         />
                     </div>
                     <div className="space-y-2">
-                        <label htmlFor="repos-absolute-directory-path" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Absolute Directory Path</label>
+                        <label htmlFor="repos-absolute-directory-path" className="text-xs uppercase font-bold text-text-faint tracking-wider">Absolute Directory Path</label>
                         <input
                             id="repos-absolute-directory-path"
                             type="text"
@@ -266,7 +266,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                         />
                     </div>
                     <div className="space-y-2">
-                        <label htmlFor="repos-interconnection-description" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Interconnection Description</label>
+                        <label htmlFor="repos-interconnection-description" className="text-xs uppercase font-bold text-text-faint tracking-wider">Interconnection Description</label>
                         <textarea
                             id="repos-interconnection-description"
                             value={draftRepo.description || ''}
@@ -281,7 +281,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                         <button
                             type="button"
                             onClick={() => setShowAdvanced(p => !p)}
-                            className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors group"
+                            className="flex items-center gap-1.5 text-xs text-text-faint hover:text-zinc-300 transition-colors group"
                         >
                             {showAdvanced ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                             <span className="underline underline-offset-2 decoration-dotted group-hover:decoration-solid transition-all">
@@ -295,7 +295,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                             {/* ── Excluded Patterns ───────────────────────────────── */}
                             <div className="space-y-2">
                                 <div className="flex items-center gap-2">
-                                    <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Extra Excluded Patterns</label>
+                                    <label className="text-xs uppercase font-bold text-text-faint tracking-wider">Extra Excluded Patterns</label>
                                     <span className="text-[10px] px-1.5 py-0.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 font-mono rounded-md">one per line</span>
                                 </div>
 
@@ -320,7 +320,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                 <button
                                     type="button"
                                     onClick={() => setShowBasePatterns(p => !p)}
-                                    className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                                    className="flex items-center gap-1.5 text-xs text-text-faint hover:text-zinc-300 transition-colors"
                                 >
                                     {showBasePatterns ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                                     Always excluded automatically ({BASE_EXCLUDED.length} base patterns)
@@ -336,7 +336,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
 
                             {/* ── Included Patterns ───────────────────────────────── */}
                             <div className="space-y-2">
-                                <label htmlFor="repos-included-file-types" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Included File Types</label>
+                                <label htmlFor="repos-included-file-types" className="text-xs uppercase font-bold text-text-faint tracking-wider">Included File Types</label>
                                 <textarea
                                     id="repos-included-file-types"
                                     value={includedText}
@@ -344,7 +344,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                     className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono min-h-[60px] rounded-md"
                                     placeholder={`*.py\n*.ts\n*.tsx\n*.md`}
                                 />
-                                <p className="text-xs text-zinc-600">Only files matching these globs will be indexed. Leave blank to use defaults.</p>
+                                <p className="text-xs text-text-faint">Only files matching these globs will be indexed. Leave blank to use defaults.</p>
                             </div>
                         </div>
                     )}
@@ -380,7 +380,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                         <FolderGit2 className="h-5 w-5" />
                         Code Repositories
                     </h3>
-                    <p className="text-zinc-500 text-sm mt-1">
+                    <p className="text-text-faint text-sm mt-1">
                         Manage your agent's codebases for semantic code searching.
                     </p>
                 </div>
@@ -394,9 +394,9 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
 
             {repos.length === 0 ? (
                 <div className="text-center py-12 border border-dashed border-zinc-800 bg-zinc-900/50 rounded-md">
-                    <FolderGit2 className="w-8 h-8 mx-auto text-zinc-600 mb-3" />
+                    <FolderGit2 className="w-8 h-8 mx-auto text-text-faint mb-3" />
                     <h3 className="text-sm font-bold text-zinc-100">No repositories indexed</h3>
-                    <p className="text-sm text-zinc-500 mt-1 mb-6">
+                    <p className="text-sm text-text-faint mt-1 mb-6">
                         Add a local repository path to enable code context.
                     </p>
                     <button
@@ -426,7 +426,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                                 {!embedCode && repo.status === 'pending' ? 'not indexed' : repo.status}
                                             </span>
                                         </h4>
-                                        <p className="text-xs text-zinc-500 font-mono truncate max-w-lg mt-1">{repo.path}</p>
+                                        <p className="text-xs text-text-faint font-mono truncate max-w-lg mt-1">{repo.path}</p>
                                     </div>
 
                                     {/* Action buttons — only visible on hover */}
@@ -460,7 +460,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                             title={isIndexing && !isStopping ? 'Cannot delete while indexing' : 'Delete'}
                                             className={`p-2 transition-colors rounded-md ${
                                                 isIndexing && !isStopping
-                                                    ? 'text-zinc-700 cursor-not-allowed'
+                                                    ? 'text-text-faint cursor-not-allowed'
                                                     : 'text-zinc-400 hover:text-red-500 hover:bg-red-500/10'
                                             }`}
                                         >
@@ -482,7 +482,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                 )}
 
                                 {embedCode && (
-                                    <div className="flex gap-4 mt-4 text-xs font-bold text-zinc-600 uppercase tracking-wider">
+                                    <div className="flex gap-4 mt-4 text-xs font-bold text-text-faint uppercase tracking-wider">
                                         <span>
                                             {(repo.file_count || 0).toLocaleString()} CHUNKS
                                             {isIndexing || isStopping ? ' INDEXED SO FAR…' : ' INDEXED'}

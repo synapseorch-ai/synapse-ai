@@ -375,7 +375,7 @@ export const SchedulesTab = () => {
                 <div className="flex items-center gap-2">
                     <button
                         onClick={fetchAll}
-                        className="p-2 text-zinc-500 hover:text-white hover:bg-surface-2 transition-colors"
+                        className="p-2 text-text-faint hover:text-white hover:bg-surface-2 transition-colors"
                         title="Refresh"
                     >
                         <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -397,19 +397,19 @@ export const SchedulesTab = () => {
                 <div className={`flex flex-col overflow-hidden transition-all ${showForm ? 'w-1/2 border-r border-zinc-800' : 'w-full'}`}>
                     <div className="flex-1 overflow-y-auto">
                         {loading && schedules.length === 0 ? (
-                            <div className="flex items-center justify-center h-32 text-zinc-600 text-xs">Loading...</div>
+                            <div className="flex items-center justify-center h-32 text-text-faint text-xs">Loading...</div>
                         ) : schedules.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center h-64 gap-4 text-zinc-700 px-8 text-center">
+                            <div className="flex flex-col items-center justify-center h-64 gap-4 text-text-faint px-8 text-center">
                                 <Clock className="h-10 w-10" />
                                 <div>
-                                    <p className="text-sm font-semibold text-zinc-500">No schedules yet</p>
+                                    <p className="text-sm font-semibold text-text-faint">No schedules yet</p>
                                     <p className="text-xs mt-1">Click &quot;New Schedule&quot; to automate your first agent run</p>
                                 </div>
                             </div>
                         ) : (
                             <table className="w-full text-xs">
                                 <thead>
-                                    <tr className="border-b border-zinc-800 text-zinc-500 text-left">
+                                    <tr className="border-b border-zinc-800 text-text-faint text-left">
                                         <th className="px-4 py-3 font-medium">Name</th>
                                         <th className="px-4 py-3 font-medium">Target</th>
                                         <th className="px-4 py-3 font-medium">Schedule</th>
@@ -427,7 +427,7 @@ export const SchedulesTab = () => {
                                                     <span className="font-semibold text-white truncate max-w-[140px]" title={s.name}>{s.name}</span>
                                                 </div>
                                                 {s.description && (
-                                                    <p className="text-zinc-600 truncate max-w-[160px] mt-0.5" title={s.description}>{s.description}</p>
+                                                    <p className="text-text-faint truncate max-w-[160px] mt-0.5" title={s.description}>{s.description}</p>
                                                 )}
                                             </td>
                                             <td className="px-4 py-3">
@@ -440,14 +440,14 @@ export const SchedulesTab = () => {
                                                 </div>
                                             </td>
                                             <td className="px-4 py-3 text-zinc-300">{describeSchedule(s)}</td>
-                                            <td className="px-4 py-3 text-zinc-500">{fmtTime(s.next_run_at)}</td>
-                                            <td className="px-4 py-3 text-zinc-600">{fmtTime(s.last_run_at)}</td>
+                                            <td className="px-4 py-3 text-text-faint">{fmtTime(s.next_run_at)}</td>
+                                            <td className="px-4 py-3 text-text-faint">{fmtTime(s.last_run_at)}</td>
                                             <td className="px-4 py-3">
                                                 <div className="flex items-center gap-1 justify-end">
                                                     {/* Enable/Disable */}
                                                     <button
                                                         onClick={() => toggleEnabled(s)}
-                                                        className="p-1.5 text-zinc-500 hover:text-white transition-colors"
+                                                        className="p-1.5 text-text-faint hover:text-white transition-colors"
                                                         title={s.enabled ? 'Disable' : 'Enable'}
                                                     >
                                                         {s.enabled
@@ -459,7 +459,7 @@ export const SchedulesTab = () => {
                                                     <button
                                                         onClick={() => runNow(s.id)}
                                                         disabled={runningIds.has(s.id)}
-                                                        className="p-1.5 text-zinc-500 hover:text-emerald-400 transition-colors disabled:opacity-40"
+                                                        className="p-1.5 text-text-faint hover:text-emerald-400 transition-colors disabled:opacity-40"
                                                         title="Run Now"
                                                     >
                                                         <Play className={`h-3.5 w-3.5 ${runningIds.has(s.id) ? 'animate-pulse' : ''}`} />
@@ -467,7 +467,7 @@ export const SchedulesTab = () => {
                                                     {/* Edit */}
                                                     <button
                                                         onClick={() => openEdit(s)}
-                                                        className="p-1.5 text-zinc-500 hover:text-white transition-colors"
+                                                        className="p-1.5 text-text-faint hover:text-white transition-colors"
                                                         title="Edit"
                                                     >
                                                         <Edit2 className="h-3.5 w-3.5" />
@@ -475,7 +475,7 @@ export const SchedulesTab = () => {
                                                     {/* Delete */}
                                                     <button
                                                         onClick={() => deleteSchedule(s.id)}
-                                                        className="p-1.5 text-zinc-500 hover:text-red-400 transition-colors"
+                                                        className="p-1.5 text-text-faint hover:text-red-400 transition-colors"
                                                         title="Delete"
                                                     >
                                                         <Trash2 className="h-3.5 w-3.5" />
@@ -497,7 +497,7 @@ export const SchedulesTab = () => {
                             <h2 className="text-sm font-semibold text-white">
                                 {editingId ? 'Edit Schedule' : 'New Schedule'}
                             </h2>
-                            <button onClick={closeForm} className="text-zinc-500 hover:text-white text-xs">? Cancel</button>
+                            <button onClick={closeForm} className="text-text-faint hover:text-white text-xs">? Cancel</button>
                         </div>
 
                         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
@@ -515,32 +515,32 @@ export const SchedulesTab = () => {
                                     {showInstructions ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                                 </button>
                                 {showInstructions && (
-                                    <div className="px-4 pb-4 text-xs text-zinc-500 space-y-3 border-t border-zinc-800">
+                                    <div className="px-4 pb-4 text-xs text-text-faint space-y-3 border-t border-zinc-800">
                                         <div className="pt-3">
                                             <p className="text-zinc-300 font-semibold mb-1">Interval -- run every N minutes/hours/days</p>
-                                            <ul className="space-y-1 text-zinc-500">
+                                            <ul className="space-y-1 text-text-faint">
                                                 <li>? <span className="text-zinc-400">Every 5 minutes</span> -- monitor a feed, poll an API</li>
                                                 <li>? <span className="text-zinc-400">Every 2 hours</span> -- periodic summaries or reports</li>
                                                 <li>? <span className="text-zinc-400">Every 1 day</span> -- daily digest or cleanup tasks</li>
                                             </ul>
-                                            <p className="text-zinc-600 mt-1.5">Interval restarts from the last run time. If the server was offline and the schedule is overdue, it runs immediately on restart.</p>
+                                            <p className="text-text-faint mt-1.5">Interval restarts from the last run time. If the server was offline and the schedule is overdue, it runs immediately on restart.</p>
                                         </div>
                                         <div>
                                             <p className="text-zinc-300 font-semibold mb-1">Cron / Fixed Time -- run at specific times</p>
-                                            <ul className="space-y-1 text-zinc-500">
+                                            <ul className="space-y-1 text-text-faint">
                                                 <li>? <span className="text-zinc-400">Every day at 9 AM</span> -- morning standup report</li>
                                                 <li>? <span className="text-zinc-400">Every Monday at 6 PM</span> -- weekly digest</li>
                                                 <li>? <span className="text-zinc-400">1st of month</span> -- monthly invoice summary</li>
                                             </ul>
-                                            <p className="text-zinc-600 mt-1.5">If a run was missed while offline, choose whether to run immediately or skip to the next scheduled time.</p>
+                                            <p className="text-text-faint mt-1.5">If a run was missed while offline, choose whether to run immediately or skip to the next scheduled time.</p>
                                         </div>
                                         <div>
                                             <p className="text-zinc-300 font-semibold mb-1">Prompt</p>
-                                            <p className="text-zinc-500">The prompt is what the agent will receive each time the schedule fires. Think of it as a standing instruction.</p>
+                                            <p className="text-text-faint">The prompt is what the agent will receive each time the schedule fires. Think of it as a standing instruction.</p>
                                         </div>
                                         <div>
                                             <p className="text-zinc-300 font-semibold mb-1">Messaging notifications</p>
-                                            <p className="text-zinc-500">If the selected agent has a connected messaging channel (Slack, Telegram, etc.), the result is sent there automatically after each run.</p>
+                                            <p className="text-text-faint">If the selected agent has a connected messaging channel (Slack, Telegram, etc.), the result is sent there automatically after each run.</p>
                                         </div>
                                     </div>
                                 )}
@@ -610,7 +610,7 @@ export const SchedulesTab = () => {
                             <div>
                                 <label htmlFor="sched-prompt" className="block text-xs text-zinc-400 mb-1.5 font-semibold">
                                     Prompt <span className="text-red-400">*</span>
-                                    <span className="ml-2 font-normal text-zinc-600">What should the agent do each time it runs?</span>
+                                    <span className="ml-2 font-normal text-text-faint">What should the agent do each time it runs?</span>
                                 </label>
                                 <textarea
                                     id="sched-prompt"
@@ -668,7 +668,7 @@ export const SchedulesTab = () => {
                                             ]}
                                         />
                                     </div>
-                                    <p className="text-xs text-zinc-600">
+                                    <p className="text-xs text-text-faint">
                                         Runs every {form.interval_value ?? '?'} {form.interval_unit ?? 'minutes'} from the last run.
                                         If overdue after a restart, it runs immediately.
                                     </p>
@@ -680,7 +680,7 @@ export const SchedulesTab = () => {
                                 <div className="bg-zinc-900/60 border border-zinc-800 p-4 space-y-4 rounded-md">
                                     {/* Preset picker */}
                                     <div>
-                                        <label className="block text-xs text-zinc-500 mb-1.5">Quick preset</label>
+                                        <label className="block text-xs text-text-faint mb-1.5">Quick preset</label>
                                         <Select
                                             value={String(selectedPresetIdx)}
                                             onChange={v => onPresetChange(parseInt(v, 10))}
@@ -708,9 +708,9 @@ export const SchedulesTab = () => {
 
                                     {/* Expression input */}
                                     <div>
-                                        <label htmlFor="sched-cron" className="block text-xs text-zinc-500 mb-1.5">
+                                        <label htmlFor="sched-cron" className="block text-xs text-text-faint mb-1.5">
                                             Cron expression
-                                            <span className="ml-2 text-zinc-700">minute hour day-of-month month day-of-week</span>
+                                            <span className="ml-2 text-text-faint">minute hour day-of-month month day-of-week</span>
                                         </label>
                                         <input
                                             id="sched-cron"
@@ -726,7 +726,7 @@ export const SchedulesTab = () => {
 
                                     {/* Missed run policy */}
                                     <div>
-                                        <label className="block text-xs text-zinc-500 mb-2">If a run was missed while offline</label>
+                                        <label className="block text-xs text-text-faint mb-2">If a run was missed while offline</label>
                                         <div className="space-y-2">
                                             {[
                                                 { value: 'run_immediately', label: 'Run immediately when server starts', desc: 'Catches up the missed run once, then resumes normal schedule' },
@@ -743,7 +743,7 @@ export const SchedulesTab = () => {
                                                     />
                                                     <div>
                                                         <p className="text-xs text-zinc-300">{opt.label}</p>
-                                                        <p className="text-[11px] text-zinc-600">{opt.desc}</p>
+                                                        <p className="text-[11px] text-text-faint">{opt.desc}</p>
                                                     </div>
                                                 </label>
                                             ))}
@@ -767,7 +767,7 @@ export const SchedulesTab = () => {
                                         : <ToggleLeft className="h-5 w-5" />
                                     }
                                 </button>
-                                <span className="text-xs text-zinc-600">{form.enabled ? 'Schedule will run automatically' : 'Schedule is paused'}</span>
+                                <span className="text-xs text-text-faint">{form.enabled ? 'Schedule will run automatically' : 'Schedule is paused'}</span>
                             </div>
 
                             {/* Save button */}

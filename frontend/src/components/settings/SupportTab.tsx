@@ -123,7 +123,7 @@ export const SupportTab = () => {
             {/* Documentation */}
             <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                    <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Documentation</label>
+                    <label className="text-xs uppercase font-bold text-text-faint tracking-wider">Documentation</label>
                     <a
                         href="https://docs.synapseorch.com"
                         target="_blank"
@@ -142,9 +142,9 @@ export const SupportTab = () => {
                             rel="noopener noreferrer"
                             className="group bg-zinc-900 border border-zinc-800 p-3 hover:border-zinc-600 hover:bg-zinc-800/50 transition-colors rounded-md"
                         >
-                            <Icon className="h-4 w-4 text-zinc-500 group-hover:text-zinc-300 mb-2 transition-colors" />
+                            <Icon className="h-4 w-4 text-text-faint group-hover:text-zinc-300 mb-2 transition-colors" />
                             <div className="text-xs font-semibold text-zinc-300 group-hover:text-white transition-colors">{label}</div>
-                            <div className="text-[10px] text-zinc-600 mt-0.5">{description}</div>
+                            <div className="text-[10px] text-text-faint mt-0.5">{description}</div>
                         </a>
                     ))}
                 </div>
@@ -152,7 +152,7 @@ export const SupportTab = () => {
 
             {/* Discord Callout */}
             <div className="space-y-4">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Community</label>
+                <label className="text-xs uppercase font-bold text-text-faint tracking-wider">Community</label>
                 <div className="bg-zinc-900 border border-zinc-800 p-4 rounded-md">
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                         <div>
@@ -160,7 +160,7 @@ export const SupportTab = () => {
                                 <LifeBuoy className="h-4 w-4 text-[#5865F2]" />
                                 Join the Community
                             </h3>
-                            <p className="text-xs text-zinc-600 max-w-xl">
+                            <p className="text-xs text-text-faint max-w-xl">
                                 Have questions, need help debugging, or want to share your custom orchestrations? Join our active Discord community to connect with other builders.
                             </p>
                         </div>
@@ -180,7 +180,7 @@ export const SupportTab = () => {
             {/* Quick Start Guide */}
             <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                    <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Quick Start Guide</label>
+                    <label className="text-xs uppercase font-bold text-text-faint tracking-wider">Quick Start Guide</label>
                     <a
                         href="https://docs.synapseorch.com/getting-started/installation"
                         target="_blank"
@@ -190,7 +190,7 @@ export const SupportTab = () => {
                         Full guide <ExternalLink className="h-3 w-3" />
                     </a>
                 </div>
-                <p className="text-xs text-zinc-600">
+                <p className="text-xs text-text-faint">
                     Follow these steps to build your first multi-agent workflow.
                 </p>
 
@@ -203,11 +203,11 @@ export const SupportTab = () => {
                         <div className="flex-1">
                             <h3 className="text-sm font-semibold text-zinc-200 mb-0.5 flex items-center gap-2">
                                 Configure Models
-                                <Link href="/settings/models" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
+                                <Link href="/settings/models" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-text-faint hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
                                     Go <ChevronRight className="h-2.5 w-2.5" />
                                 </Link>
                             </h3>
-                            <p className="text-xs text-zinc-600">Add API keys for cloud providers or select a local model via Ollama.</p>
+                            <p className="text-xs text-text-faint">Add API keys for cloud providers or select a local model via Ollama.</p>
                         </div>
                     </div>
 
@@ -218,11 +218,11 @@ export const SupportTab = () => {
                         <div className="flex-1">
                             <h3 className="text-sm font-semibold text-zinc-200 mb-0.5 flex items-center gap-2">
                                 Add Tools & Servers (Optional)
-                                <Link href="/mcp-servers" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
+                                <Link href="/mcp-servers" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-text-faint hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
                                     Go <ChevronRight className="h-2.5 w-2.5" />
                                 </Link>
                             </h3>
-                            <p className="text-xs text-zinc-600">Connect MCP servers or build custom tools so your agents can interact with the outside world.</p>
+                            <p className="text-xs text-text-faint">Connect MCP servers or build custom tools so your agents can interact with the outside world.</p>
                         </div>
                     </div>
 
@@ -233,11 +233,11 @@ export const SupportTab = () => {
                         <div className="flex-1">
                             <h3 className="text-sm font-semibold text-zinc-200 mb-0.5 flex items-center gap-2">
                                 Build Agents
-                                <Link href="/agents" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
+                                <Link href="/agents" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-text-faint hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
                                     Go <ChevronRight className="h-2.5 w-2.5" />
                                 </Link>
                             </h3>
-                            <p className="text-xs text-zinc-600">Create specialized agents with specific system prompts, models, and tool capabilities.</p>
+                            <p className="text-xs text-text-faint">Create specialized agents with specific system prompts, models, and tool capabilities.</p>
                         </div>
                     </div>
 
@@ -248,11 +248,11 @@ export const SupportTab = () => {
                         <div className="flex-1">
                             <h3 className="text-sm font-semibold text-zinc-200 mb-0.5 flex items-center gap-2">
                                 Create Orchestrations
-                                <Link href="/orchestrations" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
+                                <Link href="/orchestrations" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-text-faint hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
                                     Go <ChevronRight className="h-2.5 w-2.5" />
                                 </Link>
                             </h3>
-                            <p className="text-xs text-zinc-600">Wire your agents together in a deterministic DAG to execute complex tasks efficiently.</p>
+                            <p className="text-xs text-text-faint">Wire your agents together in a deterministic DAG to execute complex tasks efficiently.</p>
                         </div>
                     </div>
 
@@ -261,7 +261,7 @@ export const SupportTab = () => {
 
             {/* FAQ Accordion */}
             <div className="space-y-4">
-                <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Frequently Asked Questions</label>
+                <label className="text-xs uppercase font-bold text-text-faint tracking-wider">Frequently Asked Questions</label>
                 <div className="border border-zinc-800 divide-y divide-zinc-800">
                     {faqs.map((faq, index) => (
                         <div key={index} className="bg-zinc-900/30">
@@ -271,7 +271,7 @@ export const SupportTab = () => {
                             >
                                 <span className="font-medium text-sm text-zinc-200 pr-4">{faq.question}</span>
                                 <ChevronDown
-                                    className={`h-4 w-4 text-zinc-500 shrink-0 transition-transform duration-300 ${openFaq === index ? 'rotate-180 text-zinc-300' : ''}`}
+                                    className={`h-4 w-4 text-text-faint shrink-0 transition-transform duration-300 ${openFaq === index ? 'rotate-180 text-zinc-300' : ''}`}
                                 />
                             </button>
                             <div

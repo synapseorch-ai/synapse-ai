@@ -55,7 +55,13 @@
   --border-strong: #3f3f46; /* zinc-700 */
   --text: #fafafa;          /* zinc-50 */
   --text-muted: #a1a1aa;    /* zinc-400 */
-  --text-faint: #71717a;    /* zinc-500 */
+  /* Measured, not picked: #71717a read 4.12:1 on the page and 3.67:1 on a
+     surface — under AA on the two grounds faint text actually lands on, in
+     every screen that has a hint under a field. #87878f reads 5.6 / 5.0 / 4.6
+     on page, surface, header and surface-2 — the last being where the run
+     strip puts it — and stays clearly quieter than --text-muted, so the
+     three-step hierarchy survives (F43). */
+  --text-faint: #919199;
 
   /* ── Accent (D27) ────────────────────────────────────────────────────────
    * Cyan, hue 186 — the hue of the product mark, toned from neon down to the
@@ -236,6 +242,7 @@
   --color-red-900: #fee2e2;
   --color-red-800: #fecaca;
   --color-red-700: #f97316;
+  --color-red-500: #c10007;    /* red-700: white on it 6.4:1, as text on white 6.4:1 */
   --color-red-400: #b91c1c;
   --color-red-200: #7f1d1d;
 
@@ -244,6 +251,7 @@
   --color-sky-900: #e0f2fe;
   --color-sky-800: #bae6fd;
   --color-sky-400: #0369a1;
+  --color-sky-300: #00598a;    /* sky-800. Was pale blue on the inverted sky-950 tint (F8) */
 
   /* --- INDIGO PALETTE INVERSION (for Discord) --- */
   --color-indigo-950: #f5f3ff;
@@ -268,6 +276,9 @@
   --color-amber-800: #fde68a;
   --color-amber-400: #92400e;
   --color-amber-300: #78350f;
+  --color-amber-200: #973c00;  /* amber-800, 6.8:1 on the inverted amber-950 tint.
+                                  Un-inverted it was #fee685 on #fffbeb — 1.2:1,
+                                  which is not faint text, it is no text (F43) */
 
   /* --- BLUE PALETTE INVERSION (for badges/links) --- */
   --color-blue-950: #eff6ff;
@@ -290,6 +301,22 @@
   --color-violet-600: #4c1d95;
   --color-violet-400: #4338ca;
   --color-violet-300: #3730a3;
+
+  /* --- LIME / ORANGE / TEAL (step-kind captions and run-log tokens) --- */
+  /* These three families had no inversion at all, so a step caption kept its
+     dark-mode brightness on a light ground: lime-400 read 1.4:1, which is the
+     colour of the run log's own line labels (F43). Values are Tailwind's own
+     800s, the shade this layer already uses for a 400 (see amber above). */
+  --color-lime-400: oklch(45.3% 0.124 130.933);    /* lime-800 */
+  --color-lime-300: oklch(40.5% 0.101 131.063);    /* lime-900 */
+  --color-orange-400: oklch(47% 0.157 37.304);     /* orange-800 */
+  --color-teal-400: oklch(43.7% 0.078 188.216);    /* teal-800 */
+
+  /* The parked-run Answer pill is `bg-amber-500` with `text-zinc-950`, and
+     zinc-950 inverts to near-white — so in light mode it was near-white on a
+     bright amber, ~2:1. Inverting the ground instead keeps one rule for both
+     themes: dark ground, light text (F8). */
+  --color-amber-500: oklch(55.5% 0.163 48.998);    /* amber-700 */
 
   /* --- CORE COLORS INVERSION --- */
   --color-black: #ffffff;

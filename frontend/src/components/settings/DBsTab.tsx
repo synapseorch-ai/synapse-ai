@@ -122,7 +122,7 @@ export function DBsTab() {
         }
     };
 
-    if (isLoading) return <div className="p-8 text-center text-zinc-500">Loading...</div>;
+    if (isLoading) return <div className="p-8 text-center text-text-faint">Loading...</div>;
 
     if (draftConfig !== null) {
         return (
@@ -133,13 +133,13 @@ export function DBsTab() {
                         <Database className="h-5 w-5" />
                         {draftConfig.id ? 'Edit Database' : 'Add New Database'}
                     </h3>
-                    <p className="text-zinc-500 text-sm mt-1">Configure a database connection for agent context.</p>
+                    <p className="text-text-faint text-sm mt-1">Configure a database connection for agent context.</p>
                 </div>
 
                 <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <label htmlFor="db-name" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Name</label>
+                            <label htmlFor="db-name" className="text-xs uppercase font-bold text-text-faint tracking-wider">Name</label>
                             <input
                                 id="db-name"
                                 type="text"
@@ -151,7 +151,7 @@ export function DBsTab() {
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Database Type</label>
+                            <label className="text-xs uppercase font-bold text-text-faint tracking-wider">Database Type</label>
                             <Select
                                 value={draftConfig.db_type || 'postgres'}
                                 onChange={(v) => setDraftConfig({ ...draftConfig, db_type: v })}
@@ -161,7 +161,7 @@ export function DBsTab() {
                         </div>
                     </div>
                     <div className="space-y-2">
-                        <label htmlFor="db-connection-string" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Connection String</label>
+                        <label htmlFor="db-connection-string" className="text-xs uppercase font-bold text-text-faint tracking-wider">Connection String</label>
                         <input
                             id="db-connection-string"
                             type="text"
@@ -171,10 +171,10 @@ export function DBsTab() {
                             placeholder="postgresql://user:password@host:5432/dbname"
                             autoComplete="off"
                         />
-                        <p className="text-[10px] text-zinc-600">e.g. postgresql://user:pass@localhost:5432/mydb — stored locally, never sent externally.</p>
+                        <p className="text-[10px] text-text-faint">e.g. postgresql://user:pass@localhost:5432/mydb — stored locally, never sent externally.</p>
                     </div>
                     <div className="space-y-2">
-                        <label htmlFor="db-description" className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Description</label>
+                        <label htmlFor="db-description" className="text-xs uppercase font-bold text-text-faint tracking-wider">Description</label>
                         <textarea
                             id="db-description"
                             value={draftConfig.description || ''}
@@ -211,7 +211,7 @@ export function DBsTab() {
                         <Database className="h-5 w-5" />
                         Database Connections
                     </h3>
-                    <p className="text-zinc-500 text-sm mt-1">Manage database configurations for agent schema context.</p>
+                    <p className="text-text-faint text-sm mt-1">Manage database configurations for agent schema context.</p>
                 </div>
                 <button
                     onClick={() => setDraftConfig({})}
@@ -223,9 +223,9 @@ export function DBsTab() {
 
             {configs.length === 0 ? (
                 <div className="text-center py-12 border border-dashed border-zinc-800 bg-zinc-900/50 rounded-md">
-                    <Database className="w-8 h-8 mx-auto text-zinc-600 mb-3" />
+                    <Database className="w-8 h-8 mx-auto text-text-faint mb-3" />
                     <h3 className="text-sm font-bold text-zinc-100">No databases configured</h3>
-                    <p className="text-sm text-zinc-500 mt-1 mb-6">Add a database connection to enable schema context for code agents.</p>
+                    <p className="text-sm text-text-faint mt-1 mb-6">Add a database connection to enable schema context for code agents.</p>
                     <button
                         onClick={() => setDraftConfig({})}
                         className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg"
@@ -248,11 +248,11 @@ export function DBsTab() {
                                         <span className={`text-[10px] font-bold px-2 py-0.5 border uppercase tracking-wide ${getStatusColor(config.status)}`}>
                                             {config.status}
                                         </span>
-                                        <span className="text-[10px] font-bold px-2 py-0.5 border border-zinc-700 text-zinc-500 uppercase">
+                                        <span className="text-[10px] font-bold px-2 py-0.5 border border-zinc-700 text-text-faint uppercase">
                                             {config.db_type}
                                         </span>
                                     </h4>
-                                    <p className="text-xs text-zinc-500 font-mono truncate max-w-lg mt-1">
+                                    <p className="text-xs text-text-faint font-mono truncate max-w-lg mt-1">
                                         {config.connection_string.replace(/:\/\/[^@]+@/, '://***@')}
                                     </p>
                                 </div>
@@ -283,7 +283,7 @@ export function DBsTab() {
                             {config.error_message && (
                                 <p className="text-xs text-red-400 mt-2 font-mono">{config.error_message}</p>
                             )}
-                            <div className="flex gap-4 mt-4 text-xs font-bold text-zinc-600 uppercase tracking-wider">
+                            <div className="flex gap-4 mt-4 text-xs font-bold text-text-faint uppercase tracking-wider">
                                 {config.schema_info
                                     ? <span>{config.schema_info.split('\n').length - 1} TABLES CACHED</span>
                                     : <span>SCHEMA NOT FETCHED — hover and click refresh</span>
