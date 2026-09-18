@@ -209,6 +209,85 @@ class TestAReplyAnswers:
         assert kwargs["human_response"] == {"response": "go ahead"}
 
 
+async def _asked_seconds_ago(run_id, seconds):
+    """Move a paused run's question back in time, as a clock would have."""
+    import time as _time
+    from sqlalchemy import select
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    async with session() as s:
+        row = (await s.execute(select(OrchestrationRunDB).where(OrchestrationRunDB.run_id == run_id))).scalar_one()
+        history = [dict(e) for e in row.step_history]
+        for entry in history:
+            if entry.get("status") == "paused":
+                entry["started_at"] = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(_time.time() - seconds))
+        row.step_history = history
+        await s.commit()
+
+
+def _asking_briefly(orch_id, channel_id, timeout=60):
+    orch = _asking(orch_id, channel_id)
+    orch["steps"][0]["human_timeout_seconds"] = timeout
+    return orch
+
+
+class TestAQuestionExpires:
+    """A channel question is answerable for its step's `human_timeout_seconds`.
+
+    The setting had no reader in OSS once F54 removed the Future that held it.
+    Cloud already used it: a reply after the window is refused in a sentence and
+    the run keeps waiting for an answer in the app (F93, D109). OSS does the same.
+    """
+
+    async def test_a_late_reply_is_refused_and_the_run_keeps_waiting(self, wired, fake_llm):
+        from core.messaging.base import QUESTION_EXPIRED_MESSAGE
+        await _run_to_pause(_asking_briefly("orch_late", wired.channel["id"]), wired.server, "run_late")
+        await _asked_seconds_ago("run_late", 120)
+
+        await wired.adapter._dispatch("c1", "yes, ship", "u1")
+
+        assert wired.adapter.sent == [QUESTION_EXPIRED_MESSAGE]
+        run = await _run("run_late")
+        assert run.status == "paused" and run.waiting_for_human
+        assert "approval" not in run.shared_state
+
+    async def test_the_app_can_still_answer_an_expired_question(self, wired, fake_llm):
+        from core.orchestration.answers import answer_paused_run
+        await _run_to_pause(_asking_briefly("orch_late_app", wired.channel["id"]), wired.server, "run_late_app")
+        await _asked_seconds_ago("run_late_app", 120)
+        await wired.adapter._dispatch("c1", "from the channel", "u1")
+
+        await answer_paused_run(wired.server.app.state, "run_late_app", "from the app")
+
+        run = await _settled("run_late_app")
+        assert run.status == "completed"
+        assert run.shared_state["approval"] == "from the app"
+
+    async def test_a_reply_inside_the_window_is_answered(self, wired, fake_llm):
+        await _run_to_pause(_asking_briefly("orch_prompt", wired.channel["id"]), wired.server, "run_prompt")
+        await _asked_seconds_ago("run_prompt", 30)
+
+        await wired.adapter._dispatch("c1", "yes", "u1")
+
+        assert wired.adapter.sent == ["✅ Answer received — resuming the workflow."]
+        assert (await _settled("run_prompt")).shared_state["approval"] == "yes"
+
+    async def test_a_nested_question_goes_by_the_sub_runs_own_pause(self, wired, fake_llm):
+        child = _asking_briefly("orch_child3", wired.channel["id"])
+        parent = S.make_orchestration(id="orch_outer3", entry_step_id="s", steps=[
+            {"id": "s", "name": "Delegate", "type": "agent", "agent_id": "orch_agent3",
+             "prompt_template": "go", "output_key": "result", "next_step_id": None}])
+        await S.seed_agents([S.make_orchestrator_agent("orch_child3", id="orch_agent3")])
+        await _run_to_pause(parent, wired.server, "run_outer3", also=[child])
+        await _asked_seconds_ago((await _run("run_outer3")).nested_run_id, 120)
+
+        await wired.adapter._dispatch("c1", "approved", "u1")
+
+        from core.messaging.base import QUESTION_EXPIRED_MESSAGE
+        assert wired.adapter.sent == [QUESTION_EXPIRED_MESSAGE]
+        assert (await _run("run_outer3")).status == "paused"
+
+
 class TestTheAppsAnswer:
     async def test_a_run_that_is_not_waiting_is_refused(self, client):
         from core.store import get_store, upsert

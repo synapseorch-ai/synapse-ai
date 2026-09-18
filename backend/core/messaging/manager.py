@@ -291,11 +291,15 @@ class MessagingManager:
 
         Returns the run id answered, or None when no run is waiting here (the
         message is then an ordinary chat message). Resumed the way the app's
-        Answer control resumes it — on the fleet for a run a worker ran.
+        Answer control resumes it — on the fleet for a run a worker ran. Raises
+        `QuestionExpired` when the question has outlived its window (F93).
         """
         run_id = await find_run_waiting_on(channel_id)
         if run_id is None:
             return None
+        if await question_expired(run_id):
+            from core.messaging.base import QuestionExpired
+            raise QuestionExpired(run_id)
         from core.orchestration.answers import RunAlreadyActive, RunNotWaiting, answer_paused_run
 
         app = getattr(self.server_module, "app", None)
@@ -411,3 +415,61 @@ async def send_human_prompt(
         await adapter.send_message(conversation, text)
     else:
         logger.warning("[Manager] run %s: %s has no sender in this process; question not sent", run_id, platform)
+
+
+async def question_expired(run_id: str, *, now: Optional[float] = None) -> bool:
+    """Whether the question `run_id` waits on has outlived its step's `human_timeout_seconds`.
+
+    Cloud's rule (F93, D109): past the window a channel stops taking the
+    answer, and the run keeps waiting for one in the app. The window runs from
+    the pause — the `paused` entry the engine writes to `step_history` — and is
+    measured on the run whose human step asked: a parent paused on a nested
+    orchestration hands over to that sub-run, whose pause is its own.
+
+    A question whose pause or step cannot be read is not expired: the reply is
+    answered, as it was before there was a window at all.
+    """
+    import calendar
+    import time
+
+    from sqlalchemy import select
+
+    from core.config import ORCH_HUMAN_TIMEOUT
+    from core.scale.context import resolve_orchestration
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async def load(rid: str):
+        async with session() as s:
+            return (await s.execute(
+                select(OrchestrationRunDB)
+                .where(OrchestrationRunDB.tenant_id == get_tenant())
+                .where(OrchestrationRunDB.run_id == rid)
+            )).scalar_one_or_none()
+
+    row = await load(run_id)
+    for _ in range(8):  # nesting is bounded; a cycle must not spin
+        if row is None or not row.nested_run_id:
+            break
+        row = await load(row.nested_run_id)
+    if row is None or not row.current_step_id:
+        return False
+
+    paused_at = None
+    for entry in reversed(row.step_history or []):
+        if entry.get("step_id") == row.current_step_id and entry.get("status") == "paused":
+            try:
+                paused_at = calendar.timegm(time.strptime(entry.get("started_at") or "", "%Y-%m-%dT%H:%M:%SZ"))
+            except ValueError:
+                paused_at = None
+            break
+    if paused_at is None:
+        return False
+
+    orch = await resolve_orchestration(row.orchestration_id) or {}
+    step = next((st for st in orch.get("steps") or [] if st.get("id") == row.current_step_id), None)
+    if step is None:
+        return False
+    window = float(step.get("human_timeout_seconds") or ORCH_HUMAN_TIMEOUT)
+    return (time.time() if now is None else now) > paused_at + window

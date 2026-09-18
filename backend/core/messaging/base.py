@@ -36,6 +36,15 @@ NO_AGENT_MESSAGE = (
     "Assign one in Settings -> Messaging."
 )
 
+# What a reply gets once the question it would answer has outlived its step's
+# `human_timeout_seconds` — cloud's words, so the two products say the same
+# thing (F93). The run keeps waiting; the app can still answer it.
+QUESTION_EXPIRED_MESSAGE = "That question timed out — answer it from the app instead."
+
+
+class QuestionExpired(Exception):
+    """A channel reply arrived after the run's question stopped taking channel answers."""
+
 
 class MessagingAdapter(ABC):
     """
@@ -241,7 +250,13 @@ class MessagingAdapter(ABC):
         # A human step that names this channel asked its question here; the
         # reply answers the newest run waiting on it, the way the app's Answer
         # control does.
-        answered = await self.manager.answer_from_channel(self.channel_id, user_text)
+        try:
+            answered = await self.manager.answer_from_channel(self.channel_id, user_text)
+        except QuestionExpired:
+            # Past the step's window: refused in words, and the run keeps
+            # waiting for the app — not handed to the agent as chat (F93).
+            await send(chat_id, QUESTION_EXPIRED_MESSAGE)
+            return
         if answered:
             await send(chat_id, "✅ Answer received — resuming the workflow.")
             return
