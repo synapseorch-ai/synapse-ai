@@ -111,6 +111,47 @@ def drop_fixture(oid: str) -> None:
         pass
 
 
+#: Roles a person types into or picks from — the controls a field's label names.
+FIELD_ROLES = {"textbox", "combobox", "spinbutton", "searchbox"}
+
+
+async def ax_fields(page) -> list[dict]:
+    """What the browser's accessibility tree says each field is called and described as.
+
+    Playwright's `page.accessibility` is gone; the tree comes from CDP. This is
+    the name a screen reader announces — computed by the browser, not guessed
+    from the DOM, which is the only way to see what a wrapping `<label>` adds.
+    """
+    cdp = await page.context.new_cdp_session(page)
+    try:
+        tree = await cdp.send("Accessibility.getFullAXTree")
+    finally:
+        await cdp.detach()
+    out = []
+    for node in tree["nodes"]:
+        role = (node.get("role") or {}).get("value")
+        if role not in FIELD_ROLES or node.get("ignored"):
+            continue
+        out.append({
+            "role": role,
+            "name": (node.get("name") or {}).get("value", ""),
+            "desc": (node.get("description") or {}).get("value", ""),
+        })
+    return out
+
+
+async def open_step(page, oid: str, step_name: str) -> None:
+    """Open a fixture orchestration and the config panel of one of its steps."""
+    await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+    await asyncio.sleep(SETTLE + 1.0)
+    node = page.locator(".react-flow__node", has_text=step_name).first
+    box = await node.bounding_box()
+    if box is None:
+        raise AssertionError(f"no canvas node named {step_name!r}")
+    await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    await asyncio.sleep(1.0)
+
+
 # ── checks ───────────────────────────────────────────────────────────────────
 
 @check
@@ -1598,6 +1639,51 @@ async def check_labels(browser) -> str:
         )
     finally:
         await ctx.close()
+
+
+# ── a field's name is its label ──────────────────────────────────────────────
+
+@check
+async def check_fieldnames(browser) -> str:
+    """A field is called what its label says — the hint is its description, once.
+
+    The kit `Field` wrapped label, control and hint in one `<label>`, and a
+    label's text *is* the name of the control inside it, so every hinted field
+    was announced "Output key The state key this step writes…", and then the
+    same sentence again as its description (F30). Asked of the browser's own
+    accessibility tree, on the step panel (the kit's densest use) and two
+    screens with hints.
+    """
+    oid = f"orch_uismoke_names_{int(time.time())}"
+    api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    seen, doubled = 0, []
+    try:
+        for where, go in (
+            ("step panel", lambda: open_step(page, oid, "Approve")),
+            ("/settings/scale", lambda: page.goto(f"{APP}/settings/scale", wait_until="domcontentloaded")),
+            ("/kitchen-sink", lambda: page.goto(f"{APP}/kitchen-sink", wait_until="domcontentloaded")),
+        ):
+            await go()
+            await asyncio.sleep(SETTLE)
+            for f in await ax_fields(page):
+                if not f["desc"]:
+                    continue
+                seen += 1
+                if f["desc"].strip() and f["desc"].strip() in f["name"]:
+                    doubled.append(f"{where}: {f['name'][:80]!r}")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if not seen:
+        raise AssertionError("no described field found — the screens did not render")
+    if doubled:
+        raise AssertionError(
+            f"{len(doubled)} field(s) carry their hint in their name as well as their description — "
+            + "; ".join(doubled[:5])
+        )
+    return f"{seen} described fields, each named by its label alone"
 
 
 async def main() -> int:

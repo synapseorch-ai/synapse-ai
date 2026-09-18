@@ -67,6 +67,11 @@ export function Textarea({
  * grey text near a field, invisible to a screen reader. So the hint and error
  * get ids, and `aria-describedby` is threaded onto the child.
  *
+ * The hint and error sit **outside** the `<label>`. Everything inside a label is
+ * the name of its control, so a hint inside it was announced as part of the
+ * name and then again as the description — "Output key Where this step's result
+ * lands… Where this step's result lands…" (F30).
+ *
  * **`composite`** is for a control that holds buttons of its own — a code
  * editor with Format, a markdown editor with its tabs and toolbar. Wrapped in a
  * `<label>`, the first of those buttons would become the labelled control and a
@@ -121,34 +126,45 @@ export function Field({
       })
     : children;
 
-  const Wrapper = composite ? "div" : "label";
-
-  return (
-    <Wrapper
-      className={cn("block", className)}
-      {...(composite ? { role: "group", "aria-labelledby": labelId } : {})}
-    >
-      <span id={labelId} className="mb-1.5 block text-sm font-medium text-text">
-        {label}
-        {required && (
-          <span className="ml-0.5 text-danger" aria-hidden>
-            *
-          </span>
-        )}
-      </span>
-      {control}
-      {error ? (
-        <span id={errorId} role="alert" className="mt-1.5 block text-xs text-danger">
-          {error}
+  const heading = (
+    <span id={labelId} className="mb-1.5 block text-sm font-medium text-text">
+      {label}
+      {required && (
+        <span className="ml-0.5 text-danger" aria-hidden>
+          *
         </span>
-      ) : (
-        hint && (
-          <span id={hintId} className="mt-1.5 block text-xs leading-relaxed text-text-faint">
-            {hint}
-          </span>
-        )
       )}
-    </Wrapper>
+    </span>
+  );
+  const note = error ? (
+    <span id={errorId} role="alert" className="mt-1.5 block text-xs text-danger">
+      {error}
+    </span>
+  ) : (
+    hint && (
+      <span id={hintId} className="mt-1.5 block text-xs leading-relaxed text-text-faint">
+        {hint}
+      </span>
+    )
+  );
+
+  if (composite) {
+    return (
+      <div className={cn("block", className)} role="group" aria-labelledby={labelId}>
+        {heading}
+        {control}
+        {note}
+      </div>
+    );
+  }
+  return (
+    <div className={cn("block", className)}>
+      <label className="block">
+        {heading}
+        {control}
+      </label>
+      {note}
+    </div>
   );
 }
 
