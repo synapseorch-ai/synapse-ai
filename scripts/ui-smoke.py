@@ -639,12 +639,9 @@ CONTRAST_PAGES = (
 #: not named here is a regression.
 #: Matched on the colours themselves, not on class names: a class attribute is
 #: long, generated and truncated, while the pair of colours IS the defect.
-CONTRAST_WAIVED = (
-    ("#ffffff", "#f87171",
-     "white on --danger: one token is the colour of 60 pieces of danger text on a "
-     "dark ground and the ground of 18 danger buttons under white text, and no "
-     "single value serves both. Splitting it changes the kit, which is synced."),
-)
+#: Empty since F100 split `--danger`: the one waiver was white on the danger
+#: ground, which now takes `--danger-fg`.
+CONTRAST_WAIVED: tuple[tuple[str, str, str], ...] = ()
 
 #: Contrast as the browser computes it, not as the stylesheet claims it.
 #:
@@ -740,7 +737,7 @@ async def check_contrast(browser) -> str:
         raise AssertionError(f"{len(bad)} under AA — " + "; ".join(bad[:5]))
     return (
         f"{len(CONTRAST_PAGES)} screens in both themes meet AA"
-        f" ({len(CONTRAST_WAIVED)} waived, owned by the synced-UI batch)"
+        + (f" ({len(CONTRAST_WAIVED)} waived)" if CONTRAST_WAIVED else "")
     )
 
 

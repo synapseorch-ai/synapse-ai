@@ -123,7 +123,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             {(errorCount > 0 || warningCount > 0) && (
                 <span
                     className={`absolute -right-2 -top-2 z-10 flex size-[18px] items-center justify-center rounded-full border border-[var(--bg)] text-[10px] font-semibold ${
-                        errorCount > 0 ? 'bg-danger text-white' : 'bg-warning text-black'
+                        errorCount > 0 ? 'bg-danger text-danger-fg' : 'bg-warning text-black'
                     }`}
                     title={(issues || []).map((i) => i.message).join('\n')}
                 >

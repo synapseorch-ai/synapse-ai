@@ -27,7 +27,9 @@ const VARIANTS: Record<ButtonVariant, string> = {
   primary: "border-transparent bg-accent text-accent-fg hover:bg-accent-hover active:bg-accent",
   secondary:
     "border-border-strong bg-surface text-text hover:border-text-faint hover:bg-surface-2 active:bg-surface",
-  danger: "border-transparent bg-danger text-white hover:opacity-90 active:opacity-100",
+  // `text-danger-fg`, not white: white on the dark theme's danger is 2.77:1, and
+  // OSS's light theme inverts `text-white` to near-black on a dark red (F100).
+  danger: "border-transparent bg-danger text-danger-fg hover:opacity-90 active:opacity-100",
   ghost:
     "border-transparent bg-transparent text-text-muted hover:bg-surface-2 hover:text-text active:bg-surface",
 };

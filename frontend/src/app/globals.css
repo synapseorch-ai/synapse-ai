@@ -75,6 +75,10 @@
   --ring: #6bb4bd40;
 
   --danger: #f87171;
+  /* Text on a danger ground, as --accent-fg is on an accent one. --danger is
+   * both the colour of danger text and the ground of a danger button, and
+   * white on it is 2.77:1 here (F100); near-black is 7.2:1. */
+  --danger-fg: #09090b;
   --danger-subtle: #2e1b18;
   --warning: #fbbf24;
   --warning-subtle: #2c2313;
@@ -143,6 +147,7 @@
   --color-accent-fg: var(--accent-fg);
   --color-accent-subtle: var(--accent-subtle);
   --color-danger: var(--danger);
+  --color-danger-fg: var(--danger-fg);
   --color-danger-subtle: var(--danger-subtle);
   --color-warning: var(--warning);
   --color-warning-subtle: var(--warning-subtle);
@@ -203,6 +208,7 @@
   --ring: #2e656b33;
 
   --danger: #b91c1c;
+  --danger-fg: #ffffff;
   --danger-subtle: #fef2f2;
   --warning: #a16207;
   --warning-subtle: #fefce8;
