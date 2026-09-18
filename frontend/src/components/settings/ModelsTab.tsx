@@ -1,6 +1,5 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import { Check, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Info, Terminal, Eye, EyeOff } from 'lucide-react';
-import { Combobox, Input, Label, Select, Spinner, Textarea } from '@/components/ui';
+import { Check, X as XIcon, ChevronDown, ChevronUp, ExternalLink, Terminal, Eye, EyeOff } from 'lucide-react';
+import { Combobox, Input, Label, Spinner, Textarea } from '@/components/ui';
 import { modelOptions as buildModelOptions, providerLabel, withUnreachable } from '@/lib/models';
 
 /** `builder_model` is empty when it should follow `model`; a Combobox needs a value. */
@@ -72,12 +71,7 @@ interface ModelsTabProps {
     deepseekKey: string; setDeepseekKey: (v: string) => void;
     bedrockApiKey: string; setBedrockApiKey: (v: string) => void;
     awsRegion: string; setAwsRegion: (v: string) => void;
-    bedrockInferenceProfile: string; setBedrockInferenceProfile: (v: string) => void;
-    bedrockInferenceProfiles: any[];
-    loadingInferenceProfiles: boolean;
-    inferenceProfilesError?: string | null;
     loadingModels: boolean;
-    onExpandBedrock?: () => void;
     onSave: () => void;
     isSaving?: boolean;
     openaiCompatibleKey: string; setOpenaiCompatibleKey: (v: string) => void;
@@ -216,9 +210,8 @@ export const ModelsTab = ({
     geminiKey, setGeminiKey, grokKey, setGrokKey,
     deepseekKey, setDeepseekKey,
     bedrockApiKey, setBedrockApiKey,
-    awsRegion, setAwsRegion, bedrockInferenceProfile, setBedrockInferenceProfile,
-    bedrockInferenceProfiles, loadingInferenceProfiles, inferenceProfilesError, loadingModels,
-    onExpandBedrock, onSave, isSaving, mode, setMode, localModels, cloudModels, filteredModels,
+    awsRegion, setAwsRegion, loadingModels,
+    onSave, isSaving, mode, setMode, localModels, cloudModels, filteredModels,
     openaiCompatibleKey, setOpenaiCompatibleKey,
     openaiCompatibleBaseUrl, setOpenaiCompatibleBaseUrl,
     openaiCompatibleModels, setOpenaiCompatibleModels,
@@ -307,7 +300,6 @@ export const ModelsTab = ({
                                     onClick={() => {
                                         const next = isExpanded ? null : key;
                                         setExpandedProvider(next);
-                                        if (next === 'bedrock') onExpandBedrock?.();
                                     }}
                                     className="w-full flex items-center justify-between p-4 text-left hover:bg-surface/30 transition-colors"
                                 >
@@ -410,38 +402,17 @@ export const ModelsTab = ({
                                                     <Input id="awsregion" type="text" value={awsRegion} onChange={e => setAwsRegion(e.target.value)}
                                                          placeholder="us-east-1" />
                                                 </div>
-                                                <div className="space-y-1">
-                                                    <Label className="block">Inference Profile (Optional)</Label>
-                                                    <Select
-                                                        value={bedrockInferenceProfile || '__ondemand__'}
-                                                        onChange={(v) => setBedrockInferenceProfile(v === '__ondemand__' ? '' : v)}
-                                                        aria-label="Bedrock inference profile"
-                                                        size="sm"
-                                                        options={[
-                                                            { value: '__ondemand__', label: 'None (on-demand)' },
-                                                            ...(loadingInferenceProfiles
-                                                                ? [{ value: '__loading__', label: 'Loading…', disabled: true }]
-                                                                : bedrockInferenceProfiles
-                                                                    .map((p) => ({
-                                                                        value: (p.arn || p.id || '').toString(),
-                                                                        label: (p.name || p.arn || p.id || '').toString(),
-                                                                    }))
-                                                                    .filter((o) => o.value)),
-                                                        ]}
-                                                    />
-                                                </div>
-                                                {inferenceProfilesError && (
-                                                    <div className="flex items-start gap-2 p-2.5 bg-danger/5 border border-danger/20 text-2xs text-danger rounded-md">
-                                                        <Info className="w-3 h-3 mt-0.5 shrink-0" />
-                                                        <span className="break-all">{inferenceProfilesError}</span>
-                                                    </div>
-                                                )}
-                                                {!inferenceProfilesError && providerData.available && !bedrockInferenceProfile && (
-                                                    <div className="flex items-start gap-2 p-2.5 bg-warning/5 border border-warning/20 text-2xs text-warning rounded-md">
-                                                        <Info className="w-3 h-3 mt-0.5 shrink-0" />
-                                                        <span>No inference profile selected. Please select an inference profile above to use AWS Bedrock.</span>
-                                                    </div>
-                                                )}
+                                                {/* A profile is a model since batch 1B: discovery lists each as
+                                                    `bedrock.<id>`, and the workspace-wide override this card used
+                                                    to set is no longer applied. Its warning said Bedrock needed
+                                                    one chosen, which sent people to the one setting that does
+                                                    nothing (F66). */}
+                                                <p className="text-2xs text-text-faint leading-relaxed">
+                                                    Inference profiles are listed as models — the <span className="font-mono">us.</span>,{' '}
+                                                    <span className="font-mono">eu.</span>, <span className="font-mono">apac.</span> and{' '}
+                                                    <span className="font-mono">global.</span> variants and your application profiles. Pick one
+                                                    wherever you choose a model; a model with no on-demand throughput is only available that way.
+                                                </p>
                                             </div>
                                         )}
 

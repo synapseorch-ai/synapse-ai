@@ -1139,6 +1139,53 @@ async def check_scale(browser) -> str:
     return "only saveable settings are editable; environment ones name their variable"
 
 
+# ── models ───────────────────────────────────────────────────────────────────
+
+@check
+async def check_models(browser) -> str:
+    """The Bedrock card does not offer a setting the engine stopped reading.
+
+    Since batch 1B an inference profile is a model: discovery lists each one as
+    `bedrock.<id>`, and the workspace-wide `bedrock_inference_profile` override
+    is no longer applied. The card still offered it as a select, and when none
+    was chosen it warned that one was needed "to use AWS Bedrock" — sending
+    people to set a value that does nothing, and hiding the thing that works.
+    Every settings save posted it too (F66).
+
+    A stored value is kept, not cleared: the on-demand refusal names it as the
+    model to pick. The screen stops sending the key, and the route merges.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": 1200})
+    page = await ctx.new_page()
+    posts: list[dict] = []
+    page.on("request", lambda r: posts.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and r.url.endswith("/api/settings") else None)
+    problems: list[str] = []
+    try:
+        await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name=re.compile("^AWS Bedrock")).click()
+        await asyncio.sleep(1.2)
+        if await page.get_by_label("Bedrock inference profile").count():
+            problems.append("the card still offers a workspace inference profile")
+        text = (await page.evaluate("() => document.querySelector('main').innerText")).lower()
+        if "select an inference profile above to use aws bedrock" in text:
+            problems.append("it still says Bedrock needs a profile selected")
+        if "inference profiles are listed as models" not in text:
+            problems.append("nothing says an inference profile is picked as the model")
+        await page.get_by_role("button", name="Save Changes").click()
+        await asyncio.sleep(2.0)
+    finally:
+        await ctx.close()
+    if not posts:
+        problems.append("Save sent nothing")
+    elif any("bedrock_inference_profile" in p for p in posts):
+        problems.append("Save still posts bedrock_inference_profile")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "Bedrock offers profiles as models, and no workspace override"
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of

@@ -82,10 +82,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [githubCopilotCliModels, setGithubCopilotCliModels] = useState('');
     const [transformRuntime, setTransformRuntime] = useState<'docker' | 'host'>('docker');
     const [awsRegion, setAwsRegion] = useState('us-east-1');
-    const [bedrockInferenceProfile, setBedrockInferenceProfile] = useState('');
-    const [bedrockInferenceProfiles, setBedrockInferenceProfiles] = useState<Array<{ id: string; arn: string; name: string; status?: string; type?: string }>>([]);
-    const [loadingInferenceProfiles, setLoadingInferenceProfiles] = useState(false);
-    const [inferenceProfilesError, setInferenceProfilesError] = useState<string | null>(null);
     const [sqlConnectionString, setSqlConnectionString] = useState('');
 
 
@@ -151,23 +147,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         }
     };
 
-    const refreshBedrockInferenceProfiles = async () => {
-        setLoadingInferenceProfiles(true);
-        setInferenceProfilesError(null);
-        try {
-            const res = await fetch('/api/bedrock/inference-profiles');
-            const data = await res.json();
-            const profiles = Array.isArray(data.profiles) ? data.profiles : [];
-            setBedrockInferenceProfiles(profiles);
-            if (data.error) setInferenceProfilesError(data.error);
-        } catch {
-            setBedrockInferenceProfiles([]);
-            setInferenceProfilesError('Failed to reach the server.');
-        } finally {
-            setLoadingInferenceProfiles(false);
-        }
-    };
-
     const handleSaveSection = async () => {
         setIsSaving(true);
         const payload = {
@@ -197,7 +176,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             github_copilot_cli_models: githubCopilotCliModels,
             transform_runtime: transformRuntime,
             bedrock_api_key: bedrockApiKey,
-            bedrock_inference_profile: bedrockInferenceProfile,
             aws_region: awsRegion,
             sql_connection_string: sqlConnectionString,
             n8n_url: n8nUrl,
@@ -222,7 +200,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
 
             if (mode === 'bedrock' || bedrockApiKey) {
                 await refreshBedrockModels();
-                await refreshBedrockInferenceProfiles();
             } else if (activeTab === 'models' || mode === 'cloud') {
                 await refreshModels();
             }
@@ -381,7 +358,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setTransformRuntime((data.transform_runtime === 'host' ? 'host' : 'docker'));
                 setBedrockApiKey(data.bedrock_api_key || '');
                 setAwsRegion(data.aws_region || 'us-east-1');
-                setBedrockInferenceProfile(data.bedrock_inference_profile || '');
                 setSqlConnectionString(data.sql_connection_string || '');
                 setN8nUrl(data.n8n_url || 'http://localhost:5678');
                 setN8nApiKey(data.n8n_api_key || '');
@@ -395,9 +371,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setBashAllowedDirs(data.bash_allowed_dirs || []);
                 setLoginEnabled(data.login_enabled || false);
                 setLoginUsername(data.login_username || '');
-                if (data.bedrock_api_key) {
-                    refreshBedrockInferenceProfiles();
-                }
             });
 
         // Personal details
@@ -426,7 +399,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         if (mode !== 'bedrock') return;
 
         refreshBedrockModels();
-        refreshBedrockInferenceProfiles();
     }, [mode]);
 
     // Filter models based on mode
@@ -565,12 +537,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         deepseekKey={deepseekKey} setDeepseekKey={setDeepseekKey}
                         bedrockApiKey={bedrockApiKey} setBedrockApiKey={setBedrockApiKey}
                         awsRegion={awsRegion} setAwsRegion={setAwsRegion}
-                        bedrockInferenceProfile={bedrockInferenceProfile}
-                        setBedrockInferenceProfile={setBedrockInferenceProfile}
-                        bedrockInferenceProfiles={bedrockInferenceProfiles}
-                        loadingInferenceProfiles={loadingInferenceProfiles}
-                        inferenceProfilesError={inferenceProfilesError}
-                        onExpandBedrock={refreshBedrockInferenceProfiles}
                         onSave={handleSaveSection}
                         isSaving={isSaving}
                         openaiCompatibleKey={openaiCompatibleKey} setOpenaiCompatibleKey={setOpenaiCompatibleKey}
