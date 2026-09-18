@@ -72,8 +72,11 @@ interface StepConfigPanelProps {
     readOnly?: boolean;
 }
 
+// The engine asks the runner for the internet (`Network.INTERNET` in the
+// Transform executor), and a Transform in the Docker sandbox did open a socket
+// when measured — this said "no network" (F70).
 const SELF_HOSTED_RUNNER_NOTE =
-    'Runs in Docker by default (512MB RAM, no network); switch to host mode in Settings → General to lift the sandbox.';
+    'Runs in Docker by default (512MB RAM, up to a minute, with internet access); switch to host mode in Settings → General to lift the sandbox.';
 
 const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end'];
 

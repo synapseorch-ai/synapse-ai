@@ -1896,6 +1896,32 @@ async def check_ctrls(browser) -> str:
     return "Ctrl+S in the name field saves the name being typed"
 
 
+@check
+async def check_runnernote(browser) -> str:
+    """The Transform panel says what the sandbox really allows.
+
+    It said "no network". The engine asks the runner for the internet, and a
+    Transform in the shipped Docker sandbox opened a socket to 1.1.1.1:53 when
+    measured (F70). A person deciding whether code may call out reads this
+    sentence, so it must be the true one.
+    """
+    oid = f"orch_uismoke_note_{int(time.time())}"
+    orch = laid_out_orchestration(oid, 1)
+    orch["steps"][0].update({"type": "transform", "transform_code": "result = 1", "name": "Code"})
+    api("/api/orchestrations", "POST", orch)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await open_step(page, oid, "Code")
+        note = await page.locator('aside[aria-label="Step configuration"]').get_by_text("Python execution").first.locator("xpath=..").inner_text()
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if re.search(r"no network", note, re.I) or not re.search(r"internet", note, re.I):
+        raise AssertionError(f"the Transform note says {note[:140]!r} — the sandbox has internet access")
+    return "the Transform note says the sandbox reaches the internet"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
