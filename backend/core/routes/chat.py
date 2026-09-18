@@ -181,6 +181,17 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 continue
             etype = event["type"]
 
+            # Whose event this is. The engine tags everything a delegate
+            # produces (`react_engine`, the delegate_to_agent branch); rebuilt
+            # without these the browser cannot tell a sub-agent's work from the
+            # work of the agent the person actually asked (F7). Absent for the
+            # main agent's own events, so the keys stay off those entirely.
+            def whose(payload: dict) -> dict:
+                if event.get("delegate_from"):
+                    payload["delegate_from"] = event["delegate_from"]
+                    payload["delegate_agent_name"] = event.get("delegate_agent_name")
+                return payload
+
             if etype == "_step_progress":
                 latest_progress = {k: v for k, v in event.items() if k != "type"}
                 continue
@@ -189,19 +200,19 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"
 
             elif etype == "thinking":
-                yield f"data: {json.dumps({'type': 'thinking', 'message': event.get('message', ''), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
+                yield f"data: {json.dumps(whose({'type': 'thinking', 'message': event.get('message', ''), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}))}\n\n"
 
             elif etype == "tool_execution":
-                yield f"data: {json.dumps({'type': 'tool_execution', 'tool_name': event['tool_name'], 'args': event['args'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
+                yield f"data: {json.dumps(whose({'type': 'tool_execution', 'tool_name': event['tool_name'], 'args': event['args'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}))}\n\n"
 
             elif etype == "tool_result":
-                yield f"data: {json.dumps({'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': event['preview'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')})}\n\n"
+                yield f"data: {json.dumps(whose({'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': event['preview'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}))}\n\n"
 
             elif etype == "llm_reasoning":
                 # Private chain-of-thought extracted from [REASONING] blocks.
                 # Rendered as a dedicated "thinking" panel above the tool call
                 # in the chat UI / orchestration step view.
-                yield f"data: {json.dumps({'type': 'llm_reasoning', 'reasoning': event['reasoning'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
+                yield f"data: {json.dumps(whose({'type': 'llm_reasoning', 'reasoning': event['reasoning'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}), default=str)}\n\n"
 
             elif etype == "llm_thought":
                 # Action text (tool-call JSON or final-response prose) with

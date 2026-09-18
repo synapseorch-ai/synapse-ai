@@ -19,6 +19,20 @@ type ThoughtEntry =
   | { type: 'prose'; text: string }
   | { type: 'tool_call'; toolName: string };
 
+/**
+ * Whose work this is, when it is not the agent the person asked.
+ *
+ * An agent that delegates keeps streaming: the sub-agent's thinking, tool calls
+ * and results all arrive on the same channel, and the activity line read them
+ * as the main agent's own — the log said the agent you asked searched the web
+ * when a different agent did. The engine has always tagged them; the route now
+ * carries the tag through (F7).
+ */
+function delegatePrefix(data: Record<string, unknown>): string {
+  const name = data.delegate_agent_name;
+  return typeof name === 'string' && name.trim() ? `${name.trim()} › ` : '';
+}
+
 function ThoughtCollapsible({ thoughts, stepName }: { thoughts: string[]; stepName?: string }) {
   const [open, setOpen] = useState(false);
 
@@ -1161,7 +1175,7 @@ export default function Home() {
         setIsThinking(true);
         // Progress messages ("Analyzing your request…", "Delegating to X…")
         // used to be discarded — surface them in the thinking line.
-        if (data.message) setThinkingPreview(String(data.message));
+        if (data.message) setThinkingPreview(`${delegatePrefix(data)}${String(data.message)}`);
         break;
 
       case 'tool_execution': {
@@ -1170,7 +1184,7 @@ export default function Home() {
           .replace(/_/g, ' ')
           .replace(/\b\w/g, (l: string) => l.toUpperCase());
         const stepLabel = data.step_name ? ` · ${data.step_name}` : '';
-        setStreamingActivity(`🔧 ${toolDisplayName}${stepLabel}`);
+        setStreamingActivity(`🔧 ${delegatePrefix(data)}${toolDisplayName}${stepLabel}`);
         setIsThinking(false);
         break;
       }
@@ -1189,7 +1203,7 @@ export default function Home() {
           .replace(/_/g, ' ')
           .replace(/\b\w/g, (l: string) => l.toUpperCase());
         const subtaskSuffix = data.subtask_name ? ` › ${data.subtask_name}` : '';
-        setStreamingActivity(`✓ ${resultToolName}${subtaskSuffix}`);
+        setStreamingActivity(`✓ ${delegatePrefix(data)}${resultToolName}${subtaskSuffix}`);
         setIsThinking(false);
         break;
       }
@@ -1208,7 +1222,8 @@ export default function Home() {
           pendingReasoningRef.current = [...pendingReasoningRef.current, data.reasoning as string];
         }
         if (data.reasoning) {
-          setThinkingPreview(String(data.reasoning).split('\n')[0].slice(0, 140));
+          setThinkingPreview(
+            `${delegatePrefix(data)}${String(data.reasoning).split('\n')[0].slice(0, 140)}`);
         }
         setIsThinking(true);
         break;

@@ -863,6 +863,81 @@ async def check_builderctx(browser) -> str:
     return "a build names its orchestration, and only while it is the one open"
 
 
+# ── delegation ───────────────────────────────────────────────────────────────
+
+#: The chat stream, held open from the test. A fulfilled response body ends
+#: the moment it is written, and the page — correctly — calls that a turn that
+#: died early and clears the line being measured. The activity line only exists
+#: while a turn is in flight, so the turn has to stay in flight.
+DELEGATE_STUB = r"""
+const _fetch = window.fetch;
+window.__chat = {};
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  if (url.includes('/api/chat/stream')) {
+    const body = new ReadableStream({
+      start(c) {
+        const send = (e) =>
+          c.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(e) + '\n\n'));
+        window.__chat.ready = true;
+        send({type: 'status', message: 'Working'});
+        send({type: 'thinking', message: 'I will ask the researcher'});
+        send({type: 'tool_execution', tool_name: 'search_web', args: {q: 'tides'},
+              delegate_from: 'agent_main', delegate_agent_name: 'Researcher'});
+        // deliberately never closed
+      },
+    });
+    return Promise.resolve(new Response(body, {
+      status: 200, headers: {'Content-Type': 'text/event-stream'},
+    }));
+  }
+  return _fetch(input, init);
+};
+"""
+
+
+@check
+async def check_delegate(browser) -> str:
+    """A delegate's work is shown as the delegate's, not as the agent's own.
+
+    When an agent hands a task to another agent, the sub-agent keeps streaming
+    on the same channel: its thinking, its tool calls, its results. The engine
+    tags each of those with the agent that produced it; the route rebuilt every
+    event as a fixed dict and dropped the tag, so chat announced that the agent
+    you asked was searching the web when a different agent was (F7).
+
+    Stubbed at the browser, so it needs no second agent, no delegation and no
+    model call — what is under test is whether the name survives the journey.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(DELEGATE_STUB)
+    page = await ctx.new_page()
+    try:
+        await page.goto(APP, wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        box = page.locator("main textarea").last
+        await box.fill("when is high tide?")
+        await box.press("Enter")
+        activity = ""
+        for _ in range(30):
+            await asyncio.sleep(0.4)
+            activity = await page.evaluate(
+                r"""() => document.body.innerText.split('\n')
+                       .filter(l => /search web/i.test(l)).join(' | ')"""
+            )
+            if activity:
+                break
+        if not activity:
+            raise AssertionError("the delegated tool call never reached the screen")
+        if not re.search(r"researcher", activity, re.I):
+            raise AssertionError(
+                f"a delegate's tool call is shown as the agent's own: {activity!r}"
+            )
+        return "a delegate's tool call is shown under the delegate's name"
+    finally:
+        await ctx.close()
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of
