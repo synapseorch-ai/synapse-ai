@@ -17,7 +17,12 @@ interface AgentsTabProps {
     selectedAgentId: string | null;
     setSelectedAgentId: (id: string | null) => void;
     draftAgent: any;
+    /** An edit to the open draft. */
     setDraftAgent: (agent: any) => void;
+    /** Open a draft: it becomes both the draft and what "unsaved" is measured from. */
+    loadDraftAgent: (agent: any) => void;
+    /** Run `go` now, or once the person agrees to lose an unsaved edit (F73). */
+    guard: (go: () => void) => void;
     availableCapabilities: any[];
     loadingCapabilities?: boolean;
     customTools: any[];
@@ -36,7 +41,7 @@ import React, { useState, useEffect } from 'react';
 
 export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
-    draftAgent, setDraftAgent, availableCapabilities, loadingCapabilities = false, customTools,
+    draftAgent, setDraftAgent, loadDraftAgent, guard, availableCapabilities, loadingCapabilities = false, customTools,
     onDeleteAgent, providers, reasoningCapable, defaultModel, loadingAgents = false
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
@@ -66,8 +71,12 @@ export const AgentsTab = ({
         setTimeout(() => setToast(null), 4000);
     };
 
-    const handleDuplicate = async (agent: any, e: React.MouseEvent) => {
+    const handleDuplicate = (agent: any, e: React.MouseEvent) => {
         e.stopPropagation();
+        guard(() => { void duplicate(agent); });
+    };
+
+    const duplicate = async (agent: any) => {
         const copy = { ...agent, id: `agent_${Date.now()}`, name: `${agent.name} (Copy)` };
         delete copy.created_at;
         delete copy.updated_at;
@@ -81,7 +90,7 @@ export const AgentsTab = ({
                 const saved = await res.json();
                 dispatch(addAgent(saved));
                 setSelectedAgentId(saved.id);
-                setDraftAgent(saved);
+                loadDraftAgent(saved);
                 showToast('Agent duplicated', 'success');
             } else {
                 showToast('Failed to duplicate agent', 'error');
@@ -112,7 +121,7 @@ export const AgentsTab = ({
                 const saved = await res.json();
                 dispatch(addAgent(saved));
                 setSelectedAgentId(saved.id);
-                setDraftAgent(saved);
+                loadDraftAgent(saved);
                 setAiBuilderDesc('');
                 setAiBuilderOpen(false);
                 showToast(`Agent "${saved.name}" created`, 'success');
@@ -141,10 +150,12 @@ export const AgentsTab = ({
                 if (isNew) {
                     dispatch(addAgent(saved));
                     setSelectedAgentId(saved.id);
-                    setDraftAgent(saved);
                 } else {
                     dispatch(updateAgent(saved));
                 }
+                // The route answers with what it stored, which is not always what
+                // was sent (a tool policy is cleaned). That is the new baseline.
+                loadDraftAgent(saved);
                 showToast('Agent saved successfully', 'success');
             } else {
                 showToast('Failed to save agent', 'error');
@@ -320,8 +331,10 @@ export const AgentsTab = ({
                                     avatar: "default",
                                     max_turns: 30,
                                 };
-                                setDraftAgent(newAgent);
-                                setSelectedAgentId(newAgent.id);
+                                guard(() => {
+                                    loadDraftAgent(newAgent);
+                                    setSelectedAgentId(newAgent.id);
+                                });
                             }}
                             className="p-1.5 hover:bg-surface-2 text-text transition-colors border border-dashed border-text-faint hover:border-border-strong rounded-md"
                             title="Create New Agent"
@@ -338,13 +351,14 @@ export const AgentsTab = ({
                             aria-labelledby="agent-ai-builder-label"
                             value={aiBuilderDesc}
                             onChange={e => setAiBuilderDesc(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); buildAgentWithAI(); } }}
+                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); guard(() => { void buildAgentWithAI(); }); } }}
                             placeholder="Describe what this agent should do... e.g. 'A customer support agent that searches our knowledge base'"
                             rows={3}
                             className="w-full bg-bg border border-border p-2 text-xs text-text focus:border-accent focus:outline-none placeholder:text-text-faint resize-none rounded-md"
                         />
                         <button
-                            onClick={buildAgentWithAI}
+                            // The built agent replaces the open draft, so this is a switch too.
+                            onClick={() => guard(() => { void buildAgentWithAI(); })}
                             disabled={isBuilding || !aiBuilderDesc.trim()}
                             className="w-full py-1.5 bg-accent hover:bg-accent-hover disabled:bg-surface-2 disabled:text-text-faint text-accent-fg text-xs font-bold flex items-center justify-center gap-2 transition-colors"
                         >
@@ -380,8 +394,11 @@ export const AgentsTab = ({
                         <div
                             key={a.id}
                             onClick={() => {
-                                setSelectedAgentId(a.id);
-                                setDraftAgent({ ...a }); // Deep copy to draft
+                                if (a.id === selectedAgentId) return;
+                                guard(() => {
+                                    setSelectedAgentId(a.id);
+                                    loadDraftAgent({ ...a });
+                                });
                             }}
                             className={`p-3 border cursor-pointer transition-all group relative
                             ${selectedAgentId === a.id

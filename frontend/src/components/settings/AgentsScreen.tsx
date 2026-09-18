@@ -13,7 +13,8 @@
  * but it is not one a user edits or deletes, and every consumer of this list
  * has wanted it hidden.
  */
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
 import { useDispatch } from "react-redux";
 
 import { ConfirmDialog, Toast, useToast } from "@/components/ui";
@@ -36,9 +37,51 @@ export function AgentsScreen() {
     const { defaultModel } = useAppSettings();
     const { toast, show, dismiss } = useToast();
 
+    const router = useRouter();
     const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
     const [draftAgent, setDraftAgent] = useState<any>(null);
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+    // What the draft was when it was last opened or saved. The draft used to be
+    // replaced wholesale by whichever agent was clicked next, and nothing held
+    // anyone on the screen, so an unsaved edit simply vanished (F73).
+    const [baseline, setBaseline] = useState("null");
+    const loadDraftAgent = useCallback((agent: any) => {
+        setDraftAgent(agent);
+        setBaseline(JSON.stringify(agent));
+    }, []);
+    const dirty = draftAgent !== null && JSON.stringify(draftAgent) !== baseline;
+
+    // One question, whichever way out: another agent, a new one, or a link.
+    const [pending, setPending] = useState<null | (() => void)>(null);
+    const guard = useCallback((go: () => void) => {
+        if (dirty) setPending(() => go);
+        else go();
+    }, [dirty]);
+
+    // Leaving. A reload or a closed tab gets the browser's own prompt; a link
+    // inside the app gets ours, because the App Router has no way to stop a
+    // navigation once it has started — so the click is taken before it does.
+    useEffect(() => {
+        if (!dirty) return;
+        const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+        const onClick = (e: MouseEvent) => {
+            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            const link = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+            if (!link || link.target === "_blank" || link.hasAttribute("download")) return;
+            const url = new URL(link.href, window.location.href);
+            if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setPending(() => () => router.push(url.pathname + url.search + url.hash));
+        };
+        window.addEventListener("beforeunload", onBeforeUnload);
+        document.addEventListener("click", onClick, true);
+        return () => {
+            window.removeEventListener("beforeunload", onBeforeUnload);
+            document.removeEventListener("click", onClick, true);
+        };
+    }, [dirty, router]);
 
     const confirmDeleteAgent = async () => {
         if (!confirmDelete) return;
@@ -48,7 +91,7 @@ export function AgentsScreen() {
             // Clear the editor if it was showing the agent that just went away.
             if (selectedAgentId === confirmDelete) {
                 setSelectedAgentId(null);
-                setDraftAgent(null);
+                loadDraftAgent(null);
             }
         } catch {
             show("Could not delete the agent", "danger");
@@ -65,6 +108,8 @@ export function AgentsScreen() {
                 setSelectedAgentId={setSelectedAgentId}
                 draftAgent={draftAgent}
                 setDraftAgent={setDraftAgent}
+                loadDraftAgent={loadDraftAgent}
+                guard={guard}
                 availableCapabilities={capabilities}
                 loadingCapabilities={loadingCapabilities}
                 customTools={customTools}
@@ -81,6 +126,19 @@ export function AgentsScreen() {
                 onConfirm={confirmDeleteAgent}
                 title="Delete this agent?"
                 description="Its prompt, tools and model settings go with it. This cannot be undone."
+            />
+
+            <ConfirmDialog
+                open={pending !== null}
+                onClose={() => setPending(null)}
+                onConfirm={() => {
+                    const go = pending;
+                    setPending(null);
+                    go?.();
+                }}
+                title="Discard unsaved changes?"
+                description={<>Your changes to <strong>{draftAgent?.name || "this agent"}</strong> have not been saved.</>}
+                confirmLabel="Discard changes"
             />
 
             <Toast message={toast.message} tone={toast.tone} onDismiss={dismiss} />

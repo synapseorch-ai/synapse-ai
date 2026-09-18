@@ -1186,6 +1186,106 @@ async def check_models(browser) -> str:
     return "Bedrock offers profiles as models, and no workspace override"
 
 
+# ── unsaved agent edits ──────────────────────────────────────────────────────
+
+def _agent(aid: str, name: str) -> dict:
+    return {"id": aid, "name": name, "description": f"{name}, a ui-smoke fixture",
+            "system_prompt": "You help.", "tools": [], "repos": [],
+            "type": "conversational", "avatar": "default", "max_turns": 30}
+
+
+@check
+async def check_unsaved(browser) -> str:
+    """An unsaved agent edit is not thrown away without asking.
+
+    The Agents screen replaced its draft wholesale whenever another agent was
+    opened, and nothing stopped a person leaving through the rail. Measured:
+    rename an agent, click another, come back — the rename is gone; rename it
+    again, click Orchestrations — gone, and no word either time (F73).
+
+    Both ways out are driven: switching agents, and leaving through a link. Each
+    is refused once (the edit must survive "Keep editing") and then taken.
+    """
+    a, b = "agent_uismoke_a", "agent_uismoke_b"
+    api("/api/agents", "POST", _agent(a, "UI smoke Alpha"))
+    api("/api/agents", "POST", _agent(b, "UI smoke Beta"))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    problems: list[str] = []
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        name = page.get_by_label(re.compile(r"^name$", re.I)).first
+        dialog = page.get_by_role("dialog")
+
+        async def asked() -> bool:
+            await asyncio.sleep(0.8)
+            return await dialog.count() > 0
+
+        # ── switching agents ──
+        await page.get_by_text("UI smoke Alpha", exact=True).first.click()
+        await asyncio.sleep(0.8)
+        await name.fill("UI smoke Alpha, renamed")
+        await page.get_by_text("UI smoke Beta", exact=True).first.click()
+        if not await asked():
+            problems.append("switching agents discarded an unsaved edit without asking")
+        else:
+            await dialog.get_by_role("button", name=re.compile("cancel|keep", re.I)).first.click()
+            await asyncio.sleep(0.6)
+            if await name.input_value() != "UI smoke Alpha, renamed":
+                problems.append("keeping the edit did not keep it")
+            await page.get_by_text("UI smoke Beta", exact=True).first.click()
+            await asyncio.sleep(0.8)
+            await dialog.get_by_role("button", name=re.compile("discard", re.I)).first.click()
+            await asyncio.sleep(0.8)
+            if await name.input_value() != "UI smoke Beta":
+                problems.append("discarding did not open the other agent")
+
+        # ── a saved edit is not an unsaved one ──
+        # The route answers with what it stored; that becomes the baseline, or
+        # every switch after a save would ask about changes already kept.
+        await name.fill("UI smoke Beta, saved")
+        await page.get_by_role("button", name=re.compile(r"^save", re.I)).first.click()
+        await asyncio.sleep(1.5)
+        await page.get_by_text("UI smoke Alpha", exact=True).first.click()
+        if await asked():
+            problems.append("switching after a save asked about changes that were saved")
+            await dialog.get_by_role("button", name=re.compile("discard", re.I)).first.click()
+            await asyncio.sleep(0.6)
+        await page.get_by_text("UI smoke Beta, saved", exact=True).first.click()
+        await asyncio.sleep(0.8)
+
+        # ── leaving the screen ──
+        await name.fill("UI smoke Beta, renamed")
+        await page.click('a[href="/orchestrations"]')
+        if not await asked():
+            problems.append("leaving through the rail discarded an unsaved edit without asking")
+        else:
+            await dialog.get_by_role("button", name=re.compile("cancel|keep", re.I)).first.click()
+            await asyncio.sleep(0.6)
+            if not page.url.endswith("/agents"):
+                problems.append(f"keeping the edit still left, for {page.url}")
+            await page.click('a[href="/orchestrations"]')
+            await asyncio.sleep(0.8)
+            await dialog.get_by_role("button", name=re.compile("discard", re.I)).first.click()
+            await asyncio.sleep(1.5)
+            if not page.url.endswith("/orchestrations"):
+                problems.append("discarding did not go where the link pointed")
+    finally:
+        await ctx.close()
+        for aid in (a, b):
+            try:
+                api(f"/api/agents/{aid}", "DELETE")
+            except Exception:
+                pass
+    stored = {x["id"]: x["name"] for x in api("/api/agents") if x["id"] in (a, b)}
+    if stored:
+        problems.append(f"fixtures left behind: {stored}")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "an unsaved edit is kept or discarded on purpose, on switch and on leave"
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of
