@@ -2114,6 +2114,49 @@ async def check_humanfields(browser) -> str:
     return "the editor, the orchestration screen and chat agree on every field, keyed by name"
 
 
+@check
+async def check_loopmode(browser) -> str:
+    """A loop can be switched to "While a condition holds" and stays there.
+
+    The panel works out a loop's mode from its fields — a collection, else a
+    condition, else a count — and picking "while" wrote an empty condition,
+    which reads as no condition: the picker snapped straight back to "A fixed
+    number of times" and the condition field never appeared (Naveen, cloud,
+    2026-09-19). Read from the picker and from what Save sends.
+    """
+    oid = f"orch_uismoke_loop_{int(time.time())}"
+    orch = laid_out_orchestration(oid, 2)
+    orch["steps"][0].update({"type": "loop", "name": "Repeat", "loop_count": 3,
+                             "loop_step_ids": [f"{oid}_s1"], "next_step_id": None})
+    api("/api/orchestrations", "POST", orch)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and r.url.endswith("/api/orchestrations") else None)
+    try:
+        await open_step(page, oid, "Repeat")
+        mode = page.get_by_role("combobox", name="Loop mode")
+        await mode.click()
+        await page.get_by_role("option", name=re.compile("While a condition holds")).click()
+        await asyncio.sleep(0.6)
+        shown = (await mode.inner_text()).strip()
+        field = page.get_by_role("textbox", name="While condition")
+        if not await field.count():
+            raise AssertionError(f"picking 'While a condition holds' left the picker on {shown!r}, with no condition field")
+        await field.fill("(state.n or 0) < 2")
+        await field.press("Tab")
+        await page.get_by_role("button", name=re.compile(r"^Save")).first.click()
+        await asyncio.sleep(1.5)
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    loop = next((s for s in (sent[-1]["steps"] if sent else []) if s["id"] == f"{oid}_s0"), {})
+    if loop.get("loop_while_condition") != "(state.n or 0) < 2" or loop.get("loop_over"):
+        raise AssertionError(f"Save sent loop_while_condition={loop.get('loop_while_condition')!r}, loop_over={loop.get('loop_over')!r}")
+    return "a loop switched to 'while' keeps the mode and saves its condition"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

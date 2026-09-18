@@ -410,11 +410,19 @@ function loopMode(step: StepConfig): LoopMode {
 }
 
 function LoopSection({ step, update, otherSteps }: StepSectionProps) {
-    const mode = loopMode(step);
+    // The mode a person picked for this step, until the fields say it anyway.
+    // Read from the fields alone, "while" with no condition yet *is* "count" —
+    // so picking it snapped the picker straight back and its condition field
+    // never appeared (Naveen, 2026-09-19). Held per step id, so opening another
+    // step reads that step's fields. Nothing new is stored: a while loop saved
+    // with no condition runs as a count, and reopens as one.
+    const [picked, setPicked] = useState<{ stepId: string; mode: LoopMode } | null>(null);
+    const mode = picked?.stepId === step.id ? picked.mode : loopMode(step);
     // Switching mode clears the other modes' fields, so the engine's precedence
     // (collection, then condition, then count) can never be a surprise.
     const setMode = (next: LoopMode) => {
         if (next === mode) return;
+        setPicked({ stepId: step.id, mode: next });
         update({
             loop_over: next === 'foreach' ? (step.loop_over || 'state.items') : undefined,
             loop_while_condition: next === 'while' ? (step.loop_while_condition || '') : undefined,
