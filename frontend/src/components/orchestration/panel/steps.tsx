@@ -21,14 +21,21 @@ import { PythonEditor } from './PythonEditor';
 
 /* ── shared toggles ─────────────────────────────────────────────────────── */
 
-/** On re-invocation, show every prior turn's inputs/tools/output instead of just the last. */
+/**
+ * On re-invocation, show every prior turn's inputs/tools/output instead of just the last.
+ *
+ * Unset means on — the engine reads `None` as full history (`context.py`) — so
+ * the box shows unset as ticked and writes `false`, the only value that turns
+ * it off. It used to show unset as unticked and write `undefined` for
+ * unticked: both states ran with full history (F76).
+ */
 function HistoryToggle({ step, update }: { step: StepConfig; update: (patch: Partial<StepConfig>) => void }) {
     return (
         <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-surface-2/40 px-3 py-2">
             <Checkbox
                 className="mt-0.5"
-                checked={step.include_full_history ?? false}
-                onChange={(checked) => update({ include_full_history: checked || undefined })}
+                checked={step.include_full_history !== false}
+                onChange={(checked) => update({ include_full_history: checked ? undefined : false })}
                 label="Include full revision history"
             />
             <span className="text-xs text-text">

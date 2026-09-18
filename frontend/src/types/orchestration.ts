@@ -110,7 +110,6 @@ export interface Orchestration {
     entry_step_id: string;
     state_schema: Record<string, StateSchemaEntry>;
     max_total_turns: number;
-    max_total_cost_usd?: number | null;
     timeout_minutes: number;
     /** Stop a run when a step's text will not become the type its state key
      *  declares. Off by default — a type nobody was ever held to is not a

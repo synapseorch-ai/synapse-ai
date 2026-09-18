@@ -1922,6 +1922,46 @@ async def check_runnernote(browser) -> str:
     return "the Transform note says the sandbox reaches the internet"
 
 
+@check
+async def check_historyflag(browser) -> str:
+    """"Include full revision history" shows what runs, and can be turned off.
+
+    The engine reads an unset flag as on (`context.py`: None → True). The box
+    showed an unset step unticked, and unticking wrote `undefined` — so both
+    states ran with full history and the box could never say otherwise (F76).
+    Read from the box and from what Save sends.
+    """
+    oid = f"orch_uismoke_hist_{int(time.time())}"
+    orch = laid_out_orchestration(oid, 1)
+    orch["steps"][0].update({"type": "llm", "name": "Write", "prompt_template": "Say hi."})
+    api("/api/orchestrations", "POST", orch)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and r.url.endswith("/api/orchestrations") else None)
+    try:
+        await open_step(page, oid, "Write")
+        box = page.get_by_role("checkbox", name="Include full revision history")
+        shown = await box.is_checked()
+        if shown:
+            await box.click()
+        await page.get_by_role("button", name=re.compile(r"^Save")).first.click()
+        await asyncio.sleep(1.5)
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    problems = []
+    if not shown:
+        problems.append("an unset step shows the box unticked, while the engine runs it with full history")
+    saved = (sent[-1]["steps"][0] if sent else {}).get("include_full_history", "absent")
+    if saved is not False:
+        problems.append(f"unticking saved include_full_history={saved!r}, not false")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "the box shows the engine's default, and unticking saves false"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
