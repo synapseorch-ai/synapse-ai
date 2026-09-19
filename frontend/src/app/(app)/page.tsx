@@ -7,7 +7,6 @@ import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';
 import { HumanStepAnswer } from '@/components/HumanStepAnswer';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
-import { useRegisterNavGuard } from '@/components/app/NavGuard';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { Markdown, Spinner } from '@/components/ui';
 
@@ -267,6 +266,32 @@ type SessionTurn = {
   tools: string[];
   timestamp: string;
 };
+
+/** A tool call the conversation stopped to ask about — the card, without the loop's state. */
+type ParkedApproval = {
+  kind: 'tool_approval';
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+  category: string;
+  approval_id: string;
+  message: string;
+  prompt: string;
+};
+
+/** A turn still being written. A turn is saved when it ends, so it is not in `turns` yet. */
+type RunningTurn = { turn_id: string; message: string; started_at: number; cursor: string };
+
+type StepState = {
+  thoughts: string[];
+  reasoning: string[];
+  orchStepId: string | null;
+  orchCompleted: boolean;
+  receivedAgentStep: boolean;
+};
+
+const newStepState = (): StepState => (
+  { thoughts: [], reasoning: [], orchStepId: null, orchCompleted: false, receivedAgentStep: false }
+);
 
 function formatRelativeTime(iso: string | null): string {
   if (!iso) return '';
@@ -620,6 +645,10 @@ export default function Home() {
   // Timestamp of the last byte received on the active stream. Used to tell a
   // healthy stream (recent heartbeat) from a dead one after sleep/network loss.
   const lastChunkAtRef = useRef(0);
+  // The cursor (`id:`) of the last event this page handled. A turn runs on the
+  // server whether or not anyone is reading (F49); when the stream carrying it
+  // breaks, the page reads it again from here instead of sending it again.
+  const lastCursorRef = useRef<string | null>(null);
   // Persists across SSE calls: true once orchestration_complete is received
   const orchestrationCompletedRef = useRef(false);
 
@@ -654,34 +683,20 @@ export default function Home() {
     }
   }, [sessionId, currentAgentId]);
 
-  // The Settings gear owned this confirm until the gear moved to the rail.
-  // The rail calls this before navigating, so an in-flight run still gets a
-  // warning instead of being aborted silently.
-  useRegisterNavGuard(() => {
-    if (!isLoading) return true;
-    const ok = window.confirm('An agent is still processing. Navigating away will cancel it. Continue?');
-    if (!ok) return false;
-    // The confirm has promised this cancels it. Until there was a cancel
-    // endpoint that was not true — the turn ran on, unwatched.
-    signalStop(sessionId);
-    sseAbortRef.current?.abort();
-    sseAbortRef.current = null;
-    setIsLoading(false);
-    setStreamingActivity(null);
-    setIsThinking(false);
-    return true;
-  });
-
-  // Abort any in-flight SSE stream on unmount (e.g. navigating away after confirm)
+  // Leaving closes this page's stream and nothing else. The turn runs on the
+  // server whether or not anyone is reading, its answer is saved to the
+  // conversation, and coming back reopens it (F49). There used to be a confirm
+  // here — "Navigating away will cancel it" — and leaving did cancel it; Stop is
+  // how a turn is stopped now.
   useEffect(() => {
-    return () => { sseAbortRef.current?.abort(); };
+    return () => { sseAbortRef.current?.abort('leave'); };
   }, []);
 
   // Wake / network recovery: when the network comes back or the tab is
   // refocused, a stream that was alive before the machine slept is usually a
   // dead TCP socket that will never deliver another byte. If the active stream
   // has been silent for several heartbeat windows, abort it with a 'recover'
-  // reason so processMessageSSE falls back/retries instead of hanging. A recent
+  // reason so the turn is read again from its cursor instead of hanging. A recent
   // chunk (heartbeat within 60s — 6 missed pings) means the stream is just slow
   // but alive, so leave it alone; plain tab switches and slow LLM turns don't
   // kill a working stream.
@@ -713,25 +728,55 @@ export default function Home() {
     finally { setSessionsLoading(false); }
   }, []);
 
-  // Restore a session into the chat UI
-  const restoreSession = useCallback(async (sid: string, agentId: string | null) => {
+  /**
+   * Put a stored conversation back on the screen — all of what is open in it.
+   *
+   * Its transcript, a tool call it stopped to ask about (as the card, answerable
+   * here), and a turn still being written: a turn is saved when it ends, so one
+   * running now is not in the transcript yet — its question is shown and the
+   * turn is read from its start (F49). Used when the page opens on the last
+   * conversation and when one is picked from History.
+   */
+  const reopenConversation = async (sid: string, agentId: string | null) => {
+    const running = await loadConversation(sid, agentId);
+    if (running) await watchTurn(sid, running.cursor, running.message);
+  };
+
+  /** Draw the conversation as stored; the turn still being written, if any, is returned to be followed. */
+  const loadConversation = async (sid: string, agentId: string | null): Promise<RunningTurn | null> => {
     try {
-      const url = `/api/sessions/${sid}/history${agentId ? `?agent_id=${agentId}` : ''}`;
+      const url = `/api/sessions/${encodeURIComponent(sid)}/history${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''}`;
       const res = await fetch(url);
-      if (!res.ok) return;
+      if (!res.ok) return null;
       const data = await res.json();
       const turns: SessionTurn[] = data.turns || [];
-      if (turns.length === 0) return;
+      const parked: ParkedApproval | null = data.pending_approval ?? null;
+      const running: RunningTurn | null = data.running ?? null;
+      if (turns.length === 0 && !parked && !running) return null;
+
       const restored: Message[] = [];
       for (const t of turns) {
         restored.push({ role: 'user', content: t.user });
         restored.push({ role: 'assistant', content: t.assistant });
       }
+      if (parked) {
+        restored.push({ role: 'user', content: parked.message });
+        restored.push({
+          role: 'assistant', content: parked.prompt, msgType: 'human_input_required',
+          data: { kind: 'tool_approval', tool_name: parked.tool_name, tool_args: parked.tool_args, category: parked.category },
+        });
+      }
+      if (running) restored.push({ role: 'user', content: running.message });
       setMessages(restored);
+      setTurnOutcome(null);
       setSessionId(sid);
       if (agentId) setCurrentAgentId(agentId);
-    } catch (e) { console.error('[Sessions] restore error', e); }
-  }, []);
+      return running;
+    } catch (e) {
+      console.error('[Sessions] reopen error', e);
+      return null;
+    }
+  };
 
   // Helper to refresh status
   const refreshSystemStatus = () => {
@@ -747,7 +792,11 @@ export default function Home() {
     }).catch(console.error);
   };
 
-  // Initialize Application State — always start fresh, only restore last agent
+  // Initialize Application State — the last agent, and the conversation this
+  // page was on. It used to open empty while keeping the conversation's id, so
+  // the next message continued a conversation nobody could see; and a turn left
+  // running when the page went away had nowhere to be seen (F49). New chat is
+  // still one click.
   useEffect(() => {
     // 1. Get Agent Name + check installation date for banner
     fetch('/api/settings')
@@ -767,9 +816,10 @@ export default function Home() {
       })
       .catch(() => setAgentName('Offline'));
 
-    // 2. Restore last used agent (without restoring chat history)
+    // 2. Restore last used agent, then its conversation
     const initAgent = async () => {
       const savedAgent = typeof window !== 'undefined' ? localStorage.getItem('synapseAgentId') : null;
+      const savedSession = typeof window !== 'undefined' ? localStorage.getItem('synapseSessionId') : null;
       if (savedAgent) {
         try {
           await fetch('/api/agents/active', {
@@ -782,6 +832,7 @@ export default function Home() {
         }
       }
       refreshSystemStatus();
+      if (savedSession) await reopenConversation(savedSession, savedAgent);
     };
 
     initAgent();
@@ -789,28 +840,25 @@ export default function Home() {
   }, []);
 
   /**
-   * Tell the backend to stop, without waiting to hear back.
+   * Stop *reading* the turn on screen — never the turn.
    *
-   * For the places that abandon a turn as a side effect — starting a new chat,
-   * navigating away — where the person is not waiting on the answer and the
-   * caller cannot be async. Aborting the fetch only ever stopped this browser
-   * listening; the turn went on running, and on a metered deployment went on
-   * being paid for.
+   * Starting a new chat, opening another conversation or switching agent moves
+   * this page elsewhere; a turn still working carries on, its answer lands in
+   * its own conversation, and History reopens it (F49 — the builder's rule
+   * since D99). Stop is what stops a turn.
    */
-  const signalStop = (sid: string) => {
-    void fetch(`/api/chat/${encodeURIComponent(sid)}/cancel`, { method: 'POST' })
-      .catch(() => { /* best effort: the abort still ends it here */ });
-  };
-
-  const handleNewChat = () => {
-    if (isLoading) signalStop(sessionId);
-    sseAbortRef.current?.abort();
+  const stopReading = () => {
+    sseAbortRef.current?.abort('leave');
     sseAbortRef.current = null;
     setIsLoading(false);
     setIsThinking(false);
     setStreamingActivity(null);
     setTurnOutcome(null);
     setEditingIndex(null);
+  };
+
+  const handleNewChat = () => {
+    stopReading();
     setSessionId(generateSessionId());
     setMessages([]);
   };
@@ -827,7 +875,8 @@ export default function Home() {
 
   const handleSelectSession = async (s: SessionSummary) => {
     setIsHistoryOpen(false);
-    await restoreSession(s.session_id, s.agent_id);
+    stopReading();
+    await reopenConversation(s.session_id, s.agent_id);
     // Switch agent if needed
     if (s.agent_id && s.agent_id !== currentAgentId) {
       try {
@@ -865,7 +914,9 @@ export default function Home() {
         }
         setCurrentAgentId(agentId);
 
-        // Generate new session for the new agent — isolates context
+        // Generate new session for the new agent — isolates context. A turn the
+        // old agent is still writing carries on in its own conversation.
+        stopReading();
         setSessionId(generateSessionId());
 
         // Clear chat messages for clean agent context (no system bubble)
@@ -997,52 +1048,116 @@ export default function Home() {
   };
 
   /**
-   * Consume an SSE stream from a POST, through the shared event handler.
+   * Read a turn's SSE stream through the shared event handler, keeping its cursor.
    *
-   * The chat turn, the orchestration resume and now the tool-approval resume
-   * all speak the same event vocabulary and differ only in the URL and the
-   * body — so the reading of it is written once. The abort controller is
-   * registered the same way a turn's is, which is what lets Stop reach a
-   * resumed turn as well as a fresh one.
+   * The chat turn, a turn read again and the tool-approval resume all speak the
+   * same event vocabulary, so the reading of it is written once. True when the
+   * turn said `done`; false when the stream ended first — a proxy that gave up,
+   * a socket that closed — which means read it again, not that it is over.
    */
-  const streamFrom = async (url: string, body: Record<string, unknown>) => {
-    const controller = new AbortController();
-    sseAbortRef.current = controller;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+  const consumeTurnStream = async (
+    response: Response, controller: AbortController, stepState: StepState,
+  ): Promise<boolean> => {
     const reader = response.body?.getReader();
     if (!reader) throw new Error('No reader available');
-
     const decoder = new TextDecoder();
-    const stepState = { thoughts: [] as string[], reasoning: [] as string[], orchStepId: null as string | null, orchCompleted: false, receivedAgentStep: false };
     let buffer = '';
-    try {
-      while (true) {
-        const { done, value } = await readWithStallTimeout(reader, controller);
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const data = JSON.parse(line.slice(6));
-            const result = handleSSEEvent(data, stepState);
-            if (result.done) return;
-            if (result.error) throw result.error;
-          } catch (e) {
-            if (e instanceof Error && e.message) throw e;
-            console.error('Failed to parse SSE event:', e);
-          }
+    let pendingId: string | null = null;
+    while (true) {
+      const { done, value } = await readWithStallTimeout(reader, controller);
+      if (done) return false;
+      lastChunkAtRef.current = Date.now();
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (line.startsWith('id: ')) { pendingId = line.slice(4); continue; }
+        if (!line.startsWith('data: ')) continue;
+        let data;
+        try {
+          data = JSON.parse(line.slice(6));
+        } catch (e) {
+          console.error('Failed to parse SSE event:', e);
+          continue;
         }
+        const result = handleSSEEvent(data, stepState);
+        // The cursor moves only once its event has been handled, so reading
+        // the turn again never skips the event a break interrupted.
+        if (pendingId) { lastCursorRef.current = pendingId; pendingId = null; }
+        if (stepState.orchCompleted) orchestrationCompletedRef.current = true;
+        if (result.error) throw result.error;
+        if (result.done) return true;
       }
+    }
+  };
+
+  /**
+   * Read the turn this conversation is running, from `cursor` on.
+   *
+   * 'done' when it ended; 'gone' when the server holds no turn to read — it
+   * ended long enough ago that only its answer, in the conversation, is left;
+   * 'stopped' when this page stopped reading (Stop, New chat, leaving).
+   */
+  const followTurn = async (sid: string, cursor: string | null): Promise<'done' | 'gone' | 'stopped'> => {
+    const controller = new AbortController();
+    sseAbortRef.current = controller;
+    streamActiveRef.current = true;
+    lastChunkAtRef.current = Date.now();
+    try {
+      const after = cursor ? `?after=${encodeURIComponent(cursor)}` : '';
+      const response = await fetch(`/api/chat/${encodeURIComponent(sid)}/events${after}`, { signal: controller.signal });
+      if (response.status === 404 || response.status === 410) return 'gone';
+      if (!response.ok) throw new Error(`Reading the turn again failed: ${response.status}`);
+      if (await consumeTurnStream(response, controller, newStepState())) return 'done';
+      throw new Error('The stream ended before the turn did');
+    } catch (e) {
+      // An abort rejects with its *reason* ('stop', 'leave', 'recover'), not
+      // an AbortError, so the signal is what says whether this page let go.
+      if (controller.signal.aborted && controller.signal.reason !== 'recover') return 'stopped';
+      throw e;
     } finally {
+      streamActiveRef.current = false;
       if (sseAbortRef.current === controller) sseAbortRef.current = null;
+    }
+  };
+
+  /** The turn ended while nobody was reading; its answer is in the conversation. */
+  const showSavedAnswer = async (sid: string, question: string) => {
+    try {
+      const agent = currentAgentId ? `?agent_id=${encodeURIComponent(currentAgentId)}` : '';
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/history${agent}`);
+      if (!res.ok) return;
+      const turns: SessionTurn[] = (await res.json()).turns || [];
+      const last = turns[turns.length - 1];
+      if (last && last.user === question) {
+        turnAnsweredRef.current = true;
+        setMessages(prev => [...prev, { role: 'assistant', content: last.assistant }]);
+      }
+    } catch (e) {
+      console.error('[SSE] reading the saved answer failed', e);
+    }
+  };
+
+  /**
+   * The stream carrying a turn broke — a reload, a laptop waking up, a proxy
+   * that gave up. The turn did not: it runs on the server whether or not anyone
+   * is reading. So it is read again from the last event handled, and never sent
+   * again — the old fallback re-ran the whole turn over `POST /chat`, its tools
+   * and all (F49). A few tries while the network comes back; after that the
+   * retry bar, and the person decides.
+   */
+  const recoverTurn = async (sid: string, question: string) => {
+    setStreamingActivity('Connection lost — reconnecting…');
+    for (const wait of [0, 1000, 2000, 4000, 8000]) {
+      if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+      try {
+        const how = await followTurn(sid, lastCursorRef.current);
+        if (how === 'gone') await showSavedAnswer(sid, question);
+        return;
+      } catch (e) {
+        if ((e as { engineError?: boolean })?.engineError) throw e;
+        console.error('[SSE] reading the turn again failed', e);
+      }
     }
   };
 
@@ -1055,6 +1170,8 @@ export default function Home() {
    */
   const handleToolApproval = async (approve: boolean, reason: string) => {
     if (isLoading) return;
+    // The question the card belongs to — what the turn will be saved under.
+    const question = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
     setMessages(prev => [...prev, {
       role: 'assistant', msgType: 'note',
       content: approve ? 'You allowed the call.' : `You refused the call${reason ? `: ${reason}` : '.'}`,
@@ -1062,14 +1179,29 @@ export default function Home() {
     setIsLoading(true);
     setTurnOutcome(null);
     turnAnsweredRef.current = false;
+    lastCursorRef.current = null;
+    const controller = new AbortController();
+    sseAbortRef.current = controller;
     try {
-      await streamFrom(`/api/chat/${encodeURIComponent(sessionId)}/approve`, {
-        approve, reason, agent_id: currentAgentId,
+      const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approve, reason, agent_id: currentAgentId }),
+        signal: controller.signal,
       });
+      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      if (!(await consumeTurnStream(response, controller, newStepState()))) {
+        await recoverTurn(sessionId, question);
+      }
     } catch (e) {
-      console.error('Failed to resume after the approval', e);
-      setTurnOutcome(prev => prev ?? { kind: 'failed', message: 'The turn did not pick back up.' });
+      if ((e as { engineError?: boolean })?.engineError) {
+        setTurnOutcome({ kind: 'failed', message: (e as Error).message });
+      } else if (!(controller.signal.aborted && controller.signal.reason !== 'recover')) {
+        console.error('Lost the resumed turn — reading it again', e);
+        await recoverTurn(sessionId, question);
+      }
     } finally {
+      if (sseAbortRef.current === controller) sseAbortRef.current = null;
       setIsLoading(false);
       setStreamingActivity(null);
       setIsThinking(false);
@@ -1101,10 +1233,16 @@ export default function Home() {
     await processMessage(userMessage);
   };
 
-  // Refactor duplicate fetch logic into helper
-  const processMessage = async (content: string, images?: string[]) => {
-    lastSentRef.current = { content, images };
+  /**
+   * One turn on screen, from the spinner to the retry bar.
+   *
+   * Shared by a turn this page sends and one it finds running when it reopens
+   * a conversation, so both end the same way.
+   */
+  const inTurn = async (question: string, images: string[] | undefined, work: () => Promise<void>) => {
+    lastSentRef.current = { content: question, images };
     turnAnsweredRef.current = false;
+    lastCursorRef.current = null;
     setTurnOutcome(null);
     setIsLoading(true);
     setStreamingActivity(null);
@@ -1113,23 +1251,13 @@ export default function Home() {
     pendingThoughtsRef.current = [];
     pendingReasoningRef.current = [];
     lastToolRef.current = null;
-
-    // Try SSE streaming first
     try {
-      await processMessageSSE(content, images);
-    } catch (sseError) {
-      // The fallback is for a *transport* failure — a dead socket, a stalled
-      // stream, a proxy that gave up. An `error` event is the engine telling
-      // us the turn failed, and re-running it over HTTP does not fix that: it
-      // pays for the whole turn a second time to arrive at the same answer.
-      // Now that Retry exists, the person decides whether to spend that.
-      if ((sseError as { engineError?: boolean })?.engineError) {
-        console.error('[SSE] the turn failed:', sseError);
-        setTurnOutcome({ kind: 'failed', message: (sseError as Error).message });
-      } else {
-        console.error('[SSE] SSE failed, falling back to HTTP:', sseError);
-        await processMessageHTTP(content, images);
-      }
+      await work();
+    } catch (error) {
+      // An `error` event is the engine telling us the turn failed. Running it
+      // again does not fix that — Retry is there, and the person decides.
+      console.error('[SSE] the turn failed:', error);
+      setTurnOutcome({ kind: 'failed', message: (error as Error).message });
     } finally {
       // A turn that produced nothing and said nothing about why. The functional
       // setter is deliberate: an outcome already recorded — a stop, an engine
@@ -1156,13 +1284,52 @@ export default function Home() {
     }
   };
 
+  const processMessage = (content: string, images?: string[]) => inTurn(content, images, async () => {
+    try {
+      await processMessageSSE(content, images);
+    } catch (sseError) {
+      if ((sseError as { engineError?: boolean })?.engineError) throw sseError;
+      if ((sseError as { turnRunning?: boolean })?.turnRunning) {
+        // This conversation already has a turn being written — another tab, or
+        // one this page lost track of. Show that one; the message just typed
+        // goes back in the composer rather than being lost or sent over it.
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          return last?.role === 'user' && last.content === content ? prev.slice(0, -1) : prev;
+        });
+        setInput(content);
+        const running = await loadConversation(sessionId, currentAgentId);
+        if (running) {
+          lastSentRef.current = { content: running.message };
+          const how = await followTurn(sessionId, running.cursor);
+          if (how === 'gone') await showSavedAnswer(sessionId, running.message);
+        } else {
+          turnAnsweredRef.current = true;  // nothing was sent; nothing to retry
+        }
+        return;
+      }
+      await recoverTurn(sessionId, content);
+    }
+  });
+
+  /** Show a turn this page did not start — found running when a conversation reopened. */
+  const watchTurn = (sid: string, cursor: string, question: string) => inTurn(question, undefined, async () => {
+    try {
+      const how = await followTurn(sid, cursor);
+      if (how === 'gone') await showSavedAnswer(sid, question);
+    } catch (e) {
+      if ((e as { engineError?: boolean })?.engineError) throw e;
+      await recoverTurn(sid, question);
+    }
+  });
+
   // ── Shared SSE event processor ────────────────────────────────────────────
   // Handles every event type emitted by /api/chat/stream and the orchestration
   // resume endpoint. Mutates stepState in place for per-stream thought tracking.
   const handleSSEEvent = (
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     data: Record<string, any>,
-    stepState: { thoughts: string[]; reasoning: string[]; orchStepId: string | null; orchCompleted: boolean; receivedAgentStep: boolean }
+    stepState: StepState
   ): { done: boolean; error?: Error } => {
     switch (data.type) {
 
@@ -1501,78 +1668,34 @@ export default function Home() {
 
   // SSE Streaming implementation
   const processMessageSSE = async (content: string, images?: string[]) => {
-    return new Promise<void>((resolve, reject) => {
-      const stepState = { thoughts: [] as string[], reasoning: [] as string[], orchStepId: null as string | null, orchCompleted: false, receivedAgentStep: false };
-
-      const controller = new AbortController();
-      sseAbortRef.current = controller;
-      streamActiveRef.current = true;
-      lastChunkAtRef.current = Date.now();
-
-      console.log('[SSE] Attempting SSE connection to /api/chat/stream');
-      fetch('/api/chat/stream', {
+    const controller = new AbortController();
+    sseAbortRef.current = controller;
+    streamActiveRef.current = true;
+    lastChunkAtRef.current = Date.now();
+    try {
+      const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: content, session_id: sessionId, agent_id: currentAgentId, images: images || [] }),
         signal: controller.signal,
-      })
-        .then(async (response) => {
-          if (controller.signal.aborted) { resolve(); return; }
-          if (!response.ok) {
-            throw new Error(`SSE request failed: ${response.status}`);
-          }
-
-          const reader = response.body?.getReader();
-          const decoder = new TextDecoder();
-
-          if (!reader) {
-            throw new Error('No reader available for SSE');
-          }
-
-          let buffer = '';
-
-          while (true) {
-            const { done, value } = await readWithStallTimeout(reader, controller);
-            if (done) break;
-            lastChunkAtRef.current = Date.now();
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                try {
-                  const data = JSON.parse(line.slice(6));
-                  console.log('[SSE Event]', data.type, data);
-                  const result = handleSSEEvent(data, stepState);
-                  if (result.done) {
-                    if (stepState.orchCompleted) orchestrationCompletedRef.current = true;
-                    resolve();
-                    return;
-                  }
-                  if (result.error) { reject(result.error); return; }
-                } catch (e) {
-                  console.error('Failed to parse SSE event:', e);
-                }
-              }
-            }
-          }
-
-          if (stepState.orchCompleted) orchestrationCompletedRef.current = true;
-          resolve();
-        })
-        .catch((err) => {
-          // A 'recover' abort (network back / refocus on a dead post-sleep
-          // connection) should retry via the HTTP fallback, not resolve quietly.
-          if (err.name === 'AbortError') {
-            if (controller.signal.reason === 'recover') { reject(new Error('Connection lost — recovering')); return; }
-            resolve(); return; // user-initiated stop / unmount
-          }
-          reject(err); // stall watchdog or transport error → HTTP fallback
-        })
-        .finally(() => { streamActiveRef.current = false; });
-    });
+      });
+      if (response.status === 409) {
+        throw Object.assign(new Error('A reply is still being written in this conversation.'), { turnRunning: true });
+      }
+      if (!response.ok) throw new Error(`SSE request failed: ${response.status}`);
+      if (!(await consumeTurnStream(response, controller, newStepState()))) {
+        throw new Error('The stream ended before the turn did');
+      }
+    } catch (err) {
+      // An abort rejects with its *reason*, not an AbortError. Stop, New chat
+      // and leaving let go on purpose; 'recover' (the tab woke on a dead
+      // socket) is a broken stream like any other, and is read again.
+      if (controller.signal.aborted && controller.signal.reason !== 'recover') return;
+      throw err;
+    } finally {
+      streamActiveRef.current = false;
+      if (sseAbortRef.current === controller) sseAbortRef.current = null;
+    }
   };
 
   // Resume a paused orchestration after a HUMAN step
@@ -1651,31 +1774,6 @@ export default function Home() {
       setIsThinking(false);
       pendingThoughtsRef.current = [];
       pendingReasoningRef.current = [];
-    }
-  };
-
-  // HTTP fallback implementation (original logic)
-  const processMessageHTTP = async (content: string, images?: string[]) => {
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content, session_id: sessionId, agent_id: currentAgentId, images: images || [] }),
-      });
-      const data = await res.json();
-      turnAnsweredRef.current = true;
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: data.response,
-        intent: data.intent,
-        data: data.data
-      }]);
-    } catch (err) {
-      // Left unanswered on purpose: the retry bar is the affordance now. A
-      // bubble reading "Error communicating with agent." is a dead end wearing
-      // the costume of a reply, and it lands in the history the model reads
-      // next turn as something the agent said.
-      console.error('HTTP fallback failed', err);
     }
   };
 

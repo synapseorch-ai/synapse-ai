@@ -2157,6 +2157,183 @@ async def check_loopmode(browser) -> str:
     return "a loop switched to 'while' keeps the mode and saves its condition"
 
 
+# ── a chat turn outlives the page (F49) ──────────────────────────────────────
+
+#: Chat's network, driven from the test. `/api/chat/stream` and
+#: `/api/chat/{id}/events` answer with streams this script feeds frame by frame
+#: (and can break, the way a dead socket does); a conversation's history can be
+#: answered from `window.__fakeHistory`. Every call is recorded. Model-free: what
+#: is under test is what the page does with a turn it does not own.
+CHAT_STUB = r"""
+window.__calls = [];
+window.__streams = {};
+const _fetch = window.fetch;
+const _stream = (name) => new ReadableStream({
+  start(c) {
+    window.__streams[name] = {
+      push: (frame) => c.enqueue(new TextEncoder().encode(frame)),
+      close: () => { try { c.close(); } catch (e) {} },
+      fail: () => { try { c.error(new TypeError('network error')); } catch (e) {} },
+    };
+  },
+});
+const _sse = (name) => Promise.resolve(new Response(_stream(name), {
+  status: 200, headers: {'Content-Type': 'text/event-stream'},
+}));
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  if (url.includes('/api/chat') || url.includes('/api/sessions')) window.__calls.push({url: url, method: method});
+  if (url.includes('/api/chat/stream')) return _sse('post');
+  if (/\/api\/chat\/[^/?]+\/events/.test(url)) return _sse('events');
+  if (/\/api\/chat\/[^/?]+\/cancel/.test(url) || (/\/api\/chat$/.test(url) && method === 'POST')) {
+    return Promise.resolve(new Response('{}', {status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  if (/\/api\/sessions\/[^/?]+\/history/.test(url) && window.__fakeHistory) {
+    return Promise.resolve(new Response(JSON.stringify(window.__fakeHistory), {
+      status: 200, headers: {'Content-Type': 'application/json'},
+    }));
+  }
+  return _fetch(input, init);
+};
+"""
+
+
+def _frame(event: dict, cursor: str | None = None) -> str:
+    return (f"id: {cursor}\n" if cursor else "") + f"data: {json.dumps(event)}\n\n"
+
+
+async def _chat_page(browser, session_id: str, history: dict | None = None):
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(CHAT_STUB)
+    await ctx.add_init_script(
+        f"try {{ localStorage.setItem('synapseSessionId', {json.dumps(session_id)}); }} catch (e) {{}}"
+        + (f"\nwindow.__fakeHistory = {json.dumps(history)};" if history else ""))
+    page = await ctx.new_page()
+    await page.goto(APP, wait_until="domcontentloaded")
+    await asyncio.sleep(SETTLE)
+    return ctx, page
+
+
+async def _stream_open(page, name: str) -> None:
+    for _ in range(60):
+        if await page.evaluate(f"() => !!(window.__streams || {{}})[{json.dumps(name)}]"):
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"the page never opened its {name} stream")
+
+
+async def _on_screen(page, text: str, tries: int = 30) -> bool:
+    for _ in range(tries):
+        if text in await page.evaluate("() => document.body.innerText"):
+            return True
+        await asyncio.sleep(0.2)
+    return False
+
+
+@check
+async def check_chatreopen(browser) -> str:
+    """The chat page opens on its conversation — and on a turn still being written.
+
+    It used to open empty while keeping the conversation's id, so the next
+    message continued a conversation nobody could see, and a turn left running
+    when the page went away had nowhere to be seen (F49).
+    """
+    history = {
+        "turns": [{"user": "asked earlier", "assistant": "answered earlier", "tools": [], "timestamp": ""}],
+        "pending_approval": None,
+        "running": {"turn_id": "t1", "message": "still being written?", "started_at": 0, "cursor": "t1-0"},
+    }
+    ctx, page = await _chat_page(browser, "uismoke-reopen", history)
+    try:
+        await _stream_open(page, "events")
+        for shown in ("asked earlier", "answered earlier", "still being written?"):
+            if not await _on_screen(page, shown):
+                raise AssertionError(f"the reopened conversation does not show {shown!r}")
+        await page.evaluate(
+            f"() => {{ window.__streams.events.push({json.dumps(_frame({'type': 'response', 'content': 'the late answer'}, 't1-3'))});"
+            f" window.__streams.events.push({json.dumps(_frame({'type': 'done'}, 't1-4'))}); }}")
+        if not await _on_screen(page, "the late answer"):
+            raise AssertionError("the running turn's answer never reached the screen")
+        calls = await page.evaluate("() => window.__calls")
+    finally:
+        await ctx.close()
+    follows = [c["url"] for c in calls if "/events" in c["url"]]
+    if not any("after=t1-0" in u for u in follows):
+        raise AssertionError(f"the running turn was not read from its start: {follows}")
+    if any("/api/chat/stream" in c["url"] for c in calls):
+        raise AssertionError("reopening a conversation sent a message")
+    return "the conversation reopens, and a running turn is followed to its answer"
+
+
+@check
+async def check_chatrecover(browser) -> str:
+    """A broken stream is read again from its cursor, never sent again.
+
+    The old fallback re-ran the whole turn over `POST /api/chat` — its tools
+    and all — while the first run was still going (F49).
+    """
+    ctx, page = await _chat_page(browser, "uismoke-recover")
+    try:
+        box = page.locator("main textarea").last
+        await box.fill("recover me")
+        await box.press("Enter")
+        await _stream_open(page, "post")
+        await page.evaluate(
+            f"() => window.__streams.post.push({json.dumps(_frame({'type': 'status', 'message': 'working'}, 't2-1'))})")
+        await asyncio.sleep(0.3)
+        await page.evaluate("() => window.__streams.post.fail()")
+        await _stream_open(page, "events")
+        await page.evaluate(
+            f"() => {{ window.__streams.events.push({json.dumps(_frame({'type': 'response', 'content': 'recovered answer'}, 't2-2'))});"
+            f" window.__streams.events.push({json.dumps(_frame({'type': 'done'}, 't2-3'))}); }}")
+        if not await _on_screen(page, "recovered answer"):
+            raise AssertionError("the answer read after the break never reached the screen")
+        calls = await page.evaluate("() => window.__calls")
+    finally:
+        await ctx.close()
+    resent = [c for c in calls if c["method"] == "POST" and c["url"].rstrip("/").endswith("/api/chat")]
+    if resent:
+        raise AssertionError("a broken stream sent the turn again over POST /api/chat")
+    follows = [c["url"] for c in calls if "/events" in c["url"]]
+    if not any("after=t2-1" in u for u in follows):
+        raise AssertionError(f"the turn was not read again from the last event handled: {follows}")
+    return "a broken stream is read again from its cursor, and nothing is re-sent"
+
+
+@check
+async def check_chatleave(browser) -> str:
+    """Leaving mid-turn neither asks nor stops: the turn is the server's (F49).
+
+    The rail used to confirm "Navigating away will cancel it" and then cancel it.
+    """
+    ctx, page = await _chat_page(browser, "uismoke-leave")
+    dialogs: list[str] = []
+    page.on("dialog", lambda d: (dialogs.append(d.message), asyncio.ensure_future(d.dismiss())))
+    try:
+        box = page.locator("main textarea").last
+        await box.fill("leave me")
+        await box.press("Enter")
+        await _stream_open(page, "post")
+        await page.evaluate(
+            f"() => window.__streams.post.push({json.dumps(_frame({'type': 'status', 'message': 'working'}, 't3-1'))})")
+        await asyncio.sleep(0.3)
+        await page.get_by_role("link", name="Agents").first.click()
+        await asyncio.sleep(1.5)
+        left = "/agents" in page.url
+        # The rail navigates client-side, so the page's record survives the move.
+        calls = await page.evaluate("() => window.__calls || []")
+    finally:
+        await ctx.close()
+    if dialogs:
+        raise AssertionError(f"leaving mid-turn asked first: {dialogs[0]!r}")
+    if not left:
+        raise AssertionError("the rail did not leave the chat page")
+    if any("/cancel" in c["url"] for c in calls):
+        raise AssertionError("leaving mid-turn cancelled the turn")
+    return "leaving mid-turn asks nothing and stops nothing"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
