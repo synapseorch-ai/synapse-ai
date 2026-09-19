@@ -14,6 +14,7 @@ from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_STEP_TIMEOUT
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
+from .pauses import innermost_container, pause_chain
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .logger import OrchestrationLogger
@@ -352,16 +353,8 @@ class OrchestrationEngine:
                                 # Recorded here as "paused" and completed on
                                 # resume, so history means "steps that started"
                                 # whether or not the run is still waiting.
-                                run.step_history.append({
-                                    "step_id": step.id,
-                                    "step_name": step.name,
-                                    "step_type": step.type.value,
-                                    "status": "paused",
-                                    "started_at": time.strftime(
-                                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(step_start_time)
-                                    ),
-                                    "output_key": step.output_key,
-                                })
+                                run.step_history.append(
+                                    self._paused_entry(run, step, event, step_start_time))
                                 # The channel this pause waits on, so a reply
                                 # there can find the run (F54). A nested pause
                                 # carries its sub-step's channel up to here.
@@ -733,34 +726,36 @@ class OrchestrationEngine:
             session_id=run.session_id,
         )
 
-        current_step = self.step_map.get(run.current_step_id)
-        _log.debug(f"[engine.resume] 🔍 current_step lookup: current_step_id={run.current_step_id!r} → found={current_step is not None} type={current_step.type.value if current_step else 'N/A'}")
+        # Where the run waits. At the top level the step that asked is the
+        # position; inside a container the position is the container, and the
+        # containers' pause records lead in to the step that asked.
+        chain = pause_chain(self.step_map, run.shared_state, run.current_step_id)
+        asker_id = chain[-1]["step_id"] if chain else run.current_step_id
+        asker = self.step_map.get(asker_id)
+        _log.debug(f"[engine.resume] 🔍 position={run.current_step_id!r} asker={asker_id!r} found={asker is not None} type={asker.type.value if asker else 'N/A'} depth_in={len(chain)}")
 
+        answered = False
         if run.nested_run_id:
             # A nested orchestration hit a human step: resume the sub-run and let
             # it finish before the parent moves on.
             _log.debug(f"[engine.resume] 🔗 nested run detected: nested_run_id={run.nested_run_id}")
             outcome: dict = {}
-            async for event in self._resume_nested(run, human_response, run.current_step_id, outcome):
+            async for event in self._resume_nested(run, human_response, asker_id, outcome):
                 yield event
             if outcome.get("status") == "paused":
                 return
-            if outcome.get("status") == "done" and current_step:
-                next_id, resume_events = self._resolve_next(current_step, run)
-                for resume_event in resume_events:
-                    yield resume_event
-                run.current_step_id = next_id
-        elif (pending := (run.step_progress.get(run.current_step_id) or {}).get("pending_approval")):
+            answered = outcome.get("status") == "done"
+        elif (pending := (run.step_progress.get(asker_id) or {}).get("pending_approval")):
             # A tool call inside an agent step, not a human step: the answer is an
             # approval for that call, and the step has to be re-entered rather than
             # stepped past — its work is unfinished, and the transcript that got it
             # this far is in its progress record.
-            async for event in self._resume_tool_approval(run, human_response, pending, run.current_step_id):
+            async for event in self._resume_tool_approval(run, human_response, pending, asker_id):
                 yield event
         else:
             # A human step: write the answer under the step's configured output_key.
             # Falling back to "human_response" preserves backward-compat for steps with no output_key.
-            output_key = (current_step.output_key if current_step else None) or "human_response"
+            output_key = (asker.output_key if asker else None) or "human_response"
             run.shared_state[output_key] = human_response
             # Always keep "human_response" as well so evaluators that check it still work.
             if output_key != "human_response":
@@ -769,19 +764,28 @@ class OrchestrationEngine:
             run.waiting_for_human = False
             run.status = "running"
 
-            if current_step:
+            if asker:
                 # Before _resolve_next, so the loop guard counts this iteration.
-                self._complete_human_step(run, current_step)
-                next_id, resume_events = self._resolve_next(current_step, run)
-                run.current_step_id = next_id
-                # A routing decision, a loop_limit_reached, or both. Dropping them
-                # meant a run that hit its iteration cap on the step right after a
-                # human pause said nothing about why it moved on.
-                for resume_event in resume_events:
-                    yield resume_event
-                _log.debug(f"[engine.resume] ➡  _resolve_next(HUMAN) → next_step_id={next_id!r}")
+                self._complete_human_step(run, asker)
+                answered = True
             else:
-                _log.debug(f"[engine.resume] ⚠️  current_step not found in step_map — current_step_id stays as {run.current_step_id!r}, loop will likely fail immediately")
+                _log.debug(f"[engine.resume] ⚠️  step {asker_id!r} not found in step_map — the loop will likely fail immediately")
+
+        if answered and chain:
+            # Asked inside a container: the one holding the step carries on past
+            # it — the rest of that iteration, then the next — and every
+            # container outside it re-enters its own record (F109). The position
+            # stays on the outermost, which is where `_execute_loop` starts.
+            chain[-1]["answered"] = True
+        elif answered and asker:
+            next_id, resume_events = self._resolve_next(asker, run)
+            run.current_step_id = next_id
+            # A routing decision, a loop_limit_reached, or both. Dropping them
+            # meant a run that hit its iteration cap on the step right after a
+            # human pause said nothing about why it moved on.
+            for resume_event in resume_events:
+                yield resume_event
+            _log.debug(f"[engine.resume] ➡  _resolve_next({asker_id!r}) → next_step_id={next_id!r}")
 
         _log.debug(f"[engine.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}")
         state = SharedState(run)
@@ -1255,6 +1259,41 @@ class OrchestrationEngine:
             return fallback, loop_event
 
         return next_id, None
+
+    def _paused_entry(self, run: OrchestrationRun, step: StepConfig, event: dict,
+                      step_start_time: float) -> dict:
+        """The history entry for a pause: it names the step that asked.
+
+        `step` is the top-level step this loop drives, and the run's position
+        stays on it — a question asked inside a Loop, a Parallel branch or a
+        nested orchestration is answered by re-entering that container (F109).
+        But the entry is the asking step's own, typed as it is (a human step
+        stays `human`, which is what keeps a person's wait out of billed time)
+        and marked `within` the container holding it, so anything looking for
+        the waiting step — the resume, a channel's expiry, cloud's notifier —
+        reads it here rather than guessing from the position.
+        """
+        asker = self.step_map.get(event.get("orch_step_id")) or step
+        if asker is step:
+            return {
+                "step_id": step.id,
+                "step_name": step.name,
+                "step_type": step.type.value,
+                "status": "paused",
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(step_start_time)),
+                "output_key": step.output_key,
+            }
+        chain = pause_chain(self.step_map, run.shared_state, step.id)
+        return {
+            "step_id": asker.id,
+            "step_name": asker.name,
+            "step_type": asker.type.value,
+            "status": "paused",
+            # The pause, not the container's start: this is the wait.
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "output_key": asker.output_key,
+            "within": innermost_container(step.id, chain) if chain else step.id,
+        }
 
     @staticmethod
     def _complete_human_step(run: OrchestrationRun, step) -> None:

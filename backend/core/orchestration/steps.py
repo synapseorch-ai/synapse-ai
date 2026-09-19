@@ -16,8 +16,21 @@ from core import expressions as _expressions
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
+from .pauses import progress_key as _progress_key
 
 _log = get_logger(__name__)
+
+
+def _resume_index(record: dict, step_ids: list[str]) -> int:
+    """Where a container's pause record says to pick up: the step that asked.
+
+    By position when the step is still there, else by id; from the top if the
+    definition was edited while the run waited and the step is gone.
+    """
+    step_id, index = record.get("step_id"), record.get("index")
+    if isinstance(index, int) and 0 <= index < len(step_ids) and step_ids[index] == step_id:
+        return index
+    return step_ids.index(step_id) if step_id in step_ids else 0
 
 
 def _mention_warnings(mentions) -> list[str]:
@@ -936,10 +949,16 @@ class ParallelStepExecutor:
         # Their outputs are already in shared_state from the checkpoint; only
         # the interrupted (or never-started) work reruns.
         from core.orchestration.state import SharedState
-        progress_key = f"_parallel_progress_{step.id}"
+        progress_key = _progress_key(step)
         saved = run.shared_state.get(progress_key) or {}
         completed_branches: set[int] = set(saved.get("completed_branches") or [])
         completed_steps: set[str] = set(saved.get("completed_steps") or [])
+        # A step in a branch stopped to ask (F109). Answered, it is done — its
+        # answer is in its key — and its branch carries on after it, then the
+        # branches after that one. Not answered, it runs again.
+        paused = saved.get("paused")
+        if isinstance(paused, dict) and paused.get("answered") and paused.get("step_id"):
+            completed_steps.add(paused["step_id"])
         if completed_branches or completed_steps:
             _log.debug(f"PARALLEL: ⏯ resuming — branches done={sorted(completed_branches)} "
                   f"sub-steps done={sorted(completed_steps)}")
@@ -955,6 +974,14 @@ class ParallelStepExecutor:
                 await SharedState(run).checkpoint()
             except Exception as ckpt_err:
                 _log.warning(f"parallel-progress checkpoint failed: {ckpt_err}")
+
+        def _pause_progress(branch_index: int, sid: str) -> None:
+            """Keep the node's place at a pause. The engine checkpoints it."""
+            run.shared_state[progress_key] = {
+                "completed_branches": sorted(completed_branches),
+                "completed_steps": sorted(completed_steps),
+                "paused": {"branch": branch_index, "step_id": sid, "answered": False},
+            }
 
         def _is_concurrent_safe(chain: list[str]) -> bool:
             for sid in chain:
@@ -976,7 +1003,7 @@ class ParallelStepExecutor:
         branch_kwargs = dict(
             step=step, run=run, engine=engine, branch_count=len(resolved_branches),
             completed_steps=completed_steps, completed_branches=completed_branches,
-            checkpoint_progress=_checkpoint_progress,
+            checkpoint_progress=_checkpoint_progress, pause_progress=_pause_progress,
         )
 
         # ── Concurrent branches: one task each, events through a queue ──
@@ -1016,10 +1043,8 @@ class ParallelStepExecutor:
             await anyio.sleep(0)
             async for ev in self._iter_branch(branch_index, chain, **branch_kwargs):
                 if ev.get("type") == "human_input_required":
-                    # The engine resumes PAST the parallel node after human
-                    # input — drop branch progress so a later legitimate
-                    # re-entry starts fresh.
-                    run.shared_state.pop(progress_key, None)
+                    # The branch kept the node's place (`pause_progress`), so
+                    # answering re-enters here and carries on (F109).
                     yield ev
                     return
                 yield ev
@@ -1031,6 +1056,7 @@ class ParallelStepExecutor:
     async def _iter_branch(
         self, branch_index: int, branch_step_ids: list[str], *, step, run, engine,
         branch_count: int, completed_steps: set, completed_branches: set, checkpoint_progress,
+        pause_progress,
     ) -> AsyncGenerator[dict, None]:
         """One branch, start to finish. Yields its events; a
         `human_input_required` is yielded last and ends the branch."""
@@ -1092,6 +1118,7 @@ class ParallelStepExecutor:
                 continue
 
             if pending_human_event is not None:
+                pause_progress(branch_index, sid)
                 yield pending_human_event
                 return
 
@@ -1200,7 +1227,7 @@ class LoopStepExecutor:
                             f"'{step.name}'. A loop whose body reaches itself never ends."}
             return
 
-        progress_key = f"_loop_progress_{step.id}"
+        progress_key = _progress_key(step)
         cap = max(1, step.loop_max_iterations)
 
         # Saved before the first iteration and restored on every exit, so a
@@ -1228,6 +1255,15 @@ class LoopStepExecutor:
             saved = run.shared_state.get(progress_key)
             saved = saved if isinstance(saved, dict) else {}
             completed_iterations = max(0, int(saved.get("completed_iterations") or 0))
+            # A step in the body stopped to ask, part-way through an iteration
+            # (F109). The loop re-enters that iteration where it stopped:
+            # answered, it carries on after the step that asked; not answered —
+            # a tool call's approval, a replay after a cancel — it runs that step
+            # again.
+            pending_resume = saved.get("paused")
+            if not (isinstance(pending_resume, dict)
+                    and pending_resume.get("iteration") == completed_iterations + 1):
+                pending_resume = None
 
             # ── Mode resolution ──
             items: list | None = None
@@ -1282,26 +1318,30 @@ class LoopStepExecutor:
             stopped_reason = exhausted
 
             while True:
-                if total is not None and iteration >= total:
-                    stopped_reason = exhausted
-                    break
-                if iteration >= cap:
-                    stopped_reason = "max_iterations"
-                    yield {"type": "step_warning", "orch_step_id": step.id,
-                           "message": f"Loop hit its {cap}-iteration ceiling"}
-                    break
-                if mode == "while":
-                    keep_going, err = _eval_state_expr(
-                        step.loop_while_condition, run.shared_state, default=False)
-                    if err:
+                # An iteration being re-entered was admitted before its pause:
+                # its while condition is not asked again half-way through it.
+                resume_at, pending_resume = pending_resume, None
+                if resume_at is None:
+                    if total is not None and iteration >= total:
+                        stopped_reason = exhausted
+                        break
+                    if iteration >= cap:
+                        stopped_reason = "max_iterations"
                         yield {"type": "step_warning", "orch_step_id": step.id,
-                               "message": f"loop_while_condition failed to evaluate "
-                                          f"(stopping): {err}"}
-                        stopped_reason = "condition_error"
+                               "message": f"Loop hit its {cap}-iteration ceiling"}
                         break
-                    if not keep_going:
-                        stopped_reason = "condition_false"
-                        break
+                    if mode == "while":
+                        keep_going, err = _eval_state_expr(
+                            step.loop_while_condition, run.shared_state, default=False)
+                        if err:
+                            yield {"type": "step_warning", "orch_step_id": step.id,
+                                   "message": f"loop_while_condition failed to evaluate "
+                                              f"(stopping): {err}"}
+                            stopped_reason = "condition_error"
+                            break
+                        if not keep_going:
+                            stopped_reason = "condition_false"
+                            break
 
                 iteration += 1
 
@@ -1316,11 +1356,22 @@ class LoopStepExecutor:
                 yield {
                     "type": "loop_iteration", "orch_step_id": step.id,
                     "iteration": iteration, "total": total,
+                    **({"resumed": True} if resume_at else {}),
                 }
 
-                completed_this_iteration: set[str] = set()
+                completed_this_iteration: set[str] = (
+                    set(resume_at.get("completed") or []) if resume_at else set())
+                start = _resume_index(resume_at, body_ids) if resume_at else 0
 
-                for sid in body_ids:
+                for idx, sid in enumerate(body_ids):
+                    if idx < start:
+                        continue  # ran before the pause; its output is in state
+                    if resume_at and idx == start and resume_at.get("answered"):
+                        # The step that asked, answered: the answer is in its
+                        # output key, and its history entry was closed by the
+                        # resume. It counts as this iteration's result.
+                        completed_this_iteration.add(sid)
+                        continue
                     sub_step = engine.step_map.get(sid)
                     if not sub_step:
                         yield {"type": "step_warning", "orch_step_id": step.id,
@@ -1351,7 +1402,8 @@ class LoopStepExecutor:
                     yield {"type": "step_start", "orch_step_id": sub_step.id,
                            "step_name": sub_step.name, "step_type": sub_step.type.value}
 
-                    # Human input within a loop body pauses the whole run. The
+                    # Human input within a loop body pauses the whole run, and
+                    # answering it re-enters this iteration (F109). The
                     # event must be yielded OUTSIDE the fail_after scope: yielding
                     # inside it suspends this generator with the scope active, and
                     # the engine exiting its own step-timeout scope then blows up
@@ -1394,10 +1446,23 @@ class LoopStepExecutor:
                         continue
 
                     if pending_human_event is not None:
-                        # The engine resumes PAST the loop after human input, so
-                        # drop the iteration progress: a later legitimate re-entry
-                        # must start fresh, not skip iterations.
-                        run.shared_state.pop(progress_key, None)
+                        # Keep the loop's place, so answering carries it on from
+                        # here — the rest of this iteration, then the next — and
+                        # not past the loop with the rest dropped (F109). The
+                        # markers go back first: the engine checkpoints the
+                        # pause, and they belong to this generator, not the run.
+                        paused_at = {
+                            "completed_iterations": iteration - 1,
+                            "paused": {
+                                "iteration": iteration, "index": idx, "step_id": sid,
+                                "completed": [b for b in body_ids if b in completed_this_iteration],
+                                "answered": False,
+                            },
+                        }
+                        if mode == "foreach":
+                            paused_at["items"] = items
+                        run.shared_state[progress_key] = paused_at
+                        _restore()
                         yield pending_human_event
                         return
 

@@ -39,6 +39,12 @@ def _human(sid, key="answer", prompt="ok?", nxt=None, **extra):
             "output_key": key, "next_step_id": nxt, **extra}
 
 
+def _loop(sid, body, nxt=None, **mode):
+    mode = mode or {"loop_count": 2}
+    return {"id": sid, "name": sid.upper(), "type": "loop", "loop_step_ids": body,
+            "next_step_id": nxt, **mode}
+
+
 # ── the two drivers ──────────────────────────────────────────────────────────
 @pytest.fixture
 def worker(monkeypatch):
@@ -115,6 +121,165 @@ def driver(request, worker, fake_redis):
 async def _run(run_id):
     from core.orchestration.state import SharedState
     return (await SharedState.restore(run_id)).run
+
+
+def _entries(run, step_id):
+    return [h for h in run.step_history if h.get("step_id") == step_id]
+
+
+def _results(value) -> list:
+    """The per-iteration results a loop promotes into a body step's key."""
+    return [r["result"] for r in value]
+
+
+# ── a nested orchestration waiting on its own human step ─────────────────────
+def _child(orch_id):
+    return S.make_orchestration(id=orch_id, entry_step_id="approve", steps=[
+        _human("approve", key="approval", nxt="p"),
+        _print("p", "got {state.approval}", key="final"),
+    ])
+
+
+def _delegate(agent_id, nxt=None, sid="delegate"):
+    return {"id": sid, "name": sid.upper(), "type": "agent", "agent_id": agent_id,
+            "prompt_template": "go", "output_key": "result", "next_step_id": nxt}
+
+
+# ── a loop ───────────────────────────────────────────────────────────────────
+class TestALoopAsksEachIteration:
+    async def test_each_iteration_is_answered_and_the_loop_moves_on(self, driver):
+        orch = S.make_orchestration(id="orch_hloop", entry_step_id="loop1", steps=[
+            _loop("loop1", ["before", "ask", "after"], nxt="tail"),
+            _print("before"), _human("ask"), _print("after"), _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+
+        assert await driver.start(orch, "run_hloop") == "paused"
+        paused = await _run("run_hloop")
+        assert paused.current_step_id == "loop1", "the run's position is the container"
+        assert "_loop_current_iteration" not in paused.shared_state
+
+        second = await driver.answer("run_hloop", "one")
+        assert second == "paused", "iteration two asks again"
+        assert (await _run("run_hloop")).current_step_id == "loop1"
+
+        assert await driver.answer("run_hloop", "two") == "completed"
+        run = await _run("run_hloop")
+        state = run.shared_state
+        assert _results(state["answer"]) == ["one", "two"]
+        assert len(state["o_after"]) == 2, "the steps after the question ran each time"
+        assert state["o_tail"] == "tail", "the loop's next step ran"
+        asks = _entries(run, "ask")
+        assert [(h["status"], h["step_type"], h.get("within")) for h in asks] == [
+            ("completed", "human", "loop1"), ("completed", "human", "loop1")]
+        assert [h["status"] for h in _entries(run, "loop1")] == ["completed"]
+        assert not any(k.startswith("_loop_") for k in state), sorted(state)
+
+
+class TestTheModesOfALoop:
+    async def test_a_for_each_asks_about_each_item(self, driver):
+        orch = S.make_orchestration(id="orch_hfor", entry_step_id="loop1", steps=[
+            _loop("loop1", ["ask"], nxt="tail", loop_over="state.items"),
+            _human("ask", prompt="Ship {state.loop_item}?"), _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+
+        assert await driver.start(orch, "run_hfor", {"items": ["a", "b"]}) == "paused"
+        assert (await _run("run_hfor")).human_prompt == "Ship a?"
+        assert await driver.answer("run_hfor", "yes") == "paused"
+        assert (await _run("run_hfor")).human_prompt == "Ship b?"
+        assert await driver.answer("run_hfor", "no") == "completed"
+
+        state = (await _run("run_hfor")).shared_state
+        assert _results(state["answer"]) == ["yes", "no"]
+        assert state["o_tail"] == "tail"
+
+    async def test_a_while_loop_finishes_the_iteration_it_paused_in(self, driver):
+        """The first body step makes the condition false. Asked again when the
+        iteration is re-entered, it would stop the loop before `after` ran."""
+        orch = S.make_orchestration(id="orch_hwhile", entry_step_id="loop1", steps=[
+            _loop("loop1", ["mark", "ask", "after"], nxt="tail",
+                  loop_while_condition="state.flag != 'set'"),
+            _print("mark", "set", key="flag"), _human("ask"), _print("after"), _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+
+        assert await driver.start(orch, "run_hwhile", {"flag": ""}) == "paused"
+        assert await driver.answer("run_hwhile", "go on") == "completed"
+
+        run = await _run("run_hwhile")
+        assert len(run.shared_state["o_after"]) == 1
+        assert run.shared_state["o_tail"] == "tail"
+        assert [h["status"] for h in _entries(run, "after")] == ["completed"]
+
+
+class TestAParallelBranchAsks:
+    async def test_the_branch_carries_on_and_so_do_the_ones_after_it(self, driver):
+        orch = S.make_orchestration(id="orch_hpar", entry_step_id="par", steps=[
+            {"id": "par", "name": "PAR", "type": "parallel", "next_step_id": "tail",
+             "parallel_branches": [["p0"], ["ask", "after"], ["ask2"]]},
+            _print("p0"), _human("ask"), _print("after"), _human("ask2", key="answer2"),
+            _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+
+        assert await driver.start(orch, "run_hpar") == "paused"
+        assert (await _run("run_hpar")).current_step_id == "par"
+        assert await driver.answer("run_hpar", "one") == "paused", "the next branch asks"
+        assert await driver.answer("run_hpar", "two") == "completed"
+
+        run = await _run("run_hpar")
+        state = run.shared_state
+        assert (state["answer"], state["answer2"]) == ("one", "two")
+        assert state["o_after"] == "after" and state["o_tail"] == "tail"
+        assert [h["status"] for h in _entries(run, "p0")] == ["completed"], "p0 ran once"
+        assert [(h["status"], h.get("within")) for h in _entries(run, "ask")] == [("completed", "par")]
+        assert "_parallel_progress_par" not in state
+
+
+class TestALoopInALoop:
+    async def test_every_question_is_asked_and_both_loops_finish(self, driver):
+        orch = S.make_orchestration(id="orch_hll", entry_step_id="outer", steps=[
+            _loop("outer", ["inner"], nxt="tail"), _loop("inner", ["ask"]),
+            _human("ask"), _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+
+        assert await driver.start(orch, "run_hll") == "paused"
+        state = (await _run("run_hll")).shared_state
+        assert state["_loop_progress_outer"]["paused"]["step_id"] == "inner"
+        assert state["_loop_progress_inner"]["paused"]["step_id"] == "ask"
+        assert not any(k in state for k in ("_loop_current_iteration", "_loop_total"))
+
+        for answer in ("one", "two", "three"):
+            assert await driver.answer("run_hll", answer) == "paused"
+        assert await driver.answer("run_hll", "four") == "completed"
+
+        run = await _run("run_hll")
+        assert _results(run.shared_state["answer"]) == ["three", "four"]  # the inner loop's last pass
+        assert [(h["status"], h.get("within")) for h in _entries(run, "ask")] == [("completed", "inner")] * 4
+        assert run.shared_state["o_tail"] == "tail"
+        assert not any(k.startswith("_loop_") for k in run.shared_state), sorted(run.shared_state)
+
+
+class TestANestedStepInALoop:
+    async def test_each_iteration_waits_on_its_own_sub_run(self, driver):
+        orch = S.make_orchestration(id="orch_hnest", entry_step_id="loop1", steps=[
+            _loop("loop1", ["delegate"], nxt="tail"), _delegate("agent_hnest"), _print("tail"),
+        ])
+        await S.seed_agents([S.make_orchestrator_agent("orch_hnest_child", id="agent_hnest")])
+        await S.seed_orchestrations([orch, _child("orch_hnest_child")])
+
+        assert await driver.start(orch, "run_hnest") == "paused"
+        assert await driver.answer("run_hnest", "one") == "paused"
+        assert await driver.answer("run_hnest", "two") == "completed"
+
+        run = await _run("run_hnest")
+        assert _results(run.shared_state["result"]) == ["got one", "got two"]
+        assert run.shared_state["o_tail"] == "tail"
+        assert run.nested_run_id is None
+        child = await _run("run_hnest__delegate_d1")
+        assert child.status == "completed" and child.shared_state["approval"] == "two"
 
 
 # ── a tool call waiting on approval, through the fleet's jobs ────────────────
@@ -194,19 +359,6 @@ class TestAToolApprovalOnTheFleet:
         assert "pending_approval" not in (run.step_progress.get("work") or {})
 
 
-# ── a nested orchestration waiting on its own human step ─────────────────────
-def _child(orch_id):
-    return S.make_orchestration(id=orch_id, entry_step_id="approve", steps=[
-        _human("approve", key="approval", nxt="p"),
-        _print("p", "got {state.approval}", key="final"),
-    ])
-
-
-def _delegate(agent_id, nxt=None, sid="delegate"):
-    return {"id": sid, "name": sid.upper(), "type": "agent", "agent_id": agent_id,
-            "prompt_template": "go", "output_key": "result", "next_step_id": nxt}
-
-
 class TestANestedResume:
     async def test_a_sub_run_that_cannot_finish_fails_its_parent(self, driver):
         """Its sub-orchestration deleted while the parent waited. The parent was
@@ -248,3 +400,91 @@ class TestANestedResume:
         assert await driver.answer("run_ndepth", "yes") == "completed"
         assert (await _run("run_ndepth")).shared_state["result"] == "got yes"
         assert depths == {"run_ndepth__delegate_d1": 1, "run_ndepth": 0}
+
+
+class TestAToolApprovalInALoop:
+    async def test_the_call_runs_and_the_loop_moves_on(self, driver, risky_agent, fake_llm):
+        orch = S.make_orchestration(id="orch_hloop_ap", entry_step_id="loop1", steps=[
+            _loop("loop1", ["work"], nxt="after", loop_count=1), _work(),
+            _print("after", "done", key="tail"),
+        ])
+        await S.seed_orchestrations([orch])
+        tools = _Tools()
+        a, b = tools.patch()
+        with a, b:
+            fake_llm.script([tool_call("danger"), "done"])
+            assert await driver.start(orch, "run_hloop_ap") == "paused"
+            paused = await _run("run_hloop_ap")
+            assert paused.current_step_id == "loop1"
+            assert paused.step_progress["work"]["pending_approval"]["tool_name"] == "danger"
+
+            fake_llm.script(["all finished"])
+            assert await driver.answer("run_hloop_ap", {"approve": True}) == "completed"
+
+        assert tools.executed == [("danger", {})]
+        state = (await _run("run_hloop_ap")).shared_state
+        assert _results(state["result"]) == ["all finished"]
+        assert state["tail"] == "done"
+
+
+class _Agents:
+    """run_agent_step, counting calls per agent; named agents block on their first call."""
+
+    def __init__(self):
+        import asyncio
+        self.calls: dict[str, int] = {}
+        self.block_once: set[str] = set()
+        self.started = asyncio.Event()
+
+    async def __call__(self, **kwargs):
+        import asyncio
+        agent_id = kwargs["agent_id"]
+        self.calls[agent_id] = self.calls.get(agent_id, 0) + 1
+        if agent_id in self.block_once:
+            self.block_once.discard(agent_id)
+            self.started.set()
+            await asyncio.sleep(30)
+        yield {"type": "final", "response": f"{agent_id} answered"}
+
+
+class TestARedeliveredAnswerInALoop:
+    async def test_the_answer_is_applied_once_and_the_iteration_finishes(
+        self, worker, fake_redis, monkeypatch,
+    ):
+        """An answer job stopped mid-iteration (a deploy) and handed out again
+        resumes from the checkpoint: the answered step is not asked again, and
+        the step it was running runs again."""
+        import asyncio
+        import core.react_engine as re_mod
+        agents = _Agents()
+        monkeypatch.setattr(re_mod, "run_agent_step", agents)
+        orch = S.make_orchestration(id="orch_hredeliver", entry_step_id="loop1", steps=[
+            _loop("loop1", ["ask", "work"], nxt="tail", loop_count=1), _human("ask"),
+            {"id": "work", "name": "WORK", "type": "agent", "agent_id": "a2",
+             "output_key": "o_work", "next_step_id": None, "max_turns": 3},
+            _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+        started = await worker.run_orchestration_job(
+            await _ctx(fake_redis), run_id="run_hredeliver", orch_id="orch_hredeliver",
+            initial_input="go",
+        )
+        assert started["status"] == "paused"
+
+        agents.block_once.add("a2")
+        job = asyncio.create_task(worker.resume_orchestration_job(
+            await _ctx(fake_redis, 1), run_id="run_hredeliver", human_response="yes"))
+        await asyncio.wait_for(agents.started.wait(), 5)
+        job.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await job
+
+        result = await worker.resume_orchestration_job(
+            await _ctx(fake_redis, 2), run_id="run_hredeliver", human_response="yes")
+
+        assert result["status"] == "completed"
+        assert agents.calls == {"a2": 2}
+        run = await _run("run_hredeliver")
+        assert _results(run.shared_state["answer"]) == ["yes"]
+        assert [h["status"] for h in _entries(run, "ask")] == ["completed"]
+        assert run.shared_state["o_tail"] == "tail"

@@ -306,7 +306,16 @@ class WorkerEngineAdapter:
         return engine
 
     async def _sync_paused_state(self, human_event: dict) -> None:
-        """Update Postgres to reflect the run is paused waiting for human input."""
+        """Update Postgres to reflect the run is paused waiting for human input.
+
+        Not the position: the engine's pause checkpoint already wrote it, and it
+        is the step the engine drives — the container, for a question asked
+        inside a Loop, a Parallel branch or a nested orchestration. This used to
+        overwrite it with the event's `orch_step_id`, the step that asked, left
+        over from when this row was a display mirror; so a fleet run resumed
+        from inside the loop body as if that step stood alone, and ended there
+        (F109). The step that asked is the run's newest `paused` history entry.
+        """
         try:
             async with self._session_factory() as session:
                 from sqlalchemy import update
@@ -317,7 +326,6 @@ class WorkerEngineAdapter:
                     .values(
                         status="paused",
                         waiting_for_human=True,
-                        current_step_id=human_event.get("orch_step_id"),
                         human_prompt=human_event.get("prompt"),
                         human_fields=human_event.get("fields") or [],
                     )

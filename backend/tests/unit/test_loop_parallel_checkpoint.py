@@ -137,9 +137,10 @@ class TestParallelCheckpoint:
 
 
 class TestLoopHumanPause:
-    async def test_human_pause_drops_loop_progress(self):
-        """The engine resumes PAST a loop after human input, so pausing must
-        not leave iteration progress that would corrupt a later re-entry."""
+    async def test_human_pause_keeps_the_loops_place(self):
+        """Answering re-enters the loop where it stopped (F109). This used to
+        assert the opposite: the engine resumed *past* the loop, dropping the
+        remaining iterations, so the progress was thrown away at the pause."""
         orch = S.make_orchestration(
             id="orch_loop_human",
             entry_step_id="loop1",
@@ -153,4 +154,8 @@ class TestLoopHumanPause:
         events = await _run(orch, run_id="run_loop_human")
         assert any(e.get("type") == "human_input_required" for e in events)
         state = (await _final_checkpoint("run_loop_human"))["shared_state"]
-        assert "_loop_progress_loop1" not in state
+        assert state["_loop_progress_loop1"] == {
+            "completed_iterations": 0,
+            "paused": {"iteration": 1, "index": 0, "step_id": "ask", "completed": [],
+                       "answered": False},
+        }
