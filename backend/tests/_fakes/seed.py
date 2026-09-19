@@ -89,3 +89,15 @@ async def seed_api_key(name: str = "test") -> tuple[str, dict]:
     """Create a real API key. Returns (raw_key, record). raw_key -> Bearer token."""
     from core.api_keys import generate_api_key
     return await generate_api_key(name)
+
+
+async def seed_paused_run(run_id: str, orchestration_id: str = "orch_x") -> None:
+    """A run stored as paused on a question — what a resume route will answer."""
+    from core.store import get_store, upsert
+    from core.store.models import OrchestrationRunDB
+    async with (await get_store())() as session:
+        await upsert(session, OrchestrationRunDB, values={
+            "run_id": run_id, "orchestration_id": orchestration_id, "status": "paused",
+            "waiting_for_human": True, "current_step_id": "h",
+        }, index_elements=["run_id"])
+        await session.commit()

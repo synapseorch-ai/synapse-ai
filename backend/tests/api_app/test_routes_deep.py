@@ -24,6 +24,8 @@ class TestOrchestrationCrudDeep:
 
 class TestV1ResumeStream:
     async def test_v1_resume_sync(self, client, api_key, monkeypatch):
+        from _fakes.seed import seed_paused_run
+        await seed_paused_run("run_x")
         import core.orchestration.engine as engine_mod
         monkeypatch.setattr(engine_mod, "OrchestrationEngine", E.fake_engine([
             E.orch_start(), {"type": "orchestration_complete", "status": "completed", "final_state": {}},
@@ -34,6 +36,8 @@ class TestV1ResumeStream:
         assert resp.status_code == 200
 
     async def test_v1_resume_stream(self, client, api_key, monkeypatch):
+        from _fakes.seed import seed_paused_run
+        await seed_paused_run("run_x")
         import core.orchestration.engine as engine_mod
         monkeypatch.setattr(engine_mod, "OrchestrationEngine", E.fake_engine([
             E.orch_start(), E.orch_complete()]))

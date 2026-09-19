@@ -569,34 +569,14 @@ async def submit_human_input(run_id: str, request: Request):
 
 @router.post("/api/orchestrations/runs/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request):
-    """Cancel a running orchestration (works for both V1 in-process and V2 distributed runs)."""
-    from core.orchestration.state import SharedState, _cancelled_run_ids
+    """Cancel a running orchestration (works for both V1 in-process and V2 distributed runs).
 
-    # Signal the engine loop to exit on its next iteration (V1 in-process path)
-    _cancelled_run_ids.add(run_id)
+    One implementation for every caller (`core/orchestration/cancel.py`); a run
+    that has already finished keeps the status it finished with.
+    """
+    from core.orchestration.cancel import cancel_run as _cancel_run
 
-    # Cancel the asyncio task to interrupt any in-progress await (e.g. LLM call)
-    task = _active_tasks.pop(run_id, None)
-    if task and not task.done():
-        task.cancel()
-
-    # Distributed cancel: publish Redis key so workers on other machines stop too
-    redis = getattr(request.app.state, "redis", None)
-    if redis:
-        try:
-            from core.scale.pubsub import publish_cancellation
-            await publish_cancellation(redis, run_id)
-        except Exception:
-            pass
-
-    # Persist cancelled status to disk (V1 checkpoint)
-    try:
-        restored = await SharedState.restore(run_id)
-        restored.run.status = "cancelled"
-        restored.run.ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await restored.checkpoint()
-    except FileNotFoundError:
-        pass  # Run may not have checkpointed yet; that's fine
+    await _cancel_run(run_id, redis=getattr(request.app.state, "redis", None))
 
     return {"status": "cancelled", "run_id": run_id}
 

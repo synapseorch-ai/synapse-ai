@@ -18,7 +18,7 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -299,6 +299,54 @@ async def v1_cancel_chat(session_id: str, key_record: dict = Depends(require_api
     return {"status": "cancellation_requested", "session_id": session_id, "stopped": result["stopped"]}
 
 
+def _v1_drain(queue):
+    """A run's queued events as v1 SSE: `_log_*` held back, `done` after a pause or the end.
+
+    The run itself is spawned by the handler (`spawn_engine_run`); this only
+    reads its queue, so a caller that stops reading leaves the run running (F49).
+    """
+    async def body():
+        from core.orchestration.runner import SENTINEL
+        from core.react_engine import SSE_HEARTBEAT
+
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=10.0)
+            except asyncio.TimeoutError:
+                yield SSE_HEARTBEAT
+                continue
+            if event is SENTINEL:
+                break
+            etype = event.get("type", "")
+            if etype.startswith("_log_"):
+                continue
+            yield _format_sse_event(event)
+            if etype == "human_input_required":
+                break
+        yield _format_sse_event({"type": "done"})
+    return body()
+
+
+async def _answer(request: Request, run_id: str, human_response):
+    """Resume a paused run once — the helper the app and a channel reply use."""
+    from core.orchestration.answers import RunAlreadyActive, RunNotWaiting, answer_paused_run
+    try:
+        return await answer_paused_run(request.app.state, run_id, human_response)
+    except RunAlreadyActive:
+        raise HTTPException(status_code=409, detail="Run is already active")
+    except RunNotWaiting as exc:
+        if exc.status is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        raise HTTPException(status_code=409, detail=f"The run is {exc.status} and is not waiting for an answer.")
+
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+
 # ── Orchestration Endpoints ─────────────────────────────────────────────────
 
 @router.post("/orchestrations/{orch_id}/run")
@@ -395,45 +443,10 @@ async def v1_orchestration_run_stream(
     orch = Orchestration.model_validate(orch_data)
     engine = OrchestrationEngine(orch, _server)
 
-    async def event_stream():
-        from core.react_engine import iter_with_heartbeat
-        from core.orchestration.runner import stream_engine_events
-        try:
-            async for event in iter_with_heartbeat(
-                stream_engine_events(engine.run(body.message, run_id), run_id)
-            ):
-                # Heartbeat comments are yielded as raw SSE strings — pass through.
-                if isinstance(event, str):
-                    yield event
-                    continue
-                etype = event.get("type", "")
-
-                # Skip internal log events
-                if etype.startswith("_log_"):
-                    continue
-
-                yield _format_sse_event(event)
-
-                if etype == "human_input_required":
-                    yield _format_sse_event({"type": "done"})
-                    return
-
-                await asyncio.sleep(0)
-        except Exception as e:
-            log.exception("[v1/orch/stream] Unhandled error run_id=%s", run_id)
-            yield _format_sse_event({"type": "orchestration_error", "error": "An internal error occurred. Check server logs for details."})
-
-        yield _format_sse_event({"type": "done"})
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    # Spawned here, not inside the response: the run belongs to no reader.
+    from core.orchestration.runner import spawn_engine_run
+    _task, queue = spawn_engine_run(engine.run(body.message, run_id), run_id)
+    return StreamingResponse(_v1_drain(queue), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 # ── Orchestration Resume Endpoints ──────────────────────────────────────────
@@ -442,12 +455,10 @@ async def v1_orchestration_run_stream(
 async def v1_orchestration_resume(
     run_id: str,
     body: V1ResumeRequest,
+    request: Request,
     key_record: dict = Depends(require_api_key),
 ):
     """Submit human input and resume orchestration (sync)."""
-    import core.server as _server
-    from core.orchestration.engine import OrchestrationEngine
-
     # Normalize response to dict
     human_response = body.response
     if isinstance(human_response, str):
@@ -460,13 +471,20 @@ async def v1_orchestration_resume(
     status = "running"
     _allowed_statuses = {"running", "paused", "completed", "failed", "cancelled"}
 
+    # Answered once, through the helper the app and a channel reply use: a run
+    # not waiting is a 404/409, a second answer while it runs a 409, and a run
+    # a worker ran goes back to the fleet.
+    answered = await _answer(request, run_id, human_response)
+    if answered.on_fleet:
+        return {"status": "resuming", "run_id": run_id}
+
+    async def _events():
+        from core.orchestration.runner import SENTINEL
+        while (event := await answered.queue.get()) is not SENTINEL:
+            yield event
+
     try:
-        # Through the runner pump so the resumed run is journaled and
-        # registered for cancellation (single-task discipline, issue #356).
-        from core.orchestration.runner import stream_engine_events
-        async for event in stream_engine_events(
-            OrchestrationEngine.resume(run_id, human_response, _server), run_id
-        ):
+        async for event in _events():
             etype = event.get("type", "")
 
             if etype == "human_input_required":
@@ -524,59 +542,39 @@ async def v1_orchestration_resume(
 async def v1_orchestration_resume_stream(
     run_id: str,
     body: V1ResumeRequest,
+    request: Request,
     key_record: dict = Depends(require_api_key),
 ):
     """Submit human input and resume orchestration (SSE stream)."""
-    import core.server as _server
-    from core.orchestration.engine import OrchestrationEngine
-
     # Normalize response to dict
     human_response = body.response
     if isinstance(human_response, str):
         human_response = {"response": human_response}
 
-    async def event_stream():
-        from core.react_engine import iter_with_heartbeat
-        from core.orchestration.runner import stream_engine_events
-        try:
-            async for event in iter_with_heartbeat(
-                stream_engine_events(
-                    OrchestrationEngine.resume(run_id, human_response, _server), run_id
-                )
-            ):
-                # Heartbeat comments are yielded as raw SSE strings — pass through.
-                if isinstance(event, str):
-                    yield event
-                    continue
-                etype = event.get("type", "")
+    answered = await _answer(request, run_id, human_response)
+    if answered.on_fleet:
+        from core.scale import event_bridge
+        return StreamingResponse(
+            event_bridge.stream_run_events(request.app.state.redis, run_id, "0"),
+            media_type="text/event-stream", headers=_SSE_HEADERS,
+        )
+    return StreamingResponse(_v1_drain(answered.queue), media_type="text/event-stream",
+                             headers=_SSE_HEADERS)
 
-                if etype.startswith("_log_"):
-                    continue
 
-                yield _format_sse_event(event)
+@router.post("/orchestrations/runs/{run_id}/cancel")
+async def v1_cancel_run(run_id: str, request: Request, key_record: dict = Depends(require_api_key)):
+    """Stop a run. A run carries on when its caller stops reading, so this is how it stops.
 
-                if etype == "human_input_required":
-                    yield _format_sse_event({"type": "done"})
-                    return
+    v2's shape, plus `stopped`: false for a run that had already finished, which
+    keeps the status it finished with.
+    """
+    from core.orchestration.cancel import cancel_run
 
-                await asyncio.sleep(0)
-        except FileNotFoundError:
-            yield _format_sse_event({"type": "orchestration_error", "error": f"Run '{run_id}' not found"})
-        except Exception as e:
-            log.exception("[v1/resume/stream] Unhandled error run_id=%s", run_id)
-            yield _format_sse_event({"type": "orchestration_error", "error": "An internal error occurred. Check server logs for details."})
-
-        yield _format_sse_event({"type": "done"})
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    result = await cancel_run(run_id, redis=getattr(request.app.state, "redis", None))
+    if not result.found:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return {"status": "cancellation_requested", "run_id": run_id, "stopped": result.stopped}
 
 
 # ── Read-Only Discovery Endpoints ──────────────────────────────────────────
