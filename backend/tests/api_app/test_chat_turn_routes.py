@@ -151,6 +151,44 @@ class TestStop:
         assert again.json()["stopped"] is False
 
 
+class TestStopReachesTheRunAnAgentStarted:
+    async def test_stopping_an_orchestrator_agents_turn_stops_its_run(
+        self, client, live_server, gated_llm, seed_orchestration
+    ):
+        """An orchestrator agent's turn starts a run that belongs to no reader.
+        Stopping the turn used to stop only the turn: the run went on, unwatched,
+        spending, until it finished by itself."""
+        from _fakes import seed as S
+        from core.orchestration.runner import _active_tasks
+        from core.orchestration.state import SharedState
+
+        orch = await seed_orchestration(entry_step_id="s", steps=[
+            {"id": "s", "name": "Think", "type": "llm", "prompt_template": "hi",
+             "output_key": "out", "next_step_id": None},
+        ])
+        agent = S.make_orchestrator_agent(orch["id"])
+        await S.seed_agents([agent])
+
+        async with live_server.client() as c:
+            async with c.stream("POST", "/chat/stream", json={
+                "message": "go", "session_id": "ten", "agent_id": agent["id"],
+            }) as response:
+                assert response.status_code == 200
+                await asyncio.wait_for(gated_llm.started.wait(), 10)
+                run_id = next(r for r in _active_tasks if r.startswith(f"run_{orch['id']}")
+                              or orch["id"] in r)
+
+                stopped = await client.post("/chat/ten/cancel")
+                assert stopped.json()["stopped"] is True
+                await response.aread()
+
+        deadline = asyncio.get_running_loop().time() + 5
+        while run_id in _active_tasks and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+        assert run_id not in _active_tasks, "the run the agent started is still running"
+        assert (await SharedState.restore(run_id)).run.status == "cancelled"
+
+
 class TestReadingATurnAgain:
     async def test_a_finished_turn_replays_with_cursors(self, client, fake_llm, chat_agent):
         fake_llm.set_default("Forty-two.")

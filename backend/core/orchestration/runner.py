@@ -116,6 +116,11 @@ def spawn_engine_run(agen, run_id: str) -> tuple[asyncio.Task, asyncio.Queue]:
 
     task = asyncio.create_task(_pump())
     _active_tasks[run_id] = task
+    # A run an orchestrator or builder agent starts inside a chat turn belongs
+    # to that turn as far as Stop is concerned: the turn's reader going away
+    # leaves it running, but Stop on the turn stops it too (F49).
+    from core.chat_turns import note_run
+    note_run(run_id)
     return task, queue
 
 
