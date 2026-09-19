@@ -360,6 +360,36 @@ class TestAToolApprovalOnTheFleet:
 
 
 class TestANestedResume:
+    async def test_a_sub_run_two_levels_down_that_asks_twice(self, driver):
+        """The parent waits on its sub-run, which waits on its own. When the
+        innermost asked again, the parent recorded *that* run as the one it
+        waits on, so the next answer resumed it directly: the middle run never
+        finished and the parent took the innermost's answer as its step's."""
+        inner = S.make_orchestration(id="orch_n2_inner", entry_step_id="h1", steps=[
+            _human("h1", key="first", nxt="h2"), _human("h2", key="second", nxt="p"),
+            _print("p", "got {state.first} and {state.second}", key="final"),
+        ])
+        middle = S.make_orchestration(id="orch_n2_middle", entry_step_id="delegate",
+                                      steps=[_delegate("agent_n2_inner")])
+        parent = S.make_orchestration(id="orch_n2", entry_step_id="delegate",
+                                      steps=[_delegate("agent_n2_middle", "tail"), _print("tail")])
+        await S.seed_agents([
+            S.make_orchestrator_agent("orch_n2_inner", id="agent_n2_inner"),
+            S.make_orchestrator_agent("orch_n2_middle", id="agent_n2_middle"),
+        ])
+        await S.seed_orchestrations([parent, middle, inner])
+
+        assert await driver.start(parent, "run_n2") == "paused"
+        assert (await _run("run_n2")).nested_run_id == "run_n2__delegate_d1"
+        assert await driver.answer("run_n2", "a") == "paused"
+        assert (await _run("run_n2")).nested_run_id == "run_n2__delegate_d1"
+        assert await driver.answer("run_n2", "b") == "completed"
+
+        run = await _run("run_n2")
+        assert run.shared_state["result"] == "got a and b"
+        assert run.shared_state["o_tail"] == "tail"
+        assert (await _run("run_n2__delegate_d1")).status == "completed"
+
     async def test_a_sub_run_that_cannot_finish_fails_its_parent(self, driver):
         """Its sub-orchestration deleted while the parent waited. The parent was
         failed in its checkpoint, but no `orchestration_complete` followed — so
