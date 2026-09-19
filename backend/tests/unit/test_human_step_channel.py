@@ -306,3 +306,47 @@ class TestTheAppsAnswer:
         resp = await client.post("/api/orchestrations/runs/nope/human-input", json={"response": "x"})
 
         assert resp.status_code == 404
+
+
+class TestATeamsReplyAnswers:
+    """F94. Teams had its own turn handler — a copy of the agent half of
+    `_dispatch` — and never reached the half that answers a run waiting on the
+    channel, so a reply to a human step's question went to the agent as chat
+    and the run stayed paused. WhatsApp and the webhook transports go through
+    `_dispatch` and always worked."""
+
+    async def test_a_teams_reply_answers_the_run_waiting_on_the_channel(
+        self, wired, fake_llm, monkeypatch
+    ):
+        import sys
+
+        from core.messaging.adapters.teams import TeamsAdapter
+
+        # The Bot Framework SDK is an optional install; the turn only needs its
+        # message factory to wrap a string.
+        fake_core = types.ModuleType("botbuilder.core")
+        fake_core.MessageFactory = types.SimpleNamespace(text=lambda text: text)
+        monkeypatch.setitem(sys.modules, "botbuilder", types.ModuleType("botbuilder"))
+        monkeypatch.setitem(sys.modules, "botbuilder.core", fake_core)
+
+        ch = await channel_store.save_channel(
+            {"name": "Teams", "platform": "teams", "credentials": {"app_id": "a", "app_password": "p"}})
+        adapter = TeamsAdapter(ch, wired.manager)
+        wired.manager._adapters[ch["id"]] = adapter
+        await _run_to_pause(_asking("orch_teams", ch["id"]), wired.server, "run_teams")
+
+        said: list[str] = []
+        turn = types.SimpleNamespace(
+            activity=types.SimpleNamespace(
+                text="yes, ship",
+                conversation=types.SimpleNamespace(id="19:conv"),
+                from_property=types.SimpleNamespace(id="u1"),
+            ),
+            send_activity=AsyncMock(side_effect=lambda message: said.append(message)),
+        )
+        await adapter._on_turn(turn)
+
+        assert said == ["✅ Answer received — resuming the workflow."]
+        run = await _settled("run_teams")
+        assert run.status == "completed"
+        assert run.shared_state["approval"] == "yes, ship"
