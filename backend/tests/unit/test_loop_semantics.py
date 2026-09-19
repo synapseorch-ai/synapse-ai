@@ -498,7 +498,9 @@ class TestLoopValidation:
         issues = _validate_orchestration(orch)["issues"]
         assert any("routing is ignored inside a loop body" in i for i in issues)
 
-    def test_a_human_step_in_the_body_is_flagged(self):
+    def test_a_human_step_in_the_body_is_not_flagged(self):
+        """Answering it carries the loop on (F109). This warned that the
+        remaining iterations would be dropped, which is no longer true."""
         from core.builder_tools import _validate_orchestration
         orch = {
             "id": "o", "entry_step_id": "loop1",
@@ -511,7 +513,7 @@ class TestLoopValidation:
             ],
         }
         issues = _validate_orchestration(orch)["issues"]
-        assert any("dropping the remaining iterations" in i for i in issues)
+        assert not any("human step" in i or "iterations" in i for i in issues), issues
 
     def test_a_body_step_chaining_outside_the_body_is_flagged(self):
         from core.builder_tools import _validate_orchestration

@@ -2315,12 +2315,6 @@ def _validate_orchestration(orch: dict) -> dict:
                         f"'{bstep.get('type')}' — its routing is ignored inside a "
                         f"loop body. Put the branch after the loop."
                     )
-                if bstep.get("type") == "human":
-                    issues.append(
-                        f"Loop step '{sid}' body contains human step '{bsid}' — "
-                        f"answering it resumes past the loop, dropping the "
-                        f"remaining iterations. Put the approval outside the loop."
-                    )
                 # A parallel branch auto-follows next_step_id; a loop body does
                 # not, so a chain wired this way silently runs only its head.
                 nxt = bstep.get("next_step_id")

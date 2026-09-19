@@ -129,9 +129,6 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
                     if (b.type === 'if_else' || b.type === 'switch' || b.type === 'evaluator') {
                         add(s.id, warning(`“${b.name}” routes, but routing inside a loop body is ignored — put the branch after the loop`));
                     }
-                    if (b.type === 'human') {
-                        add(s.id, warning(`“${b.name}” pauses for input, and answering it resumes past the loop — the remaining iterations are dropped`));
-                    }
                     // A parallel branch auto-follows next_step_id; a loop body does not.
                     if (b.next_step_id && !bodySet.has(b.next_step_id) && b.next_step_id !== s.next_step_id) {
                         add(s.id, warning(`“${b.name}” points on to a step outside the loop body, which the loop will not run`));
