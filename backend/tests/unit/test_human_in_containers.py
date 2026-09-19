@@ -537,3 +537,69 @@ class TestARunPausedBeforeF109:
             assert [(h["status"], h["step_type"], h.get("within")) for h in _entries(run, "ask")] == [
                 ("completed", "human", "loop1")]
             assert run.shared_state["answer"] == "yes"
+
+
+# ── an agent step's wait is one entry, closed ────────────────────────────────
+def _open(run) -> list:
+    return [(h["step_id"], h["status"]) for h in run.step_history
+            if h.get("status") in ("paused", "running")]
+
+
+class TestAnAgentStepsWaitIsOneEntry:
+    """An agent step that waited — on a sub-orchestration's question, or on a
+    tool call's approval — ran once, and has one history entry, closed.
+
+    It used to have two: a nested resume appended a completed entry and left
+    the paused one open, and an approval reopened the paused entry as `running`
+    for ever while the step's end appended another. Cloud prices every entry
+    and lets an open one claim every later usage row; a loop multiplied both.
+    Neither counts the person's wait as the step's duration."""
+
+    async def test_a_nested_step(self, driver):
+        orch = S.make_orchestration(id="orch_wnest", entry_step_id="delegate",
+                                    steps=[_delegate("agent_wnest", "tail"), _print("tail")])
+        await S.seed_agents([S.make_orchestrator_agent("orch_wnest_child", id="agent_wnest")])
+        await S.seed_orchestrations([orch, _child("orch_wnest_child")])
+        assert await driver.start(orch, "run_wnest") == "paused"
+        assert await driver.answer("run_wnest", "yes") == "completed"
+
+        run = await _run("run_wnest")
+        assert [(h["status"], h["step_type"]) for h in _entries(run, "delegate")] == [
+            ("completed", "agent")]
+        assert _open(run) == []
+        assert not _entries(run, "delegate")[0].get("duration_seconds")
+
+    async def test_a_nested_step_in_a_loop(self, driver):
+        orch = S.make_orchestration(id="orch_wnestl", entry_step_id="loop1", steps=[
+            _loop("loop1", ["delegate"], nxt="tail"), _delegate("agent_wnestl"), _print("tail"),
+        ])
+        await S.seed_agents([S.make_orchestrator_agent("orch_wnestl_child", id="agent_wnestl")])
+        await S.seed_orchestrations([orch, _child("orch_wnestl_child")])
+        assert await driver.start(orch, "run_wnestl") == "paused"
+        assert await driver.answer("run_wnestl", "one") == "paused"
+        assert await driver.answer("run_wnestl", "two") == "completed"
+
+        run = await _run("run_wnestl")
+        assert [(h["status"], h.get("within")) for h in _entries(run, "delegate")] == [
+            ("completed", "loop1")] * 2
+        assert _open(run) == []
+
+    @pytest.mark.parametrize("in_loop", [False, True], ids=["top-level", "in-a-loop"])
+    async def test_an_approved_tool_call(self, driver, risky_agent, fake_llm, in_loop):
+        steps = [_work("after"), _print("after", "done", key="tail")]
+        if in_loop:
+            steps = [_loop("loop1", ["work"], nxt="after", loop_count=1), _work(),
+                     _print("after", "done", key="tail")]
+        orch = S.make_orchestration(id="orch_wap", entry_step_id=steps[0]["id"], steps=steps)
+        await S.seed_orchestrations([orch])
+        tools = _Tools()
+        a, b = tools.patch()
+        with a, b:
+            fake_llm.script([tool_call("danger"), "done"])
+            assert await driver.start(orch, "run_wap") == "paused"
+            fake_llm.script(["all finished"])
+            assert await driver.answer("run_wap", {"approve": True}) == "completed"
+
+        run = await _run("run_wap")
+        assert [h["status"] for h in _entries(run, "work")] == ["completed"]
+        assert _open(run) == []

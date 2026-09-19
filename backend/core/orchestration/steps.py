@@ -16,7 +16,7 @@ from core import expressions as _expressions
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
-from .pauses import progress_key as _progress_key
+from .pauses import end_step, progress_key as _progress_key
 
 _log = get_logger(__name__)
 
@@ -1106,7 +1106,7 @@ class ParallelStepExecutor:
                         _log.warning(f"closing timed-out step '{sub_step.name}' failed: {close_err}")
                 duration = round(time.time() - step_start, 2)
                 _log.debug(f"PARALLEL: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s in branch {branch_index}")
-                run.step_history.append({
+                end_step(run.step_history, {
                     "step_id": sub_step.id, "step_name": sub_step.name,
                     "step_type": sub_step.type.value, "status": "failed",
                     "error": f"Timed out after {sub_timeout}s",
@@ -1124,7 +1124,7 @@ class ParallelStepExecutor:
 
             duration = round(time.time() - step_start, 2)
             _log.debug(f"PARALLEL: ✓ sub-step '{sub_step.name}' done in {duration}s")
-            run.step_history.append({
+            end_step(run.step_history, {
                 "step_id": sub_step.id, "step_name": sub_step.name,
                 "step_type": sub_step.type.value, "status": "completed",
                 "started_at": _iso(step_start), "ended_at": _iso(time.time()),
@@ -1434,7 +1434,7 @@ class LoopStepExecutor:
                                 _log.warning(f"closing timed-out step "
                                       f"'{sub_step.name}' failed: {close_err}")
                         _log.debug(f"LOOP: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s (iteration {iteration})")
-                        run.step_history.append({
+                        end_step(run.step_history, {
                             "step_id": sub_step.id, "step_name": sub_step.name,
                             "step_type": sub_step.type.value, "status": "failed",
                             "error": f"Timed out after {sub_timeout}s",
@@ -1467,7 +1467,7 @@ class LoopStepExecutor:
                         return
 
                     duration = round(time.time() - step_start, 2)
-                    run.step_history.append({
+                    end_step(run.step_history, {
                         "step_id": sub_step.id, "step_name": sub_step.name,
                         "step_type": sub_step.type.value,
                         "status": "failed" if failed else "completed",

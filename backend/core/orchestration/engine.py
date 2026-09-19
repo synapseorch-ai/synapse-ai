@@ -14,7 +14,7 @@ from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_STEP_TIMEOUT
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
-from .pauses import innermost_container, pause_chain, progress_key
+from .pauses import end_step, innermost_container, pause_chain, progress_key
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .logger import OrchestrationLogger
@@ -395,7 +395,7 @@ class OrchestrationEngine:
                         "type": "step_error", "orch_step_id": step.id,
                         "error": f"Step '{step.name}' timed out after {step_timeout}s",
                     }
-                    run.step_history.append({
+                    end_step(run.step_history, {
                         "step_id": step.id, "step_name": step.name,
                         "step_type": step.type.value, "status": "failed",
                         "error": f"Timed out after {step_timeout}s",
@@ -434,7 +434,7 @@ class OrchestrationEngine:
 
                 # Record step completion
                 step_duration = round(time.time() - step_start_time, 2)
-                run.step_history.append({
+                end_step(run.step_history, {
                     "step_id": step.id,
                     "step_name": step.name,
                     "step_type": step.type.value,
@@ -496,7 +496,7 @@ class OrchestrationEngine:
                 # to learn whether it was a 401 or a KeyError.
                 safe_error = "An internal error occurred while executing this step."
                 real_error = f"{type(e).__name__}: {str(e)[:300]}"
-                run.step_history.append({
+                end_step(run.step_history, {
                     "step_id": step.id,
                     "step_name": step.name,
                     "step_type": step.type.value,
@@ -966,15 +966,23 @@ class OrchestrationEngine:
         if parent_step and parent_step.output_key:
             run.shared_state[parent_step.output_key] = final_response
 
-        # Record agent step completion in history
-        import time as _time
-        run.step_history.append({
-            "step_id": step_id,
-            "step_name": parent_step.name if parent_step else "",
-            "step_type": "agent",
-            "status": "completed",
-            "ended_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-        })
+        # The step's pause entry is its one entry: closed where it stands, with
+        # no duration — the time was a person's, spent in the sub-run. Appending
+        # a second left the first `paused` for ever, and cloud priced both.
+        ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for entry in reversed(run.step_history):
+            if entry.get("step_id") == step_id and entry.get("status") == "paused":
+                entry["status"] = "completed"
+                entry["ended_at"] = ended_at
+                break
+        else:
+            run.step_history.append({
+                "step_id": step_id,
+                "step_name": parent_step.name if parent_step else "",
+                "step_type": "agent",
+                "status": "completed",
+                "ended_at": ended_at,
+            })
 
         # Clear nested context; the caller moves the parent on.
         run.nested_run_id = None

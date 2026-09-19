@@ -75,3 +75,23 @@ def innermost_container(position: str, chain: list[dict]) -> str:
     """The container holding the step that asked — `position` itself at one level."""
     containers = [position] + [p["step_id"] for p in chain[:-1]]
     return containers[-1]
+
+
+def end_step(step_history: list, entry: dict) -> None:
+    """Record a step's end: close the entry it has open, or add one.
+
+    A step re-entered after its tool call was approved already has an entry —
+    the pause's, reopened `running` by the resume. Its end closes that entry
+    instead of adding a second, so a step that ran once has one entry: that is
+    what a run's timeline shows and what cloud prices (F109). The entry keeps
+    its start; its duration is this execution's, never the person's wait.
+    """
+    for existing in reversed(step_history):
+        if (isinstance(existing, dict) and existing.get("step_id") == entry.get("step_id")
+                and existing.get("status") == "running"):
+            started_at = existing.get("started_at")
+            existing.update(entry)
+            if started_at:
+                existing["started_at"] = started_at
+            return
+    step_history.append(entry)
