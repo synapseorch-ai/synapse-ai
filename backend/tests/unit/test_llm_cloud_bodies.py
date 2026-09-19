@@ -281,3 +281,17 @@ class TestAnInferenceProfileIsAModel:
                                    "sys", "us-east-1", {})
         assert "pick an inference profile as the model" in str(exc.value)
         assert "no longer applied" not in str(exc.value)
+
+
+def test_the_retired_profile_setting_is_gone_from_the_model_and_the_defaults():
+    """F66, the last half. A profile is picked as a model now, and both Models
+    screens have stopped writing the workspace-wide override (OSS batch 2, cloud
+    batch 4), so nothing sets it. A value stored earlier stays in the store —
+    the tenant settings are overlaid without the model — which is what lets the
+    on-demand refusal above still name it."""
+    from core.config import default_settings
+    from core.models import Settings
+
+    assert "bedrock_inference_profile" not in Settings.model_fields
+    assert "bedrock_inference_profile" not in default_settings()
+

@@ -141,7 +141,6 @@ _DEFAULTS = {
         "codex_cli_models": "",
         "github_copilot_cli_models": "",
         "bedrock_api_key": "",
-        "bedrock_inference_profile": "",
         "embedding_model": "",
         "aws_access_key_id": "",
         "aws_secret_access_key": "",
