@@ -1045,6 +1045,13 @@ class ParallelStepExecutor:
         )
 
         # ── Concurrent branches: one task each, events through a queue ──
+        # A branch that raises fails the node — and so the run — once its
+        # siblings have finished (F88, D112). It used to be that branch's own
+        # problem: reported, and the run moved on with the merge working from
+        # what arrived, while the same step in a sequential branch failed the
+        # run. The siblings are let finish rather than cancelled, so what they
+        # did is kept for a Replay, which reruns only the branch that failed.
+        failures: list[str] = []
         if concurrent:
             _log.debug(f"PARALLEL: ├─ running {len(concurrent)} tool-free branch(es) concurrently")
             queue: asyncio.Queue = asyncio.Queue()
@@ -1053,9 +1060,10 @@ class ParallelStepExecutor:
                 try:
                     async for ev in self._iter_branch(branch_index, chain, **branch_kwargs):
                         await queue.put(ev)
-                except Exception as e:  # noqa: BLE001 — one branch's failure is its own
-                    await queue.put({"type": "step_error", "orch_step_id": step.id,
-                                     "error": f"Branch {branch_index} failed: {type(e).__name__}: {str(e)[:300]}"})
+                except Exception as e:  # noqa: BLE001 — recorded, raised once the others finish
+                    message = f"Branch {branch_index} failed: {type(e).__name__}: {str(e)[:300]}"
+                    failures.append(message)
+                    await queue.put({"type": "step_error", "orch_step_id": step.id, "error": message})
                 finally:
                     await queue.put(_BRANCH_DONE)
 
@@ -1074,6 +1082,12 @@ class ParallelStepExecutor:
                 for t in tasks:
                     if not t.done():
                         t.cancel()
+
+        if failures:
+            # Before any sequential branch starts: an agent or a tool has no
+            # business running for a node that has already failed.
+            raise RuntimeError(failures[0] if len(failures) == 1
+                               else f"{len(failures)} branches failed; first: {failures[0]}")
 
         # ── Sequential branches: agents and tools, one at a time as before ──
         for branch_index, chain in sequential:
@@ -1130,6 +1144,7 @@ class ParallelStepExecutor:
             # active and breaks the engine's own scope exit (issue #356
             # family). Same pattern as the loop executor.
             pending_human_event = None
+            failed = False
             sub_gen = executor.execute(sub_step, run, engine)
             try:
                 with anyio.fail_after(sub_timeout):
@@ -1137,6 +1152,8 @@ class ParallelStepExecutor:
                         if event.get("type") == "human_input_required":
                             pending_human_event = event
                             break
+                        if event.get("type") == "step_error":
+                            failed = True
                         yield event
             except TimeoutError:
                 with anyio.CancelScope(shield=True):
@@ -1164,9 +1181,11 @@ class ParallelStepExecutor:
 
             duration = round(time.time() - step_start, 2)
             _log.debug(f"PARALLEL: ✓ sub-step '{sub_step.name}' done in {duration}s")
+            # A step that reported an error is recorded as failed, as a loop body
+            # records it (F88); it was recorded `completed`.
             end_step(run.step_history, {
                 "step_id": sub_step.id, "step_name": sub_step.name,
-                "step_type": sub_step.type.value, "status": "completed",
+                "step_type": sub_step.type.value, "status": "failed" if failed else "completed",
                 "started_at": _iso(step_start), "ended_at": _iso(time.time()),
                 "duration_seconds": duration, "output_key": sub_step.output_key,
             })

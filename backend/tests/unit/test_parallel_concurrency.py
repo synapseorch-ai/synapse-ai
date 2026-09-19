@@ -124,33 +124,116 @@ class TestBranchesWithSharedResourcesStaySequential:
         assert state["o_ag"] == "agent done" and state["o_a"] == state["o_b"] == "branch output"
 
 
-class TestOneBranchFailingIsItsOwnProblem:
-    async def test_the_others_finish_and_the_run_moves_on(self, slow_llm):
-        from core.models_orchestration import Orchestration, StepType
-        from core.orchestration.engine import OrchestrationEngine
+class _FlakyLLM:
+    """The real LLM executor, except that step `b` raises (while `fail` is set)."""
+
+    def __init__(self):
+        from core.models_orchestration import StepType
         from core.orchestration import steps as steps_mod
+        self.real = steps_mod.STEP_EXECUTORS[StepType.LLM]
+        self.fail = True
 
-        real_llm = steps_mod.STEP_EXECUTORS[StepType.LLM]
+    async def execute(self, step, run, engine):
+        if step.id == "b" and self.fail:
+            raise RuntimeError("provider exploded")
+        async for ev in self.real.execute(step, run, engine):
+            yield ev
 
-        class FlakyLLM:
-            async def execute(self, step, run, engine):
-                if step.id == "b":
-                    raise RuntimeError("provider exploded")
-                async for ev in real_llm.execute(step, run, engine):
-                    yield ev
 
+def _flaky_engine(orch, flaky):
+    from core.models_orchestration import Orchestration, StepType
+    from core.orchestration.engine import OrchestrationEngine
+    engine = OrchestrationEngine(Orchestration.model_validate(orch), _server())
+    engine.executors = {**engine.executors, StepType.LLM: flaky}
+    return engine
+
+
+class TestAFailedBranchFailsTheRun:
+    """F88 (Naveen, D112). A step raising in a concurrent branch used to be that
+    branch's own problem — reported, and the run moved on with the merge working
+    from what arrived — while the same step in a sequential branch failed the
+    run. Both now fail it; the concurrent siblings still finish first, so their
+    work is kept for a Replay, which reruns only the branch that failed."""
+
+    async def test_the_others_finish_and_the_run_fails(self, slow_llm):
         orch = _fanout([_llm("a"), _llm("b"), _llm("c")])
-        engine = OrchestrationEngine(Orchestration.model_validate(orch), _server())
-        engine.executors = {**engine.executors, StepType.LLM: FlakyLLM()}
-        events = await _run(orch, engine=engine)
+        events = await _run(orch, engine=_flaky_engine(orch, _FlakyLLM()))
 
         errors = [e for e in events if e.get("type") == "step_error"]
         assert any("provider exploded" in e["error"] for e in errors)
-        assert any(e.get("type") == "orchestration_complete" for e in events)
-        state = _final(events)
-        assert state["o_a"] == state["o_c"] == "branch output"
+        complete = next(e for e in events if e.get("type") == "orchestration_complete")
+        assert complete["status"] == "failed"
+        state = complete["final_state"]
+        assert state["o_a"] == state["o_c"] == "branch output", "the siblings finished"
         assert "o_b" not in state
-        assert "joined" in state   # the merge still ran with what arrived
+        assert "joined" not in state, "the merge does not run on what arrived"
+
+    async def test_a_sequential_branch_does_not_start_after_one_failed(self, slow_llm, monkeypatch):
+        import core.react_engine as re_mod
+        started = []
+
+        async def agent(**kwargs):
+            started.append(kwargs.get("agent_id"))
+            yield {"type": "final", "response": "agent done"}
+
+        monkeypatch.setattr(re_mod, "run_agent_step", agent)
+        await S.seed_agents([S.make_agent(id="a1")])
+        agent_step = {"id": "ag", "name": "Agent", "type": "agent", "agent_id": "a1",
+                      "prompt_template": "x", "output_key": "o_ag", "next_step_id": None}
+        orch = _fanout([_llm("a"), _llm("b"), agent_step])
+        events = await _run(orch, engine=_flaky_engine(orch, _FlakyLLM()))
+
+        assert next(e for e in events if e.get("type") == "orchestration_complete")["status"] == "failed"
+        assert started == [], "a branch started after the run had already failed"
+
+    async def test_a_replay_reruns_only_the_branch_that_failed(self, slow_llm):
+        from core.orchestration.engine import OrchestrationEngine
+        orch = _fanout([_llm("a"), _llm("b"), _llm("c")])
+        await S.seed_orchestrations([orch])
+        flaky = _FlakyLLM()
+        await _run(orch, run_id="run_par_replay", engine=_flaky_engine(orch, flaky))
+
+        flaky.fail = False
+        import core.orchestration.steps as steps_mod
+        from core.models_orchestration import StepType
+        real = steps_mod.STEP_EXECUTORS[StepType.LLM]
+        steps_mod.STEP_EXECUTORS[StepType.LLM] = flaky
+        try:
+            events = [e async for e in OrchestrationEngine.resume_failed("run_par_replay", _server())]
+        finally:
+            steps_mod.STEP_EXECUTORS[StepType.LLM] = real
+
+        started = [e["orch_step_id"] for e in events if e.get("type") == "step_start"
+                   and e["orch_step_id"] in {"a", "b", "c"}]
+        assert started == ["b"]
+        complete = next(e for e in events if e.get("type") == "orchestration_complete")
+        assert complete["status"] == "completed"
+        assert len(complete["final_state"]["joined"]) == 3
+
+
+class TestABranchStepThatReportsAnError:
+    async def test_is_recorded_failed_not_completed(self):
+        """A step that reports `step_error` without raising was recorded
+        `completed` in a branch — where a loop body recorded it `failed` (F88)."""
+        from core.models_orchestration import Orchestration, StepType
+        from core.orchestration.engine import OrchestrationEngine
+        from core.orchestration.state import SharedState
+
+        class Reports:
+            async def execute(self, step, run, engine):
+                yield {"type": "step_error", "orch_step_id": step.id, "error": "reported"}
+
+        orch = S.make_orchestration(entry_step_id="par", steps=[
+            {"id": "par", "name": "Par", "type": "parallel", "parallel_branches": [["bad"]],
+             "next_step_id": None},
+            {"id": "bad", "name": "Bad", "type": "tool", "forced_tool": "t", "output_key": "b",
+             "next_step_id": None}])
+        engine = OrchestrationEngine(Orchestration.model_validate(orch), _server())
+        engine.executors = {**engine.executors, StepType.TOOL: Reports()}
+        [e async for e in engine.run("go", run_id="run_par_reported")]
+
+        history = (await SharedState.restore("run_par_reported")).run.step_history
+        assert [(h["step_id"], h["status"]) for h in history if h["step_id"] == "bad"] == [("bad", "failed")]
 
 
 class TestCrashRecoveryStillHolds:
