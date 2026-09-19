@@ -59,6 +59,11 @@ def _start(request: ChatRequest, resume_state: dict | None = None, *,
 def _read(turn: chat_turns.ChatTurn, after: int = 0):
     """The turn's events for one reader, each with its cursor."""
     async def body():
+        # A comment first, so the response opens at once. Nothing is flushed —
+        # headers included — before the first byte, and a reader joining a turn
+        # inside a long model call would otherwise wait out a heartbeat to learn
+        # it had reconnected.
+        yield chat_turns.HEARTBEAT
         async for item in chat_turns.read(turn, after):
             yield item if isinstance(item, str) else chat_turns.frame(turn, item)
     return body()
