@@ -488,3 +488,52 @@ class TestARedeliveredAnswerInALoop:
         assert _results(run.shared_state["answer"]) == ["yes"]
         assert [h["status"] for h in _entries(run, "ask")] == ["completed"]
         assert run.shared_state["o_tail"] == "tail"
+
+
+# ── runs paused before F109 ──────────────────────────────────────────────────
+async def _as_before_f109(run_id: str, *, fleet: bool) -> None:
+    """Rewrite a paused loop run into the shape a pre-F109 build left.
+
+    Both shapes dropped the loop's progress at the pause and left its iteration
+    markers in the checkpoint; the engine's history entry named the loop. The
+    fleet then overwrote the position with the step that asked.
+    """
+    from core.orchestration.state import SharedState
+    run = await _run(run_id)
+    for entry in run.step_history:
+        if entry.get("status") == "paused":
+            entry.update({"step_id": "loop1", "step_name": "LOOP1", "step_type": "loop"})
+            entry.pop("within", None)
+    run.shared_state.pop("_loop_progress_loop1", None)
+    run.shared_state.update({"_loop_current_iteration": 1, "_loop_total": 2})
+    run.current_step_id = "ask" if fleet else "loop1"
+    await SharedState(run).checkpoint()
+
+
+class TestARunPausedBeforeF109:
+    """Its place in the loop was never kept, so it cannot carry on inside. It
+    resumes past the loop, as a pre-F109 in-process run did — where the fleet's
+    shape used to end the run at the step that asked."""
+
+    @pytest.mark.parametrize("fleet_shape", [True, False], ids=["fleet-shape", "engine-shape"])
+    async def test_it_resumes_past_the_loop(self, driver, fleet_shape):
+        orch = S.make_orchestration(id="orch_hold", entry_step_id="loop1", steps=[
+            _loop("loop1", ["ask", "after"], nxt="tail"), _human("ask"), _print("after"),
+            _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+        assert await driver.start(orch, "run_hold") == "paused"
+        await _as_before_f109("run_hold", fleet=fleet_shape)
+
+        assert await driver.answer("run_hold", "yes") == "completed"
+
+        run = await _run("run_hold")
+        assert run.shared_state["o_tail"] == "tail", "the loop's next step ran"
+        assert run.shared_state["human_response"] == "yes"
+        assert not [h for h in run.step_history if h.get("status") == "paused"]
+        assert not any(k in run.shared_state for k in ("_loop_current_iteration", "_loop_total"))
+        if fleet_shape:
+            # The loop's open entry was the wait: closed as the human step's.
+            assert [(h["status"], h["step_type"], h.get("within")) for h in _entries(run, "ask")] == [
+                ("completed", "human", "loop1")]
+            assert run.shared_state["answer"] == "yes"

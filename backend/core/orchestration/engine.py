@@ -14,7 +14,7 @@ from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_STEP_TIMEOUT
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
-from .pauses import innermost_container, pause_chain
+from .pauses import innermost_container, pause_chain, progress_key
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .logger import OrchestrationLogger
@@ -729,8 +729,7 @@ class OrchestrationEngine:
         # Where the run waits. At the top level the step that asked is the
         # position; inside a container the position is the container, and the
         # containers' pause records lead in to the step that asked.
-        chain = pause_chain(self.step_map, run.shared_state, run.current_step_id)
-        asker_id = chain[-1]["step_id"] if chain else run.current_step_id
+        chain, asker_id, resume_past = self._pause_position(run)
         asker = self.step_map.get(asker_id)
         _log.debug(f"[engine.resume] 🔍 position={run.current_step_id!r} asker={asker_id!r} found={asker is not None} type={asker.type.value if asker else 'N/A'} depth_in={len(chain)}")
 
@@ -777,8 +776,8 @@ class OrchestrationEngine:
             # container outside it re-enters its own record (F109). The position
             # stays on the outermost, which is where `_execute_loop` starts.
             chain[-1]["answered"] = True
-        elif answered and asker:
-            next_id, resume_events = self._resolve_next(asker, run)
+        elif answered and (done_with := self.step_map.get(resume_past) if resume_past else asker):
+            next_id, resume_events = self._resolve_next(done_with, run)
             run.current_step_id = next_id
             # A routing decision, a loop_limit_reached, or both. Dropping them
             # meant a run that hit its iteration cap on the step right after a
@@ -1259,6 +1258,48 @@ class OrchestrationEngine:
             return fallback, loop_event
 
         return next_id, None
+
+    def _pause_position(self, run: OrchestrationRun) -> tuple[list[dict], str | None, str | None]:
+        """Where a paused run waits: the containers' pause records, the step
+        that asked, and — for a run paused before F109 — a container to resume
+        past.
+
+        A pause inside a container is a chain of records leading in from the
+        position to the step that asked (`pauses.pause_chain`). A run paused
+        before those records existed has none, and its place in the container
+        is lost, so it resumes past the container instead of inside it. Its
+        shape says which build paused it:
+        - in-process, the position and the history entry both name the
+          container, which is answered and stepped past as it always was;
+        - on a fleet, the adapter had moved the position to the step that
+          asked, while the entry names the container. The run used to end at
+          that step. Now the entry — which is the wait — becomes the step's
+          own, closed typed as the step, and the run goes on past the
+          container. Not for a tool call's approval: that step is re-entered
+          where it stands, as before.
+        """
+        chain = pause_chain(self.step_map, run.shared_state, run.current_step_id)
+        if chain:
+            return chain, chain[-1]["step_id"], None
+        # No container holds a pause, so no loop is mid-iteration: markers in
+        # the state were left by a pre-F109 pause, checkpointed before the loop
+        # could put them back.
+        run.shared_state.pop("_loop_current_iteration", None)
+        run.shared_state.pop("_loop_total", None)
+        here = run.current_step_id
+        entry = next((e for e in reversed(run.step_history)
+                      if isinstance(e, dict) and e.get("status") == "paused"), None)
+        waited_in = entry.get("step_id") if entry else None
+        step = self.step_map.get(here)
+        if (step is not None and waited_in and waited_in != here
+                and progress_key(self.step_map.get(waited_in))
+                and not (run.step_progress.get(here) or {}).get("pending_approval")):
+            entry.update({"step_id": step.id, "step_name": step.name,
+                          "step_type": step.type.value, "output_key": step.output_key,
+                          "within": waited_in})
+            run.current_step_id = waited_in
+            return [], here, waited_in
+        return [], here, None
 
     def _paused_entry(self, run: OrchestrationRun, step: StepConfig, event: dict,
                       step_start_time: float) -> dict:
