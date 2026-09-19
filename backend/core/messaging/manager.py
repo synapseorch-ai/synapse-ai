@@ -424,7 +424,9 @@ async def question_expired(run_id: str, *, now: Optional[float] = None) -> bool:
     answer, and the run keeps waiting for one in the app. The window runs from
     the pause — the `paused` entry the engine writes to `step_history` — and is
     measured on the run whose human step asked: a parent paused on a nested
-    orchestration hands over to that sub-run, whose pause is its own.
+    orchestration hands over to that sub-run, whose pause is its own. The
+    entry, not the run's position, names the step: inside a Loop or a Parallel
+    branch the position is the container.
 
     A question whose pause or step cannot be read is not expired: the reply is
     answered, as it was before there was a window at all.
@@ -435,6 +437,7 @@ async def question_expired(run_id: str, *, now: Optional[float] = None) -> bool:
     from sqlalchemy import select
 
     from core.config import ORCH_HUMAN_TIMEOUT
+    from core.orchestration.pauses import asking_step_id
     from core.scale.context import resolve_orchestration
     from core.store import session
     from core.store.models import OrchestrationRunDB
@@ -456,9 +459,12 @@ async def question_expired(run_id: str, *, now: Optional[float] = None) -> bool:
     if row is None or not row.current_step_id:
         return False
 
+    # The step that asked, which inside a Loop or a Parallel branch is not the
+    # run's position — that is the container (F109).
+    asked_by = asking_step_id(row.step_history, row.current_step_id)
     paused_at = None
     for entry in reversed(row.step_history or []):
-        if entry.get("step_id") == row.current_step_id and entry.get("status") == "paused":
+        if entry.get("step_id") == asked_by and entry.get("status") == "paused":
             try:
                 paused_at = calendar.timegm(time.strptime(entry.get("started_at") or "", "%Y-%m-%dT%H:%M:%SZ"))
             except ValueError:
@@ -468,7 +474,7 @@ async def question_expired(run_id: str, *, now: Optional[float] = None) -> bool:
         return False
 
     orch = await resolve_orchestration(row.orchestration_id) or {}
-    step = next((st for st in orch.get("steps") or [] if st.get("id") == row.current_step_id), None)
+    step = next((st for st in orch.get("steps") or [] if st.get("id") == asked_by), None)
     if step is None:
         return False
     window = float(step.get("human_timeout_seconds") or ORCH_HUMAN_TIMEOUT)

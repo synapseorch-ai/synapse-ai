@@ -272,6 +272,26 @@ class TestAQuestionExpires:
         assert wired.adapter.sent == ["✅ Answer received — resuming the workflow."]
         assert (await _settled("run_prompt")).shared_state["approval"] == "yes"
 
+    async def test_a_question_asked_in_a_loop_goes_by_its_own_step(self, wired, fake_llm):
+        """The run's position is the loop and the pause entry is the human
+        step's (F109): the window is the step's, read from its entry. Matching
+        the entry on the position found nothing, so the question never expired."""
+        asking = _asking_briefly("orch_loopq", wired.channel["id"])["steps"]
+        loop = S.make_orchestration(id="orch_loopq", entry_step_id="loop1", steps=[
+            {"id": "loop1", "name": "Each", "type": "loop", "loop_count": 2,
+             "loop_step_ids": ["h"], "next_step_id": None},
+            {**asking[0], "next_step_id": None},
+        ])
+        await _run_to_pause(loop, wired.server, "run_loopq")
+        assert (await _run("run_loopq")).current_step_id == "loop1"
+        await _asked_seconds_ago("run_loopq", 120)
+
+        await wired.adapter._dispatch("c1", "yes", "u1")
+
+        from core.messaging.base import QUESTION_EXPIRED_MESSAGE
+        assert wired.adapter.sent == [QUESTION_EXPIRED_MESSAGE]
+        assert (await _run("run_loopq")).status == "paused"
+
     async def test_a_nested_question_goes_by_the_sub_runs_own_pause(self, wired, fake_llm):
         child = _asking_briefly("orch_child3", wired.channel["id"])
         parent = S.make_orchestration(id="orch_outer3", entry_step_id="s", steps=[
