@@ -83,7 +83,41 @@ def _format_history(history: list[dict]) -> str:
     return "\n".join(f"{m.get('role', 'user')}: {m.get('content', '')}" for m in history)
 
 
-async def _target_state(message: str, viewing_id: str | None) -> dict:
+async def _previous_matches(session_id: str) -> str:
+    """What the previous turn of this conversation asked about, if it asked.
+
+    When a turn could not tell which orchestration was meant, its state lists
+    the candidates; the next message in the same conversation is resolved
+    against that list, so "the second one" is an answer (F16). Only the newest
+    turn counts: a question two turns back has been answered or dropped since.
+    """
+    from sqlalchemy import select
+
+    from core.native_builder.target import AMBIGUOUS
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        state = (
+            await s.execute(
+                select(OrchestrationRunDB.shared_state)
+                .where(
+                    OrchestrationRunDB.tenant_id == get_tenant(),
+                    OrchestrationRunDB.session_id == session_id,
+                )
+                .order_by(OrchestrationRunDB.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none() or {}
+    if state.get("current_orchestration_source") != AMBIGUOUS:
+        return ""
+    return str(state.get("current_orchestration_matches") or "")
+
+
+async def _target_state(
+    message: str, viewing_id: str | None, previous_matches: str = ""
+) -> dict:
     """Which orchestration this message is about, as the run's state keys.
 
     This passed an id through if it existed, which let the builder's own
@@ -98,7 +132,7 @@ async def _target_state(message: str, viewing_id: str | None) -> dict:
     from core.store.resources import load_orchestrations
 
     visible = [o for o in await load_orchestrations() if _is_visible(o)]
-    target = resolve_target(message, viewing_id, visible)
+    target = resolve_target(message, viewing_id, visible, previous_matches)
     viewing = next((o for o in visible if viewing_id and o["id"] == viewing_id), None)
     page = describe_page("orchestration", viewing.get("name", ""), viewing["id"]) if viewing else ""
     return {**target.state(), "current_page": page}
@@ -189,7 +223,11 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module):
         "chat_history": _format_history(request.history),
         "selected_agent_ids": list(request.selected_agent_ids or []),
         "can_create_agents": bool(request.can_create_agents),
-        **await _target_state(request.message, request.current_orchestration_id),
+        **await _target_state(
+            request.message,
+            request.current_orchestration_id,
+            await _previous_matches(_session_id(request.client_session_id)),
+        ),
         "org_profile": await _workspace_profile(),
         "requirements": "",
         "human_response": {},

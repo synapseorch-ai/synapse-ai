@@ -15,6 +15,7 @@ from __future__ import annotations
 from core.native_builder.target import (
     AMBIGUOUS,
     NAMED,
+    PICKED,
     TARGET_KEYS,
     VIEWING,
     describe_page,
@@ -101,6 +102,67 @@ class TestAnUnclearTarget:
         assert "orch_res" in state["current_orchestration_matches"]
         assert "orch_weekly" in state["current_orchestration_matches"]
 
+
+
+TWINS = [*ROWS, {"id": "orch_ext_2", "name": "Extended Research"}]
+#: What the previous turn asked about: two orchestrations with one name.
+ASKED = resolve_target("update the extended research orchestration", None, TWINS).matches
+
+
+class TestAReplyToTheQuestion:
+    """F16. The builder asked which one; the next message answers it.
+
+    Measured on cloud dev before this: "the second one" reached the router with
+    no target and no history, was routed to `answer`, and nothing was changed.
+    The reply picks only from the list it answers, and only when it is nothing
+    but the choice — otherwise the builder asks again, as D93 decided.
+    """
+
+    def test_an_ordinal_picks_from_the_list_it_answers(self):
+        assert [m.split(" (")[1].split(")")[0] for m in ASKED] == ["orch_ext", "orch_ext_2"]
+        for reply, want in (
+            ("the second one", "orch_ext_2"),
+            ("2", "orch_ext_2"),
+            ("#1", "orch_ext"),
+            ("I mean the first", "orch_ext"),
+            ("the 2nd please", "orch_ext_2"),
+            ("the last one", "orch_ext_2"),
+        ):
+            target = resolve_target(reply, None, TWINS, previous_matches=ASKED)
+            assert (target.id, target.source) == (want, PICKED), reply
+
+    def test_the_stored_text_of_the_list_works_as_well(self):
+        text = resolve_target("update the extended research orchestration", None, TWINS).state()[
+            "current_orchestration_matches"
+        ]
+        assert resolve_target("the second one", None, TWINS, previous_matches=text).id == "orch_ext_2"
+
+    def test_a_candidate_named_in_full_is_picked_though_another_is_open(self):
+        asked = resolve_target(
+            "update the extended research orchestration to use a loop", "orch_weekly", ROWS
+        ).matches
+        target = resolve_target("extended research", "orch_weekly", ROWS, previous_matches=asked)
+        assert (target.id, target.source) == ("orch_ext", PICKED)
+
+    def test_a_message_that_is_more_than_a_choice_is_not_one(self):
+        target = resolve_target("add 2 steps to it", None, TWINS, previous_matches=ASKED)
+        assert (target.id, target.source) == ("", "")
+
+    def test_an_ordinal_past_the_list_picks_nothing(self):
+        assert resolve_target("the third one", None, TWINS, previous_matches=ASKED).id == ""
+
+    def test_a_candidate_deleted_since_is_not_picked(self):
+        target = resolve_target("the second one", None, ROWS, previous_matches=ASKED)
+        assert (target.id, target.source) == ("", "")
+
+    def test_without_a_question_an_ordinal_means_nothing(self):
+        assert resolve_target("the second one", None, TWINS).state() == NOTHING
+
+    def test_the_state_says_it_was_picked(self):
+        state = resolve_target("2", None, TWINS, previous_matches=ASKED).state()
+        assert state["current_orchestration_source"] == PICKED
+        assert state["current_orchestration_name"] == "Extended Research"
+        assert state["current_orchestration_matches"] == ""
 
 class TestNothingToGoOn:
     def test_no_page_and_no_name(self):

@@ -541,6 +541,37 @@ class TestTheBuilderKnowsWhatYouMean:
         })
         assert state["current_orchestration_id"] == ""
 
+    async def test_a_reply_picks_from_the_list_the_last_turn_asked_about(
+        self, client, builder, fake_llm
+    ):
+        """F16. The builder asked which one; "the second one" answers it, and the
+        router sees the conversation the request was made in."""
+        await self._orchestration("orch_ext", "extended research")
+        await self._orchestration("orch_ext_2", "Extended Research")
+        first = await self._final_state(client, fake_llm, {"message": self.MESSAGE, "client_session_id": "pick"})
+        assert first["current_orchestration_source"] == "ambiguous"
+
+        fake_llm.reset()
+        second = await self._final_state(client, fake_llm, {
+            "message": "the second one", "client_session_id": "pick",
+            "history": [{"role": "user", "content": self.MESSAGE},
+                        {"role": "assistant", "content": "Which one did you mean?"}],
+        })
+        assert (second["current_orchestration_id"], second["current_orchestration_source"]) == (
+            "orch_ext_2", "picked",
+        )
+        assert f"[chat_history]:\nuser: {self.MESSAGE}" in fake_llm.calls[0]["prompt_msg"]
+
+    async def test_another_conversation_does_not_answer_the_question(
+        self, client, builder, fake_llm
+    ):
+        await self._orchestration("orch_ext", "extended research")
+        await self._orchestration("orch_ext_2", "Extended Research")
+        await self._final_state(client, fake_llm, {"message": self.MESSAGE, "client_session_id": "one"})
+        fake_llm.reset()
+        other = await self._final_state(client, fake_llm, {"message": "the second one", "client_session_id": "two"})
+        assert other["current_orchestration_id"] == ""
+
     async def test_an_ambiguous_name_resolves_nothing(self, client, builder, fake_llm):
         await self._orchestration("orch_ext", "extended research")
         await self._orchestration("orch_ext_2", "Extended Research")

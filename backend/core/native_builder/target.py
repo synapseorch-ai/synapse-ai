@@ -16,6 +16,12 @@ tenant's, a draft that was never saved: not in the list, so never a target.
 When the signals disagree, or a name fits two orchestrations, nothing resolves
 and the router sends the message to `answer`, which asks. Guessing wrong here
 edits someone's workflow they did not mean to touch.
+
+The next message can answer that question (F16). Given the list the previous
+turn asked about, a reply that is nothing but a choice — "the second one",
+"2" — or that names exactly one of those candidates resolves to it, as
+`picked`, even with another orchestration open: the person has now said which.
+Anything else is resolved as if nothing had been asked.
 """
 from __future__ import annotations
 
@@ -27,6 +33,9 @@ from dataclasses import dataclass
 VIEWING = "viewing"
 NAMED = "named"
 AMBIGUOUS = "ambiguous"
+#: Chosen from the list the previous turn asked about. The request itself is
+#: that turn's — the router reads it from `chat_history`.
+PICKED = "picked"
 
 #: The state keys this module fills. Declared in the seed's `state_schema`; the
 #: commercial edition sets them from its own RLS-scoped rows.
@@ -102,17 +111,76 @@ def _line(row: Mapping, why: str) -> str:
     return f"{row.get('name') or row['id']} ({row['id']}) — {why}"
 
 
+def _ids_in(lines: Iterable[str]) -> list[str]:
+    """The ids in a previous turn's matches, in the order it listed them."""
+    out = []
+    for line in lines:
+        found = re.search(r"\(([^()\s]+)\)\s*$", line.rsplit(" — ", 1)[0])
+        if found:
+            out.append(found.group(1))
+    return out
+
+
+_ORDINALS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+}
+#: Words a bare choice comes wrapped in. Anything else in the reply makes it a
+#: request rather than a pick: "add 2 steps" is not "2".
+_FILLER = frozenset(
+    "the one please i m mean its it is number no option pick choose that ok okay yes go with use".split()
+)
+
+
+def _ordinal(message: str, count: int) -> int | None:
+    """The 0-based position a reply like "the second one" or "#2" picks, or None."""
+    words = [w for w in _words(message).split() if w not in _FILLER]
+    if len(words) != 1:
+        return None
+    word = words[0]
+    if word == "last":
+        n = count
+    elif word.isdigit():
+        n = int(word)
+    elif re.fullmatch(r"\d+(st|nd|rd|th)", word):
+        n = int(word[:-2])
+    else:
+        n = _ORDINALS.get(word, 0)
+    return n - 1 if 1 <= n <= count else None
+
+
 def resolve_target(
-    message: str, viewing_id: str | None, visible: Iterable[Mapping]
+    message: str,
+    viewing_id: str | None,
+    visible: Iterable[Mapping],
+    previous_matches: Iterable[str] | str = (),
 ) -> Target:
     """The orchestration `message` is about, from what is open and what is named.
 
     `visible` rows need `id` and `name`, and must already exclude everything the
-    builder may not touch.
+    builder may not touch. `previous_matches` is the list the previous turn of
+    this conversation asked about (its `current_orchestration_matches`, as lines
+    or as the stored text), or nothing when that turn was not a question.
     """
     rows = [row for row in visible if row.get("id")]
     viewing = next((row for row in rows if row["id"] == viewing_id), None) if viewing_id else None
     named = _named(message, rows)
+
+    asked = _ids_in(
+        previous_matches.splitlines() if isinstance(previous_matches, str) else previous_matches
+    )
+    if asked:
+        by_id = {row["id"]: row for row in rows}
+        picked = None
+        if named:
+            if len(named) == 1 and named[0]["id"] in asked:
+                picked = named[0]
+        else:
+            index = _ordinal(message, len(asked))
+            if index is not None:
+                picked = by_id.get(asked[index])
+        if picked is not None:
+            return Target(picked["id"], str(picked.get("name") or ""), PICKED)
 
     if not named:
         if viewing is None:
