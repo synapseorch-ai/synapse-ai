@@ -432,7 +432,7 @@ kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.13.0/keda
                                     {[
                                         ['WORKER_CONCURRENCY', '10 — max parallel jobs per worker'],
                                         ['WORKER_JOB_TIMEOUT', '3600 — seconds before a job times out'],
-                                        ['WORKER_MAX_RETRIES', '3 — times a job cut off by a stopping worker is handed out again; each resumes from its checkpoint'],
+                                        ['WORKER_MAX_RETRIES', '3 — tries a job gets when a stopping worker cuts it off; each resumes from its checkpoint, and after the last the run is failed and dead-lettered'],
                                         ['WORKER_HEALTH_PORT', '9000 — HTTP health endpoint port'],
                                     ].map(([k, v]) => (
                                         <div key={k} className="flex gap-3 py-1.5 border-b border-border/50">

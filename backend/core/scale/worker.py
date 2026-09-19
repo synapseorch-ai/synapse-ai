@@ -38,6 +38,26 @@ _worker_address: str = ""
 _active_jobs: int = 0        # approximate counter updated by jobs
 
 
+#: What a chat turn handed out again says instead of running again (F89).
+INTERRUPTED_TURN = (
+    "This reply was interrupted by a restart before it finished, and was not run again: "
+    "anything it had already started may have happened. Send your message again if you "
+    "still want it."
+)
+
+
+def job_retries(ctx: dict) -> int:
+    """How many deliveries a job gets to do its work: `WORKER_MAX_RETRIES` (3).
+
+    An embedder with its own setting puts it in the worker's `ctx` as
+    `job_retries` at startup. The worker's ARQ `max_tries` is one more than
+    this: ARQ fails a job past `max_tries` without calling it, so the extra
+    delivery is the one on which the job records that it gave up (F89).
+    """
+    configured = ctx.get("job_retries")
+    return int(configured) if configured else int(os.getenv("WORKER_MAX_RETRIES", "3"))
+
+
 def _get_active_jobs() -> int:
     return _active_jobs
 
@@ -125,6 +145,9 @@ async def run_orchestration_job(
     leased = False
 
     try:
+        if await _gave_up(ctx, "run_orchestration_job", run_id, orch_id):
+            return {"status": "failed", "run_id": run_id}
+
         # This tenant's MCP session set, from the bounded pool. It merges the
         # process-wide native servers with the tenant's own, so what the engine
         # sees is the shape `ctx["server_module"]` used to be — except that it
@@ -265,6 +288,9 @@ async def resume_orchestration_job(
     orch_id: str | None = None
 
     try:
+        if await _gave_up(ctx, "resume_orchestration_job", run_id, None):
+            return {"status": "failed", "run_id": run_id}
+
         # This tenant's MCP session set, from the bounded pool. It merges the
         # process-wide native servers with the tenant's own, so what the engine
         # sees is the shape `ctx["server_module"]` used to be — except that it
@@ -383,6 +409,9 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
     orch_id: str | None = None
 
     try:
+        if await _gave_up(ctx, "resume_failed_job", run_id, None):
+            return {"status": "failed", "run_id": run_id}
+
         # This tenant's MCP session set, from the bounded pool. It merges the
         # process-wide native servers with the tenant's own, so what the engine
         # sees is the shape `ctx["server_module"]` used to be — except that it
@@ -566,6 +595,23 @@ async def run_agent_chat_job(
         # there is nothing to trade away by doing them first. A wedged turn is
         # now a `running` row a staff console or a support reply can see.
         history = await _load_chat_history(session_factory, session_id, agent_id)
+
+        if ctx.get("job_try", 1) > 1:
+            # Handed out again: the first try was stopped mid-turn (a deploy, a
+            # worker shutting down). A chat turn has no checkpoint, so running
+            # it again started from scratch — and any tool it had already called
+            # ran twice (F89). It is not rerun: the turn says it was
+            # interrupted, and the person decides whether to send it again.
+            from core.scale.pubsub import ChatEventPublisher
+            publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl)
+            await publisher.publish({"type": "error", "message": INTERRUPTED_TURN})
+            await publisher.publish_done()
+            history.append({"role": "user", "content": message})
+            history.append({"role": "assistant", "content": INTERRUPTED_TURN})
+            await _upsert_chat_session(session_factory, session_id, agent_id, "failed", history)
+            _log.info(f"[worker] chat {session_id}: turn handed out again (try {ctx['job_try']}) — not rerun")
+            return {"status": "interrupted", "session_id": session_id}
+
         await _upsert_chat_session(session_factory, session_id, agent_id, "running", history)
 
         from core.scale.pubsub import ChatEventPublisher
@@ -922,7 +968,10 @@ class WorkerSettings:
     queue_name = QUEUE_NAME
     max_jobs = int(os.getenv("WORKER_CONCURRENCY", "10"))
     job_timeout = int(os.getenv("WORKER_JOB_TIMEOUT", "3600"))
-    max_tries = int(os.getenv("WORKER_MAX_RETRIES", "3"))
+    # One more than the retry policy: ARQ fails a job past `max_tries` without
+    # calling it, so the extra delivery is the one on which a job records that
+    # it gave up (`_gave_up`, F89).
+    max_tries = job_retries({}) + 1
     # On SIGTERM, stop taking jobs and give running ones this long to finish
     # before cancelling them. Unset, every job was cancelled at once. A job
     # still running at the end is cancelled, handed out again, and resumes
@@ -1099,7 +1148,28 @@ async def _deliver_webhook_for_run(
         _log.debug(f"[worker] webhook delivery failed for {run_id}: {e}")
 
 
-async def _dead_job(ctx: dict, job_function: str, run_id: str, orch_id: str | None, exc: Exception) -> None:
+async def _gave_up(ctx: dict, job_function: str, run_id: str, orch_id: str | None) -> bool:
+    """On the delivery past the retry policy: fail and dead-letter the run, not run it.
+
+    A job is handed out again only after the previous try was stopped — a worker
+    shutting down, a deploy, a kill. Once that has happened as often as the
+    policy allows, ARQ would fail the next delivery without calling us, and the
+    run stayed `running` with no dead letter until an API restart swept it. The
+    worker now takes one more delivery than the policy, and on it the job does
+    no work: the run is failed and dead-lettered, and Retry resumes it on purpose.
+    """
+    attempt = ctx.get("job_try", 1)
+    if attempt <= job_retries(ctx):
+        return False
+    await _dead_job(ctx, job_function, run_id, orch_id, RuntimeError(
+        f"Stopped {attempt - 1} times without finishing (the worker running it shut "
+        f"down or was killed each time), so it was not run again. Retry resumes it."
+    ), tb="")
+    return True
+
+
+async def _dead_job(ctx: dict, job_function: str, run_id: str, orch_id: str | None, exc: Exception,
+                    tb: str | None = None) -> None:
     """Record a job that died outside the engine: run failed, stream ended, dead-lettered.
 
     Every step is best-effort — this runs while an exception is on its way to
@@ -1110,7 +1180,7 @@ async def _dead_job(ctx: dict, job_function: str, run_id: str, orch_id: str | No
     alone: the resume that raised was refused because there was nothing to do.
     """
     session_factory = ctx["session_factory"]
-    tb = traceback.format_exc()
+    tb = traceback.format_exc() if tb is None else tb
     _log.warning(f"[worker] {job_function} died for run {run_id}: {exc}")
 
     try:
