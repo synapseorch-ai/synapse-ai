@@ -96,14 +96,16 @@ class TestToolStep:
         # The run terminates (complete or error) without an unhandled crash.
         assert "orchestration_complete" in types_seen or "orchestration_error" in types_seen
 
-    async def test_tool_step_without_forced_tool_warns(self, fake_llm):
+    async def test_tool_step_without_forced_tool_fails_the_run(self, fake_llm):
+        """It used to warn and let the run carry on without it (F90)."""
         orch = S.make_orchestration(
             entry_step_id="tl",
             steps=[{"id": "tl", "name": "Call", "type": "tool", "forced_tool": None,
                     "next_step_id": None}],
         )
         events, _ = await _run(orch, fake_llm, ["x"])
-        assert any(e.get("type") == "step_warning" for e in events)
+        complete = [e for e in events if e.get("type") == "orchestration_complete"]
+        assert complete and complete[-1]["status"] == "failed"
 
 
 class TestCancellation:

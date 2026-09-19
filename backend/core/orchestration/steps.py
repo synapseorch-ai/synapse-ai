@@ -395,6 +395,22 @@ class AgentStepExecutor:
         store_execution_memory(run, step, trace, agent_name, transition, inputs_snapshot)
 
 
+class ToolCallFailed(RuntimeError):
+    """A tool that ran and reported failure: an error, not the step's output (F90).
+
+    A Tool step used to hand a python tool's non-zero exit, an MCP result marked
+    `isError` and an HTTP tool's 4xx/5xx on as its result, and the run carried on.
+    `retryable` says whether other arguments might fix it — the step's attempts
+    are the model's to try again with. A server fault is not the model's to fix,
+    and re-sending a request that may already have had its effect could do the
+    thing twice.
+    """
+
+    def __init__(self, message: str, *, retryable: bool):
+        super().__init__(message)
+        self.retryable = retryable
+
+
 class ToolStepExecutor:
     """Single forced tool call — lightweight direct LLM call (no full agent/ReAct stack).
 
@@ -417,9 +433,11 @@ class ToolStepExecutor:
         from .resolved import resolve_for_run, run_custom_tools
 
         if not step.forced_tool:
-            yield {"type": "step_warning", "orch_step_id": step.id,
-                   "message": f"No tool configured for TOOL step '{step.name}'"}
-            return
+            # A step that cannot run is not a step that ran (F90): it used to
+            # warn and let the run carry on without it.
+            message = f"Tool step '{step.name}' has no tool configured"
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
 
         from .context import build_step_prompt, TransitionContext, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
@@ -479,8 +497,10 @@ class ToolStepExecutor:
         final_response = None
         called_tool: str = ""
         last_tool_args: dict = {}
+        attempts = 0
 
         for turn in range(max_turns):
+            attempts = turn + 1
             turn_prompt = tool_prompt
             if last_error:
                 turn_prompt += f"\n\nPrevious attempt failed: {last_error}\nPlease try again with correct arguments."
@@ -559,6 +579,11 @@ class ToolStepExecutor:
                 _log.debug(f"TOOL STEP: 📤 Tool Result ({called_tool}): {preview}")
                 _log.debug(f"TOOL STEP: ✅ tool '{called_tool}' succeeded")
                 break
+            except ToolCallFailed as e:
+                last_error = str(e)
+                _log.debug(f"TOOL STEP: ❌ tool reported failure turn={turn + 1}: {last_error}")
+                if not e.retryable:
+                    break
             except Exception as e:
                 last_error = str(e)
                 _log.debug(f"TOOL STEP: ❌ tool execution failed turn={turn + 1}: {last_error}")
@@ -568,11 +593,11 @@ class ToolStepExecutor:
             "orch_step_id": step.id,
             "step_name": step.name,
             "response": final_response if final_response is not None
-                        else f"Tool step '{step.name}' failed after {max_turns} attempt(s): {last_error}",
+                        else f"Tool step '{step.name}' failed after {attempts} attempt(s): {last_error}",
         }
 
         if final_response is None:
-            raise RuntimeError(f"Tool step '{step.name}' failed after {max_turns} attempt(s): {last_error}")
+            raise RuntimeError(f"Tool step '{step.name}' failed after {attempts} attempt(s): {last_error}")
 
         # Record execution memory so re-invocations can see prior turn's args + result.
         from .context import build_execution_trace, store_execution_memory
@@ -620,7 +645,13 @@ class ToolStepExecutor:
                 result = await session.call_tool(
                     actual_tool_name, tool_args, read_timeout_seconds=timedelta(seconds=MCP_TOOL_CALL_TIMEOUT)
                 )
-                return result.content[0].text if result.content else ""
+                text = result.content[0].text if result.content else ""
+                if getattr(result, "isError", False):
+                    # MCP's own way of saying the call failed; it was never read.
+                    raise ToolCallFailed(
+                        f"Tool '{tool_name}' returned an error: {text[:500] or '(no detail)'}",
+                        retryable=True)
+                return text
         # Custom tools — Python or HTTP. The run's resolved list, the one the
         # schema lookup above already used: the store's raw rows carry a hosted
         # deployment's `synsec://` references, which went to the server as the
@@ -639,10 +670,13 @@ class ToolStepExecutor:
     async def _execute_python_tool(self, tool: dict, tool_args: dict) -> str:
         """Execute a custom Python tool through the registered code runner.
 
-        The same body as `react_engine.run_agent_step`'s python branch, and it
-        stays that way on purpose: a tool called from a TOOL step and the same
-        tool called by an agent must behave identically. Both are now one call
-        to `core.execution`, which is what stopped them drifting.
+        The same execution as `react_engine.run_agent_step`'s python branch, on
+        purpose: a tool called from a TOOL step and the same tool called by an
+        agent run identically. Both are one call to `core.execution`, which is
+        what stopped them drifting. What a failure *means* differs: an agent is
+        handed the error as the tool's answer and decides what to do with it; a
+        TOOL step has nobody to decide, so a non-zero exit is a failed call
+        (F90) — retried with the error, then the run fails.
         """
         from core import variables as _variables
         from core.execution import ExecRequest, Network, declared_globals, get_runner, wrap_args
@@ -664,11 +698,11 @@ class ToolStepExecutor:
         ))
 
         if result.exit_code != 0:
-            return json.dumps({
-                "error": f"Python tool exited with code {result.exit_code}",
-                "stderr": result.stderr,
-                "stdout": result.stdout,
-            })
+            # The end of the output is where a traceback says what went wrong.
+            detail = (result.stderr or result.stdout or "").strip()[-800:]
+            raise ToolCallFailed(
+                f"Python tool exited with code {result.exit_code}: {detail or '(no output)'}",
+                retryable=True)
         try:
             return json.dumps(json.loads(result.stdout.strip()))
         except Exception:
@@ -697,6 +731,10 @@ class ToolStepExecutor:
                 client, tool, tool_args, await _variables.load(),
                 timeout=HTTP_TOOL_TIMEOUT,
             )
+        if resp.status_code >= 400:
+            raise ToolCallFailed(
+                f"HTTP {resp.status_code} from '{tool.get('name', 'tool')}': {(resp.text or '')[:500]}",
+                retryable=resp.status_code < 500)
 
         _, text = http_tool.decode(resp, tool)
         return text
@@ -1075,9 +1113,11 @@ class ParallelStepExecutor:
                 continue
             executor = engine.executors.get(sub_step.type)
             if not executor:
-                yield {"type": "step_error", "orch_step_id": sid,
-                       "error": f"No executor for {sub_step.type}"}
-                continue
+                # A step this engine cannot run fails the run, as it does at the
+                # top level (F90); it used to be skipped and the branch went on.
+                message = f"No executor for {sub_step.type}"
+                yield {"type": "step_error", "orch_step_id": sid, "error": message}
+                raise RuntimeError(message)
 
             step_start = time.time()
             sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
@@ -1222,10 +1262,12 @@ class LoopStepExecutor:
 
         depth = getattr(engine, "_loop_depth", 0)
         if depth >= MAX_NESTED_DEPTH:
-            yield {"type": "step_error", "orch_step_id": step.id,
-                   "error": f"Loop nesting exceeded {MAX_NESTED_DEPTH} levels at "
-                            f"'{step.name}'. A loop whose body reaches itself never ends."}
-            return
+            # Fails the run (F90): it used to be reported and skipped, and the
+            # run carried on as if the loop's body had run.
+            message = (f"Loop nesting exceeded {MAX_NESTED_DEPTH} levels at "
+                       f"'{step.name}'. A loop whose body reaches itself never ends.")
+            yield {"type": "step_error", "orch_step_id": step.id, "error": message}
+            raise RuntimeError(message)
 
         progress_key = _progress_key(step)
         cap = max(1, step.loop_max_iterations)
@@ -1380,9 +1422,10 @@ class LoopStepExecutor:
 
                     executor = engine.executors.get(sub_step.type)
                     if not executor:
-                        yield {"type": "step_error", "orch_step_id": sid,
-                               "error": f"No executor for {sub_step.type}"}
-                        continue
+                        # Fails the run, as at the top level (F90).
+                        message = f"No executor for {sub_step.type}"
+                        yield {"type": "step_error", "orch_step_id": sid, "error": message}
+                        raise RuntimeError(message)
 
                     # The engine only builds a TransitionContext for the steps it
                     # drives itself, so without this a body step would read the
