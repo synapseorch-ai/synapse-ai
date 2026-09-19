@@ -655,23 +655,30 @@ class OrchestrationEngine:
 
     @classmethod
     async def resume(
-        cls, run_id: str, human_response: dict, server_module, images: list[str] | None = None
+        cls, run_id: str, human_response: dict, server_module, images: list[str] | None = None,
+        *, depth: int = 0,
     ) -> AsyncGenerator[dict, None]:
         """Resume a paused orchestration after human input.
+
+        Loads what this entry point has to load — the checkpoint and the
+        definition — and hands the rest to `resume_paused`, which the fleet's
+        adapter calls with the definition it already has.
 
         `images` are the attachments sent *with the answer*, not the ones the
         run started with — those are not persisted anywhere, by design, so a
         step re-entered after a pause sees only what the person attached to
         their reply.
+
+        `depth` is the nesting depth of the run being resumed. A parent resuming
+        the sub-orchestration it waits on passes its own plus one, so the child
+        is not taken for a top-level run — which writes memory summaries and is
+        scored — and its nesting cap counts from where it really is.
         """
         from .state import SharedState as SS
 
         _log.debug(f"[engine.resume] ▶ restoring state from JSON checkpoint for run_id={run_id}")
         restored = await SS.restore(run_id)
         run = restored.run
-        # Answered: no longer waiting on a channel. Written at the next checkpoint;
-        # a nested step that pauses again records its channel again.
-        run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
         _log.debug(f"[engine.resume] 📋 restored run: orch_id={run.orchestration_id} status={run.status} current_step_id={run.current_step_id} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}")
 
         # Load the orchestration definition
@@ -684,75 +691,107 @@ class OrchestrationEngine:
 
         orch = Orchestration.model_validate(orch_data)
         apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
-        engine = cls(orch, server_module)
-        engine.global_variables = await engine._load_global_variables()
+        engine = cls(orch, server_module, depth=depth)
         engine.images = list(images or [])
-        _log.debug(f"[engine.resume] 🗺  step_map keys: {list(engine.step_map.keys())}")
+        async for event in engine.resume_paused(run, human_response):
+            yield event
+
+    async def resume_paused(self, run: OrchestrationRun, human_response) -> AsyncGenerator[dict, None]:
+        """Answer a paused run and carry it on. The one resume.
+
+        Both entry points come here: `resume()` above, and
+        `WorkerEngineAdapter.resume`, which every resume on a fleet goes
+        through. The adapter used to hold a hand copy of this logic, and the
+        copy drifted three times: it never closed the human step's history
+        entry, it dropped the routing events after an answer, and it had no
+        tool-approval branch at all — so on a fleet an approved tool call was
+        written into the step's output key as though it were an answer, and
+        stepped past with the call never run (F109). What differs between the
+        callers — where the definition comes from, where the events go — stays
+        with them; everything that decides what an answer does is here.
+
+        Three kinds of pause, told apart by what the run recorded:
+        - a nested orchestration paused inside a step (`nested_run_id`): the
+          sub-run is resumed, and its result is the step's;
+        - a tool call waiting on approval (`pending_approval` in the step's
+          progress): the step is re-entered with the decision, not stepped past;
+        - anything else is a human step's answer.
+        """
+        # Answered: no longer waiting on a channel. Written at the next checkpoint;
+        # a nested step that pauses again records its channel again.
+        run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
+        self.global_variables = await self._load_global_variables()
+        self.agent_names = await self._load_agent_names()
+        _log.debug(f"[engine.resume] 🗺  step_map keys: {list(self.step_map.keys())}")
 
         # Create logger — appends to existing log file if present
-        engine.logger = OrchestrationLogger(
-            run_id=run_id,
+        self.logger = OrchestrationLogger(
+            run_id=run.run_id,
             orchestration_id=run.orchestration_id,
-            orchestration_name=orch.name,
+            orchestration_name=self.orch.name,
             user_input=f"(resumed) human_response={human_response}",
             session_id=run.session_id,
         )
 
-        # If the parent was paused because a NESTED orchestration hit a human step,
-        # resume the sub-run and let it complete before continuing the parent.
-        if run.nested_run_id:
-            _log.debug(f"[engine.resume] 🔗 nested run detected: nested_run_id={run.nested_run_id}, delegating to _resume_nested_orch")
-            async for event in cls._resume_nested_orch(run, engine, human_response, server_module):
-                yield event
-            return
-
-        # A tool call inside an agent step, not a human step: the answer is an
-        # approval for that call, and the step has to be re-entered rather than
-        # stepped past — its work is unfinished, and the transcript that got it
-        # this far is in its progress record.
-        _pending = (run.step_progress.get(run.current_step_id) or {}).get("pending_approval")
-        if _pending:
-            async for event in cls._resume_tool_approval(run, engine, human_response, _pending):
-                yield event
-            return
-
-        # Normal path: human step is directly in this orchestration.
-        # Move to next step after the HUMAN step
-        current_step = engine.step_map.get(run.current_step_id)
+        current_step = self.step_map.get(run.current_step_id)
         _log.debug(f"[engine.resume] 🔍 current_step lookup: current_step_id={run.current_step_id!r} → found={current_step is not None} type={current_step.type.value if current_step else 'N/A'}")
 
-        # Write human response to shared state under the step's configured output_key.
-        # Falling back to "human_response" preserves backward-compat for steps with no output_key.
-        output_key = (current_step.output_key if current_step else None) or "human_response"
-        run.shared_state[output_key] = human_response
-        # Always keep "human_response" as well so evaluators that check it still work.
-        if output_key != "human_response":
-            run.shared_state["human_response"] = human_response
-
-        run.waiting_for_human = False
-        run.status = "running"
-
-        if current_step:
-            # Before _resolve_next, so the loop guard counts this iteration.
-            engine._complete_human_step(run, current_step)
-            next_id, resume_events = engine._resolve_next(current_step, run)
-            run.current_step_id = next_id
-            # A routing decision, a loop_limit_reached, or both. Dropping them
-            # meant a run that hit its iteration cap on the step right after a
-            # human pause said nothing about why it moved on.
-            for resume_event in resume_events:
-                yield resume_event
-            _log.debug(f"[engine.resume] ➡  _resolve_next({run.current_step_id!r} was HUMAN) → next_step_id={next_id!r}")
+        if run.nested_run_id:
+            # A nested orchestration hit a human step: resume the sub-run and let
+            # it finish before the parent moves on.
+            _log.debug(f"[engine.resume] 🔗 nested run detected: nested_run_id={run.nested_run_id}")
+            outcome: dict = {}
+            async for event in self._resume_nested(run, human_response, run.current_step_id, outcome):
+                yield event
+            if outcome.get("status") == "paused":
+                return
+            if outcome.get("status") == "done" and current_step:
+                next_id, resume_events = self._resolve_next(current_step, run)
+                for resume_event in resume_events:
+                    yield resume_event
+                run.current_step_id = next_id
+        elif (pending := (run.step_progress.get(run.current_step_id) or {}).get("pending_approval")):
+            # A tool call inside an agent step, not a human step: the answer is an
+            # approval for that call, and the step has to be re-entered rather than
+            # stepped past — its work is unfinished, and the transcript that got it
+            # this far is in its progress record.
+            async for event in self._resume_tool_approval(run, human_response, pending, run.current_step_id):
+                yield event
         else:
-            _log.debug(f"[engine.resume] ⚠️  current_step not found in step_map — current_step_id stays as {run.current_step_id!r}, loop will likely fail immediately")
+            # A human step: write the answer under the step's configured output_key.
+            # Falling back to "human_response" preserves backward-compat for steps with no output_key.
+            output_key = (current_step.output_key if current_step else None) or "human_response"
+            run.shared_state[output_key] = human_response
+            # Always keep "human_response" as well so evaluators that check it still work.
+            if output_key != "human_response":
+                run.shared_state["human_response"] = human_response
+
+            run.waiting_for_human = False
+            run.status = "running"
+
+            if current_step:
+                # Before _resolve_next, so the loop guard counts this iteration.
+                self._complete_human_step(run, current_step)
+                next_id, resume_events = self._resolve_next(current_step, run)
+                run.current_step_id = next_id
+                # A routing decision, a loop_limit_reached, or both. Dropping them
+                # meant a run that hit its iteration cap on the step right after a
+                # human pause said nothing about why it moved on.
+                for resume_event in resume_events:
+                    yield resume_event
+                _log.debug(f"[engine.resume] ➡  _resolve_next(HUMAN) → next_step_id={next_id!r}")
+            else:
+                _log.debug(f"[engine.resume] ⚠️  current_step not found in step_map — current_step_id stays as {run.current_step_id!r}, loop will likely fail immediately")
 
         _log.debug(f"[engine.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}")
-        engine.agent_names = await engine._load_agent_names()
         state = SharedState(run)
         # Persist "running" + the cleared human flag before the first step, so
-        # the run stops showing as "needs input" the moment it resumes.
+        # the run stops showing as "needs input" the moment it resumes. A failed
+        # nested resume is persisted here too, and `_execute_loop` then finishes
+        # it as failed — so the fleet records `failed`, where it used to find no
+        # `orchestration_complete` and record the run `completed`.
         await state.checkpoint()
-        async for event in engine._execute_loop(run, state):
+        async for event in self._execute_loop(run, state):
             yield event
         _log.debug(f"[engine.resume] 🏁 _execute_loop finished, run.status={run.status} run.current_step_id={run.current_step_id!r}")
 
@@ -780,16 +819,19 @@ class OrchestrationEngine:
         yes = cleaned in ("y", "yes", "true", "1", "ok", "okay", "approve", "approved", "allow", "go")
         return yes, "" if yes else (text.strip() or "the user declined")
 
-    @classmethod
-    async def _resume_tool_approval(cls, run, engine, human_response, pending):
-        """Continue an agent step that stopped to ask about one tool call."""
-        step = engine.step_map.get(run.current_step_id)
-        approved, reason = cls._approved(human_response)
+    async def _resume_tool_approval(self, run, human_response, pending, step_id: str):
+        """Give an agent step the decision on the one tool call it stopped to ask about.
+
+        Nothing is run here: the caller's `_execute_loop` re-enters the step,
+        which acts on `pending_call` from its progress record, keyed by its id.
+        """
+        step = self.step_map.get(step_id)
+        approved, reason = self._approved(human_response)
         approval_id = pending.get("approval_id")
         _log.debug(f"[engine.resume] 🔐 tool approval for '{pending.get('tool_name')}' → "
                    f"{'approved' if approved else 'refused'}")
 
-        progress = dict(run.step_progress.get(run.current_step_id) or {})
+        progress = dict(run.step_progress.get(step_id) or {})
         progress.pop("pending_approval", None)
         # The call itself, so the step can act on the answer without asking the
         # model to make the same choice again — it might not, and then an
@@ -805,41 +847,40 @@ class OrchestrationEngine:
         progress[bucket] = sorted(set(progress.get(bucket) or []) | {approval_id})
         if not approved and reason:
             progress["denied_reasons"] = {**(progress.get("denied_reasons") or {}), approval_id: reason}
-        run.step_progress[run.current_step_id] = progress
+        run.step_progress[step_id] = progress
 
         run.waiting_for_human = False
         run.status = "running"
         # The step is unfinished, so its history entry is reopened rather than
         # closed: it did not complete when it paused.
         for entry in reversed(run.step_history):
-            if entry.get("step_id") == run.current_step_id and entry.get("status") == "paused":
+            if entry.get("step_id") == step_id and entry.get("status") == "paused":
                 entry["status"] = "running"
                 break
 
-        yield {"type": "tool_approval_resolved", "orch_step_id": run.current_step_id,
+        yield {"type": "tool_approval_resolved", "orch_step_id": step_id,
                "tool_name": pending.get("tool_name"), "approved": approved,
                "step_name": step.name if step else ""}
 
-        state = SharedState(run)
-        await state.checkpoint()
-        async for event in engine._execute_loop(run, state):
-            yield event
-
-    @classmethod
-    async def _resume_nested_orch(
-        cls,
+    async def _resume_nested(
+        self,
         run: OrchestrationRun,
-        engine: "OrchestrationEngine",
-        human_response: dict,
-        server_module,
+        human_response,
+        step_id: str,
+        outcome: dict,
     ) -> AsyncGenerator[dict, None]:
-        """Resume a parent run whose nested sub-orchestration was paused at a human step.
+        """Resume the sub-orchestration step `step_id` is waiting on.
 
-        Resumes the sub-run, forwards its events tagged with the parent step's
-        context, then writes the sub-orch result to parent shared_state and
-        continues the parent execution loop.
+        Forwards the sub-run's events tagged as the parent step's, and says how
+        it ended in `outcome["status"]`:
+        - "paused": the sub-run stopped to ask again; the parent is
+          re-checkpointed, still waiting on it;
+        - "done": it finished; its result is written to the step's output key,
+          the step's history recorded, the parent un-paused;
+        - "failed": it produced nothing; the parent is failed.
+        Moving the parent on is the caller's.
         """
-        parent_step = engine.step_map.get(run.current_step_id)
+        parent_step = self.step_map.get(step_id)
         nested_run_id = run.nested_run_id
         nested_orch_id = run.nested_orch_id
         _NESTED_FILTER_TYPES = {"orchestration_start", "orchestration_complete", "orchestration_end"}
@@ -847,23 +888,29 @@ class OrchestrationEngine:
         final_response: str | None = None
         sub_events: list[dict] = []
 
-        async for sub_event in cls.resume(nested_run_id, human_response, server_module):
+        async for sub_event in type(self).resume(
+            nested_run_id, human_response, self.server_module, depth=self.depth + 1,
+        ):
             sub_events.append(sub_event)
 
             # Sub-orch hit another human step (multi-turn human interaction inside nested orch)
             if sub_event.get("type") == "human_input_required":
-                run.nested_run_id = sub_event.get("nested_run_id") or nested_run_id
-                run.nested_orch_id = sub_event.get("nested_orch_id") or nested_orch_id
+                # Still waiting on the same sub-run. The event names whatever
+                # *it* waits on — a sub-run of its own, two levels down — and
+                # recording that here would make the next answer skip a level.
+                run.nested_run_id = nested_run_id
+                run.nested_orch_id = nested_orch_id
                 if sub_event.get("channel_id"):
                     run.shared_state[HUMAN_CHANNEL_KEY] = sub_event["channel_id"]
                 else:
                     run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
                 state = SharedState(run)
                 await state.checkpoint()
+                outcome["status"] = "paused"
                 yield {
                     **sub_event,
                     "run_id": run.run_id,
-                    "orch_step_id": run.current_step_id,
+                    "orch_step_id": step_id,
                     "step_name": parent_step.name if parent_step else "",
                     "nested_run_id": nested_run_id,
                     "nested_orch_id": nested_orch_id,
@@ -880,7 +927,7 @@ class OrchestrationEngine:
             yield {
                 **sub_event,
                 "run_id": run.run_id,
-                "orch_step_id": run.current_step_id,
+                "orch_step_id": step_id,
                 "step_name": parent_step.name if parent_step else "",
                 "nested_run_id": nested_run_id,
                 "nested_orch_id": nested_orch_id,
@@ -904,8 +951,8 @@ class OrchestrationEngine:
 
         if final_response is None:
             run.status = "failed"
-            state = SharedState(run)
-            await state.checkpoint()
+            run.waiting_for_human = False
+            outcome["status"] = "failed"
             yield {
                 "type": "orchestration_error",
                 "error": "Nested orchestration failed to produce a result after human input",
@@ -919,30 +966,19 @@ class OrchestrationEngine:
         # Record agent step completion in history
         import time as _time
         run.step_history.append({
-            "step_id": run.current_step_id,
+            "step_id": step_id,
             "step_name": parent_step.name if parent_step else "",
             "step_type": "agent",
             "status": "completed",
             "ended_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
         })
 
-        # Clear nested context and resume parent from next step after agent step
+        # Clear nested context; the caller moves the parent on.
         run.nested_run_id = None
         run.nested_orch_id = None
         run.waiting_for_human = False
         run.status = "running"
-
-        if parent_step:
-            next_id, extra_events = engine._resolve_next(parent_step, run)
-            for extra_event in extra_events:
-                yield extra_event
-            run.current_step_id = next_id
-
-        state = SharedState(run)
-        # Same as resume(): make the un-paused state visible before step one.
-        await state.checkpoint()
-        async for event in engine._execute_loop(run, state):
-            yield event
+        outcome["status"] = "done"
 
     def _type_written_state(
         self, run: OrchestrationRun, step: StepConfig, before: dict

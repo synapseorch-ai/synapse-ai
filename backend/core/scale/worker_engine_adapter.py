@@ -6,14 +6,15 @@ Differences from the in-process (V1) execution path:
   - Polls Redis for distributed cancellation signal at each step boundary
   - Handles HUMAN step pause/resume via Redis keys + ARQ re-enqueue
 
-`resume()` below is a near-copy of `OrchestrationEngine.resume()`, deliberately
-— it uses the orchestration this process already loaded from the store rather
-than reloading a definition it may not have. **That makes the two a pair that
-must be changed together, and they have already drifted once:** a fix to the
-classmethod is invisible here, and on a shared fleet *every* resume runs here
-and none runs there, so a suite that only exercises the classmethod stays green
-while the product is broken. `tests/unit/test_adapter_resume.py` covers this
-path for that reason.
+`resume()` below builds its engine from the orchestration this process already
+loaded from the store, rather than reloading a definition it may not have — and
+then calls `OrchestrationEngine.resume_paused`, the same method the in-process
+`resume()` calls. It used to be a hand copy of that logic instead, and on a
+shared fleet *every* resume runs here and none runs there, so each fix to the
+classmethod was invisible here until someone found it broken on a fleet: the
+human step's history entry never closed, the routing events after an answer
+were dropped, and a tool call's approval was treated as an answer and stepped
+past (F109). `tests/unit/test_adapter_resume.py` keeps it a call.
 """
 from typing import AsyncGenerator
 
@@ -46,9 +47,9 @@ def _cancel_guarded(method):
     a request: it propagates, so the job is retried or abandoned as it always
     was.
 
-    A decorator rather than an edit to each method: the two resume
-    implementations are compared at the source level by a test, and a wrapper
-    is transparent to `inspect.getsource`.
+    A decorator rather than an edit to each method: `test_adapter_resume.py`
+    reads `resume` at the source level, and a wrapper is transparent to
+    `inspect.getsource`.
     """
     @_functools.wraps(method)
     async def wrapper(self, *args, **kwargs):
@@ -154,10 +155,11 @@ class WorkerEngineAdapter:
     ) -> str:
         """Resume a paused run after human input.
 
-        Uses self._orch (loaded from the store by the worker) instead of the
-        OrchestrationEngine.resume() classmethod, which also reloads the
-        orchestration definition and would go looking for one this process may
-        not have.
+        What an answer does is decided by `OrchestrationEngine.resume_paused`,
+        the same method the in-process `resume()` calls. This method only does
+        what is the fleet's own: it builds the engine from `self._orch` (loaded
+        from the store by the worker) instead of reloading a definition this
+        process may not have, and it publishes what the engine yields.
 
         `images` are the attachments sent *with the answer*, matching
         `OrchestrationEngine.resume`. The ones the run started with are not
@@ -165,12 +167,11 @@ class WorkerEngineAdapter:
         only what the person attached to their reply.
         """
         from core.orchestration.state import SharedState
-        from core.orchestration.logger import OrchestrationLogger
 
         # Restore in-progress run state. This reads the store, so the process
         # resuming need not be the one that paused — which is what lets a
         # single shared fleet drain one queue.
-        _log.debug(f"[adapter.resume] ▶ restoring JSON checkpoint run_id={self._run_id}")
+        _log.debug(f"[adapter.resume] ▶ restoring checkpoint run_id={self._run_id}")
         restored = await SharedState.restore(self._run_id)
         run = restored.run
         _log.debug(f"[adapter.resume] 📋 restored: status={run.status} current_step_id={run.current_step_id!r} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}")
@@ -184,93 +185,22 @@ class WorkerEngineAdapter:
         # Build engine using self._orch (Postgres-loaded) so step_map is always populated.
         engine = self._build_engine()
         engine.images = list(images or [])
-        _log.debug(f"[adapter.resume] 🗺  step_map keys: {list(engine.step_map.keys())}")
-
-        engine.logger = OrchestrationLogger(
-            run_id=self._run_id,
-            orchestration_id=run.orchestration_id,
-            orchestration_name=self._orch.name,
-            user_input=f"(resumed) human_response={human_response}",
-            session_id=run.session_id,
-        )
 
         final_status = "completed"
-
-        # Nested-orchestration pause: delegate to the classmethod's nested handler.
-        if run.nested_run_id:
-            _log.debug(f"[adapter.resume] 🔗 nested run — delegating to _resume_nested_orch nested_run_id={run.nested_run_id}")
-            event_count = 0
-            async for event in OrchestrationEngine._resume_nested_orch(run, engine, human_response, self._server_module):
-                event_count += 1
-                _log.debug(f"[adapter.resume] 📨 nested event #{event_count} type={event.get('type', '?')}")
-                await self._publisher.publish(event)
-                if event.get("type") == "orchestration_complete":
-                    final_status = event.get("status", "completed")
-                if event.get("type") == "human_input_required":
-                    await self._sync_paused_state(event)
-                    await self._publisher.publish_paused()
-                    return "paused"
-            await self._sync_final_state(final_status)
-            await self._publisher.publish_done()
-            return final_status
-
-        # Normal path: human step is directly in this orchestration.
-        current_step = engine.step_map.get(run.current_step_id)
-        _log.debug(f"[adapter.resume] 🔍 current_step lookup: id={run.current_step_id!r} found={current_step is not None} type={current_step.type.value if current_step else 'N/A'}")
-
-        output_key = (current_step.output_key if current_step else None) or "human_response"
-        run.shared_state[output_key] = human_response
-        if output_key != "human_response":
-            run.shared_state["human_response"] = human_response
-
-        run.waiting_for_human = False
-        run.status = "running"
-
-        if current_step:
-            # Before _resolve_next, so the loop guard counts this iteration.
-            # This line, and this ordering, must match OrchestrationEngine.resume():
-            # everything below is a copy of it, and when `_complete_human_step`
-            # was added there it was not added here. On a shared fleet, where
-            # every resume comes through this method and never that one, the
-            # effect was that a human step's `paused` entry in `step_history`
-            # was never closed — so a finished run still showed the approval as
-            # awaiting input, its duration grew forever against wall-clock, and
-            # `_apply_loop_guard` never counted a human step inside a loop.
-            engine._complete_human_step(run, current_step)
-            next_id, resume_events = engine._resolve_next(current_step, run)
-            run.current_step_id = next_id
-            # `OrchestrationEngine.resume()` yields these, and this method is a
-            # copy of it that dropped them. A shared fleet takes this path and
-            # never that one, so the routing decision after an approval — and
-            # the loop-limit refusal that explains an iteration cap — reached a
-            # self-hosted run log and never a cloud one. Same drift as the
-            # `_complete_human_step` line above, in the same file.
-            for ev in resume_events:
-                await self._publisher.publish(ev)
-            _log.debug(f"[adapter.resume] ➡  _resolve_next → next_step_id={next_id!r}")
-        else:
-            _log.debug(f"[adapter.resume] ⚠️  current_step not in step_map — step_id={run.current_step_id!r} will fail in _execute_loop")
-
-        _log.debug(f"[adapter.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}")
-        state = SharedState(run)
-        event_count = 0
-        async for event in engine._execute_loop(run, state):
-            event_count += 1
-            etype = event.get("type", "unknown")
-            _log.debug(f"[adapter.resume] 📨 event #{event_count} type={etype} step={event.get('orch_step_id', '')} status={event.get('status', '')}")
+        async for event in engine.resume_paused(run, human_response):
+            _log.debug(f"[adapter.resume] 📨 type={event.get('type', '?')} step={event.get('orch_step_id', '')} status={event.get('status', '')}")
             await self._publisher.publish(event)
 
             if event.get("type") == "orchestration_complete":
                 final_status = event.get("status", "completed")
-                _log.debug(f"[adapter.resume] 🏁 orchestration_complete → final_status={final_status}")
 
             if event.get("type") == "human_input_required":
-                _log.debug(f"[adapter.resume] ⏸ another human step — pausing again")
+                _log.debug(f"[adapter.resume] ⏸ paused again")
                 await self._sync_paused_state(event)
                 await self._publisher.publish_paused()
                 return "paused"
 
-        _log.debug(f"[adapter.resume] ✅ loop done after {event_count} events, calling _sync_final_state(status={final_status})")
+        _log.debug(f"[adapter.resume] ✅ done, calling _sync_final_state(status={final_status})")
         await self._sync_final_state(final_status)
         await self._publisher.publish_done()
         return final_status

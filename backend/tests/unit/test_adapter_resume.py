@@ -2,10 +2,11 @@
 
 ## Why this file exists
 
-`WorkerEngineAdapter.resume()` is a near-copy of `OrchestrationEngine.resume()`.
-The duplication is deliberate — the adapter uses the orchestration the worker
-already loaded from the store instead of reloading a definition the process may
-not have — but it makes the two a pair that has to change together.
+`WorkerEngineAdapter.resume()` was a near-copy of `OrchestrationEngine.resume()`
+— the adapter uses the orchestration the worker already loaded from the store
+instead of reloading a definition the process may not have — which made the two
+a pair that had to change together. Since F109 both call `resume_paused`, and
+`TestThereIsOneResume` below keeps it that way.
 
 They drifted. `78076d3` taught the classmethod to close the `paused` entry a
 human step leaves in `step_history`, and did not teach the adapter. Every test
@@ -142,14 +143,16 @@ class TestResumingThroughTheAdapter:
         assert "Decision was:" in str(state["final"])
 
 
-class TestTheTwoResumesAgree:
-    def test_the_adapter_closes_the_human_step_like_the_classmethod(self):
+class TestThereIsOneResume:
+    def test_both_entry_points_hand_the_answer_to_the_same_method(self):
         """A source-level tripwire for the drift itself.
 
-        The two implementations cannot be collapsed — the adapter exists to
-        avoid a reload — so the next best thing is to notice when one of them
-        stops calling something the other does. Cheap, and it fails at the
-        moment the copy is edited rather than the next time a fleet resumes.
+        The adapter builds its engine from the orchestration the worker already
+        loaded, so the two entry points cannot be one function. They used to be
+        two copies of the same logic, and the copy drifted three times — the
+        last time it had no tool-approval branch at all (F109). Now each hands
+        the answer to `resume_paused`, and neither may decide anything itself:
+        a call to one of these below means the copy is growing back.
         """
         import ast
         import inspect
@@ -173,13 +176,10 @@ class TestTheTwoResumesAgree:
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             }
 
-        classmethod_calls = calls(OrchestrationEngine.resume)
-        adapter_calls = calls(WorkerEngineAdapter.resume)
-
-        for call in ("_complete_human_step", "_resolve_next"):
-            assert call in classmethod_calls, f"{call} left OrchestrationEngine.resume"
-            assert call in adapter_calls, (
-                f"WorkerEngineAdapter.resume no longer calls {call}, and "
-                "OrchestrationEngine.resume still does. Every resume on a shared "
-                "fleet goes through the adapter."
-            )
+        deciding = {"_complete_human_step", "_resolve_next", "_execute_loop",
+                    "_resume_nested", "_resume_tool_approval"}
+        for name, fn in (("OrchestrationEngine.resume", OrchestrationEngine.resume),
+                         ("WorkerEngineAdapter.resume", WorkerEngineAdapter.resume)):
+            made = calls(fn)
+            assert "resume_paused" in made, f"{name} no longer calls resume_paused"
+            assert not made & deciding, f"{name} decides for itself again: {sorted(made & deciding)}"
