@@ -16,8 +16,10 @@ export const maxDuration = 300;
  * second place to get that judgement wrong.
  *
  * `signal` is forwarded for the same reason `/api/chat/stream` forwards it: a
- * closed tab or a Stop press must reach the turn, or it goes on burning tokens
- * against a socket nobody is reading.
+ * closed tab must not leave this proxy holding a request nobody reads. It closes
+ * the reader, not the turn — a visitor clicking through the host site reloads
+ * this frame, and the frame reads the turn again from `/api/widget/stream`
+ * (F49). Stop is `/api/widget/cancel`.
  */
 export async function POST(req: Request) {
   try {

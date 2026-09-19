@@ -64,6 +64,13 @@ export default function WidgetChat({
   const abort = useRef<AbortController | null>(null);
   const log = useRef<HTMLDivElement>(null);
   const lastSent = useRef('');
+  /**
+   * The cursor of the last event this frame handled. A turn runs on whether or
+   * not this frame is reading (F49): when its stream breaks, or the visitor
+   * clicks to another page on the host site and this frame reloads, the turn is
+   * read again from here rather than sent again.
+   */
+  const cursor = useRef('0');
 
   useEffect(() => {
     log.current?.scrollTo({ top: log.current.scrollHeight, behavior: 'smooth' });
@@ -166,18 +173,31 @@ export default function WidgetChat({
       }).catch(() => null);
       if (!history?.ok || cancelled) return;
 
-      const rows = ((await history.json()).messages ?? []) as { role: string; content: string }[];
-      setMessages(
-        rows
-          .filter((row) => row.role === 'user' || row.role === 'assistant')
-          .map((row) => ({ role: row.role as 'user' | 'assistant', text: row.content ?? '' })),
-      );
+      const body = (await history.json()) as {
+        messages?: { role: string; content: string }[];
+        running?: { message: string; cursor: string } | null;
+      };
+      const rows = body.messages ?? [];
+      const restored: Message[] = rows
+        .filter((row) => row.role === 'user' || row.role === 'assistant')
+        .map((row) => ({ role: row.role as 'user' | 'assistant', text: row.content ?? '' }));
+      // A reply still being written is not in the history yet — it is saved when
+      // it ends. Show the question and follow the reply from its start.
+      if (body.running) restored.push({ role: 'user', text: body.running.message });
+      setMessages(restored);
+      if (body.running && !cancelled) {
+        lastSent.current = body.running.message;
+        void watch(body.running.cursor);
+      }
     };
 
     void resume();
     return () => {
       cancelled = true;
     };
+    // `watch` reads only refs and state setters; adding it would re-run the
+    // resume — and follow the reply twice — on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialToken, storageKey, remember, preview]);
 
   /**
@@ -213,9 +233,140 @@ export default function WidgetChat({
 
   const close = () => window.parent?.postMessage({ type: 'synapse:close' }, '*');
 
+  /**
+   * Read one turn's events into the conversation, keeping its cursor.
+   *
+   * 'done' when the turn said so; 'ended' when the stream closed first — a
+   * proxy that gave up, a reload — which means read it again, not that it is
+   * over. Frames are split on a blank line and a partial one is kept, because a
+   * chunk boundary lands mid-frame often enough to matter.
+   */
+  const consume = async (stream: Response, seen: { answered: boolean }): Promise<'done' | 'ended'> => {
+    const reader = stream.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return 'ended';
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() ?? '';
+
+      for (const frame of frames) {
+        const lines = frame.split('\n');
+        const line = lines.find((l) => l.startsWith('data: '));
+        if (!line) continue;
+        let event: { type?: string; response?: string; content?: string; message?: string };
+        try {
+          event = JSON.parse(line.slice(6));
+        } catch {
+          continue;
+        }
+
+        if (event.type === 'status' || event.type === 'thinking') {
+          // The engine's own words describe the machinery. The visitor gets
+          // that it is working, and nothing about how.
+          setStatus(THINKING);
+        } else if (event.type === 'final' || event.type === 'response') {
+          seen.answered = true;
+          const text2 = event.response ?? event.content ?? '';
+          setMessages((m) => [...m, { role: 'assistant', text: text2 }]);
+        } else if (event.type === 'cancelled') {
+          seen.answered = true;
+          setMessages((m) => [...m, { role: 'assistant', text: 'Stopped.', failed: true }]);
+        } else if (event.type === 'done') {
+          // The queued stream stays open until it is told the turn is over.
+          await reader.cancel().catch(() => {});
+          return 'done';
+        } else if (event.type === 'error' || event.type === 'orchestration_error') {
+          seen.answered = true;
+          setMessages((m) => [
+            ...m,
+            { role: 'assistant', text: 'Something went wrong. Please try again.', failed: true },
+          ]);
+        }
+        // The cursor moves once its event is handled, so reading again never
+        // skips the event a break interrupted.
+        const id = lines.find((l) => l.startsWith('id: '));
+        if (id) cursor.current = id.slice(4);
+      }
+    }
+  };
+
+  /**
+   * Read this conversation's turn again, from the last event handled.
+   * 'gone' when there is none to read — it ended, and its answer is in the history.
+   */
+  const follow = async (controller: AbortController, seen: { answered: boolean }): Promise<'done' | 'ended' | 'gone'> => {
+    const opened = await fetch(`/api/widget/stream?cursor=${encodeURIComponent(cursor.current)}`, {
+      headers: { Authorization: `Bearer ${token.current}` },
+      signal: controller.signal,
+    });
+    if (opened.status === 404 || opened.status === 410) return 'gone';
+    if (!opened.ok || !opened.body) return 'ended';
+    return consume(opened, seen);
+  };
+
+  /** The reply ended while nobody was reading: take it from the history. */
+  const fromHistory = async (seen: { answered: boolean }) => {
+    const history = await fetch('/api/widget/history', {
+      headers: { Authorization: `Bearer ${token.current}` },
+    }).catch(() => null);
+    if (!history?.ok) return;
+    const rows = ((await history.json()).messages ?? []) as { role: string; content: string }[];
+    const last = rows[rows.length - 1];
+    const asked = rows[rows.length - 2];
+    if (last?.role === 'assistant' && asked?.role === 'user' && asked.content === lastSent.current) {
+      seen.answered = true;
+      setMessages((m) => [...m, { role: 'assistant', text: last.content ?? '' }]);
+    }
+  };
+
+  /**
+   * Keep reading a turn whose stream broke. It was never the stream's to lose:
+   * the turn runs on, so a few tries while the network comes back, and never
+   * sending the question again.
+   */
+  const recover = async (controller: AbortController, seen: { answered: boolean }) => {
+    for (const wait of [0, 1000, 2000, 4000]) {
+      if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+      if (controller.signal.aborted) return;
+      try {
+        const how = await follow(controller, seen);
+        if (how === 'done') return;
+        if (how === 'gone') return fromHistory(seen);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.error('[widget] reading the reply again failed', error);
+      }
+    }
+  };
+
+  /** Follow a reply this frame did not start — found running when it reloaded. */
+  const watch = async (from: string) => {
+    const controller = new AbortController();
+    abort.current = controller;
+    cursor.current = from;
+    setBusy(true);
+    setStatus(THINKING);
+    const seen = { answered: false };
+    try {
+      const how = await follow(controller, seen);
+      if (how === 'gone') await fromHistory(seen);
+      else if (how === 'ended') await recover(controller, seen);
+    } catch {
+      if (!controller.signal.aborted) await recover(controller, seen);
+    } finally {
+      setBusy(false);
+      setStatus('');
+      abort.current = null;
+    }
+  };
+
   const send = useCallback(async (text: string) => {
     if (!text.trim() || busy) return;
     lastSent.current = text;
+    cursor.current = '0';
     setMessages((m) => [...m, { role: 'user', text }]);
     setDraft('');
     setBusy(true);
@@ -223,6 +374,7 @@ export default function WidgetChat({
 
     const controller = new AbortController();
     abort.current = controller;
+    const seen = { answered: false };
 
     // One retry, and only for an expired token. A conversation that outlives the
     // token's hour is the ordinary case for a widget somebody leaves open in a
@@ -249,6 +401,17 @@ export default function WidgetChat({
         }
       }
 
+      if (response.status === 409) {
+        // A reply is already being written in this conversation — this frame
+        // lost track of it (another tab, a reload mid-turn). Follow that one;
+        // what was just typed goes back in the box rather than over it.
+        setMessages((m) => (m[m.length - 1]?.role === 'user' ? m.slice(0, -1) : m));
+        setDraft(text);
+        await recover(controller, seen);
+        seen.answered = true;
+        return;
+      }
+
       if (!response.ok || !response.body) {
         const detail = (await response.json().catch(() => ({}))).detail;
         setMessages((m) => [
@@ -261,99 +424,43 @@ export default function WidgetChat({
       /**
        * Where the events actually are, which differs by deployment.
        *
-       * Self-hosted runs the turn in the request and streams straight back from
-       * this POST. The hosted product queues every turn onto a shared fleet, so
-       * the POST can only answer "accepted" with a cursor, and the events come
-       * off a stream opened separately. Branching on the content type we were
-       * actually handed is the honest way to serve both from one file — the
-       * alternative is a build flag that lies on whichever product it is wrong
-       * about.
+       * Self-hosted streams the turn back from this POST. The hosted product
+       * queues every turn onto a shared fleet, so the POST can only answer
+       * "accepted" with a cursor, and the events come off a stream opened
+       * separately. Branching on the content type we were actually handed is the
+       * honest way to serve both from one file — the alternative is a build flag
+       * that lies on whichever product it is wrong about.
        */
-      let stream = response;
-      if (!(response.headers.get('content-type') ?? '').includes('text/event-stream')) {
+      let how: 'done' | 'ended' | 'gone';
+      if ((response.headers.get('content-type') ?? '').includes('text/event-stream')) {
+        how = await consume(response, seen);
+      } else {
         const accepted = (await response.json().catch(() => ({}))) as { cursor?: string };
-        const opened = await fetch(
-          `/api/widget/stream?cursor=${encodeURIComponent(accepted.cursor ?? '0')}`,
-          { headers: { Authorization: `Bearer ${token.current}` }, signal: controller.signal },
-        );
-        if (!opened.ok || !opened.body) {
-          setMessages((m) => [
-            ...m,
-            { role: 'assistant', text: 'Something went wrong. Please try again.', failed: true },
-          ]);
-          return;
-        }
-        stream = opened;
+        cursor.current = accepted.cursor ?? '0';
+        how = await follow(controller, seen);
       }
-
-      const reader = stream.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let answered = false;
-
-      // Frames are split on a blank line and a partial one is kept, because a
-      // chunk boundary lands mid-frame often enough to matter.
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-
-        for (const frame of frames) {
-          const line = frame.split('\n').find((l) => l.startsWith('data: '));
-          if (!line) continue;
-          let event: { type?: string; response?: string; content?: string; message?: string };
-          try {
-            event = JSON.parse(line.slice(6));
-          } catch {
-            continue;
-          }
-
-          if (event.type === 'status' || event.type === 'thinking') {
-            // The engine's own words describe the machinery. The visitor gets
-            // that it is working, and nothing about how.
-            setStatus(THINKING);
-          } else if (event.type === 'final' || event.type === 'response') {
-            answered = true;
-            const text2 = event.response ?? event.content ?? '';
-            setMessages((m) => [...m, { role: 'assistant', text: text2 }]);
-          } else if (event.type === 'cancelled') {
-            answered = true;
-            setMessages((m) => [...m, { role: 'assistant', text: 'Stopped.', failed: true }]);
-          } else if (event.type === 'done') {
-            // The queued stream stays open until it is told the turn is over.
-            await reader.cancel().catch(() => {});
-            break;
-          } else if (event.type === 'error' || event.type === 'orchestration_error') {
-            answered = true;
-            setMessages((m) => [
-              ...m,
-              { role: 'assistant', text: 'Something went wrong. Please try again.', failed: true },
-            ]);
-          }
-        }
-      }
-
-      if (!answered) {
-        setMessages((m) => [
-          ...m,
-          { role: 'assistant', text: 'Something went wrong. Please try again.', failed: true },
-        ]);
-      }
+      if (how === 'ended') await recover(controller, seen);
+      else if (how === 'gone') await fromHistory(seen);
     } catch (error) {
-      // An abort is the Stop button working, not a failure to report.
-      if ((error as Error).name !== 'AbortError') {
-        setMessages((m) => [
-          ...m,
-          { role: 'assistant', text: 'Something went wrong. Please try again.', failed: true },
-        ]);
+      // An abort is the Stop button working, not a failure to report. Anything
+      // else broke the stream, not the turn.
+      if (!controller.signal.aborted) {
+        console.error('[widget] the reply stream broke — reading it again', error);
+        await recover(controller, seen);
       }
     } finally {
+      if (!seen.answered && !controller.signal.aborted) {
+        setMessages((m) => [
+          ...m,
+          { role: 'assistant', text: 'Something went wrong. Please try again.', failed: true },
+        ]);
+      }
       setBusy(false);
       setStatus('');
       abort.current = null;
     }
+    // `consume`, `follow` and `recover` read only refs and state setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, remember]);
 
   /**

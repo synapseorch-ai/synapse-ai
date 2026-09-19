@@ -6,13 +6,13 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 /**
- * Present for parity with the hosted product, where a queued turn's events
- * arrive on a stream opened separately from the POST that started it.
+ * The visitor's turn, read again from a cursor (F49).
  *
- * Self-hosted answers the POST with the stream itself, so the widget client
- * normally never reaches here — it branches on the content type it was handed.
- * This exists so that branch cannot 404 on a self-hosted deployment running its
- * chat through the queue, which `core/routes/chat.py` already supports.
+ * A turn outlives the frame that started it — a visitor clicking through the
+ * host site reloads this frame — so a reloaded frame whose history says a turn
+ * is running, and a frame whose stream broke, read it here. In the hosted
+ * product a queued turn's events always arrive this way. 404/410 pass through:
+ * nothing to read, the answer is in the history.
  */
 export async function GET(req: Request) {
   const cursor = new URL(req.url).searchParams.get('cursor') ?? '0';
