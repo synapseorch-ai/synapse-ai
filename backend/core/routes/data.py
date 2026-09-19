@@ -134,7 +134,8 @@ async def start_synthetic_generation(req: SyntheticDataRequest):
     if current_job["status"] == "generating":
         raise HTTPException(status_code=400, detail="A generation job is already running.")
 
-    asyncio.create_task(generate_synthetic_data(req))
+    from core.background import spawn_background
+    spawn_background(generate_synthetic_data(req), name="synthetic-data")
     return {"status": "started", "message": "Generation started in background."}
 
 

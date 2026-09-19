@@ -316,11 +316,14 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
 
     The run is spawned **here**, in the handler, and not inside the response —
     which is how every other orchestration entry point does it, and the
-    difference is not cosmetic. A task created inside the response body
-    inherits `BaseHTTPMiddleware`'s cancel scope, and that scope is cancelled
-    the moment the browser goes away: measured on a real build, the detached
-    run stalled where it stood with its database connection terminated under
-    it, while the same build spawned from a handler ran on to its question.
+    difference is not cosmetic. The response body is cancelled the moment the
+    browser goes away, and whatever the body was advancing is cancelled with
+    it — before this, `prepare_builder_run`'s reads and the run's spawn both
+    ran inside it, and a real build stalled where it stood. (D99 put that down
+    to `BaseHTTPMiddleware`'s cancel scope; anyio tracks scopes per task, so a
+    task the body creates does not inherit one — F49 measured the real cause.)
+    `tests/unit/test_response_bodies_start_no_work.py` holds the rule for
+    every route.
     """
     await reject_unseeable_images(request)
     prepared = await prepare_builder_run(request, http_request.app.state.server_module)

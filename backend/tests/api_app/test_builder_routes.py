@@ -749,11 +749,12 @@ class TestTheRunIsDrivenByThePump:
     async def test_the_run_outlives_the_browser(self, client, builder, gated_llm):
         """A reload must not kill a build: the run finishes and stays resumable.
 
-        The task being detached is not enough on its own. Spawn it inside the
-        response body and it inherits `BaseHTTPMiddleware`'s cancel scope, and
-        a real build then stalled where it stood the moment the browser went
-        away — its database connection terminated under it — while reporting
-        `running` for ever. Spawning from the handler is what this pins.
+        The task being detached is not enough on its own: spawned inside the
+        response body, a real build stalled where it stood the moment the
+        browser went away, reporting `running` for ever. Spawning from the
+        handler is what this pins; `test_response_bodies_start_no_work.py`
+        holds the rule for every route, and `test_outlives_the_client.py`
+        hangs up on a real server.
         """
         from core.orchestration.runner import _active_tasks
         from core.orchestration.state import SharedState
@@ -803,36 +804,3 @@ class TestTheRunIsDrivenByThePump:
                 reader.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await reader
-
-    def test_the_route_spawns_the_run_itself(self):
-        """The run is spawned in the handler, not inside the response body.
-
-        Read as a source guard, not as behaviour, because the behaviour cannot
-        be reached from here: httpx's ASGITransport does not reproduce
-        Starlette's `BaseHTTPMiddleware` cancelling a request's scope when the
-        browser disconnects, so both spellings pass every test in this file.
-        Against a real server they differ completely — a run spawned inside the
-        response body inherits that scope and stalls where it stands, database
-        connection terminated under it, reporting `running` for ever.
-        """
-        import ast
-        import inspect
-
-        from core.routes import builder as module
-
-        tree = ast.parse(inspect.getsource(module))
-        spawned = {
-            node.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.AsyncFunctionDef)
-            and any(
-                isinstance(call.func, ast.Name) and call.func.id == "spawn_engine_run"
-                for call in ast.walk(node)
-                if isinstance(call, ast.Call)
-            )
-        }
-        for handler in ("builder_chat", "builder_resume"):
-            assert handler in spawned, (
-                f"{handler} does not call spawn_engine_run itself — if the run is "
-                "spawned from inside the streaming response it dies with the browser"
-            )

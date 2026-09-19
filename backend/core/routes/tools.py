@@ -524,7 +524,9 @@ async def reconnect_mcp_server(name: str):
         config = _server.mcp_manager.get_server_config(name)
         if config and config.get("server_type") == "remote" and not config.get("token"):
             auth_url_future: asyncio.Future = asyncio.get_event_loop().create_future()
-            asyncio.create_task(_server.mcp_manager.start_oauth_connect(config, auth_url_future))
+            from core.background import spawn_background
+            spawn_background(_server.mcp_manager.start_oauth_connect(config, auth_url_future),
+                             name="mcp-oauth-connect")
             try:
                 auth_url = await asyncio.wait_for(asyncio.shield(auth_url_future), timeout=10)
                 if auth_url:

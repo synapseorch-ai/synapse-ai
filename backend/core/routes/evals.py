@@ -14,7 +14,6 @@ do is re-run that judgement on demand: one run, or the last N of an
 orchestration. They exist because a rubric written today is worth pointing at
 work that already happened.
 """
-import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -349,7 +348,8 @@ async def run_suite(suite_id: str, request: Request):
             from core.log import get_logger
             get_logger(__name__).warning(f"suite run '{suite_run_id}' failed: {exc}")
 
-    asyncio.create_task(_drive())
+    from core.background import spawn_background
+    spawn_background(_drive(), name=f"eval-suite-{suite_run_id}")
     return {"suite_run_id": suite_run_id, "status": "running",
             "estimate": suites_mod.estimate(suite)}
 

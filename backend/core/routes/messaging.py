@@ -5,7 +5,6 @@ Includes the webhook endpoints: the platform-specific Teams/WhatsApp pair that
 predate webhook mode, and the generic verified endpoint every webhook-mode
 channel (Telegram, Slack, Discord) receives through.
 """
-import asyncio
 import json
 import logging
 
@@ -305,7 +304,8 @@ async def platform_webhook(platform: str, channel_id: str, request: Request):
             return {"type": 4, "data": {"content": "This channel is disabled."}}
         return {"status": "ignored", "reason": "channel not running"}
 
-    asyncio.create_task(adapter.handle_inbound(payload))
+    from core.background import spawn_background
+    spawn_background(adapter.handle_inbound(payload), name=f"messaging-inbound-{platform}")
 
     if platform == "discord":
         # "Thinking…" — buys the 15-minute follow-up window the adapter

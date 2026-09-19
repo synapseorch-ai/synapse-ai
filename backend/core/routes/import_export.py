@@ -290,7 +290,9 @@ async def import_bundle(req: ImportRequest):
                 import asyncio
                 loop = asyncio.get_event_loop()
                 auth_url_future: asyncio.Future = loop.create_future()
-                asyncio.create_task(_server.mcp_manager.start_oauth_connect(config, auth_url_future))
+                from core.background import spawn_background
+                spawn_background(_server.mcp_manager.start_oauth_connect(config, auth_url_future),
+                                 name="mcp-oauth-connect")
                 try:
                     auth_url = await asyncio.wait_for(asyncio.shield(auth_url_future), timeout=15.0)
                     mcp_result["status"] = "oauth_pending"
