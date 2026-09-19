@@ -130,6 +130,22 @@ class TestStop:
         assert saved[1]["content"] == chat_turns.STOPPED_ANSWER
         assert [e.event["type"] for e in turn.entries][-2:] == ["cancelled", "done"]
 
+    async def test_a_stopped_turn_is_logged_as_stopped(
+        self, client, live_server, gated_llm, chat_agent, monkeypatch
+    ):
+        """The agent's run log said `completed` for a turn that was stopped:
+        `except Exception` does not catch a cancellation."""
+        from core.agent_logger import AgentLogger
+        ended: list[str] = []
+        original = AgentLogger.run_end
+        monkeypatch.setattr(AgentLogger, "run_end",
+                            lambda self, status: (ended.append(status), original(self, status))[1])
+
+        async with _turn_in_a_model_call(live_server, gated_llm, "eleven", chat_agent["id"]) as turn:
+            await client.post("/chat/eleven/cancel")
+            await asyncio.wait_for(turn.wait(), 10)
+        assert ended == ["cancelled"]
+
     async def test_a_v1_caller_can_stop_its_turn(
         self, client, api_key, live_server, gated_llm, chat_agent
     ):

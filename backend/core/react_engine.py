@@ -2435,6 +2435,11 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         ):
             _agent_log.log_event(event)
             yield event
+    except asyncio.CancelledError:
+        # Stopped — Stop, or the fleet's cancel watcher. Not an Exception, so it
+        # used to reach the `finally` still reading "completed".
+        _log_status = "cancelled"
+        raise
     except Exception:
         _log_status = "error"
         raise
