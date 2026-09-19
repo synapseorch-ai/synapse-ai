@@ -131,6 +131,97 @@ def _format_sse_event(event: dict) -> str:
 
 # ── Chat Endpoints ──────────────────────────────────────────────────────────
 
+async def _v1_turn_events(chat_request, agent: dict, _server):
+    """One v1 chat turn's events, in v1's vocabulary — what its turn's task drives.
+
+    Started by the handler through `core.chat_turns`, never inside a response:
+    an API caller that stops reading has not asked the turn to stop, and
+    `POST /api/v1/chat/{session_id}/cancel` is how it does (F49).
+    """
+    from core import chat_turns
+    from core.react_engine import run_react_loop
+
+    turn = chat_turns.current_turn.get()
+
+    async def _stopped() -> bool:
+        return bool(turn is not None and turn.stop_requested)
+
+    # Session info first so the consumer can capture the session_id.
+    yield {
+        "type": "session",
+        "session_id": chat_request.session_id,
+        "agent_id": agent["id"],
+        "agent_name": agent["name"],
+    }
+    try:
+        async for event in run_react_loop(chat_request, _server, should_stop=_stopped,
+                                          expand_mentions=True):
+            etype = event.get("type", "")
+
+            if etype == "status":
+                yield {"type": "status", "message": event["message"]}
+
+            elif etype == "thinking":
+                yield {"type": "thinking", "message": event.get("message", "")}
+
+            elif etype == "tool_execution":
+                yield {"type": "tool_execution", "tool_name": event["tool_name"], "args": event["args"]}
+
+            elif etype == "tool_result":
+                yield {"type": "tool_result", "tool_name": event["tool_name"], "preview": event["preview"]}
+
+            elif etype == "llm_thought":
+                yield {"type": "llm_thought", "thought": event["thought"], "turn": event.get("turn", 1)}
+
+            elif etype == "final" and event.get("orch_step_id"):
+                # An orchestrator agent's step finishing, not the turn: it used
+                # to be sent as the turn's `response` and `done`, so a caller
+                # stopped reading after the first step.
+                yield {"type": "agent_step_result", "orch_step_id": event.get("orch_step_id"),
+                       "step_name": event.get("step_name", ""), "content": event.get("response", "")}
+
+            elif etype == "final":
+                yield {
+                    "type": "response",
+                    "content": event.get("response", ""),
+                    "intent": event.get("intent", "chat"),
+                    "session_id": chat_request.session_id,
+                }
+                yield {"type": "done"}
+
+            elif _pause_of(event):
+                pause = _pause_of(event)
+                yield {"type": pause.pop("status"), **pause, "session_id": chat_request.session_id}
+                yield {"type": "done"}
+
+            elif etype in ("error", "orchestration_error"):
+                # orchestration_error is what an orchestrator agent fails with.
+                log.error("[v1/chat] Agent error session=%s: %s", chat_request.session_id,
+                          event.get("message") or event.get("error"))
+                yield {"type": "error", "message": "The agent encountered an error processing your request."}
+
+            await asyncio.sleep(0)
+
+    except Exception:
+        log.exception("[v1/chat] Unhandled error session=%s", chat_request.session_id)
+        yield {"type": "error", "message": "An internal error occurred. Check server logs for details."}
+
+
+def _v1_start(body: V1ChatRequest, agent: dict, _server):
+    """Start a v1 turn from the handler; 409 while the conversation has one running."""
+    from core import chat_turns
+    from core.routes.chat import TURN_RUNNING
+
+    chat_request = _build_chat_request(body, agent)
+    try:
+        with chat_turns.claim(chat_request.session_id, message=chat_request.message,
+                              agent_key=agent["id"]) as turn:
+            turn.start(_v1_turn_events(chat_request, agent, _server))
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    return chat_request, turn
+
+
 @router.post("/chat")
 async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_key)):
     """Synchronous chat — returns only the final response."""
@@ -140,135 +231,49 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
     if not _server.agent_sessions:
         raise HTTPException(status_code=503, detail="No agent sessions available. Server may still be starting.")
 
-    chat_request = _build_chat_request(body, agent)
-    from core.react_engine import run_react_loop
-
-    final_event = None
-    error_msg = None
-    pause = None
-
-    try:
-        async for event in run_react_loop(chat_request, _server, expand_mentions=True):
-            etype = event.get("type", "")
-            if etype == "final":
-                final_event = event
-            elif _pause_of(event):
-                pause = _pause_of(event)
-            elif etype in ("error", "orchestration_error"):
-                # orchestration_error is what an orchestrator agent fails with.
-                error_msg = event.get("message") or event.get("error") or "Unknown error"
-    except Exception as exc:
-        log.exception("[v1/chat] Unhandled error for session=%s", chat_request.session_id)
-        raise HTTPException(status_code=500, detail="An internal error occurred. Check server logs for details.")
-
-    if error_msg:
-        log.error("[v1/chat] Agent error for session=%s: %s", chat_request.session_id, error_msg)
-        raise HTTPException(status_code=500, detail="The agent encountered an error processing your request.")
+    chat_request, turn = _v1_start(body, agent, _server)
+    # Waiting is not owning: this request going away leaves the turn running.
+    await turn.wait()
 
     identity = {
         "agent_id": agent["id"],
         "agent_name": agent["name"],
         "session_id": chat_request.session_id,
     }
-    if pause and not final_event:
-        prompt = pause.pop("prompt")
-        return {"response": prompt, **pause, **identity}
+    for entry in turn.entries:
+        event = entry.event
+        kind = event.get("type")
+        if kind == "error":
+            raise HTTPException(status_code=500, detail=event.get("message") or "The agent encountered an error.")
+        if kind == "cancelled":
+            return {"response": event.get("message") or "Stopped.", "status": "cancelled", **identity}
+        if kind in ("awaiting_approval", "paused"):
+            pause = {k: v for k, v in event.items() if k not in ("type", "session_id")}
+            prompt = pause.pop("prompt", "")
+            return {"response": prompt, "status": kind, **pause, **identity}
+        if kind == "response":
+            return {"response": event.get("content", ""), "status": "completed", **identity}
 
-    response_text = "I completed the requested actions."
-    if final_event:
-        response_text = final_event.get("response", response_text)
-
-    return {"response": response_text, "status": "completed", **identity}
+    return {"response": "I completed the requested actions.", "status": "completed", **identity}
 
 
 @router.post("/chat/stream")
 async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require_api_key)):
     """SSE streaming chat — returns all events."""
+    from core import chat_turns
+
     agent = await _agent_or_error(body.agent)
 
     import core.server as _server
     if not _server.agent_sessions:
         raise HTTPException(status_code=503, detail="No agent sessions available. Server may still be starting.")
 
-    chat_request = _build_chat_request(body, agent)
+    _chat_request, turn = _v1_start(body, agent, _server)
 
     async def event_generator():
-        from core.react_engine import run_react_loop, iter_with_heartbeat
-        try:
-            # Emit session info first so the consumer can capture the session_id
-            yield _format_sse_event({
-                "type": "session",
-                "session_id": chat_request.session_id,
-                "agent_id": agent["id"],
-                "agent_name": agent["name"],
-            })
-            async for event in iter_with_heartbeat(
-                run_react_loop(chat_request, _server, expand_mentions=True)
-            ):
-                # Heartbeat comments are yielded as raw SSE strings — pass through.
-                if isinstance(event, str):
-                    yield event
-                    continue
-                etype = event.get("type", "")
-
-                if etype == "status":
-                    yield _format_sse_event({"type": "status", "message": event["message"]})
-
-                elif etype == "thinking":
-                    yield _format_sse_event({
-                        "type": "thinking",
-                        "message": event.get("message", ""),
-                    })
-
-                elif etype == "tool_execution":
-                    yield _format_sse_event({
-                        "type": "tool_execution",
-                        "tool_name": event["tool_name"],
-                        "args": event["args"],
-                    })
-
-                elif etype == "tool_result":
-                    yield _format_sse_event({
-                        "type": "tool_result",
-                        "tool_name": event["tool_name"],
-                        "preview": event["preview"],
-                    })
-
-                elif etype == "llm_thought":
-                    yield _format_sse_event({
-                        "type": "llm_thought",
-                        "thought": event["thought"],
-                        "turn": event.get("turn", 1),
-                    })
-
-                elif etype == "final":
-                    yield _format_sse_event({
-                        "type": "response",
-                        "content": event.get("response", ""),
-                        "intent": event.get("intent", "chat"),
-                        "session_id": chat_request.session_id,
-                    })
-                    yield _format_sse_event({"type": "done"})
-
-                elif _pause_of(event):
-                    pause = _pause_of(event)
-                    yield _format_sse_event({
-                        "type": pause.pop("status"), **pause,
-                        "session_id": chat_request.session_id,
-                    })
-                    yield _format_sse_event({"type": "done"})
-
-                elif etype in ("error", "orchestration_error"):
-                    # orchestration_error is what an orchestrator agent fails with.
-                    log.error("[v1/chat/stream] Agent error session=%s: %s", chat_request.session_id,
-                              event.get("message") or event.get("error"))
-                    yield _format_sse_event({"type": "error", "message": "The agent encountered an error processing your request."})
-
-                await asyncio.sleep(0)
-
-        except Exception as e:
-            log.exception("[v1/chat/stream] Unhandled error session=%s", chat_request.session_id)
-            yield _format_sse_event({"type": "error", "message": "An internal error occurred. Check server logs for details."})
+        # The turn's frames exactly as v1 has always sent them — no cursor.
+        async for item in chat_turns.read(turn):
+            yield item if isinstance(item, str) else item.data
 
     return StreamingResponse(
         event_generator(),
@@ -279,6 +284,19 @@ async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/chat/{session_id}/cancel")
+async def v1_cancel_chat(session_id: str, key_record: dict = Depends(require_api_key)):
+    """Stop the turn running in this conversation.
+
+    A v1 turn carries on when its caller stops reading, so stopping it is its own
+    call — the shape `/api/v2/chat/{session_id}/cancel` has. `stopped` is false
+    when nothing was running: not an error, the turn may simply have finished.
+    """
+    from core.routes.chat import cancel_chat
+    result = await cancel_chat(session_id)
+    return {"status": "cancellation_requested", "session_id": session_id, "stopped": result["stopped"]}
 
 
 # ── Orchestration Endpoints ─────────────────────────────────────────────────

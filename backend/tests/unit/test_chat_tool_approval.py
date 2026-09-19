@@ -41,7 +41,7 @@ def captured(monkeypatch):
     """Swap the streaming half out; keep the decision-shaping half real."""
     seen = {}
 
-    def fake_guarded(request, resume_state=None, *, expand_mentions):
+    def fake_events(request, _server, resume_state=None, *, expand_mentions):
         seen["request"] = request
         seen["resume_state"] = resume_state
         # A resume is the member's own turn picked up again: its `@[path]`
@@ -52,7 +52,7 @@ def captured(monkeypatch):
                 yield b""
         return _empty()
 
-    monkeypatch.setattr(chat_routes, "_guarded_stream", fake_guarded)
+    monkeypatch.setattr(chat_routes, "_event_stream", fake_events)
     return seen
 
 

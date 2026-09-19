@@ -1,8 +1,8 @@
 """
 The embeddable chat widget: one script tag drops an agent into another site.
 
-The visitor route names — ``session``, ``refresh``, ``chat``, ``cancel``,
-``history`` — are a contract shared with the cloud product, because the widget
+The visitor route names — ``session``, ``refresh``, ``chat``, ``stream``,
+``cancel``, ``history`` — are a contract shared with the cloud product, because the widget
 client that calls them is the same file in both. It reaches a Next route handler
 here and a control-plane route there, and the paths are what let one file do
 both. Renaming one without the other is a 404 that only shows up in a browser.
@@ -54,6 +54,7 @@ import json
 import time
 
 from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core.chat_widgets import branding as _branding
@@ -61,7 +62,9 @@ from core.chat_widgets import limits as _limits
 from core.chat_widgets import origins as _origins
 from core.chat_widgets import store as _store
 from core.models import ChatRequest
-from core.routes.chat import _guarded_stream, _sse
+from core import chat_turns
+from core.routes import chat as _chat
+from core.routes.chat import TURN_RUNNING, _read, _sse
 from core.widget_token import VisitorClaims, mint, refresh, verify
 
 router = APIRouter()
@@ -223,34 +226,68 @@ async def widget_chat(
     request: Request,
     authorization: str | None = Header(default=None),
 ):
-    """One turn, streamed back on the connection that asked for it.
+    """One turn, streamed back on the connection that asked for it — which can
+    go away without taking the turn with it; `/api/widget/stream` reads it again.
 
     The agent comes from the *token*, never from the body — which is the one
     thing `api_v1`'s `_resolve_agent_for_api` gets wrong for this purpose: it
     falls back to the first configured agent when the identifier does not match,
     so a typo reaches an agent nobody meant to publish.
     """
+    import core.server as _server
+
     claims = await _claims(authorization)
     widget = await _live_widget(claims)
     redis = _redis(request)
 
-    if not await _limits.check_ip(redis, _client_ip(request)):
-        raise HTTPException(status_code=429, detail="Too many messages. Try again in a few minutes.")
-    if not await _limits.check_daily(redis, widget["id"], widget.get("daily_message_cap")):
-        raise HTTPException(
-            status_code=429,
-            detail="This chat has reached its limit for today. Please try again tomorrow.",
-        )
+    # Claimed before the limits are counted, so a message refused because a
+    # reply is still being written costs the visitor nothing.
+    try:
+        with chat_turns.claim(claims.session_id, message=body.message,
+                              agent_key=claims.agent_id or "default") as turn:
+            if not await _limits.check_ip(redis, _client_ip(request)):
+                raise HTTPException(status_code=429, detail="Too many messages. Try again in a few minutes.")
+            if not await _limits.check_daily(redis, widget["id"], widget.get("daily_message_cap")):
+                raise HTTPException(
+                    status_code=429,
+                    detail="This chat has reached its limit for today. Please try again tomorrow.",
+                )
 
-    await _refuse_a_gated_agent(claims.agent_id)
+            await _refuse_a_gated_agent(claims.agent_id)
 
-    turn = ChatRequest(
-        message=body.message,
-        session_id=claims.session_id,
-        agent_id=claims.agent_id,
-    )
-    # A visitor is not a member: their `@[path]` must not read the vault.
-    return _sse(_for_a_visitor(_guarded_stream(turn, expand_mentions=False)))
+            visitor_turn = ChatRequest(
+                message=body.message,
+                session_id=claims.session_id,
+                agent_id=claims.agent_id,
+            )
+            # Started here, not inside the response: a visitor clicking through
+            # the host site reloads this frame, and that must not end the turn
+            # (F49). A visitor is not a member: their `@[path]` must not read
+            # the vault.
+            turn.start(_chat._event_stream(visitor_turn, _server, None, expand_mentions=False))
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    return _sse(_for_a_visitor(_read(turn)))
+
+
+@router.get("/api/widget/stream")
+async def widget_stream(cursor: str | None = None, authorization: str | None = Header(default=None)):
+    """Read this conversation's turn again, from `cursor` — through the same filter.
+
+    What a reloaded frame opens when its history says a turn is still running,
+    and what a broken stream reconnects to. The conversation comes from the
+    signed token, never the URL, so a visitor can only ever read their own.
+    """
+    claims = await _claims(authorization)
+    await _live_widget(claims)
+    turn = chat_turns.find(claims.session_id)
+    if turn is None:
+        return JSONResponse(status_code=404, content={"detail": "No reply is being written."})
+    try:
+        after = chat_turns.parse_cursor(turn, cursor)
+    except chat_turns.TurnGone:
+        return JSONResponse(status_code=410, content={"detail": "That reply has finished."})
+    return _sse(_for_a_visitor(_read(turn, after)))
 
 
 #: The only events that may leave this building.
@@ -299,32 +336,56 @@ async def _for_a_visitor(stream):
     timeline is not something a visitor can act on.
     """
     async for chunk in stream:
-        if not isinstance(chunk, str) or not chunk.startswith("data: "):
+        if not isinstance(chunk, str):
+            continue
+        if chunk.lstrip().startswith(":"):
             # Heartbeat comments keep the connection alive and carry nothing.
             yield chunk
             continue
+
+        # A frame may carry its cursor (`id: …`) before its `data:` line. Only
+        # those two are read; anything else in a frame is dropped, so nothing
+        # rides past the allowlist on a line of its own.
+        cursor, payload = None, []
+        for line in chunk.split("\n"):
+            if line.startswith("id: "):
+                cursor = line[4:]
+            elif line.startswith("data: "):
+                payload.append(line[6:])
+        if not payload:
+            continue
         try:
-            event = json.loads(chunk[6:].strip())
+            event = json.loads("\n".join(payload))
         except (ValueError, TypeError):
             continue
         if not isinstance(event, dict):
             continue
 
-        kind = event.get("type")
-        if kind in _PAUSE_EVENTS:
-            # Closed, not parked: the pause is already written to the session and
-            # a member can see it in the workspace. The visitor gets a sentence
-            # and a finished conversation instead of a spinner waiting on a
-            # dialog that will never be shown to them.
-            yield f"data: {json.dumps({'type': 'response', 'content': _PAUSED_MESSAGE})}\n\n"
+        shown, ends = _visitor_view(event)
+        prefix = f"id: {cursor}\n" if cursor else ""
+        for item in shown:
+            yield f"{prefix}data: {json.dumps(item)}\n\n"
+        if ends:
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
-        if kind not in _VISITOR_EVENTS:
-            continue
 
-        # Re-serialised from a narrowed dict rather than passed through, so a
-        # field added to an allowed event cannot ride along unread.
-        yield f"data: {json.dumps(_visitor_fields(event))}\n\n"
+
+def _visitor_view(event: dict) -> tuple[list[dict], bool]:
+    """One event as a stranger may see it, and whether their turn ends there.
+
+    Closed, not parked, on a pause: the pause is already written to the session
+    and a member can see it in the workspace. The visitor gets a sentence and a
+    finished conversation instead of a spinner waiting on a dialog that will
+    never be shown to them.
+    """
+    kind = event.get("type")
+    if kind in _PAUSE_EVENTS:
+        return [{"type": "response", "content": _PAUSED_MESSAGE}], True
+    if kind not in _VISITOR_EVENTS:
+        return [], False
+    # Re-serialised from a narrowed dict rather than passed through, so a
+    # field added to an allowed event cannot ride along unread.
+    return [_visitor_fields(event)], False
 
 
 def _visitor_fields(event: dict) -> dict:
@@ -367,7 +428,12 @@ async def widget_history(authorization: str | None = Header(default=None)):
 
     row = await _sessions.get(claims.session_id, claims.agent_id)
     messages = (row or {}).get("messages") or []
-    return {"session_id": claims.session_id, "messages": messages}
+    # A turn still being written is not in `messages` yet — a turn is saved when
+    # it ends. `running` is what lets a reloaded frame show the question and
+    # follow the reply (`/api/widget/stream`).
+    turn = chat_turns.live(claims.session_id)
+    running = {"message": turn.message, "cursor": turn.cursor(0)} if turn else None
+    return {"session_id": claims.session_id, "messages": messages, "running": running}
 
 
 # ── The owner's surface ─────────────────────────────────────────────────────

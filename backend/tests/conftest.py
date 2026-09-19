@@ -159,6 +159,32 @@ def _isolate_notifications(tmp_path, monkeypatch):
     notif_mod.hub._terminal_notified.clear()
 
 
+# ── chat turn isolation (autouse) ────────────────────────────────────────────
+@pytest_asyncio.fixture(autouse=True)
+async def _isolate_chat_turns(_isolate_run_checkpoints):
+    """No chat turn outlives its test.
+
+    A turn runs in its own task now (F49), so one a test left running would
+    still be writing to a store the next test's fixtures have replaced — or to a
+    loop that has closed. Torn down before the store fixture it depends on.
+    """
+    import asyncio
+    import contextlib
+
+    from core import chat_turns
+
+    chat_turns._TURNS.clear()
+    yield
+    leftovers = [t.task for t in chat_turns._TURNS.values()
+                 if t.task is not None and not t.task.done()]
+    for task in leftovers:
+        task.cancel()
+    for task in leftovers:
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(task, 5)
+    chat_turns._TURNS.clear()
+
+
 # ── fake LLM (autouse) ───────────────────────────────────────────────────────
 @pytest.fixture(autouse=True)
 def fake_llm(monkeypatch):
@@ -207,6 +233,56 @@ async def client(test_app):
     transport = httpx.ASGITransport(app=test_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+@pytest_asyncio.fixture
+async def live_server(test_app, tmp_path):
+    """The same app behind a real uvicorn server on this test's loop.
+
+    For what ``client`` cannot show: a client that hangs up mid-stream (F49).
+    Set up through ``client`` or the store; stream through ``live_server.client()``.
+    """
+    import os
+
+    from _fakes.live_server import serve
+
+    assert str(tmp_path) in os.environ.get("SYNAPSE_DB_URL", ""), (
+        "the live server must run against this test's store, never backend/var"
+    )
+    async with serve(test_app) as live:
+        yield live
+
+
+@pytest.fixture
+def gated_llm(monkeypatch):
+    """A model call that parks until the test lets it go.
+
+    Patched at the same three sites as ``fake_llm``. ``started`` is set when a
+    call arrives, ``release`` lets every waiting call answer ``answer``; the
+    gate is opened at teardown so nothing is left parked on a closed loop.
+    """
+    import asyncio
+    import types
+
+    gate = types.SimpleNamespace(
+        started=asyncio.Event(), release=asyncio.Event(),
+        answer="The answer, after the gate.", calls=0,
+    )
+
+    async def _gated(*args, **kwargs):
+        gate.calls += 1
+        gate.started.set()
+        await gate.release.wait()
+        return gate.answer
+
+    import core.llm_providers as _llm
+    monkeypatch.setattr(_llm, "generate_response", _gated, raising=False)
+    import core.react_engine as _re
+    monkeypatch.setattr(_re, "llm_generate_response", _gated, raising=False)
+    import core.routes.agents as _agents
+    monkeypatch.setattr(_agents, "llm_generate_response", _gated, raising=False)
+    yield gate
+    gate.release.set()
 
 
 # ── seed fixtures ────────────────────────────────────────────────────────────

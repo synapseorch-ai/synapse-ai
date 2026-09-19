@@ -1,45 +1,28 @@
 """
 Chat endpoints: /chat and /chat/stream
 Thin wrappers around the shared ReAct engine (core.react_engine).
+
+A turn is started by the route *handler* and runs in a task of its own
+(`core.chat_turns`); the response only reads it. So a reader leaving — a closed
+tab, a reload, a laptop waking up — ends that reader, never the turn (F49). Stop
+is `/chat/{id}/cancel`, and `GET /chat/{id}/events` reads a turn again from a
+cursor.
 """
 import json
 import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
+from core import chat_turns
 from core.models import ChatRequest, ChatResponse
 from pydantic import BaseModel
 from core.react_engine import run_react_loop, parse_tool_call, iter_with_heartbeat  # noqa: F401 — re-export for backwards compat
 
 router = APIRouter()
 
-
-#: Chat turns running in *this* process, by session id.
-#:
-#: The single-process product has no worker and no Redis, so there is nothing
-#: to publish a stop signal to — the task doing the work is right here. Same
-#: shape as `core.orchestration.runner._active_tasks`, and the same reason:
-#: cancelling the task reaches a turn that is inside an LLM call, which a flag
-#: checked between turns cannot.
-#:
-#: Scale mode keeps its own path (the Redis key the worker watches). A
-#: deployment may be running both, so `/chat/{id}/cancel` does both and reports
-#: whether anything was actually there to stop.
-_ACTIVE_CHAT_TASKS: dict[str, asyncio.Task] = {}
-
-#: Sessions asked to stop. Two mechanisms, because they fail in opposite ways.
-#:
-#: The flag is the clean one: the loop consults it between turns and raises,
-#: which unwinds through the generator and leaves a `cancelled` event and a
-#: `done` on the stream — so the client learns why the turn ended. It cannot
-#: reach a turn already inside one long LLM call.
-#:
-#: Cancelling the task can. What it cannot do is speak afterwards: the response
-#: task is the one being cancelled, so anything yielded after that point may
-#: never reach the wire. Setting the flag first gives the loop a chance to end
-#: cleanly, and the cancel is what stops a wedged turn from running on.
-_STOP_REQUESTED: set[str] = set()
+#: What a second message gets while a turn is still running on its conversation.
+TURN_RUNNING = "A reply is still being written in this conversation."
 
 
 async def _resolve_agent(request: ChatRequest):
@@ -56,86 +39,105 @@ async def _resolve_agent(request: ChatRequest):
         return None
 
 
-@router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    import core.server as _server
-    if not _server.agent_sessions:
-        raise HTTPException(status_code=500, detail="No agents connected")
+def _start(request: ChatRequest, resume_state: dict | None = None, *,
+           expand_mentions: bool) -> chat_turns.ChatTurn:
+    """Start the turn from the handler. Raises `TurnAlreadyRunning`.
 
-    final_event = None
+    `expand_mentions` has no default on purpose: every caller says whose text
+    this is — a member's (`@[path]` reads the vault) or a widget visitor's (it
+    never does).
+    """
+    import core.server as _server
+
+    with chat_turns.claim(request.session_id, message=request.message or "",
+                          agent_key=request.agent_id or "default") as turn:
+        turn.start(_event_stream(request, _server, resume_state,
+                                 expand_mentions=expand_mentions))
+    return turn
+
+
+def _read(turn: chat_turns.ChatTurn, after: int = 0):
+    """The turn's events for one reader, each with its cursor."""
+    async def body():
+        async for item in chat_turns.read(turn, after):
+            yield item if isinstance(item, str) else chat_turns.frame(turn, item)
+    return body()
+
+
+def _summarize(turn: chat_turns.ChatTurn) -> ChatResponse:
+    """A finished turn as the one-shot `/chat` answer."""
     pause = None
-    async for event in run_react_loop(request, _server, expand_mentions=True):
-        if event["type"] == "final":
-            final_event = event
-        elif event["type"] == "human_input_required":
+    for entry in turn.entries:
+        event = entry.event
+        kind = event.get("type")
+        if kind == "response":
+            return ChatResponse(
+                response=event.get("content", ""), intent=event.get("intent", "chat"),
+                data=event.get("data"), tool_name=event.get("tool_name"),
+            )
+        if kind == "error":
+            return ChatResponse(response=event.get("message", ""), intent="chat", data=None, tool_name=None)
+        if kind == "orchestration_error":
+            # An orchestrator agent failed — same outcome, different event shape.
+            return ChatResponse(response=event.get("error", ""), intent="chat", data=None, tool_name=None)
+        if kind == "cancelled":
+            return ChatResponse(response=event.get("message") or "Stopped.", intent="cancelled",
+                                data=None, tool_name=None)
+        if kind == "human_input_required" and pause is None:
             from core.routes.api_v1 import _pause_of
             pause = _pause_of(event)
-        elif event["type"] == "error":
-            return ChatResponse(response=event["message"], intent="chat", data=None, tool_name=None)
-        elif event["type"] == "orchestration_error":
-            # An orchestrator agent failed — same outcome, different event shape.
-            return ChatResponse(response=event["error"], intent="chat", data=None, tool_name=None)
 
-    if not final_event and pause:
+    if pause:
         # Stopped for a person, not finished (F68): a tool call awaiting approval
         # or an orchestration paused on a human step.
         status = pause.pop("status")
         prompt = pause.pop("prompt")
         return ChatResponse(response=prompt, intent=status, data=pause, tool_name=None)
+    return ChatResponse(response="I completed the requested actions.", intent="chat", data=None, tool_name=None)
 
-    if not final_event:
-        return ChatResponse(response="I completed the requested actions.", intent="chat", data=None, tool_name=None)
 
-    return ChatResponse(
-        response=final_event["response"],
-        intent=final_event["intent"],
-        data=final_event.get("data"),
-        tool_name=final_event.get("tool_name"),
-    )
+@router.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    import core.server as _server
+    if not _server.agent_sessions:
+        raise HTTPException(status_code=500, detail="No agents connected")
+    try:
+        turn = _start(request, expand_mentions=True)
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    # Waiting is not owning: this request going away leaves the turn running.
+    await turn.wait()
+    return _summarize(turn)
 
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Real-time streaming endpoint with SSE"""
-    return _sse(_guarded_stream(request, expand_mentions=True))
+    try:
+        turn = _start(request, expand_mentions=True)
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    return _sse(_read(turn))
 
 
-def _guarded_stream(request: ChatRequest, resume_state: dict | None = None, *,
-                    expand_mentions: bool):
-    """The turn's events, with the session claimed and a stop handled.
+@router.get("/chat/{session_id}/events")
+async def chat_events(session_id: str, request: Request, after: str | None = None):
+    """Read a conversation's turn again — the live one, or the one just ended.
 
-    Shared by the first turn and by a resume after a tool approval: both are
-    the same loop, they only differ in what seeds it. `expand_mentions` has no
-    default on purpose: every caller says whose text this is — a member's
-    (`@[path]` reads the vault) or a widget visitor's (it never does).
+    `after` (or `Last-Event-ID`) is the cursor of the last event already seen;
+    without it the turn is read from its start. 404 when the conversation has no
+    turn held here (it finished long ago, or never ran in this process — its
+    answer is in the conversation); 410 when the cursor belongs to a turn that
+    has since been replaced.
     """
-    async def event_generator():
-        import core.server as _server
-
-        # Claim this session for the duration of the turn. Registered from
-        # inside the generator because that is the task actually streaming —
-        # the request handler has already returned by the time this runs.
-        _session_key = getattr(request, "session_id", None)
-        _task = asyncio.current_task()
-        if _session_key and _task is not None:
-            _ACTIVE_CHAT_TASKS[_session_key] = _task
-
-        try:
-            async for chunk in _event_stream(request, _server, resume_state,
-                                             expand_mentions=expand_mentions):
-                yield chunk
-        except asyncio.CancelledError:
-            # Stopped on purpose: say so and close the stream cleanly, rather
-            # than letting the client wait out a socket that will never speak
-            # again.
-            yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Stopped.'})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        finally:
-            if _session_key and _ACTIVE_CHAT_TASKS.get(_session_key) is _task:
-                _ACTIVE_CHAT_TASKS.pop(_session_key, None)
-            _STOP_REQUESTED.discard(_session_key or "")
-
-    return event_generator()
+    turn = chat_turns.find(session_id)
+    if turn is None:
+        return JSONResponse(status_code=404, content={"detail": "No turn is running in this conversation."})
+    try:
+        after_seq = chat_turns.parse_cursor(turn, after or request.headers.get("last-event-id"))
+    except chat_turns.TurnGone:
+        return JSONResponse(status_code=410, content={"detail": "That turn has ended; read the conversation instead."})
+    return _sse(_read(turn, after_seq))
 
 
 def _sse(generator):
@@ -152,6 +154,7 @@ def _sse(generator):
 
 async def _event_stream(request, _server, resume_state: dict | None = None, *,
                         expand_mentions: bool = False):
+    """One chat turn's events as SSE frames — the producer a turn's task drives."""
     # Route builder agents to the dedicated builder stream
     agent = await _resolve_agent(request)
     if agent and agent.get("type") == "builder":
@@ -160,8 +163,24 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
             yield chunk
         return
 
+    turn = chat_turns.current_turn.get()
+    if turn is not None and agent and agent.get("type") != "orchestrator":
+        # Stopped before it answered, a turn still keeps its question — as the
+        # fleet's chat job does. Otherwise Stop destroyed the exchange rather
+        # than ending it, and a reopened conversation lost what was asked.
+        # Saved under the id the engine saves a finished turn under. An
+        # orchestrator agent's turns are not saved at all, stopped or not.
+        async def _save_stopped(agent_id=agent.get("id"), session_id=request.session_id,
+                                message=request.message or ""):
+            from core.session import _save_conversation_turn
+            await _save_conversation_turn(session_id=session_id or "default", agent_id=agent_id,
+                                          user=message, assistant=chat_turns.STOPPED_ANSWER)
+        turn.on_stop = _save_stopped
+
     async def _stopped() -> bool:
-        return getattr(request, "session_id", None) in _STOP_REQUESTED
+        # The turn's own flag: a Stop that arrived after an earlier turn ended
+        # must not end this one.
+        return bool(turn is not None and turn.stop_requested)
 
     try:
         # The last turn-boundary snapshot. Kept so a pause can be resumed from
@@ -312,14 +331,10 @@ async def cancel_chat(session_id: str):
     `stopped` says whether anything was found to stop: false means the turn had
     already finished, which is not an error and should not read as one.
     """
-    stopped = False
-
-    # In-process (single-process product): the task is right here.
-    _STOP_REQUESTED.add(session_id)
-    task = _ACTIVE_CHAT_TASKS.get(session_id)
-    if task is not None and not task.done():
-        task.cancel()
-        stopped = True
+    # In-process (single-process product): the turn's task is right here. Only
+    # a live turn is flagged — a flag left for a turn that had already ended
+    # used to end the conversation's *next* turn at its first boundary.
+    stopped = await chat_turns.stop(session_id)
 
     # Scale mode: the turn is on a worker, so the signal goes through Redis.
     # Both paths run — a deployment can be serving chat in-process while the
@@ -364,22 +379,33 @@ async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
     allow `rm`.
     """
     from core.store import sessions as _sessions
+    import core.server as _server
 
     agent_key = decision.agent_id or "default"
-    pending = await _sessions.get_pending_approval(session_id, agent_key)
-    if not pending:
-        raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
+    # The conversation is claimed before the question is spent: answering while
+    # another turn runs here is refused with the question still open, rather
+    # than cleared and then refused.
+    try:
+        with chat_turns.claim(session_id, agent_key=agent_key) as turn:
+            pending = await _sessions.get_pending_approval(session_id, agent_key)
+            if not pending:
+                raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
 
-    # Cleared before the turn runs, not after. A resume that crashed with the
-    # row still set would re-open a question the person has already answered.
-    await _sessions.set_pending_approval(session_id, agent_key, None)
+            # Cleared before the turn runs, not after. A resume that crashed with
+            # the row still set would re-open a question the person has already
+            # answered.
+            await _sessions.set_pending_approval(session_id, agent_key, None)
 
-    from core.chat_approval import resume_state_for
-    resume_state = resume_state_for(pending, approve=decision.approve, reason=decision.reason)
+            from core.chat_approval import resume_state_for
+            resume_state = resume_state_for(pending, approve=decision.approve, reason=decision.reason)
 
-    resumed = ChatRequest(
-        message=pending.get("message") or "",
-        session_id=session_id,
-        agent_id=None if agent_key == "default" else agent_key,
-    )
-    return _sse(_guarded_stream(resumed, resume_state=resume_state, expand_mentions=True))
+            resumed = ChatRequest(
+                message=pending.get("message") or "",
+                session_id=session_id,
+                agent_id=None if agent_key == "default" else agent_key,
+            )
+            turn.message = resumed.message
+            turn.start(_event_stream(resumed, _server, resume_state, expand_mentions=True))
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    return _sse(_read(turn))

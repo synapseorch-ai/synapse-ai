@@ -24,6 +24,7 @@ from core.llm_providers import LLMResult, generate_response_ex as llm_generate_r
 from core.model_wait import ModelWait
 from core.tools import aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
+from core import chat_approval as _chat_approval
 import anyio as _anyio
 import re as _re
 from datetime import timedelta
@@ -1819,15 +1820,8 @@ async def run_agent_step(
                     yield {
                         "type": "human_input_required",
                         "kind": "tool_approval",
-                        # `explain()` returns an independent clause beginning
-                        # with "it", so it is joined with a dash rather than
-                        # spliced after "which": "…run **scrape_url**, which it
-                        # reaches systems outside this workspace" is what a live
-                        # approval card said, and it is the same splice the
-                        # widget refusal had to fix. Nobody had read this one
-                        # aloud because nothing could reach the card.
-                        "prompt": (f"The agent wants to run **{tool_name}** — "
-                                   f"{_tool_policy.explain(_category)}. Allow it?"),
+                        # One sentence, shared with a reopened page's card.
+                        "prompt": _chat_approval.approval_prompt(tool_name, _category),
                         "tool_name": tool_name,
                         "tool_args": tool_args,
                         "category": _category,

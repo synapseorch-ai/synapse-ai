@@ -42,6 +42,37 @@ def parked_payload(event: dict, *, message: str, progress: dict | None) -> dict[
     }
 
 
+def approval_prompt(tool_name: str | None, category: str | None) -> str:
+    """The question the approval card asks — live, and again on a reopened page.
+
+    `explain()` returns an independent clause beginning with "it", so it is
+    joined with a dash rather than spliced after "which": "…run **scrape_url**,
+    which it reaches systems outside this workspace" is what a live approval
+    card once said.
+    """
+    from core import tool_policy
+    return f"The agent wants to run **{tool_name}** — {tool_policy.explain(category)}. Allow it?"
+
+
+def public_view(pending: dict | None) -> dict[str, Any] | None:
+    """A parked call as a page may show it: the card, never the snapshot.
+
+    `progress` is engine state — the context text the loop had built, the
+    tools it had used — and a reopened page has no use for it.
+    """
+    if not pending:
+        return None
+    return {
+        "kind": "tool_approval",
+        "tool_name": pending.get("tool_name"),
+        "tool_args": pending.get("tool_args") or {},
+        "category": pending.get("category"),
+        "approval_id": pending.get("approval_id"),
+        "message": pending.get("message") or "",
+        "prompt": approval_prompt(pending.get("tool_name"), pending.get("category")),
+    }
+
+
 def resume_state_for(pending: dict, *, approve: bool, reason: str = "") -> dict[str, Any]:
     """Turn a parked call and a person's answer into a state the loop resumes from.
 

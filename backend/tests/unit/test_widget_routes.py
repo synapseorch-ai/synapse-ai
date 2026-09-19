@@ -318,6 +318,22 @@ class TestTheStreamIsAnAllowlist:
         out = await self._emitted([{"type": "status", "message": "calling scrape_url on acme.com"}])
         assert out == [{"type": "status"}]
 
+    async def test_a_frame_with_a_cursor_is_filtered_like_any_other(self):
+        """A turn read again carries `id:` before its `data:` (F49). The filter
+        used to pass anything not starting with `data:` straight through as a
+        heartbeat — which, with a cursor in front, would have been every event."""
+        from core.routes.widget import _for_a_visitor
+
+        async def source():
+            yield ('id: t1-4\ndata: ' + json.dumps(
+                {"type": "tool_execution", "tool_name": "run_sql_query",
+                 "args": {"sql": "SELECT * FROM customers"}}) + '\n\n')
+            yield 'id: t1-5\ndata: ' + json.dumps({"type": "response", "content": "Hi."}) + '\n\n'
+            yield 'id: t1-6\nevent: leak\ndata: ' + json.dumps({"type": "_log_llm_call"}) + '\n\n'
+
+        seen = [chunk async for chunk in _for_a_visitor(source())]
+        assert seen == ['id: t1-5\ndata: {"type": "response", "content": "Hi."}\n\n']
+
     async def test_a_pause_ends_the_conversation_rather_than_asking(self):
         out = await self._emitted([
             {"type": "human_input_required", "kind": "tool_approval",

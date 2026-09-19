@@ -8,9 +8,11 @@ GET  /api/sessions/{session_id}/snapshot    → {last_response, last_updated}
 DELETE /api/sessions/{session_id}           → delete a session
 POST /api/sessions/{session_id}/last-turn/pop → take the last turn back (retry)
 """
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from core import chat_turns
 
 from core.session import (
     list_chat_sessions,
@@ -31,9 +33,24 @@ async def get_sessions(agent_id: str | None = Query(default=None)):
 
 @router.get("/api/sessions/{session_id}/history")
 async def get_session_history(session_id: str, agent_id: str | None = Query(default=None)):
-    """Return the full list of turns for a session."""
+    """Return the full list of turns for a session — and what is still open in it.
+
+    A turn is saved when it ends, so a conversation reopened mid-turn is told
+    about it here (`running`, readable at `/chat/{id}/events`), and one waiting
+    on a tool call gets its question back (`pending_approval`, the card without
+    the loop's snapshot).
+    """
+    from core.chat_approval import public_view
+    from core.store import sessions as store
+
     turns = await _get_conversation_history(session_id, agent_id=agent_id)
-    return {"session_id": session_id, "agent_id": agent_id, "turns": turns}
+    turn = chat_turns.live(session_id)
+    pending = await store.get_pending_approval(session_id, agent_id or "default")
+    return {
+        "session_id": session_id, "agent_id": agent_id, "turns": turns,
+        "running": turn.summary() if turn else None,
+        "pending_approval": public_view(pending),
+    }
 
 
 @router.get("/api/sessions/{session_id}/snapshot")
@@ -66,6 +83,10 @@ async def pop_session_last_turn(session_id: str, body: PopTurnRequest | None = N
     which happened.
     """
     body = body or PopTurnRequest()
+    if chat_turns.live(session_id) is not None:
+        # The running turn saves when it ends; a pop now would remove the turn
+        # before it, and that save would land after.
+        raise HTTPException(status_code=409, detail="A reply is still being written in this conversation.")
     turn = await pop_last_conversation_turn(
         session_id, agent_id=body.agent_id, expect_user=body.expect_user)
     return {"session_id": session_id, "removed": turn is not None, "turn": turn}
