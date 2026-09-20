@@ -22,6 +22,9 @@ export interface ValidationResult {
 const error = (message: string): StepIssue => ({ severity: 'error', message });
 const warning = (message: string): StepIssue => ({ severity: 'warning', message });
 
+/** Steps that exist to produce a value, so losing it is worth saying. */
+const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform', 'extract_json', 'human']);
+
 /**
  * `agents` is the list the caller already holds for the picker. When it is
  * given, an `agent_id` that names nothing in it is an error — the engine
@@ -176,6 +179,19 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
             case 'extract_json':
                 if (!s.input_keys?.length) add(s.id, warning('No input keys — nothing to extract from'));
                 break;
+        }
+
+        // A step whose whole purpose is a value, with nowhere to put it.
+        //
+        // These executors write `shared_state[output_key]` and nothing else
+        // keeps what they produced, so without one the step runs, costs its
+        // model call, and its result is dropped — no later step can read it.
+        // Left out on purpose: routing steps (`evaluator`, `if_else`, `switch`)
+        // whose key only records the decision they already acted on, `print`
+        // (its text is in the run log either way), and the containers, `loop`
+        // and `parallel`, whose key is a summary of what their body did.
+        if (RESULT_STEP_TYPES.has(s.type) && !s.output_key?.trim()) {
+            add(s.id, warning("No output key — this step's result is discarded"));
         }
 
         // Any step may name an agent (agent steps must, evaluators may). A name

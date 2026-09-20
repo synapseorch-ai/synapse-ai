@@ -2191,6 +2191,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         return {"error": f"Unknown tool: {tool_name}"}
 
 
+#: Steps that exist to produce a value, so losing it is worth an issue.
+_RESULT_STEP_TYPES = frozenset({"agent", "llm", "tool", "merge", "transform", "extract_json", "human"})
+
+
 def _validate_orchestration(orch: dict) -> dict:
     """Return {"ok": bool, "issues": [str, ...]} describing wiring problems.
 
@@ -2273,6 +2277,14 @@ def _validate_orchestration(orch: dict) -> dict:
                     f"needs next_step_id set to the merge step where its branches meet; "
                     f"add a merge step if the orchestration has none."
                 )
+        if stype in _RESULT_STEP_TYPES and not (s.get("output_key") or "").strip():
+            # These executors write `shared_state[output_key]` and nothing else
+            # keeps what they produced. Routing steps, `print` and the two
+            # containers are left out: their key is a record, not the point.
+            issues.append(
+                f"Step '{sid}' ({stype}) has no output_key — its result is discarded and no "
+                f"later step can read it."
+            )
         if stype == "merge" and not (s.get("input_keys") or []):
             # It combines the keys it is given and nothing else — with none it
             # writes an empty result over its output_key and says nothing.

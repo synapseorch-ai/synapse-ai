@@ -895,6 +895,31 @@ class TestParallelConvergence:
         assert len(issues) == 1, issues
         assert "input_keys" in issues[0]
 
+    def test_a_result_step_with_no_output_key_is_an_issue(self):
+        # A merge, an agent, an llm — their whole purpose is the value they
+        # write. Naveen's Report Compiler had none, and nothing said so; the
+        # panel's placeholder even reads like a value (2026-09-20).
+        from core.builder_tools import _validate_orchestration
+        doc = {"id": "o", "entry_step_id": "l1", "steps": [
+            {"id": "l1", "name": "Draft", "type": "llm", "prompt_template": "x", "next_step_id": "e1"},
+            {"id": "e1", "name": "Done", "type": "end"},
+        ]}
+        issues = [i for i in _validate_orchestration(doc)["issues"] if "output_key" in i]
+        assert len(issues) == 1, issues
+        assert "l1" in issues[0] and "discarded" in issues[0]
+
+    def test_a_routing_or_print_step_needs_no_output_key(self):
+        # Their key records a decision they have already acted on, or text the
+        # run log carries anyway — warning about those is noise.
+        from core.builder_tools import _validate_orchestration
+        doc = {"id": "o", "entry_step_id": "s1", "steps": [
+            {"id": "s1", "name": "Show", "type": "print", "print_content": "hi", "next_step_id": "s2"},
+            {"id": "s2", "name": "Gate", "type": "if_else", "if_condition": "True",
+             "if_true_step_id": "e1", "if_false_step_id": "e1"},
+            {"id": "e1", "name": "Done", "type": "end"},
+        ]}
+        assert [i for i in _validate_orchestration(doc)["issues"] if "output_key" in i] == []
+
     def test_the_message_says_to_add_a_merge_rather_than_delete_anything(self):
         # The saver acts on these messages literally: told that a read had no
         # writer, it deleted the read (F123). This one must point at the fix.
