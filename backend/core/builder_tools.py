@@ -2411,7 +2411,18 @@ def _validate_orchestration(orch: dict) -> dict:
                 )
 
     # Reachability walk: every reachable step must be able to hit an `end`.
-    # Dead-end non-end steps (no next_step_id / routes / branches) are bugs.
+    # Dead-end non-end steps (no next_step_id / routes / branches) are bugs —
+    # except inside a container, whose members' continuation is the container's
+    # (F124). A loop runs the steps in `loop_step_ids` in order and never
+    # follows `next_step_id`; `resolve_branch_chain` walks a single-entry
+    # branch until the join or a step with no next. Demanding one here is what
+    # made the builder give a loop body an edge to the step after the loop.
+    # The containers themselves are ordinary steps and stay checked.
+    contained: set[str] = set()
+    for s in steps:
+        contained.update(x for x in (s.get("loop_step_ids") or []) if x)
+        for branch in s.get("parallel_branches") or []:
+            contained.update(x for x in branch if x)
     if entry in by_id:
         from collections import deque
         visited: set[str] = set()
@@ -2449,9 +2460,10 @@ def _validate_orchestration(orch: dict) -> dict:
                 if target and target in by_id:
                     successors.append(target)
             if not successors:
-                issues.append(
-                    f"Step '{cur}' (type={s.get('type')}) has no next_step_id / routes / branches — path dead-ends without reaching an `end` step."
-                )
+                if cur not in contained:
+                    issues.append(
+                        f"Step '{cur}' (type={s.get('type')}) has no next_step_id / routes / branches — path dead-ends without reaching an `end` step."
+                    )
                 continue
             for nxt_id in successors:
                 if nxt_id not in visited:

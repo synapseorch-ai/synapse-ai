@@ -532,9 +532,12 @@ class TestLoopValidation:
         issues = _validate_orchestration(orch)["issues"]
         assert any("only the steps listed in loop_step_ids" in i for i in issues)
 
-    def test_a_well_formed_loop_raises_nothing_about_the_loop(self):
-        issues = self._issues({"loop_count": 3})
-        assert not any("Loop" in i or "loop" in i for i in issues), issues
+    def test_a_well_formed_loop_raises_nothing(self):
+        # Strengthened with F124. This asked only that no message said "loop",
+        # and passed while the body step — which correctly has no next_step_id,
+        # because a loop body's continuation is the loop's — was being reported
+        # as a dead end in a sentence that happened not to use the word.
+        assert self._issues({"loop_count": 3}) == []
 
 
 class TestTurnGuard:

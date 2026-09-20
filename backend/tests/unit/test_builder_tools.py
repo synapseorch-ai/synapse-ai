@@ -1009,3 +1009,80 @@ class TestAReadOfAKeyTheEngineWrites:
         assert "output_key" in issue
         head = issue.split("—", 1)[1].split(".")[0].lower()
         assert "delete" not in head and "remove" not in head, issue
+
+
+class TestAContainerMemberEndsWithItsContainer:
+    """A loop body step and a parallel branch step need no successor (F124).
+
+    The reachability walk treated both as ordinary steps and demanded one, so
+    the builder gave Naveen's Test Harness an edge the loop ignores: its Wiki
+    Searcher pointed at Data Formatter, the step *after* the loop. A loop runs
+    the steps in `loop_step_ids` and never follows `next_step_id`;
+    `resolve_branch_chain` walks a single-entry branch until the join **or a
+    step with no next**, so a branch's last step legitimately has none either.
+
+    Their continuation is their container's, and the container is checked.
+    """
+
+    DEADEND = "has no next_step_id"
+
+    @staticmethod
+    def _deadends(steps, entry):
+        from core.builder_tools import _validate_orchestration
+        issues = _validate_orchestration({"id": "o", "entry_step_id": entry, "steps": steps})["issues"]
+        return [i for i in issues if "has no next_step_id" in i]
+
+    def _loop(self, body_next, **loop_fields):
+        return self._deadends([
+            {"id": "loop1", "name": "Loop", "type": "loop", "loop_step_ids": ["body"],
+             "next_step_id": "done", **loop_fields},
+            {"id": "body", "name": "Body", "type": "print", "print_content": "x",
+             "next_step_id": body_next},
+            {"id": "done", "name": "Done", "type": "end"},
+        ], "loop1")
+
+    def test_a_for_each_body_step_needs_no_successor(self):
+        assert self._loop(None, loop_over="state.items") == []
+
+    def test_a_count_loop_body_step_needs_one_no_more_than_a_for_each_one(self):
+        assert self._loop(None, loop_count=3) == []
+
+    def test_a_parallel_branch_step_needs_no_successor(self):
+        assert self._deadends([
+            {"id": "par1", "name": "Split", "type": "parallel",
+             "parallel_branches": [["a1"], ["b1"]], "next_step_id": "mrg1"},
+            {"id": "a1", "name": "A", "type": "print", "print_content": "a"},
+            {"id": "b1", "name": "B", "type": "print", "print_content": "b"},
+            {"id": "mrg1", "name": "Join", "type": "merge", "merge_strategy": "dict",
+             "input_keys": ["x"], "output_key": "y", "next_step_id": "end1"},
+            {"id": "end1", "name": "Done", "type": "end"},
+        ], "par1") == []
+
+    def test_a_step_outside_any_container_still_has_to_go_somewhere(self):
+        assert self._deadends([
+            {"id": "p1", "name": "P", "type": "print", "print_content": "x"},
+        ], "p1")
+
+    def test_the_container_itself_is_still_checked(self):
+        # The exemption is membership, not "is a container": a loop that is a
+        # member of nothing and leads nowhere is still a dead end. (A loop with
+        # a body is never one — the walk counts its body as a successor, which
+        # is how body steps get visited at all.)
+        issues = self._deadends([
+            {"id": "loop1", "name": "Loop", "type": "loop", "loop_step_ids": [],
+             "loop_count": 3},
+        ], "loop1")
+        assert len(issues) == 1 and "loop1" in issues[0], issues
+
+    def test_a_chain_led_out_of_a_body_is_still_checked_where_it_lands(self):
+        # `b2` is reached from a body step but is not itself a member, so the
+        # walk must still reach it and still complain.
+        issues = self._deadends([
+            {"id": "loop1", "name": "Loop", "type": "loop", "loop_step_ids": ["b1"],
+             "next_step_id": "done", "loop_count": 3},
+            {"id": "b1", "name": "B1", "type": "print", "print_content": "x",
+             "next_step_id": "b2"},
+            {"id": "b2", "name": "B2", "type": "print", "print_content": "y"},
+            {"id": "done", "name": "Done", "type": "end"},
+        ], "loop1")
+        assert len(issues) == 1 and "b2" in issues[0], issues
