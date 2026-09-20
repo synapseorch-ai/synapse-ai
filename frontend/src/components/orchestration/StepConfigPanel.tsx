@@ -422,7 +422,11 @@ function CacheSection({ step, update, readOnly = false }: { step: StepConfig; up
  */
 function Frozen({ readOnly, className, children }: { readOnly: boolean; className?: string; children: React.ReactNode }) {
     return (
-        <fieldset disabled={readOnly} className={['m-0 min-w-0 border-0 p-0', className].filter(Boolean).join(' ')}>
+        // `mx-0`, not `m-0`: a fieldset's UA margin is horizontal only, and
+        // `m-0` also cancelled the vertical gap its parent's `space-y-*` gives
+        // it — which is why "Next step" sat 1px above the Guardrails card while
+        // Guardrails and Caching had 16px between them.
+        <fieldset disabled={readOnly} className={['mx-0 min-w-0 border-0 p-0', className].filter(Boolean).join(' ')}>
             {children}
         </fieldset>
     );
