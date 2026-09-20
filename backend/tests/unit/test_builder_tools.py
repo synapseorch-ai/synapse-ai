@@ -834,3 +834,61 @@ class TestStateSchemaCanonicalisation:
         # Malformed, and `_validate_orchestration` says so — but loading an
         # orchestration must not be what fails.
         assert self._schema({"a": "list"})["a"] == "list"
+
+
+class TestParallelConvergence:
+    """A parallel step with no `next_step_id` runs the rest of the graph twice.
+
+    The engine builds a single-entry branch by following `next_step_id` until it
+    reaches the parallel's own `next_step_id` — the join — or a step with no
+    next (`ParallelStepExecutor.resolve_branch_chain`). With no join the chain
+    never stops: Naveen's Test Harness ran Summarizer → Compiler → Review →
+    Finalizer as *branch one*, so the second branch's Entity Extractor never ran
+    and the End step inside the branch failed the run. The canvas cannot show
+    this — a branch's chain is drawn as ordinary next edges — so the builder
+    has to get it right when it writes the orchestration.
+    """
+
+    JOIN = "needs next_step_id set to the merge step"
+
+    @staticmethod
+    def _issues(par_next, merge_next="rev1", extra=None):
+        from core.builder_tools import _validate_orchestration
+        steps = [
+            {"id": "par1", "name": "Analyse", "type": "parallel",
+             "parallel_branches": [["sum1"], ["ent1"]], "next_step_id": par_next},
+            {"id": "sum1", "name": "Summarise", "type": "llm", "output_key": "summary",
+             "next_step_id": "mrg1"},
+            {"id": "ent1", "name": "Entities", "type": "llm", "output_key": "entities",
+             "next_step_id": "mrg1"},
+            {"id": "mrg1", "name": "Compile", "type": "merge", "merge_strategy": "dict",
+             "output_key": "report", "next_step_id": merge_next},
+            {"id": "rev1", "name": "Print", "type": "print", "print_content": "x",
+             "next_step_id": "end1"},
+            {"id": "end1", "name": "Done", "type": "end"},
+        ]
+        return _validate_orchestration({
+            "id": "o", "entry_step_id": "par1", "steps": steps + (extra or []),
+        })["issues"]
+
+    def test_a_parallel_joined_at_a_merge_step_raises_nothing(self):
+        assert self._issues("mrg1") == []
+
+    def test_a_parallel_with_no_join_is_an_issue(self):
+        issues = [i for i in self._issues("") if "par1" in i]
+        assert len(issues) == 1, issues
+        assert self.JOIN in issues[0]
+
+    def test_a_parallel_joined_at_something_other_than_a_merge_is_an_issue(self):
+        # Reaching a step that is not a merge means the branches' outputs are
+        # never combined — and the builder has a merge step for exactly this.
+        issues = [i for i in self._issues("rev1") if "par1" in i]
+        assert len(issues) == 1, issues
+        assert "rev1" in issues[0] and self.JOIN in issues[0]
+
+    def test_the_message_says_to_add_a_merge_rather_than_delete_anything(self):
+        # The saver acts on these messages literally: told that a read had no
+        # writer, it deleted the read (F123). This one must point at the fix.
+        issue = [i for i in self._issues("") if "par1" in i][0]
+        assert "add a merge step" in issue
+        assert "delete" not in issue.lower() and "remove" not in issue.lower()

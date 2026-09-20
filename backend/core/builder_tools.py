@@ -750,7 +750,7 @@ BUILDER_TOOL_SCHEMAS = [
                         "description": "State keys this step reads",
                     },
                     "output_key": {"type": "string", "description": "State key this step writes to"},
-                    "next_step_id": {"type": "string", "description": "Next step ID. NOT used for evaluator/if_else/switch steps."},
+                    "next_step_id": {"type": "string", "description": "Next step ID. NOT used for evaluator/if_else/switch steps. REQUIRED on a parallel step, where it is the join and must name a merge step."},
                     "evaluator_prompt": {"type": "string", "description": "Routing instructions for evaluator steps"},
                     "route_map_json": {
                         "type": "string",
@@ -2251,6 +2251,28 @@ def _validate_orchestration(orch: dict) -> dict:
                     issues.append(
                         f"Step '{sid}' parallel branch references unknown step '{bsid}'."
                     )
+        if stype == "parallel":
+            # The join, and it is not optional. `resolve_branch_chain` builds a
+            # single-entry branch by following `next_step_id` until it reaches
+            # this step's own `next_step_id` or a step with no next — so with no
+            # join each branch runs the whole rest of the graph, one branch after
+            # another, and the first to reach an `end` takes the run with it.
+            # Measured on a real orchestration: branch one ran Summarizer →
+            # Compiler → Review → Finalizer and branch two never started.
+            #
+            # A merge step specifically, because combining what the branches
+            # produced is what a join is for, and `merge` is the step that does
+            # it. The message names the repair: these go back to the saver,
+            # which acts on them literally (told a read had no writer, it
+            # deleted the read).
+            joined = by_id.get(nxt) if nxt else None
+            if not nxt or (joined or {}).get("type") != "merge":
+                where = f"'{nxt}', which is not a merge step" if nxt else "nothing"
+                issues.append(
+                    f"Parallel step '{sid}' converges on {where} — it "
+                    f"needs next_step_id set to the merge step where its branches meet; "
+                    f"add a merge step if the orchestration has none."
+                )
         if stype == "agent" and not s.get("agent_id"):
             issues.append(f"Agent step '{sid}' has no agent_id.")
         if stype == "evaluator" and not (s.get("route_map") or {}):
