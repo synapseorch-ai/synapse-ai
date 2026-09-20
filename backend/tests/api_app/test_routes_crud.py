@@ -36,6 +36,32 @@ async def test_safe_get_never_crashes(client, path):
     assert resp.status_code not in (500, 502, 504), f"{path} -> {resp.status_code}: {resp.text[:200]}"
 
 
+class TestTheHarnessInstallsWhatTheLifespanWould:
+    """F91: `test_app` drives the app without its lifespan, so it has to install
+    the settings provider itself.
+
+    It used to lean on `core/server.py`'s import-time `install_provider()` —
+    which is there for exactly this reason, but fires once per process. A unit
+    test that imports the engine and then discards the provider
+    (`test_no_env_secrets.py`, whose last case imports `core.server`) left every
+    settings route reading bare defaults for the rest of the run: the write went
+    to the store and the read did not. Invisible from the repo root, where
+    `api_app/` is collected before `unit/`.
+    """
+
+    def test_the_settings_provider_survives_a_test_that_discarded_it(self, request):
+        # The import first, then the discard: that order is the whole defect.
+        # With `core.server` already in `sys.modules`, the fixture's own import
+        # is a no-op and nothing puts the provider back.
+        import core.server  # noqa: F401
+        from core.config import get_settings_provider, set_settings_provider
+
+        set_settings_provider(None)
+        request.getfixturevalue("test_app")
+
+        assert get_settings_provider() is not None
+
+
 class TestSettingsRoutes:
     async def test_get_and_update_settings(self, client):
         resp = await client.post("/api/settings", json={"agent_name": "Cov Agent", "model": "mistral"})

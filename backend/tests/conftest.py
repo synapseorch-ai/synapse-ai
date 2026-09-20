@@ -213,6 +213,13 @@ def test_app(monkeypatch):
     ReAct loop don't short-circuit with 'No agents connected'. Lifespan is NOT
     run (httpx ASGITransport does not emit lifespan events)."""
     import core.server as server
+    # The lifespan we skip installs the settings provider (server.py does it at
+    # import too, for this very reason) — but that fires once per process, so a
+    # test that discarded the provider left every later settings read on bare
+    # defaults while the writes went to the store (F91). Installing is a
+    # function-pointer assignment: no I/O, no loop, no store.
+    from core import settings_runtime
+    settings_runtime.install_provider()
     monkeypatch.setattr(server, "agent_sessions", {"_test": object()}, raising=False)
     if not hasattr(server, "memory_store"):
         monkeypatch.setattr(server, "memory_store", None, raising=False)
