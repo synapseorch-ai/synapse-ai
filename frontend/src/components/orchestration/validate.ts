@@ -143,6 +143,19 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
                     if (branch.length === 0) add(s.id, warning('A branch has no entry step'));
                     else checkTarget(s.id, branch[0], 'A branch entry');
                 }
+                // The join. A branch listed by its entry step follows that step's
+                // next-step chain until it reaches this step's own next step — so
+                // with none set, every branch runs the whole rest of the flow, one
+                // branch after another, and the first to reach an End step takes
+                // the run with it. An error, not a warning: the run misbehaves.
+                if (!s.next_step_id) {
+                    add(s.id, error('No next step — set it to the Merge step where the branches meet, or each branch runs the rest of the flow'));
+                } else {
+                    const join = orch.steps.find((x) => x.id === s.next_step_id);
+                    if (join && join.type !== 'merge') {
+                        add(s.id, warning(`Branches meet at “${join.name}”, which is not a Merge step, so what they produced is not combined`));
+                    }
+                }
                 break;
             }
             case 'transform':
