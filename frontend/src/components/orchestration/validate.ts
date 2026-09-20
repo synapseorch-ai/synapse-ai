@@ -158,6 +158,12 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
                 }
                 break;
             }
+            case 'merge':
+                // It combines the keys it is given and nothing else: with none,
+                // it writes an empty dict/list/string over its output key and
+                // reports `input_count: 0`, silently.
+                if (!s.input_keys?.length) add(s.id, warning('No input keys — nothing to combine, so this writes an empty result'));
+                break;
             case 'transform':
                 if (!s.transform_code?.trim()) add(s.id, error('No Python code set'));
                 break;

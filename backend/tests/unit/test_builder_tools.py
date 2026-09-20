@@ -852,7 +852,7 @@ class TestParallelConvergence:
     JOIN = "needs next_step_id set to the merge step"
 
     @staticmethod
-    def _issues(par_next, merge_next="rev1", extra=None):
+    def _issues(par_next, merge_next="rev1", extra=None, strip_merge_inputs=False):
         from core.builder_tools import _validate_orchestration
         steps = [
             {"id": "par1", "name": "Analyse", "type": "parallel",
@@ -862,7 +862,8 @@ class TestParallelConvergence:
             {"id": "ent1", "name": "Entities", "type": "llm", "output_key": "entities",
              "next_step_id": "mrg1"},
             {"id": "mrg1", "name": "Compile", "type": "merge", "merge_strategy": "dict",
-             "output_key": "report", "next_step_id": merge_next},
+             "output_key": "report", "next_step_id": merge_next,
+             **({} if strip_merge_inputs else {"input_keys": ["summary", "entities"]})},
             {"id": "rev1", "name": "Print", "type": "print", "print_content": "x",
              "next_step_id": "end1"},
             {"id": "end1", "name": "Done", "type": "end"},
@@ -885,6 +886,14 @@ class TestParallelConvergence:
         issues = [i for i in self._issues("rev1") if "par1" in i]
         assert len(issues) == 1, issues
         assert "rev1" in issues[0] and self.JOIN in issues[0]
+
+    def test_a_merge_with_no_input_keys_is_an_issue(self):
+        # It combines the keys it is given and nothing else: with none it writes
+        # an empty result over its output_key and reports input_count 0. Naveen
+        # found his own merge step like this, and nothing said so (2026-09-20).
+        issues = [i for i in self._issues("mrg", extra=None, strip_merge_inputs=True) if "mrg1" in i]
+        assert len(issues) == 1, issues
+        assert "input_keys" in issues[0]
 
     def test_the_message_says_to_add_a_merge_rather_than_delete_anything(self):
         # The saver acts on these messages literally: told that a read had no

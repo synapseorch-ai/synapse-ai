@@ -2273,6 +2273,13 @@ def _validate_orchestration(orch: dict) -> dict:
                     f"needs next_step_id set to the merge step where its branches meet; "
                     f"add a merge step if the orchestration has none."
                 )
+        if stype == "merge" and not (s.get("input_keys") or []):
+            # It combines the keys it is given and nothing else — with none it
+            # writes an empty result over its output_key and says nothing.
+            issues.append(
+                f"Merge step '{sid}' has no input_keys — set them to the output_key of each "
+                f"branch it combines."
+            )
         if stype == "agent" and not s.get("agent_id"):
             issues.append(f"Agent step '{sid}' has no agent_id.")
         if stype == "evaluator" and not (s.get("route_map") or {}):
