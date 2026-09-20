@@ -372,3 +372,37 @@ class TestTheSummaryHasSomethingToName:
         prompt = self._summarize()["prompt_template"]
         assert "Orchestration built or changed:\n{state.final_orch}" not in prompt
         assert "plan_draft" in prompt and "current_orchestration_name" in prompt
+
+
+class TestAServerNameIsNotACapability:
+    """F126. On 2026-09-13 the Requirements Analyst specified a Wiki Searcher
+    step using "a search tool from the `deepwiki` MCP server (e.g., a query or
+    search function)" — it had never read what deepwiki holds, and deepwiki
+    answers questions about GitHub repositories. The Agent Creator and the
+    Create Saver both saw the real description later and bound it anyway.
+
+    `list_tool_servers` now carries each server's own tools, and these rules
+    are what tell the agents to read them.
+    """
+
+    @staticmethod
+    def _prompt(role):
+        for agent in bundled_definitions()["agents"]:
+            if agent["id"].endswith(role):
+                return agent["system_prompt"]
+        raise AssertionError(f"no agent for {role}")
+
+    def test_the_analyst_is_told_a_name_is_not_a_capability(self):
+        prompt = self._prompt("analyst")
+        assert "NAME is not its capability" in prompt
+        assert "deepwiki" in prompt, "the rule names the case it came from"
+
+    def test_the_analyst_is_told_that_nothing_fitting_is_an_answer(self):
+        assert "If nothing fits, say so plainly" in self._prompt("analyst")
+
+    def test_everyone_who_binds_a_tool_stops_on_a_mismatch(self):
+        # The analyst proposes; these three are the ones that write the binding.
+        for role in ("agent_creator", "saver_create", "saver_update"):
+            prompt = self._prompt(role)
+            assert "must match what the plan asked for" in prompt, role
+            assert "do not bind it because the server's name sounded right" in prompt, role

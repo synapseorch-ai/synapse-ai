@@ -1195,6 +1195,55 @@ BUILDER_TOOL_SCHEMAS = [
 BUILDER_TOOL_NAMES = {t["function"]["name"] for t in BUILDER_TOOL_SCHEMAS}
 
 
+# ─── Tool server capability ───────────────────────────────────────────────────
+#
+# `list_tool_servers` is the first call every builder prompt tells an agent to
+# make, and the Requirements Analyst gets one round of tool calls — so whatever
+# this answers is often the whole basis for choosing an integration. It used to
+# answer with names: the analyst read `deepwiki` as a wiki to search for general
+# research, against its own "don't guess capabilities" rule, and the agent it
+# actually holds answers questions about GitHub repositories (F126).
+#
+# A name is not a capability, so the listing carries a few of the server's real
+# tools. Bounded on purpose: `list_all_tools` is banned in the analyst's own
+# prompt for blowing up context, and acme's three servers hold 64 tools whose
+# raw definitions are 62 KB. Eight names with a one-line description is ~2.4 KB
+# for the same three and says what each server is for; `tool_count` tells the
+# agent there is more, and `list_server_tools` is the next call the prompt
+# already names.
+
+#: How many of a server's tools the listing names, and how much of each
+#: description it keeps. Enough to characterise a server, not to work from.
+_SERVER_TOOLS_SHOWN = 8
+_SERVER_TOOL_DESC = 90
+
+
+def _tool_summary(tools: list[dict] | None) -> dict:
+    """`tool_count` plus a bounded preview, for one server's listing entry."""
+    tools = tools or []
+    preview = []
+    for t in tools[:_SERVER_TOOLS_SHOWN]:
+        # First line only: an MCP description is often a paragraph with usage
+        # notes under it, and the first line is the sentence that says what it
+        # does.
+        desc = (t.get("description") or "").strip().split("\n")[0]
+        preview.append({"name": t.get("name"), "description": desc[:_SERVER_TOOL_DESC]})
+    return {"tool_count": len(tools) or None, "tools": preview}
+
+
+async def _session_tools(server_module: Any, name: str | None) -> list[dict]:
+    """A registered server's tools from its live session, when the row has none."""
+    session = (getattr(server_module, "agent_sessions", None) or {}).get(f"ext_mcp_{name}")
+    if not session:
+        return []
+    try:
+        return [{"name": t.name, "description": t.description}
+                for t in (await session.list_tools()).tools]
+    except Exception:
+        # A server that cannot be reached is still worth listing by name.
+        return []
+
+
 # ─── Tool Implementations ──────────────────────────────────────────────────────
 
 async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -> str:
@@ -1428,17 +1477,24 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": f"Could not fetch tool details: {e}"}
 
     elif tool_name == "list_tool_servers":
+        from core.routes.tools import _NATIVE_SERVER_LABELS
+
         ext_servers = await load_mcp_servers()
-        result = [
-            {
-                "name": s.get("name"),
-                "label": s.get("label", s.get("name")),
+        result = []
+        for s in ext_servers:
+            name = s.get("name")
+            # A stored row already carries what the server exposes, so the
+            # capability costs nothing to report (F126). A row saved before
+            # that, or one whose OAuth never completed, has an empty list and
+            # falls through to its live session.
+            tools = s.get("tools") or await _session_tools(server_module, name)
+            result.append({
+                "name": name,
+                "label": s.get("label", name),
                 "type": s.get("server_type", "stdio"),
                 "status": s.get("status", "unknown"),
-                "tool_count": None,
-            }
-            for s in ext_servers
-        ]
+                **_tool_summary(tools),
+            })
         # Also include MCP sessions started programmatically (not in mcp_store.json).
         # Sessions keyed as "ext_mcp_<name>" are external — strip the prefix and
         # mark them as external so callers know to use "name__tool_name" format.
@@ -1448,18 +1504,21 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             if sess_name in ext_keys:
                 continue
             try:
-                tools_result = await session.list_tools()
-                tool_count = len(tools_result.tools)
+                tools = [
+                    {"name": t.name, "description": t.description}
+                    for t in (await session.list_tools()).tools
+                ]
             except Exception:
-                tool_count = 0
+                tools = []
             is_ext = sess_name.startswith("ext_mcp_")
             display_name = sess_name[len("ext_mcp_"):] if is_ext else sess_name
             result.append({
                 "name": display_name,
-                "label": display_name.replace("_", " ").title(),
+                "label": (None if is_ext else _NATIVE_SERVER_LABELS.get(display_name))
+                         or display_name.replace("_", " ").title(),
                 "type": "external_mcp" if is_ext else "native_mcp",
                 "status": "running",
-                "tool_count": tool_count,
+                **_tool_summary(tools),
             })
         return result
 

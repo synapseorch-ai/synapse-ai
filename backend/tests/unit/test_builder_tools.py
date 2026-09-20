@@ -9,6 +9,7 @@ workspace-wide cannot quietly lose a row again.
 from __future__ import annotations
 
 import json
+import types
 
 import pytest
 
@@ -1086,3 +1087,93 @@ class TestAContainerMemberEndsWithItsContainer:
             {"id": "done", "name": "Done", "type": "end"},
         ], "loop1")
         assert len(issues) == 1 and "b2" in issues[0], issues
+
+
+class _FakeSession:
+    """An MCP session that answers `list_tools()` with what it was given."""
+
+    def __init__(self, tools):
+        self._tools = [types.SimpleNamespace(name=n, description=d) for n, d in tools]
+
+    async def list_tools(self):
+        return types.SimpleNamespace(tools=self._tools)
+
+
+
+class TestAToolServerListingSaysWhatTheServerDoes:
+    """`list_tool_servers` is the first call the builder prompts name (F126).
+
+    The Requirements Analyst is told to call it first, to stop when it has what
+    it needs, and never to call `list_all_tools` — and it gets one round of
+    tool calls. So a listing of bare names is often the whole basis for picking
+    an integration: `deepwiki` reads like a wiki to search, and the agent it
+    holds answers questions about GitHub repositories.
+
+    A stored row already carries the server's tools, so saying so is free.
+    """
+
+    @staticmethod
+    async def _list(monkeypatch, rows, sessions=None):
+        import core.builder_tools as bt
+
+        async def _rows():
+            return rows
+
+        monkeypatch.setattr(bt, "load_mcp_servers", _rows)
+        module = types.SimpleNamespace(agent_sessions=sessions or {})
+        return json.loads(await bt.execute_builder_tool("list_tool_servers", {}, module))
+
+    ROW = {
+        "name": "deepwiki", "label": "DeepWiki", "server_type": "remote",
+        "status": "connected",
+        "tools": [
+            {"name": "ask_question",
+             "description": "Ask any question about a GitHub repository and get an "
+                            "AI-powered, context-grounded response.\nUsage notes follow."},
+            {"name": "read_wiki_contents",
+             "description": "View documentation about a GitHub repository."},
+        ],
+    }
+
+    async def test_a_server_names_the_tools_it_holds(self, monkeypatch):
+        [entry] = await self._list(monkeypatch, [self.ROW])
+        assert entry["tool_count"] == 2
+        assert [t["name"] for t in entry["tools"]] == ["ask_question", "read_wiki_contents"]
+        assert entry["tools"][0]["description"].startswith("Ask any question about a GitHub")
+
+    async def test_only_the_first_line_of_a_description_is_kept(self, monkeypatch):
+        # An MCP description is often a paragraph of usage notes under one
+        # sentence saying what the tool does. The sentence is the useful part.
+        [entry] = await self._list(monkeypatch, [self.ROW])
+        assert "Usage notes" not in entry["tools"][0]["description"]
+
+    async def test_the_listing_is_bounded(self, monkeypatch):
+        many = dict(self.ROW, tools=[{"name": f"t{i}", "description": "d" * 400}
+                                     for i in range(37)])
+        [entry] = await self._list(monkeypatch, [many])
+        assert entry["tool_count"] == 37, "the count is the real one"
+        assert len(entry["tools"]) == 8, "the preview is not"
+        assert all(len(t["description"]) <= 90 for t in entry["tools"])
+
+    async def test_a_row_with_no_tools_falls_back_to_its_live_session(self, monkeypatch):
+        # OSS never caches tools on the row; cloud's install path does.
+        session = _FakeSession([("search", "Search the web.")])
+        [entry] = await self._list(
+            monkeypatch, [dict(self.ROW, tools=[])],
+            {"ext_mcp_deepwiki": session},
+        )
+        assert entry["tool_count"] == 1
+        assert entry["tools"][0]["name"] == "search"
+
+    async def test_a_server_that_cannot_be_reached_is_still_listed(self, monkeypatch):
+        [entry] = await self._list(monkeypatch, [dict(self.ROW, tools=[])], {})
+        assert entry["name"] == "deepwiki"
+        assert entry["tool_count"] is None and entry["tools"] == []
+
+    async def test_a_native_server_gets_its_real_label(self, monkeypatch):
+        # "Web Scraper", not "Web_Scraper".title() — the name a person sees on
+        # the Tools screen is the name the builder should reason about.
+        session = _FakeSession([("scrape_url", "Fetch a URL as markdown.")])
+        [entry] = await self._list(monkeypatch, [], {"web_scraper": session})
+        assert entry["label"] == "Web Scraper"
+        assert entry["type"] == "native_mcp" and entry["tool_count"] == 1
