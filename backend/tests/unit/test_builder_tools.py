@@ -926,3 +926,86 @@ class TestParallelConvergence:
         issue = [i for i in self._issues("") if "par1" in i][0]
         assert "add a merge step" in issue
         assert "delete" not in issue.lower() and "remove" not in issue.lower()
+
+
+class TestAReadOfAKeyTheEngineWrites:
+    """`output_key` is not the only way a key gets into shared state (F123).
+
+    The writer check used to know about nothing else, so a loop body that read
+    the loop's own item was told *"reads input_key 'loop_item' but no step
+    writes it — either use an existing output_key or delete the read"*. The
+    Create Saver acts on these literally: it deleted the read, and Naveen's
+    Test Harness ran three iterations of the same question with no query.
+
+    The keys, and only these: a **for-each** loop's `loop_item_key` and
+    `loop_index_key` (`steps.py` writes them under `if mode == "foreach"` —
+    a count or a while loop writes neither), and `human_response`, which
+    `engine.py` writes after every human step whatever that step's own
+    output_key is.
+    """
+
+    @staticmethod
+    def _issues(loop_fields, body_reads, extra=None):
+        from core.builder_tools import _validate_orchestration
+        steps = [
+            {"id": "loop1", "name": "Loop", "type": "loop",
+             "loop_step_ids": ["body"], "next_step_id": "done", **loop_fields},
+            {"id": "body", "name": "Body", "type": "llm", "prompt_template": "x",
+             "output_key": "o1", "input_keys": body_reads, "next_step_id": None},
+            {"id": "done", "name": "Done", "type": "end"},
+        ]
+        return _validate_orchestration({
+            "id": "o", "entry_step_id": "loop1", "steps": steps + (extra or []),
+        })["issues"]
+
+    @staticmethod
+    def _reads(issues, key):
+        return [i for i in issues if f"input_key '{key}'" in i]
+
+    def test_a_for_each_body_may_read_the_loop_item(self):
+        issues = self._issues({"loop_over": "state.queries"}, ["loop_item", "loop_index"])
+        assert self._reads(issues, "loop_item") == [], issues
+        assert self._reads(issues, "loop_index") == [], issues
+
+    def test_a_renamed_loop_item_key_counts_too(self):
+        issues = self._issues(
+            {"loop_over": "state.queries", "loop_item_key": "query",
+             "loop_index_key": "nth"},
+            ["query", "nth"],
+        )
+        assert self._reads(issues, "query") == [], issues
+        assert self._reads(issues, "nth") == [], issues
+
+    def test_a_count_loop_writes_neither_so_the_read_is_still_flagged(self):
+        # `mode == "foreach"` is the gate in the executor, so it is the gate
+        # here. Silencing this would hide a read that really does resolve to
+        # the schema default for ever.
+        issues = self._issues({"loop_count": 3}, ["loop_item"])
+        assert self._reads(issues, "loop_item"), issues
+
+    def test_a_while_loop_writes_neither_either(self):
+        issues = self._issues({"loop_while_condition": "state.go"}, ["loop_item"])
+        assert self._reads(issues, "loop_item"), issues
+
+    def test_a_step_after_a_human_step_may_read_human_response(self):
+        # The engine writes the answer to the step's output_key *and* always to
+        # `human_response` as well, so evaluators that check it still work.
+        issues = self._issues(
+            {"loop_count": 3}, ["human_response"],
+            extra=[{"id": "ask", "name": "Ask", "type": "human",
+                    "human_prompt": "ok?", "output_key": "approval",
+                    "next_step_id": "loop1"}],
+        )
+        assert self._reads(issues, "human_response") == [], issues
+
+    def test_human_response_with_no_human_step_is_still_flagged(self):
+        issues = self._issues({"loop_count": 3}, ["human_response"])
+        assert self._reads(issues, "human_response"), issues
+
+    def test_a_genuinely_unwritten_read_leads_with_the_repair(self):
+        # Still an issue — but the saver reads the first repair it is offered,
+        # and "delete the read" was the wrong one to offer first.
+        issue = self._reads(self._issues({"loop_count": 3}, ["nowhere"]), "nowhere")[0]
+        assert "output_key" in issue
+        head = issue.split("—", 1)[1].split(".")[0].lower()
+        assert "delete" not in head and "remove" not in head, issue

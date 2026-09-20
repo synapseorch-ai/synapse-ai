@@ -2204,9 +2204,11 @@ def _validate_orchestration(orch: dict) -> dict:
       - every next_step_id / route_map target / loop_step_ids entry /
         parallel_branches element resolves to a real step (empty string = end)
       - every reachable path terminates at an `end`-type step
-      - every step's input_keys are either `user_input` / `user_query` or the
-        `output_key` of some step in the orchestration (a key with no writer
-        anywhere is meaningless — it can only ever be its schema default)
+      - every step's input_keys are written by something: `user_input` /
+        `user_query`, some step's `output_key`, a for-each loop's item or
+        index key, or `human_response` where a human step exists (a key with
+        no writer anywhere is meaningless — it can only ever be its schema
+        default)
       - every state_schema entry declares a type we can read, and its default
         is of that type
     """
@@ -2384,12 +2386,28 @@ def _validate_orchestration(orch: dict) -> dict:
         ok = s.get("output_key")
         if ok:
             writable.add(ok)
+        # `output_key` is not the only way a key reaches shared state (F123).
+        # A **for-each** loop writes its item and its index before the body
+        # runs (`steps.py`, under `if mode == "foreach"`); a count loop and a
+        # while loop write neither, so they stay unwritable here and a body
+        # reading `loop_item` there is still told so.
+        if s.get("type") == "loop" and s.get("loop_over"):
+            writable.add(s.get("loop_item_key") or "loop_item")
+            writable.add(s.get("loop_index_key") or "loop_index")
+        # And the engine writes a human answer to `human_response` as well as
+        # to the step's own output_key, so evaluators that check it still work.
+        if s.get("type") == "human":
+            writable.add("human_response")
     for s in steps:
         sid = s.get("id", "?")
         for k in s.get("input_keys") or []:
             if k not in writable:
+                # The repair the saver should reach for comes first. Told
+                # "delete the read", it deleted one that was correct (F123).
                 issues.append(
-                    f"Step '{sid}' reads input_key '{k}' but no step writes it — either use an existing output_key or delete the read."
+                    f"Step '{sid}' reads input_key '{k}', which nothing writes — give an "
+                    f"earlier step '{k}' as its output_key, or change the read to a key that "
+                    f"is already written. Remove the read only if the step does not need that value."
                 )
 
     # Reachability walk: every reachable step must be able to hit an `end`.

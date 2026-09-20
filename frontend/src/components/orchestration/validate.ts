@@ -59,7 +59,19 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
     // output key. Flagging a built-in taught this check its first false alarm.
     const knownKeys = new Set(BUILTIN_STATE_KEYS);
     for (const key of Object.keys(orch.state_schema || {})) knownKeys.add(key);
-    for (const s of orch.steps) if (s.output_key) knownKeys.add(s.output_key);
+    for (const s of orch.steps) {
+        if (s.output_key) knownKeys.add(s.output_key);
+        // An output key is not the only writer (F123). A for-each loop writes
+        // its item and index before the body runs — a count or while loop
+        // writes neither — and a human step's answer is always written to
+        // `human_response` as well as to its own output key. Declaring them in
+        // Shared state used to be the only thing that stopped the warning.
+        if (s.type === 'loop' && s.loop_over) {
+            knownKeys.add(s.loop_item_key || 'loop_item');
+            knownKeys.add(s.loop_index_key || 'loop_index');
+        }
+        if (s.type === 'human') knownKeys.add('human_response');
+    }
 
     // --- Duplicate output keys ---
     const outputOwners = new Map<string, string[]>();
