@@ -36,7 +36,10 @@ from core.orchestration.runner import (
     spawn_engine_run,
     stream_engine_events,
 )
+from core.log import get_logger
 from core.react_engine import iter_with_heartbeat
+
+_log = get_logger(__name__)
 
 router = APIRouter()
 
@@ -356,6 +359,24 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
     return _stream(_queue_events(queue))
 
 
+async def _save_chat_turn(request, answer: str) -> None:
+    """Keep the turn in the conversation, as any agent's turn is kept (F115).
+
+    A builder-typed agent's turn never reaches `run_agent_step`, where a turn is
+    saved, so a reopened conversation showed it only while its event log was
+    held. Saved before it is shown, in the order `run_agent_step` keeps.
+    """
+    from core.session import _save_conversation_turn
+    try:
+        await _save_conversation_turn(
+            session_id=getattr(request, "session_id", None) or "default",
+            agent_id=getattr(request, "agent_id", None), user=request.message or "",
+            assistant=answer,
+        )
+    except Exception as exc:  # noqa: BLE001 — the answer is still shown
+        _log.warning(f"builder chat turn not saved: {exc}")
+
+
 async def run_builder_stream_compat(request, server_module):
     """SSE for the main chat page, which talks to a builder-typed agent.
 
@@ -408,13 +429,16 @@ async def run_builder_stream_compat(request, server_module):
             yield _sse({"type": "tool_result", "tool_name": "resource_saved", "preview": preview})
 
         elif etype == "human_input_required":
-            yield _sse({"type": "response", "content": event.get("prompt", ""), "intent": "chat", "data": None, "tool_name": None})
+            question = event.get("prompt", "")
+            await _save_chat_turn(request, question)
+            yield _sse({"type": "response", "content": question, "intent": "chat", "data": None, "tool_name": None})
             yield _sse({"type": "done"})
             return
 
         elif etype == "orchestration_complete":
-            summary = (event.get("final_state") or {}).get("summary")
-            yield _sse({"type": "response", "content": summary or "Done.", "intent": "chat", "data": None, "tool_name": None})
+            answer = (event.get("final_state") or {}).get("summary") or "Done."
+            await _save_chat_turn(request, answer)
+            yield _sse({"type": "response", "content": answer, "intent": "chat", "data": None, "tool_name": None})
             yield _sse({"type": "done"})
 
         elif etype in ("orchestration_error", "step_error"):

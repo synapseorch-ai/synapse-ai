@@ -2404,10 +2404,25 @@ async def run_react_loop(request, server_module, should_stop=None, *,
 
     # --- Orchestrator delegation ---
     if active_agent.get("type") == "orchestrator":
+        answer = None
         async for event in run_orchestrator_agent(
             active_agent, user_message, server_module, session_id=session_id,
         ):
+            if event.get("type") == "final" and not event.get("orch_step_id"):
+                answer = event.get("response", "")
             yield event
+        # Saved as any agent's turn is at the end of `run_agent_step`, which an
+        # orchestrator never reaches — so a reopened conversation lost it once
+        # its event log went (F115). Only a turn that answered: a stopped one is
+        # saved by its caller, and one waiting on a person has not answered.
+        if answer is not None:
+            try:
+                await _save_conversation_turn(
+                    session_id=session_id, agent_id=active_agent.get("id"),
+                    user=user_message, assistant=answer,
+                )
+            except Exception as mem_err:
+                _log.warning(f"Session save failed (non-fatal): {mem_err}")
         return
 
     # --- Standard single-agent ReAct loop ---

@@ -295,3 +295,126 @@ class TestTheWidgetReadsThroughTheSameFilter:
 
         history = (await client.get("/api/widget/history", headers=auth)).json()
         assert history["running"] is None
+
+
+class TestEveryAgentTypeKeepsItsTurns:
+    """F115: an orchestrator- or builder-type agent's chat turn saved nothing —
+    `run_react_loop` hands an orchestrator off before the save, and a builder
+    never reaches it — so a reopened conversation (F49) showed such a turn only
+    while its event log was held, then not at all. The fleet's chat job has
+    saved every agent type all along; the two paths disagreed about the same
+    table. What is saved is what the page was shown."""
+
+    @staticmethod
+    def _shown(text: str) -> str:
+        return [e for e in _data(text) if e["type"] == "response"][-1]["content"]
+
+    async def test_an_orchestrator_agents_turn_is_saved(self, client, seed_orchestration, seed_agent):
+        orch = await seed_orchestration(id="orch_f115")
+        agent = await seed_agent(type="orchestrator", orchestration_id=orch["id"])
+
+        reply = await client.post("/chat/stream", json={
+            "message": "run it", "session_id": "f115", "agent_id": agent["id"]})
+
+        shown = self._shown(reply.text)
+        assert shown
+        saved = await _messages("f115")
+        assert [(m["role"], m["content"]) for m in saved] == [("user", "run it"), ("assistant", shown)]
+
+    @pytest.mark.parametrize("ending,expected", [
+        ({"type": "orchestration_complete", "final_state": {"summary": "Built the thing."}},
+         "Built the thing."),
+        ({"type": "human_input_required", "prompt": "Which of the two?"}, "Which of the two?"),
+    ], ids=["finished", "asked"])
+    async def test_a_builder_agents_turn_is_saved(self, client, seed_agent, monkeypatch, ending, expected):
+        import core.routes.builder as builder
+
+        async def _builder_run(req, server_module):
+            yield {"type": "step_start", "step_name": "Plan"}
+            yield ending
+
+        monkeypatch.setattr(builder, "run_builder_stream", _builder_run)
+        agent = await seed_agent(type="builder")
+
+        reply = await client.post("/chat/stream", json={
+            "message": "build me a digest", "session_id": "f115b", "agent_id": agent["id"]})
+
+        assert self._shown(reply.text) == expected
+        saved = await _messages("f115b")
+        assert [(m["role"], m["content"]) for m in saved] == [
+            ("user", "build me a digest"), ("assistant", expected)]
+
+    async def test_a_builder_turn_that_cannot_be_saved_is_still_answered(
+        self, client, seed_agent, monkeypatch
+    ):
+        import core.routes.builder as builder
+        import core.session as session
+
+        async def _builder_run(req, server_module):
+            yield {"type": "orchestration_complete", "final_state": {"summary": "Built it."}}
+
+        async def _store_down(**kwargs):
+            raise RuntimeError("store unavailable")
+
+        monkeypatch.setattr(builder, "run_builder_stream", _builder_run)
+        monkeypatch.setattr(session, "_save_conversation_turn", _store_down)
+        agent = await seed_agent(type="builder")
+
+        reply = await client.post("/chat/stream", json={
+            "message": "build", "session_id": "f115c", "agent_id": agent["id"]})
+
+        assert self._shown(reply.text) == "Built it."
+
+    async def test_a_stopped_orchestrator_turn_keeps_its_question(
+        self, client, live_server, gated_llm, seed_orchestration, seed_agent
+    ):
+        orch = await seed_orchestration(id="orch_f115s", entry_step_id="think", steps=[
+            {"id": "think", "name": "Think", "type": "llm", "prompt_template": "go",
+             "output_key": "thought", "next_step_id": None}])
+        agent = await seed_agent(type="orchestrator", orchestration_id=orch["id"])
+
+        async with _turn_in_a_model_call(live_server, gated_llm, "f115s", agent["id"],
+                                         message="and stop") as turn:
+            assert (await client.post("/chat/f115s/cancel")).json()["stopped"] is True
+            await asyncio.wait_for(turn.wait(), 10)
+
+        saved = await _messages("f115s")
+        assert [(m["role"], m["content"]) for m in saved] == [
+            ("user", "and stop"), ("assistant", chat_turns.STOPPED_ANSWER)]
+
+    async def test_the_fleet_keeps_one_pair_and_the_same_answer(
+        self, client, fake_redis, seed_orchestration, seed_agent, monkeypatch
+    ):
+        """The fleet's chat job saved an orchestrator's turn all along, by
+        rewriting the conversation after the loop. The loop now saves it as
+        well, so this pins that the two writes still leave one pair — and that
+        it is the answer the in-process page shows."""
+        import types
+
+        from core.scale import mcp_pool, worker
+        from core.store import get_store
+
+        server = types.SimpleNamespace(agent_sessions={"_test": object()}, memory_store=None,
+                                       tool_router={})
+
+        async def acquire():
+            return server
+
+        async def nothing():
+            return None
+
+        monkeypatch.setattr(mcp_pool, "acquire", acquire)
+        monkeypatch.setattr(mcp_pool, "release", nothing)
+        monkeypatch.setattr(worker, "_load_job_settings", nothing)
+        orch = await seed_orchestration(id="orch_f115f")
+        agent = await seed_agent(type="orchestrator", orchestration_id=orch["id"])
+        shown = self._shown((await client.post("/chat/stream", json={
+            "message": "run it", "session_id": "f115-app", "agent_id": agent["id"]})).text)
+
+        ctx = {"redis": fake_redis, "session_factory": await get_store(), "job_try": 1,
+               "job_id": "job-1"}
+        result = await worker.run_agent_chat_job(ctx, "f115-fleet", agent["id"], "run it")
+
+        assert result["status"] == "completed"
+        saved = await _messages("f115-fleet")
+        assert [(m["role"], m["content"]) for m in saved] == [("user", "run it"), ("assistant", shown)]

@@ -160,27 +160,28 @@ def _sse(generator):
 async def _event_stream(request, _server, resume_state: dict | None = None, *,
                         expand_mentions: bool = False):
     """One chat turn's events as SSE frames — the producer a turn's task drives."""
-    # Route builder agents to the dedicated builder stream
     agent = await _resolve_agent(request)
-    if agent and agent.get("type") == "builder":
-        from core.routes.builder import run_builder_stream_compat
-        async for chunk in run_builder_stream_compat(request, _server):
-            yield chunk
-        return
-
     turn = chat_turns.current_turn.get()
-    if turn is not None and agent and agent.get("type") != "orchestrator":
+    if turn is not None and agent:
         # Stopped before it answered, a turn still keeps its question — as the
         # fleet's chat job does. Otherwise Stop destroyed the exchange rather
         # than ending it, and a reopened conversation lost what was asked.
-        # Saved under the id the engine saves a finished turn under. An
-        # orchestrator agent's turns are not saved at all, stopped or not.
+        # Saved under the id the engine saves a finished turn under. Every
+        # agent type: an orchestrator's or a builder's finished turn is saved
+        # like any other since F115, so its stopped one is too.
         async def _save_stopped(agent_id=agent.get("id"), session_id=request.session_id,
                                 message=request.message or ""):
             from core.session import _save_conversation_turn
             await _save_conversation_turn(session_id=session_id or "default", agent_id=agent_id,
                                           user=message, assistant=chat_turns.STOPPED_ANSWER)
         turn.on_stop = _save_stopped
+
+    # Route builder agents to the dedicated builder stream
+    if agent and agent.get("type") == "builder":
+        from core.routes.builder import run_builder_stream_compat
+        async for chunk in run_builder_stream_compat(request, _server):
+            yield chunk
+        return
 
     async def _stopped() -> bool:
         # The turn's own flag: a Stop that arrived after an earlier turn ended
