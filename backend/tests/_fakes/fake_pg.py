@@ -67,6 +67,7 @@ def run_row(run_id: str = "run_1", **over) -> SimpleNamespace:
         run_id=run_id, orchestration_id="orch_1", status="running", tenant_id="default",
         current_step_id="s1", waiting_for_human=False, worker_id="worker-a",
         total_cost_usd=0.0, total_tokens_used=0, started_at=None, ended_at=None,
+        step_history=[],
     )
     data.update(over)
     return SimpleNamespace(**data)

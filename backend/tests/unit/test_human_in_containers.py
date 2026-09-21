@@ -520,6 +520,86 @@ class TestARedeliveredAnswerInALoop:
         assert run.shared_state["o_tail"] == "tail"
 
 
+class TestAnAnswerIsForOneQuestion:
+    """F111: an answer job said nothing about which question it answered, and a
+    second try asked only whether the run was waiting. So a job whose first try
+    answered, carried on and paused at the next question — stopped by a deploy
+    between that pause and the job's return — answered the next question too,
+    with the old answer. A loop asks once per iteration under one step id, so
+    it is the likeliest place. Driven through `answer_paused_run`, so the job
+    gets exactly what the app enqueues."""
+
+    @staticmethod
+    async def _enqueued(fake_redis, run_id, response) -> dict:
+        from core.orchestration.answers import answer_paused_run
+        from core.store import get_store
+        app_state = types.SimpleNamespace(
+            redis=fake_redis, arq_redis=_m.AsyncMock(), pg_session_factory=await get_store())
+        await answer_paused_run(app_state, run_id, response)
+        args, kwargs = app_state.arq_redis.enqueue_job.call_args
+        assert args[0] == "resume_orchestration_job"
+        return {k: v for k, v in kwargs.items() if not k.startswith("_")}
+
+    @pytest.fixture(autouse=True)
+    def _a_started_worker(self, worker, monkeypatch):
+        # Set by the worker's startup; a run with none is not the fleet's, and
+        # the app would resume it in-process rather than enqueue an answer.
+        monkeypatch.setattr(worker, "_worker_id", "worker-f111")
+
+    async def test_a_redelivered_answer_does_not_answer_the_next_iteration(self, worker, fake_redis):
+        orch = S.make_orchestration(id="orch_f111", entry_step_id="loop1", steps=[
+            _loop("loop1", ["ask"], nxt="tail"), _human("ask"), _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+        started = await worker.run_orchestration_job(
+            await _ctx(fake_redis), run_id="run_f111", orch_id="orch_f111", initial_input="go")
+        assert started["status"] == "paused"
+
+        job = await self._enqueued(fake_redis, "run_f111", "one")
+        first = await worker.resume_orchestration_job(await _ctx(fake_redis, 1), **job)
+        assert first["status"] == "paused", "iteration two asks"
+        # The same job, handed out again: its first try was stopped after the
+        # run paused at iteration two, before it returned.
+        again = await worker.resume_orchestration_job(await _ctx(fake_redis, 2), **job)
+
+        assert again["status"] == "paused"
+        run = await _run("run_f111")
+        assert run.waiting_for_human
+        assert [h["status"] for h in _entries(run, "ask")] == ["completed", "paused"]
+
+        second = await self._enqueued(fake_redis, "run_f111", "two")
+        assert (await worker.resume_orchestration_job(await _ctx(fake_redis, 1), **second))[
+            "status"] == "completed"
+        state = (await _run("run_f111")).shared_state
+        # The app sends a typed answer as a mapping.
+        assert _results(state["answer"]) == [{"response": "one"}, {"response": "two"}]
+        assert state["o_tail"] == "tail"
+
+    async def test_two_answers_to_one_question_answer_it_once(self, worker, fake_redis):
+        """The app and a channel can both answer before either job runs; each
+        passed the enqueue's "is it waiting?" and the second answered the next
+        question. Same defect, on a first try."""
+        orch = S.make_orchestration(id="orch_f111b", entry_step_id="h1", steps=[
+            _human("h1", key="first", nxt="h2"), _human("h2", key="second", nxt="tail"),
+            _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+        await worker.run_orchestration_job(
+            await _ctx(fake_redis), run_id="run_f111b", orch_id="orch_f111b", initial_input="go")
+        from_app = await self._enqueued(fake_redis, "run_f111b", "from the app")
+        from_channel = await self._enqueued(fake_redis, "run_f111b", "from the channel")
+
+        assert (await worker.resume_orchestration_job(await _ctx(fake_redis), **from_app))[
+            "status"] == "paused"
+        late = await worker.resume_orchestration_job(await _ctx(fake_redis), **from_channel)
+
+        assert late["status"] == "paused"
+        run = await _run("run_f111b")
+        assert run.shared_state["first"] == {"response": "from the app"}
+        assert "second" not in run.shared_state
+        assert run.waiting_for_human and [h["step_id"] for h in run.step_history] == ["h1", "h2"]
+
+
 # ── runs paused before F109 ──────────────────────────────────────────────────
 async def _as_before_f109(run_id: str, *, fleet: bool) -> None:
     """Rewrite a paused loop run into the shape a pre-F109 build left.

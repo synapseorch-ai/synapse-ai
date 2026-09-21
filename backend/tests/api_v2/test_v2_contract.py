@@ -103,6 +103,18 @@ class TestV2Resume:
         assert body["run_id"] == "run_1"
         assert body["status"] == "resuming"
 
+    async def test_resume_names_the_question_it_answers(self, client, v2, api_key):
+        """F111: the job is told which pause the answer is for, so a job that
+        finds the run asking another question does not answer it."""
+        from _fakes.fake_pg import fake_session_factory, run_row
+        history = [{"step_id": "h1", "status": "completed"}, {"step_id": "h2", "status": "paused"}]
+        v2.state.pg_session_factory = fake_session_factory(
+            run_row("run_1", status="paused", waiting_for_human=True, step_history=history))
+        await client.post("/api/v2/orchestrations/runs/run_1/resume",
+                          json={"response": "yes"}, headers=api_key["headers"])
+        _, kwargs = v2.state.arq_redis.enqueue_job.call_args
+        assert kwargs["pause_ordinal"] == 1
+
     async def test_resume_unknown_run_is_404(self, client, v2, api_key):
         from _fakes.fake_pg import fake_session_factory
         v2.state.pg_session_factory = fake_session_factory(None)

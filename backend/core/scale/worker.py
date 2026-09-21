@@ -271,11 +271,14 @@ async def resume_orchestration_job(
     webhook_url: str | None = None,
     webhook_secret: str | None = None,
     images: list | None = None,
+    pause_ordinal: int | None = None,
 ) -> dict:
     """Resume a paused orchestration run after human input is submitted.
 
     `images` are the attachments sent with the answer, not the ones the run
-    started with — see `WorkerEngineAdapter.resume`.
+    started with — see `WorkerEngineAdapter.resume`. `pause_ordinal` is the
+    question the answer was given for (`pauses.pause_ordinal`); a job without
+    one was enqueued before answers carried it and is applied as it was.
     """
     global _active_jobs
     _active_jobs += 1
@@ -326,6 +329,16 @@ async def resume_orchestration_job(
             )
             if redelivery == "done":
                 return {"status": row.status, "run_id": run_id}
+        elif _answers_another_question(row, pause_ordinal):
+            # The question this answer was given for has been answered: by
+            # this job's own first try, which then reached the next question
+            # (F111), or by a second answer to it — the app and a channel can
+            # both answer before either job runs. The run waits for its own.
+            _log.info(
+                f"[worker] run {run_id}: answer for question {pause_ordinal} not applied — "
+                f"the run is {row.status}, asking {_asking_ordinal(row)}"
+            )
+            return {"status": row.status, "run_id": run_id}
 
         orch = await _load_orchestration(session_factory, orch_id)
         _log.debug(f"[resume] 📦 orchestration loaded from Postgres: id={orch.id} name={orch.name} steps={len(orch.steps)}")
@@ -1051,6 +1064,28 @@ def _awaits_answer(row) -> bool:
     """
     history = row.step_history or []
     return bool(row.waiting_for_human or (history and history[-1].get("status") == "paused"))
+
+
+def _asking_ordinal(row) -> int | None:
+    from core.orchestration.pauses import pause_ordinal
+    return pause_ordinal(row.step_history)
+
+
+def _answers_another_question(row, pause_ordinal: int | None) -> bool:
+    """True when an answer's question is not the one the run is asking (F111).
+
+    `_awaits_answer` says only that the run is waiting, not on what — and a
+    loop asks once per iteration under one step id, so an old answer looked
+    like an answer to the new question. A run no longer waiting was answered
+    already. An answer that says nothing about its question (enqueued before
+    answers did), or a run whose pause has no entry to compare, is applied.
+    """
+    if pause_ordinal is None:
+        return False
+    if not _awaits_answer(row):
+        return True
+    asking = _asking_ordinal(row)
+    return asking is not None and asking != pause_ordinal
 
 
 async def _load_chat_history(session_factory, session_id: str, agent_id: str | None) -> list:

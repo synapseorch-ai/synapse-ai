@@ -424,7 +424,8 @@ async def v2_resume_run(
 
     async with sf() as session:
         result = await session.execute(
-            select(OrchestrationRunDB.status).where(OrchestrationRunDB.run_id == run_id)
+            select(OrchestrationRunDB.status, OrchestrationRunDB.step_history)
+            .where(OrchestrationRunDB.run_id == run_id)
         )
         run_row = result.first()
     if not run_row:
@@ -441,12 +442,16 @@ async def v2_resume_run(
     if isinstance(resp, str):
         resp = {"response": resp}
 
+    from core.orchestration.pauses import pause_ordinal
+
     await arq_redis.enqueue_job(
         "resume_orchestration_job",
         run_id=run_id,
         human_response=resp,
         webhook_url=body.webhook_url,
         webhook_secret=body.webhook_secret,
+        # The question this answer is for (F111).
+        pause_ordinal=pause_ordinal(run_row.step_history),
         _queue_name=queue_name,
         _job_id=f"resume_{run_id}_{int(time.time())}",
     )

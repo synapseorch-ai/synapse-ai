@@ -47,6 +47,24 @@ def asking_step_id(step_history: list | None, current_step_id: str | None) -> st
     return current_step_id
 
 
+def pause_ordinal(step_history: list | None) -> int | None:
+    """Which question a paused run is asking: its newest `paused` entry's index.
+
+    A step id does not say — a human step in a loop asks once per iteration
+    under one id — but each pause opens an entry of its own, and an answered
+    one is closed where it stands, so the index names this question and no
+    later one. An answer carries it (F111): an answer job whose question is no
+    longer the one asked must not answer the one that is. None when no entry
+    is paused (a run paused before the entry existed).
+    """
+    history = step_history or []
+    for index in range(len(history) - 1, -1, -1):
+        entry = history[index]
+        if isinstance(entry, dict) and entry.get("status") == "paused":
+            return index
+    return None
+
+
 def pause_chain(step_map: Mapping[str, Any], shared_state: Mapping[str, Any],
                 position: str | None) -> list[dict]:
     """The containers' pause records from `position` inwards, outermost first.

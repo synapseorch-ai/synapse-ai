@@ -67,6 +67,7 @@ async def worker_run_row(app_state: Any, run_id: str):
                 OrchestrationRunDB.status,
                 OrchestrationRunDB.current_step_id,
                 OrchestrationRunDB.waiting_for_human,
+                OrchestrationRunDB.step_history,
             ).where(
                 OrchestrationRunDB.run_id == run_id,
                 OrchestrationRunDB.tenant_id == get_tenant(),
@@ -93,6 +94,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
     if row is not None:
         if not _waiting(row.status, row.waiting_for_human):
             raise RunNotWaiting(run_id, row.status)
+        from core.orchestration.pauses import pause_ordinal
         from core.scale.config import QUEUE_NAME
 
         resp = response if isinstance(response, dict) else {"response": response}
@@ -100,6 +102,9 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
             "resume_orchestration_job",
             run_id=run_id,
             human_response=resp,
+            # The question this answer is for: a job that finds the run asking
+            # another does not answer it (F111).
+            pause_ordinal=pause_ordinal(row.step_history),
             _queue_name=QUEUE_NAME,
             _job_id=f"resume_{run_id}_{int(time.time())}",
         )
