@@ -314,6 +314,12 @@ def detect_mode_from_model(model_name: str) -> str:
     Returns 'cloud' for OpenAI/Anthropic/Gemini/Grok/DeepSeek models,
     'bedrock' for Bedrock, 'cli' for local CLI session models (cli.*),
     and 'local' for anything else (assumed to be Ollama).
+
+    A mode is the branch of `generate_response_ex` that dispatches the model,
+    not where its server runs: 'local' *is* the Ollama branch. An OpenAI v1
+    server on this machine (`locv1.`, LM Studio / vLLM) is dispatched by the
+    'cloud' branch, as `oaic.` is — answering 'local' for it sent every call to
+    Ollama with the literal `locv1.<model>` as its name (F114).
     """
     if not model_name:
         return "local"
@@ -337,7 +343,7 @@ def detect_mode_from_model(model_name: str) -> str:
     if m.startswith("oaic."):
         return "cloud"
     if m.startswith("locv1."):
-        return "local"
+        return "cloud"  # a local server, but the v1 branch dispatches it — see above
     if m.startswith("ollama."):
         return "local"
     if m.startswith("hf."):

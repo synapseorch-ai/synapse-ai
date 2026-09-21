@@ -11,6 +11,10 @@ class TestModeDetection:
         ("deepseek-chat", "cloud"),
         ("bedrock.anthropic.claude", "bedrock"),
         ("synapse.nova-pro", "cloud"),
+        # F114: a mode is the dispatch family, not where the server is. Both
+        # go through the OpenAI-compatible branch; `local` means Ollama.
+        ("oaic.some-model", "cloud"),
+        ("locv1.model", "cloud"),
         ("cli.claude.sonnet", "cli"),
         ("hf.Qwen/Qwen2.5", "hf"),
         ("ollama.llama3", "local"),

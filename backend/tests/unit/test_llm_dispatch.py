@@ -186,3 +186,42 @@ class TestOpenAIReasoningModelsAreOpenAI:
     def test_a_local_model_starting_with_o_stays_local(self, model):
         assert _llm_mod.detect_mode_from_model(model) == "local"
         assert _llm_mod.detect_provider_from_model(model) == "ollama"
+
+
+class TestAV1CompatibleModelReachesItsOwnServer:
+    """F114: `locv1.*` was detected as `local`, and `local` is the Ollama branch —
+    so every agent turn and step on an LM Studio / vLLM model sent the literal
+    `locv1.<model>` to Ollama's `/api/chat` or `/api/generate`, and nothing reached
+    the server it names. `test_oaic_and_locv1_route_to_v1_compatible` could not
+    see it: it hands `cloud` in by hand. These take the mode the way every caller
+    does, from the model id."""
+
+    @pytest.mark.parametrize("model,base_key", [
+        ("locv1.qwen3-8b", "local_compatible_base_url"),
+        ("oaic.qwen3-8b", "openai_compatible_base_url"),
+    ])
+    @pytest.mark.parametrize("tools", [None, [{"type": "function", "function": {"name": "get_time"}}]],
+                             ids=["step", "agent-turn"])
+    async def test_it_is_sent_to_its_base_url_and_never_to_ollama(self, monkeypatch, model, base_key, tools):
+        seen = {}
+
+        async def _v1(name, messages, system, base_url, api_key, **k):
+            seen.update(name=name, base_url=base_url)
+            return LLMResult("from the v1 server", 1, 1, 0, 0)
+
+        ollama_calls = []
+
+        def _ollama(url, kwargs):
+            ollama_calls.append(url)
+            return FakeResponse({"response": "from ollama", "message": {"content": "from ollama"}})
+
+        monkeypatch.setattr(_llm_mod, "call_v1_compatible", _v1)
+        install_httpx(monkeypatch, _ollama)
+        settings = {base_key: "http://127.0.0.1:1234"}
+
+        out = await _REAL_GENERATE("hi", "s", _llm_mod.detect_mode_from_model(model), model,
+                                   settings, tools=tools)
+
+        assert ollama_calls == []
+        assert out == "from the v1 server"
+        assert seen == {"name": "qwen3-8b", "base_url": "http://127.0.0.1:1234"}
