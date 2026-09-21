@@ -241,3 +241,43 @@ class TestAStepThatCannotRun:
         assert done["status"] == "failed"
         assert any("No executor" in (e.get("error") or "") for e in events)
         assert "after" not in done["final_state"]
+
+
+# ── a container naming a step that is not there (F113) ──────────────────────
+# The `driver` runs each case in-process and through the fleet's real job
+# functions: how a failure is recorded has differed between them before (F109).
+from test_human_in_containers import _run as _restored, driver, worker  # noqa: E402,F401
+
+
+class TestAContainerNamingAStepThatIsNotThere:
+    """A Loop body or a Parallel branch naming a step id the orchestration does
+    not have was warned about and skipped, and the run went on as if the body
+    had run — a loop could complete having run none of it. A missing step fails
+    the run at the top level ("Step '…' not found"), and both validators call
+    this an error; the runtime was the one place that disagreed (D112's rule,
+    decided for this case 2026-09-21). The step that is not there cannot be
+    shown on the canvas, so the failure is the container's, naming it."""
+
+    @pytest.mark.parametrize("container", ["loop", "parallel"])
+    async def test_it_fails_the_run(self, driver, container):
+        if container == "loop":
+            head = {"id": "c", "name": "C", "type": "loop", "loop_count": 1,
+                    "loop_step_ids": ["body", "gone"], "next_step_id": "after"}
+        else:
+            head = {"id": "c", "name": "C", "type": "parallel",
+                    "parallel_branches": [["body"], ["gone"]], "next_step_id": "after"}
+        body = {"id": "body", "name": "Body", "type": "print", "print_content": "ran",
+                "output_key": "b", "next_step_id": None}
+        orch = S.make_orchestration(id=f"orch_f113_{container}", entry_step_id="c",
+                                    steps=[head, body, _AFTER])
+        await S.seed_orchestrations([orch])
+
+        status = await driver.start(orch, f"run_f113_{container}")
+
+        assert status == "failed"
+        run = await _restored(f"run_f113_{container}")
+        assert run.status == "failed"
+        failed = [h for h in run.step_history if h.get("status") == "failed"]
+        assert [h["step_id"] for h in failed] == ["c"]
+        assert "'gone'" in failed[0]["error"]
+        assert "after" not in run.shared_state

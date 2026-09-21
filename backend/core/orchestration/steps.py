@@ -1122,9 +1122,12 @@ class ParallelStepExecutor:
                 continue
             sub_step = engine.step_map.get(sid)
             if not sub_step:
-                yield {"type": "step_warning", "orch_step_id": sid,
-                       "message": f"Step {sid} not found in branch {branch_index}"}
-                continue
+                # A step that is not there fails the run, as it does at the top
+                # level; it used to be warned about and the branch went on
+                # without it (F113). Named on the node, which is on the canvas.
+                message = f"Step '{sid}' in branch {branch_index} not found"
+                yield {"type": "step_error", "orch_step_id": step.id, "error": message}
+                raise RuntimeError(message)
             executor = engine.executors.get(sub_step.type)
             if not executor:
                 # A step this engine cannot run fails the run, as it does at the
@@ -1435,9 +1438,12 @@ class LoopStepExecutor:
                         continue
                     sub_step = engine.step_map.get(sid)
                     if not sub_step:
-                        yield {"type": "step_warning", "orch_step_id": step.id,
-                               "message": f"Loop body step {sid} not found"}
-                        continue
+                        # Fails the run, as a missing step does at the top level;
+                        # skipped, the loop could complete having run none of its
+                        # body (F113).
+                        message = f"Loop body step '{sid}' not found"
+                        yield {"type": "step_error", "orch_step_id": step.id, "error": message}
+                        raise RuntimeError(message)
 
                     executor = engine.executors.get(sub_step.type)
                     if not executor:
