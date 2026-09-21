@@ -282,6 +282,31 @@ class TestANestedStepInALoop:
         assert child.status == "completed" and child.shared_state["approval"] == "two"
 
 
+class TestANestedStepFinishedByAnAnswerIsRemembered:
+    """F112: a nested step that finishes in one go records what its
+    sub-orchestration returned in the step's execution memory — what a later
+    run of the same step reads back as its previous work, and what the judge
+    scores. Finished through an answer it recorded nothing, so in a loop each
+    iteration's delegate read as a step that had never run."""
+
+    async def test_each_answered_run_of_the_step_is_in_its_memory(self, driver):
+        orch = S.make_orchestration(id="orch_f112", entry_step_id="loop1", steps=[
+            _loop("loop1", ["delegate"], nxt="tail"), _delegate("agent_f112"), _print("tail"),
+        ])
+        await S.seed_agents([S.make_orchestrator_agent(
+            "orch_f112_child", id="agent_f112", name="Reviewer")])
+        await S.seed_orchestrations([orch, _child("orch_f112_child")])
+
+        assert await driver.start(orch, "run_f112") == "paused"
+        assert await driver.answer("run_f112", "one") == "paused"
+        assert await driver.answer("run_f112", "two") == "completed"
+
+        memory = (await _run("run_f112")).shared_state.get("_exec_memory_delegate", [])
+        assert [(m["execution"], m["agent"], m["trace"]["final_output"]) for m in memory] == [
+            (1, "Reviewer", "got one"), (2, "Reviewer", "got two")]
+        assert [m["trace"]["tools_used"] for m in memory] == [["sub_orchestration"]] * 2
+
+
 # ── a tool call waiting on approval, through the fleet's jobs ────────────────
 AGENT = "risky_agent"
 _DANGER = {"type": "function", "function": {"name": "danger", "description": "d",

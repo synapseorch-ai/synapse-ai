@@ -965,6 +965,8 @@ class OrchestrationEngine:
         # Write sub-orch result into parent shared_state
         if parent_step and parent_step.output_key:
             run.shared_state[parent_step.output_key] = final_response
+        if parent_step is not None:
+            await self._remember_nested_result(run, parent_step, nested_orch_id, final_response)
 
         # The step's pause entry is its one entry: closed where it stands, with
         # no duration — the time was a person's, spent in the sub-run. Appending
@@ -990,6 +992,35 @@ class OrchestrationEngine:
         run.waiting_for_human = False
         run.status = "running"
         outcome["status"] = "done"
+
+    async def _remember_nested_result(
+        self, run: OrchestrationRun, step: StepConfig, sub_orch_id: str | None, result: str,
+    ) -> None:
+        """Record a nested step finished by an answer, as one finished in one go is.
+
+        `_execute_nested_orchestration` records the sub-orchestration's result
+        in the step's execution memory — what a later run of the step reads back
+        as its previous work, and what the judge scores. A step finished here
+        recorded nothing (F112). What triggered its first run is gone by now, so
+        there is no origin; its inputs are read again, which is what it saw —
+        the parent has not moved while it waited, the answer went to the sub-run.
+        """
+        from core.scale.context import resolve_orchestration
+        from .context import build_execution_trace, snapshot_inputs, store_execution_memory
+
+        sub_name = sub_orch_id or "sub_orchestration"
+        try:
+            sub_name = ((await resolve_orchestration(sub_orch_id)) or {}).get("name") or sub_name
+        except Exception as exc:  # noqa: BLE001 — a label; the result is already in state
+            _log.debug(f"nested step {step.id}: sub-orchestration name unavailable: {exc}")
+        trace = build_execution_trace([
+            {"type": "tool_call", "tool_name": "sub_orchestration", "tool_input": {"orchestration": sub_name}},
+            {"type": "tool_result", "result": str(result)},
+            {"type": "final", "response": str(result)},
+        ])
+        agent_name = (self.agent_names.get(step.agent_id or "") or step.agent_id
+                      or "sub_orchestration")
+        store_execution_memory(run, step, trace, agent_name, None, snapshot_inputs(step, run, self))
 
     def _type_written_state(
         self, run: OrchestrationRun, step: StepConfig, before: dict
