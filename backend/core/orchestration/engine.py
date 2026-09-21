@@ -1501,8 +1501,13 @@ class OrchestrationEngine:
             except Exception as exc:
                 _log.warning(f"memory summary for '{agent_id}' failed: {exc}")
 
-    def _build_final_response(self, run: OrchestrationRun) -> str:
-        """Build a human-readable summary from the run."""
+    @staticmethod
+    def _build_final_response(run: OrchestrationRun) -> str:
+        """Build a human-readable summary from the run.
+
+        From the run alone, so a run's answer can be read back from its
+        checkpoint after the run is over (v1's run read, F117).
+        """
         if run.status == "failed":
             last_error = None
             for h in reversed(run.step_history):

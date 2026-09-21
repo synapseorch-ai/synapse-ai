@@ -7,10 +7,15 @@ and orchestrations. All routes are protected by API key auth (Bearer token).
 Endpoints:
   POST /chat              — Sync chat (returns only final response)
   POST /chat/stream       — SSE chat (all events)
+  POST /chat/{session_id}/cancel             — Stop the turn a conversation is running
   POST /orchestrations/{orch_id}/run         — Start orchestration (sync)
   POST /orchestrations/{orch_id}/run/stream  — Start orchestration (SSE)
+  GET  /orchestrations/runs/{run_id}         — A run's state, and its result once it has ended
   POST /orchestrations/runs/{run_id}/resume         — Resume after human input (sync)
   POST /orchestrations/runs/{run_id}/resume/stream  — Resume after human input (SSE)
+  POST /orchestrations/runs/{run_id}/cancel         — Stop a run
+  GET  /agents, /agents/{agent_id}                  — Discovery
+  GET  /orchestrations, /orchestrations/{orch_id}   — Discovery
 """
 import asyncio
 import json
@@ -560,6 +565,53 @@ async def v1_orchestration_resume_stream(
         )
     return StreamingResponse(_v1_drain(answered.queue), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
+
+
+@router.get("/orchestrations/runs/{run_id}")
+async def v1_get_run(run_id: str, key_record: dict = Depends(require_api_key)):
+    """A run's state and, once it has ended, its result (F117).
+
+    A run carries on when its caller stops reading (F49), so a caller that
+    dropped `run/stream` or `resume/stream` needs a way back to what it would
+    have been sent — and v2's status route is scale-mode only and carries no
+    result. The shapes are the sync routes': a paused run names its question,
+    an ended one carries `response`, `shared_state` and `step_history`. Engine
+    bookkeeping is left out of `shared_state`, as the app's own read leaves it.
+    """
+    from core.orchestration.engine import OrchestrationEngine
+    from core.orchestration.pauses import asking_step_id
+    from core.orchestration.runner import _active_tasks
+    from core.orchestration.state import SharedState
+    from core.routes.orchestrations import _public_run_view
+
+    try:
+        run = (await SharedState.restore(run_id)).run
+    except FileNotFoundError:
+        # A run inside its first step has no checkpoint yet.
+        task = _active_tasks.get(run_id)
+        if task is not None and not task.done():
+            return {"status": "running", "run_id": run_id}
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    if run.status == "paused" and run.waiting_for_human:
+        return {
+            "status": "paused",
+            "run_id": run_id,
+            "human_input_required": {
+                "step_id": asking_step_id(run.step_history, run.current_step_id),
+                "prompt": run.human_prompt,
+                "fields": run.human_fields or [],
+            },
+        }
+    body = {
+        "status": run.status,
+        "run_id": run_id,
+        "shared_state": _public_run_view(run)["shared_state"],
+        "step_history": run.step_history,
+    }
+    if run.status in ("completed", "failed", "cancelled"):
+        body["response"] = OrchestrationEngine._build_final_response(run)
+    return body
 
 
 @router.post("/orchestrations/runs/{run_id}/cancel")

@@ -219,5 +219,33 @@ class TestAV1RunOutlivesItsReader:
             f"the resumed run is {await self._status(run_id)!r} after its caller hung up"
         )
 
+    async def test_a_caller_that_hung_up_reads_the_result_back(
+        self, client, api_key, live_server, gated_llm, seed_orchestration
+    ):
+        """F117: the run finished without its caller, and v1 had no route to
+        the result — a `run/stream` caller that dropped lost it for good."""
+        orch = await seed_orchestration(
+            entry_step_id="s",
+            steps=[{"id": "s", "name": "Think", "type": "llm",
+                    "prompt_template": "hi", "output_key": "out",
+                    "next_step_id": None}],
+        )
+        first = await _hang_up_mid_call(
+            live_server, gated_llm, "POST", f"/api/v1/orchestrations/{orch['id']}/run/stream",
+            json={"message": "go"}, headers=api_key["headers"],
+        )
+        run_id = first["run_id"]
+        gated_llm.release.set()
+        assert await _until(lambda: self._is(run_id, "completed"))
+
+        read = await client.get(f"/api/v1/orchestrations/runs/{run_id}", headers=api_key["headers"])
+
+        assert read.status_code == 200, read.text
+        body = read.json()
+        assert (body["status"], body["run_id"], body["response"]) == (
+            "completed", run_id, gated_llm.answer)
+        assert body["shared_state"]["out"] == gated_llm.answer
+        assert [h["step_id"] for h in body["step_history"]] == ["s"]
+
     async def _is(self, run_id: str, status: str) -> bool:
         return await self._status(run_id) == status

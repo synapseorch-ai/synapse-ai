@@ -130,3 +130,53 @@ class TestCancellingAFinishedRunInTheApp:
         response = await client.post(f"/api/orchestrations/runs/{completed_run}/cancel")
         assert response.status_code == 200
         assert await _status(completed_run) == "completed"
+
+
+class TestARunCanBeReadBack:
+    """F117: `GET /api/v1/orchestrations/runs/{run_id}` answers with what the
+    sync route would have — a v1 run outlives its caller (F49), so a caller
+    needs a way back to it that does not depend on having kept the stream."""
+
+    @staticmethod
+    def _private(key: str) -> bool:
+        from core.routes.orchestrations import _PRIVATE_STATE_PREFIXES
+        return key.startswith(_PRIVATE_STATE_PREFIXES)
+
+    async def test_an_ended_run_reads_as_the_sync_route_answered(self, client, api_key, seed_orchestration):
+        orch = await seed_orchestration()
+        ran = (await client.post(f"/api/v1/orchestrations/{orch['id']}/run",
+                                 json={"message": "go"}, headers=api_key["headers"])).json()
+
+        read = await client.get(f"/api/v1/orchestrations/runs/{ran['run_id']}",
+                                headers=api_key["headers"])
+
+        assert read.status_code == 200, read.text
+        body = read.json()
+        for field in ("status", "run_id", "response", "step_history"):
+            assert body[field] == ran[field], field
+        # Engine bookkeeping is left out, as the app's own read leaves it out.
+        assert body["shared_state"] == {k: v for k, v in ran["shared_state"].items()
+                                        if not self._private(k)}
+
+    async def test_a_paused_run_names_its_question_as_the_sync_route_did(
+        self, client, api_key, seed_orchestration
+    ):
+        orch = await seed_orchestration(entry_step_id="ask", steps=_ASK_THEN_THINK)
+        ran = (await client.post(f"/api/v1/orchestrations/{orch['id']}/run",
+                                 json={"message": "go"}, headers=api_key["headers"])).json()
+        assert await _until_status(ran["run_id"], "paused")
+
+        body = (await client.get(f"/api/v1/orchestrations/runs/{ran['run_id']}",
+                                 headers=api_key["headers"])).json()
+
+        assert body["status"] == "paused"
+        asked = ran["human_input_required"]
+        assert body["human_input_required"] == {k: asked[k] for k in ("step_id", "prompt", "fields")}
+
+    async def test_an_unknown_run_is_a_404(self, client, api_key):
+        read = await client.get("/api/v1/orchestrations/runs/no_such_run", headers=api_key["headers"])
+        assert read.status_code == 404, read.text
+
+    async def test_it_needs_a_key(self, client, completed_run):
+        read = await client.get(f"/api/v1/orchestrations/runs/{completed_run}")
+        assert read.status_code in (401, 403), read.text
