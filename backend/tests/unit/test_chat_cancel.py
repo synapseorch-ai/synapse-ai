@@ -154,6 +154,28 @@ class TestStopping:
         # And the turns from before this one are still there.
         assert messages[0] == {"role": "user", "content": "first"}
 
+    async def test_a_turn_stopped_before_it_said_anything_is_not_saved_as_silence(
+        self, chat_job, monkeypatch
+    ):
+        """F116: it was saved as an empty assistant message, which goes back to
+        the model as history. Measured on cloud (nova-pro): the next message,
+        "Just say OK.", was answered with more of the stopped question — the
+        model read it as still waiting. The engine's own turn saves what the
+        in-process path does (F49)."""
+        from core.chat_turns import STOPPED_ANSWER
+        _patch_loop(monkeypatch, _loop_that([{"type": "status", "message": "thinking"}],
+                                            hang_forever=True))
+        redis = _FakeRedis(cancelled_after=1)
+        ctx = {"redis": redis, "session_factory": object()}
+
+        await asyncio.wait_for(worker.run_agent_chat_job(ctx, "chat_1", None, "hi"), timeout=5)
+
+        status, messages = chat_job[-1]
+        assert status == "cancelled"
+        assert messages[-2:] == [{"role": "user", "content": "hi"},
+                                 {"role": "assistant", "content": STOPPED_ANSWER}]
+        assert messages[0] == {"role": "user", "content": "first"}
+
     async def test_the_signal_is_cleared_so_the_next_turn_runs(self, chat_job, monkeypatch):
         """A cancel key that outlives its turn stops the following one too."""
         _patch_loop(monkeypatch, _loop_that([{"type": "status", "message": "x"}],

@@ -747,7 +747,13 @@ async def run_agent_chat_job(
         # A cancelled turn is persisted too, with whatever the agent had
         # already said. Dropping it would mean the Stop button destroyed the
         # exchange rather than ending it — and Retry would have nothing to
-        # retry from.
+        # retry from. Stopped before it said anything, it is saved as the
+        # in-process path saves it, never as silence: an empty answer goes
+        # back to the model as history, and the next turn answered the stopped
+        # question instead of the new one (F116).
+        if cancelled and not response_text:
+            from core.chat_turns import STOPPED_ANSWER
+            response_text = STOPPED_ANSWER
         history.append({"role": "user", "content": message})
         history.append({"role": "assistant", "content": response_text})
         await _upsert_chat_session(session_factory, session_id, agent_id,
