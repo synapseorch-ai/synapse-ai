@@ -96,6 +96,19 @@ const REMOTE_PRESETS: Preset[] = [
     { server_type: 'remote', name: 'Fetch', url: 'https://remote.mcpservers.org/fetch/mcp', label: 'Fetch', auth: 'none' },
 ];
 
+/**
+ * Tokens the old Slack, Figma and GitHub presets filled in — environment
+ * variable *names*, not tokens (F103). A non-empty token skips OAuth, so a
+ * server saved with one never signs in; F74 fixed the presets, not the servers
+ * already saved, and nothing stored is rewritten. Matched exactly. The value
+ * says what the preset needs now.
+ */
+const PLACEHOLDER_TOKENS: Record<string, { preset: string; needs: 'oauth' | 'token' }> = {
+    SLACK_CLIENT_ID: { preset: 'Slack', needs: 'oauth' },
+    FIGMA_PERSONAL_ACCESS_TOKEN: { preset: 'Figma', needs: 'oauth' },
+    GITHUB_PERSONAL_ACCESS_TOKEN: { preset: 'GitHub Copilot', needs: 'token' },
+};
+
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
 const StatusBadge = ({ status }: { status?: string }) => {
@@ -348,6 +361,20 @@ export const McpServersTab = ({
                                             ? server.url
                                             : `${server.command} ${(server.args || []).join(' ')}`}
                                     </code>
+                                    {(() => {
+                                        const placeholder = server.server_type === 'remote'
+                                            ? PLACEHOLDER_TOKENS[(server.token || '').trim()] : undefined;
+                                        if (!placeholder) return null;
+                                        return (
+                                            <p className="text-2xs text-warning">
+                                                Its token is <code className="font-code">{server.token.trim()}</code>, a
+                                                placeholder an older preset filled in, so it never signs in.{' '}
+                                                {placeholder.needs === 'oauth'
+                                                    ? `Remove it and add it again from the ${placeholder.preset} preset to sign in with OAuth.`
+                                                    : `Remove it and add it again from the ${placeholder.preset} preset with a GitHub personal access token.`}
+                                            </p>
+                                        );
+                                    })()}
                                 </div>
                                 </div>
                                 <div className="flex items-center gap-1 ml-4 shrink-0">

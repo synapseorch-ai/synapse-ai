@@ -1468,6 +1468,50 @@ async def check_effort(browser) -> str:
 
 
 @check
+async def check_mcpplaceholder(browser) -> str:
+    """A server an older preset saved with a placeholder token says so.
+
+    The Slack, Figma and GitHub presets filled the token with an environment
+    variable's *name*; a non-empty token skips OAuth, so such a server never
+    signs in and its row said only "disconnected" (F103). F74 fixed the presets,
+    not the servers already saved. Their URLs point at nothing here, so no
+    third party is dialled.
+    """
+    servers = {
+        "uismoke_ph_slack": ("Slack", "SLACK_CLIENT_ID", "preset"),
+        "uismoke_ph_github": ("GitHub Copilot", "GITHUB_PERSONAL_ACCESS_TOKEN", "personal access token"),
+    }
+    for name, (label, token, _) in servers.items():
+        api("/api/mcp/servers", "POST", {"name": name, "label": label, "server_type": "remote",
+                                         "url": "http://127.0.0.1:9/mcp", "token": token}, timeout=60)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/mcp-servers", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 1.0)
+        rows = await page.evaluate("""(names) => names.map(n => {
+          const tag = [...document.querySelectorAll('span')].find(s => (s.textContent || '').trim() === n);
+          const row = tag && tag.closest('div.group');
+          return row ? row.innerText : null;
+        })""", list(servers))
+    finally:
+        await ctx.close()
+        for name in servers:
+            try:
+                api(f"/api/mcp/servers/{name}", "DELETE")
+            except Exception:
+                pass
+    for (name, (label, token, fix)), text in zip(servers.items(), rows):
+        if text is None:
+            raise AssertionError(f"the {label} server's row never rendered")
+        if "placeholder" not in text.lower() or token not in text:
+            raise AssertionError(f"the {label} row does not say its token is a placeholder: {text!r}")
+        if fix not in text.lower():
+            raise AssertionError(f"the {label} row does not say what to do about it: {text!r}")
+    return "a server saved with a preset's placeholder token says so, and what to do"
+
+
+@check
 async def check_effortdefault(browser) -> str:
     """An agent with no effort of its own shows the one it runs at.
 
