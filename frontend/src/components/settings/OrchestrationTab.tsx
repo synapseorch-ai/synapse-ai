@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX } from 'lucide-react';
+import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowDown, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX } from 'lucide-react';
 import { Button, Combobox, Hint, IconButton, Mark, Markdown, Modal, SearchInput, Spinner } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
@@ -1889,7 +1889,14 @@ function BottomPanel({
         setSeenPrompt(humanPrompt);
         setHumanModalOpen(false);
     }
-    const logRef = useRef<HTMLDivElement>(null);
+    // The panel's one scroller, shared by all four sections. The run log
+    // follows the newest line only while the reader is at its foot (F127):
+    // the old effect set `scrollTop` on the log's own div, which does not
+    // scroll, so the log never followed at all. Scrolling up to read stops the
+    // following; "Jump to latest" starts it again, as cloud's RunPanel does.
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const [pinned, setPinned] = useState(true);
+    if (runLog.length === 0 && !pinned) setPinned(true); // a new run starts at its foot
     const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
     const onDragHandleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -1911,10 +1918,14 @@ function BottomPanel({
     }, [panelHeight]);
 
     useEffect(() => {
-        if (logRef.current) {
-            logRef.current.scrollTop = logRef.current.scrollHeight;
-        }
-    }, [runLog]);
+        const el = scrollRef.current;
+        if (el && pinned && activeSection === 'run') el.scrollTop = el.scrollHeight;
+    }, [runLog, pinned, activeSection]);
+
+    const onPanelScroll = () => {
+        const el = scrollRef.current;
+        if (el && activeSection === 'run') setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
+    };
 
     return (
         <div style={{ height: panelHeight }} className="flex flex-col">
@@ -1965,7 +1976,7 @@ function BottomPanel({
                 </button>
             </div>
 
-            <div className="p-4 flex-1 overflow-y-auto min-h-0">
+            <div ref={scrollRef} onScroll={onPanelScroll} className="p-4 flex-1 overflow-y-auto min-h-0">
                 {/* State Schema */}
                 {activeSection === 'state' && (
                     <StateSchemaEditor
@@ -2111,7 +2122,7 @@ function BottomPanel({
                         )}
 
                         {/* Log output */}
-                        <div ref={logRef} className="font-mono text-[11px] text-zinc-400 space-y-0.5">
+                        <div className="font-mono text-[11px] text-zinc-400 space-y-0.5">
                             {runLog.length === 0 ? (
                                 <div className="text-text-faint italic">No run output yet. Click Run to start.</div>
                             ) : (
@@ -2279,6 +2290,21 @@ function BottomPanel({
                                 })
                             )}
                         </div>
+
+                        {/* Centred, not in the bottom-right corner the builder launcher
+                            owns (F37). Not while a question is up: the run is waiting,
+                            nothing new arrives, and the strip below says where it is. */}
+                        {!pinned && !humanPrompt && runLog.length > 0 && (
+                            <div className="pointer-events-none sticky bottom-0 z-10 flex justify-center pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setPinned(true)}
+                                    className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] text-text-muted shadow-md transition-colors hover:text-text"
+                                >
+                                    <ArrowDown size={11} aria-hidden /> Jump to latest
+                                </button>
+                            </div>
+                        )}
 
                         {/* Human input — a slim sticky strip as the trigger, with the
                             question, context and answer in a modal (the same pattern

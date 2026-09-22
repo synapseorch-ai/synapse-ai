@@ -934,6 +934,109 @@ window.fetch = function (input, init) {
 """
 
 
+#: The run's own stream, answered in the page: the test pushes step events into
+#: it one batch at a time, so the log grows while the reader is on it — with no
+#: engine, no model and nothing slow.
+RUNLOG_STUB = r"""
+const _fetch = window.fetch;
+window.__run = {};
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  if (/\/api\/orchestrations\/[^/]+\/run$/.test(url)) {
+    const body = new ReadableStream({
+      start(c) {
+        let n = 0;
+        window.__run.push = (count) => {
+          for (let i = 0; i < count; i++, n++) {
+            c.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({
+              type: 'step_start', orch_step_id: 's' + n, step_name: 'Step number ' + n,
+              step_type: 'print'}) + '\n\n'));
+          }
+        };
+        // deliberately never closed: the run is still going
+      },
+    });
+    return Promise.resolve(new Response(body, {
+      status: 200, headers: {'Content-Type': 'text/event-stream'},
+    }));
+  }
+  return _fetch(input, init);
+};
+"""
+
+#: Where the run log's scroller stands: the nearest scrolling ancestor of a line.
+RUNLOG_POSITION = r"""() => {
+  const line = [...document.querySelectorAll('div.font-mono *')]
+      .find(e => /Step number/.test(e.textContent || ''));
+  let el = line;
+  while (el && !(el.scrollHeight > el.clientHeight + 2 &&
+                 /(auto|scroll)/.test(getComputedStyle(el).overflowY))) el = el.parentElement;
+  if (!el) return null;
+  window.__scroller = el;
+  const chip = [...document.querySelectorAll('button')]
+      .some(b => /Jump to latest/.test(b.innerText || ''));
+  return {gap: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight),
+          top: Math.round(el.scrollTop), chip};
+}"""
+
+
+@check
+async def check_runfollow(browser) -> str:
+    """The run log follows the newest line, and leaves a reader who scrolled up alone.
+
+    Its effect set `scrollTop` on the log's own div, which does not scroll — the
+    panel does — so the log never followed at all: measured, the scroller stayed
+    at the top while fourteen lines arrived below it (F127). Now it follows while
+    the reader is at its foot, stops when they scroll up, and "Jump to latest"
+    starts it again.
+    """
+    oid = f"orch_uismoke_follow_{int(time.time())}"
+    api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(RUNLOG_STUB)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2.0)
+        await page.get_by_role("button", name="Run", exact=True).click()
+        for _ in range(30):
+            if await page.evaluate("() => !!window.__run.push"):
+                break
+            await asyncio.sleep(0.1)
+        await page.evaluate("() => window.__run.push(60)")
+        await asyncio.sleep(0.8)
+        at = await page.evaluate(RUNLOG_POSITION)
+        if at is None:
+            raise AssertionError("sixty lines never made the run log scroll")
+        if at["gap"] > 24:
+            raise AssertionError(f"the log did not follow its newest line: {at['gap']}px below the view")
+
+        await page.evaluate("() => { window.__scroller.scrollTop = 0; }")
+        await asyncio.sleep(0.3)
+        await page.evaluate("() => window.__run.push(10)")
+        await asyncio.sleep(0.8)
+        held = await page.evaluate(RUNLOG_POSITION)
+        if held["top"] > 0:
+            raise AssertionError(f"a reader who scrolled up was moved to {held['top']}px")
+        if not held["chip"]:
+            raise AssertionError("scrolled up, the log offers no way back to its newest line")
+
+        await page.get_by_role("button", name="Jump to latest").click()
+        await asyncio.sleep(0.5)
+        await page.evaluate("() => window.__run.push(5)")
+        await asyncio.sleep(0.8)
+        back = await page.evaluate(RUNLOG_POSITION)
+        if back["gap"] > 24 or back["chip"]:
+            raise AssertionError(f"'Jump to latest' did not start following again: {back}")
+        return "the run log follows its newest line, and not a reader who scrolled up"
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/orchestrations/{oid}", "DELETE")
+        except Exception:
+            pass
+
+
 @check
 async def check_delegate(browser) -> str:
     """A delegate's work is shown as the delegate's, not as the agent's own.
