@@ -33,6 +33,19 @@ function delegatePrefix(data: Record<string, unknown>): string {
   return typeof name === 'string' && name.trim() ? `${name.trim()} › ` : '';
 }
 
+/**
+ * A turn's thoughts to keep beside its answer: the last one goes when it only
+ * repeats the answer (F102). The engine sends each turn's text as
+ * `llm_thought`, the answering turn included, so the panel of the agent's turns
+ * ended with the answer itself. Cloud's chat drops it the same way
+ * (`org/chat/turn.ts`).
+ */
+function withoutEcho(thoughts: string[], answer: unknown): string[] {
+  const said = typeof answer === 'string' ? answer.trim() : '';
+  if (!said || thoughts.length === 0) return thoughts;
+  return thoughts[thoughts.length - 1].trim() === said ? thoughts.slice(0, -1) : thoughts;
+}
+
 function ThoughtCollapsible({ thoughts, stepName }: { thoughts: string[]; stepName?: string }) {
   const [open, setOpen] = useState(false);
 
@@ -1412,7 +1425,7 @@ export default function Home() {
 
       case 'response': {
         turnAnsweredRef.current = true;
-        const capturedThoughts = [...pendingThoughtsRef.current];
+        const capturedThoughts = withoutEcho([...pendingThoughtsRef.current], data.content);
         const capturedReasoning = [...pendingReasoningRef.current];
         setMessages(prev => [...prev, {
           role: 'assistant',
@@ -1432,7 +1445,7 @@ export default function Home() {
       case 'final': {
         if (data.orch_step_id) {
           // Sub-agent step inside an orchestration — render as agent_step_result bubble
-          const capturedThoughts = [...stepState.thoughts];
+          const capturedThoughts = withoutEcho([...stepState.thoughts], data.response);
           const capturedReasoning = [...stepState.reasoning];
           setMessages(prev => [...prev, {
             role: 'assistant',
@@ -1451,7 +1464,7 @@ export default function Home() {
           stepState.receivedAgentStep = true;
         } else {
           // Top-level final (single-agent response outside orchestration)
-          const capturedThoughts = [...pendingThoughtsRef.current];
+          const capturedThoughts = withoutEcho([...pendingThoughtsRef.current], data.response);
           const capturedReasoning = [...pendingReasoningRef.current];
           setMessages(prev => [...prev, {
             role: 'assistant',
@@ -1504,7 +1517,7 @@ export default function Home() {
           msgType: 'agent_step_result',
           stepName: data.step_name,
           orchStepId: data.orch_step_id,
-          thoughts: [...stepState.thoughts],
+          thoughts: withoutEcho([...stepState.thoughts], data.content),
           reasoning: [...stepState.reasoning],
         }]);
         stepState.thoughts = [];

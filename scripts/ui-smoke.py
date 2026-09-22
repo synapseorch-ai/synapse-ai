@@ -2477,6 +2477,49 @@ async def check_chatreopen(browser) -> str:
 
 
 @check
+async def check_thoughtecho(browser) -> str:
+    """The panels beside an answer do not repeat the answer.
+
+    The engine sends each turn's text as `llm_thought`, the answering turn
+    included, so the panel of the agent's turns ended with the answer itself —
+    measured on a real turn: the answer on screen twice with the panels open
+    (F102). The model's own reasoning still shows, and so does an earlier turn.
+    """
+    ctx, page = await _chat_page(browser, "uismoke-echo")
+    answer = "The tide turns at 4:12 this afternoon."
+    try:
+        box = page.locator("main textarea").last
+        await box.fill("when does the tide turn?")
+        await box.press("Enter")
+        await _stream_open(page, "post")
+        frames = [
+            _frame({"type": "llm_reasoning", "reasoning": "Look it up, then say when.", "turn": 1}, "e-1"),
+            _frame({"type": "llm_thought", "thought": "I will check the tide table first.", "turn": 1}, "e-2"),
+            _frame({"type": "llm_thought", "thought": answer, "turn": 2}, "e-3"),
+            _frame({"type": "response", "content": answer}, "e-4"),
+            _frame({"type": "done"}, "e-5"),
+        ]
+        await page.evaluate(
+            "(frames) => frames.forEach(f => window.__streams.post.push(f))", frames)
+        if not await _on_screen(page, answer):
+            raise AssertionError("the answer never reached the screen")
+        # Two panels: "Thinking" is the model's own reasoning, "Reasoning" the
+        # text of each turn the agent took.
+        for toggle in await page.get_by_role("button", name=re.compile("reasoning|thinking", re.I)).all():
+            await toggle.click()
+        await asyncio.sleep(0.5)
+        text = await page.evaluate("() => document.body.innerText")
+    finally:
+        await ctx.close()
+    if text.count(answer) != 1:
+        raise AssertionError(f"with its panels open the answer is on screen {text.count(answer)} times")
+    for kept in ("Look it up, then say when.", "I will check the tide table first."):
+        if kept not in text:
+            raise AssertionError(f"a panel lost what it should keep: {kept!r}")
+    return "the answer is shown once; the reasoning and the earlier turn stay"
+
+
+@check
 async def check_chatrecover(browser) -> str:
     """A broken stream is read again from its cursor, never sent again.
 
