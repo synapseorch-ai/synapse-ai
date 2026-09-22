@@ -86,7 +86,10 @@ class TestReasoningAndThought:
 
 
 class TestErrorAndGuards:
-    async def test_llm_exception_yields_error_event(self, fake_llm, monkeypatch):
+    async def test_llm_exception_fails_the_turn(self, fake_llm, monkeypatch):
+        """This asserted an `error` event — and the loop then sent the
+        exception's text as the turn's `final`, its answer. The turn raises now
+        (F133); `test_a_model_failure_is_not_an_answer.py` has the rest."""
         agent = S.make_agent(tools=[], skip_default_tools=True)
 
         async def _boom(*a, **k):
@@ -94,11 +97,15 @@ class TestErrorAndGuards:
 
         import core.react_engine as re
         monkeypatch.setattr(re, "llm_generate_response", _boom)
+        from core.llm_providers import LLMError
         from core.react_engine import run_agent_step
-        events = [ev async for ev in run_agent_step(
-            message="go", agent_id=agent["id"], session_id="s1", server_module=_server(),
-            agent_override=agent, tools_override=[], max_turns=3)]
-        assert any(e.get("type") == "error" for e in events)
+        events = []
+        with pytest.raises(LLMError, match="model unreachable"):
+            async for ev in run_agent_step(
+                message="go", agent_id=agent["id"], session_id="s1", server_module=_server(),
+                agent_override=agent, tools_override=[], max_turns=3):
+                events.append(ev)
+        assert not any(e.get("type") == "final" for e in events)
 
     async def test_max_turns_guard(self, fake_llm):
         # Keep calling a tool forever -> the max_turns guard must stop the loop.

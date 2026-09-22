@@ -612,6 +612,9 @@ async def run_agent_chat_job(
     # Set before the `try`, so the `except` can tell "we never got far enough to
     # have a publisher" from "the turn failed with one". See below.
     publisher = None
+    # Whether this turn's exchange is already in `history`: an error after the
+    # answer was recorded (its webhook, say) must not replace it (F133).
+    recorded = False
 
     try:
         # Everything that makes this turn *visible* happens before the pool is
@@ -777,6 +780,7 @@ async def run_agent_chat_job(
             response_text = STOPPED_ANSWER
         history.append({"role": "user", "content": message})
         history.append({"role": "assistant", "content": response_text})
+        recorded = True
         await _upsert_chat_session(session_factory, session_id, agent_id,
                                    "cancelled" if cancelled else "completed", history)
         if cancelled:
@@ -834,9 +838,37 @@ async def run_agent_chat_job(
             # record"; it was the opposite. `history` holds the turns loaded at
             # the top of this job, so the exchange survives its own failure and
             # there is something left to retry from.
+            #
+            # And the question with it (F133): a turn that failed before it
+            # answered keeps what was asked, answered by a marker, as a stopped
+            # or an interrupted turn does — a reopened conversation used to
+            # lose it. The provider's words are not the answer; they went out
+            # on the stream above, to the person in the app.
+            if not recorded:
+                from core.chat_turns import FAILED_ANSWER
+                history.append({"role": "user", "content": message})
+                history.append({"role": "assistant", "content": FAILED_ANSWER})
             await _upsert_chat_session(session_factory, session_id, agent_id, "failed", history)
         except Exception:
             pass
+        if webhook_url and not recorded:
+            # A caller waiting on its webhook is told the turn failed. It used
+            # to hear nothing — or, when the failure was the model's, a
+            # `completed` carrying the provider's error as the answer.
+            try:
+                from core.scale.webhook import deliver_webhook
+                await deliver_webhook(
+                    webhook_url=webhook_url,
+                    payload={
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "status": "failed",
+                        "error": "The agent encountered an error processing your request.",
+                    },
+                    secret=webhook_secret,
+                )
+            except Exception:
+                pass
         raise
 
     finally:

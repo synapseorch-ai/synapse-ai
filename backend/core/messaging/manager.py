@@ -16,6 +16,9 @@ from core.messaging import store as channel_store
 
 logger = logging.getLogger(__name__)
 
+#: What a channel hears when an agent's turn fails — cloud's words for the same.
+FAILED_REPLY = "⚠️ Something went wrong answering that. Please try again."
+
 # Map platform → adapter class (lazy import in _build_adapter to avoid
 # ImportError when libraries are not installed)
 PLATFORM_ADAPTER_MAP = {
@@ -234,8 +237,11 @@ class MessagingManager:
                 if event.get("type") == "final":
                     final_response = event.get("response", "")
         except Exception as e:
+            # Whoever is talking to the bot is told something went wrong, not
+            # what: a model's failure is the provider's words about the
+            # workspace's key or account (F133), and anything else is ours.
             logger.error("[Manager] run_agent error (agent=%s): %s", agent_id, e)
-            final_response = f"⚠️ Error: {e}"
+            final_response = FAILED_REPLY
         return final_response
 
     async def _run_orchestrator(

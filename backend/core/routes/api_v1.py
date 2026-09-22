@@ -144,6 +144,7 @@ async def _v1_turn_events(chat_request, agent: dict, _server):
     `POST /api/v1/chat/{session_id}/cancel` is how it does (F49).
     """
     from core import chat_turns
+    from core.llm_providers import LLMError
     from core.react_engine import run_react_loop
 
     turn = chat_turns.current_turn.get()
@@ -207,6 +208,12 @@ async def _v1_turn_events(chat_request, agent: dict, _server):
 
             await asyncio.sleep(0)
 
+    except LLMError as exc:
+        # The model failed (F133): the turn raises rather than answering with the
+        # provider's words, and an API caller hears what it hears of any agent
+        # error — not those words, which are the workspace's to read.
+        log.error("[v1/chat] Model error session=%s: %s", chat_request.session_id, exc)
+        yield {"type": "error", "message": "The agent encountered an error processing your request."}
     except Exception:
         log.exception("[v1/chat] Unhandled error session=%s", chat_request.session_id)
         yield {"type": "error", "message": "An internal error occurred. Check server logs for details."}

@@ -443,6 +443,13 @@ async def run_builder_stream_compat(request, server_module):
             yield _sse({"type": "done"})
             return
 
+        elif etype == "orchestration_complete" and event.get("status") == "failed":
+            # Not "Done." (F133): the run failed, and its step's error has
+            # already gone to the page. The conversation keeps the question.
+            from core.chat_turns import FAILED_ANSWER
+            await _save_chat_turn(request, FAILED_ANSWER)
+            yield _sse({"type": "done"})
+
         elif etype == "orchestration_complete":
             answer = (event.get("final_state") or {}).get("summary") or "Done."
             await _save_chat_turn(request, answer)

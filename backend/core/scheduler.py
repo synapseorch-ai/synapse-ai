@@ -294,6 +294,9 @@ class ScheduleManager:
 
 
         final_response = ""
+        # A turn that raises — its model failed (F133) — is logged as failed;
+        # `_run` records the schedule run's error and sends no notification.
+        outcome = "failed"
         try:
             async for event in run_agent_step(
                 message=prompt,
@@ -307,8 +310,9 @@ class ScheduleManager:
                 sched_log.log_event(event)
                 if event.get("type") == "final":
                     final_response = event.get("response", "")
+            outcome = "completed"
         finally:
-            agent_log.run_end("completed")
+            agent_log.run_end(outcome)
             agent_log.close()
 
         return final_response

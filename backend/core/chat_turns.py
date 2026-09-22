@@ -67,6 +67,13 @@ MAX_RETAINED = 500
 #: silence reads to the model like an answer.
 STOPPED_ANSWER = "(Stopped before answering.)"
 
+#: What a turn whose model call failed is saved as (F133). The provider's own
+#: words are not: they went back to the model as history, to a widget visitor
+#: in its transcript, and out on a channel as the agent's reply. The person in
+#: the app sees them as the turn's error; the conversation keeps that the
+#: question went unanswered.
+FAILED_ANSWER = "(The model failed before answering.)"
+
 HEARTBEAT = ": ping\n\n"
 
 
