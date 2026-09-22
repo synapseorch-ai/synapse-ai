@@ -80,6 +80,66 @@ def _is_structural(run_id: str) -> bool:
     return run_id.startswith("builder_") or "__" in run_id
 
 
+async def claim_answer(
+    session_factory,
+    run_id: str,
+    *,
+    pause_ordinal: int | None,
+    job_id: str,
+    worker_id: str,
+    redelivery: bool = False,
+) -> bool:
+    """Take a paused run for one answer, or say another answer has it (F136).
+
+    Reading the run and then writing "running" let two answer jobs picked up in
+    one poll both see it asking, both pass F111's check, and both drive the
+    engine from the same checkpoint — every step after the question ran twice.
+    So the write is the check: one UPDATE that matches only a run still paused
+    on a question, and whichever job's UPDATE lands first is the one that
+    answers. The other matches nothing.
+
+    `redelivery` is a job handed out again (`job_try > 1`) whose first try may
+    have claimed the run and stopped before the answer reached a checkpoint. It
+    matches its own claim by the job id ARQ keeps across tries — the run is
+    `running` then, or `failed` if the API's startup sweep got to it first.
+
+    The ordinal is compared *after* the claim, in the same transaction, because
+    that is the only place it cannot go stale: a winner that answers, carries on
+    and pauses at the next question before a loser's UPDATE lands leaves a run
+    that is paused again — on a question the loser's answer is not for.
+    Compared as F111 does: an answer that names no question, or a run whose
+    pause has no entry to compare, is applied.
+
+    The UPDATE is the transaction's first statement on purpose: on SQLite a
+    transaction that has read first cannot then wait for the write lock.
+    """
+    from sqlalchemy import and_, or_, update
+
+    from core.orchestration.pauses import pause_ordinal as ordinal_of
+    from core.store.models import OrchestrationRunDB as Run
+
+    asking = and_(Run.status == "paused", Run.waiting_for_human.is_(True))
+    if redelivery and job_id:
+        asking = or_(asking, and_(Run.job_id == job_id, Run.status.in_(("running", "failed"))))
+
+    async with session_factory() as s:
+        claimed = (await s.execute(
+            update(Run)
+            .where(Run.run_id == run_id, Run.tenant_id == get_tenant(), asking)
+            .values(status="running", waiting_for_human=False, worker_id=worker_id, job_id=job_id)
+            .returning(Run.step_history)
+        )).one_or_none()
+        if claimed is None:
+            await s.rollback()
+            return False
+        now_asking = ordinal_of(claimed.step_history)
+        if pause_ordinal is not None and now_asking is not None and now_asking != pause_ordinal:
+            await s.rollback()
+            return False
+        await s.commit()
+        return True
+
+
 class StoreStateBackend:
     """Reads and writes `orchestration_runs` in the engine's store."""
 

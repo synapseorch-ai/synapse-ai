@@ -338,7 +338,7 @@ async def resume_orchestration_job(
                 f"[worker] run {run_id}: answer for question {pause_ordinal} not applied — "
                 f"the run is {row.status}, asking {_asking_ordinal(row)}"
             )
-            return {"status": row.status, "run_id": run_id}
+            return {"status": row.status, "run_id": run_id, "applied": False}
 
         orch = await _load_orchestration(session_factory, orch_id)
         _log.debug(f"[resume] 📦 orchestration loaded from Postgres: id={orch.id} name={orch.name} steps={len(orch.steps)}")
@@ -346,22 +346,43 @@ async def resume_orchestration_job(
         from core.scale.pubsub import RunEventPublisher
         publisher = RunEventPublisher(redis, run_id, ttl=cfg.pubsub_event_ttl)
 
-        # Mark run as picked up: transition paused → running so status polling reflects activity
-        async with session_factory() as session:
-            from sqlalchemy import update
-            from core.scale.models_db import OrchestrationRunDB
-            await session.execute(
-                update(OrchestrationRunDB)
-                .where(OrchestrationRunDB.run_id == run_id)
-                .values(
-                    status="running",
-                    waiting_for_human=False,
-                    worker_id=_worker_id,
-                    job_id=ctx.get("job_id", ""),
+        if redelivery == "resume":
+            # No answer to apply — the first try's already reached a checkpoint
+            # — so nothing to claim: this try carries the run on from there.
+            async with session_factory() as session:
+                from sqlalchemy import update
+                from core.scale.models_db import OrchestrationRunDB
+                await session.execute(
+                    update(OrchestrationRunDB)
+                    .where(OrchestrationRunDB.run_id == run_id)
+                    .values(
+                        status="running",
+                        waiting_for_human=False,
+                        worker_id=_worker_id,
+                        job_id=ctx.get("job_id", ""),
+                    )
                 )
-            )
-            await session.commit()
+                await session.commit()
+        else:
+            # The run is this answer's only if this UPDATE is the one that takes
+            # it off the question (F136): two answers picked up in one poll both
+            # got this far, and both used to drive the engine.
+            from core.orchestration.state_store import claim_answer
+            if not await claim_answer(
+                session_factory, run_id,
+                pause_ordinal=pause_ordinal,
+                job_id=ctx.get("job_id", ""),
+                worker_id=_worker_id,
+                redelivery=ctx.get("job_try", 1) > 1,
+            ):
+                status = await _status_of_run(session_factory, run_id)
+                _log.info(
+                    f"[worker] run {run_id}: answer for question {pause_ordinal} not applied — "
+                    f"another answer to it is being applied (the run is {status})"
+                )
+                return {"status": status, "run_id": run_id, "applied": False}
         _log.debug(f"[resume] ✅ DB status set to 'running', waiting_for_human=False")
+        await _answer_claimed(ctx, run_id)
 
         await publisher.publish({"type": "worker_picked_up", "worker_id": _worker_id, "run_id": run_id})
 
@@ -1070,6 +1091,28 @@ def _awaits_answer(row) -> bool:
     """
     history = row.step_history or []
     return bool(row.waiting_for_human or (history and history[-1].get("status") == "paused"))
+
+
+async def _status_of_run(session_factory, run_id: str) -> str | None:
+    row = await _load_run_row(session_factory, run_id)
+    return row.status if row is not None else None
+
+
+async def _answer_claimed(ctx: dict, run_id: str) -> None:
+    """Tell an embedder the run is this job's to resume — `ctx["on_answer_claimed"]`.
+
+    Cloud closes its meter's pause here rather than before the job, so an answer
+    that does not apply (F136) leaves the pause exactly as it found it. Awaited
+    after the claim and never allowed to fail the resume: an error in someone
+    else's bookkeeping is not a reason to dead-letter a run that is fine.
+    """
+    hook = ctx.get("on_answer_claimed")
+    if hook is None:
+        return
+    try:
+        await hook()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(f"[worker] run {run_id}: on_answer_claimed failed: {exc}")
 
 
 def _asking_ordinal(row) -> int | None:
