@@ -1481,11 +1481,23 @@ async def check_mcpplaceholder(browser) -> str:
         "uismoke_ph_slack": ("Slack", "SLACK_CLIENT_ID", "preset"),
         "uismoke_ph_github": ("GitHub Copilot", "GITHUB_PERSONAL_ACCESS_TOKEN", "personal access token"),
     }
-    for name, (label, token, _) in servers.items():
+    # And one with a real-looking token, which must never reach the page (F135).
+    secret = "uismoke-bearer-7f3a9c"
+    for name, (label, token) in {**{n: v[:2] for n, v in servers.items()},
+                                 "uismoke_ph_real": ("Real token", secret)}.items():
         api("/api/mcp/servers", "POST", {"name": name, "label": label, "server_type": "remote",
                                          "url": "http://127.0.0.1:9/mcp", "token": token}, timeout=60)
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
+    served: list[str] = []
+
+    async def keep(response):
+        if "/api/mcp/servers" in response.url:
+            try:
+                served.append(await response.text())
+            except Exception:
+                pass
+    page.on("response", keep)
     try:
         await page.goto(f"{APP}/mcp-servers", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 1.0)
@@ -1496,11 +1508,15 @@ async def check_mcpplaceholder(browser) -> str:
         })""", list(servers))
     finally:
         await ctx.close()
-        for name in servers:
+        for name in [*servers, "uismoke_ph_real"]:
             try:
                 api(f"/api/mcp/servers/{name}", "DELETE")
             except Exception:
                 pass
+    if not served:
+        raise AssertionError("the page never read /api/mcp/servers")
+    if any(secret in body for body in served):
+        raise AssertionError("a server's bearer token reached the browser")
     for (name, (label, token, fix)), text in zip(servers.items(), rows):
         if text is None:
             raise AssertionError(f"the {label} server's row never rendered")
@@ -1508,7 +1524,7 @@ async def check_mcpplaceholder(browser) -> str:
             raise AssertionError(f"the {label} row does not say its token is a placeholder: {text!r}")
         if fix not in text.lower():
             raise AssertionError(f"the {label} row does not say what to do about it: {text!r}")
-    return "a server saved with a preset's placeholder token says so, and what to do"
+    return "a placeholder token says so and what to do; no token reaches the browser"
 
 
 @check

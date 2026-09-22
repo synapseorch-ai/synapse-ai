@@ -79,3 +79,60 @@ class TestApiKeysAndMcp:
     async def test_mcp_servers_list(self, client):
         resp = await client.get("/api/mcp/servers")
         assert resp.status_code == 200
+
+
+class TestMcpServersKeepTheirSecrets:
+    """F135: the list route returned each server's stored config as is — the
+    bearer token in clear, and a local server's environment values (its API
+    keys) with it — and the add route echoed the token back. What the screen
+    needs is whether a token is set, and the name an older preset filled in
+    (F103), which is an environment variable's name, not a secret."""
+
+    _SERVERS = [
+        {"name": "gh", "server_type": "remote", "url": "https://x.test/mcp",
+         "token": "ghp_realsecret", "status": "connected"},
+        {"name": "old", "server_type": "remote", "url": "https://y.test/mcp",
+         "token": "SLACK_CLIENT_ID", "status": "disconnected"},
+        {"name": "local", "server_type": "stdio", "command": "uvx", "args": ["x"],
+         "env": {"API_KEY": "sk-secret"}, "status": "connected"},
+    ]
+
+    async def test_the_list_serves_no_token_or_environment_value(self, client, monkeypatch):
+        import copy
+        import json
+        import types
+
+        import core.server as server
+
+        manager = types.SimpleNamespace(servers_config=copy.deepcopy(self._SERVERS))
+        monkeypatch.setattr(server, "mcp_manager", manager, raising=False)
+
+        body = (await client.get("/api/mcp/servers")).json()
+
+        assert "ghp_realsecret" not in json.dumps(body)
+        assert "sk-secret" not in json.dumps(body)
+        by = {s["name"]: s for s in body}
+        assert (by["gh"]["token_set"], by["gh"]["token_placeholder"]) == (True, None)
+        assert by["old"]["token_placeholder"] == "SLACK_CLIENT_ID"
+        assert by["local"]["env"] == {"API_KEY": ""} and by["local"]["token_set"] is False
+        assert manager.servers_config == self._SERVERS, "the stored config keeps its secrets"
+
+    async def test_the_add_response_serves_no_token(self, client, monkeypatch):
+        import types
+
+        import core.server as server
+
+        async def add_server(**kw):
+            return {"config": {"name": kw["name"], "server_type": "remote", "url": kw["url"],
+                               "token": kw["token"], "status": "disconnected"},
+                    "connected": False, "status": "disconnected"}
+
+        monkeypatch.setattr(server, "mcp_manager",
+                            types.SimpleNamespace(servers_config=[], add_server=add_server), raising=False)
+
+        resp = await client.post("/api/mcp/servers", json={
+            "name": "n", "server_type": "remote", "url": "https://z.test/mcp", "token": "ghp_realsecret"})
+
+        assert resp.status_code == 200, resp.text
+        assert "ghp_realsecret" not in resp.text
+        assert resp.json()["config"]["token_set"] is True

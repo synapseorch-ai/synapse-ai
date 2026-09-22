@@ -449,12 +449,37 @@ async def _register_session(name: str):
             )
 
 
+#: What the old Slack, Figma and GitHub presets put in the token field (F103):
+#: environment variable *names*, not tokens, so naming one back is safe.
+_PLACEHOLDER_TOKENS = frozenset({
+    "SLACK_CLIENT_ID", "FIGMA_PERSONAL_ACCESS_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN",
+})
+
+
+def _public_server(config: dict) -> dict:
+    """A server's config as the browser may see it: no secrets (F135).
+
+    The stored config held the bearer token in clear and a local server's
+    environment values (its API keys), and both went to the browser as they
+    were. The screen needs to know whether a token is set and, when it is a
+    placeholder an older preset filled in, which one (F103) — never the value.
+    Environment keys stay, values are blanked. A copy: the manager keeps its own.
+    """
+    view = {k: v for k, v in config.items() if k != "token"}
+    token = (config.get("token") or "").strip()
+    view["token_set"] = bool(token)
+    view["token_placeholder"] = token if token in _PLACEHOLDER_TOKENS else None
+    if isinstance(config.get("env"), dict):
+        view["env"] = {key: "" for key in config["env"]}
+    return view
+
+
 @router.get("/api/mcp/servers")
 async def list_mcp_servers():
     import core.server as _server
     if not _server.mcp_manager:
         return []
-    return _server.mcp_manager.servers_config
+    return [_public_server(c) for c in _server.mcp_manager.servers_config]
 
 
 @router.post("/api/mcp/servers")
@@ -492,14 +517,14 @@ async def add_mcp_server(req: AddMCPServerRequest):
         if status == "oauth_pending":
             return {
                 "status": "oauth_pending",
-                "config": result["config"],
+                "config": _public_server(result["config"]),
                 "connected": False,
                 "auth_url": result.get("auth_url"),
                 "message": "OAuth required — opening browser. Return here once authorised.",
             }
         return {
             "status": "success" if connected else "saved",
-            "config": result["config"],
+            "config": _public_server(result["config"]),
             "connected": connected,
             "message": "Server connected and saved." if connected else "Config saved. Use Retry to reconnect.",
         }
