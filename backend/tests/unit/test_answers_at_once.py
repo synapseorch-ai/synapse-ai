@@ -101,6 +101,73 @@ class TestOnTheFleet:
         assert run.shared_state["answer"] in ("one", "two"), "one answer, mid-loop"
 
 
+class TestInProcess:
+    async def test_two_answers_at_once_resume_the_run_once(self, monkeypatch):
+        from core.orchestration import answers
+        from core.orchestration.runner import SENTINEL
+        from core.orchestration.state import SharedState
+
+        orch = _asking_loop("orch_f136_local")
+        await S.seed_orchestrations([orch])
+        from core.models_orchestration import Orchestration
+        from core.orchestration.engine import OrchestrationEngine
+        engine = OrchestrationEngine(Orchestration.model_validate(orch), _server())
+        events = [e async for e in engine.run("go", run_id="run_f136_local")]
+        assert events[-1]["type"] == "human_input_required"
+
+        _together(monkeypatch, SharedState, "restore")
+        app_state = types.SimpleNamespace(server_module=_server())
+
+        async def answer(text: str):
+            try:
+                return await answers.answer_paused_run(app_state, "run_f136_local", text)
+            except answers.RunAlreadyActive as refused:
+                return refused
+
+        outcomes = await asyncio.gather(answer("one"), answer("two"))
+
+        resumed = [o for o in outcomes if isinstance(o, answers.Answered)]
+        refused = [o for o in outcomes if isinstance(o, answers.RunAlreadyActive)]
+        drained: list[dict] = []
+        for outcome in resumed:
+            while (event := await asyncio.wait_for(outcome.queue.get(), 10)) is not SENTINEL:
+                drained.append(event)
+
+        assert _ran(drained, "after") == 1, "the step after the question ran once"
+        assert (len(resumed), len(refused)) == (1, 1), "the second answer is refused, not queued"
+        run = await _run("run_f136_local")
+        assert run.waiting_for_human and run.status == "paused"
+        assert [h["status"] for h in run.step_history if h.get("step_id") == "ask"] == [
+            "completed", "paused"]
+
+
+class TestTheAppsEnqueue:
+    async def test_an_answer_arq_dropped_is_refused_not_reported_as_queued(
+        self, worker, fake_redis, monkeypatch,
+    ):
+        """ARQ keeps one job per id, and an answer's id was the run and the second
+        it was given in: a second answer that second was dropped and its caller
+        told it had been queued."""
+        import unittest.mock as _m
+        from core.orchestration import answers
+        from core.store import get_store
+        monkeypatch.setattr(worker, "_worker_id", "worker-f136")
+        await S.seed_orchestrations([_asking_loop("orch_f136_enqueue")])
+        await worker.run_orchestration_job(
+            await _ctx(fake_redis), run_id="run_f136_enqueue", orch_id="orch_f136_enqueue",
+            initial_input="go")
+        app_state = types.SimpleNamespace(
+            redis=fake_redis, arq_redis=_m.AsyncMock(), pg_session_factory=await get_store())
+
+        assert (await answers.answer_paused_run(app_state, "run_f136_enqueue", "one")).on_fleet
+        _, kwargs = app_state.arq_redis.enqueue_job.call_args
+        assert kwargs["_job_id"].startswith("resume_run_f136_enqueue_")
+
+        app_state.arq_redis.enqueue_job.return_value = None
+        with pytest.raises(answers.RunAlreadyActive):
+            await answers.answer_paused_run(app_state, "run_f136_enqueue", "two")
+
+
 class TestTheClaim:
     """`state_store.claim_answer` on the shapes a run can be in when an answer arrives."""
 

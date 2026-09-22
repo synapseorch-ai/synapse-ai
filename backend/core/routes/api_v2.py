@@ -424,7 +424,11 @@ async def v2_resume_run(
 
     async with sf() as session:
         result = await session.execute(
-            select(OrchestrationRunDB.status, OrchestrationRunDB.step_history)
+            select(
+                OrchestrationRunDB.status,
+                OrchestrationRunDB.waiting_for_human,
+                OrchestrationRunDB.step_history,
+            )
             .where(OrchestrationRunDB.run_id == run_id)
         )
         run_row = result.first()
@@ -432,6 +436,11 @@ async def v2_resume_run(
         raise HTTPException(404, detail=f"Run '{run_id}' not found.")
     if run_row.status in ("completed", "failed", "cancelled"):
         raise HTTPException(409, detail=f"Run '{run_id}' is already {run_row.status} and cannot be resumed.")
+    # A run that is not paused on a question has nothing to answer. This used to
+    # enqueue anyway, and a job for a running run carried no question to check
+    # (F136) — as v1 already refused (D113).
+    if not (run_row.status == "paused" and run_row.waiting_for_human):
+        raise HTTPException(409, detail=f"Run '{run_id}' is {run_row.status} and is not waiting for an answer.")
 
     # The run's tenant no longer selects a queue: any worker can resume any
     # run, because the run's state is in the store rather than on the disk of
@@ -444,7 +453,7 @@ async def v2_resume_run(
 
     from core.orchestration.pauses import pause_ordinal
 
-    await arq_redis.enqueue_job(
+    job = await arq_redis.enqueue_job(
         "resume_orchestration_job",
         run_id=run_id,
         human_response=resp,
@@ -453,8 +462,12 @@ async def v2_resume_run(
         # The question this answer is for (F111).
         pause_ordinal=pause_ordinal(run_row.step_history),
         _queue_name=queue_name,
-        _job_id=f"resume_{run_id}_{int(time.time())}",
+        _job_id=f"resume_{run_id}_{int(time.time() * 1000)}",
     )
+    if job is None:
+        # ARQ drops a second job with the same id: another answer to this run
+        # was queued this millisecond, and this one was not.
+        raise HTTPException(409, detail=f"An answer to run '{run_id}' was queued at the same moment.")
 
     return {
         "run_id": run_id,

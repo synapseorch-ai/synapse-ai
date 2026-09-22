@@ -10,6 +10,12 @@ run is resumed in this process.
 (`RunNotWaiting`): the browser and a channel can both answer the same question,
 and before this the engine had no such guard — a second answer was written into
 whatever step the run had reached by then.
+
+**And once when two answers arrive together (F136).** Both used to pass the
+check above — here, across the `await` that reads the run; on the fleet, in two
+jobs picked up in one poll — and both drove the run from the same checkpoint.
+In this process the run is claimed before the first `await`; on the fleet the
+worker claims it with one conditional UPDATE (`state_store.claim_answer`).
 """
 from __future__ import annotations
 
@@ -32,7 +38,8 @@ class RunNotWaiting(Exception):
 
 
 class RunAlreadyActive(Exception):
-    """An in-process pump is already driving this run."""
+    """Another answer already has this run: a pump driving it in this process,
+    an answer being applied here, or one just queued for the fleet."""
 
 
 @dataclass
@@ -80,6 +87,15 @@ def _waiting(status: Optional[str], waiting_for_human: Any) -> bool:
     return status == "paused" and bool(waiting_for_human)
 
 
+#: Runs an answer is being applied to in this process, from before the answer's
+#: first `await` until its pump is registered in `runner._active_tasks`. Taken
+#: and checked with no `await` between, which is the whole of its correctness:
+#: the event loop cannot hand a second answer the run in between. A run is
+#: resumed in-process only by the process that holds it, so this set is enough
+#: here; several processes are the fleet's case, and the fleet claims the row.
+_answering: set[str] = set()
+
+
 async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answered:
     """Resume `run_id` with `response`, on the fleet or in this process.
 
@@ -98,7 +114,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
         from core.scale.config import QUEUE_NAME
 
         resp = response if isinstance(response, dict) else {"response": response}
-        await app_state.arq_redis.enqueue_job(
+        job = await app_state.arq_redis.enqueue_job(
             "resume_orchestration_job",
             run_id=run_id,
             human_response=resp,
@@ -106,28 +122,39 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
             # another does not answer it (F111).
             pause_ordinal=pause_ordinal(row.step_history),
             _queue_name=QUEUE_NAME,
-            _job_id=f"resume_{run_id}_{int(time.time())}",
+            _job_id=f"resume_{run_id}_{int(time.time() * 1000)}",
         )
+        if job is None:
+            # ARQ keeps one job per id and answers None for a second: an answer
+            # to this run was queued this same millisecond. It was dropped, so
+            # it must not be reported as queued.
+            raise RunAlreadyActive(run_id)
         return Answered(on_fleet=True)
 
     from core.orchestration.runner import _active_tasks, spawn_engine_run
     from core.orchestration.state import SharedState
 
     # Two pumps for one run would interleave its journal and duplicate work.
+    # Checked and claimed with no `await` between (F136).
     active = _active_tasks.get(run_id)
-    if active is not None and not active.done():
+    if run_id in _answering or (active is not None and not active.done()):
         raise RunAlreadyActive(run_id)
-
+    _answering.add(run_id)
     try:
-        run = (await SharedState.restore(run_id)).run
-    except FileNotFoundError:
-        raise RunNotWaiting(run_id, None)
-    if not _waiting(run.status, run.waiting_for_human):
-        raise RunNotWaiting(run_id, run.status)
+        try:
+            run = (await SharedState.restore(run_id)).run
+        except FileNotFoundError:
+            raise RunNotWaiting(run_id, None)
+        if not _waiting(run.status, run.waiting_for_human):
+            raise RunNotWaiting(run_id, run.status)
 
-    from core.orchestration.engine import OrchestrationEngine
+        from core.orchestration.engine import OrchestrationEngine
 
-    _task, queue = spawn_engine_run(
-        OrchestrationEngine.resume(run_id, response, app_state.server_module), run_id
-    )
+        # Registers the pump in `_active_tasks` before it returns, so the claim
+        # can be let go as soon as it has.
+        _task, queue = spawn_engine_run(
+            OrchestrationEngine.resume(run_id, response, app_state.server_module), run_id
+        )
+    finally:
+        _answering.discard(run_id)
     return Answered(on_fleet=False, queue=queue)

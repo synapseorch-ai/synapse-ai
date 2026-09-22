@@ -94,7 +94,10 @@ class TestV2Resume:
     async def test_resume_returns_202(self, client, v2, api_key):
         from _fakes.fake_pg import fake_session_factory, run_row
         # A paused run exists; resume publishes to Redis + enqueues a resume job.
-        v2.state.pg_session_factory = fake_session_factory(run_row("run_1", status="paused"))
+        # Paused *on a question* — the fake's row defaults to not waiting, which a
+        # paused run never is, and since F136 the route checks.
+        v2.state.pg_session_factory = fake_session_factory(
+            run_row("run_1", status="paused", waiting_for_human=True))
         resp = await client.post("/api/v2/orchestrations/runs/run_1/resume",
                                  json={"response": {"approved": True}},
                                  headers=api_key["headers"])
@@ -114,6 +117,26 @@ class TestV2Resume:
                           json={"response": "yes"}, headers=api_key["headers"])
         _, kwargs = v2.state.arq_redis.enqueue_job.call_args
         assert kwargs["pause_ordinal"] == 1
+
+    async def test_a_run_not_waiting_is_not_answered(self, client, v2, api_key):
+        """F136: a running run's resume used to be queued with no question to
+        check, and the worker applied it."""
+        from _fakes.fake_pg import fake_session_factory, run_row
+        v2.state.pg_session_factory = fake_session_factory(run_row("run_1", status="running"))
+        resp = await client.post("/api/v2/orchestrations/runs/run_1/resume",
+                                 json={"response": "yes"}, headers=api_key["headers"])
+        assert resp.status_code == 409
+        v2.state.arq_redis.enqueue_job.assert_not_called()
+
+    async def test_an_answer_arq_dropped_is_not_reported_as_queued(self, client, v2, api_key):
+        """ARQ keeps one job per id; a second answer queued the same moment is dropped."""
+        from _fakes.fake_pg import fake_session_factory, run_row
+        v2.state.pg_session_factory = fake_session_factory(
+            run_row("run_1", status="paused", waiting_for_human=True))
+        v2.state.arq_redis.enqueue_job.return_value = None
+        resp = await client.post("/api/v2/orchestrations/runs/run_1/resume",
+                                 json={"response": "yes"}, headers=api_key["headers"])
+        assert resp.status_code == 409
 
     async def test_resume_unknown_run_is_404(self, client, v2, api_key):
         from _fakes.fake_pg import fake_session_factory
