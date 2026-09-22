@@ -1459,32 +1459,40 @@ async def run_agent_step(
                         yield _wait_event
                     _llm_result = _wait.result
                 except Exception as llm_err:
-                    _llm_duration = round(time.time() - _llm_start, 1)
-                    error_msg = f"LLM Error ({_llm_duration}s): {llm_err}"
-                    _log.warning(f"❌ {error_msg}")
-                    # A model that failed has not answered (F133). Its error
-                    # used to become the turn's answer: saved as what the agent
-                    # said, sent out as `final` — so a channel posted it, a
-                    # widget showed it to a visitor, and an Agent step wrote it
-                    # into its output key while the run carried on. The turn
-                    # raises instead, and whoever drove it reports it once. The
-                    # conversation keeps the question, as a stopped turn does.
-                    if not is_orchestrator and persist_turn:
-                        from core.chat_turns import FAILED_ANSWER
-                        try:
-                            await _save_conversation_turn(
-                                session_id=session_id,
-                                agent_id=agent_id_for_session,
-                                user=user_message,
-                                assistant=FAILED_ANSWER,
-                                tools=tools_used_summary,
-                            )
-                        except Exception as mem_err:
-                            _log.warning(f"Session save failed (non-fatal): {mem_err}")
-                    from core.llm_providers import LLMError
-                    if isinstance(llm_err, LLMError):
-                        raise
-                    raise LLMError(str(llm_err)) from llm_err
+                    from core.llm_providers import EmptyAnswer, LLMError
+                    if not (isinstance(llm_err, EmptyAnswer) and llm_err.stop_reason == "max_tokens"
+                            and llm_err.reasoning):
+                        _llm_duration = round(time.time() - _llm_start, 1)
+                        error_msg = f"LLM Error ({_llm_duration}s): {llm_err}"
+                        _log.warning(f"❌ {error_msg}")
+                        # A model that failed has not answered (F133). Its error
+                        # used to become the turn's answer: saved as what the
+                        # agent said, sent out as `final` — so a channel posted
+                        # it, a widget showed it to a visitor, and an Agent step
+                        # wrote it into its output key while the run carried on.
+                        # The turn raises instead, and whoever drove it reports
+                        # it once. The conversation keeps the question, as a
+                        # stopped turn does.
+                        if not is_orchestrator and persist_turn:
+                            from core.chat_turns import FAILED_ANSWER
+                            try:
+                                await _save_conversation_turn(
+                                    session_id=session_id,
+                                    agent_id=agent_id_for_session,
+                                    user=user_message,
+                                    assistant=FAILED_ANSWER,
+                                    tools=tools_used_summary,
+                                )
+                            except Exception as mem_err:
+                                _log.warning(f"Session save failed (non-fatal): {mem_err}")
+                        if isinstance(llm_err, LLMError):
+                            raise
+                        raise LLMError(str(llm_err)) from llm_err
+                    # Cut off at the output cap while still thinking: not a
+                    # failure but a truncated reply, which the check below asks
+                    # the model to continue — as it did when this came back as
+                    # text.
+                    _llm_result = LLMResult("", *llm_err.usage, "max_tokens", (), llm_err.reasoning)
                 _llm_duration = round(time.time() - _llm_start, 1)
             llm_output = _llm_result.text
             _log.debug(f"🤖 LLM Response ({_llm_duration}s): {llm_output[:500]}{'...(truncated)' if len(llm_output) > 500 else ''}")

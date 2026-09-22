@@ -35,13 +35,15 @@ class TestGeminiBody:
         assert text == "gemini answer"
         assert it == 10 and ot == 5
 
-    async def test_empty_candidates_returns_error(self, monkeypatch):
+    async def test_empty_candidates_raise(self, monkeypatch):
+        """This asserted the failure came back as the answer's text ("Error: …"),
+        which an agent then said and a step stored. It raises now (F133)."""
         empty = SimpleNamespace(models=SimpleNamespace(
             generate_content=lambda model, contents, config: SimpleNamespace(
                 candidates=[], usage_metadata=None)))
         monkeypatch.setattr(llm, "_gemini_client", empty)
-        text, *_ = await llm.call_gemini("gemini-2.0", [{"role": "user", "content": "q"}], "sys", "key")
-        assert text.startswith("Error")
+        with pytest.raises(llm.EmptyAnswer, match="No response candidates"):
+            await llm.call_gemini("gemini-2.0", [{"role": "user", "content": "q"}], "sys", "key")
 
 
 class TestGeminiRetriesOnlyWhatCanSucceed:

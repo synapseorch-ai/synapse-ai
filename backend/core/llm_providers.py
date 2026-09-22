@@ -31,6 +31,11 @@ from core.log import get_logger
 _log = get_logger(__name__)
 
 
+def _attempts(n: int) -> str:
+    """"1 attempt", "5 attempts" — for a provider's final error message."""
+    return f"{n} attempt" if n == 1 else f"{n} attempts"
+
+
 def _retry_notice(provider: str, reason: str, attempt: int, max_retries: int, backoff: float) -> None:
     """Say, out loud, that a model call failed and is being tried again.
 
@@ -264,6 +269,25 @@ class LLMError(Exception):
     instead of silently passing error strings to the next node.
     """
     pass
+
+
+class EmptyAnswer(LLMError):
+    """A provider answered, and the answer holds nothing usable (F133).
+
+    Empty, blocked by a safety filter, or all reasoning and no answer. Each was
+    returned as the reply's text — "Error: Empty Anthropic response." — so an
+    agent said it and a step stored it. It carries what the call spent
+    (`usage`: input, output, cache-read and cache-write tokens), because those
+    tokens were billed, and why the reply stopped: one cut off at the output
+    cap while still thinking is a reply the agent loop asks to continue, not a
+    failure.
+    """
+
+    def __init__(self, message: str, *, reasoning: str = ""):
+        super().__init__(message)
+        self.reasoning = reasoning
+        self.stop_reason: str | None = None
+        self.usage: tuple[int, int, int, int] = (0, 0, 0, 0)
 
 
 # Configuration — read at call time. `settings` wins over the environment so a
@@ -987,7 +1011,7 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"OpenAI LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
+    error_msg = f"OpenAI LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
     _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
@@ -1065,7 +1089,7 @@ def _extract_anthropic_response(response) -> tuple[str, str]:
     a wall of base64 where an explanation should be.
     """
     if not response.content:
-        return "Error: Empty Anthropic response.", ""
+        raise EmptyAnswer("Error: Empty Anthropic response.")
 
     thinking_parts: list[str] = []
     text_parts: list[str] = []
@@ -1097,9 +1121,12 @@ def _extract_anthropic_response(response) -> tuple[str, str]:
         return answer, reasoning
 
     if reasoning:
-        return "Error: Anthropic returned only reasoning — raise the response cap or lower the reasoning effort.", reasoning
+        raise EmptyAnswer(
+            "Error: Anthropic returned only reasoning — raise the response cap or lower the reasoning effort.",
+            reasoning=reasoning,
+        )
 
-    return "Error: Anthropic returned no usable content.", ""
+    raise EmptyAnswer("Error: Anthropic returned no usable content.")
 
 
 async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
@@ -1214,22 +1241,17 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
 
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]  # seconds between retries
     last_error = None
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
             _log.debug(f"🔄 Anthropic call start (attempt {attempt}/{MAX_RETRIES})")
             response = await client.messages.create(**kwargs)
             _log.debug(f"✅ Anthropic call complete (attempt {attempt})")
-            # Extract actual token usage from the SDK response object
-            input_tokens = getattr(getattr(response, 'usage', None), 'input_tokens', 0) or 0
-            output_tokens = getattr(getattr(response, 'usage', None), 'output_tokens', 0) or 0
-            from core.cache.prompt_cache import extract_anthropic_cache_tokens
-            cache_read, cache_write = extract_anthropic_cache_tokens(response)
-            _text, _reasoning = _extract_anthropic_response(response)
-            return LLMResult(_text, input_tokens, output_tokens,
-                             cache_read, cache_write,
-                             _normalise_stop_reason(getattr(response, "stop_reason", None)),
-                             (), _reasoning)
+            # Read outside this `try` (F133): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to five times, paying for each.
+            break
         except anthropic.APITimeoutError:
             last_error = f"Request timed out ({ANTHROPIC_TIMEOUT}s)"
             _retry_notice("Anthropic", f"did not answer within {ANTHROPIC_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
@@ -1253,9 +1275,28 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Claude LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-    _log.warning(f"❌ {error_msg}")
-    raise LLMError(error_msg)
+    if response is None:
+        # How many attempts were made, not how many were allowed: a refused
+        # request (a 400) stops at the first, and "All 5 attempts failed" read
+        # as five retries that never happened (F133, measured on cloud).
+        error_msg = f"Claude LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    # Extract actual token usage from the SDK response object
+    input_tokens = getattr(getattr(response, 'usage', None), 'input_tokens', 0) or 0
+    output_tokens = getattr(getattr(response, 'usage', None), 'output_tokens', 0) or 0
+    from core.cache.prompt_cache import extract_anthropic_cache_tokens
+    cache_read, cache_write = extract_anthropic_cache_tokens(response)
+    stop_reason = _normalise_stop_reason(getattr(response, "stop_reason", None))
+    try:
+        _text, _reasoning = _extract_anthropic_response(response)
+    except EmptyAnswer as empty:
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
+    return LLMResult(_text, input_tokens, output_tokens,
+                     cache_read, cache_write, stop_reason, (), _reasoning)
 
 def _convert_tools_for_gemini(ollama_tools: list[dict] | None):
     """Convert Ollama-format tool list to Gemini FunctionDeclaration list.
@@ -1623,6 +1664,17 @@ def _convert_messages_for_gemini(messages: list[dict], images: list[str] | None 
     return contents
 
 
+def _malformed_call(response) -> bool:
+    """Gemini stopped on a function call it could not form, and said nothing else."""
+    try:
+        candidate = response.candidates[0]
+        finish = candidate.finish_reason
+        return (finish is not None and finish.name == "MALFORMED_FUNCTION_CALL"
+                and not (candidate.content and candidate.content.parts))
+    except (AttributeError, IndexError, TypeError):
+        return False
+
+
 def _extract_gemini_response(response) -> tuple[str, str]:
     """Split a Gemini response into (text, reasoning).
 
@@ -1644,16 +1696,16 @@ def _extract_gemini_response(response) -> tuple[str, str]:
     its own return value, and `core.react_engine` puts it on the event.
     """
     if not response.candidates:
-        return "Error: No response candidates from Gemini.", ""
+        raise EmptyAnswer("Error: No response candidates from Gemini.")
 
     candidate = response.candidates[0]
 
     if candidate.finish_reason and candidate.finish_reason.name == "SAFETY":
-        return "Error: Response blocked by Gemini safety filters.", ""
+        raise EmptyAnswer("Error: Response blocked by Gemini safety filters.")
 
     if not candidate.content or not candidate.content.parts:
         reason = candidate.finish_reason.name if candidate.finish_reason else "UNKNOWN"
-        return f"Error: Empty Gemini response. Finish Reason: {reason}", ""
+        raise EmptyAnswer(f"Error: Empty Gemini response. Finish Reason: {reason}")
 
     # Walk parts in order, keeping thoughts, answer text and calls apart.
     thought_parts: list[str] = []
@@ -1690,10 +1742,14 @@ def _extract_gemini_response(response) -> tuple[str, str]:
     # Thoughts but no answer. The model spent its whole budget thinking, which
     # is a real outcome at a low cap — say so rather than returning nothing,
     # because an empty string reads to the loop as a finished final response.
+    # And say so as a failure, not as the answer (F133).
     if reasoning:
-        return "Error: Gemini returned only reasoning — raise the response cap or lower the reasoning effort.", reasoning
+        raise EmptyAnswer(
+            "Error: Gemini returned only reasoning — raise the response cap or lower the reasoning effort.",
+            reasoning=reasoning,
+        )
 
-    return "Error: Gemini returned no usable content.", ""
+    raise EmptyAnswer("Error: Gemini returned no usable content.")
 
 # Global singleton Gemini client — reuses connection pool, prevents socket exhaustion
 _gemini_client = None
@@ -1779,45 +1835,19 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     BACKOFF_SCHEDULE = [5, 10, 20, 40, 80]  # seconds between retries
     last_error = None
     refused = False
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
             response = await _call(config, f"attempt {attempt}")
-            result, reasoning_text = _extract_gemini_response(response)
 
-            # If MALFORMED_FUNCTION_CALL, retry once without tools (forces text response)
-            if "MALFORMED_FUNCTION_CALL" in result and gemini_tools:
+            # If MALFORMED_FUNCTION_CALL, retry once without tools (forces text
+            # response). Read off the finish reason: the answer is read outside
+            # this `try` now, and an empty one raises (F133).
+            if _malformed_call(response) and gemini_tools:
                 _log.debug("Gemini MALFORMED_FUNCTION_CALL — retrying without tools")
                 response = await _call(_build_config(with_tools=False), "no-tools retry")
-                result, reasoning_text = _extract_gemini_response(response)
-
-            # Extract actual token usage from Gemini response metadata
-            input_tokens = 0
-            output_tokens = 0
-            cache_read = 0
-            cache_write = 0
-            try:
-                um = getattr(response, 'usage_metadata', None)
-                if um:
-                    input_tokens = getattr(um, 'prompt_token_count', 0) or 0
-                    output_tokens = getattr(um, 'candidates_token_count', 0) or 0
-                    # Thinking is billed as output and is reported separately —
-                    # so leaving it out did not merely under-report the count,
-                    # it under-charged the call. At `high` that is most of it.
-                    output_tokens += int(getattr(um, 'thoughts_token_count', 0) or 0)
-                    cache_read = int(getattr(um, 'cached_content_token_count', 0) or 0)
-                    # Gemini's prompt_token_count is INCLUSIVE of cached tokens.
-                    if cache_read:
-                        input_tokens = max(0, input_tokens - cache_read)
-            except Exception:
-                pass
-            _finish = None
-            try:
-                _finish = response.candidates[0].finish_reason
-            except (AttributeError, IndexError, TypeError):
-                pass
-            return LLMResult(result, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(_finish), (), reasoning_text)
+            break
 
         # except asyncio.TimeoutError:
         #     last_error = f"Request timed out ({GEMINI_TIMEOUT}s)"
@@ -1844,13 +1874,50 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = (
-        f"Gemini LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
-        if not refused
-        else f"Gemini LLM Error: the request was refused. {last_error}"
-    )
-    _log.warning(f"❌ {error_msg}")
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = (
+            f"Gemini LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+            if not refused
+            else f"Gemini LLM Error: the request was refused. {last_error}"
+        )
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    # Read outside the retried `try` (F133): an answer that arrived is never
+    # sent for again because reading it raised — an empty or blocked one raises
+    # on purpose now, and five paid attempts would not change it.
+    input_tokens = 0
+    output_tokens = 0
+    cache_read = 0
+    cache_write = 0
+    try:
+        um = getattr(response, 'usage_metadata', None)
+        if um:
+            input_tokens = getattr(um, 'prompt_token_count', 0) or 0
+            output_tokens = getattr(um, 'candidates_token_count', 0) or 0
+            # Thinking is billed as output and is reported separately —
+            # so leaving it out did not merely under-report the count,
+            # it under-charged the call. At `high` that is most of it.
+            output_tokens += int(getattr(um, 'thoughts_token_count', 0) or 0)
+            cache_read = int(getattr(um, 'cached_content_token_count', 0) or 0)
+            # Gemini's prompt_token_count is INCLUSIVE of cached tokens.
+            if cache_read:
+                input_tokens = max(0, input_tokens - cache_read)
+    except Exception:
+        pass
+    _finish = None
+    try:
+        _finish = response.candidates[0].finish_reason
+    except (AttributeError, IndexError, TypeError):
+        pass
+    try:
+        result, reasoning_text = _extract_gemini_response(response)
+    except EmptyAnswer as empty:
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = _normalise_stop_reason(_finish)
+        raise
+    return LLMResult(result, input_tokens, output_tokens, cache_read, cache_write,
+                     _normalise_stop_reason(_finish), (), reasoning_text)
 
 async def call_grok(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
                     max_tokens: int | None = None, reasoning=None):
@@ -1940,7 +2007,7 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Grok LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
+    error_msg = f"Grok LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
     _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
@@ -2031,7 +2098,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"DeepSeek LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
+    error_msg = f"DeepSeek LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
     _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
@@ -2149,7 +2216,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"V1-compatible LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
+    error_msg = f"V1-compatible LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
     _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
@@ -2553,7 +2620,7 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Bedrock LLM Error: All {MAX_RETRIES} attempts failed. Last error: {last_error}"
+    error_msg = f"Bedrock LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
     _log.warning(f"❌ {error_msg}")
     raise LLMError(error_msg)
 
@@ -3006,6 +3073,29 @@ async def generate_response_ex(
                 )
             else:
                 raise LLMError(f"Error: Unknown cloud model selected ({current_model}).")
+        except EmptyAnswer as empty:
+            # The call was made and billed; only its answer was empty or blocked
+            # (F133). Logged as any call is, then raised as the failure it is.
+            try:
+                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = empty.usage
+                await usage_tracker.log_usage(
+                    model=current_model,
+                    provider=detect_provider_from_model(current_model),
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    context_chars=context_chars,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    source=source,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    latency_seconds=_time.time() - _t0,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                )
+            except Exception as _track_err:
+                _log.warning(f"usage_tracker: log_usage (empty answer) failed: {_track_err}")
+            raise
         except LLMError:
             # LLM errors must propagate — do NOT swallow them.
             # Orchestration engine will catch this and stop execution.
