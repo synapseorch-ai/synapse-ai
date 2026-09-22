@@ -3005,13 +3005,17 @@ async def generate_response_ex(
                     reasoning=_reasoning_plan,
                 )
             else:
-                return LLMResult("Error: Unknown cloud model selected.")
+                raise LLMError(f"Error: Unknown cloud model selected ({current_model}).")
         except LLMError:
             # LLM errors must propagate — do NOT swallow them.
             # Orchestration engine will catch this and stop execution.
             raise
         except Exception as e:
-            return LLMResult(f"Cloud API Error: {str(e)}")
+            # Any other failure is one too (F132). Returned as the reply, it was
+            # written into an LLM step's output key and the run completed, and
+            # an evaluator took its fallback route on it. The same holds for the
+            # CLI, HuggingFace and Ollama branches below.
+            raise LLMError(f"Cloud API Error: {str(e)}") from e
 
     elif mode == "cli":
         # CLI session providers: build a flat prompt and spawn the local binary.
@@ -3039,7 +3043,7 @@ async def generate_response_ex(
         except LLMError:
             raise
         except Exception as e:
-            return LLMResult(f"CLI Provider Error: {str(e)}")
+            raise LLMError(f"CLI Provider Error: {str(e)}") from e
 
     elif mode == "hf":
         try:
@@ -3059,7 +3063,7 @@ async def generate_response_ex(
         except LLMError:
             raise
         except Exception as e:
-            return LLMResult(f"HuggingFace Provider Error: {str(e)}")
+            raise LLMError(f"HuggingFace Provider Error: {str(e)}") from e
 
     else:
         # Local Ollama
@@ -3163,7 +3167,7 @@ async def generate_response_ex(
                     output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
 
             except Exception as e:
-                return LLMResult(f"Local Agent Error: {e}")
+                raise LLMError(f"Local Agent Error: {e}") from e
 
     # ── Inline thinking tags, whichever provider answered (F32) ──────────────
     # Folded into `reasoning` rather than dropped: the loop shows it as the

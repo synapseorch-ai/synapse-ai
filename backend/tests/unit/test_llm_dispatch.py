@@ -98,16 +98,36 @@ class TestCloudDispatch:
         assert len(out) == 2
         assert seen == {"model": "titan-embed-v2", "base_url": "http://gw", "api_key": "tok"}
 
+    # F132: these two, and the Ollama one below, pinned the failure *returned as
+    # the model's reply* — the defect. They now pin that it is raised.
     async def test_unknown_cloud_model(self, monkeypatch):
-        out = await _REAL_GENERATE("hi", "s", "cloud", "weirdmodel", {})
-        assert "Unknown cloud model" in out
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _REAL_GENERATE("hi", "s", "cloud", "weirdmodel", {})
+        assert "Unknown cloud model" in str(err.value)
 
     async def test_cloud_generic_error_is_wrapped(self, monkeypatch):
         async def _boom(*a, **k):
             raise ValueError("kaboom")
         monkeypatch.setattr(_llm_mod, "call_openai", _boom)
-        out = await _REAL_GENERATE("hi", "s", "cloud", "gpt-4o", {"openai_key": "x"})
-        assert out.startswith("Cloud API Error")
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _REAL_GENERATE("hi", "s", "cloud", "gpt-4o", {"openai_key": "x"})
+        assert str(err.value).startswith("Cloud API Error") and "kaboom" in str(err.value)
+
+    async def test_cli_error_is_wrapped(self, monkeypatch):
+        async def _boom(*a, **k):
+            raise OSError("claude: not found")
+        monkeypatch.setattr(_llm_mod, "call_cli_provider", _boom)
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _REAL_GENERATE("hi", "s", "cli", "cli.claude", {})
+        assert str(err.value).startswith("CLI Provider Error")
+
+    async def test_huggingface_error_is_wrapped(self, monkeypatch):
+        async def _boom(*a, **k):
+            raise RuntimeError("model not loaded")
+        monkeypatch.setattr(_llm_mod, "call_huggingface", _boom)
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _REAL_GENERATE("hi", "s", "hf", "hf.some/model", {})
+        assert str(err.value).startswith("HuggingFace Provider Error")
 
     async def test_llm_error_propagates(self, monkeypatch):
         async def _err(*a, **k):
@@ -135,8 +155,9 @@ class TestLocalDispatch:
 
     async def test_ollama_error_is_wrapped(self, monkeypatch):
         install_httpx(monkeypatch, FakeResponse(status_code=500, text="boom"))
-        out = await _REAL_GENERATE("hi", "sys", "local", "ollama.llama3", {})
-        assert out.startswith("Local Agent Error")
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _REAL_GENERATE("hi", "sys", "local", "ollama.llama3", {})
+        assert str(err.value).startswith("Local Agent Error")
 
 
 class TestResponseCache:
