@@ -264,6 +264,7 @@
   --color-indigo-900: #ede9fe;
   --color-indigo-800: #ddd6fe;
   --color-indigo-400: #4338ca;
+  --color-indigo-300: #3730a3;  /* indigo-800. Chat's reasoning panel read 1.72-1.98:1 (F101) */
 
   /* --- GREEN/EMERALD PALETTE INVERSION (for Slack/WhatsApp) --- */
   --color-green-950: #f0fdf4;

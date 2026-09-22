@@ -629,7 +629,38 @@ CONTRAST_PAGES = (
     "/evals", "/mcp-servers", "/skills", "/kitchen-sink",
     "/settings/general", "/settings/models", "/settings/scale", "/settings/widgets",
     "/settings/messaging", "/settings/memory", "/settings/api-keys",
+    # The rest of the rail (F101): the uses the inversion layer lacks sit mostly
+    # on screens the walk never opened.
+    "/dashboard", "/usage", "/settings/personal_details", "/settings/variables",
+    "/settings/workspace", "/settings/repos", "/settings/db_configs",
+    "/settings/import_export", "/settings/support", "/settings/datalab",
 )
+
+#: A run log with a line of every kind, and a chat turn with its panels open —
+#: states no page load reaches, and where most raw colour lives (F101).
+CONTRAST_RUN_EVENTS = [
+    {"type": "orchestration_start", "run_id": "run_contrast"},
+    {"type": "step_start", "orch_step_id": "a", "step_name": "Research", "step_type": "agent"},
+    {"type": "thinking", "orch_step_id": "a", "message": "Looking it up"},
+    {"type": "tool_execution", "orch_step_id": "a", "tool_name": "search_web", "args": {"q": "x"}},
+    {"type": "tool_result", "orch_step_id": "a", "tool_name": "search_web", "preview": "3 results"},
+    {"type": "step_warning", "orch_step_id": "a", "message": "a warning line"},
+    {"type": "step_complete", "orch_step_id": "a", "step_name": "Research", "duration_seconds": 1.2},
+    {"type": "routing_decision", "orch_step_id": "r", "step_type": "evaluator", "decision": "yes",
+     "target_step_id": "b"},
+    {"type": "loop_iteration", "orch_step_id": "l", "iteration": 1},
+    {"type": "step_error", "orch_step_id": "b", "error": "an error line"},
+    {"type": "transform_result", "orch_step_id": "t", "result": "ok"},
+]
+CONTRAST_CHAT_EVENTS = [
+    {"type": "status", "message": "Working"},
+    {"type": "llm_reasoning", "reasoning": "Thinking about it.", "turn": 1},
+    {"type": "llm_thought", "thought": "I will search.", "turn": 1},
+    {"type": "tool_execution", "tool_name": "search_web", "args": {"q": "x"}},
+    {"type": "tool_result", "tool_name": "search_web", "preview": "3 results"},
+    {"type": "response", "content": "The answer, with **bold** and `code`."},
+    {"type": "done"},
+]
 
 #: Known, owned, and deliberately not fixed here. `--danger` is one token doing
 #: two jobs — it is the colour of 60 pieces of danger *text* on a dark ground
@@ -719,24 +750,71 @@ async def check_contrast(browser) -> str:
             f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}"
         )
         page = await ctx.new_page()
+
+        async def measure(where: str) -> None:
+            for row in await page.evaluate(CONTRAST):
+                if any(row["fg"] == fg and row["bg"] == bg for fg, bg, _ in CONTRAST_WAIVED):
+                    continue
+                bad.append(
+                    f"{theme} {where}: {row['ratio']}:1 (needs {row['need']}) "
+                    f"{row['fg']} on {row['bg']} — {row['txt'][:24]!r}"
+                )
         try:
             for path in CONTRAST_PAGES:
                 await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
                 await asyncio.sleep(SETTLE)
-                for row in await page.evaluate(CONTRAST):
-                    if any(row["fg"] == fg and row["bg"] == bg
-                           for fg, bg, _ in CONTRAST_WAIVED):
-                        continue
-                    bad.append(
-                        f"{theme} {path}: {row['ratio']}:1 (needs {row['need']}) "
-                        f"{row['fg']} on {row['bg']} — {row['txt'][:24]!r}"
-                    )
+                await measure(path)
+        finally:
+            await ctx.close()
+
+        # A run log with a line of every kind, on a stubbed stream.
+        oid = f"orch_uismoke_contrast_{int(time.time())}"
+        api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+        await ctx.add_init_script(RUNLOG_STUB)
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE + 2.0)
+            await page.get_by_role("button", name="Run", exact=True).click()
+            for _ in range(30):
+                if await page.evaluate("() => !!window.__run.raw"):
+                    break
+                await asyncio.sleep(0.1)
+            await page.evaluate("(evs) => evs.forEach(e => window.__run.raw(e))", CONTRAST_RUN_EVENTS)
+            await asyncio.sleep(1.5)
+            await measure("a run log")
+        finally:
+            await ctx.close()
+            try:
+                api(f"/api/orchestrations/{oid}", "DELETE")
+            except Exception:
+                pass
+
+        # A chat turn with its panels open, on a stubbed stream.
+        ctx, page = await _chat_page(browser, f"uismoke-contrast-{theme}")
+        try:
+            await page.evaluate(f"() => localStorage.setItem('synapseTheme', '{theme}')")
+            await page.reload(wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            box = page.locator("main textarea").last
+            await box.fill("contrast turn")
+            await box.press("Enter")
+            await _stream_open(page, "post")
+            frames = [_frame(e, f"k-{i}") for i, e in enumerate(CONTRAST_CHAT_EVENTS)]
+            await page.evaluate("(fs) => fs.forEach(f => window.__streams.post.push(f))", frames)
+            await asyncio.sleep(1.5)
+            for toggle in await page.get_by_role("button", name=re.compile("reasoning|thinking", re.I)).all():
+                await toggle.click()
+            await asyncio.sleep(0.5)
+            await measure("a chat turn")
         finally:
             await ctx.close()
     if bad:
         raise AssertionError(f"{len(bad)} under AA — " + "; ".join(bad[:5]))
     return (
-        f"{len(CONTRAST_PAGES)} screens in both themes meet AA"
+        f"{len(CONTRAST_PAGES)} screens, a run log and a chat turn in both themes meet AA"
         + (f" ({len(CONTRAST_WAIVED)} waived)" if CONTRAST_WAIVED else "")
     )
 
@@ -946,6 +1024,8 @@ window.fetch = function (input, init) {
     const body = new ReadableStream({
       start(c) {
         let n = 0;
+        window.__run.raw = (e) =>
+          c.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(e) + '\n\n'));
         window.__run.push = (count) => {
           for (let i = 0; i < count; i++, n++) {
             c.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({

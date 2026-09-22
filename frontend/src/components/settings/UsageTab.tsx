@@ -302,7 +302,10 @@ function ModelBar({ stat, maxCost }: { stat: ModelStat; maxCost: number }) {
                 <div><p className="text-xs text-text-faint">Reqs</p><p className="text-sm font-semibold text-white">{stat.requests}</p></div>
                 <div><p className="text-xs text-text-faint">Tokens</p><p className="text-sm font-semibold text-white">{fmtK(stat.total_tokens)}</p></div>
                 <div className="min-w-[70px]"><p className="text-xs text-text-faint">Cost</p>
-                    <p className="text-sm font-semibold" style={{ color: meta.dot }}>{usd(stat.estimated_cost)}</p></div>
+                    {/* The figure in text colour, as its neighbours: a provider's dot
+                        colour is not a text colour — Ollama's slate read 2.41:1 on the
+                        light ground (F101). The bar and the dot keep the colour. */}
+                    <p className="text-sm font-semibold text-white">{usd(stat.estimated_cost)}</p></div>
             </div>
         </div>
     );
@@ -485,7 +488,6 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                             }
                             const prevCtx = i > 0 ? sorted[i - 1].context_chars : 0;
                             const delta = log.context_chars - prevCtx;
-                            const metaDot = PROVIDER_META[detectProvider(log.model)]?.dot ?? '#71717a';
                             const prevAgent = i > 0 ? (sorted[i - 1].agent_id || '') : null;
                             const currentAgent = log.agent_id || '';
                             const agentChanged = showAgentDividers && (i === 0 || currentAgent !== prevAgent);
@@ -553,7 +555,7 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                                                 <span className="text-text-faint">--</span>
                                             )}
                                         </td>
-                                        <td className="py-2.5 pr-3 text-right font-medium tabular-nums" style={{ color: metaDot }}>{usd(log.estimated_cost)}</td>
+                                        <td className="py-2.5 pr-3 text-right font-medium tabular-nums text-text">{usd(log.estimated_cost)}</td>
                                     </tr>
                                 </React.Fragment>
                             );

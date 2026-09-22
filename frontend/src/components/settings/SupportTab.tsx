@@ -164,11 +164,13 @@ export const SupportTab = () => {
                                 Have questions, need help debugging, or want to share your custom orchestrations? Join our active Discord community to connect with other builders.
                             </p>
                         </div>
+                        {/* White in both themes: the light theme inverts `text-white` to
+                            near-black, 4.31:1 on Discord's blurple against 4.61:1 (F101). */}
                         <a
                             href="https://discord.gg/9UN45qyGh8"
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex shrink-0 items-center gap-2 px-4 py-2 bg-[#5865F2] hover:bg-[#4752C4] text-white text-xs font-bold transition-colors"
+                            className="inline-flex shrink-0 items-center gap-2 px-4 py-2 bg-[#5865F2] hover:bg-[#4752C4] text-[#ffffff] text-xs font-bold transition-colors"
                         >
                             Join Discord Server
                             <ExternalLink className="h-3.5 w-3.5" />
