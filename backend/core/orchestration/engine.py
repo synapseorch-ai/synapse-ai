@@ -755,6 +755,7 @@ class OrchestrationEngine:
             # A human step: write the answer under the step's configured output_key.
             # Falling back to "human_response" preserves backward-compat for steps with no output_key.
             output_key = (asker.output_key if asker else None) or "human_response"
+            human_response = self._as_answered(human_response, asker)
             run.shared_state[output_key] = human_response
             # Always keep "human_response" as well so evaluators that check it still work.
             if output_key != "human_response":
@@ -797,6 +798,23 @@ class OrchestrationEngine:
         async for event in self._execute_loop(run, state):
             yield event
         _log.debug(f"[engine.resume] 🏁 _execute_loop finished, run.status={run.status} run.current_step_id={run.current_step_id!r}")
+
+    @staticmethod
+    def _as_answered(human_response, asker):
+        """A step with no fields holds its answer as text, whichever road it took (F106).
+
+        The same step's key held `yes` or `{"response": "yes"}` by where it was
+        answered: OSS chat sent the mapping, the app's modal and a channel reply
+        the string — which the fleet's enqueue wrapped — and v1's and v2's
+        resume always wrapped. So `{state.approval}` rendered differently for
+        the same answer. Decided here, once, rather than at every sender. A
+        step that declares fields keeps its mapping, and so does any other dict:
+        a caller that chose a shape keeps it.
+        """
+        if (asker is not None and not asker.human_fields and isinstance(human_response, dict)
+                and list(human_response) == ["response"]):
+            return human_response["response"]
+        return human_response
 
     @staticmethod
     def _approved(human_response) -> tuple[bool, str]:

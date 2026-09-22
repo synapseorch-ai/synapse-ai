@@ -67,6 +67,17 @@ class TestAResumeIsAnAnswer:
         assert answer.status_code == 409, answer.text
         assert await _status(completed_run) == "completed"
 
+    async def test_a_typed_answer_is_held_as_its_text(self, client, api_key, paused_run):
+        """v1 wraps a string answer as `{"response": …}` on the way in; a step
+        with no fields held that mapping, where the app's modal left the words
+        (F106). The step holds the text now, however it was answered."""
+        from core.orchestration.state import SharedState
+
+        answer = await client.post(f"/api/v1/orchestrations/runs/{paused_run}/resume",
+                                   json={"response": "yes"}, headers=api_key["headers"])
+        assert answer.status_code == 200, answer.text
+        assert (await SharedState.restore(paused_run)).run.shared_state["answer"] == "yes"
+
     @pytest.mark.parametrize("route", ["resume", "resume/stream"])
     async def test_an_unknown_run_is_a_404(self, client, api_key, route):
         answer = await client.post(f"/api/v1/orchestrations/runs/no_such_run/{route}",

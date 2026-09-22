@@ -596,8 +596,9 @@ class TestAnAnswerIsForOneQuestion:
         assert (await worker.resume_orchestration_job(await _ctx(fake_redis, 1), **second))[
             "status"] == "completed"
         state = (await _run("run_f111")).shared_state
-        # The app sends a typed answer as a mapping.
-        assert _results(state["answer"]) == [{"response": "one"}, {"response": "two"}]
+        # The app's enqueue wraps a typed answer as a mapping; a step with no
+        # fields holds it as its text (F106 — this pinned the mapping until then).
+        assert _results(state["answer"]) == ["one", "two"]
         assert state["o_tail"] == "tail"
 
     async def test_two_answers_to_one_question_answer_it_once(self, worker, fake_redis):
@@ -620,7 +621,7 @@ class TestAnAnswerIsForOneQuestion:
 
         assert late["status"] == "paused"
         run = await _run("run_f111b")
-        assert run.shared_state["first"] == {"response": "from the app"}
+        assert run.shared_state["first"] == "from the app"  # the text, since F106
         assert "second" not in run.shared_state
         assert run.waiting_for_human and [h["step_id"] for h in run.step_history] == ["h1", "h2"]
 
