@@ -5,10 +5,10 @@
  *
  * `SettingsView` fetches the whole settings payload into ~50 useState pairs
  * because the General and Models tabs *edit* it. The three screens split out of
- * it only ever read three fields — the default model an agent falls back to,
- * and the n8n URL and key that decide whether the tool builder can offer a
- * workflow picker — so they get the payload read-only rather than 50 setters
- * drilled through them.
+ * it only ever read four fields — the default model an agent falls back to, the
+ * reasoning effort it runs at without one of its own, and the n8n URL and key
+ * that decide whether the tool builder can offer a workflow picker — so they
+ * get the payload read-only rather than 50 setters drilled through them.
  *
  * Deliberately not in Redux. This is request state, not shared app state: the
  * settings screens own the writes, and a cache here would go stale the moment
@@ -20,6 +20,8 @@ export type AppSettings = {
     model?: string;
     n8n_url?: string;
     n8n_api_key?: string;
+    /** What an agent with no effort of its own runs at (F99). */
+    reasoning_effort?: string;
 };
 
 export function useAppSettings() {

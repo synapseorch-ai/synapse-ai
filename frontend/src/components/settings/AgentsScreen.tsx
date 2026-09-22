@@ -34,7 +34,7 @@ export function AgentsScreen() {
     const dispatch = useDispatch<AppDispatch>();
     const { agents, customTools, models, loading } = useSettingsData();
     const { capabilities, loading: loadingCapabilities } = useCapabilities();
-    const { defaultModel } = useAppSettings();
+    const { defaultModel, settings } = useAppSettings();
     const { toast, show, dismiss } = useToast();
 
     const router = useRouter();
@@ -118,6 +118,7 @@ export function AgentsScreen() {
                 reasoningCapable={models.reasoning_capable || []}
                 reasoningWithoutOff={models.reasoning_without_off || []}
                 defaultModel={defaultModel}
+                workspaceEffort={settings.reasoning_effort}
                 loadingAgents={loading}
             />
 

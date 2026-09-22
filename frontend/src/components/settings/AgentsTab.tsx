@@ -37,6 +37,9 @@ interface AgentsTabProps {
      *  Served for the same reason as the list above. */
     reasoningWithoutOff?: string[];
     defaultModel?: string;
+    /** The workspace's `reasoning_effort`, which an agent with none of its own
+     *  runs at. Absent when the workspace never set one. */
+    workspaceEffort?: string;
     loadingAgents?: boolean;
 }
 
@@ -45,7 +48,7 @@ import React, { useState, useEffect } from 'react';
 export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
     draftAgent, setDraftAgent, loadDraftAgent, guard, availableCapabilities, loadingCapabilities = false, customTools,
-    onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, defaultModel, loadingAgents = false
+    onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, defaultModel, workspaceEffort, loadingAgents = false
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const [repos, setRepos] = useState<any[]>([]);
@@ -605,30 +608,44 @@ export const AgentsTab = ({
                                                     {/* No Off where the model has none: an Off that
                                                         quietly runs as Low is the "set and ignored"
                                                         reading this control exists to avoid (F65). */}
-                                                    {((reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '')
-                                                        ? (['low', 'medium', 'high'] as const)
-                                                        : (['off', 'low', 'medium', 'high'] as const)
-                                                    ).map(level => {
-                                                        const stored = draftAgent.reasoning_effort || 'medium';
-                                                        const shown = stored === 'off' && (reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '')
-                                                            ? 'low' : stored;
-                                                        const active = shown === level;
-                                                        return (
-                                                            <button
-                                                                key={level}
-                                                                type="button"
-                                                                onClick={() => setDraftAgent({ ...draftAgent, reasoning_effort: level })}
-                                                                aria-pressed={active}
-                                                                className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors ${
-                                                                    active
-                                                                        ? 'border-accent bg-accent/10 text-accent'
-                                                                        : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
-                                                                }`}
-                                                            >
-                                                                {level}
-                                                            </button>
-                                                        );
-                                                    })}
+                                                    {(() => {
+                                                        const withoutOff = (reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '');
+                                                        // What an agent with no effort of its own runs at (F99): the
+                                                        // workspace's setting, else the engine's default — Low for the
+                                                        // Claude CLI (F65), Medium for the rest. It was drawn as Medium
+                                                        // whatever ran. Off shows as Low where the model has none.
+                                                        const set = (workspaceEffort || '').trim().toLowerCase();
+                                                        const inherited = ['off', 'low', 'medium', 'high'].includes(set)
+                                                            ? (set === 'off' && withoutOff ? 'low' : set)
+                                                            : (withoutOff ? 'low' : 'medium');
+                                                        const stored = draftAgent.reasoning_effort || null;
+                                                        const shown = stored === 'off' && withoutOff ? 'low' : stored;
+                                                        // `null`, not undefined: a stored agent reads back `null`, and
+                                                        // the unsaved-changes guard compares JSON (F73).
+                                                        const options: { value: string | null; label: string }[] = [
+                                                            { value: null, label: `Default · ${inherited}` },
+                                                            ...(withoutOff ? ['low', 'medium', 'high'] : ['off', 'low', 'medium', 'high'])
+                                                                .map(level => ({ value: level, label: level })),
+                                                        ];
+                                                        return options.map(({ value, label }) => {
+                                                            const active = shown === value;
+                                                            return (
+                                                                <button
+                                                                    key={value ?? 'default'}
+                                                                    type="button"
+                                                                    onClick={() => setDraftAgent({ ...draftAgent, reasoning_effort: value })}
+                                                                    aria-pressed={active}
+                                                                    className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors ${
+                                                                        active
+                                                                            ? 'border-accent bg-accent/10 text-accent'
+                                                                            : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
+                                                                    }`}
+                                                                >
+                                                                    {label}
+                                                                </button>
+                                                            );
+                                                        });
+                                                    })()}
                                                 </div>
                                                 <p className="text-2xs text-text-faint mt-1">How much this model thinks before it answers. Higher costs more and takes longer; thinking tokens are billed as output.</p>
                                             </div>

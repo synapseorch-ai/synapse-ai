@@ -1467,6 +1467,53 @@ async def check_effort(browser) -> str:
     return f"{claude[0]}: effort offered as {'/'.join(names)}, and a stored off shows as the low it runs at"
 
 
+@check
+async def check_effortdefault(browser) -> str:
+    """An agent with no effort of its own shows the one it runs at.
+
+    The control drew every such agent as Medium, while the engine uses the
+    workspace's setting — and, with none, Low for the Claude CLI (F65's rule)
+    and Medium for the rest (F99). The workspace setting is read, never written:
+    "unset" cannot be put back through the API, and for a CLI agent it is not
+    the same as Medium.
+    """
+    models = api("/api/models")
+    claude = sorted(m for m in models.get("all_available", []) if m.startswith("cli.claude."))
+    if not claude:
+        return "skipped — no Claude CLI on this machine, so no cli.claude model to open"
+    workspace = (api("/api/settings").get("reasoning_effort") or "").strip().lower()
+    runs_at = {"off": "low"}.get(workspace, workspace) or "low"
+    aid = "agent_uismoke_effortdefault"
+    api("/api/agents", "POST", {**_agent(aid, "UI smoke default effort"), "model": claude[0]})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": 1200})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        await page.get_by_text("UI smoke default effort", exact=True).first.click()
+        await asyncio.sleep(1.0)
+        levels = await page.evaluate("""() => {
+          const label = [...document.querySelectorAll('label, span, p')]
+            .find(e => (e.textContent || '').trim() === 'Reasoning');
+          if (!label) return null;
+          return [...label.parentElement.querySelectorAll('button')].map(b => ({
+            name: (b.textContent || '').trim().toLowerCase(), pressed: b.getAttribute('aria-pressed')}));
+        }""")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if levels is None:
+        raise AssertionError(f"{claude[0]} takes an effort and the editor offers no reasoning control")
+    pressed = [lv["name"] for lv in levels if lv["pressed"] == "true"]
+    if len(pressed) != 1 or not pressed[0].startswith("default") or runs_at not in pressed[0]:
+        raise AssertionError(
+            f"an agent with no effort shows {pressed}, but it runs at the workspace's: {runs_at}")
+    return f"an agent with no effort shows '{pressed[0]}', the level it runs at"
+
+
 # ── headers ──────────────────────────────────────────────────────────────────
 
 #: Reachable only by typing the URL, so it appears in no rail and a crawl of
