@@ -385,11 +385,19 @@ async def run_builder_stream_compat(request, server_module):
     human step ends the turn with the question as an assistant message — the
     user answers by replying, which starts a fresh turn.
     """
+    # The conversation so far is what `_save_chat_turn` keeps (F115), read
+    # under the same key. This read `request.history_messages`, which
+    # `ChatRequest` has never had, so every turn — a reply to the builder's own
+    # question included — reached it with no history at all (F134).
+    from core.session import get_recent_history_messages
+    history = await get_recent_history_messages(
+        getattr(request, "session_id", None) or "default",
+        agent_id=getattr(request, "agent_id", None),
+    )
     builder_req = BuilderChatRequest(
         message=request.message,
-        history=getattr(request, "history_messages", []) or [],
+        history=history,
         can_create_agents=True,
-        model=getattr(request, "model", None),
         client_session_id=str(getattr(request, "session_id", "") or "chat"),
         # Chat has an attach button and the builder-typed agent is reached
         # through it, so dropping these here would lose the one attachment path

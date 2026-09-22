@@ -344,6 +344,37 @@ class TestEveryAgentTypeKeepsItsTurns:
         assert [(m["role"], m["content"]) for m in saved] == [
             ("user", "build me a digest"), ("assistant", expected)]
 
+    async def test_a_builder_agent_is_given_the_conversation_so_far(
+        self, client, seed_agent, monkeypatch
+    ):
+        """F134: the chat page's builder path read `request.history_messages`,
+        a field `ChatRequest` has never had — so every turn reached the builder
+        with no history, and a reply to its question ("the second one") arrived
+        with nothing before it. The conversation is what F115 saves."""
+        import core.routes.builder as builder
+
+        seen: list[list[dict]] = []
+        endings = iter([
+            {"type": "human_input_required", "prompt": "Which of the two?"},
+            {"type": "orchestration_complete", "final_state": {"summary": "Changed it."}},
+        ])
+
+        async def _builder_run(req, server_module):
+            seen.append(list(req.history))
+            yield next(endings)
+
+        monkeypatch.setattr(builder, "run_builder_stream", _builder_run)
+        agent = await seed_agent(type="builder")
+
+        for message in ("change the digest", "the second one"):
+            reply = await client.post("/chat/stream", json={
+                "message": message, "session_id": "f134", "agent_id": agent["id"]})
+            assert reply.status_code == 200, reply.text
+
+        assert seen[0] == [], "a conversation's first turn has nothing before it"
+        assert [(m["role"], m["content"]) for m in seen[1]] == [
+            ("user", "change the digest"), ("assistant", "Which of the two?")]
+
     async def test_a_builder_turn_that_cannot_be_saved_is_still_answered(
         self, client, seed_agent, monkeypatch
     ):
