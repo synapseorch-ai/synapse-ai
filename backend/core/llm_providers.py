@@ -186,6 +186,40 @@ _STOP_REASONS = {
 }
 
 
+#: Stop reasons that mean "the provider withheld this reply", across all five
+#: vocabularies. They normalise to "stop" above, because the agent loop only
+#: acts on "max_tokens" — but an empty reply that stopped for one of these was
+#: blocked, not empty, and the difference is the whole of the error message
+#: somebody reads (F137).
+_BLOCKED_STOP_REASONS = frozenset({
+    "refusal", "content_filter", "content_filtered",
+    "safety", "recitation", "guardrail_intervened",
+})
+
+
+def _empty_answer(provider: str, *, reasoning: str = "", stop_reason=None) -> "EmptyAnswer":
+    """The exception for a reply that arrived carrying nothing usable (F137).
+
+    Every provider had its own way of saying nothing: Bedrock and Ollama
+    returned `""`, the OpenAI-compatible extractor returned `""` for a
+    content-filtered reply, and the refusal stop reasons normalise to "stop" —
+    a finished answer. The agent loop then reported "I completed the requested
+    actions." for a turn where the model said nothing at all, and an LLM step
+    wrote the empty string into its output key.
+
+    Anthropic and Gemini already raised (F133); this is that behaviour, worded
+    once for the rest.
+    """
+    blocked = str(getattr(stop_reason, "name", None) or stop_reason or "").strip().lower()
+    if blocked in _BLOCKED_STOP_REASONS:
+        return EmptyAnswer(
+            f"Error: {provider} withheld this reply ({blocked}).", reasoning=reasoning)
+    if reasoning:
+        return EmptyAnswer(
+            f"Error: {provider} returned only reasoning, no answer.", reasoning=reasoning)
+    return EmptyAnswer(f"Error: Empty {provider} response.")
+
+
 def _normalise_stop_reason(raw) -> str | None:
     """One vocabulary for every provider's stop reason. Unknown values map to
     None rather than a guess: the loop only acts on "max_tokens"."""
@@ -1019,9 +1053,16 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
     # Handle tool_calls response
     choice = data["choices"][0]
     msg = choice.get("message", {})
-    text, _reasoning = _openai_compat_extract(msg)
+    stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
+    try:
+        text, _reasoning = _openai_compat_extract(msg, "OpenAI", choice.get("finish_reason"))
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or withheld.
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
     return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                     _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
+                     stop_reason, (), _reasoning)
 
 def _convert_tools_for_anthropic(ollama_tools: list[dict] | None) -> list[dict] | None:
     """Convert Ollama-format tool list to Anthropic tool format.
@@ -1050,7 +1091,8 @@ def _convert_tools_for_anthropic(ollama_tools: list[dict] | None) -> list[dict] 
     return tools if tools else None
 
 
-def _openai_compat_extract(msg: dict) -> tuple[str, str]:
+def _openai_compat_extract(msg: dict, provider: str = "The model",
+                           finish_reason=None) -> tuple[str, str]:
     """Normalize an OpenAI-compatible chat-completion message into
     `({"tool": ..., "arguments": ...}` shape or plain text, reasoning)`.
 
@@ -1067,6 +1109,7 @@ def _openai_compat_extract(msg: dict) -> tuple[str, str]:
     """
     reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
     tool_calls = msg.get("tool_calls") or []
+    refusal = (msg.get("refusal") or "").strip()
     if tool_calls:
         # Every call, as consecutive JSON objects: the ReAct loop parses all of
         # them and executes them in order. Only `tool_calls[0]` used to
@@ -1079,7 +1122,15 @@ def _openai_compat_extract(msg: dict) -> tuple[str, str]:
         if narration:
             reasoning = f"{reasoning}\n\n{narration}".strip() if reasoning else narration
         return call_json, reasoning
-    return (msg.get("content", "") or ""), reasoning
+
+    answer = msg.get("content", "") or ""
+    if answer.strip():
+        return answer, reasoning
+    # Nothing usable came back. It used to be returned as the reply (F137).
+    if refusal:
+        raise EmptyAnswer(f"Error: {provider} refused this request: {refusal}",
+                          reasoning=reasoning)
+    raise _empty_answer(provider, reasoning=reasoning, stop_reason=finish_reason)
 
 
 def _extract_anthropic_response(response) -> tuple[str, str]:
@@ -2023,9 +2074,16 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
         input_tokens = max(0, input_tokens - cache_read)
     choice = data["choices"][0]
     msg = choice.get("message", {})
-    text, _reasoning = _openai_compat_extract(msg)
+    stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
+    try:
+        text, _reasoning = _openai_compat_extract(msg, "Grok", choice.get("finish_reason"))
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or withheld.
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
     return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                     _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
+                     stop_reason, (), _reasoning)
 
 
 async def call_deepseek(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
@@ -2122,9 +2180,16 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
     # so input_tokens here is the MISS count already; do NOT subtract again.
     choice = data["choices"][0]
     msg = choice.get("message", {})
-    text, _reasoning = _openai_compat_extract(msg)
+    stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
+    try:
+        text, _reasoning = _openai_compat_extract(msg, "DeepSeek", choice.get("finish_reason"))
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or withheld.
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
     return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                     _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
+                     stop_reason, (), _reasoning)
 
 
 def _normalize_v1_base_url(base_url: str) -> str:
@@ -2248,9 +2313,16 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         input_tokens = max(0, input_tokens - cache_read)
     choice = data["choices"][0]
     msg = choice.get("message", {})
-    text, _reasoning = _openai_compat_extract(msg)
+    stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
+    try:
+        text, _reasoning = _openai_compat_extract(msg, "The provider", choice.get("finish_reason"))
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or withheld.
+        empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
+        empty.stop_reason = stop_reason
+        raise
     return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                     _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
+                     stop_reason, (), _reasoning)
 
 
 async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True,
@@ -2368,7 +2440,7 @@ def _split_think_tags(text: str) -> tuple[str, str]:
     return _THINK_TAG_RE.sub("", text).strip(), "\n".join(thoughts).strip()
 
 
-def _extract_bedrock_content(message: dict) -> tuple[str, str]:
+def _extract_bedrock_content(message: dict, stop_reason=None) -> tuple[str, str]:
     """Split a Converse output message into (text, reasoning).
 
     This used to be `content[0].get("text", "")` — the first block, assumed to
@@ -2379,7 +2451,7 @@ def _extract_bedrock_content(message: dict) -> tuple[str, str]:
     """
     blocks = message.get("content") or []
     if not isinstance(blocks, list):
-        return "", ""
+        raise _empty_answer("Bedrock", stop_reason=stop_reason)
     text_parts, thought_parts = [], []
     for block in blocks:
         if not isinstance(block, dict):
@@ -2392,7 +2464,13 @@ def _extract_bedrock_content(message: dict) -> tuple[str, str]:
             thought = ((block.get("reasoningContent") or {}).get("reasoningText") or {}).get("text")
             if thought:
                 thought_parts.append(thought)
-    return "\n".join(text_parts).strip(), "\n".join(thought_parts).strip()
+    answer = "\n".join(text_parts).strip()
+    reasoning = "\n".join(thought_parts).strip()
+    if not answer:
+        # Returned as the reply until F137 — so an agent said nothing and an
+        # LLM step stored nothing, both reported as success.
+        raise _empty_answer("Bedrock", reasoning=reasoning, stop_reason=stop_reason)
+    return answer, reasoning
 
 
 #: Bedrock errors worth another attempt — the model gateway's own set
@@ -2649,7 +2727,6 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
 
     if converse_resp is not None:
         msg = (((converse_resp or {}).get("output") or {}).get("message") or {})
-        text, _reasoning = _extract_bedrock_content(msg)
         usage = (converse_resp or {}).get("usage") or {}
         inp = int(usage.get("inputTokens") or 0)
         out = int(usage.get("outputTokens") or 0)
@@ -2658,13 +2735,22 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
         # Bedrock inputTokens may include cache hits; subtract for consistent billing math.
         if cache_read:
             inp = max(0, inp - cache_read)
+        raw_stop = (converse_resp or {}).get("stopReason")
+        try:
+            text, _reasoning = _extract_bedrock_content(msg, raw_stop)
+        except EmptyAnswer as empty:
+            # The call was made and billed; only its answer was empty or withheld.
+            empty.usage = (inp, out, cache_read, cache_write)
+            empty.stop_reason = _normalise_stop_reason(raw_stop)
+            raise
         return LLMResult(text, inp, out, cache_read, cache_write,
-                         _normalise_stop_reason((converse_resp or {}).get("stopReason")),
-                         (), _reasoning)
+                         _normalise_stop_reason(raw_stop), (), _reasoning)
 
     response_body = json.loads(invoke_resp.get("body").read()) if invoke_resp.get("body") else {}
     content = response_body.get("content") or []
     text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
+    if not text.strip():
+        raise _empty_answer("Bedrock", stop_reason=response_body.get("stop_reason"))
     return LLMResult(text)
 
 
@@ -3266,6 +3352,10 @@ async def generate_response_ex(
                         _reasoning = "\n\n".join(
                             t for t in (msg.get("thinking") or "", _inline_thoughts)
                             if t and t.strip()).strip()
+                        if not result_text.strip():
+                            # Returned as the reply until F137.
+                            raise _empty_answer("Ollama", reasoning=_reasoning,
+                                                stop_reason=data.get("done_reason"))
 
                     stop_reason = _normalise_stop_reason(data.get("done_reason"))
 
@@ -3296,9 +3386,16 @@ async def generate_response_ex(
                     response.raise_for_status()
                     data = response.json()
                     result_text, _reasoning = _split_think_tags(data.get("response", ""))
+                    if not result_text.strip():
+                        raise _empty_answer("Ollama", reasoning=_reasoning,
+                                            stop_reason=data.get("done_reason"))
                     input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_for_generate)
                     output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
 
+            except EmptyAnswer:
+                # Already the right exception, carrying its reasoning and stop
+                # reason; re-wrapping would lose both (F137).
+                raise
             except Exception as e:
                 raise LLMError(f"Local Agent Error: {e}") from e
 

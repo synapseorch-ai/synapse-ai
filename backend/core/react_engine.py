@@ -2281,7 +2281,16 @@ async def run_agent_step(
                 }
 
     if not final_response:
-        final_response = "I completed the requested actions."
+        # Every turn was spent and none of them ended with an answer — the loop
+        # only leaves without one by running out of turns. It used to say "I
+        # completed the requested actions.", which is a claim the run cannot
+        # support and the one F68 struck off the v1 approval path for the same
+        # reason. An empty reply no longer reaches here at all: it raises in
+        # the provider now (F137).
+        final_response = (
+            f"I ran out of turns ({max_turns}) before finishing this task. "
+            "The work so far is above."
+        )
 
     # A memory-enabled chat agent leaves a cheap per-exchange trace — one line
     # per turn, no LLM. Orchestration runs get their proper summary at run end.

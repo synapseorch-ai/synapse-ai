@@ -203,3 +203,121 @@ class TestAStep:
         state = (await _run("run_empty")).shared_state
         assert "Empty Anthropic response" not in str(state.get("draft"))
         assert "o_after" not in state
+
+
+class TestTheOtherProvidersSayItToo:
+    """The same rule for the three readers F133 did not reach (F137).
+
+    Bedrock (Converse and InvokeModel), the OpenAI-compatible extractor — which
+    is openai, grok, deepseek, `oaic.`, `locv1.` and the model gateway — and
+    Ollama all returned `""`, and `refusal`/`content_filter`/`SAFETY` normalise
+    to "stop", a finished answer. So the agent loop reported "I completed the
+    requested actions." for a turn in which the model said nothing at all, and
+    an LLM step wrote the empty string into its output key.
+    """
+
+    @staticmethod
+    def _reply(message, finish_reason="stop"):
+        from _fakes.fake_http import FakeResponse, install_httpx
+        return FakeResponse({
+            "usage": {"prompt_tokens": 9, "completion_tokens": 0},
+            "choices": [{"message": message, "finish_reason": finish_reason}],
+        }), install_httpx
+
+    async def test_an_empty_openai_reply_raises(self, monkeypatch):
+        reply, install = self._reply({"content": ""})
+        install(monkeypatch, reply)
+        with pytest.raises(llm.EmptyAnswer, match="Empty OpenAI response") as raised:
+            await llm.call_openai("gpt-4o", [{"role": "user", "content": "q"}], "key")
+        # The call was made and billed, so what it spent travels with it.
+        assert raised.value.usage == (9, 0, 0, 0)
+
+    async def test_a_filtered_reply_says_it_was_withheld(self, monkeypatch):
+        reply, install = self._reply({"content": ""}, finish_reason="content_filter")
+        install(monkeypatch, reply)
+        with pytest.raises(llm.EmptyAnswer, match="withheld this reply"):
+            await llm.call_grok("grok-2", [{"role": "user", "content": "q"}], "sys", "key")
+
+    async def test_a_refusal_carries_the_models_words(self, monkeypatch):
+        reply, install = self._reply({"content": "", "refusal": "I can't help with that."})
+        install(monkeypatch, reply)
+        with pytest.raises(llm.EmptyAnswer, match="I can't help with that."):
+            await llm.call_deepseek("deepseek-chat", [{"role": "user", "content": "q"}],
+                                    "sys", "key")
+
+    async def test_reasoning_with_no_answer_raises_and_keeps_the_thinking(self, monkeypatch):
+        reply, install = self._reply({"content": "", "reasoning_content": "thinking hard"},
+                                     finish_reason="length")
+        install(monkeypatch, reply)
+        with pytest.raises(llm.EmptyAnswer, match="only reasoning") as raised:
+            await llm.call_v1_compatible("m", [{"role": "user", "content": "q"}], "sys",
+                                         "http://host/v1", "key")
+        # `max_tokens` + reasoning is the one the agent loop continues rather
+        # than fails, so both have to survive the raise.
+        assert raised.value.stop_reason == "max_tokens"
+        assert raised.value.reasoning == "thinking hard"
+
+    async def test_a_tool_call_with_no_prose_is_still_an_answer(self, monkeypatch):
+        reply, install = self._reply({
+            "content": "",
+            "tool_calls": [{"function": {"name": "get_x", "arguments": "{}"}}],
+        }, finish_reason="tool_calls")
+        install(monkeypatch, reply)
+        text, *_ = await llm.call_openai("gpt-4o", [{"role": "user", "content": "q"}], "key",
+                                         tools=[{"type": "function", "function": {"name": "get_x"}}])
+        assert "get_x" in text
+
+    async def test_an_empty_bedrock_reply_raises(self, monkeypatch):
+        class _FakeBedrock:
+            def converse(self, **kwargs):
+                return {"output": {"message": {"content": []}},
+                        "usage": {"inputTokens": 5, "outputTokens": 0},
+                        "stopReason": "end_turn"}
+
+        monkeypatch.setattr(llm, "_make_aws_client", lambda *a, **k: _FakeBedrock())
+        with pytest.raises(llm.EmptyAnswer, match="Empty Bedrock response") as raised:
+            await llm.call_bedrock("bedrock.anthropic.claude", [{"role": "user", "content": "q"}],
+                                   "sys", "us-east-1", {})
+        assert raised.value.usage == (5, 0, 0, 0)
+
+    async def test_a_guardrail_says_it_was_withheld(self, monkeypatch):
+        class _FakeBedrock:
+            def converse(self, **kwargs):
+                return {"output": {"message": {"content": []}}, "usage": {},
+                        "stopReason": "guardrail_intervened"}
+
+        monkeypatch.setattr(llm, "_make_aws_client", lambda *a, **k: _FakeBedrock())
+        with pytest.raises(llm.EmptyAnswer, match="withheld this reply"):
+            await llm.call_bedrock("bedrock.anthropic.claude", [{"role": "user", "content": "q"}],
+                                   "sys", "us-east-1", {})
+
+
+class TestTheTurnLimitSaysWhatHappened:
+    """"I completed the requested actions." was the only thing a turn that ran
+    out of turns ever said (F137). It is a claim the run cannot support, and
+    the same false line F68 struck off the v1 approval path."""
+
+    async def test_a_turn_that_ran_out_says_so(self, fake_llm):
+        from _fakes.fake_llm import tool_call
+        from core.react_engine import run_agent_step
+
+        agent = S.make_agent(tools=["all"], skip_default_tools=True)
+
+        async def executor(name, args):
+            return "again"
+
+        fake_llm.script([tool_call("my_tool", x=1)] * 6)
+        events = [ev async for ev in run_agent_step(
+            message="go", agent_id=agent.get("id"), session_id="s_turnlimit",
+            server_module=SimpleNamespace(agent_sessions={}, memory_store=None, tool_router={}),
+            agent_override=agent, max_turns=2, tool_executor=executor,
+            tools_override=[{"type": "function", "function": {
+                "name": "my_tool", "description": "t",
+                "parameters": {"type": "object", "properties": {"x": {"type": "integer"}}}}}],
+        )]
+
+        finals = [e for e in events if e.get("type") == "final"]
+        assert finals, [e.get('type') for e in events]
+        answer = finals[-1].get("response", "")
+        assert "ran out of turns" in answer, answer
+        assert "I completed the requested actions." not in answer
