@@ -27,6 +27,7 @@ an error.
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
@@ -181,6 +182,21 @@ async def _save_in(s, values: dict) -> None:
     await upsert(s, ScheduleDB, values=values, index_elements=["id"], update=list(_MUTABLE))
 
 
+#: Told of every schedule `save` writes, after it commits. None here, because
+#: `core/scheduler.py` polls `due()` and finds a new row by itself. A deployment
+#: that arms each occurrence instead of polling (cloud: a deferred job per
+#: `next_run_at`, no cross-tenant scan) installs one, or a schedule the engine
+#: writes itself — the builder's `create_schedule`, the operator's
+#: `set_schedule_enabled` — is listed, enabled and never fired (F149).
+_saved_observer: Callable[[dict], Awaitable[None]] | None = None
+
+
+def set_saved_observer(observer: Callable[[dict], Awaitable[None]] | None) -> None:
+    """Install the callable told of each saved schedule. ``None`` removes it."""
+    global _saved_observer
+    _saved_observer = observer
+
+
 async def save(item: dict) -> None:
     """Create or update one schedule."""
     from core.store import session
@@ -189,6 +205,11 @@ async def save(item: dict) -> None:
         return
     async with session() as s:
         await _save_in(s, schedule_values(item, get_tenant()))
+    # After the commit, not inside it: what the observer starts may read the
+    # row from another process. Its failure propagates — a save that could not
+    # be armed is not a schedule that works.
+    if _saved_observer is not None:
+        await _saved_observer(item)
 
 
 async def set_next_run(schedule_id: str, when: datetime | None) -> None:

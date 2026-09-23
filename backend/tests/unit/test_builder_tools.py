@@ -427,6 +427,33 @@ class TestSchedules:
         listed = await call("list_schedules", {}, server)
         assert listed[0]["enabled"] is False
 
+    async def test_a_deployment_that_arms_hears_of_what_the_builder_made(self, server):
+        """F149: the create saver now makes schedules. A deployment that arms
+        rather than polls hears of the new one with its next run, and of the
+        pause, which is how it stands the armed job down."""
+        from core.store import schedules as schedule_store
+
+        heard = []
+
+        async def observer(item):
+            heard.append((item["id"], item["enabled"], item["next_run_at"]))
+
+        schedule_store.set_saved_observer(observer)
+        try:
+            await S.seed_orchestrations([S.make_orchestration(id="orch_brief", name="Brief")])
+            created = await call("create_schedule", {
+                "name": "Mondays", "target_type": "orchestration", "target_id": "orch_brief",
+                "prompt": "Brightside, Kestrel", "schedule_type": "interval",
+                "interval_value": 7, "interval_unit": "days",
+            }, server)
+            assert created.get("status") == "created", created
+            await call("set_schedule_enabled", {"schedule_id": created["id"], "enabled": False}, server)
+        finally:
+            schedule_store.set_saved_observer(None)
+
+        assert [(i, e) for i, e, _ in heard] == [(created["id"], True), (created["id"], False)]
+        assert heard[0][2] == created["next_run_at"]
+
 
 class TestVariablesArePreviewedNotDisclosed:
     async def test_values_are_truncated_and_the_reference_is_given(self, server):

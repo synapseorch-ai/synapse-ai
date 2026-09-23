@@ -155,3 +155,45 @@ async def test_replace_is_scoped_to_one_tenant(multi_tenant):
 
     with tenant_scope("acme"):
         assert [s["id"] for s in await store.load()] == ["sched_1"]
+
+
+class TestADeploymentThatArmsIsTold:
+    """F149 (D122). A deployment that does not poll `due()` — cloud arms each
+    occurrence as a deferred job instead — never learns about a schedule the
+    engine writes itself: the builder's `create_schedule`, the operator's
+    `set_schedule_enabled`. The row is listed, enabled, with a next run, and
+    nothing ever fires it. `set_saved_observer` is how such a deployment hears
+    of every save, after it commits."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        yield
+        store.set_saved_observer(None)
+
+    async def test_nothing_is_installed_by_default(self):
+        seen = []
+        await store.save(_make("sched_quiet"))
+        assert seen == []  # and no error: OSS's scheduler polls, so it installs none
+
+    async def test_each_save_is_reported_after_it_commits(self):
+        seen = []
+
+        async def observer(item):
+            # The row must already be readable: an armed job that wakes to
+            # find no row stands down and never re-arms.
+            seen.append((item["id"], await store.get(item["id"]) is not None))
+
+        store.set_saved_observer(observer)
+        await store.save(_make("sched_seen"))
+        await store.save(_make("sched_seen", enabled=False))
+        assert seen == [("sched_seen", True), ("sched_seen", True)]
+
+    async def test_a_save_that_writes_nothing_reports_nothing(self):
+        seen = []
+
+        async def observer(item):
+            seen.append(item)
+
+        store.set_saved_observer(observer)
+        await store.save({"name": "no id"})
+        assert seen == []
