@@ -258,21 +258,32 @@ class TestTheClaim:
 
 
 class TestANestedRunsSecondQuestion:
-    @pytest.mark.xfail(strict=True, reason=(
-        "F140: a nested run's next question adds no entry to the parent's history, so "
-        "the parent's ordinal does not change and a queued second answer answers it"))
-    async def test_a_queued_second_answer_does_not_answer_the_childs_next_question(
-        self, worker, fake_redis,
-    ):
+    """Each question a nested run asks is its own question (F140).
+
+    The parent waits on one step for the whole sub-conversation, and its pause
+    entry used to be one entry for all of it — so `pause_ordinal` named the
+    same index however many questions the child asked, and an answer queued
+    behind the first was applied to the second. A Loop's second question has
+    always opened an entry of its own, which is why F111 held there.
+    """
+
+    @staticmethod
+    async def _seed(orch_id: str, agent_id: str) -> dict:
         from test_human_in_containers import _delegate
-        inner = S.make_orchestration(id="orch_f140_inner", entry_step_id="h1", steps=[
+        inner = S.make_orchestration(id=f"{orch_id}_inner", entry_step_id="h1", steps=[
             _human("h1", key="first", nxt="h2"), _human("h2", key="second", nxt="p"),
             _print("p", "got {state.first} and {state.second}", key="final"),
         ])
-        parent = S.make_orchestration(id="orch_f140", entry_step_id="delegate",
-                                      steps=[_delegate("agent_f140_inner", "tail"), _print("tail")])
-        await S.seed_agents([S.make_orchestrator_agent("orch_f140_inner", id="agent_f140_inner")])
+        parent = S.make_orchestration(id=orch_id, entry_step_id="delegate",
+                                      steps=[_delegate(agent_id, "tail"), _print("tail")])
+        await S.seed_agents([S.make_orchestrator_agent(f"{orch_id}_inner", id=agent_id)])
         await S.seed_orchestrations([parent, inner])
+        return parent
+
+    async def test_a_queued_second_answer_does_not_answer_the_childs_next_question(
+        self, worker, fake_redis,
+    ):
+        await self._seed("orch_f140", "agent_f140_inner")
         await worker.run_orchestration_job(
             await _ctx(fake_redis), run_id="run_f140", orch_id="orch_f140", initial_input="go")
         from core.orchestration.pauses import pause_ordinal
@@ -287,3 +298,39 @@ class TestANestedRunsSecondQuestion:
 
         child = await _run("run_f140__delegate_d1")
         assert "second" not in child.shared_state, "the child's second question is still open"
+
+    async def test_the_ordinal_moves_with_the_question(self, worker, fake_redis):
+        """In-process too: the engine writes the entry, not the fleet."""
+        from core.orchestration.engine import OrchestrationEngine
+        from core.models_orchestration import Orchestration
+        from core.orchestration.pauses import pause_ordinal
+
+        parent = await self._seed("orch_f140b", "agent_f140b_inner")
+        engine = OrchestrationEngine(Orchestration.model_validate(parent), _server())
+        [e async for e in engine.run("go", run_id="run_f140b")]
+        first = pause_ordinal((await _run("run_f140b")).step_history)
+
+        [e async for e in OrchestrationEngine.resume("run_f140b", "a", _server())]
+        history = (await _run("run_f140b")).step_history
+        second = pause_ordinal(history)
+
+        assert second is not None and second != first, "the next question is a new entry"
+        assert history[first]["status"] == "completed", "the answered one is closed"
+
+    async def test_the_delegate_is_still_one_priced_step(self, worker, fake_redis):
+        """A person's wait is not another execution of the step it waits in.
+
+        The entry is typed `human`, which is what every pricing and counting
+        rule already treats as free — and what keeps the loop guard from
+        spending a delegate's iterations on how talkative its sub-run was.
+        """
+        await self._seed("orch_f140c", "agent_f140c_inner")
+        await worker.run_orchestration_job(
+            await _ctx(fake_redis), run_id="run_f140c", orch_id="orch_f140c", initial_input="go")
+        await worker.resume_orchestration_job(
+            await _ctx(fake_redis), run_id="run_f140c", human_response="a")
+
+        history = (await _run("run_f140c")).step_history
+        delegate = [h for h in history if h["step_id"] == "delegate"]
+        assert len(delegate) == 2, delegate
+        assert [h["step_type"] for h in delegate] == ["agent", "human"]

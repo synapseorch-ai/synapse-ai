@@ -921,6 +921,20 @@ class OrchestrationEngine:
                 # recording that here would make the next answer skip a level.
                 run.nested_run_id = nested_run_id
                 run.nested_orch_id = nested_orch_id
+                # A new question opens an entry of its own (F140). Without one
+                # the parent's newest `paused` entry stayed the first
+                # question's, at the same index — so `pause_ordinal` did not
+                # move, and an answer queued behind the first was applied to
+                # this one. A Loop's second question has always appended an
+                # entry, which is why F111 holds there and failed here.
+                #
+                # Typed `human`, not as the step: the step is executing, and
+                # this is a person's wait inside that one execution. That is
+                # what keeps the delegate to a single priced entry — appending
+                # a second `agent` one is the mistake the done path below
+                # records ("cloud priced both") — and out of active time and
+                # the executed-step count, which already exclude human steps.
+                self._reopen_nested_pause(run, step_id, parent_step)
                 if sub_event.get("channel_id"):
                     run.shared_state[HUMAN_CHANNEL_KEY] = sub_event["channel_id"]
                 else:
@@ -1298,11 +1312,24 @@ class OrchestrationEngine:
         return sum(1 for h in run.step_history if h.get("step_id") not in nested)
 
     def _apply_loop_guard(self, next_id: str, run: OrchestrationRun) -> tuple[str | None, dict | None]:
-        """Check if the target step has exceeded its max_iterations."""
+        """Check if the target step has exceeded its max_iterations.
+
+        Counted per step id, and **typed as the step**: an entry recorded
+        against this step under another type is not an execution of it. That is
+        a person's wait inside one execution — a nested run asking a second
+        question writes one (F140) — and counting those would spend a delegate's
+        iterations on how talkative its sub-run was. A human step's own entries
+        are typed `human` and so still count, which is what keeps a loop
+        containing one from iterating without limit.
+        """
         if next_id not in self.step_map:
             return next_id, None
 
-        exec_count = sum(1 for h in run.step_history if h["step_id"] == next_id)
+        step_type = self.step_map[next_id].type.value
+        exec_count = sum(
+            1 for h in run.step_history
+            if h["step_id"] == next_id and h.get("step_type", step_type) == step_type
+        )
         max_iter = self.step_map[next_id].max_iterations
         if exec_count >= max_iter:
             loop_event = {
@@ -1392,6 +1419,35 @@ class OrchestrationEngine:
             "output_key": asker.output_key,
             "within": innermost_container(step.id, chain) if chain else step.id,
         }
+
+    @staticmethod
+    def _reopen_nested_pause(run: OrchestrationRun, step_id: str, parent_step) -> None:
+        """Close the question a nested run just had answered, and open the next.
+
+        The parent waits on the same step throughout, so `step_id` is the same
+        for every question — but each question is its own wait, and
+        `pauses.pause_ordinal` names a question by the index of the newest
+        `paused` entry. One entry for a whole conversation meant one index for
+        every question in it (F140).
+
+        The closed entry keeps whatever type it had, so the step's own first
+        entry stays the priced one. The new entry is a `human` wait: free,
+        outside active time, outside the executed-step count.
+        """
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for entry in reversed(run.step_history):
+            if entry.get("step_id") == step_id and entry.get("status") == "paused":
+                entry["status"] = "completed"
+                entry["ended_at"] = now
+                break
+        run.step_history.append({
+            "step_id": step_id,
+            "step_name": parent_step.name if parent_step else "",
+            "step_type": StepType.HUMAN.value,
+            "status": "paused",
+            "started_at": now,
+            "within": step_id,
+        })
 
     @staticmethod
     def _complete_human_step(run: OrchestrationRun, step) -> None:
