@@ -406,3 +406,89 @@ class TestAServerNameIsNotACapability:
             prompt = self._prompt(role)
             assert "must match what the plan asked for" in prompt, role
             assert "do not bind it because the server's name sounded right" in prompt, role
+
+
+class TestWhatWasAskedForIsBuilt:
+    """F149 + F150 (B4, D122). "Every Monday morning, pull … and write me a
+    short summary I can check before it goes to the client" was built as
+    `agent → agent → end`: no human step and no schedule, four times out of
+    four on `synapse.nova-pro`. Two different losses.
+
+    * The approval was lost at the analyst: its own Goal restated "a short
+      summary for review before it goes to the client", and its Human
+      checkpoints line read "None specified by the user". Nothing told it that
+      a check before something goes out *is* a checkpoint.
+    * The schedule could not have been kept on any model: the create path's
+      agents held no schedule tool — only the operator did, on the manage path —
+      and the plan had nowhere to write a cadence.
+    """
+
+    @staticmethod
+    def _agent(role):
+        for agent in bundled_definitions()["agents"]:
+            if agent["id"].endswith(role):
+                return agent
+        raise AssertionError(f"no agent for {role}")
+
+    @staticmethod
+    def _step(step_id):
+        steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+        return steps[step_id]
+
+    def test_the_analyst_is_told_a_check_before_it_goes_out_is_a_checkpoint(self):
+        prompt = self._agent("analyst")["system_prompt"]
+        assert "before it goes to the client" in prompt, "the rule names the case it came from"
+        assert "is a human checkpoint" in prompt
+
+    def test_the_analyst_writes_down_a_cadence(self):
+        prompt = self._agent("analyst")["system_prompt"]
+        assert "- **Schedule**:" in prompt
+        # A scheduled run starts with no person to type its input: the cadence
+        # and what each run starts with are asked for together.
+        assert "what each scheduled run starts with" in prompt
+
+    def test_the_plan_has_a_step_for_every_checkpoint_and_a_schedule_section(self):
+        prompt = self._step("step_draft_plan")["prompt_template"]
+        assert "Every human checkpoint in the requirements becomes a `human` step" in prompt
+        assert "## Schedule" in prompt
+        assert "Omit this section when the requirements name no cadence" in prompt
+
+    def test_the_create_saver_can_make_the_schedule_and_nothing_more(self):
+        tools = set(self._agent("saver_create")["tools"])
+        # A new orchestration has no schedule to find, so no listing either.
+        assert "create_schedule" in tools
+        assert not {"list_schedules", "set_schedule_enabled", "delete_schedule"} & tools
+
+    def test_the_create_saver_schedules_only_what_the_plan_says_after_it_validates(self):
+        prompt = self._agent("saver_create")["system_prompt"]
+        assert "PHASE 4: Schedule" in prompt
+        assert "Only if the plan has a `## Schedule` section" in prompt
+        assert prompt.index("PHASE 3") < prompt.index("PHASE 4: Schedule")
+
+    def test_a_schedule_is_made_only_after_a_person_approved_the_plan(self):
+        """A schedule is standing spend. The create saver is reached only
+        through the plan review, as the operator is."""
+        orch = bundled_definitions()["orchestration"]
+        steps = {s["id"]: s for s in orch["steps"]}
+
+        def into(target):
+            return [
+                s for s in orch["steps"]
+                if target in [s.get("next_step_id"), *(s.get("route_map") or {}).values()]
+            ]
+
+        # Walk back from the saver to the start; every path passes the review.
+        seen, frontier = set(), ["step_save_create"]
+        while frontier:
+            current = frontier.pop()
+            for s in into(current):
+                if s["id"] in seen or s["id"] == "step_human_review":
+                    continue
+                seen.add(s["id"])
+                frontier.append(s["id"])
+        assert "step_intent" not in seen, "the create saver is reachable without the review"
+        assert steps["step_human_review"]["type"] == "human"
+
+    def test_the_summary_names_a_schedule_it_made(self):
+        prompt = self._step("step_summarize")["prompt_template"]
+        assert "schedule" in prompt.lower()
