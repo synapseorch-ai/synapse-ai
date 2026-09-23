@@ -39,6 +39,10 @@ def _human(sid, key="answer", prompt="ok?", nxt=None, **extra):
             "output_key": key, "next_step_id": nxt, **extra}
 
 
+def _end(sid="fin"):
+    return {"id": sid, "name": sid.upper(), "type": "end"}
+
+
 def _loop(sid, body, nxt=None, **mode):
     mode = mode or {"loop_count": 2}
     return {"id": sid, "name": sid.upper(), "type": "loop", "loop_step_ids": body,
@@ -739,3 +743,83 @@ class TestAnAgentStepsWaitIsOneEntry:
         run = await _run("run_wap")
         assert [h["status"] for h in _entries(run, "work")] == ["completed"]
         assert _open(run) == []
+
+
+class TestAnEndInsideAParallelBranch:
+    """An End reached in a branch ends the run — after the node has finished.
+
+    It used to crash it (F128). The engine breaks its own `async for` on
+    `orchestration_end`, which left the branch generator suspended at a yield
+    *inside* its own `anyio.fail_after`; the engine's scope exit then raised
+    ("Attempted to exit a cancel scope that isn't the current task's current
+    cancel scope"), the run failed with "An internal error occurred", and the
+    GC later closed the branch from another task.
+
+    And even without the crash the node was abandoned where it stood, so a
+    sibling branch never ran at all (F125) — on the report's own orchestration
+    that was the Entity Extractor, whose output stayed `[]`.
+    """
+
+    @staticmethod
+    def _orch(oid):
+        return S.make_orchestration(id=oid, entry_step_id="par", steps=[
+            {"id": "par", "name": "PAR", "type": "parallel", "next_step_id": "tail",
+             "parallel_branches": [["b0"], ["b1"]]},
+            _print("b0", nxt="fin"), _end(), _print("b1"), _print("tail"),
+        ])
+
+    async def test_the_run_completes_and_every_branch_ran(self, driver):
+        orch = self._orch("orch_end_par")
+        await S.seed_orchestrations([orch])
+
+        assert await driver.start(orch, "run_end_par") == "completed"
+
+        run = await _run("run_end_par")
+        assert run.shared_state["o_b0"] == "b0"
+        assert run.shared_state["o_b1"] == "b1", "the sibling branch is not skipped (F125)"
+        assert "o_tail" not in run.shared_state, "End still ends the run"
+
+    async def test_the_node_is_not_left_mid_flight(self, driver):
+        orch = self._orch("orch_end_par2")
+        await S.seed_orchestrations([orch])
+        await driver.start(orch, "run_end_par2")
+
+        run = await _run("run_end_par2")
+        assert run.status == "completed"
+        assert "_parallel_progress_par" not in run.shared_state, "the node cleaned up"
+        assert [h["status"] for h in _entries(run, "fin")] == ["completed"]
+
+    async def test_a_sequential_branch_is_not_skipped_either(self, driver, monkeypatch):
+        """The report's shape: agent steps, so no branch is concurrency-safe."""
+        from core import config as _cfg
+        monkeypatch.setattr(_cfg, "PARALLEL_BRANCHES_CONCURRENT", False)
+        orch = self._orch("orch_end_par3")
+        await S.seed_orchestrations([orch])
+
+        assert await driver.start(orch, "run_end_par3") == "completed"
+        assert (await _run("run_end_par3")).shared_state["o_b1"] == "b1"
+
+
+class TestAnEndInsideALoopBody:
+    """Same trap, same shape, in the loop executor (F128).
+
+    The iteration it is in finishes; later iterations do not run. Unlike a
+    Parallel's siblings they are repetitions rather than work declared
+    alongside it, and an End is the author saying stop repeating.
+    """
+
+    async def test_the_iteration_finishes_and_the_loop_stops(self, driver):
+        orch = S.make_orchestration(id="orch_end_loop", entry_step_id="lp", steps=[
+            {"id": "lp", "name": "LP", "type": "loop", "loop_step_ids": ["b0", "fin", "after"],
+             "loop_count": 3, "next_step_id": "tail"},
+            _print("b0"), _end(), _print("after"), _print("tail"),
+        ])
+        await S.seed_orchestrations([orch])
+
+        assert await driver.start(orch, "run_end_loop") == "completed"
+
+        run = await _run("run_end_loop")
+        after = run.shared_state["o_after"]
+        assert [r["result"] for r in after] == ["after"], "the rest of the iteration ran, once"
+        assert "o_tail" not in run.shared_state, "the loop did not carry on past the End"
+        assert len(_entries(run, "b0")) == 1, "no second iteration"

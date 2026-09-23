@@ -912,6 +912,14 @@ class EvaluatorStepExecutor:
                 run.shared_state[step.output_key] = label
 
 
+#: A container's own signal that a step inside it was an End: never yielded to
+#: the engine, which would take it as the run ending there and abandon the
+#: container mid-flight (F128). The container finishes, then yields the End
+#: event it carried — so the engine ends the run, and nothing inside was
+#: skipped to get there (F125).
+CONTAINER_END = "_container_end"
+
+
 #: Step types with no shared resource behind them — no MCP session, no
 #: browser, no subprocess of the agent's — so branches made only of these can
 #: overlap. `agent` and `tool` are excluded: MCP sessions and the single
@@ -1052,6 +1060,11 @@ class ParallelStepExecutor:
         # run. The siblings are let finish rather than cancelled, so what they
         # did is kept for a Replay, which reruns only the branch that failed.
         failures: list[str] = []
+        #: An End reached inside a branch. Held until every branch has run —
+        #: F125: branch 0 ending the run used to leave branch 1 unrun, and on
+        #: the report's own orchestration that was the Entity Extractor, whose
+        #: output stayed `[]`.
+        end_event: dict | None = None
         if concurrent:
             _log.debug(f"PARALLEL: ├─ running {len(concurrent)} tool-free branch(es) concurrently")
             queue: asyncio.Queue = asyncio.Queue()
@@ -1074,6 +1087,9 @@ class ParallelStepExecutor:
                     ev = await queue.get()
                     if ev is _BRANCH_DONE:
                         remaining -= 1
+                        continue
+                    if ev.get("type") == CONTAINER_END:
+                        end_event = ev["event"]
                         continue
                     yield ev
             finally:
@@ -1099,11 +1115,19 @@ class ParallelStepExecutor:
                     # answering re-enters here and carries on (F109).
                     yield ev
                     return
+                if ev.get("type") == CONTAINER_END:
+                    end_event = ev["event"]
+                    continue
                 yield ev
 
         run.shared_state.pop(progress_key, None)
         _log.debug(f"PARALLEL: ✅ all {len(resolved_branches)} branches complete")
         yield {"type": "parallel_complete", "orch_step_id": step.id, "branch_count": len(resolved_branches)}
+
+        # Last, and outside every scope this node held: the engine breaks its
+        # own loop on this event, so nothing here may still be in flight.
+        if end_event is not None:
+            yield end_event
 
     async def _iter_branch(
         self, branch_index: int, branch_step_ids: list[str], *, step, run, engine,
@@ -1116,6 +1140,7 @@ class ParallelStepExecutor:
         yield {"type": "branch_start", "orch_step_id": step.id,
                "branch_index": branch_index, "branch_count": branch_count}
 
+        branch_end_event = None
         for sid in branch_step_ids:
             if sid in completed_steps:
                 _log.debug(f"PARALLEL: ↷ sub-step '{sid}' already complete — skipping")
@@ -1146,7 +1171,16 @@ class ParallelStepExecutor:
             # yielding inside suspends this generator with the scope
             # active and breaks the engine's own scope exit (issue #356
             # family). Same pattern as the loop executor.
+            #
+            # `orchestration_end` is the same trap and was not covered (F128).
+            # The engine breaks its own `async for` on that event, which left
+            # this generator suspended at the yield below *inside* its
+            # fail_after — so the engine's scope exit raised, the run failed
+            # with "An internal error occurred", and the GC later closed this
+            # generator from another task. Captured and broken out of here, for
+            # the same reason and in the same shape.
             pending_human_event = None
+            pending_end_event = None
             failed = False
             sub_gen = executor.execute(sub_step, run, engine)
             try:
@@ -1154,6 +1188,9 @@ class ParallelStepExecutor:
                     async for event in sub_gen:
                         if event.get("type") == "human_input_required":
                             pending_human_event = event
+                            break
+                        if event.get("type") == "orchestration_end":
+                            pending_end_event = event
                             break
                         if event.get("type") == "step_error":
                             failed = True
@@ -1182,6 +1219,14 @@ class ParallelStepExecutor:
                 yield pending_human_event
                 return
 
+            if pending_end_event is not None:
+                # The End executor set the run completed before it yielded.
+                # Put that back: the run ends when this node has finished, not
+                # part-way through it, and every step between here and there
+                # must run normally. The node's own generator ends the run.
+                run.status = "running"
+                branch_end_event = pending_end_event
+
             duration = round(time.time() - step_start, 2)
             _log.debug(f"PARALLEL: ✓ sub-step '{sub_step.name}' done in {duration}s")
             # A step that reported an error is recorded as failed, as a loop body
@@ -1198,9 +1243,13 @@ class ParallelStepExecutor:
             # a crash resumes at the next sub-step, not the whole branch.
             completed_steps.add(sid)
             await checkpoint_progress()
+            if branch_end_event is not None:
+                break  # an End is the last step of its chain
 
         completed_branches.add(branch_index)
         await checkpoint_progress()
+        if branch_end_event is not None:
+            yield {"type": CONTAINER_END, "orch_step_id": step.id, "event": branch_end_event}
 
 
 class MergeStepExecutor:
@@ -1380,6 +1429,10 @@ class LoopStepExecutor:
                          else "empty_collection" if mode == "foreach" and not items
                          else "collection_exhausted")
             stopped_reason = exhausted
+            #: An End reached in the body. Held until this iteration has
+            #: finished, so nothing inside it is abandoned half-done (F128) —
+            #: then the loop stops and the engine ends the run.
+            loop_end_event: dict | None = None
 
             while True:
                 # An iteration being re-entered was admitted before its pause:
@@ -1477,7 +1530,14 @@ class LoopStepExecutor:
                     # the engine exiting its own step-timeout scope then blows up
                     # with "exit cancel scope that isn't the current" (issue #356
                     # family). Same pattern as the engine's own human-pause path.
+                    #
+                    # `orchestration_end` is the same trap, and was not covered
+                    # (F128): the engine breaks its own loop on it, leaving this
+                    # generator suspended inside the fail_after below, so the
+                    # engine's scope exit raised and the run failed with "An
+                    # internal error occurred".
                     pending_human_event = None
+                    pending_end_event = None
                     failed = False
                     # Held so it can be closed explicitly below. A body step that
                     # times out leaves its executor suspended mid-await, and an
@@ -1490,6 +1550,9 @@ class LoopStepExecutor:
                             async for event in sub_gen:
                                 if event.get("type") == "human_input_required":
                                     pending_human_event = event
+                                    break
+                                if event.get("type") == "orchestration_end":
+                                    pending_end_event = event
                                     break
                                 if event.get("type") == "step_error":
                                     failed = True
@@ -1533,6 +1596,17 @@ class LoopStepExecutor:
                         _restore()
                         yield pending_human_event
                         return
+
+                    if pending_end_event is not None:
+                        # The End executor set the run completed before it
+                        # yielded. Put that back so the rest of this iteration
+                        # runs normally; this generator ends the run when it is
+                        # done. Later iterations do not run — an End is the
+                        # author saying stop repeating, and unlike a Parallel's
+                        # siblings they are repetitions, not work already
+                        # declared alongside it.
+                        run.status = "running"
+                        loop_end_event = pending_end_event
 
                     duration = round(time.time() - step_start, 2)
                     end_step(run.step_history, {
@@ -1593,6 +1667,10 @@ class LoopStepExecutor:
                         stopped_reason = "break"
                         break
 
+                if loop_end_event is not None:
+                    stopped_reason = "end"
+                    break
+
             run.shared_state.pop(progress_key, None)
 
             # After all iterations, promote accumulated results to output keys
@@ -1618,6 +1696,11 @@ class LoopStepExecutor:
             yield {"type": "loop_complete", "orch_step_id": step.id,
                    "iterations_completed": iterations_run,
                    "stopped_reason": stopped_reason}
+
+            # Last, and outside every scope this node held: the engine breaks
+            # its own loop on this event.
+            if loop_end_event is not None:
+                yield loop_end_event
         finally:
             _restore()
 
