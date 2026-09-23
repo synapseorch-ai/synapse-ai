@@ -211,3 +211,57 @@ class TestAnthropicBody:
         monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeAnthropic)
         with pytest.raises(llm.LLMError):
             await llm.call_anthropic("claude-x", [{"role": "user", "content": "q"}], "sys", "key")
+
+
+class TestAReplyThatArrivedIsReadOnce:
+    """A reply we cannot parse is not a reason to buy another one (F138).
+
+    Four of the five provider loops read the answer inside the `try` that
+    retries, so an exception while reading a reply that *had arrived* landed in
+    the catch-all and sent the call again — up to four more times, each paid,
+    for a body that was never going to parse. Anthropic was moved out in
+    `1ebddcf` and is the shape the others now follow: the `try` ends at `break`
+    and the reading happens after the loop.
+    """
+
+    @staticmethod
+    def _counting(monkeypatch):
+        """A 200 with no `choices` — delivered, and unreadable."""
+        calls = {"n": 0}
+
+        def handler(url, kwargs):
+            calls["n"] += 1
+            return FakeResponse({"usage": {"prompt_tokens": 3, "completion_tokens": 1}})
+
+        install_httpx(monkeypatch, handler)
+
+        async def _no_sleep(_seconds):
+            return None
+
+        monkeypatch.setattr(llm.asyncio, "sleep", _no_sleep)
+        return calls
+
+    async def test_openai_sends_the_call_once(self, monkeypatch):
+        calls = self._counting(monkeypatch)
+        with pytest.raises(Exception):
+            await llm.call_openai("gpt-4o", [{"role": "user", "content": "q"}], "key")
+        assert calls["n"] == 1
+
+    async def test_grok_sends_the_call_once(self, monkeypatch):
+        calls = self._counting(monkeypatch)
+        with pytest.raises(Exception):
+            await llm.call_grok("grok-2", [{"role": "user", "content": "q"}], "sys", "key")
+        assert calls["n"] == 1
+
+    async def test_deepseek_sends_the_call_once(self, monkeypatch):
+        calls = self._counting(monkeypatch)
+        with pytest.raises(Exception):
+            await llm.call_deepseek("deepseek-chat", [{"role": "user", "content": "q"}], "sys", "key")
+        assert calls["n"] == 1
+
+    async def test_a_v1_compatible_endpoint_sends_the_call_once(self, monkeypatch):
+        calls = self._counting(monkeypatch)
+        with pytest.raises(Exception):
+            await llm.call_v1_compatible("m", [{"role": "user", "content": "q"}], "sys",
+                                         "http://host/v1", "key")
+        assert calls["n"] == 1

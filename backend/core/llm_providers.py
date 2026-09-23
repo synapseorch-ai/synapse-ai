@@ -954,6 +954,7 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
         payload["tool_choice"] = "auto"
 
     last_error = None
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
@@ -973,24 +974,12 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
             if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
                 continue
             resp.raise_for_status()
-            data = resp.json()
-            # Extract actual token usage from the API response
-            usage = data.get("usage", {})
-            input_tokens = usage.get("prompt_tokens", 0)
-            output_tokens = usage.get("completion_tokens", 0)
-            from core.cache.prompt_cache import extract_openai_cache_tokens
-            cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
-            # OpenAI reports prompt_tokens INCLUSIVE of cached tokens; subtract so
-            # `input_tokens` is cache-miss only for consistent billing math.
-            if cache_read:
-                input_tokens = max(0, input_tokens - cache_read)
-            # Handle tool_calls response
-            choice = data["choices"][0]
-            msg = choice.get("message", {})
-            text, _reasoning = _openai_compat_extract(msg)
             _log.debug(f"✅ OpenAI call complete (attempt {attempt})")
-            return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
+            # Read outside this `try` (F138): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to four more times, paying for each.
+            response = resp
+            break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({OPENAI_TIMEOUT}s)"
             _retry_notice("OpenAI", f"did not answer within {OPENAI_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
@@ -1011,9 +1000,28 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"OpenAI LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
-    _log.warning(f"❌ {error_msg}")
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = f"OpenAI LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    data = response.json()
+    # Extract actual token usage from the API response
+    usage = data.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    from core.cache.prompt_cache import extract_openai_cache_tokens
+    cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
+    # OpenAI reports prompt_tokens INCLUSIVE of cached tokens; subtract so
+    # `input_tokens` is cache-miss only for consistent billing math.
+    if cache_read:
+        input_tokens = max(0, input_tokens - cache_read)
+    # Handle tool_calls response
+    choice = data["choices"][0]
+    msg = choice.get("message", {})
+    text, _reasoning = _openai_compat_extract(msg)
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                     _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
 
 def _convert_tools_for_anthropic(ollama_tools: list[dict] | None) -> list[dict] | None:
     """Convert Ollama-format tool list to Anthropic tool format.
@@ -1954,6 +1962,7 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
         payload["tool_choice"] = "auto"
 
     last_error = None
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
@@ -1973,20 +1982,12 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
             if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
                 continue
             resp.raise_for_status()
-            data = resp.json()
-            usage = data.get("usage", {})
-            input_tokens = usage.get("prompt_tokens", 0)
-            output_tokens = usage.get("completion_tokens", 0)
-            from core.cache.prompt_cache import extract_openai_cache_tokens
-            cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
-            if cache_read:
-                input_tokens = max(0, input_tokens - cache_read)
-            choice = data["choices"][0]
-            msg = choice.get("message", {})
-            text, _reasoning = _openai_compat_extract(msg)
             _log.debug(f"✅ Grok call complete (attempt {attempt})")
-            return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
+            # Read outside this `try` (F138): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to four more times, paying for each.
+            response = resp
+            break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({GROK_TIMEOUT}s)"
             _retry_notice("Grok", f"did not answer within {GROK_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
@@ -2007,9 +2008,24 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Grok LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
-    _log.warning(f"❌ {error_msg}")
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = f"Grok LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    data = response.json()
+    usage = data.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    from core.cache.prompt_cache import extract_openai_cache_tokens
+    cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
+    if cache_read:
+        input_tokens = max(0, input_tokens - cache_read)
+    choice = data["choices"][0]
+    msg = choice.get("message", {})
+    text, _reasoning = _openai_compat_extract(msg)
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                     _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
 
 
 async def call_deepseek(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
@@ -2045,6 +2061,7 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
         payload["tool_choice"] = "auto"
 
     last_error = None
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
@@ -2064,20 +2081,12 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
             if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
                 continue
             resp.raise_for_status()
-            data = resp.json()
-            usage = data.get("usage", {})
-            input_tokens = usage.get("prompt_tokens", 0)
-            output_tokens = usage.get("completion_tokens", 0)
-            from core.cache.prompt_cache import extract_deepseek_cache_tokens
-            cache_read, cache_write = extract_deepseek_cache_tokens(usage) if prompt_cache else (0, 0)
-            # DeepSeek's prompt_tokens already separates hit/miss via prompt_cache_*_tokens,
-            # so input_tokens here is the MISS count already; do NOT subtract again.
-            choice = data["choices"][0]
-            msg = choice.get("message", {})
-            text, _reasoning = _openai_compat_extract(msg)
             _log.debug(f"✅ DeepSeek call complete (attempt {attempt})")
-            return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
+            # Read outside this `try` (F138): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to four more times, paying for each.
+            response = resp
+            break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({DEEPSEEK_TIMEOUT}s)"
             _retry_notice("DeepSeek", f"did not answer within {DEEPSEEK_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
@@ -2098,9 +2107,24 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"DeepSeek LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
-    _log.warning(f"❌ {error_msg}")
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = f"DeepSeek LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    data = response.json()
+    usage = data.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    from core.cache.prompt_cache import extract_deepseek_cache_tokens
+    cache_read, cache_write = extract_deepseek_cache_tokens(usage) if prompt_cache else (0, 0)
+    # DeepSeek's prompt_tokens already separates hit/miss via prompt_cache_*_tokens,
+    # so input_tokens here is the MISS count already; do NOT subtract again.
+    choice = data["choices"][0]
+    msg = choice.get("message", {})
+    text, _reasoning = _openai_compat_extract(msg)
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                     _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
 
 
 def _normalize_v1_base_url(base_url: str) -> str:
@@ -2166,6 +2190,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         headers["Authorization"] = f"Bearer {api_key}"
 
     last_error = None
+    response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
@@ -2180,20 +2205,12 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
                 continue
             resp.raise_for_status()
-            data = resp.json()
-            usage = data.get("usage", {})
-            input_tokens = usage.get("prompt_tokens", 0)
-            output_tokens = usage.get("completion_tokens", 0)
-            from core.cache.prompt_cache import extract_openai_cache_tokens
-            cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
-            if cache_read:
-                input_tokens = max(0, input_tokens - cache_read)
-            choice = data["choices"][0]
-            msg = choice.get("message", {})
-            text, _reasoning = _openai_compat_extract(msg)
             _log.debug(f"✅ V1-compatible call complete (attempt {attempt})")
-            return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                             _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
+            # Read outside this `try` (F138): anything raised while reading an
+            # answer that arrived landed in the catch-all below and sent the
+            # call again, up to four more times, paying for each.
+            response = resp
+            break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({V1_TIMEOUT}s)"
             _retry_notice("V1-compatible", f"did not answer within {V1_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
@@ -2216,9 +2233,24 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"V1-compatible LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
-    _log.warning(f"❌ {error_msg}")
-    raise LLMError(error_msg)
+    if response is None:
+        error_msg = f"V1-compatible LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    data = response.json()
+    usage = data.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+    from core.cache.prompt_cache import extract_openai_cache_tokens
+    cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
+    if cache_read:
+        input_tokens = max(0, input_tokens - cache_read)
+    choice = data["choices"][0]
+    msg = choice.get("message", {})
+    text, _reasoning = _openai_compat_extract(msg)
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
+                     _normalise_stop_reason(choice.get("finish_reason")), (), _reasoning)
 
 
 async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True,
@@ -2544,6 +2576,8 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
         return await asyncio.to_thread(_run)
 
     last_error = None
+    converse_resp = None
+    invoke_resp = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
@@ -2558,20 +2592,14 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                         )
                     else:
                         resp = await _converse_call()
-                    msg = (((resp or {}).get("output") or {}).get("message") or {})
-                    text, _reasoning = _extract_bedrock_content(msg)
-                    usage = (resp or {}).get("usage") or {}
-                    inp = int(usage.get("inputTokens") or 0)
-                    out = int(usage.get("outputTokens") or 0)
-                    from core.cache.prompt_cache import extract_bedrock_cache_tokens
-                    cache_read, cache_write = extract_bedrock_cache_tokens(resp or {})
-                    # Bedrock inputTokens may include cache hits; subtract for consistent billing math.
-                    if cache_read:
-                        inp = max(0, inp - cache_read)
                     _log.debug(f"✅ Bedrock (converse) complete (attempt {attempt})")
-                    return LLMResult(text, inp, out, cache_read, cache_write,
-                                     _normalise_stop_reason((resp or {}).get("stopReason")),
-                                     (), _reasoning)
+                    # Read outside this `try` (F138): anything raised while
+                    # reading an answer that arrived was taken for a Converse
+                    # failure, which falls through to InvokeModel in the same
+                    # attempt and then to the outer retry — a second and a
+                    # third paid call to read a reply already in hand.
+                    converse_resp = resp
+                    break
                 except Exception as converse_err:
                     msg_str = str(converse_err)
                     code, message = _bedrock_error(converse_err)
@@ -2594,19 +2622,13 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                         # error with the fallback's.
                         raise
                     _log.debug(f"Bedrock model has no Converse API (attempt {attempt}), using invoke_model: {converse_err}")
-                    resp = await _invoke_model_call()
-                    response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
-                    content = response_body.get("content") or []
-                    text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
+                    invoke_resp = await _invoke_model_call()
                     _log.debug(f"✅ Bedrock (invoke_model) complete (attempt {attempt})")
-                    return LLMResult(text)
+                    break
             else:
-                resp = await _invoke_model_call()
-                response_body = json.loads(resp.get("body").read()) if resp and resp.get("body") else {}
-                content = response_body.get("content") or []
-                text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
+                invoke_resp = await _invoke_model_call()
                 _log.debug(f"✅ Bedrock (invoke_model) complete (attempt {attempt})")
-                return LLMResult(text)
+                break
         except LLMError:
             raise  # Non-retryable (config error)
         except Exception as e:
@@ -2620,9 +2642,30 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
                 await asyncio.sleep(backoff)
                 continue
 
-    error_msg = f"Bedrock LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
-    _log.warning(f"❌ {error_msg}")
-    raise LLMError(error_msg)
+    if converse_resp is None and invoke_resp is None:
+        error_msg = f"Bedrock LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        _log.warning(f"❌ {error_msg}")
+        raise LLMError(error_msg)
+
+    if converse_resp is not None:
+        msg = (((converse_resp or {}).get("output") or {}).get("message") or {})
+        text, _reasoning = _extract_bedrock_content(msg)
+        usage = (converse_resp or {}).get("usage") or {}
+        inp = int(usage.get("inputTokens") or 0)
+        out = int(usage.get("outputTokens") or 0)
+        from core.cache.prompt_cache import extract_bedrock_cache_tokens
+        cache_read, cache_write = extract_bedrock_cache_tokens(converse_resp or {})
+        # Bedrock inputTokens may include cache hits; subtract for consistent billing math.
+        if cache_read:
+            inp = max(0, inp - cache_read)
+        return LLMResult(text, inp, out, cache_read, cache_write,
+                         _normalise_stop_reason((converse_resp or {}).get("stopReason")),
+                         (), _reasoning)
+
+    response_body = json.loads(invoke_resp.get("body").read()) if invoke_resp.get("body") else {}
+    content = response_body.get("content") or []
+    text = content[0].get("text", "") if (content and isinstance(content, list) and isinstance(content[0], dict)) else ""
+    return LLMResult(text)
 
 
 # ─── HuggingFace local-model provider ───────────────────────────────────────────

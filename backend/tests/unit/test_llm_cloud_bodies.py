@@ -297,3 +297,39 @@ def test_the_retired_profile_setting_is_gone_from_the_model_and_the_defaults():
     assert "bedrock_inference_profile" not in Settings.model_fields
     assert "bedrock_inference_profile" not in default_settings()
 
+
+
+class TestABedrockReplyThatArrivedIsReadOnce:
+    """Bedrock's is the same defect, one turn worse (F138).
+
+    The Converse answer was read inside the inner `try`, so an exception while
+    reading a reply that had arrived was taken for a *Converse failure* — which
+    falls through to InvokeModel in the same attempt, and then to the outer
+    retry. One unreadable reply bought an InvokeModel call and four more
+    Converse calls.
+    """
+
+    async def test_an_unreadable_converse_reply_buys_nothing(self, monkeypatch):
+        calls = {"converse": 0, "invoke": 0}
+
+        class _FakeBedrock:
+            def converse(self, **kwargs):
+                calls["converse"] += 1
+                # Delivered, and not the shape we read: `output` is not a dict.
+                return {"output": "surprise", "usage": {}}
+
+            def invoke_model(self, **kwargs):
+                calls["invoke"] += 1
+                raise AssertionError("InvokeModel must not be tried for a reply that arrived")
+
+        monkeypatch.setattr(llm, "_make_aws_client", lambda *a, **k: _FakeBedrock())
+
+        async def _no_sleep(_seconds):
+            return None
+
+        monkeypatch.setattr(llm.asyncio, "sleep", _no_sleep)
+
+        with pytest.raises(Exception):
+            await llm.call_bedrock("bedrock.anthropic.claude", [{"role": "user", "content": "q"}],
+                                   "sys", "us-east-1", {})
+        assert calls == {"converse": 1, "invoke": 0}
