@@ -251,10 +251,25 @@ class TestTheClaim:
             "completed", "paused"]
 
     async def test_a_cancelled_run_is_not_claimed(self, worker, fake_redis):
-        """Cancelling leaves `waiting_for_human` set (core/orchestration/cancel.py)."""
+        """Through the real cancel, which clears the flag as well as the status
+        since F141 — the claim takes `paused` AND waiting, so either alone is
+        enough to refuse. It used to be worth saying that cancelling left
+        `waiting_for_human` set and the status carried this on its own.
+        """
+        from core.orchestration.cancel import cancel_run
+
         asking = await self._paused_loop(worker, fake_redis, "run_claim5")
-        await self._set("run_claim5", status="cancelled")
+        await cancel_run("run_claim5")
+        run = await _run("run_claim5")
+        assert run.status == "cancelled" and not run.waiting_for_human
         assert not await self._claim("run_claim5", asking)
+
+    async def test_a_run_left_waiting_on_a_dead_job_is_not_claimed(self, worker, fake_redis):
+        """The other half of the claim's predicate, which the cancel case used
+        to cover: a run still flagged waiting but no longer `paused`."""
+        asking = await self._paused_loop(worker, fake_redis, "run_claim7")
+        await self._set("run_claim7", status="failed")
+        assert not await self._claim("run_claim7", asking)
 
 
 class TestANestedRunsSecondQuestion:

@@ -2310,7 +2310,12 @@ function BottomPanel({
                             question, context and answer in a modal (the same pattern
                             as the agent-response bubble). On a short log area the
                             inline card swallowed the whole tab. */}
-                        {humanPrompt && (
+                        {/* Paused as well as asking (F141): a cancelled run kept its
+                            prompt, so this strip stayed up offering an Answer the API
+                            refuses with a 409 — and an in-process cancel emits no
+                            event, so nothing cleared it. Cloud's run page has checked
+                            the status since F136. */}
+                        {humanPrompt && runStatus === 'paused' && (
                             <div className="sticky bottom-0 z-10 pt-2">
                                 {/* pr-16 keeps Answer out of the bottom-right corner the
                                     builder launcher owns (44px at a 20px inset, fixed).
@@ -2336,7 +2341,7 @@ function BottomPanel({
                         )}
 
                         <Modal
-                            open={!!humanPrompt && humanModalOpen}
+                            open={!!humanPrompt && runStatus === 'paused' && humanModalOpen}
                             onClose={() => setHumanModalOpen(false)}
                             title="Human input required"
                             size="lg"

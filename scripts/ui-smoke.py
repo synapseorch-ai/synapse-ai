@@ -2667,6 +2667,50 @@ async def check_chatleave(browser) -> str:
     return "leaving mid-turn asks nothing and stops nothing"
 
 
+@check
+async def check_cancelanswer(browser) -> str:
+    """A cancelled run does not go on asking for an answer (F141).
+
+    `cancel.cancel_run` wrote the status and left `waiting_for_human` set and
+    the `paused` entry open, and the screen showed its answer strip for any run
+    with a prompt — so a cancelled run kept offering an Answer the API refuses
+    with a 409. Nothing cleared it either: an in-process cancel writes the
+    checkpoint directly while the engine loop is suspended, so the page sees no
+    `orchestration_complete` and no `orchestration_error`.
+
+    Checked twice: in the tab that cancelled, and after a reload, which is
+    where the engine's half has to be right.
+    """
+    oid = f"orch_uismoke_cancel_{int(time.time())}"
+    api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2.0)
+        await page.get_by_role("button", name="Run", exact=True).click()
+        for _ in range(25):
+            await asyncio.sleep(1.0)
+            if await page.get_by_text("Waiting for your input").count():
+                break
+        else:
+            raise AssertionError("the run never reached its question")
+
+        await page.get_by_role("button", name="Cancel", exact=True).click()
+        await asyncio.sleep(1.5)
+        if await page.get_by_text("Waiting for your input").count():
+            raise AssertionError("a cancelled run still offers Answer in the tab that cancelled it")
+
+        await page.reload(wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2.0)
+        if await page.get_by_text("Waiting for your input").count():
+            raise AssertionError("a cancelled run offers Answer again after a reload")
+        return "a cancelled run stops asking, in the tab and after a reload"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

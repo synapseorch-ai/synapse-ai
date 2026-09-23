@@ -20,6 +20,32 @@ from typing import Any, Optional
 FINISHED = frozenset({"completed", "failed", "cancelled"})
 
 
+def _close_open_question(step_history: list) -> None:
+    """Close the `paused` entry a cancelled run was waiting on (F141).
+
+    The newest one, whichever step it names — inside a Loop or a Parallel
+    branch the run's position is the container, not the step that asked (F109).
+
+    Without this the entry stays open, and anything rendering the timeline
+    measures its duration against the wall clock for as long as somebody looks
+    at it. Cloud has done this since its own cancel route was written
+    (`api/control/run_cancel._close_paused_step`); this is the shape it follows,
+    with `cancelled` where a resume writes `completed`.
+    """
+    now = time.gmtime()
+    for entry in reversed(step_history or []):
+        if not isinstance(entry, dict) or entry.get("status") != "paused":
+            continue
+        entry["status"] = "cancelled"
+        entry["ended_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", now)
+        try:
+            began = time.strptime(str(entry.get("started_at")), "%Y-%m-%dT%H:%M:%SZ")
+            entry["duration_seconds"] = max(0.0, time.mktime(now) - time.mktime(began))
+        except (ValueError, TypeError):
+            entry["duration_seconds"] = 0.0
+        return
+
+
 @dataclass
 class Cancelled:
     #: False when there is no such run here: no task, no stored state.
@@ -72,6 +98,14 @@ async def cancel_run(run_id: str, *, redis: Any = None) -> Cancelled:
         if status not in FINISHED:
             restored.run.status = "cancelled"
             restored.run.ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            # A cancelled run is not asking anything (F141). The flag and the
+            # open entry used to survive the cancel, so every reader still
+            # believed it was waiting: the orchestration screen kept its answer
+            # strip up, offering an Answer the API refuses with a 409. The
+            # fleet's adapter has always cleared the flag here; this is the
+            # in-process path catching up.
+            restored.run.waiting_for_human = False
+            _close_open_question(restored.run.step_history)
             await restored.checkpoint()
             status, stopped = "cancelled", True
 
