@@ -62,8 +62,12 @@ dependencies = [
     "slack-bolt>=1.18,<2",
     "pyyaml>=6.0,<7",
     # A cron schedule's next run (core/scheduler.py). Only requirements.txt
-    # named it, so a pip install could not save a cron schedule (F159).
+    # named it, so a pip install could not save a cron schedule (F161; its commit says F159).
     "croniter>=2.0,<7",
+    # The CLI's tables, Markdown answers and chat spinner (synapse/client, D126).
+    # Already resolved through crawl4ai, cocoindex and mcp; named because the CLI
+    # imports it directly.
+    "rich>=13,<16",
 ]
 
 [project.scripts]

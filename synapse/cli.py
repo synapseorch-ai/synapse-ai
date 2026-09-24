@@ -816,8 +816,11 @@ def _api_keys_command(action: str, name: str = "", key_id: str = ""):
         print(f"  ID:      {record['id']}")
         print(f"\n  !  Save this key now - it cannot be retrieved again.")
         print(f"\n  {raw_key}\n")
+        # Where this install answers, not a hard-coded port (D124, D126).
+        from synapse.client.target import resolve_origin
+        _origin, api_base = resolve_origin()
         print(f"  Usage:")
-        print(f"    curl -X POST http://localhost:8765/api/v1/chat \\")
+        print(f"    curl -X POST {api_base}/chat \\")
         print(f"      -H 'Authorization: Bearer <YOUR_API_KEY>' \\")
         print(f"      -H 'Content-Type: application/json' \\")
         print(f"      -d '{{\"message\": \"hello\"}}'")
@@ -1630,7 +1633,7 @@ def _profile_command(action: str, output: str | None = None, limit: int = 20, du
         if params:
             url += f"?{params}"
         req = urllib.request.Request(url, method=method)
-        # `/api/*` wants the install's internal token whenever one is set (F158).
+        # `/api/*` wants the install's internal token whenever one is set (F160; its commit says F158).
         token = os.getenv("SYNAPSE_INTERNAL_TOKEN")
         if token:
             req.add_header("X-Synapse-Internal", token)
@@ -1747,7 +1750,11 @@ def _warn_if_not_on_path():
 
 
 def _warn_versions():
-    """Warn (non-fatally) if Python or Node.js versions are below the minimum required."""
+    """Warn (non-fatally) if Python or Node.js versions are below the minimum required.
+
+    On stderr, and only for the commands that build or run the server (D126):
+    an API command needs no Node, and its `--json` output must stay JSON.
+    """
     # ── Python ───────────────────────────────────────────────────────────────
     py = sys.version_info[:2]
     if py < MIN_PYTHON:
@@ -1755,13 +1762,15 @@ def _warn_versions():
             f"Warning: Python {py[0]}.{py[1]} detected -- "
             f"Synapse requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+.\n"
             "  Please switch to Python 3.11 or newer (https://www.python.org/downloads/)\n"
-            "  and reinstall: pip install synapse-ai"
+            "  and reinstall: pip install synapse-ai",
+            file=sys.stderr,
         )
     elif py >= MAX_PYTHON:
         print(
             f"Warning: Python {py[0]}.{py[1]} detected -- "
             f"Synapse is tested up to Python {MAX_PYTHON[0]}.{MAX_PYTHON[1] - 1}.\n"
-            "  Dependencies may not have prebuilt wheels for this interpreter."
+            "  Dependencies may not have prebuilt wheels for this interpreter.",
+            file=sys.stderr,
         )
 
     # ── Node.js ───────────────────────────────────────────────────────────────
@@ -1776,7 +1785,8 @@ def _warn_versions():
     if node is None:
         print(
             f"Warning: node not found -- Node.js {'.'.join(str(x) for x in MIN_NODE)}+ is required.\n"
-            "  Install from https://nodejs.org/"
+            "  Install from https://nodejs.org/",
+            file=sys.stderr,
         )
     else:
         try:
@@ -1790,7 +1800,8 @@ def _warn_versions():
                     f"Synapse requires Node.js {min_str}+.\n"
                     f"  Please upgrade from https://nodejs.org/\n"
                     f"  After upgrading, rebuild the frontend:\n"
-                    f"    cd {FRONTEND_DIR} && npm install && npm run build"
+                    f"    cd {FRONTEND_DIR} && npm install && npm run build",
+                    file=sys.stderr,
                 )
         except Exception:
             pass  # version check failed; let downstream tools surface the error
@@ -1809,11 +1820,10 @@ def _force_utf8_streams():
 def main():
     _force_utf8_streams()
     _warn_if_not_on_path()
-    _warn_versions()
-    parser = argparse.ArgumentParser(prog="synapse", description="Manage Synapse server (backend + frontend)")
+    parser = argparse.ArgumentParser(prog="synapse", description="Run Synapse, and drive it from the terminal")
     # What SECURITY.md asks a reporter to run (F80).
     parser.add_argument("--version", action="version", version=f"synapse {_get_current_version()}")
-    sub = parser.add_subparsers(dest="cmd")
+    sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
 
     p_start = sub.add_parser("start", help="Start backend and frontend")
     p_start.add_argument("--detach", "-d", action="store_true", help="Run processes in background and write pidfiles")
@@ -1882,7 +1892,17 @@ def main():
     )
     p_apikeys.add_argument("name_or_id", nargs="?", default="", help="Key name (generate) or key ID (revoke)")
 
+    # The API commands: agents, orchestrations, run, runs, schedules, chat, … (D126)
+    from synapse.client import commands as _client_commands
+    _client_commands.register(sub)
+
     args = parser.parse_args()
+
+    if getattr(args, "func", None) is not None:
+        sys.exit(args.func(args))
+
+    if args.cmd in (None, "start", "restart", "setup", "upgrade"):
+        _warn_versions()
 
     if args.cmd == "start" or args.cmd is None:
         # default to start when invoked without subcommand to preserve previous behaviour

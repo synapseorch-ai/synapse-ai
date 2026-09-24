@@ -9,7 +9,7 @@
 | npm | bundled with Node | Yes |
 | ollama | any | No (local models only) |
 
-Warnings are printed at startup if versions are below the minimums. Missing `ollama` is a non-fatal warning — cloud API models (Anthropic, OpenAI, Gemini) still work.
+`synapse start`, `restart`, `setup` and `upgrade` warn on stderr if versions are below the minimums. Node is needed only to run Synapse; the commands that drive it (below) need Python alone. Missing `ollama` is a non-fatal warning — cloud API models (Anthropic, OpenAI, Gemini) still work.
 
 ## Installation
 
@@ -39,6 +39,9 @@ synapse setup
 | `SYNAPSE_BACKEND_PORT` | `8765` | Backend API server port |
 | `SYNAPSE_FRONTEND_PORT` | `3000` | Frontend web UI port |
 | `SYNAPSE_PROFILING` | `false` | Enable performance profiling (set by `--profile`) |
+| `SYNAPSE_API_URL` | this machine's backend | The Synapse the API commands talk to: an origin such as `https://api.synapseorch.com` or `http://localhost:3000` (same as `--url`) |
+| `SYNAPSE_API_KEY` | — | The API key for `SYNAPSE_API_URL` (same as `--api-key`). Not needed for this machine's own Synapse |
+| `SYNAPSE_CLI_CONFIG` | `~/.synapse/cli.json` | Where the CLI keeps its own key and login session |
 
 Values in a `.env` file at the project root are loaded automatically (variables already in the environment are not overridden).
 
@@ -171,6 +174,74 @@ Steps performed:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--keep-data` | off | Preserve `backend/var` and `~/.synapse` when uninstalling |
+
+## Driving Synapse from the terminal
+
+These commands talk to a running Synapse over its `/api/v1` API, so the same
+commands drive this machine's Synapse, one on another machine, or Synapse Cloud.
+
+```bash
+synapse agents list                       # and: agents show <id|name>
+synapse orch list                         # and: orch show <id|name>  (orch = orchestrations)
+
+synapse run "Weekly report" -m "this week" -i pages=3
+synapse run "Weekly report" --detach      # print the run id and leave it running
+
+synapse runs list --status paused
+synapse runs show <run_id>
+synapse runs logs <run_id> -f
+synapse runs answer <run_id> "yes"        # or --field name=value …, or --approve / --reject
+synapse runs cancel <run_id>
+
+synapse schedules create --orchestration "Weekly report" --cron "0 9 * * 1" --prompt "this week" --paused
+synapse schedules list                    # and: show, pause, resume, trigger, delete
+
+synapse chat                              # a conversation; /help lists its commands
+synapse chat --agent Research -m "summarise today's news"
+echo "summarise this" | synapse chat
+
+synapse mcp                               # serve this Synapse to an MCP client over stdio
+```
+
+**Names or ids.** Agents and orchestrations can be named in any case, or given by id.
+
+**This machine's Synapse needs no setup.** The first command mints an API key for
+the CLI, named "Synapse CLI" (you will see it in Settings → API keys), and keeps it
+in `~/.synapse/cli.json`. Revoking it there rotates it: the next command mints
+another. If you have turned on the app's login, the CLI asks for it too, once
+every 7 days, as the browser does:
+
+```bash
+synapse login
+synapse logout
+```
+
+**Another Synapse needs its URL and an API key:**
+
+```bash
+export SYNAPSE_API_URL=https://api.synapseorch.com
+export SYNAPSE_API_KEY=sk-syn-…
+synapse runs list
+# or per command: synapse runs list --url … --api-key …
+```
+
+**A run that asks a person.** At a terminal, `run` asks each question as it comes
+and carries on. In a script, it prints the run id and exits with `3`. Answer with
+`synapse runs answer`. In a chat, a tool call the agent needs permission for is
+asked about in the chat.
+
+**For scripts.** Every command takes `--json`. `list` and `show` print the API's
+JSON as it is. `run`, `runs logs -f` and `chat` print one event per line. Nothing
+else is written to stdout; notes and progress go to stderr, so `synapse run x >
+out.txt` keeps only the answer.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Done |
+| 1 | An error: the server refused, could not be reached, or the name matched nothing |
+| 2 | The command line was wrong, or it needs a person (`schedules delete` without `--yes`) |
+| 3 | A run is waiting for an answer |
+| 4 | A run failed or was cancelled |
 
 ## PID files
 

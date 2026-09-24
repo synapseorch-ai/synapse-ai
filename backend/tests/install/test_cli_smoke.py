@@ -165,7 +165,7 @@ class TestVersion:
 def test_profile_sends_the_internal_token(monkeypatch, capsys):
     """`synapse profile` called `/api/profiling/*` with no `X-Synapse-Internal`,
     so on any install with a token — every `synapse start` writes one — it was
-    refused: measured as `Error 403: {"detail":"Forbidden"}` (F158)."""
+    refused: measured as `Error 403: {"detail":"Forbidden"}` (F160; its commit says F158)."""
     import urllib.request
 
     sent = {}
