@@ -79,7 +79,9 @@ _REQUIRED_MCP_SYMBOLS = [
     ("mcp.client.stdio", "stdio_client"),
     ("mcp.client.streamable_http", "streamable_http_client"),
     ("mcp.server", "Server"),
+    ("mcp.server.lowlevel", "Server"),
     ("mcp.server.stdio", "stdio_server"),
+    ("mcp.server.streamable_http_manager", "StreamableHTTPSessionManager"),
     ("mcp.shared.auth", "OAuthClientInformationFull"),
     ("mcp.shared.auth", "OAuthClientMetadata"),
     ("mcp.shared.auth", "OAuthToken"),
@@ -87,6 +89,8 @@ _REQUIRED_MCP_SYMBOLS = [
     ("mcp.types", "ImageContent"),
     ("mcp.types", "TextContent"),
     ("mcp.types", "Tool"),
+    ("mcp.types", "ToolAnnotations"),
+    ("mcp.types", "CallToolResult"),
 ]
 
 

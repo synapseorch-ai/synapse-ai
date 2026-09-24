@@ -427,6 +427,14 @@ async def lifespan(app: FastAPI):
     print("Starting Multi-Agent Orchestrator...")
     exit_stack = AsyncExitStack()
 
+    # Synapse's own MCP endpoint (D125). Entered first, so it is closed last and
+    # answers for as long as anything else is up, a failed startup included.
+    try:
+        from core.mcp_server.endpoint import default_endpoint
+        await exit_stack.enter_async_context(default_endpoint().serve())
+    except Exception as e:
+        print(f"Warning: MCP endpoint not started: {e}")
+
     # Bring a pre-store install's JSON files across, once, on first boot after
     # the upgrade. No-ops when the store already holds content, so this is safe
     # on every start. Deliberately not a command the user has to run: an upgrade
@@ -900,6 +908,13 @@ async def bind_settings(request, call_next):
         return await call_next(request)
     finally:
         settings_runtime.reset(token)
+
+
+# Synapse's own MCP endpoint (D125), outermost: it checks its own API key and
+# is not a browser surface, so neither CORS nor the internal token applies.
+from core.mcp_server.endpoint import McpDispatch as _McpDispatch
+
+app.add_middleware(_McpDispatch)
 
 
 # --- Include Route Routers ---
