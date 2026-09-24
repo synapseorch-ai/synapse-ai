@@ -584,41 +584,14 @@ async def v1_get_run(run_id: str, key_record: dict = Depends(require_api_key)):
     result. The shapes are the sync routes': a paused run names its question,
     an ended one carries `response`, `shared_state` and `step_history`. Engine
     bookkeeping is left out of `shared_state`, as the app's own read leaves it.
+    MCP's `get_run` reads the same view (`core/orchestration/run_view.py`).
     """
-    from core.orchestration.engine import OrchestrationEngine
-    from core.orchestration.pauses import asking_step_id
-    from core.orchestration.runner import _active_tasks
-    from core.orchestration.state import SharedState
-    from core.routes.orchestrations import _public_run_view
+    from core.orchestration.run_view import read_run
 
-    try:
-        run = (await SharedState.restore(run_id)).run
-    except FileNotFoundError:
-        # A run inside its first step has no checkpoint yet.
-        task = _active_tasks.get(run_id)
-        if task is not None and not task.done():
-            return {"status": "running", "run_id": run_id}
+    view = await read_run(run_id)
+    if view is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-
-    if run.status == "paused" and run.waiting_for_human:
-        return {
-            "status": "paused",
-            "run_id": run_id,
-            "human_input_required": {
-                "step_id": asking_step_id(run.step_history, run.current_step_id),
-                "prompt": run.human_prompt,
-                "fields": run.human_fields or [],
-            },
-        }
-    body = {
-        "status": run.status,
-        "run_id": run_id,
-        "shared_state": _public_run_view(run)["shared_state"],
-        "step_history": run.step_history,
-    }
-    if run.status in ("completed", "failed", "cancelled"):
-        body["response"] = OrchestrationEngine._build_final_response(run)
-    return body
+    return view
 
 
 @router.post("/orchestrations/runs/{run_id}/cancel")
