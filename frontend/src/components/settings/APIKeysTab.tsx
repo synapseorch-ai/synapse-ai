@@ -1,6 +1,6 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useSyncExternalStore } from 'react';
 import { Copy, CheckCircle, AlertCircle, BookOpen, X, ChevronDown, ChevronRight, Zap } from 'lucide-react';
 import { Button, Input, Label, Modal } from '@/components/ui';
 
@@ -625,9 +625,19 @@ function useOrchestrationRun(runId: string | null) {
 
 // ── Docs Drawer ───────────────────────────────────────────────────────────────
 
-const DocsDrawer = ({ open, onClose, port }: { open: boolean; onClose: () => void; port: string }) => {
+// The origin this page was served from, which is the API's origin too: the UI
+// rewrites `/api/v1` and `/api/v2` to the backend, so the address in the
+// browser's bar is the one a client should call — `localhost:3000` on a laptop,
+// the install's own host behind a proxy. It was `http://localhost:{backend
+// port}`, which is wrong everywhere but the machine itself (Docker binds the
+// backend to 127.0.0.1) and wrong there for anyone who changed the port.
+// Empty during the server render; the drawer is only ever opened in a browser.
+const subscribeNever = () => () => {};
+const useOrigin = () => useSyncExternalStore(subscribeNever, () => window.location.origin, () => '');
+
+const DocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void }) => {
     const [version, setVersion] = useState<'v1' | 'v2'>('v1');
-    const BASE = `http://localhost:${port}/api/${version}`;
+    const BASE = `${useOrigin()}/api/${version}`;
 
     useEffect(() => {
         const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -694,8 +704,6 @@ export const APIKeysTab = () => {
     const [copied, setCopied] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
     const [docsOpen, setDocsOpen] = useState(false);
-
-    const backendPort = process.env.NEXT_PUBLIC_BACKEND_PORT || '8765';
 
     const showToast = (message: string, type: 'success' | 'error' = 'success') => {
         setToast({ message, type });
@@ -782,7 +790,7 @@ export const APIKeysTab = () => {
             )}
 
             {/* Docs Drawer */}
-            <DocsDrawer open={docsOpen} onClose={() => setDocsOpen(false)} port={backendPort} />
+            <DocsDrawer open={docsOpen} onClose={() => setDocsOpen(false)} />
 
             {/* Generate New Key */}
             <div className="space-y-2">
