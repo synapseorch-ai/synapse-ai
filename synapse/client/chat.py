@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import sys
-import uuid
 from pathlib import Path
 
 from rich.markup import escape
@@ -30,22 +29,24 @@ HELP = """\
 End a line with \\ to keep typing, or open and close a block with \"\"\"."""
 
 
-def _new_session() -> str:
-    return f"cli_{uuid.uuid4().hex[:12]}"
 
 
 class Chat:
-    def __init__(self, api: ApiClient, out: Output, agent: dict, session: str, verbose: bool):
+    def __init__(self, api: ApiClient, out: Output, agent: dict, session: str | None, verbose: bool):
         self.api = api
         self.out = out
         self.agent = agent
+        # None until the server names the conversation in its first `session`
+        # event: cloud mints every session id and 404s one it did not (D124).
         self.session = session
         self.verbose = verbose
 
     # ── one turn ────────────────────────────────────────────────────────────
 
     def send(self, message: str) -> int:
-        body = {"message": message, "agent": self.agent["id"], "session_id": self.session}
+        body = {"message": message, "agent": self.agent["id"]}
+        if self.session:
+            body["session_id"] = self.session
         return self._follow(self.api.stream("POST", "/chat/stream", body))
 
     def _follow(self, frames) -> int:
@@ -53,7 +54,8 @@ class Chat:
         try:
             pause = self._render(frames)
         except KeyboardInterrupt:
-            self.api.post(f"/chat/{self.session}/cancel")
+            if self.session:
+                self.api.post(f"/chat/{self.session}/cancel")
             self.out.note("Stopped.")
             return errors.ERROR
         if pause is None:
@@ -155,13 +157,13 @@ class Chat:
                 except CliError as exc:
                     self.out.error(exc.message)
                     return True
-                self.session = _new_session()
+                self.session = None
                 self.out.note(f"Now talking to {self.agent['name']}.", style="bold")
         elif name == "new":
-            self.session = _new_session()
+            self.session = None
             self.out.note("New conversation.", style="bold")
         elif name == "session":
-            self.out.note(self.session, style="")
+            self.out.note(self.session or "No conversation yet: send a message first.", style="")
         else:
             self.out.error(f"There is no /{name}. /help lists them.")
         return True
@@ -236,7 +238,7 @@ def run_chat(args, api: ApiClient, out: Output) -> int:
     if not agents:
         raise CliError("There are no agents to chat with yet.")
     agent = _pick(agents, args.agent, "agent") if args.agent else agents[0]
-    chat = Chat(api, out, agent, args.session or _new_session(), args.verbose)
+    chat = Chat(api, out, agent, args.session, args.verbose)
 
     if args.message is not None or not sys.stdin.isatty():
         message = args.message if args.message is not None else sys.stdin.read()

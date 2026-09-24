@@ -322,6 +322,31 @@ class TestChat:
         code, _, err = await synapse("chat", "-m", "email them")
         assert code == 3 and "--session" in err
 
+    async def test_the_server_names_the_conversation(self, synapse, seed_agent, monkeypatch):
+        """Cloud mints every chat session id and 404s one it did not (D124), so
+        the first turn sends none and every later turn sends the server's."""
+        import core.react_engine as re
+        await seed_agent()
+        sent = []
+
+        async def loop(request, *args, **kwargs):
+            sent.append(request.session_id)
+            yield {"type": "final", "response": "ok"}
+        monkeypatch.setattr(re, "run_react_loop", loop)
+
+        class Tty:
+            def isatty(self):
+                return True
+        monkeypatch.setattr(sys, "stdin", Tty())
+        replies = iter(["one", "two", "/exit"])
+        monkeypatch.setattr(builtins, "input", lambda prompt="": next(replies))
+
+        code, _, _ = await synapse("chat")
+
+        assert code == 0
+        assert sent[0].startswith("api_"), "the server minted the first id"
+        assert sent[1] == sent[0]
+
     async def test_the_repl(self, synapse, seed_agent, fake_llm, monkeypatch):
         await seed_agent(name="Helper")
         fake_llm.set_default("Hi!")
@@ -330,7 +355,7 @@ class TestChat:
             def isatty(self):
                 return True
         monkeypatch.setattr(sys, "stdin", Tty())
-        replies = iter(["hello", "/session", "/nope", "/exit"])
+        replies = iter(["/session", "hello", "/session", "/nope", "/exit"])
         monkeypatch.setattr(builtins, "input", lambda prompt="": next(replies))
 
         code, out, err = await synapse("chat")
@@ -338,7 +363,9 @@ class TestChat:
         assert code == 0
         assert "Hi!" in out
         assert "Chatting with Helper" in err
-        assert "cli_" in err and "There is no /nope" in err
+        assert "No conversation yet" in err
+        assert "api_" in err, "the conversation's id is the one the server minted"
+        assert "There is no /nope" in err
 
 
 # ── mcp ─────────────────────────────────────────────────────────────────────
