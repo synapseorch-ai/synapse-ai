@@ -1599,7 +1599,13 @@ async def run_agent_step(
                     )
                     _log.debug(f"📋 final deferred — {len(_open)} open task(s), nudge {_task_nudges}/2")
                     yield {"type": "status",
-                           "message": f"Final response deferred — {len(_open)} open task{'s' if len(_open) != 1 else ''} remain"}
+                           # B4-23: read by people on the run page and in chat, so it
+                           # speaks plainly — it was "Final response deferred — 1 open
+                           # task remain", internal and ungrammatical.
+                           "message": (
+                               f"Not done yet — {len(_open)} planned "
+                               f"{'task is' if len(_open) == 1 else 'tasks are'} still open"
+                           )}
                     continue
                 if _open:
                     yield {"type": "tasks_incomplete", "tasks": [dict(t) for t in _open]}

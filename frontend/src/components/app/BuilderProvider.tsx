@@ -52,7 +52,7 @@ const WELCOME: BuilderMessage = {
     key: 'welcome',
     content:
         "I build things in this workspace — agents, orchestrations, tools, skills and schedules. " +
-        "Tell me what you want to happen and I'll ask what I need, show you a plan, and build it once you approve.\n\n" +
+        "Tell me what you want to happen. I'll show you a plan to approve before I build anything.\n\n" +
         // Not italicised. Three italic lines is most of what made this read as
         // filler rather than as examples you could type.
         '- "Every weekday at 8, summarise yesterday\'s support tickets and post it to Slack"\n' +

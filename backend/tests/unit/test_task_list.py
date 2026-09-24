@@ -74,8 +74,19 @@ def _final(events):
 
 
 def _deferrals(events):
+    # Matched on the wording since B4-23 (D122), changed deliberately: the
+    # status used to read "Final response deferred — 1 open task remain".
     return [e for e in _of_type(events, "status")
-            if "deferred" in (e.get("message") or "").lower()]
+            if "not done yet" in (e.get("message") or "").lower()]
+
+
+def test_the_deferral_speaks_plainly_and_agrees_with_its_count():
+    import inspect
+
+    from core import react_engine
+    source = inspect.getsource(react_engine)
+    assert "open task{'s' if len(_open) != 1 else ''} remain" not in source
+    assert "'task is' if len(_open) == 1 else 'tasks are'" in source
 
 
 # ── validation ───────────────────────────────────────────────────────────────
