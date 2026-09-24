@@ -144,6 +144,27 @@ class TestSystemRowsAreHidden:
         edit = await call("update_agent", {"agent_id": "agent_native_builder", "fields": {"name": "x"}}, server)
         assert "error" in edit
 
+    @pytest.mark.parametrize("fields", [{"system": "native_builder"}, {"type": "builder"}])
+    async def test_an_agent_cannot_be_made_a_system_agent(self, server, fields):
+        """`fields` was applied whole, so an edit could mark a workspace agent as the
+        builder's own and hide it from every list (F158). MCP serves this tool."""
+        from core.store.resources import get_agent
+
+        await S.seed_agents([S.make_agent(id="agent_mine", name="Mine")])
+        edit = await call("update_agent", {"agent_id": "agent_mine", "fields": {"name": "Mine 2", **fields}}, server)
+        assert "error" in edit
+        stored = await get_agent("agent_mine")
+        assert stored["name"] == "Mine" and not stored.get("system") and stored.get("type") != "builder"
+        assert [a["id"] for a in await call("list_agents", {}, server)] == ["agent_mine"]
+
+    async def test_an_ordinary_edit_still_saves(self, server):
+        from core.store.resources import get_agent
+
+        await S.seed_agents([S.make_agent(id="agent_mine", name="Mine")])
+        edit = await call("update_agent", {"agent_id": "agent_mine", "fields": {"name": "Mine 2", "type": "code"}}, server)
+        assert edit["status"] == "updated"
+        assert (await get_agent("agent_mine"))["name"] == "Mine 2"
+
     async def test_a_system_orchestration_cannot_be_edited(self, server):
         await S.seed_orchestrations([S.make_orchestration(id="orch_native_builder", system="native_builder")])
         result = await call("add_single_step", {

@@ -1457,7 +1457,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": f"Agent '{args['agent_id']}' not found"}
         if agent.get("system"):
             return {"error": f"Agent '{args['agent_id']}' is part of the builder itself and cannot be edited."}
-        agent.update(args.get("fields", {}))
+        fields = args.get("fields", {}) or {}
+        # Marking an agent as the builder's own hides it from every list (F158).
+        if "system" in fields or fields.get("type") == "builder":
+            return {"error": "An agent cannot be made part of the builder: `system` and type 'builder' are not editable."}
+        agent.update(fields)
         agent["id"] = args["agent_id"]  # the id is not patchable
         await save_agent(agent)
         _emit(events, "agent", "updated", agent["id"], agent.get("name"), agent)
