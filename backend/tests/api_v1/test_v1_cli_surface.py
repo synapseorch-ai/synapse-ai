@@ -303,3 +303,16 @@ class TestChatApproval:
 async def test_every_new_route_wants_a_key(client, method, path):
     resp = await client.request(method, path, headers={"Authorization": "Bearer sk-syn-" + "0" * 32})
     assert resp.status_code == 401, (path, resp.status_code)
+
+
+# ── The workspace's orchestrations, not the builder's (F162) ───────────────
+
+
+async def test_the_list_leaves_out_the_builders_own_orchestration(client, api_key):
+    """v1 listed the AI builder's seeded orchestration beside the workspace's,
+    where the app's list and v1's agent list (F69) both leave it out — so
+    `synapse orch list` showed "Synapse AI Builder, 24 steps" on every install."""
+    made = await _seed(dict(id="orch_native_builder", name="Synapse AI Builder", system=True),
+                       dict(id="orch_mine", name="Mine"))
+    resp = await client.get("/api/v1/orchestrations", headers=api_key["headers"])
+    assert [o["id"] for o in resp.json()] == ["orch_mine"], made

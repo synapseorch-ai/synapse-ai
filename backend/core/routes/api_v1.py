@@ -823,9 +823,13 @@ async def v1_get_agent(agent_id: str, key_record: dict = Depends(require_api_key
 
 @router.get("/orchestrations")
 async def v1_list_orchestrations(key_record: dict = Depends(require_api_key)):
-    """List all configured orchestrations (id, name, steps summary)."""
-    from core.routes.orchestrations import load_orchestrations
-    orchs = await load_orchestrations()
+    """List the workspace's orchestrations (id, name, steps summary).
+
+    The AI builder's own seeded orchestration is left out, as the app's list
+    and v1's agent list (F69) leave it out (F162).
+    """
+    from core.routes.orchestrations import list_orchestrations
+    orchs = await list_orchestrations()
     return [
         {
             "id": o["id"],
