@@ -160,3 +160,33 @@ class TestVersion:
     def test_the_npm_wrapper_does_not_start_the_server_for_it(self):
         source = (cli.ROOT_DIR / "bin" / "synapse.js").read_text()
         assert "cliArg === '--version'" in source
+
+
+def test_profile_sends_the_internal_token(monkeypatch, capsys):
+    """`synapse profile` called `/api/profiling/*` with no `X-Synapse-Internal`,
+    so on any install with a token — every `synapse start` writes one — it was
+    refused: measured as `Error 403: {"detail":"Forbidden"}` (F158)."""
+    import urllib.request
+
+    sent = {}
+
+    class _Resp:
+        headers = {"Content-Type": "application/json"}
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(req, timeout=None):
+        sent.update(req.headers)
+        return _Resp()
+
+    monkeypatch.setenv("SYNAPSE_INTERNAL_TOKEN", "the-token")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    run_cli(monkeypatch, capsys, "profile", "stats")
+    assert sent.get("X-synapse-internal") == "the-token"

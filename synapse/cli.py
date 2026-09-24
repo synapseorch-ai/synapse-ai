@@ -1630,6 +1630,10 @@ def _profile_command(action: str, output: str | None = None, limit: int = 20, du
         if params:
             url += f"?{params}"
         req = urllib.request.Request(url, method=method)
+        # `/api/*` wants the install's internal token whenever one is set (F158).
+        token = os.getenv("SYNAPSE_INTERNAL_TOKEN")
+        if token:
+            req.add_header("X-Synapse-Internal", token)
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 ct = resp.headers.get("Content-Type", "")
