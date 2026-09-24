@@ -1064,7 +1064,8 @@ BUILDER_TOOL_SCHEMAS = [
             "name": "create_schedule",
             "description": (
                 "Run an agent or orchestration on a cadence. Either an interval "
-                "(interval_value + interval_unit) or a cron expression — not both."
+                "(interval_value + interval_unit) or a cron expression — not both. "
+                "It is created paused: a person checks what each run starts with and turns it on."
             ),
             "parameters": {
                 "type": "object",
@@ -1078,7 +1079,6 @@ BUILDER_TOOL_SCHEMAS = [
                     "interval_value": {"type": "integer"},
                     "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days"]},
                     "cron_expression": {"type": "string", "description": "Standard 5-field cron, e.g. '0 8 * * 1-5'"},
-                    "enabled": {"type": "boolean", "description": "Default true"},
                 },
                 "required": ["name", "target_type", "target_id", "prompt", "schedule_type"],
             },
@@ -2117,6 +2117,13 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": f"Invalid schedule: {exc.errors()[0]['msg']}"}
 
         schedule = body.model_dump()
+        # F155 (D122): always created paused, whatever was asked. The builder's
+        # schedules began each run with a restatement of the task rather than its
+        # input ("Pull the latest blog posts from our client's three competitors"
+        # with none named), so every run would have chosen its own subject. A
+        # person reads what it starts with and turns it on — `set_schedule_enabled`
+        # when they ask the builder, or the Schedules screen.
+        schedule["enabled"] = False
         schedule["id"] = f"sched_{_uuid.uuid4().hex[:8]}"
         schedule["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         schedule["last_run_at"] = None
@@ -2130,7 +2137,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "status": "created",
             "id": schedule["id"],
             "name": schedule["name"],
+            "enabled": False,
             "next_run_at": schedule["next_run_at"],
+            "note": (
+                "Created paused. Check the message each run starts with, then turn it on "
+                "under Schedules."
+            ),
         }
 
     elif tool_name == "set_schedule_enabled":

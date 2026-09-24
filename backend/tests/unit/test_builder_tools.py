@@ -384,6 +384,25 @@ class TestSkills:
 
 
 class TestSchedules:
+    async def test_a_schedule_the_builder_makes_starts_paused(self, server):
+        """F155 (D122). The builder's schedule began each run with a restatement
+        of the task ("Pull the latest blog posts from our client's three
+        competitors…") rather than the competitors — so every Monday run would
+        have chosen its own. Whatever the model asked for, it is created paused:
+        a person reads what it starts with and turns it on."""
+        await S.seed_orchestrations([S.make_orchestration(id="orch_brief", name="Brief")])
+        result = await call("create_schedule", {
+            "name": "Mondays", "target_type": "orchestration", "target_id": "orch_brief",
+            "prompt": "Pull the posts", "schedule_type": "interval",
+            "interval_value": 7, "interval_unit": "days", "enabled": True,
+        }, server)
+        assert result["status"] == "created"
+        assert result["enabled"] is False
+        assert "turn it on" in result["note"]
+
+        from core.store import schedules as schedule_store
+        assert (await schedule_store.load())[0]["enabled"] is False
+
     async def test_creating_a_schedule_computes_its_next_run(self, server):
         await S.seed_orchestrations([S.make_orchestration(id="orch_brief", name="Market brief")])
         result = await call("create_schedule", {
@@ -447,12 +466,15 @@ class TestSchedules:
                 "interval_value": 7, "interval_unit": "days",
             }, server)
             assert created.get("status") == "created", created
-            await call("set_schedule_enabled", {"schedule_id": created["id"], "enabled": False}, server)
+            await call("set_schedule_enabled", {"schedule_id": created["id"], "enabled": True}, server)
         finally:
             schedule_store.set_saved_observer(None)
 
-        assert [(i, e) for i, e, _ in heard] == [(created["id"], True), (created["id"], False)]
-        assert heard[0][2] == created["next_run_at"]
+        # D122 (F155): changed deliberately. A builder schedule is created paused,
+        # so the first save a deployment hears of is paused, and turning it on is
+        # the save that carries the next run to arm.
+        assert [(i, e) for i, e, _ in heard] == [(created["id"], False), (created["id"], True)]
+        assert heard[1][2] == created["next_run_at"]
 
 
 class TestVariablesArePreviewedNotDisclosed:

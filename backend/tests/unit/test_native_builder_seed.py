@@ -492,3 +492,6 @@ class TestWhatWasAskedForIsBuilt:
     def test_the_summary_names_a_schedule_it_made(self):
         prompt = self._step("step_summarize")["prompt_template"]
         assert "schedule" in prompt.lower()
+        # F155: and says it waits, paused, for a person to turn it on.
+        assert "created paused" in prompt
+        assert "SCHEDULED (paused)" in self._agent("saver_create")["system_prompt"]
