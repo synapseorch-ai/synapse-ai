@@ -214,6 +214,27 @@ class TestRuns:
         code, out, _ = await synapse("runs", "logs", run_id, "-f", "--json")
         assert json.loads(out.splitlines()[-1])["event"] == {"type": "stream_complete"}
 
+    async def test_logs_read_a_workers_run_whose_ids_are_not_numbers(self, synapse, monkeypatch):
+        """A run a scale-mode worker ran is read from its Redis stream: ids like
+        `1790-0`, every event on one page. The CLI paged on with `after=1790-0`,
+        which v1's integer `after` refuses — so it stops at a short page."""
+        import core.routes.orchestrations as orch_routes
+
+        pages = []
+
+        async def events(run_id, request, after=0, limit=5000):
+            pages.append(after)
+            return {"events": [{"id": "1790-0", "event": {"type": "orchestration_complete",
+                                                          "status": "completed"}}],
+                    "last_id": "1790-0", "run": None}
+        monkeypatch.setattr(orch_routes, "get_run_events", events)
+
+        code, out, _ = await synapse("runs", "logs", "run_on_fleet", "--json")
+
+        assert code == 0, out
+        assert pages == [0]
+        assert json.loads(out)["id"] == "1790-0"
+
     async def test_show_on_a_waiting_run_names_its_question_and_exits_3(self, synapse, seed_orchestration):
         orch = await seed_orchestration(entry_step_id="ask", steps=_ASK)
         _, _, err = await synapse("run", orch["id"])

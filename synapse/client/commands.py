@@ -380,16 +380,19 @@ def runs_logs(args, api: ApiClient, out: Output):
                 break
         return errors.OK
 
-    after = 0
+    # `last_id` is a cursor, not always a number: a run a scale-mode worker ran is
+    # read from its Redis stream (ids like `1790-0`), all of it on one page. So a
+    # short page is the end, and the cursor is only ever handed back as it came.
+    after, page_size = 0, 5000
     while True:
-        page = api.get(f"/orchestrations/runs/{args.run_id}/events", after=after)
+        page = api.get(f"/orchestrations/runs/{args.run_id}/events", after=after, limit=page_size)
         for entry in page["events"]:
             if out.json_mode:
                 out.event(entry)
             else:
                 follower.line(entry["event"])
                 _final_answer(out, entry["event"])
-        if not page["events"] or page["last_id"] == after:
+        if len(page["events"]) < page_size or page["last_id"] == after:
             break
         after = page["last_id"]
     return errors.OK
