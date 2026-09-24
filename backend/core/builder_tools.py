@@ -1053,6 +1053,17 @@ BUILDER_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "finish_build",
+            "description": (
+                "Close the build this run started: remove any orchestration it created that "
+                "never passed validation. Takes no arguments; touches nothing outside this run."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_schedules",
             "description": "List this workspace's schedules with their target, cadence, enabled state and next run.",
             "parameters": {"type": "object", "properties": {}, "required": []},
@@ -1244,6 +1255,38 @@ async def _session_tools(server_module: Any, name: str | None) -> list[dict]:
         return []
 
 
+# ─── Embedder seams ────────────────────────────────────────────────────────────
+
+import contextvars as _contextvars
+
+#: Asked before any builder tool creates an orchestration or agent (F154).
+#: ``await check(kind, adding)`` returns a sentence refusing it, or None. None
+#: installed means no limit — OSS. Cloud installs its plan's census, so the
+#: builder and the template gallery refuse the same thing for the same reason.
+_room_check: Any = None
+
+
+def set_room_check(check: Any) -> None:
+    """Install the plan-room check. ``None`` removes it."""
+    global _room_check
+    _room_check = check
+
+
+async def _refused(kind: str, adding: int) -> dict | None:
+    if _room_check is None:
+        return None
+    reason = await _room_check(kind, adding)
+    return {"error": reason, "refused": "plan_limit"} if reason else None
+
+
+#: The run a builder tool is working inside, when the engine says (F156). A
+#: skeleton is stamped with it until it validates, so `finish_build` can remove
+#: what its own run started and never finished — never another run's.
+_current_run: _contextvars.ContextVar[str | None] = _contextvars.ContextVar(
+    "builder_tools_current_run", default=None
+)
+
+
 # ─── Tool Implementations ──────────────────────────────────────────────────────
 
 async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -> str:
@@ -1253,7 +1296,7 @@ async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -
 
 
 async def execute_builder_tool_with_events(
-    tool_name: str, args: dict, server_module: Any
+    tool_name: str, args: dict, server_module: Any, *, run_id: str | None = None
 ) -> tuple[str, list[dict]]:
     """Dispatch a builder tool, returning its JSON result *and* what it changed.
 
@@ -1264,11 +1307,14 @@ async def execute_builder_tool_with_events(
     on any orchestration big enough to be worth building.
     """
     events: list[dict] = []
+    token = _current_run.set(run_id)
     try:
         result = await _dispatch(tool_name, args, server_module, events)
         return json.dumps(result, default=str), events
     except Exception as e:
         return json.dumps({"error": str(e)}), []
+    finally:
+        _current_run.reset(token)
 
 
 def _emit(
@@ -1322,6 +1368,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         return agent
 
     elif tool_name == "create_agent":
+        if (refusal := await _refused("agent", 1)) is not None:
+            return refusal
         agents = await load_user_agents()
         existing_ids = {a.get("id") for a in agents}
         # Guarantee uniqueness: the id is a primary key, and on cloud it is a
@@ -1353,6 +1401,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         specs = args.get("agents") or []
         if not isinstance(specs, list) or not specs:
             return {"error": "agents must be a non-empty array of agent specs"}
+        if (refusal := await _refused("agent", len(specs))) is not None:
+            return refusal
         agents = await load_user_agents()
         existing_ids = {a.get("id") for a in agents}
         created = []
@@ -1577,6 +1627,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         return orch
 
     elif tool_name == "create_orchestration":
+        if (refusal := await _refused("orchestration", 1)) is not None:
+            return refusal
         existing_ids = {o.get("id") for o in await load_orchestrations()}
         orch_id = _random_id("orch_")
         while orch_id in existing_ids:
@@ -1647,6 +1699,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         return {"status": "updated", "orchestration": orch}
 
     elif tool_name == "create_orchestration_skeleton":
+        if (refusal := await _refused("orchestration", 1)) is not None:
+            return refusal
         existing_ids = {o.get("id") for o in await load_orchestrations()}
         orch_id = _random_id("orch_")
         while orch_id in existing_ids:
@@ -1667,6 +1721,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "created_at": now,
             "updated_at": now,
         }
+        if (run := _current_run.get()) is not None:
+            orch["building_run"] = run  # cleared when it validates (F156)
         await save_orchestration(orch)
         _emit(events, "orchestration", "created", orch["id"], orch["name"], orch)
         return {"status": "created", "orchestration": orch}
@@ -1889,7 +1945,24 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         orch = await _visible_orchestration(args["orch_id"])
         if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
-        return _validate_orchestration(orch)
+        verdict = _validate_orchestration(orch)
+        if verdict.get("ok") and orch.pop("building_run", None) is not None:
+            await save_orchestration(orch)  # finished: `finish_build` keeps it
+        return verdict
+
+    elif tool_name == "finish_build":
+        # F156: remove what this run's saver started and never validated. Never
+        # another run's, and nothing at all outside a run.
+        run = _current_run.get()
+        removed: list[str] = []
+        if run is not None:
+            from core.store.resources import delete_orchestration as _delete_orch
+            for orch in await load_orchestrations():
+                if orch.get("building_run") == run:
+                    await _delete_orch(orch["id"])
+                    _emit(events, "orchestration", "deleted", orch["id"], orch.get("name"))
+                    removed.append(orch["id"])
+        return {"status": "finished", "removed": removed}
 
     # ── Custom HTTP tools ────────────────────────────────────────────────────
 

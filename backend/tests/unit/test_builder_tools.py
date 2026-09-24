@@ -1226,3 +1226,91 @@ class TestAToolServerListingSaysWhatTheServerDoes:
         [entry] = await self._list(monkeypatch, [], {"web_scraper": session})
         assert entry["label"] == "Web Scraper"
         assert entry["type"] == "native_mcp" and entry["tool_count"] == 1
+
+
+async def call_in_run(tool: str, args: dict, server, run_id: str) -> dict:
+    """A builder tool as the engine calls it inside a run, which it now names."""
+    from core.builder_tools import execute_builder_tool_with_events
+
+    output, _ = await execute_builder_tool_with_events(tool, args, server, run_id=run_id)
+    return json.loads(output)
+
+
+class TestAPlanThatIsFullRefusesTheBuilder:
+    """F154 (D122). The builder's saves went through the engine store, where no
+    plan limit is checked: Northwind held 5 orchestrations on Free's 3, while
+    the template gallery refused the same thing. An embedder with limits
+    installs a room check, and every builder tool that creates asks it first."""
+
+    @pytest.fixture
+    def full(self):
+        from core import builder_tools
+
+        asked = []
+
+        async def check(kind, adding):
+            asked.append((kind, adding))
+            return f"The Free plan includes 3 {kind}s. Delete one, or upgrade."
+
+        builder_tools.set_room_check(check)
+        yield asked
+        builder_tools.set_room_check(None)
+
+    async def test_an_orchestration_is_refused_before_anything_is_saved(self, server, full):
+        skeleton = await call("create_orchestration_skeleton", {"name": "X", "entry_step_id": "step_a"}, server)
+        whole = await call("create_orchestration", {
+            "name": "Y", "entry_step_id": "step_1",
+            "steps_json": json.dumps([{"id": "step_1", "name": "End", "type": "end"}]),
+        }, server)
+        assert skeleton == {"error": "The Free plan includes 3 orchestrations. Delete one, or upgrade.",
+                            "refused": "plan_limit"}
+        assert whole["refused"] == "plan_limit"
+        from core.routes.orchestrations import load_orchestrations
+        assert await load_orchestrations() == []
+
+    async def test_agents_are_counted_as_a_batch(self, server, full):
+        one = await call("create_agent", {"name": "A", "description": "d", "type": "conversational",
+                                          "tools": [], "system_prompt": "p"}, server)
+        many = await call("create_agents", {"agents": [
+            {"role": r, "name": r, "description": "d", "type": "conversational", "tools": [], "system_prompt": "p"}
+            for r in ("a", "b", "c")
+        ]}, server)
+        assert one["refused"] == many["refused"] == "plan_limit"
+        assert ("agent", 1) in full and ("agent", 3) in full
+        from core.routes.agents import load_user_agents
+        assert await load_user_agents() == []
+
+
+class TestABuildThatStopsLeavesNothingBehind:
+    """F156 (D122). A build stopped by the create saver's own Phase 0 left
+    `Weekly Update Email for Lumen Dental` in the list with 0 steps, counting
+    against the plan. A skeleton carries the run that made it until it
+    validates; `finish_build` removes what its run started and never finished."""
+
+    async def test_an_unfinished_skeleton_is_removed(self, server):
+        made = await call_in_run("create_orchestration_skeleton",
+                                 {"name": "Half", "entry_step_id": "step_a"}, server, "run_a")
+        done = await call_in_run("finish_build", {}, server, "run_a")
+        assert done["removed"] == [made["orchestration"]["id"]]
+        from core.routes.orchestrations import load_orchestrations
+        assert [o for o in await load_orchestrations() if o.get("is_active", True)] == []
+
+    async def test_a_validated_build_stays_and_loses_its_mark(self, server):
+        made = await call_in_run("create_orchestration_skeleton",
+                                 {"name": "Whole", "entry_step_id": "step_end"}, server, "run_b")
+        orch_id = made["orchestration"]["id"]
+        await call_in_run("add_single_step", {"orch_id": orch_id, "step_id": "step_end", "name": "End",
+                                              "type": "end"}, server, "run_b")
+        assert (await call_in_run("validate_orchestration", {"orch_id": orch_id}, server, "run_b"))["ok"]
+        assert (await call_in_run("finish_build", {}, server, "run_b"))["removed"] == []
+        from core.store.resources import get_orchestration
+        kept = await get_orchestration(orch_id)
+        assert kept is not None and "building_run" not in kept
+
+    async def test_another_runs_build_and_a_call_outside_a_run_are_left_alone(self, server):
+        made = await call_in_run("create_orchestration_skeleton",
+                                 {"name": "Theirs", "entry_step_id": "step_a"}, server, "run_c")
+        assert (await call_in_run("finish_build", {}, server, "run_d"))["removed"] == []
+        assert (await call("finish_build", {}, server))["removed"] == []
+        from core.store.resources import get_orchestration
+        assert await get_orchestration(made["orchestration"]["id"]) is not None

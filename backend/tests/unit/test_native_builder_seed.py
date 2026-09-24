@@ -472,9 +472,12 @@ class TestWhatWasAskedForIsBuilt:
         steps = {s["id"]: s for s in orch["steps"]}
 
         def into(target):
+            # if_else branches too (D122): with only next/route_map the walk
+            # stops at the first if_else and passes without checking anything.
             return [
                 s for s in orch["steps"]
-                if target in [s.get("next_step_id"), *(s.get("route_map") or {}).values()]
+                if target in [s.get("next_step_id"), s.get("if_true_step_id"),
+                              s.get("if_false_step_id"), *(s.get("route_map") or {}).values()]
             ]
 
         # Walk back from the saver to the start; every path passes the review.
@@ -495,3 +498,35 @@ class TestWhatWasAskedForIsBuilt:
         # F155: and says it waits, paused, for a person to turn it on.
         assert "created paused" in prompt
         assert "SCHEDULED (paused)" in self._agent("saver_create")["system_prompt"]
+
+
+class TestAFullPlanAndAStoppedBuild:
+    """F154 and F156 (D122), in the seed's wiring."""
+
+    @staticmethod
+    def _steps():
+        return {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+
+    def test_a_create_is_checked_against_the_plan_before_anything_is_paid_for(self):
+        steps = self._steps()
+        assert steps["step_intent"]["route_map"]["create"] == "step_plan_room"
+        room = steps["step_plan_room"]
+        assert room["type"] == "if_else"
+        assert room["if_true_step_id"] == "step_understand"
+        full = steps[room["if_false_step_id"]]
+        assert full["type"] == "print" and full["output_key"] == "final_orch"
+        assert "{state.plan_room.reason}" in full["print_content"]
+        assert full["next_step_id"] == "step_summarize"
+        schema = bundled_definitions()["orchestration"]["state_schema"]
+        assert schema["plan_room"]["type"] == "dict"
+
+    def test_an_update_is_not_refused_for_orchestrations(self):
+        # An update adds no orchestration; only a create is checked.
+        assert self._steps()["step_intent"]["route_map"]["update"] == "step_fetch_existing"
+
+    def test_the_create_saver_is_followed_by_finish_build(self):
+        steps = self._steps()
+        assert steps["step_save_create"]["next_step_id"] == "step_finish_build"
+        finish = steps["step_finish_build"]
+        assert (finish["type"], finish["forced_tool"]) == ("tool", "finish_build")
+        assert finish["next_step_id"] == "step_summarize"

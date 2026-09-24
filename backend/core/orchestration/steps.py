@@ -562,7 +562,9 @@ class ToolStepExecutor:
 
             try:
                 resource_events: list[dict] = []
-                result = await self._execute_tool(called_tool, tool_args, engine, resource_events)
+                result = await self._execute_tool(
+                    called_tool, tool_args, engine, resource_events, run_id=run.run_id
+                )
                 final_response = result
                 if step.output_key:
                     run.shared_state[step.output_key] = result
@@ -616,7 +618,7 @@ class ToolStepExecutor:
 
     async def _execute_tool(
         self, tool_name: str, tool_args: dict, engine: "OrchestrationEngine",
-        resource_events: list | None = None,
+        resource_events: list | None = None, *, run_id: str | None = None,
     ) -> str:
         """Execute a tool via MCP session or Docker sandbox (custom Python tools).
 
@@ -632,7 +634,11 @@ class ToolStepExecutor:
         # the builder primitives.
         from core.builder_tools import BUILDER_TOOL_NAMES, execute_builder_tool_with_events
         if tool_name in BUILDER_TOOL_NAMES:
-            output, saved = await execute_builder_tool_with_events(tool_name, tool_args, server_module)
+            # The run's id lets a builder tool tell its own run's work from
+            # another's — `finish_build` removes only what this run left (F156).
+            output, saved = await execute_builder_tool_with_events(
+                tool_name, tool_args, server_module, run_id=run_id
+            )
             if resource_events is not None:
                 resource_events.extend(saved)
             return output

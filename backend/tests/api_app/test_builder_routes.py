@@ -221,7 +221,8 @@ class TestSeeHowImBuilt:
         legend = (await client.get("/api/builder/legend")).json()
 
         assert legend["name"] == "Synapse AI Builder"
-        assert legend["step_count"] == 21
+        # 24 since D122: the plan-room check and its refusal (F154), and finish_build (F156).
+        assert legend["step_count"] == 24
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {"create", "update", "manage", "answer"}
         assert {a["role"] for a in legend["agents"]} == {
