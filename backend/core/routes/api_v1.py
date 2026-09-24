@@ -14,6 +14,11 @@ Endpoints:
   POST /orchestrations/runs/{run_id}/resume         — Resume after human input (sync)
   POST /orchestrations/runs/{run_id}/resume/stream  — Resume after human input (SSE)
   POST /orchestrations/runs/{run_id}/cancel         — Stop a run
+  GET  /orchestrations/runs                         — Recent runs (D126)
+  GET  /orchestrations/runs/{run_id}/events         — A run's events from a cursor (D126)
+  GET  /orchestrations/runs/{run_id}/events/stream  — The same, then followed live (D126)
+  POST /chat/{session_id}/approve                   — Answer a turn's tool approval (D126)
+  GET/POST /schedules, GET/PATCH/DELETE /schedules/{id}, POST /schedules/{id}/run  (D126)
   GET  /agents, /agents/{agent_id}                  — Discovery
   GET  /orchestrations, /orchestrations/{orch_id}   — Discovery
 """
@@ -23,12 +28,15 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from core.api_key_middleware import require_api_key
 from core.images import checked_images
+from core.models_schedule import ScheduleCreate, ScheduleUpdate
 
 router = APIRouter()
 log = logging.getLogger("api_v1")
@@ -48,10 +56,31 @@ class V1ChatRequest(BaseModel):
 
 class V1OrchestrationRunRequest(BaseModel):
     message: str = ""
+    # The run's inputs, merged into its shared state (cloud's `RunRequest` has
+    # the same field). A leading underscore is the engine's own bookkeeping
+    # (`_model_override`, …), so a caller cannot set one (D126).
+    initial_state: dict = {}
+
+    @field_validator("initial_state")
+    @classmethod
+    def _no_engine_keys(cls, value: dict) -> dict:
+        engine_keys = sorted(k for k in value if str(k).startswith("_"))
+        if engine_keys:
+            raise ValueError(f"these keys are the engine's own and cannot be set: {', '.join(engine_keys)}")
+        return value
 
 
 class V1ResumeRequest(BaseModel):
     response: dict | str = {}         # human input fields
+
+
+class V1ApprovalRequest(BaseModel):
+    approve: bool
+    reason: str = ""
+    # The call this answers, as `awaiting_approval` named it. When given and it
+    # is not the call the conversation is waiting on, the answer is refused.
+    approval_id: str | None = None
+    agent: str | None = None          # the conversation's agent (first agent if omitted)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -110,8 +139,8 @@ def _pause_of(event: dict) -> dict | None:
 
     A `human_input_required` ends the turn with nothing after it: either a tool
     call whose policy is `confirm` (the call has not run) or an orchestrator
-    agent's orchestration pausing on a human step. There is no v1 route to
-    answer either yet; saying so beats reporting the turn as done.
+    agent's orchestration pausing on a human step. The first is answered at
+    `/chat/{session_id}/approve`, the second at the run's `resume` (D126).
     """
     if event.get("type") != "human_input_required":
         return None
@@ -136,12 +165,17 @@ def _format_sse_event(event: dict) -> str:
 
 # ── Chat Endpoints ──────────────────────────────────────────────────────────
 
-async def _v1_turn_events(chat_request, agent: dict, _server):
+async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict | None = None):
     """One v1 chat turn's events, in v1's vocabulary — what its turn's task drives.
 
     Started by the handler through `core.chat_turns`, never inside a response:
     an API caller that stops reading has not asked the turn to stop, and
     `POST /api/v1/chat/{session_id}/cancel` is how it does (F49).
+
+    A tool approval parks the call and the turn's last snapshot, as the app's
+    chat does (`routes/chat.py::_event_stream`), so `/chat/{id}/approve` picks
+    the turn up where it stopped instead of re-running what already ran.
+    `resume_state` is that snapshot, on the way back in (D126).
     """
     from core import chat_turns
     from core.llm_providers import LLMError
@@ -159,12 +193,18 @@ async def _v1_turn_events(chat_request, agent: dict, _server):
         "agent_id": agent["id"],
         "agent_name": agent["name"],
     }
+    latest_progress: dict | None = None
     try:
         async for event in run_react_loop(chat_request, _server, should_stop=_stopped,
+                                          progress_events=True, resume_state=resume_state,
                                           expand_mentions=True):
             etype = event.get("type", "")
 
-            if etype == "status":
+            if etype == "_step_progress":
+                # Engine state for a resume, never an event.
+                latest_progress = {k: v for k, v in event.items() if k != "type"}
+
+            elif etype == "status":
                 yield {"type": "status", "message": event["message"]}
 
             elif etype == "thinking":
@@ -196,6 +236,13 @@ async def _v1_turn_events(chat_request, agent: dict, _server):
                 yield {"type": "done"}
 
             elif _pause_of(event):
+                if event.get("kind") == "tool_approval":
+                    from core.chat_approval import parked_payload
+                    from core.store import sessions as _sessions
+                    await _sessions.set_pending_approval(
+                        chat_request.session_id, chat_request.agent_id,
+                        parked_payload(event, message=chat_request.message, progress=latest_progress),
+                    )
                 pause = _pause_of(event)
                 yield {"type": pause.pop("status"), **pause, "session_id": chat_request.session_id}
                 yield {"type": "done"}
@@ -311,6 +358,48 @@ async def v1_cancel_chat(session_id: str, key_record: dict = Depends(require_api
     return {"status": "cancellation_requested", "session_id": session_id, "stopped": result["stopped"]}
 
 
+@router.post("/chat/{session_id}/approve")
+async def v1_approve_chat_tool(session_id: str, body: V1ApprovalRequest,
+                               key_record: dict = Depends(require_api_key)):
+    """Answer the tool call this conversation stopped on, and carry the turn on (SSE).
+
+    The app's `/chat/{id}/approve`, in v1's frames. The question is claimed
+    before it is spent, so an answer while another turn runs here is a 409 with
+    the question still open. Naming the call (`approval_id`) makes an answer to
+    an older question a 409 rather than an answer to this one.
+    """
+    from core import chat_turns
+    from core.chat_approval import resume_state_for
+    from core.models import ChatRequest
+    from core.routes.chat import TURN_RUNNING
+    from core.store import sessions as _sessions
+    import core.server as _server
+
+    agent = await _agent_or_error(body.agent)
+    try:
+        with chat_turns.claim(session_id, agent_key=agent["id"]) as turn:
+            pending = await _sessions.get_pending_approval(session_id, agent["id"])
+            if not pending:
+                raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
+            if body.approval_id is not None and body.approval_id != pending.get("approval_id"):
+                raise HTTPException(status_code=409, detail="That approval is not the one this conversation is waiting on.")
+            await _sessions.set_pending_approval(session_id, agent["id"], None)
+
+            resumed = ChatRequest(message=pending.get("message") or "", session_id=session_id,
+                                  agent_id=agent["id"])
+            turn.message = resumed.message
+            turn.start(_v1_turn_events(resumed, agent, _server,
+                                       resume_state_for(pending, approve=body.approve, reason=body.reason)))
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+
+    async def event_generator():
+        async for item in chat_turns.read(turn):
+            yield item if isinstance(item, str) else item.data
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
 def _v1_drain(queue):
     """A run's queued events as v1 SSE: `_log_*` held back, `done` after a pause or the end.
 
@@ -392,7 +481,8 @@ async def v1_orchestration_run(
     # Through the runner pump so the run is journaled, registered for
     # cancellation, and survives a dropped client (the engine itself is
     # advanced by the pump's task — issue #356).
-    async for event in stream_engine_events(engine.run(body.message, run_id), run_id):
+    async for event in stream_engine_events(
+            engine.run(body.message, run_id, initial_state=body.initial_state or None), run_id):
         etype = event.get("type", "")
 
         if etype == "human_input_required":
@@ -457,7 +547,8 @@ async def v1_orchestration_run_stream(
 
     # Spawned here, not inside the response: the run belongs to no reader.
     from core.orchestration.runner import spawn_engine_run
-    _task, queue = spawn_engine_run(engine.run(body.message, run_id), run_id)
+    _task, queue = spawn_engine_run(
+        engine.run(body.message, run_id, initial_state=body.initial_state or None), run_id)
     return StreamingResponse(_v1_drain(queue), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
@@ -574,6 +665,47 @@ async def v1_orchestration_resume_stream(
                              headers=_SSE_HEADERS)
 
 
+# Declared before `/orchestrations/{orch_id}`, which would read `runs` as an id.
+@router.get("/orchestrations/runs")
+async def v1_list_runs(
+    limit: int = Query(20, ge=1, le=200),
+    status: Literal["running", "paused", "completed", "failed", "cancelled"] | None = None,
+    orchestration_id: str | None = None,
+    key_record: dict = Depends(require_api_key),
+):
+    """Recent runs of the workspace's orchestrations, newest first (D126).
+
+    The list MCP's `list_runs` reads too (`core/orchestration/run_view.py`), so
+    the two cannot drift. The filters are cloud's `GET /orchestrations/runs`'.
+    """
+    from core.orchestration.run_view import list_runs
+    return await list_runs(limit=limit, status=status, orchestration_id=orchestration_id)
+
+
+@router.get("/orchestrations/runs/{run_id}/events")
+async def v1_run_events(run_id: str, request: Request, after: int = Query(0, ge=0),
+                        limit: int = Query(5000, ge=1, le=5000),
+                        key_record: dict = Depends(require_api_key)):
+    """A run's events after `after`, oldest first, with `last_id` to read on from (D126).
+
+    The app's run log (`GET /api/orchestrations/runs/{id}/events`), unchanged.
+    """
+    from core.routes.orchestrations import get_run_events
+    return await get_run_events(run_id, request, after=after, limit=limit)
+
+
+@router.get("/orchestrations/runs/{run_id}/events/stream")
+async def v1_run_events_stream(run_id: str, request: Request, after: int = Query(0, ge=0),
+                               key_record: dict = Depends(require_api_key)):
+    """SSE: the run's events after `after` (or `Last-Event-ID`), then followed live (D126).
+
+    Frames carry `id:` lines to reconnect from; `stream_complete` ends the
+    stream once the run has ended. The app's reattach stream, unchanged.
+    """
+    from core.routes.orchestrations import stream_run_events_sse
+    return await stream_run_events_sse(run_id, request, after=after)
+
+
 @router.get("/orchestrations/runs/{run_id}")
 async def v1_get_run(run_id: str, key_record: dict = Depends(require_api_key)):
     """A run's state and, once it has ended, its result (F117).
@@ -607,6 +739,51 @@ async def v1_cancel_run(run_id: str, request: Request, key_record: dict = Depend
     if not result.found:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return {"status": "cancellation_requested", "run_id": run_id, "stopped": result.stopped}
+
+
+# ── Schedules (D126) ────────────────────────────────────────────────────────
+# The app's schedule routes (`core/routes/schedules.py`), behind an API key.
+
+
+@router.get("/schedules")
+async def v1_list_schedules(key_record: dict = Depends(require_api_key)):
+    from core.routes.schedules import list_schedules
+    return await list_schedules()
+
+
+@router.post("/schedules")
+async def v1_create_schedule(body: ScheduleCreate, request: Request,
+                             key_record: dict = Depends(require_api_key)):
+    from core.routes.schedules import create_schedule
+    return await create_schedule(body, request)
+
+
+@router.get("/schedules/{schedule_id}")
+async def v1_get_schedule(schedule_id: str, key_record: dict = Depends(require_api_key)):
+    from core.routes.schedules import get_schedule
+    return await get_schedule(schedule_id)
+
+
+@router.patch("/schedules/{schedule_id}")
+async def v1_patch_schedule(schedule_id: str, body: ScheduleUpdate, request: Request,
+                            key_record: dict = Depends(require_api_key)):
+    """A partial update; `{"enabled": false}` pauses, `{"enabled": true}` resumes."""
+    from core.routes.schedules import patch_schedule
+    return await patch_schedule(schedule_id, body, request)
+
+
+@router.delete("/schedules/{schedule_id}")
+async def v1_delete_schedule(schedule_id: str, key_record: dict = Depends(require_api_key)):
+    from core.routes.schedules import delete_schedule
+    return await delete_schedule(schedule_id)
+
+
+@router.post("/schedules/{schedule_id}/run")
+async def v1_run_schedule_now(schedule_id: str, request: Request,
+                              key_record: dict = Depends(require_api_key)):
+    """Run it now, as a test: a paused one too, and its next run does not move (F72)."""
+    from core.routes.schedules import run_schedule_now
+    return await run_schedule_now(schedule_id, request)
 
 
 # ── Read-Only Discovery Endpoints ──────────────────────────────────────────
