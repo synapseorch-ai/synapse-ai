@@ -3,7 +3,7 @@ Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core.images import checked_images
 
@@ -91,7 +91,19 @@ class AgentActiveRequest(BaseModel):
 
 
 class Settings(BaseModel):
-    agent_name: str
+    """What `POST /api/settings` accepts — a patch, merged over what is stored.
+
+    Unknown fields are refused (422, naming them) rather than dropped (S11):
+    `allow_stdio_mcp` and `mcp_command_allowlist` were missing here, so saving
+    either answered 200 and changed nothing, and the stdio knob the security
+    advisory tells operators to turn off could never be turned off. A field a
+    screen sends belongs in this model; one nobody should send is an error.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    # A default only so a patch need not carry it: the route merges with
+    # `exclude_unset`, so an unsent field never overwrites what is stored.
+    agent_name: str = "Synapse"
     model: str = "mistral" # Default model (Ollama or Cloud)
     builder_model: str = ""  # Model for the AI builder; empty = use `model`
     judge_model: str = ""    # Model for eval scoring; empty = use `model`
@@ -151,6 +163,13 @@ class Settings(BaseModel):
     tool_policy_defaults: dict[str, str] = {}
     embed_code: bool = False  # If False, search_codebase is disabled and postgres not required
     bash_allowed_dirs: list[str] = []  # Extra dirs the bash tool can run commands in (repos + vault always included)
+    # stdio MCP servers launch local commands (GHSA-3j67-x3j8-r32x). Allowed by
+    # default for a local single-user install; scale mode forces it off
+    # (core/mcp_client.stdio_mcp_allowed). Settable only since S11.
+    allow_stdio_mcp: bool = True
+    # When non-empty, only these command basenames may run as stdio servers
+    # (e.g. ["npx", "uvx"]). Empty allows any command on PATH.
+    mcp_command_allowlist: list[str] = []
     # An install choice: read once at startup to start the code indexer
     # (core/server.py), so changing it takes a restart. Asked by the installer.
     coding_agent_enabled: bool = True
