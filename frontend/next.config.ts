@@ -56,6 +56,16 @@ const _frontendPort = process.env.SYNAPSE_FRONTEND_PORT || "3000";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  experimental: {
+    // How long the `/api/:path*` rewrite below waits on a silent backend
+    // (F169). Next's default is 30 s, and this origin is the self-hosted API's
+    // documented base: a synchronous v1 chat or run, or an MCP tool waiting on
+    // a run (`wait_seconds` up to 120, a chat up to 600), answered 500 at 30 s
+    // while the backend carried on. An idle timeout, so streams were never cut
+    // (their ping lands every 10 s). Past the longest bounded wait, not unbounded:
+    // a backend that never answers still ends the request.
+    proxyTimeout: 610_000,
+  },
   env: {
     // These are injected into every server-side page/route at runtime.
     // Route handlers can read process.env.BACKEND_URL without their own fallback.
