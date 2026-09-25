@@ -40,7 +40,8 @@ class _NoFilesystemStore(BlobStore):
 
 
 @pytest.fixture
-def s3_like_store(monkeypatch, tmp_path):
+def native_list(monkeypatch, tmp_path):
+    """The native server list's inputs, with the default (local) blob store."""
     import core.server as server
     import core.vault as vault
 
@@ -55,22 +56,33 @@ def s3_like_store(monkeypatch, tmp_path):
     monkeypatch.setattr(vault, "_vault_root", lambda: tmp_path / "vault")
     monkeypatch.setattr(server, "_get_google_oauth_env", no_google)
     monkeypatch.setattr(server, "_filesystem_server_spec", filesystem_spec)
+
+
+@pytest.fixture
+def s3_like_store(native_list):
     set_blob_store(_NoFilesystemStore())
     yield
     set_blob_store(None)
 
 
-async def test_the_native_server_list_builds_with_an_s3_blob_store(s3_like_store, capsys):
+async def test_the_native_server_list_builds_with_an_s3_blob_store(s3_like_store):
     import core.server as server
 
     servers = await server._build_native_mcp_servers()
 
     names = [s["name"] for s in servers]
     assert "Filesystem" in names and "Browser Automation" in names
-    # The Memory server's graph is durable tenant state, and there is no
-    # directory for it: skipped, and the log says why.
-    assert "Memory" not in names
-    assert "Memory MCP server" in capsys.readouterr().out
+
+
+async def test_the_memory_mcp_server_is_not_a_native_server(native_list):
+    """F226: the engine's agent memory replaced it. It asked the blob store for
+    a directory on every start — the ask that hung an S3 install (F225)."""
+    import core.server as server
+
+    servers = await server._build_native_mcp_servers()
+
+    assert "Memory" not in [s["name"] for s in servers]
+    assert not any("server-memory" in " ".join(s.get("args", [])) for s in servers)
 
 
 async def test_a_builder_error_does_not_hang_startup(monkeypatch, capsys):

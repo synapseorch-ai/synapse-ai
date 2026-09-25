@@ -215,27 +215,13 @@ async def _build_native_mcp_servers() -> list[dict]:
         print("Warning: No Google OAuth credentials found — skipping Google Workspace MCP server.")
 
 
-    # --- Memory MCP Server ---
-    # The knowledge graph this server accumulates is durable tenant state — it
-    # is what the user told it to remember — so it goes beside the rest of the
-    # tenant's content rather than into scratch. With an S3 bucket the blob
-    # store has no directory, and `tenant_dir` refuses rather than write it to
-    # disk the next deploy discards: the server is skipped, like any other
-    # native server that cannot start. It used to raise here, inside the
-    # lifespan's Filesystem task, and the backend never finished starting (F225).
-    from core.runtime_dirs import NoDurableStorage, tenant_dir
-    try:
-        memory_file_path = tenant_dir("memory") / "memory.jsonl"
-    except NoDurableStorage:
-        print("Warning: skipping the Memory MCP server — its knowledge graph needs a "
-              "directory on disk, and the configured blob store (S3) has none.")
-    else:
-        servers.append({
-            "name": "Memory",
-            "command": _NPX_CMD,
-            "args": ["-y", "@modelcontextprotocol/server-memory"],
-            "env": {"MEMORY_FILE_PATH": str(memory_file_path)},
-        })
+    # The Memory MCP server (@modelcontextprotocol/server-memory) used to be
+    # spawned here. The engine's own agent memory replaces it (F226):
+    # `remember` / `search_memory` / `read_memory` / `forget` in
+    # core/agent_memory.py, per agent, bounded, and in the blob store — so it
+    # also works with an S3 bucket, where the server's one shared
+    # `memory.jsonl` had nowhere to live (F225). Its graph file, where one
+    # exists, is left on disk unread.
 
     # Sequential Thinking used to be spawned here as an npx server. It is now
     # the native task list (core/task_list.py) — engine-owned, journaled,
