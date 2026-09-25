@@ -177,6 +177,8 @@ async def _build_native_mcp_servers() -> list[dict]:
     servers.append(await _filesystem_server_spec())
 
     # --- Playwright MCP Server (browser automation) ---
+    from core.vault import _vault_root
+
     _settings = load_settings()
     if _settings.get("browser_automation_enabled", True):
         env_dict = {}

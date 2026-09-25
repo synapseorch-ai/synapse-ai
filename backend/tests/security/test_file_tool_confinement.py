@@ -223,3 +223,27 @@ async def test_an_allowed_directory_already_covered_is_not_passed_twice(layout, 
         lambda: {"bash_allowed_dirs": [str(layout["vault"]), str(layout["allowed"]), "/no/such/dir"]},
     )
     assert await file_roots.allowed_roots() == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
+
+
+async def test_the_native_server_list_still_builds(layout, monkeypatch):
+    """The whole list, not only the Filesystem entry.
+
+    The first cut of this change removed an import the Browser Automation entry
+    below it still used; `_build_native_mcp_servers` raised NameError inside the
+    lifespan's Filesystem task, and the backend never finished starting. The
+    unit tests' app skips the lifespan, so nothing here noticed (F-row: the OSS
+    test pass, 2026-09-25).
+    """
+    import core.server as server
+
+    async def no_google():
+        return {}
+
+    monkeypatch.setattr(server, "load_settings", lambda: {"browser_automation_enabled": True})
+    monkeypatch.setattr(server, "_get_google_oauth_env", no_google)
+
+    servers = await server._build_native_mcp_servers()
+    by_name = {s["name"]: s for s in servers}
+    assert by_name["Filesystem"]["args"][2:] == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
+    browser = by_name["Browser Automation"]["args"]
+    assert browser[browser.index("--output-dir") + 1] == str(layout["vault"] / "playwright")
