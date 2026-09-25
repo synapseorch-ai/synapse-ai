@@ -98,6 +98,16 @@ def test_telegram_compares_the_shared_secret():
     assert not verify.verify_telegram("", "")
 
 
+def test_a_non_ascii_header_is_refused_not_raised():
+    """F224: `hmac.compare_digest` raises on a non-ASCII str, and every one of
+    these headers is the sender's to choose — the route answered 500."""
+    import time
+
+    ts = str(int(time.time()))
+    assert not verify.verify_telegram("s3cret", "sé")
+    assert not verify.verify_slack(SECRET, ts, "v0=é", b"{}")
+
+
 # ── Meta (WhatsApp Cloud API) signatures ─────────────────────────────────────
 
 def _meta_sign(secret: str, body: bytes) -> str:

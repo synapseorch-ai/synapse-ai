@@ -40,6 +40,12 @@ import time
 SLACK_TIMESTAMP_TOLERANCE_SECONDS = 60 * 5
 
 
+def _same(expected: str, received: str) -> bool:
+    """Constant-time equality on bytes. `compare_digest` raises on a str with
+    a non-ASCII character, and a header is the sender's to choose (F224)."""
+    return hmac.compare_digest(expected.encode("utf-8", "replace"), received.encode("utf-8", "replace"))
+
+
 def verify_slack(
     signing_secret: str,
     timestamp: str,
@@ -59,7 +65,7 @@ def verify_slack(
         return False
     base = b"v0:" + timestamp.encode() + b":" + body
     digest = hmac.new(signing_secret.encode(), base, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(f"v0={digest}", signature)
+    return _same(f"v0={digest}", signature)
 
 
 def verify_discord(public_key_hex: str, signature_hex: str, timestamp: str, body: bytes) -> bool:
@@ -84,7 +90,7 @@ def verify_telegram(secret_token: str, header_token: str) -> bool:
     """Constant-time comparison of the ``setWebhook`` secret against the header."""
     if not secret_token or not header_token:
         return False
-    return hmac.compare_digest(secret_token, header_token)
+    return _same(secret_token, header_token)
 
 
 def verify_meta(app_secret: str, signature: str, body: bytes) -> bool:
@@ -92,6 +98,4 @@ def verify_meta(app_secret: str, signature: str, body: bytes) -> bool:
     if not app_secret or not signature:
         return False
     digest = hmac.new(app_secret.encode(), body, hashlib.sha256).hexdigest()
-    # Bytes, not str: `compare_digest` raises on a non-ASCII str, and the
-    # header is the sender's to choose.
-    return hmac.compare_digest(f"sha256={digest}".encode(), signature.encode("utf-8", "replace"))
+    return _same(f"sha256={digest}", signature)
