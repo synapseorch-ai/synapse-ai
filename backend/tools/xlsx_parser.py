@@ -11,6 +11,30 @@ import io
 # Initialize MCP Server
 app = Server("xlsx-parser-mcp-server")
 
+
+def _cell(value) -> str:
+    if value is None or (pd.api.types.is_scalar(value) and pd.isna(value)):
+        return ""
+    return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def _markdown_table(df: pd.DataFrame) -> str:
+    """A sheet as a Markdown table.
+
+    Written out rather than `DataFrame.to_markdown`, which needs `tabulate` —
+    a package nothing here installs, so every parse used to end in an import
+    error (F172). Same shape `pdf_parser` gives its tables.
+    """
+    headers = [_cell(c) for c in df.columns]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in df.itertuples(index=False):
+        lines.append("| " + " | ".join(_cell(v) for v in row) + " |")
+    return "\n".join(lines)
+
+
 @app.list_tools()
 async def list_tools() -> list[types.Tool]:
     return [
@@ -56,9 +80,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent | type
                     output_text.append("[Empty Sheet]")
                     continue
 
-                # Convert to Markdown
-                markdown = df.to_markdown(index=False)
-                output_text.append(markdown)
+                output_text.append(_markdown_table(df))
                 output_text.append("\n")
 
             return [types.TextContent(type="text", text="".join(output_text))]
