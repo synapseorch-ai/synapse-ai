@@ -5,6 +5,7 @@ import { modelOptions as buildModelOptions, providerLabel, withUnreachable } fro
 /** `builder_model` is empty when it should follow `model`; a Combobox needs a value. */
 const DEFAULT_SENTINEL = '__default__';
 import React, { useState } from 'react';
+import { SavedSecret, secretPlaceholder, useSavedSecrets } from './SavedSecret';
 
 type BrandIconProps = { className?: string; style?: React.CSSProperties };
 
@@ -228,6 +229,7 @@ export const ModelsTab = ({
     githubCopilotCliModels, setGithubCopilotCliModels,
 }: ModelsTabProps) => {
 
+    const { secrets } = useSavedSecrets();
     const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
     const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
     const toggleKeyVisible = (k: string) => setVisibleKeys(prev => ({ ...prev, [k]: !prev[k] }));
@@ -343,7 +345,7 @@ export const ModelsTab = ({
                                                         value={getKeyValue(key)}
                                                         onChange={e => setKeyValue(key, e.target.value)}
                                                         className="pr-8"
-                                                        placeholder={meta.keyPlaceholder}
+                                                        placeholder={secretPlaceholder(secrets, `${key}_key`, meta.keyPlaceholder ?? '')}
                                                     />
                                                     <button type="button" onClick={() => toggleKeyVisible(key)}
                                                         aria-label={visibleKeys[key] ? 'Hide API key' : 'Show API key'}
@@ -351,6 +353,7 @@ export const ModelsTab = ({
                                                         {visibleKeys[key] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                                                     </button>
                                                 </div>
+                                                <SavedSecret name={`${key}_key`} label={`${providerLabel(key)} API key`} typed={getKeyValue(key)} />
                                                 {/* Key instructions */}
                                                 {meta.keyNote && (
                                                     <p className="text-2xs text-text-faint">{meta.keyNote}</p>
@@ -376,12 +379,13 @@ export const ModelsTab = ({
                                                     <Label htmlFor="bedrockapikey" className="block">Bedrock API Key</Label>
                                                     <div className="relative">
                                                         <Input id="bedrockapikey" type={visibleKeys['bedrock'] ? 'text' : 'password'} value={bedrockApiKey} onChange={e => setBedrockApiKey(e.target.value)}
-                                                            className="pr-8" placeholder="ABSK... or bedrock-api-key..." />
+                                                            className="pr-8" placeholder={secretPlaceholder(secrets, 'bedrock_api_key', "ABSK... or bedrock-api-key...")} />
                                                         <button type="button" onClick={() => toggleKeyVisible('bedrock')}
                                                             className="absolute right-2 top-1/2 -translate-y-1/2 text-text-faint hover:text-text transition-colors">
                                                             {visibleKeys['bedrock'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                                                         </button>
                                                     </div>
+                                                    <SavedSecret name="bedrock_api_key" label="Bedrock API key" typed={bedrockApiKey} />
                                                     {meta.keyNote && (
                                                         <p className="text-2xs text-text-faint">{meta.keyNote}</p>
                                                     )}
@@ -423,12 +427,13 @@ export const ModelsTab = ({
                                                     <Label htmlFor="openaicompatiblekey" className="block">API Key</Label>
                                                     <div className="relative">
                                                         <Input id="openaicompatiblekey" type={visibleKeys['openai_compatible'] ? 'text' : 'password'} value={openaiCompatibleKey} onChange={e => setOpenaiCompatibleKey(e.target.value)}
-                                                            className="pr-8" placeholder="sk-..." />
+                                                            className="pr-8" placeholder={secretPlaceholder(secrets, 'openai_compatible_key', "sk-...")} />
                                                         <button type="button" onClick={() => toggleKeyVisible('openai_compatible')}
                                                             className="absolute right-2 top-1/2 -translate-y-1/2 text-text-faint hover:text-text transition-colors">
                                                             {visibleKeys['openai_compatible'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                                                         </button>
                                                     </div>
+                                                    <SavedSecret name="openai_compatible_key" label="OpenAI-compatible API key" typed={openaiCompatibleKey} />
                                                 </div>
                                                 <div className="space-y-1">
                                                     <Label htmlFor="openaicompatiblebaseurl" className="block">Base URL</Label>
@@ -458,12 +463,13 @@ export const ModelsTab = ({
                                                     <Label htmlFor="localcompatiblekey" className="block">API Key (optional)</Label>
                                                     <div className="relative">
                                                         <Input id="localcompatiblekey" type={visibleKeys['local_compatible'] ? 'text' : 'password'} value={localCompatibleKey} onChange={e => setLocalCompatibleKey(e.target.value)}
-                                                            className="pr-8" placeholder="Leave blank if not required" />
+                                                            className="pr-8" placeholder={secretPlaceholder(secrets, 'local_compatible_key', "Leave blank if not required")} />
                                                         <button type="button" onClick={() => toggleKeyVisible('local_compatible')}
                                                             className="absolute right-2 top-1/2 -translate-y-1/2 text-text-faint hover:text-text transition-colors">
                                                             {visibleKeys['local_compatible'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                                                         </button>
                                                     </div>
+                                                    <SavedSecret name="local_compatible_key" label="local v1-compatible API key" typed={localCompatibleKey} />
                                                 </div>
                                                 <div className="space-y-1">
                                                     <Label htmlFor="localcompatiblebaseurl" className="block">Base URL</Label>
@@ -496,12 +502,13 @@ export const ModelsTab = ({
                                                     <Label htmlFor="huggingfacetoken" className="block">Access Token (optional)</Label>
                                                     <div className="relative">
                                                         <Input id="huggingfacetoken" type={visibleKeys['huggingface'] ? 'text' : 'password'} value={huggingfaceToken} onChange={e => setHuggingfaceToken(e.target.value)}
-                                                            className="pr-8" placeholder="hf_... (required for gated models like Llama, Gemma)" />
+                                                            className="pr-8" placeholder={secretPlaceholder(secrets, 'huggingface_token', "hf_... (required for gated models like Llama, Gemma)")} />
                                                         <button type="button" onClick={() => toggleKeyVisible('huggingface')}
                                                             className="absolute right-2 top-1/2 -translate-y-1/2 text-text-faint hover:text-text transition-colors">
                                                             {visibleKeys['huggingface'] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                                                         </button>
                                                     </div>
+                                                    <SavedSecret name="huggingface_token" label="Hugging Face token" typed={huggingfaceToken} />
                                                     <p className="text-2xs text-text-faint">Only needed for gated models. Public models load without a token.</p>
                                                 </div>
                                                 <div className="space-y-1">

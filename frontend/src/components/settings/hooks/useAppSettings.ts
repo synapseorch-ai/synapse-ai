@@ -19,7 +19,8 @@ import { useEffect, useState } from "react";
 export type AppSettings = {
     model?: string;
     n8n_url?: string;
-    n8n_api_key?: string;
+    /** Whether an n8n key is saved; the key itself is never served (F201). */
+    n8n_api_key_set?: boolean;
     /** What an agent with no effort of its own runs at (F99). */
     reasoning_effort?: string;
 };
@@ -48,7 +49,7 @@ export function useAppSettings() {
     return {
         settings,
         n8nBaseUrl,
-        n8nIntegrated: !!settings.n8n_api_key?.trim(),
+        n8nIntegrated: !!settings.n8n_api_key_set,
         defaultModel: settings.model || "",
     };
 }

@@ -104,6 +104,19 @@ def load_settings():
     return dict(_DEFAULTS)
 
 
+#: Settings that are secrets (F201). `GET /api/settings` and the POST's answer
+#: serve each as "" beside `<name>_set` and `<name>_hint`; a POST that sends one
+#: blank keeps what is stored (the page posts its whole form back), and
+#: `clear_secrets` removes one. A field named like a secret that is missing here
+#: fails a test, so a new key is masked by default rather than by memory.
+SECRET_SETTINGS = (
+    "openai_key", "anthropic_key", "gemini_key", "grok_key", "deepseek_key",
+    "openai_compatible_key", "local_compatible_key", "model_gateway_key",
+    "huggingface_token", "bedrock_api_key", "aws_secret_access_key", "aws_session_token",
+    "n8n_api_key", "metrics_token", "s3_secret_access_key",
+)
+
+
 #: Shipped defaults. Module-level so a settings provider can overlay a tenant's
 #: stored values onto the same baseline rather than reconstructing every key.
 _DEFAULTS = {

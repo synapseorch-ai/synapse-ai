@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from core.config import load_settings, sanitize_db_url
+from core.config import SECRET_SETTINGS, load_settings, sanitize_db_url
 from core.models import Settings, PersonalDetails
 from core.personal_details import load_personal_details, save_personal_details
 from core.llm_providers import _make_aws_client, OLLAMA_MODEL
@@ -107,12 +107,27 @@ async def get_status():
     }
 
 
+def public_settings(settings: dict) -> dict:
+    """The settings as the browser may see them: no secret (F201).
+
+    Each of `SECRET_SETTINGS` is served as "" beside `<name>_set` and
+    `<name>_hint` (the last four characters of a long one, to tell two keys
+    apart). The login hash is left out. A copy: the hash is left out of the
+    answer, never out of the settings (S10).
+    """
+    view = dict(settings)
+    view.pop("login_password_hash", None)
+    for name in SECRET_SETTINGS:
+        value = str(view.get(name) or "")
+        view[name] = ""
+        view[f"{name}_set"] = bool(value)
+        view[f"{name}_hint"] = value[-4:] if len(value) >= 12 else ""
+    return view
+
+
 @router.get("/api/settings")
 async def get_settings():
-    # A copy: the hash is left out of the answer, never out of the settings (S10).
-    settings = dict(load_settings())
-    settings.pop("login_password_hash", None)
-    return settings
+    return public_settings(load_settings())
 
 
 @router.post("/api/settings/login")
@@ -141,6 +156,18 @@ async def update_settings(settings: Settings):
         data = settings.dict(exclude_unset=True)
     except Exception:
         data = settings.dict()
+
+    # A secret is never served back, so the page posts it blank: blank keeps
+    # what is stored, and removing one is asked for by name (F201).
+    clear = data.pop("clear_secrets", None) or []
+    not_secrets = [n for n in clear if n not in SECRET_SETTINGS]
+    if not_secrets:
+        raise HTTPException(status_code=422, detail=f"Not a secret setting: {', '.join(not_secrets)}")
+    for name in SECRET_SETTINGS:
+        if name in data and not str(data[name] or "").strip():
+            data.pop(name)
+    for name in clear:
+        data[name] = ""
 
     existing = load_settings()
     # Never overwrite the bcrypt hash via the general settings endpoint
@@ -175,7 +202,7 @@ async def update_settings(settings: Settings):
             _server.memory_store = _init_memory_store(data)
         except Exception as e:
             print(f"Warning: failed to reinitialize MemoryStore after settings update: {e}")
-    return data
+    return public_settings(data)
 
 
 # --- Code Embedding Setup ---

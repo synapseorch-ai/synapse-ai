@@ -170,6 +170,9 @@ class Settings(BaseModel):
     # When non-empty, only these command basenames may run as stdio servers
     # (e.g. ["npx", "uvx"]). Empty allows any command on PATH.
     mcp_command_allowlist: list[str] = []
+    # Not a setting: which secrets this save removes (F201). A secret is never
+    # served back, so a blank one means "unchanged" and removal is explicit.
+    clear_secrets: list[str] = []
     # An install choice: read once at startup to start the code indexer
     # (core/server.py), so changing it takes a restart. Asked by the installer.
     coding_agent_enabled: bool = True

@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback } from 'react';
+import { SavedSecret, secretPlaceholder, useSavedSecrets } from './SavedSecret';
 import { Shield, CheckCircle2, XCircle, RefreshCw, ChevronDown, ChevronUp, User, ExternalLink } from 'lucide-react';
 
 interface CredInfo {
@@ -21,6 +22,9 @@ export const IntegrationsTab = ({
     n8nUrl, setN8nUrl, n8nApiKey, setN8nApiKey,
     onSave
 }: IntegrationsTabProps) => {
+    // The key is never served back (F201): one is saved, or it is not.
+    const { secrets } = useSavedSecrets();
+    const n8nConfigured = !!n8nApiKey || !!secrets.n8n_api_key?.set;
     const [credInfo, setCredInfo] = useState<CredInfo | null>(null);
     const [loading, setLoading] = useState(true);
     const [showReupload, setShowReupload] = useState(false);
@@ -329,11 +333,11 @@ export const IntegrationsTab = ({
             <div className="bg-zinc-900 border border-zinc-800 overflow-hidden rounded-md">
                 <div className="p-4 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                        <div className={`h-2 w-2 ${n8nApiKey ? 'bg-green-500' : 'bg-red-500'}`} />
+                        <div className={`h-2 w-2 ${n8nConfigured ? 'bg-green-500' : 'bg-red-500'}`} />
                         <span className="text-sm font-bold text-zinc-400">n8n</span>
                     </div>
-                    <span className={`text-xs px-2 py-1 bg-zinc-900 border border-zinc-800 ${n8nApiKey ? 'text-green-400' : 'text-text-faint'} rounded-md`}>
-                        {n8nApiKey ? 'CONFIGURED' : 'NOT CONFIGURED'}
+                    <span className={`text-xs px-2 py-1 bg-zinc-900 border border-zinc-800 ${n8nConfigured ? 'text-green-400' : 'text-text-faint'} rounded-md`}>
+                        {n8nConfigured ? 'CONFIGURED' : 'NOT CONFIGURED'}
                     </span>
                 </div>
                 <div className="p-6 space-y-6">
@@ -357,8 +361,9 @@ export const IntegrationsTab = ({
                             value={n8nApiKey}
                             onChange={(e) => setN8nApiKey(e.target.value)}
                             className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
-                            placeholder="X-N8N-API-KEY"
+                            placeholder={secretPlaceholder(secrets, 'n8n_api_key', 'X-N8N-API-KEY')}
                         />
+                        <SavedSecret name="n8n_api_key" label="n8n API key" typed={n8nApiKey} />
                         <p className="text-xs text-text-faint">Used server-side to list workflows and derive webhook URLs.</p>
                     </div>
 

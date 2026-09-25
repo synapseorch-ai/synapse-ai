@@ -20,6 +20,7 @@ import { VariablesTab } from './settings/VariablesTab';
 import { MemoryTab } from './settings/MemoryTab';
 import { DataLabTab } from './settings/DataLabTab';
 import { ModelsTab } from './settings/ModelsTab';
+import { SavedSecretsContext, pickSecrets, type SecretState } from './settings/SavedSecret';
 import { IntegrationsTab } from './settings/IntegrationsTab';
 import { ToastNotification } from './settings/ToastNotification';
 import { ReposTab } from './settings/ReposTab';
@@ -147,6 +148,33 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         }
     };
 
+    // Keys are never served back (F201): each arrives blank beside whether one
+    // is saved. A blank field on save keeps the saved key; Remove clears it.
+    const [secretState, setSecretState] = useState<Record<string, SecretState>>({});
+    const secretSetters: Record<string, (v: string) => void> = {
+        openai_key: setOpenaiKey, anthropic_key: setAnthropicKey, gemini_key: setGeminiKey,
+        grok_key: setGrokKey, deepseek_key: setDeepseekKey, bedrock_api_key: setBedrockApiKey,
+        openai_compatible_key: setOpenaiCompatibleKey, local_compatible_key: setLocalCompatibleKey,
+        huggingface_token: setHuggingfaceToken, n8n_api_key: setN8nApiKey,
+    };
+    const SECRET_NAMES = Object.keys(secretSetters);
+
+    const removeSecret = async (name: string) => {
+        try {
+            const res = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ clear_secrets: [name] }),
+            });
+            if (!res.ok) throw new Error();
+            setSecretState(pickSecrets(await res.json(), SECRET_NAMES));
+            await refreshModels();
+            showToast('Key removed', 'success');
+        } catch {
+            showToast('Could not remove the key', 'error');
+        }
+    };
+
     const handleSaveSection = async () => {
         setIsSaving(true);
         const payload = {
@@ -197,8 +225,15 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 body: JSON.stringify(payload),
             });
             if (!response.ok) throw new Error('Failed to update settings');
+            // The answer serves no key either: note what is now saved, and empty
+            // the fields a new key was typed into, which read "Saved" from here.
+            const saved = await response.json().catch(() => null);
+            if (saved) {
+                setSecretState(pickSecrets(saved, SECRET_NAMES));
+                SECRET_NAMES.forEach(n => secretSetters[n](''));
+            }
 
-            if (mode === 'bedrock' || bedrockApiKey) {
+            if (mode === 'bedrock' || bedrockApiKey || secretState.bedrock_api_key?.set) {
                 await refreshBedrockModels();
             } else if (activeTab === 'models' || mode === 'cloud') {
                 await refreshModels();
@@ -338,6 +373,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setEmbeddingModel(data.embedding_model || '');
                 setBuilderModel(data.builder_model || '');
                 setMode(data.mode || 'local');
+                setSecretState(pickSecrets(data, SECRET_NAMES));
                 setOpenaiKey(data.openai_key || '');
                 setAnthropicKey(data.anthropic_key || '');
                 setGeminiKey(data.gemini_key || '');
@@ -421,7 +457,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const nav = navEntryFor(activeTab) ?? navEntryFor('general')!;
 
     return (
-        <>
+        <SavedSecretsContext.Provider value={{ secrets: secretState, remove: removeSecret }}>
             <Screen
                 title={nav.label}
                 description={nav.blurb}
@@ -602,6 +638,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             {/* Toast Notification */}
             {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
 
-        </>
+        </SavedSecretsContext.Provider>
     );
 };
