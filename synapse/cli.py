@@ -1712,16 +1712,53 @@ def _uninstall_command(keep_data: bool = False):
     print("\n=== Synapse AI has been uninstalled. Goodbye! ===")
 
 
-def _profile_command(action: str, output: str | None = None, limit: int = 20, duration: int = 30):
-    backend_port = int(os.getenv("SYNAPSE_BACKEND_PORT", str(DEFAULT_BACKEND_PORT)))
-    base_url = f"http://127.0.0.1:{backend_port}/api/profiling"
+def _profile_session(origin: str) -> tuple[str | None, bool]:
+    """A session for this machine's internal `/api/*`, as the browser holds one (S9, F171).
+
+    With login on, the one `synapse login` saved. With login off and an access
+    token configured (every `synapse start` writes one since D124), the token
+    swapped for a session at `/api/auth/access`, as the browser's link is.
+    Returns (session or None, whether login is on).
+    """
+    import json
+
+    from synapse.client import target as _target
+
     try:
-        from synapse.client.target import _read_config
-        session = (
-            _read_config().get("targets", {}).get(f"http://127.0.0.1:{backend_port}", {}).get("session")
-        )
+        login_on = _target._login_settings() is not None
     except Exception:
-        session = None
+        login_on = False
+    if login_on:
+        entry = _target._read_config().get("targets", {}).get(origin, {})
+        return entry.get("session"), True
+
+    link = _read_env_var(ACCESS_TOKEN_VAR)
+    if not link:
+        return None, False
+    req = urllib.request.Request(
+        f"{origin}/api/auth/access", method="POST",
+        data=json.dumps({"token": link}).encode(), headers={"Content-Type": "application/json"},
+    )
+    token = os.getenv("SYNAPSE_INTERNAL_TOKEN")
+    if token:
+        req.add_header("X-Synapse-Internal", token)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read() or b"{}").get("token"), False
+    except Exception:
+        # Refused or unreachable: the profiling call says which, as it would anyway.
+        return None, False
+
+
+def _profile_command(action: str, output: str | None = None, limit: int = 20, duration: int = 30):
+    from synapse.client import target as _target
+
+    # Resolved as `synapse start` and `synapse login` resolve it (stored > env >
+    # default), so the session `login` saved is found under the same address.
+    backend_port = _target.local_port()
+    origin = f"http://127.0.0.1:{backend_port}"
+    base_url = f"{origin}/api/profiling"
+    session, login_on = _profile_session(origin)
 
     def _api(method: str, path: str, params: str = "") -> dict | str | None:
         url = f"{base_url}{path}"
@@ -1746,7 +1783,11 @@ def _profile_command(action: str, output: str | None = None, limit: int = 20, du
                 return body.decode()
         except urllib.error.HTTPError as e:
             if e.code == 401:
-                print("This Synapse has login turned on. Run `synapse login` first.")
+                if login_on:
+                    print("This Synapse has login turned on. Run `synapse login` first.")
+                else:
+                    print("This Synapse refused the session its access link opened. "
+                          "Check `synapse access-link`, then try again.")
                 return None
             print(f"Error {e.code}: {e.read().decode()}")
             return None

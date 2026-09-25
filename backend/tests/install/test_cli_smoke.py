@@ -190,3 +190,47 @@ def test_profile_sends_the_internal_token(monkeypatch, capsys):
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     run_cli(monkeypatch, capsys, "profile", "stats")
     assert sent.get("X-synapse-internal") == "the-token"
+
+
+def test_profile_opens_an_install_with_an_access_link(clean_install, monkeypatch, capsys):
+    """Every `synapse start` writes an access token since D124, and the backend
+    then wants a session on `/api/profiling/*` too. With login off, `profile`
+    sent none and read 401 — measured on a scratch backend, and reported as
+    "login turned on" to an install that has none (F171). It swaps the token
+    for a session at `/api/auth/access`, as the browser's link does."""
+    import json
+    import urllib.request
+
+    calls = []
+
+    class _Resp:
+        def __init__(self, body):
+            self.body = body
+            self.headers = {"Content-Type": "application/json"}
+
+        def read(self):
+            return json.dumps(self.body).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(req, timeout=None):
+        calls.append((req.full_url, dict(req.headers), req.data))
+        if req.full_url.endswith("/api/auth/access"):
+            return _Resp({"success": True, "token": "link-session"})
+        return _Resp({})
+
+    monkeypatch.setenv("SYNAPSE_INTERNAL_TOKEN", "the-token")
+    monkeypatch.setenv("SYNAPSE_ACCESS_TOKEN", "the-link")
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    run_cli(monkeypatch, capsys, "profile", "stats")
+
+    exchange, stats = calls
+    assert exchange[0].endswith("/api/auth/access")
+    assert json.loads(exchange[2]) == {"token": "the-link"}
+    assert exchange[1].get("X-synapse-internal") == "the-token"
+    assert stats[0].endswith("/api/profiling/stats")
+    assert stats[1].get("X-synapse-session") == "link-session"
