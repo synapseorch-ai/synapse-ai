@@ -5,6 +5,7 @@ import platform
 import shutil
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Optional
 from contextlib import asynccontextmanager, AsyncExitStack
@@ -217,15 +218,24 @@ async def _build_native_mcp_servers() -> list[dict]:
     # --- Memory MCP Server ---
     # The knowledge graph this server accumulates is durable tenant state — it
     # is what the user told it to remember — so it goes beside the rest of the
-    # tenant's content rather than into scratch.
-    from core.runtime_dirs import tenant_dir
-    memory_file_path = tenant_dir("memory") / "memory.jsonl"
-    servers.append({
-        "name": "Memory",
-        "command": _NPX_CMD,
-        "args": ["-y", "@modelcontextprotocol/server-memory"],
-        "env": {"MEMORY_FILE_PATH": str(memory_file_path)},
-    })
+    # tenant's content rather than into scratch. With an S3 bucket the blob
+    # store has no directory, and `tenant_dir` refuses rather than write it to
+    # disk the next deploy discards: the server is skipped, like any other
+    # native server that cannot start. It used to raise here, inside the
+    # lifespan's Filesystem task, and the backend never finished starting (F225).
+    from core.runtime_dirs import NoDurableStorage, tenant_dir
+    try:
+        memory_file_path = tenant_dir("memory") / "memory.jsonl"
+    except NoDurableStorage:
+        print("Warning: skipping the Memory MCP server — its knowledge graph needs a "
+              "directory on disk, and the configured blob store (S3) has none.")
+    else:
+        servers.append({
+            "name": "Memory",
+            "command": _NPX_CMD,
+            "args": ["-y", "@modelcontextprotocol/server-memory"],
+            "env": {"MEMORY_FILE_PATH": str(memory_file_path)},
+        })
 
     # Sequential Thinking used to be spawned here as an npx server. It is now
     # the native task list (core/task_list.py) — engine-owned, journaled,
@@ -298,10 +308,19 @@ async def _filesystem_mcp_manager() -> None:
     """
     global _filesystem_stack
 
-    await _connect_filesystem_mcp(label="started")
-
-    if _filesystem_ready is not None:
-        _filesystem_ready.set()
+    # The lifespan waits on `_filesystem_ready`, so it is set whatever the first
+    # attempt did. An exception escaping `_connect_filesystem_mcp` — anything
+    # `_build_native_mcp_servers` raises — used to end this task before the
+    # event was set, and the backend waited for ever without a word (F177).
+    try:
+        await _connect_filesystem_mcp(label="started")
+    except Exception:
+        # Beside the line above it in the log, not on another stream.
+        print("Failed to start Filesystem MCP server:")
+        traceback.print_exc(file=sys.stdout)
+    finally:
+        if _filesystem_ready is not None:
+            _filesystem_ready.set()
 
     try:
         while True:
