@@ -1627,6 +1627,13 @@ def _uninstall_command(keep_data: bool = False):
 def _profile_command(action: str, output: str | None = None, limit: int = 20, duration: int = 30):
     backend_port = int(os.getenv("SYNAPSE_BACKEND_PORT", str(DEFAULT_BACKEND_PORT)))
     base_url = f"http://127.0.0.1:{backend_port}/api/profiling"
+    try:
+        from synapse.client.target import _read_config
+        session = (
+            _read_config().get("targets", {}).get(f"http://127.0.0.1:{backend_port}", {}).get("session")
+        )
+    except Exception:
+        session = None
 
     def _api(method: str, path: str, params: str = "") -> dict | str | None:
         url = f"{base_url}{path}"
@@ -1637,6 +1644,10 @@ def _profile_command(action: str, output: str | None = None, limit: int = 20, du
         token = os.getenv("SYNAPSE_INTERNAL_TOKEN")
         if token:
             req.add_header("X-Synapse-Internal", token)
+        # With login on, the backend also wants a session (S9): the one
+        # `synapse login` saved for this machine's backend.
+        if session:
+            req.add_header("X-Synapse-Session", session)
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 ct = resp.headers.get("Content-Type", "")
@@ -1646,6 +1657,9 @@ def _profile_command(action: str, output: str | None = None, limit: int = 20, du
                     return json.loads(body)
                 return body.decode()
         except urllib.error.HTTPError as e:
+            if e.code == 401:
+                print("This Synapse has login turned on. Run `synapse login` first.")
+                return None
             print(f"Error {e.code}: {e.read().decode()}")
             return None
         except Exception as e:

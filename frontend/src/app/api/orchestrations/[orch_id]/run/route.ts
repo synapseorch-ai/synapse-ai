@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as http from 'http';
 import { URL } from 'url';
-import { internalTokenHeader } from '@/lib/backend';
+import { internalHeaders } from '@/lib/backend';
 
 const _backendUrl = new URL(process.env.BACKEND_URL || 'http://127.0.0.1:8765');
 const BACKEND_HOST = _backendUrl.hostname;
@@ -22,6 +22,8 @@ export async function POST(
     // Use Node.js native http instead of fetch (undici) — undici buffers the
     // entire response before exposing body, which defeats SSE streaming.
     // Native http.request fires 'data' events per-chunk in real time.
+    // Read here, in the request's scope: the executor below cannot await.
+    const auth = await internalHeaders();
     const webStream = await new Promise<ReadableStream>((resolve, reject) => {
         const options: http.RequestOptions = {
             hostname: BACKEND_HOST,
@@ -32,7 +34,7 @@ export async function POST(
                 'Content-Type': 'application/json',
                 'Content-Length': Buffer.byteLength(postData),
                 'Accept-Encoding': 'identity',
-                ...internalTokenHeader(),
+                ...auth,
             },
         };
 

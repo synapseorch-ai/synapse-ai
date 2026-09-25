@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as http from 'http';
 import { URL } from 'url';
-import { internalTokenHeader } from '@/lib/backend';
+import { internalHeaders } from '@/lib/backend';
 
 const _backendUrl = new URL(process.env.BACKEND_URL || 'http://127.0.0.1:8765');
 const BACKEND_HOST = _backendUrl.hostname;
@@ -17,6 +17,8 @@ export async function GET(req: Request) {
     const after = reqUrl.searchParams.get('after') || '0';
     const lastEventId = req.headers.get('last-event-id');
 
+    // Read here, in the request's scope: the executor below cannot await.
+    const auth = await internalHeaders();
     const upstream = await new Promise<{ stream: ReadableStream; status: number }>((resolve, reject) => {
         const options: http.RequestOptions = {
             hostname: BACKEND_HOST,
@@ -26,7 +28,7 @@ export async function GET(req: Request) {
             headers: {
                 'Accept-Encoding': 'identity',
                 ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
-                ...internalTokenHeader(),
+                ...auth,
             },
         };
 

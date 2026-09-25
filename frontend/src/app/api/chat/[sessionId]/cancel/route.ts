@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +18,7 @@ export async function POST(
     try {
         const res = await fetch(
             `${BACKEND_URL}/chat/${encodeURIComponent(sessionId)}/cancel`,
-            { method: 'POST', headers: backendHeaders() },
+            { method: 'POST', headers: await sessionHeaders() },
         );
         return NextResponse.json(await res.json(), { status: res.status });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

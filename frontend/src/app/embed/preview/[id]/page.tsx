@@ -1,4 +1,4 @@
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 import WidgetChat, { type Theme } from '../../[key]/WidgetChat';
 import styles from '../../[key]/embed.module.css';
@@ -33,7 +33,7 @@ export default async function PreviewPage({ params }: PageProps) {
   try {
     const response = await fetch(
       `${BACKEND_URL}/api/widgets/${encodeURIComponent(id)}/preview`,
-      { method: 'POST', headers: backendHeaders(), cache: 'no-store' },
+      { method: 'POST', headers: await sessionHeaders(), cache: 'no-store' },
     );
     status = response.status;
     session = await response.json();

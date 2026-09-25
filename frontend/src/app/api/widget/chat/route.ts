@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
     const body = await req.text();
     const response = await fetch(`${BACKEND_URL}/api/widget/chat`, {
       method: 'POST',
-      headers: backendHeaders({
+      headers: await sessionHeaders({
         Authorization: req.headers.get('authorization') ?? '',
         'X-Forwarded-For': req.headers.get('x-forwarded-for') ?? '',
       }),

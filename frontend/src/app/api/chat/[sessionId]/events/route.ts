@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +20,7 @@ export async function GET(
 ) {
     const { sessionId } = await params;
     const after = new URL(req.url).searchParams.get('after');
-    const headers: Record<string, string> = { ...backendHeaders() };
+    const headers: Record<string, string> = { ...await sessionHeaders() };
     const lastEventId = req.headers.get('last-event-id');
     if (lastEventId) headers['Last-Event-ID'] = lastEventId;
     try {

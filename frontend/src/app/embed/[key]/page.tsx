@@ -1,6 +1,6 @@
 import { headers } from 'next/headers';
 
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 import EmbedRefusal from './EmbedRefusal';
 import WidgetChat, { type Theme } from './WidgetChat';
@@ -63,7 +63,7 @@ export default async function EmbedPage({ params }: PageProps) {
   try {
     const response = await fetch(`${BACKEND_URL}/api/widget/session`, {
       method: 'POST',
-      headers: backendHeaders(),
+      headers: await sessionHeaders(),
       body: JSON.stringify({
         public_key: key,
         // An empty origin — a direct visit with no referrer — is passed through

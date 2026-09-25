@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +12,7 @@ export async function POST(
         const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}/run`, {
             method: 'POST',
             cache: 'no-store',
-            headers: backendHeaders(),
+            headers: await sessionHeaders(),
         });
         const data = await res.json();
         return NextResponse.json(data, { status: res.status });

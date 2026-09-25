@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -20,7 +20,7 @@ export async function GET(req: Request) {
     const response = await fetch(
       `${BACKEND_URL}/api/widget/stream?cursor=${encodeURIComponent(cursor)}`,
       {
-        headers: backendHeaders({ Authorization: req.headers.get('authorization') ?? '' }),
+        headers: await sessionHeaders({ Authorization: req.headers.get('authorization') ?? '' }),
         signal: req.signal,
       },
     );

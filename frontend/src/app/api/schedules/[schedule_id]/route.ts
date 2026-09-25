@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,7 +11,7 @@ export async function GET(
     try {
         const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}`, {
             cache: 'no-store',
-            headers: backendHeaders(),
+            headers: await sessionHeaders(),
         });
         const data = await res.json();
         return NextResponse.json(data, { status: res.status });
@@ -30,7 +30,7 @@ export async function PUT(
         const body = await req.json();
         const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}`, {
             method: 'PUT',
-            headers: backendHeaders(),
+            headers: await sessionHeaders(),
             body: JSON.stringify(body),
             cache: 'no-store',
         });
@@ -51,7 +51,7 @@ export async function PATCH(
         const body = await req.json();
         const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}`, {
             method: 'PATCH',
-            headers: backendHeaders(),
+            headers: await sessionHeaders(),
             body: JSON.stringify(body),
             cache: 'no-store',
         });
@@ -72,7 +72,7 @@ export async function DELETE(
         const res = await fetch(`${BACKEND_URL}/api/schedules/${schedule_id}`, {
             method: 'DELETE',
             cache: 'no-store',
-            headers: backendHeaders(),
+            headers: await sessionHeaders(),
         });
         const data = await res.json();
         return NextResponse.json(data, { status: res.status });

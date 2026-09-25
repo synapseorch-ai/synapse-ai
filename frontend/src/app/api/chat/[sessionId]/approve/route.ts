@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -21,7 +21,7 @@ export async function POST(
             `${BACKEND_URL}/chat/${encodeURIComponent(sessionId)}/approve`,
             {
                 method: 'POST',
-                headers: backendHeaders(),
+                headers: await sessionHeaders(),
                 body: JSON.stringify(body),
                 signal: req.signal,
             },
