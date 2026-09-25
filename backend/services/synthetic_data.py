@@ -1,6 +1,6 @@
 import os
 import json
-import httpx
+import logging
 from datetime import datetime
 from pydantic import BaseModel
 from typing import List, Optional
@@ -11,11 +11,19 @@ from typing import List, Optional
 #: on the machine that was running it.
 DATASETS_PREFIX = "datasets"
 
+logger = logging.getLogger(__name__)
+
 class SyntheticDataRequest(BaseModel):
+    """One generation job.
+
+    There is no provider and no key here (F210): records come from the engine's
+    own model call, so the model is any the workspace can reach and its key
+    stays on the server. It used to take a key from the browser and put it in a
+    URL — which every failed record then printed into the log.
+    """
     topic: str
     count: int
-    provider: str  # "openai" or "gemini"
-    api_key: str
+    model: Optional[str] = None  # empty = the workspace's default model
     system_prompt: Optional[str] = "You are a helpful assistant."
     edge_cases: Optional[str] = ""
     examples: Optional[List[dict]] = [] # [{"user": "...", "assistant": "..."}]
@@ -75,64 +83,52 @@ async def generate_synthetic_data(request: SyntheticDataRequest):
         for ex in request.examples:
             meta_system_prompt += f"User: {ex['user']}\nAssistant: {ex['assistant']}\n---\n"
 
+    from core.config import load_settings
+    from core.llm_providers import detect_mode_from_model, generate_response
+
+    settings = load_settings()
+    model = request.model or settings.get("model", "")
+    mode = detect_mode_from_model(model)
+
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            for i in range(request.count):
-                try:
-                    content = ""
-                    
-                    if request.provider == "openai":
-                        resp = await client.post(
-                            "https://api.openai.com/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {request.api_key}"},
-                            json={
-                                "model": "gpt-4o",
-                                "messages": [
-                                    {"role": "system", "content": meta_system_prompt},
-                                    {"role": "user", "content": f"Generate conversation #{i+1}."}
-                                ],
-                                "temperature": 0.7
-                            }
-                        )
-                        resp.raise_for_status()
-                        content = resp.json()["choices"][0]["message"]["content"]
-                        
-                    elif request.provider == "gemini":
-                        # Simplification: Assuming API key works with standard Gemini endpoint or via a wrapper
-                        # For POC, let's assume OpenAI format or similar if using a proxy, 
-                        # otherwise raw Gemini API call structure:
-                        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={request.api_key}"
-                        resp = await client.post(
-                            url,
-                            json={
-                                "contents": [{
-                                    "parts": [{"text": meta_system_prompt + f"\n\nGenerate conversation #{i+1}."}]
-                                }]
-                            }
-                        )
-                        resp.raise_for_status()
-                        data = resp.json()
-                        content = data["candidates"][0]["content"]["parts"][0]["text"]
-                    
-                    # Cleanup JSON
-                    json_str = content.strip()
-                    if json_str.startswith("```json"):
-                        json_str = json_str[7:-3]
-                    elif json_str.startswith("```"):
-                         json_str = json_str[3:-3]
-                    
-                    record = json.loads(json_str)
-                    
-                    # Append to file immediatey (streaming save)
-                    with open(filepath, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(record) + "\n")
-                        
-                    current_job["completed"] += 1
-                    
-                except Exception as e:
-                    print(f"Error generating record {i}: {e}")
-                    # Continue to next record even if one fails
-                    continue
+        failed, first_error = 0, None
+        for i in range(request.count):
+            try:
+                content = await generate_response(
+                    prompt_msg=f"Generate conversation #{i+1}.",
+                    sys_prompt=meta_system_prompt,
+                    mode=mode,
+                    current_model=model,
+                    current_settings=settings,
+                )
+
+                # Cleanup JSON
+                json_str = content.strip()
+                if json_str.startswith("```json"):
+                    json_str = json_str[7:-3]
+                elif json_str.startswith("```"):
+                    json_str = json_str[3:-3]
+
+                record = json.loads(json_str)
+
+                # Append to file immediately (streaming save)
+                with open(filepath, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record) + "\n")
+
+                current_job["completed"] += 1
+
+            except Exception as e:
+                # Continue to the next record; the job says how many failed.
+                failed += 1
+                first_error = first_error or f"{type(e).__name__}: {e}"
+                logger.warning("Data Lab: record %d of %d failed: %s", i + 1, request.count, e)
+
+        if current_job["completed"] == 0:
+            # Nothing was written, so there is nothing to publish. This used to
+            # end "completed", with 0 records and no error.
+            current_job["status"] = "failed"
+            current_job["error"] = f"No records were generated. {first_error or ''}".strip()
+            return
 
         # Publish the finished dataset. In a local install the blob store is a
         # directory the user can open; in a hosted one it is per-org S3.
@@ -141,11 +137,13 @@ async def generate_synthetic_data(request: SyntheticDataRequest):
             with open(filepath, "r", encoding="utf-8") as f:
                 get_blob_store().put(f"{DATASETS_PREFIX}/{filename}", f.read())
         except Exception as e:
-            print(f"Warning: could not publish dataset {filename}: {e}")
+            logger.warning("Data Lab: could not publish dataset %s: %s", filename, e)
 
         current_job["status"] = "completed"
-        
+        if failed:
+            current_job["error"] = f"{failed} of {request.count} failed: {first_error}"
+
     except Exception as e:
         current_job["status"] = "failed"
         current_job["error"] = str(e)
-        print(f"Job failed: {e}")
+        logger.warning("Data Lab: job failed: %s", e)

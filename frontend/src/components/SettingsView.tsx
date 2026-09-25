@@ -263,7 +263,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     // Data Lab State
     const [dlTopic, setDlTopic] = useState('');
     const [dlCount, setDlCount] = useState(10);
-    const [dlProvider, setDlProvider] = useState('openai');
+    const [dlModel, setDlModel] = useState('');
     const [dlSystemPrompt, setDlSystemPrompt] = useState('You are a helpful assistant.');
     const [dlEdgeCases, setDlEdgeCases] = useState('');
     const [dlStatus, setDlStatus] = useState<any>(null);
@@ -275,21 +275,24 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             fetchDatasets();
             fetchStatus();
             // Poll
-            const interval = setInterval(() => {
-                fetchStatus();
-                if (dlStatus?.status === 'generating') fetchDatasets(); // Refresh list occasionally
-            }, 2000);
+            const interval = setInterval(fetchStatus, 2000);
             return () => clearInterval(interval);
         }
     }, [activeTab]);
+
+    // A job that just ended shows its dataset. The poll above used to test
+    // `dlStatus` inside its own closure — the value from when the tab opened —
+    // so the list refreshed only on a reload.
+    const dlJobStatus = dlStatus?.status;
+    useEffect(() => {
+        if (activeTab === 'datalab' && (dlJobStatus === 'completed' || dlJobStatus === 'failed')) fetchDatasets();
+    }, [activeTab, dlJobStatus]);
 
     const fetchDatasets = () => fetch('/api/synthetic/datasets').then(r => r.json()).then(setDlDatasets).catch(() => { });
     const fetchStatus = () => fetch('/api/synthetic/status').then(r => r.json()).then(setDlStatus).catch(() => { });
 
     const handleGenerateData = async () => {
         if (!dlTopic) { showToast('Please enter a topic', 'warning'); return; }
-        if (dlProvider === 'openai' && !openaiKey) { showToast('OpenAI Key required', 'warning'); return; }
-        if (dlProvider === 'gemini' && !geminiKey) { showToast('Gemini Key required', 'warning'); return; }
 
         try {
             const res = await fetch('/api/synthetic/generate', {
@@ -298,8 +301,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 body: JSON.stringify({
                     topic: dlTopic,
                     count: dlCount,
-                    provider: dlProvider,
-                    api_key: dlProvider === 'openai' ? openaiKey : geminiKey,
+                    model: dlModel || null,
                     system_prompt: dlSystemPrompt,
                     edge_cases: dlEdgeCases
                 })
@@ -510,7 +512,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                     <DataLabTab
                         dlTopic={dlTopic} setDlTopic={setDlTopic}
                         dlCount={dlCount} setDlCount={setDlCount}
-                        dlProvider={dlProvider} setDlProvider={setDlProvider}
+                        dlModel={dlModel} setDlModel={setDlModel}
+                        modelOptions={Object.values(providers).flatMap(p => (p.available ? p.models : []))}
+                        defaultModel={selectedModel}
                         dlSystemPrompt={dlSystemPrompt} setDlSystemPrompt={setDlSystemPrompt}
                         dlEdgeCases={dlEdgeCases} setDlEdgeCases={setDlEdgeCases}
                         dlStatus={dlStatus}

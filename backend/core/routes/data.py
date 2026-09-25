@@ -361,8 +361,11 @@ async def get_models():
             return False, GEMINI_FALLBACK, ["text-embedding-004", "gemini-embedding-001"]
         try:
             async with httpx.AsyncClient() as client:
+                # The key as a header, never in the URL: a URL is what an
+                # exception message and an access log print (F210).
                 r = await client.get(
-                    f"https://generativelanguage.googleapis.com/v1beta/models?key={gemini_key}",
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    headers={"x-goog-api-key": gemini_key},
                     timeout=5.0,
                 )
                 if r.status_code == 200:

@@ -2,10 +2,16 @@
 import { Database } from 'lucide-react';
 import { Select } from '@/components/ui';
 
+/** The Select shows an empty value as "Select…", so the default has a value of its own. */
+const WORKSPACE_DEFAULT = '__workspace_default__';
+
 interface DataLabTabProps {
     dlTopic: string; setDlTopic: (v: string) => void;
     dlCount: number; setDlCount: (v: number) => void;
-    dlProvider: string; setDlProvider: (v: string) => void;
+    /** '' = the workspace's default model. */
+    dlModel: string; setDlModel: (v: string) => void;
+    /** Every model the workspace can reach, and the default one. */
+    modelOptions: string[]; defaultModel: string;
     dlSystemPrompt: string; setDlSystemPrompt: (v: string) => void;
     dlEdgeCases: string; setDlEdgeCases: (v: string) => void;
     dlStatus: any;
@@ -15,7 +21,7 @@ interface DataLabTabProps {
 
 export const DataLabTab = ({
     dlTopic, setDlTopic, dlCount, setDlCount,
-    dlProvider, setDlProvider, dlSystemPrompt, setDlSystemPrompt,
+    dlModel, setDlModel, modelOptions, defaultModel, dlSystemPrompt, setDlSystemPrompt,
     dlEdgeCases, setDlEdgeCases, dlStatus, dlDatasets, onGenerate
 }: DataLabTabProps) => (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-8 h-full">
@@ -38,14 +44,16 @@ export const DataLabTab = ({
                             min={1} max={100} />
                     </div>
                     <div className="space-y-1">
-                        <label className="text-[10px] uppercase font-bold text-text-faint">Provider</label>
+                        <label className="text-[10px] uppercase font-bold text-text-faint">Model</label>
+                        {/* Any model the workspace reaches, through the engine's
+                            own call — the key stays on the server (F210). */}
                         <Select
-                            value={dlProvider}
-                            onChange={setDlProvider}
-                            aria-label="Provider"
+                            value={dlModel || WORKSPACE_DEFAULT}
+                            onChange={v => setDlModel(v === WORKSPACE_DEFAULT ? '' : v)}
+                            aria-label="Model"
                             options={[
-                                { value: 'openai', label: 'OpenAI (GPT-4o)' },
-                                { value: 'gemini', label: 'Gemini (1.5 Pro)' },
+                                { value: WORKSPACE_DEFAULT, label: `Workspace default${defaultModel ? ` (${defaultModel})` : ''}` },
+                                ...modelOptions.filter(m => m !== '').map(m => ({ value: m, label: m })),
                             ]}
                         />
                     </div>
@@ -81,6 +89,9 @@ export const DataLabTab = ({
                 )}
                 {dlStatus?.status === 'failed' && (
                     <span className="text-red-500 text-xs">Failed: {dlStatus.error}</span>
+                )}
+                {dlStatus?.status === 'completed' && dlStatus.error && (
+                    <span className="text-amber-500 text-xs">Done with errors: {dlStatus.error}</span>
                 )}
             </h3>
 
