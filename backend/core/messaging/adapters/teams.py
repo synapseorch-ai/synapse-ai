@@ -65,11 +65,20 @@ class TeamsAdapter(MessagingAdapter):
         logger.warning("[Teams] Proactive send not implemented yet. "
                        "Teams replies are sent within request context.")
 
-    async def process_request(self, request, response):
-        """Process an aiohttp request from the Teams webhook endpoint."""
+    async def process_request(self, auth_header: str, body: dict):
+        """One Bot Framework delivery: its token checked, then `_on_turn`.
+
+        `CloudAdapter.process_activity` authenticates `auth_header` — the JWT
+        Microsoft signs for this app id — before running the turn, and raises
+        `PermissionError` when it is not one; the webhook route answers 401.
+        Returns the SDK's invoke response, None for an ordinary message.
+        """
         if not self._adapter_bot:
-            return
-        await self._adapter_bot.process_activity(request, response, self._on_turn)
+            raise RuntimeError("Teams adapter is not started.")
+        from botbuilder.schema import Activity
+
+        activity = Activity().deserialize(body)
+        return await self._adapter_bot.process_activity(auth_header, activity, self._on_turn)
 
     async def _on_turn(self, turn_context) -> None:
         """One Teams message: a command, else `_dispatch` like every other adapter.

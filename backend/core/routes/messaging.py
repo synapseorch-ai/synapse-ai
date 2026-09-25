@@ -9,7 +9,7 @@ import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core.messaging import store as channel_store
 
@@ -233,6 +233,109 @@ async def test_channel(channel_id: str, request: Request):
     }
 
 
+# ── Platform-specific webhooks (Teams, WhatsApp) ─────────────────────────────
+#
+# Registered BEFORE the generic `{platform}` route below. FastAPI matches in
+# registration order, and the generic route answers any platform it does not
+# serve with 404 "Unknown platform" — so while it came first, no Teams or
+# WhatsApp delivery ever reached these (F206).
+
+# ── Teams Webhook ─────────────────────────────────────────────────────────────
+
+@router.post("/api/messaging/teams/webhook/{channel_id}")
+async def teams_webhook(channel_id: str, request: Request):
+    """Inbound webhook for Microsoft Teams (Bot Framework).
+
+    The SDK checks the delivery's `Authorization` token — a JWT Microsoft signs
+    for this bot's app id — before `_on_turn` runs, so the header goes to the
+    adapter with the activity. It used to be handed the body where the SDK
+    wants the header, so no delivery could have been accepted (F206).
+    """
+    manager = _get_manager(request)
+    adapter = manager.get_teams_adapter(channel_id)
+    if not adapter:
+        raise HTTPException(status_code=404, detail="Teams channel not found or not running")
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Body is not JSON")
+    try:
+        invoke = await adapter.process_request(request.headers.get("authorization", ""), body)
+    except PermissionError:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    except Exception as e:
+        logger.error("[Teams Webhook] Error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    if invoke is not None:
+        return JSONResponse(status_code=invoke.status, content=invoke.body)
+    return {"status": "ok"}
+
+
+# ── WhatsApp Webhook ──────────────────────────────────────────────────────────
+
+@router.get("/api/messaging/whatsapp/webhook/{channel_id}")
+async def whatsapp_verify(channel_id: str, request: Request):
+    """Meta webhook verification (GET with hub.challenge)."""
+    manager = _get_manager(request)
+    adapter = manager.get_whatsapp_adapter(channel_id)
+    if not adapter:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found or not running")
+
+    params = dict(request.query_params)
+    mode = params.get("hub.mode", "")
+    token = params.get("hub.verify_token", "")
+    challenge = params.get("hub.challenge", "")
+
+    result = adapter.verify_webhook(mode, token, challenge)
+    if result is None:
+        raise HTTPException(status_code=403, detail="Verification failed")
+    return PlainTextResponse(result)
+
+
+@router.post("/api/messaging/whatsapp/webhook/{channel_id}")
+async def whatsapp_webhook(channel_id: str, request: Request):
+    """Inbound webhook for WhatsApp Cloud API (Meta).
+
+    Signature first, on the exact bytes received, as the generic route does:
+    Meta signs every delivery with the app's secret (`X-Hub-Signature-256`).
+    Without the check, anyone who learned this URL could put words in any phone
+    number's mouth — and have the agent answer that number from the business
+    account. Then dispatched in the background, like the generic route: Meta
+    retries a delivery it is not answered for quickly, and an agent turn is not
+    quick.
+    """
+    from core.messaging import verify
+
+    manager = _get_manager(request)
+    ch = await channel_store.get_channel(channel_id)
+    if not ch or ch.get("platform") != "whatsapp":
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    body = await request.body()
+    app_secret = (ch.get("credentials") or {}).get("app_secret", "")
+    if not app_secret:
+        raise HTTPException(
+            status_code=401,
+            detail="This WhatsApp channel has no App Secret, so no delivery can be "
+                   "verified. Add it in Settings → Messaging.",
+        )
+    if not verify.verify_meta(app_secret, request.headers.get("x-hub-signature-256", ""), body):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    adapter = manager.get_whatsapp_adapter(channel_id)
+    if not adapter:
+        raise HTTPException(status_code=404, detail="WhatsApp channel not found or not running")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Body is not JSON")
+
+    from core.background import spawn_background
+    spawn_background(adapter.process_webhook(payload), name="messaging-inbound-whatsapp")
+    return {"status": "ok"}
+
+
 # ── Generic webhook (webhook-mode Telegram / Slack / Discord) ─────────────────
 
 @router.post("/api/messaging/{platform}/webhook/{channel_id}")
@@ -311,61 +414,4 @@ async def platform_webhook(platform: str, channel_id: str, request: Request):
         # "Thinking…" — buys the 15-minute follow-up window the adapter
         # answers through.
         return inbound.DISCORD_DEFERRED_REPLY
-    return {"status": "ok"}
-
-
-# ── Teams Webhook ─────────────────────────────────────────────────────────────
-
-@router.post("/api/messaging/teams/webhook/{channel_id}")
-async def teams_webhook(channel_id: str, request: Request):
-    """Inbound webhook for Microsoft Teams Bot Framework."""
-    manager = _get_manager(request)
-    adapter = manager.get_teams_adapter(channel_id)
-    if not adapter:
-        raise HTTPException(status_code=404, detail="Teams channel not found or not running")
-
-    # Delegate to the adapter for full Bot Framework processing
-    from aiohttp.web import Request as AiohttpRequest, Response as AiohttpResponse
-    # FastAPI/Starlette compatible shim is needed here.
-    # For simplicity, we pass the raw request JSON to the adapter.
-    body = await request.json()
-    try:
-        await adapter.process_request(body, None)
-        return {"status": "ok"}
-    except Exception as e:
-        logger.error("[Teams Webhook] Error: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── WhatsApp Webhook ──────────────────────────────────────────────────────────
-
-@router.get("/api/messaging/whatsapp/webhook/{channel_id}")
-async def whatsapp_verify(channel_id: str, request: Request):
-    """Meta webhook verification (GET with hub.challenge)."""
-    manager = _get_manager(request)
-    adapter = manager.get_whatsapp_adapter(channel_id)
-    if not adapter:
-        raise HTTPException(status_code=404, detail="WhatsApp channel not found or not running")
-
-    params = dict(request.query_params)
-    mode = params.get("hub.mode", "")
-    token = params.get("hub.verify_token", "")
-    challenge = params.get("hub.challenge", "")
-
-    result = adapter.verify_webhook(mode, token, challenge)
-    if result is None:
-        raise HTTPException(status_code=403, detail="Verification failed")
-    return PlainTextResponse(result)
-
-
-@router.post("/api/messaging/whatsapp/webhook/{channel_id}")
-async def whatsapp_webhook(channel_id: str, request: Request):
-    """Inbound webhook for WhatsApp Cloud API (Meta)."""
-    manager = _get_manager(request)
-    adapter = manager.get_whatsapp_adapter(channel_id)
-    if not adapter:
-        raise HTTPException(status_code=404, detail="WhatsApp channel not found or not running")
-
-    body = await request.json()
-    await adapter.process_webhook(body)
     return {"status": "ok"}

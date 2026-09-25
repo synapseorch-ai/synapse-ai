@@ -22,6 +22,9 @@ The rules implemented, per platform:
   ``X-Telegram-Bot-Api-Secret-Token`` header — a shared secret compared in
   constant time. The webhook URL itself should also be unguessable; this check
   is the second factor, not the first.
+* **Meta** (WhatsApp Cloud API) signs the raw body with the app secret
+  (HMAC-SHA256, hex, prefixed ``sha256=``) in ``X-Hub-Signature-256``. There
+  is no timestamp, so there is no replay window to bound.
 
 Every function returns ``False`` rather than raising on malformed input: to a
 receiver, "the header was garbage" and "the signature was wrong" call for the
@@ -82,3 +85,13 @@ def verify_telegram(secret_token: str, header_token: str) -> bool:
     if not secret_token or not header_token:
         return False
     return hmac.compare_digest(secret_token, header_token)
+
+
+def verify_meta(app_secret: str, signature: str, body: bytes) -> bool:
+    """True when ``signature`` is Meta's ``X-Hub-Signature-256`` for ``body``."""
+    if not app_secret or not signature:
+        return False
+    digest = hmac.new(app_secret.encode(), body, hashlib.sha256).hexdigest()
+    # Bytes, not str: `compare_digest` raises on a non-ASCII str, and the
+    # header is the sender's to choose.
+    return hmac.compare_digest(f"sha256={digest}".encode(), signature.encode("utf-8", "replace"))

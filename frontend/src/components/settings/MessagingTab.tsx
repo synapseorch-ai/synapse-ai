@@ -118,9 +118,9 @@ const SETUP_GUIDES: Record<Platform, { title: string; steps: string[] }> = {
         title: 'Creating a Microsoft Teams Bot',
         steps: [
             'Go to portal.azure.com → Create a resource → Azure Bot',
-            'Set the Messaging endpoint to: https://<your-ngrok-url>/api/messaging/teams/webhook/<channel-id>',
-            'For local dev, run: ngrok http 8765  and use the Forwarding URL',
-            'Note: only the Synapse backend needs the public URL — your frontend is unaffected',
+            'Set the Messaging endpoint to: https://<your-synapse-address>/api/messaging/teams/webhook/<channel-id>',
+            'Use the public address of the Synapse app, not the backend port: the app is what passes a delivery on to the backend',
+            'For local dev, tunnel the app (for example ngrok http 3000) and use the Forwarding URL',
             'In the bot Configuration, copy the Microsoft App ID',
             'In Certificates & Secrets, create a new client secret and copy it',
             'Add the Teams channel in the bot\'s Channels tab',
@@ -131,9 +131,10 @@ const SETUP_GUIDES: Record<Platform, { title: string; steps: string[] }> = {
         steps: [
             'BUSINESS ACCOUNT PATH: Go to developers.facebook.com → My Apps → Create App (type: Business)',
             'Add WhatsApp product → Phone Numbers → select a test or production number',
-            'In WhatsApp → Configuration, set Webhook URL to: https://<ngrok-url>/api/messaging/whatsapp/webhook/<channel-id>',
+            'In WhatsApp → Configuration, set Webhook URL to: https://<your-synapse-address>/api/messaging/whatsapp/webhook/<channel-id> (the public address of the Synapse app, not the backend port)',
             'Set your Verify Token (any string), subscribe to the messages webhook field',
             'Copy the Phone Number ID and generate a temporary/permanent Access Token',
+            'In App settings → Basic, copy the App Secret: Synapse refuses any delivery it does not sign',
             '--- OR ---',
             'UNOFFICIAL PATH: No business account needed. Synapse will open WhatsApp Web in a browser window and you scan the QR code to authenticate. This may violate WhatsApp\'s Terms of Service.',
         ],
@@ -539,7 +540,7 @@ export const MessagingTab = () => {
                     </div>
                     <p className="text-[10px] text-text-faint mt-1 leading-relaxed">
                         Where platforms deliver messages for channels in webhook mode. A public
-                        HTTPS address for this backend — a tunnel URL works for local testing.
+                        HTTPS address of this Synapse app, not its backend port — a tunnel URL works for local testing.
                     </p>
                 </div>
             </div>
@@ -801,6 +802,8 @@ export const MessagingTab = () => {
                                             {[
                                                 { key: 'phone_number_id', label: 'Phone Number ID', placeholder: '123456789012345', secret: false },
                                                 { key: 'access_token', label: 'Access Token', placeholder: 'EAA...', secret: true },
+                                                { key: 'app_secret', label: 'App Secret', placeholder: '', secret: true,
+                                                  note: 'App settings → Basic. Meta signs every delivery with it; a delivery without a matching signature is refused.' },
                                                 { key: 'verify_token', label: 'Verify Token (your choice)', placeholder: 'synapse_verify', secret: false,
                                                   note: 'Used to verify Meta webhook. Set the same value in your Meta App settings.' },
                                             ].map(f => (

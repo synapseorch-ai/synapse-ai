@@ -98,6 +98,32 @@ def test_telegram_compares_the_shared_secret():
     assert not verify.verify_telegram("", "")
 
 
+# ── Meta (WhatsApp Cloud API) signatures ─────────────────────────────────────
+
+def _meta_sign(secret: str, body: bytes) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def test_meta_accepts_its_own_signature():
+    body = b'{"object":"whatsapp_business_account","entry":[]}'
+    assert verify.verify_meta("app-secret", _meta_sign("app-secret", body), body)
+
+
+def test_meta_rejects_wrong_secret_tampered_body_and_garbage():
+    body = b'{"entry":[]}'
+    good = _meta_sign("app-secret", body)
+    assert not verify.verify_meta("other-secret", good, body)
+    assert not verify.verify_meta("app-secret", good, body + b" ")
+    # The bare hex without Meta's `sha256=` prefix is not what Meta sends.
+    assert not verify.verify_meta("app-secret", good.removeprefix("sha256="), body)
+    assert not verify.verify_meta("app-secret", "sha256=zz", body)
+    assert not verify.verify_meta("app-secret", "sha256=é", body)
+    assert not verify.verify_meta("app-secret", "", body)
+    # No secret configured is "cannot verify", never "verified" — even against
+    # a signature made with the empty key.
+    assert not verify.verify_meta("", _meta_sign("", body), body)
+
+
 # ── Payload parsing ──────────────────────────────────────────────────────────
 
 def test_telegram_update_parses_to_a_message():
