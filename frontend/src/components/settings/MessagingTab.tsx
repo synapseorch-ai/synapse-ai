@@ -61,17 +61,22 @@ const PLATFORMS: { id: Platform; label: string; color: string; icon: string }[] 
 
 // ─── Credential field definitions per platform ────────────────────────────────
 
-const CREDENTIAL_FIELDS: Record<Platform, { key: string; label: string; placeholder: string; secret?: boolean; note?: string }[]> = {
+/** `mode`: shown only for that delivery mode — webhook mode verifies each
+ *  delivery with a credential polling never needs, and vice versa (F227). */
+const CREDENTIAL_FIELDS: Record<Platform, { key: string; label: string; placeholder: string; secret?: boolean; note?: string; mode?: DeliveryMode }[]> = {
     telegram: [
         { key: 'bot_token', label: 'Bot Token', placeholder: '123456:ABC-DEF...', secret: true, note: 'Get from @BotFather on Telegram' },
     ],
     discord: [
         { key: 'bot_token', label: 'Bot Token', placeholder: 'MTE...', secret: true, note: 'From Discord Developer Portal → Bot → Token' },
         { key: 'channel_id', label: 'Restrict to Channel ID (optional)', placeholder: '123456789012345678', note: 'Leave empty to respond in all channels where the bot is mentioned' },
+        { key: 'application_id', label: 'Application ID', placeholder: '123456789012345678', mode: 'webhook', note: 'Developer Portal → General Information. Registers the /ask command' },
+        { key: 'public_key', label: 'Public Key', placeholder: 'a1b2c3…', mode: 'webhook', note: 'Developer Portal → General Information. Verifies each interaction Discord sends' },
     ],
     slack: [
         { key: 'bot_token', label: 'Bot Token (xoxb-...)', placeholder: 'xoxb-...', secret: true, note: 'OAuth & Permissions → Bot Token Scopes' },
-        { key: 'app_token', label: 'App-Level Token (xapp-...)', placeholder: 'xapp-...', secret: true, note: 'Enable Socket Mode → generate App-Level Token with connections:write scope' },
+        { key: 'app_token', label: 'App-Level Token (xapp-...)', placeholder: 'xapp-...', secret: true, mode: 'polling', note: 'Enable Socket Mode → generate App-Level Token with connections:write scope' },
+        { key: 'signing_secret', label: 'Signing Secret', placeholder: '', secret: true, mode: 'webhook', note: 'Basic Information → App Credentials. Verifies each delivery Slack sends' },
     ],
     teams: [
         { key: 'app_id', label: 'Azure App ID', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', note: 'Azure Bot resource → Configuration → Microsoft App ID' },
@@ -873,11 +878,11 @@ export const MessagingTab = () => {
                             ) : (
                                 /* Standard credential fields */
                                 <div className="space-y-3">
-                                    {CREDENTIAL_FIELDS[draft.platform]?.map(f => (
+                                    {CREDENTIAL_FIELDS[draft.platform]?.filter(f => !f.mode || f.mode === (draft.mode || 'polling')).map(f => (
                                         <div key={f.key} className="space-y-1">
-                                            <label htmlFor="messaging-f-label-2" className="text-[10px] font-bold text-text-faint uppercase">{f.label}</label>
+                                            <label htmlFor={`messaging-cred-${f.key}`} className="text-[10px] font-bold text-text-faint uppercase">{f.label}</label>
                                             <input
-                                                id="messaging-f-label-2"
+                                                id={`messaging-cred-${f.key}`}
                                                 type={f.secret ? 'password' : 'text'}
                                                 value={draft.credentials[f.key] || ''}
                                                 onChange={e => updateCred(f.key, e.target.value)}
