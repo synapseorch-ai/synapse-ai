@@ -74,6 +74,34 @@ const V1Docs = ({ BASE }: { BASE: string }) => (
             <CodeBlock code={`Authorization: Bearer sk-syn-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`} />
         </Section>
 
+        <Section title="Connect Claude Code or Cursor (MCP)">
+            <p className="text-xs text-text-faint">
+                Synapse is an MCP server at <code className="font-code text-text">{BASE}/mcp</code>. A client
+                with an API key can build agents and workflows, run them, answer their questions and read the
+                results. Every workflow is also a tool of its own, named <code className="font-code text-text">run_&lt;name&gt;</code>.
+                Deleting stays in the app.
+            </p>
+            <p className="text-2xs uppercase font-bold text-text-muted tracking-wider">Claude Code</p>
+            <CodeBlock code={`claude mcp add --transport http synapse ${BASE}/mcp \\
+  --header "Authorization: Bearer sk-syn-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"`} />
+            <p className="text-2xs uppercase font-bold text-text-muted tracking-wider">Cursor</p>
+            <p className="text-xs text-text-faint">
+                In <code className="font-code text-text">~/.cursor/mcp.json</code>, or <code className="font-code text-text">.cursor/mcp.json</code> in a project:
+            </p>
+            <CodeBlock code={`{
+  "mcpServers": {
+    "synapse": {
+      "url": "${BASE}/mcp",
+      "headers": { "Authorization": "Bearer sk-syn-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
+    }
+  }
+}`} />
+            <p className="text-xs text-text-faint">
+                A client that only starts local (stdio) servers can run <code className="font-code text-text">synapse mcp</code>,
+                which relays to this address. On the machine Synapse is installed on, it uses the CLI&apos;s own key.
+            </p>
+        </Section>
+
         <Section title="All Endpoints" defaultOpen>
             <div>
                 <EndpointRow method="POST" path="/chat" desc="Synchronous chat — returns final response only" />
