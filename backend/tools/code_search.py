@@ -14,6 +14,8 @@ import mcp.types as types
 from mcp.server import Server
 from psycopg_pool import ConnectionPool
 
+from core.file_roots import allowed_roots, refusal, within
+
 async def _load_repos() -> list[dict]:
     """The tenant's linked repos.
 
@@ -38,25 +40,9 @@ async def _load_repo_paths() -> dict[str, str]:
     }
 
 
-async def _get_allowed_base_paths() -> list[str]:
-    """Return allowed base paths: all configured repo paths + vault directory."""
-    paths = list((await _load_repo_paths()).values())
-    try:
-        from core.vault import _vault_root
-        paths.append(str(_vault_root()))
-    except Exception:
-        pass
-    return paths
-
-
 async def _is_path_allowed(path: str) -> bool:
-    """Return True if path resolves to within a configured repo or vault."""
-    resolved = os.path.realpath(path)
-    for base in await _get_allowed_base_paths():
-        base_real = os.path.realpath(base)
-        if resolved == base_real or resolved.startswith(base_real + os.sep):
-            return True
-    return False
+    """True if `path` resolves inside a root agents may read (`core/file_roots.py`)."""
+    return within(path, await allowed_roots())
 
 
 _pool: ConnectionPool | None = None
@@ -365,8 +351,14 @@ def _grep_folder(
     context: int = 0,
     max_matches: int = 1000,
     recursive: bool = True,
+    *,
+    roots: list[str],
 ) -> list[dict]:
-    """Search for a pattern across all files in a folder matching file_pattern."""
+    """Search for a pattern across all files in a folder matching file_pattern.
+
+    Only files that resolve inside `roots`: `file_pattern` is joined onto the
+    folder, so a `..` in it, or a symlink under it, would otherwise walk out (S5).
+    """
     import glob as _glob
 
     resolved = folder_path if os.path.isabs(folder_path) else os.path.join(os.getcwd(), folder_path)
@@ -376,7 +368,10 @@ def _grep_folder(
         return [{"error": f"Not a directory: {folder_path}."}]
 
     glob_pat = os.path.join(resolved, "**", file_pattern) if recursive else os.path.join(resolved, file_pattern)
-    files = sorted(f for f in _glob.glob(glob_pat, recursive=recursive) if os.path.isfile(f))
+    files = sorted(
+        f for f in _glob.glob(glob_pat, recursive=recursive)
+        if os.path.isfile(f) and within(f, roots)
+    )
 
     all_results: list[dict] = []
     for fpath in files:
@@ -396,10 +391,14 @@ def _glob_files(
     include_dirs: bool = False,
     include_hidden: bool = True,
     max_results: int = 1000,
+    *,
+    roots: list[str],
 ) -> list[dict] | list[str]:
     """List files under `folder_path` matching `pattern` using Python glob rules.
 
     Returns relative paths from `folder_path`. Uses `glob` and supports `**` for recursion.
+    Only entries that resolve inside `roots` — a `..` in `pattern`, or a symlink,
+    would otherwise list what is outside (S5).
     """
     resolved = folder_path if os.path.isabs(folder_path) else os.path.join(os.getcwd(), folder_path)
 
@@ -417,6 +416,8 @@ def _glob_files(
     for p in iterator:
         name = os.path.basename(p)
         if not include_hidden and name.startswith("."):
+            continue
+        if not within(p, roots):
             continue
         if include_dirs or os.path.isfile(p):
             results.append(os.path.relpath(p, resolved))
@@ -482,6 +483,14 @@ async def _read_file_by_lines(file_path: str, start_line: int = 1, end_line: int
                 if os.path.exists(candidate):
                     resolved = candidate
 
+    # Checked on what was found, after every fallback above, so a relative
+    # `../` or a symlink cannot reach past the roots; and on the path as given
+    # when nothing was, so "not found" is not an answer about outside files (S5).
+    roots = await allowed_roots()
+    if resolved and not within(resolved, roots):
+        return {"error": refusal(file_path)}
+    if not resolved and os.path.isabs(file_path) and not within(file_path, roots):
+        return {"error": refusal(file_path)}
     if not resolved or not os.path.exists(resolved):
         return {"error": f"File not found: {file_path}. Checked absolute path, vault directory, and passed repo."}
     if not os.path.isfile(resolved):
@@ -838,11 +847,11 @@ async def call_tool(
 
             resolved = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
             if not await _is_path_allowed(resolved):
-                return [types.TextContent(type="text", text=json.dumps({"error": f"Access denied: '{path}' is not within a configured repository or vault."}))]
+                return [types.TextContent(type="text", text=json.dumps({"error": refusal(path)}))]
             if os.path.isdir(resolved):
                 file_pattern = arguments.get("file_pattern", "*")
                 recursive = bool(arguments.get("recursive", True))
-                results = _grep_folder(path, pattern, file_pattern=file_pattern, ignore_case=ignore_case, fixed=fixed, context=context, max_matches=max_matches, recursive=recursive)
+                results = _grep_folder(path, pattern, file_pattern=file_pattern, ignore_case=ignore_case, fixed=fixed, context=context, max_matches=max_matches, recursive=recursive, roots=await allowed_roots())
             else:
                 results = _grep_file(path, pattern, ignore_case=ignore_case, fixed=fixed, context=context, max_matches=max_matches)
 
@@ -855,7 +864,7 @@ async def call_tool(
 
             _fp_resolved = folder_path if os.path.isabs(folder_path) else os.path.join(os.getcwd(), folder_path)
             if not await _is_path_allowed(_fp_resolved):
-                return [types.TextContent(type="text", text=json.dumps({"error": f"Access denied: '{folder_path}' is not within a configured repository or vault."}))]
+                return [types.TextContent(type="text", text=json.dumps({"error": refusal(folder_path)}))]
 
             pattern = arguments.get("pattern", "**/*")
             recursive = bool(arguments.get("recursive", True))
@@ -863,7 +872,7 @@ async def call_tool(
             include_hidden = bool(arguments.get("include_hidden", True))
             max_results = int(arguments.get("max_results", 1000))
 
-            results = _glob_files(folder_path, pattern=pattern, recursive=recursive, include_dirs=include_dirs, include_hidden=include_hidden, max_results=max_results)
+            results = _glob_files(folder_path, pattern=pattern, recursive=recursive, include_dirs=include_dirs, include_hidden=include_hidden, max_results=max_results, roots=await allowed_roots())
             return [types.TextContent(type="text", text=json.dumps({"results": results}, ensure_ascii=False))]
 
         if name == "read_file_by_lines":

@@ -92,23 +92,24 @@ _PROJECT_ROOT = BACKEND_ROOT.parent
 from core.tools_registry import ALL_NATIVE_TOOLS
 TOOLS_LIST = dict(ALL_NATIVE_TOOLS)
 
-async def _get_repo_paths() -> list[str]:
-    """Load repo paths for the filesystem MCP server's permissions.
+async def _filesystem_server_spec() -> dict:
+    """The Filesystem MCP server, rooted where agents may read.
 
-    Read from the store; this was a fifth reader of `DATA_DIR/repos.json`
-    after repos moved, so the filesystem server's roots were whatever the
-    repos looked like before the migration.
+    The roots are `core/file_roots.allowed_roots()` — repositories, the
+    tenant's vault, then Settings → "Allowed Directories" — the same list the
+    engine's own file tools check against (S5), so the two cannot drift. Read
+    fresh, so a restart picks up edits without a backend reboot.
     """
-    from core.store import collections
+    from core import file_roots
 
-    try:
-        return [
-            r["path"] for r in await collections.load("repos")
-            if r.get("path") and os.path.isdir(r["path"])
-        ]
-    except Exception as e:
-        print(f"Warning: Could not load repo paths: {e}")
-        return []
+    fs_paths = await file_roots.allowed_roots()
+    if not await file_roots.repo_paths():
+        print("Warning: No repos configured — starting filesystem MCP server with vault access only.")
+    return {
+        "name": "Filesystem",
+        "command": _NPX_CMD,
+        "args": ["-y", "@modelcontextprotocol/server-filesystem"] + fs_paths,
+    }
 
 
 async def _get_google_oauth_env() -> dict[str, str]:
@@ -173,36 +174,7 @@ async def _build_native_mcp_servers() -> list[dict]:
     servers = []
 
     # --- Filesystem MCP Server ---
-    repo_paths = await _get_repo_paths()
-    # The tenant's vault, from the blob store. Was DATA_DIR/"vault", which the
-    # tenant-scoped storage change left pointing at a directory the vault no
-    # longer writes to — so the filesystem server's one guaranteed root was
-    # stale content.
-    from core.vault import _vault_root
-    vault_path = str(_vault_root())
-    # Always start with vault; include any configured repo paths on top.
-    fs_paths = repo_paths + [vault_path]
-    # Also include user-configured directories from General Settings ("Allowed
-    # Directories"). Read fresh so a restart picks up edits without a backend
-    # reboot. Filter to existing dirs and de-duplicate against paths we already
-    # have so the MCP server doesn't see the same root twice.
-    extra_dirs = [
-        d for d in load_settings().get("bash_allowed_dirs", [])
-        if d and os.path.isdir(d)
-    ]
-    seen = {os.path.realpath(p) for p in fs_paths}
-    for d in extra_dirs:
-        rp = os.path.realpath(d)
-        if rp not in seen:
-            fs_paths.append(d)
-            seen.add(rp)
-    if not repo_paths:
-        print("Warning: No repos configured — starting filesystem MCP server with vault access only.")
-    servers.append({
-        "name": "Filesystem",
-        "command": _NPX_CMD,
-        "args": ["-y", "@modelcontextprotocol/server-filesystem"] + fs_paths,
-    })
+    servers.append(await _filesystem_server_spec())
 
     # --- Playwright MCP Server (browser automation) ---
     _settings = load_settings()

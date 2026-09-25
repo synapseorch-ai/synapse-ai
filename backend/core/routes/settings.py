@@ -397,12 +397,14 @@ async def get_file(path: str):
     primitive over every file the server user owns. The allowance is now the two
     directories whose contents this endpoint exists to serve.
     """
-    from core.server import _get_repo_paths
+    from core import file_roots
     from core.vault import _vault_root
 
     resolved = os.path.realpath(path)
-    allowed_bases = [str(_vault_root())] + await _get_repo_paths()
-    if not any(resolved.startswith(os.path.realpath(base)) for base in allowed_bases):
+    allowed_bases = [str(_vault_root())] + await file_roots.repo_paths()
+    # `within`, not `startswith`: a sibling named `vault-old` starts with the
+    # vault's own path (S8).
+    if not file_roots.within(resolved, allowed_bases):
         raise HTTPException(status_code=403, detail="Access denied: path outside allowed directories")
     if not os.path.exists(resolved) or not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")

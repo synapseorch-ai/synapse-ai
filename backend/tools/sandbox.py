@@ -29,6 +29,8 @@ import uuid
 from pathlib import Path
 from datetime import datetime, timezone
 
+from core.file_roots import within
+
 server = Server("sandbox")
 
 # ── paths & limits ───────────────────────────────────────────────────────
@@ -68,7 +70,9 @@ def _safe_path(relative: str) -> Path | None:
     """Resolve *relative* inside the vault; return None if it escapes."""
     root = _vault_root()
     target = (root / relative).resolve()
-    if not str(target).startswith(str(root)):
+    # `within`, not `startswith`: a sibling named `vault-old` starts with the
+    # vault's own path (S8).
+    if not within(target, [root]):
         return None
     return target
 
@@ -78,7 +82,7 @@ def _resolve(raw_path: str) -> Path | None:
     p = Path(raw_path)
     if p.is_absolute():
         resolved = p.resolve()
-        if not str(resolved).startswith(str(_vault_root())):
+        if not within(resolved, [_vault_root()]):
             return None
         return resolved
     return _safe_path(raw_path)

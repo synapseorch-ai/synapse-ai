@@ -14,6 +14,8 @@ import os
 import mcp.types as types
 from mcp.server import Server
 
+from core.file_roots import allowed_roots, refusal, within
+
 app = Server("file-reader-server")
 
 
@@ -26,8 +28,12 @@ def _ensure(path: str) -> str:
         return path
 
 
-def _read_lines(file_path: str, start_line: int, end_line: int) -> dict:
+def _read_lines(file_path: str, start_line: int, end_line: int, *, roots: list[str]) -> dict:
     local = _ensure(file_path)
+    # Before the existence check, so a refused path says nothing about
+    # whether it exists (S5).
+    if not within(local, roots):
+        return {"error": refusal(file_path)}
     if not os.path.exists(local):
         return {"error": f"File not found: {file_path}"}
     if not os.path.isfile(local):
@@ -56,8 +62,12 @@ def _read_lines(file_path: str, start_line: int, end_line: int) -> dict:
         return {"error": str(ex)}
 
 
-def _grep(file_path: str, query: str, context_lines: int) -> dict:
+def _grep(file_path: str, query: str, context_lines: int, *, roots: list[str]) -> dict:
     local = _ensure(file_path)
+    # Before the existence check, so a refused path says nothing about
+    # whether it exists (S5).
+    if not within(local, roots):
+        return {"error": refusal(file_path)}
     if not os.path.exists(local):
         return {"error": f"File not found: {file_path}"}
     if not os.path.isfile(local):
@@ -176,12 +186,14 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
             file_path=arguments.get("file_path", ""),
             start_line=int(arguments.get("start_line", 1)),
             end_line=int(arguments.get("end_line", 100)),
+            roots=await allowed_roots(),
         )
     elif name == "grep_file":
         result = _grep(
             file_path=arguments.get("file_path", ""),
             query=arguments.get("query", ""),
             context_lines=int(arguments.get("context_lines", 5)),
+            roots=await allowed_roots(),
         )
     else:
         result = {"error": f"Unknown tool: {name}"}
