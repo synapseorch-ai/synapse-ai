@@ -428,9 +428,40 @@ def _v1_drain(queue):
     return body()
 
 
+async def _workspace_orchestration(orch_id: str) -> dict:
+    """An orchestration v1 may run or read: the workspace's, never the AI builder's own (F96).
+
+    F162 left it out of the list; by id it was still run, streamed and served.
+    MCP's point-load (`builder_tools._visible_orchestration`), so the two agree.
+    """
+    from core.builder_tools import _visible_orchestration
+
+    orch = await _visible_orchestration(orch_id)
+    if orch is None:
+        raise HTTPException(status_code=404, detail=f"Orchestration '{orch_id}' not found")
+    return orch
+
+
+async def _refuse_builder_run(run_id: str) -> None:
+    """404 a run of the AI builder's own orchestration (F96), as MCP's `_served_run` does.
+
+    Narrower than MCP's check on purpose: a run whose orchestration has since
+    been deleted is still read back here, as v1 and the CLI always have.
+    """
+    from core.builder_tools import _is_visible
+    from core.orchestration.run_view import run_orchestration_id
+    from core.store.resources import get_orchestration
+
+    orch_id = await run_orchestration_id(run_id)
+    orch = await get_orchestration(orch_id) if orch_id else None
+    if orch is not None and not _is_visible(orch):
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+
 async def _answer(request: Request, run_id: str, human_response):
     """Resume a paused run once — the helper the app and a channel reply use."""
     from core.orchestration.answers import RunAlreadyActive, RunNotWaiting, answer_paused_run
+    await _refuse_builder_run(run_id)
     try:
         return await answer_paused_run(request.app.state, run_id, human_response)
     except RunAlreadyActive:
@@ -458,15 +489,11 @@ async def v1_orchestration_run(
 ):
     """Start an orchestration (sync). Returns final result or human_input_required."""
     import core.server as _server
-    from core.routes.orchestrations import load_orchestrations
     from core.models_orchestration import Orchestration
     from core.orchestration.engine import OrchestrationEngine
     from core.orchestration.runner import stream_engine_events
 
-    orchs = await load_orchestrations()
-    orch_data = next((o for o in orchs if o["id"] == orch_id), None)
-    if not orch_data:
-        raise HTTPException(status_code=404, detail=f"Orchestration '{orch_id}' not found")
+    orch_data = await _workspace_orchestration(orch_id)
 
     run_id = f"run_{orch_id}_{int(time.time() * 1000)}"
     orch = Orchestration.model_validate(orch_data)
@@ -532,14 +559,10 @@ async def v1_orchestration_run_stream(
 ):
     """Start an orchestration (SSE stream)."""
     import core.server as _server
-    from core.routes.orchestrations import load_orchestrations
     from core.models_orchestration import Orchestration
     from core.orchestration.engine import OrchestrationEngine
 
-    orchs = await load_orchestrations()
-    orch_data = next((o for o in orchs if o["id"] == orch_id), None)
-    if not orch_data:
-        raise HTTPException(status_code=404, detail=f"Orchestration '{orch_id}' not found")
+    orch_data = await _workspace_orchestration(orch_id)
 
     run_id = f"run_{orch_id}_{int(time.time() * 1000)}"
     orch = Orchestration.model_validate(orch_data)
@@ -691,6 +714,7 @@ async def v1_run_events(run_id: str, request: Request, after: int = Query(0, ge=
     The app's run log (`GET /api/orchestrations/runs/{id}/events`), unchanged.
     """
     from core.routes.orchestrations import get_run_events
+    await _refuse_builder_run(run_id)
     return await get_run_events(run_id, request, after=after, limit=limit)
 
 
@@ -703,6 +727,7 @@ async def v1_run_events_stream(run_id: str, request: Request, after: int = Query
     stream once the run has ended. The app's reattach stream, unchanged.
     """
     from core.routes.orchestrations import stream_run_events_sse
+    await _refuse_builder_run(run_id)
     return await stream_run_events_sse(run_id, request, after=after)
 
 
@@ -720,6 +745,7 @@ async def v1_get_run(run_id: str, key_record: dict = Depends(require_api_key)):
     """
     from core.orchestration.run_view import read_run
 
+    await _refuse_builder_run(run_id)
     view = await read_run(run_id)
     if view is None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -735,6 +761,7 @@ async def v1_cancel_run(run_id: str, request: Request, key_record: dict = Depend
     """
     from core.orchestration.cancel import cancel_run
 
+    await _refuse_builder_run(run_id)
     result = await cancel_run(run_id, redis=getattr(request.app.state, "redis", None))
     if not result.found:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -851,10 +878,6 @@ async def v1_get_orchestration(orch_id: str, key_record: dict = Depends(require_
     not whatever older keys a stored document still carries.
     """
     from core.models_orchestration import Orchestration
-    from core.routes.orchestrations import load_orchestrations
-    orchs = await load_orchestrations()
-    orch = next((o for o in orchs if o["id"] == orch_id), None)
-    if not orch:
-        raise HTTPException(status_code=404, detail=f"Orchestration '{orch_id}' not found")
+    orch = await _workspace_orchestration(orch_id)
     return Orchestration.model_validate(orch).model_dump(mode="json")
 

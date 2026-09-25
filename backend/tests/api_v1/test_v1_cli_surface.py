@@ -316,3 +316,59 @@ async def test_the_list_leaves_out_the_builders_own_orchestration(client, api_ke
                        dict(id="orch_mine", name="Mine"))
     resp = await client.get("/api/v1/orchestrations", headers=api_key["headers"])
     assert [o["id"] for o in resp.json()] == ["orch_mine"], made
+
+
+async def test_the_builders_own_orchestration_is_not_served_by_id(client, api_key):
+    """F96. F162 took it out of the list, but by id v1 still ran it, streamed it
+    and served its definition — MCP refuses all three, and cloud's v1 404s it."""
+    await _seed(dict(id="orch_native_builder", name="Synapse AI Builder", system="native_builder"),
+                dict(id="orch_mine", name="Mine"))
+    h = api_key["headers"]
+    for method, path in [("POST", "/api/v1/orchestrations/orch_native_builder/run"),
+                         ("POST", "/api/v1/orchestrations/orch_native_builder/run/stream"),
+                         ("GET", "/api/v1/orchestrations/orch_native_builder")]:
+        resp = await asyncio.wait_for(
+            client.request(method, path, json={"message": "go"} if method == "POST" else None, headers=h), 10)
+        assert resp.status_code == 404, (path, resp.status_code, resp.text[:200])
+        assert "not found" in resp.json()["detail"]
+    mine = await client.get("/api/v1/orchestrations/orch_mine", headers=h)
+    assert mine.status_code == 200 and mine.json()["id"] == "orch_mine"
+
+
+async def test_the_builders_own_runs_are_not_served(client, api_key):
+    """F96, by run id: its runs are `run_orch_native_builder_<ms>`, a guessable
+    id, and every run route read, answered or cancelled one. MCP's `_served_run`
+    refuses them; v1 now does the same."""
+    from core.models_orchestration import OrchestrationRun
+    from core.orchestration.state import SharedState
+
+    await _seed(dict(id="orch_native_builder", name="Synapse AI Builder", system="native_builder"))
+    run_id = "run_orch_native_builder_1"
+    await SharedState(OrchestrationRun(run_id=run_id, orchestration_id="orch_native_builder",
+                                       status="paused", waiting_for_human=True)).checkpoint()
+    h = api_key["headers"]
+    for method, path in [("GET", f"/api/v1/orchestrations/runs/{run_id}"),
+                         ("GET", f"/api/v1/orchestrations/runs/{run_id}/events"),
+                         ("GET", f"/api/v1/orchestrations/runs/{run_id}/events/stream"),
+                         ("POST", f"/api/v1/orchestrations/runs/{run_id}/resume"),
+                         ("POST", f"/api/v1/orchestrations/runs/{run_id}/resume/stream"),
+                         ("POST", f"/api/v1/orchestrations/runs/{run_id}/cancel")]:
+        body = {"response": "approve"} if path.endswith(("resume", "resume/stream")) else None
+        resp = await asyncio.wait_for(client.request(method, path, json=body, headers=h), 10)
+        assert resp.status_code == 404, (path, resp.status_code, resp.text[:200])
+    assert await _status(run_id) == "paused", "nothing answered or cancelled it"
+
+
+async def test_a_run_whose_orchestration_was_deleted_can_still_be_read(client, api_key):
+    """F96's guard is for the builder's runs only. MCP's also refuses a run whose
+    orchestration is gone; v1 and the CLI have always read old runs back, so
+    they still do."""
+    from core.models_orchestration import OrchestrationRun
+    from core.orchestration.state import SharedState
+
+    run_id = "run_orch_gone_1"
+    await SharedState(OrchestrationRun(run_id=run_id, orchestration_id="orch_gone",
+                                       status="completed")).checkpoint()
+    resp = await client.get(f"/api/v1/orchestrations/runs/{run_id}", headers=api_key["headers"])
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "completed"
