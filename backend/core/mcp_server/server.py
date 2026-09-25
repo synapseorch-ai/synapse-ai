@@ -7,11 +7,17 @@ sessions and the store a builder tool or a run needs.
 
 Two hooks make it reusable by an embedder (cloud's hosted endpoint):
 
-* `authorize(bearer) -> principal | None` — who is calling. Checked at the HTTP
-  edge and again on every call: the SDK runs handlers on its own task group, so
+* `authorize(request) -> principal | None` — who is calling, from the Starlette
+  request (its headers; in cloud its app's state too). Checked at the HTTP edge
+  and again on every call: the SDK runs handlers on its own task group, so
   nothing the edge learned reaches them.
 * `bind(principal)` — an async context the call runs inside: the settings the
   request reads, and in a multi-tenant host the tenant.
+* `server_module()` — an async context yielding what a builder tool is handed as
+  `server_module` (its tool sessions). This process's `core.server` by default;
+  a fleet's per-tenant module, acquired and given back, in cloud.
+
+Where a run tool's run executes is `runs.set_run_backend`'s.
 """
 from __future__ import annotations
 
@@ -27,8 +33,9 @@ from core.mcp_server import catalog, runs, workflows
 
 _log = get_logger(__name__)
 
-Authorize = Callable[[str | None], Awaitable[Any | None]]
+Authorize = Callable[[Any], Awaitable[Any | None]]
 Bind = Callable[[Any], contextlib.AbstractAsyncContextManager]
+ServerModule = Callable[[], contextlib.AbstractAsyncContextManager]
 
 #: The most text one tool result carries. `get_orchestration` and a run's state
 #: have no bound of their own, and a client model reads every character.
@@ -68,8 +75,9 @@ def bearer_from(headers: Any) -> str | None:
     return token.strip()
 
 
-async def authorize_api_key(bearer: str | None) -> dict | None:
-    """The open-source authorizer: a Synapse API key (`sk-syn-…`)."""
+async def authorize_api_key(request: Any) -> dict | None:
+    """The open-source authorizer: a Synapse API key (`sk-syn-…`) as the request's bearer."""
+    bearer = bearer_from(getattr(request, "headers", None))
     if not bearer:
         return None
     from core.api_keys import validate_api_key
@@ -90,6 +98,13 @@ async def bind_settings(_principal: Any) -> AsyncIterator[None]:
         yield
     finally:
         settings_runtime.reset(token)
+
+
+@contextlib.asynccontextmanager
+async def this_process() -> AsyncIterator[Any]:
+    """The open-source server module: this backend's own tool sessions."""
+    import core.server as _server
+    yield _server
 
 
 def _text_result(text: str, *, is_error: bool = False) -> types.CallToolResult:
@@ -114,12 +129,12 @@ def _reserved() -> set[str]:
     return set(catalog.SERVED_BUILDER_TOOLS) | set(runs.RUN_TOOL_NAMES)
 
 
-async def _call(name: str, args: dict) -> types.CallToolResult:
+async def _call(name: str, args: dict, server_module: ServerModule = this_process) -> types.CallToolResult:
     if name in catalog.SERVED_BUILDER_TOOLS:
-        import core.server as _server
         from core.builder_tools import execute_builder_tool_with_events
 
-        output, _events = await execute_builder_tool_with_events(name, args, _server)
+        async with server_module() as module:
+            output, _events = await execute_builder_tool_with_events(name, args, module)
         try:
             parsed = json.loads(output)
         except ValueError:
@@ -143,7 +158,7 @@ async def _call(name: str, args: dict) -> types.CallToolResult:
 
 
 def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_settings,
-                 name: str = "synapse") -> Server:
+                 name: str = "synapse", server_module: ServerModule = this_process) -> Server:
     server: Server = Server(name, version=synapse_version(), instructions=INSTRUCTIONS)
 
     async def _principal() -> Any | None:
@@ -151,7 +166,9 @@ def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_set
             request = server.request_context.request
         except LookupError:
             return None
-        return await authorize(bearer_from(getattr(request, "headers", None)))
+        if request is None:
+            return None
+        return await authorize(request)
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
@@ -170,7 +187,7 @@ def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_set
             return _error("A valid Synapse API key is required.")
         async with bind(principal):
             try:
-                return await _call(tool_name, arguments or {})
+                return await _call(tool_name, arguments or {}, server_module)
             except runs.ToolRefusal as exc:
                 return _error(str(exc))
             except KeyError as exc:

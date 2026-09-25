@@ -19,7 +19,17 @@ import contextlib
 import json
 from typing import AsyncIterator
 
-from core.mcp_server.server import Authorize, Bind, authorize_api_key, bearer_from, bind_settings, build_server
+from starlette.requests import Request
+
+from core.mcp_server.server import (
+    Authorize,
+    Bind,
+    ServerModule,
+    authorize_api_key,
+    bind_settings,
+    build_server,
+    this_process,
+)
 
 #: Where the endpoint is served, on both products (D124): `{origin}/api/v1/mcp`.
 #: A self-host's UI origin reaches it through the existing `/api/v1` rewrite;
@@ -39,9 +49,10 @@ async def _send_json(send, status: int, body: dict, headers: list[tuple[bytes, b
 
 
 class McpEndpoint:
-    def __init__(self, authorize: Authorize = authorize_api_key, bind: Bind = bind_settings) -> None:
+    def __init__(self, authorize: Authorize = authorize_api_key, bind: Bind = bind_settings,
+                 server_module: ServerModule = this_process) -> None:
         self._authorize = authorize
-        self.server = build_server(authorize, bind)
+        self.server = build_server(authorize, bind, server_module=server_module)
         self._manager = None
 
     @property
@@ -70,8 +81,7 @@ class McpEndpoint:
         if self._manager is None:
             await _send_json(send, 503, {"detail": "The MCP endpoint is starting."})
             return
-        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers") or []}
-        if await self._authorize(bearer_from(headers)) is None:
+        if await self._authorize(Request(scope)) is None:
             await _send_json(
                 send, 401, {"detail": "A valid Synapse API key is required (Authorization: Bearer sk-syn-…)."},
                 [(b"www-authenticate", b"Bearer")],

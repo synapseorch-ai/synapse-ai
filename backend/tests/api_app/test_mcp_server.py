@@ -278,3 +278,199 @@ class TestChat:
         async with mcp_session(mcp_app, api_key) as s:
             result = await s.call_tool("chat_with_agent", {"message": "hi", "agent": "Nobody"})
         assert result.isError and "not found" in result.content[0].text
+
+
+class _RecordingRuns:
+    """A run backend that executes nothing: where a deployment's fleet would be (cloud)."""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+        self.status = "queued"
+
+    async def start(self, orch, message, inputs):
+        self.calls.append(("start", orch["id"], message, inputs))
+        return f"run_{orch['id']}_1", None
+
+    async def served(self, run_id):
+        return run_id.startswith("run_orch_fleet_")
+
+    async def read(self, run_id):
+        self.calls.append(("read", run_id))
+        return {"status": self.status, "run_id": run_id}
+
+    async def answer(self, run_id, response):
+        self.calls.append(("answer", run_id, response))
+        self.status = "completed"
+        return None
+
+    async def cancel(self, run_id):
+        self.calls.append(("cancel", run_id))
+        return {"run_id": run_id, "status": "cancelled", "stopped": True}
+
+    async def list(self, *, limit, status, orchestration_id):
+        self.calls.append(("list", limit, status, orchestration_id))
+        return [{"run_id": "run_orch_fleet_1"}]
+
+    async def chat(self, *, message, agent, session_id, wait):
+        self.calls.append(("chat", message, agent, session_id, wait))
+        return {"response": "hi", "status": "completed", "session_id": "chat_1"}
+
+
+@pytest.fixture
+def fleet_runs():
+    from core.mcp_server import runs
+    backend = _RecordingRuns()
+    runs.set_run_backend(backend)
+    try:
+        yield backend
+    finally:
+        runs.set_run_backend(None)
+
+
+class TestWhereRunsExecute:
+    """Every run tool reaches a run through the installed backend, so a deployment
+    whose runs execute elsewhere (cloud's fleet) changes nothing but the backend."""
+
+    async def test_every_run_tool_goes_through_the_backend(self, mcp_app, api_key, seed_orchestration,
+                                                           fleet_runs):
+        from core.orchestration.runner import _active_tasks
+
+        await seed_orchestration(id="orch_fleet", name="Fleet job")
+        before = set(_active_tasks)
+        async with mcp_session(mcp_app, api_key) as s:
+            started = _body(await s.call_tool("run_orchestration", {
+                "orchestration_id": "orch_fleet", "message": "go", "inputs": {"topic": "x"},
+                "wait_seconds": 0}))
+            by_name = _body(await s.call_tool("run_fleet_job", {"message": "again", "wait_seconds": 0}))
+            answered = _body(await s.call_tool("answer_run", {"run_id": "run_orch_fleet_1", "answer": "yes",
+                                                              "wait_seconds": 1}))
+            stopped = _body(await s.call_tool("cancel_run", {"run_id": "run_orch_fleet_1"}))
+            listed = _body(await s.call_tool("list_runs", {"status": "paused", "limit": 5}))
+            chatted = _body(await s.call_tool("chat_with_agent", {"message": "hello", "agent": "Chatty"}))
+
+        # A fleet's accepted run is still going, and says how to follow it.
+        assert started["status"] == "queued" and "get_run" in started["note"]
+        assert by_name["run_id"] == "run_orch_fleet_1"
+        assert answered["status"] == "completed"
+        assert stopped == {"run_id": "run_orch_fleet_1", "status": "cancelled", "stopped": True}
+        assert listed == [{"run_id": "run_orch_fleet_1"}]
+        assert chatted["response"] == "hi"
+        kinds = [c[0] for c in fleet_runs.calls]
+        assert ("start", "orch_fleet", "go", {"topic": "x"}) in fleet_runs.calls
+        assert ("start", "orch_fleet", "again", None) in fleet_runs.calls
+        assert ("answer", "run_orch_fleet_1", {"response": "yes"}) in fleet_runs.calls
+        assert ("list", 5, "paused", None) in fleet_runs.calls
+        assert ("chat", "hello", "Chatty", None, 120.0) in fleet_runs.calls
+        assert "cancel" in kinds
+        # Nothing ran in this process.
+        assert set(_active_tasks) == before
+
+    async def test_the_refusals_hold_before_any_backend_is_asked(self, mcp_app, api_key, seed_orchestration,
+                                                                 fleet_runs):
+        from tests._fakes import seed
+        await seed.seed_orchestrations([
+            seed.make_orchestration(id="orch_fleet", name="Fleet job"),
+            seed.make_orchestration(id="orch_native_builder", name="AI Builder", system="native_builder"),
+        ])
+        async with mcp_session(mcp_app, api_key) as s:
+            builder = await s.call_tool("run_orchestration", {"orchestration_id": "orch_native_builder",
+                                                              "message": "go"})
+            engine_key = await s.call_tool("run_orchestration", {"orchestration_id": "orch_fleet", "message": "go",
+                                                                 "inputs": {"_model_override": "x"}})
+            unserved = await s.call_tool("answer_run", {"run_id": "run_orch_native_builder_1", "answer": "ok"})
+        assert builder.isError and "not found" in builder.content[0].text
+        assert engine_key.isError and "_model_override" in engine_key.content[0].text
+        assert unserved.isError and "not found" in unserved.content[0].text
+        assert not [c for c in fleet_runs.calls if c[0] in ("start", "answer")]
+
+
+class _SlowFleet(_RecordingRuns):
+    """A fleet that has not picked the answer up: the row still shows the question."""
+
+    def __init__(self):
+        super().__init__()
+        self.pause = 2
+
+    async def read(self, run_id):
+        return {"status": "paused", "run_id": run_id, "_pause": self.pause,
+                "human_input_required": {"step_id": "b", "prompt": "Approve?", "fields": []}}
+
+    async def answer(self, run_id, response):
+        self.calls.append(("answer", run_id, response))
+        return None
+
+
+class TestAnAnsweredQuestionIsNotAskedAgain:
+    async def test_the_question_just_answered_reads_as_resuming(self, mcp_app, api_key, seed_orchestration):
+        """A fleet picks an answer up when it can. Until it does, the row still
+        holds the question; shown it again, a client would answer twice or take
+        its answer as lost. A new question — another pause — is asked."""
+        from core.mcp_server import runs
+
+        await seed_orchestration(id="orch_fleet", name="Fleet job")
+        fleet = _SlowFleet()
+        runs.set_run_backend(fleet)
+        try:
+            async with mcp_session(mcp_app, api_key) as s:
+                answered = _body(await s.call_tool("answer_run", {
+                    "run_id": "run_orch_fleet_1", "answer": "yes", "wait_seconds": 1}))
+                fleet.pause = 4
+                asked = _body(await s.call_tool("get_run", {"run_id": "run_orch_fleet_1"}))
+        finally:
+            runs.set_run_backend(None)
+
+        assert answered["status"] == "resuming", answered
+        assert "human_input_required" not in answered
+        assert "picked it up" in answered["note"] and "get_run" in answered["note"]
+        assert asked["status"] == "paused" and asked["human_input_required"]["prompt"] == "Approve?"
+        assert not [k for k in (*answered, *asked) if k.startswith("_")]
+
+
+class TestAnEmbeddersAuthorizer:
+    async def test_it_is_handed_the_request_at_the_edge_and_on_every_call(self, test_app):
+        """Cloud admits a key through its own door, which reads the request (its
+        app's state), not a bare bearer string; and hands a builder tool its own
+        per-tenant server module, given back after the call."""
+        from starlette.requests import Request
+
+        from core.mcp_server.endpoint import McpEndpoint
+
+        seen: list = []
+
+        async def authorize(request):
+            seen.append(request)
+            return {"org": "o1"} if request.headers.get("authorization") == "Bearer good" else None
+
+        @contextlib.asynccontextmanager
+        async def bind(principal):
+            seen.append(principal)
+            yield
+
+        modules: list[str] = []
+
+        @contextlib.asynccontextmanager
+        async def server_module():
+            import core.server as _server
+            modules.append("acquired")
+            yield _server
+            modules.append("released")
+
+        endpoint = McpEndpoint(authorize, bind, server_module)
+        async with endpoint.serve():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=endpoint), base_url="http://test",
+                                         headers={"authorization": "Bearer good"}, timeout=30) as http, \
+                    streamable_http_client("http://test/", http_client=http) as (read, write, _), \
+                    ClientSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                assert modules == []  # listing tools builds no tenant's sessions
+                listed = await session.call_tool("list_agents", {})
+            async with _http(endpoint, {"authorization": "Bearer bad"}) as http:
+                refused = await http.post("/", json=_INITIALIZE, headers=_MCP_HEADERS)
+
+        assert refused.status_code == 401
+        assert tools.tools and not listed.isError
+        assert modules == ["acquired", "released"]
+        requests = [x for x in seen if isinstance(x, Request)]
+        assert len(requests) >= 3  # the edge twice (initialize, list), and the list call itself
+        assert {"org": "o1"} in seen  # bind got the principal the authorizer returned
