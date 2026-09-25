@@ -67,6 +67,46 @@ class TestAnnotations:
             assert marks[name].destructiveHint is False, name
 
 
+
+class TestScopes:
+    """What a caller must have been granted to see and call each tool (D127).
+
+    An embedder may grant less than everything: cloud's OAuth tokens carry `read`,
+    `run` and `build`. A key, and every self-hosted caller, is granted all three.
+    """
+
+    def test_every_served_tool_has_one_scope(self):
+        for tool in catalog.builder_tools() + list(runs.RUN_TOOLS):
+            assert catalog.scope_of(tool.name) in catalog.SCOPES, tool.name
+
+    def test_reading_is_read(self):
+        for name in catalog.READ_TOOLS:
+            assert catalog.scope_of(name) == "read", name
+        assert catalog.scope_of("get_run") == "read"
+        assert catalog.scope_of("list_runs") == "read"
+
+    def test_building_is_build(self):
+        for name in catalog.BUILD_TOOLS:
+            assert catalog.scope_of(name) == "build", name
+
+    @pytest.mark.parametrize("name", ["run_orchestration", "answer_run", "cancel_run", "chat_with_agent"])
+    def test_starting_answering_cancelling_and_chatting_spend_credits(self, name):
+        assert catalog.scope_of(name) == "run"
+
+    def test_a_workflow_tool_runs(self):
+        assert catalog.scope_of(workflows.PREFIX + "weekly_client_summary") == "run"
+
+    @pytest.mark.parametrize("name", ["delete_agent", "finish_build", "no_such_tool"])
+    def test_what_is_not_served_has_no_scope(self, name):
+        assert catalog.scope_of(name) is None
+
+    def test_a_read_scope_only_reads(self):
+        """A token granted `read` alone must see nothing that changes anything."""
+        marks = {t.name: t.annotations for t in catalog.builder_tools() + list(runs.RUN_TOOLS)}
+        for name, mark in marks.items():
+            if catalog.scope_of(name) == "read":
+                assert mark.readOnlyHint, name
+
 def _orch(oid, name, **extra):
     return {"id": oid, "name": name, "description": extra.pop("description", ""), "steps": [], **extra}
 

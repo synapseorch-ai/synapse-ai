@@ -79,6 +79,14 @@ OVERWRITING_TOOLS: frozenset[str] = frozenset({
 
 SERVED_BUILDER_TOOLS: frozenset[str] = frozenset(READ_TOOLS + BUILD_TOOLS)
 
+#: What a caller must have been granted to see and call a tool (D127). An embedder
+#: may grant less than everything — cloud's OAuth tokens carry these — while a key,
+#: and every self-hosted caller, is granted all three. `run` spends model credits.
+SCOPES: tuple[str, ...] = ("read", "run", "build")
+
+#: The run tools that only read a run.
+READING_RUN_TOOLS: frozenset[str] = frozenset({"get_run", "list_runs"})
+
 
 def annotations_for(name: str) -> types.ToolAnnotations:
     if name in READ_TOOLS:
@@ -88,6 +96,19 @@ def annotations_for(name: str) -> types.ToolAnnotations:
         destructiveHint=name in OVERWRITING_TOOLS,
         openWorldHint=name == "import_openapi",
     )
+
+
+def scope_of(name: str) -> str | None:
+    """The scope a served tool needs; None for a name that is not served."""
+    from core.mcp_server import runs, workflows
+
+    if name in READ_TOOLS or name in READING_RUN_TOOLS:
+        return "read"
+    if name in BUILD_TOOLS:
+        return "build"
+    if name in runs.RUN_TOOL_NAMES or name.startswith(workflows.PREFIX):
+        return "run"
+    return None
 
 
 def builder_tools() -> list[types.Tool]:

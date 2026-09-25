@@ -474,3 +474,48 @@ class TestAnEmbeddersAuthorizer:
         requests = [x for x in seen if isinstance(x, Request)]
         assert len(requests) >= 3  # the edge twice (initialize, list), and the list call itself
         assert {"org": "o1"} in seen  # bind got the principal the authorizer returned
+
+
+class TestAnEmbeddersGrant:
+    async def test_a_caller_sees_and_calls_only_what_it_was_granted(self, test_app):
+        """Cloud's OAuth tokens carry scopes (D127): a token granted `read` alone lists
+        no tool that runs or builds, and calling one is refused by name — never
+        dispatched. Without a `permits` hook every caller gets everything."""
+        from core.mcp_server.endpoint import McpEndpoint
+
+        async def authorize(request):
+            return {"scopes": {"read"}} if request.headers.get("authorization") == "Bearer good" else None
+
+        @contextlib.asynccontextmanager
+        async def bind(principal):
+            yield
+
+        asked: list[tuple] = []
+
+        def permits(principal, scope):
+            asked.append((principal["scopes"], scope))
+            return scope in principal["scopes"]
+
+        endpoint = McpEndpoint(authorize, bind, permits=permits)
+        async with endpoint.serve():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=endpoint), base_url="http://test",
+                                         headers={"authorization": "Bearer good"}, timeout=30) as http, \
+                    streamable_http_client("http://test/", http_client=http) as (read, write, _), \
+                    ClientSession(read, write) as session:
+                await session.initialize()
+                names = {t.name for t in (await session.list_tools()).tools}
+                built = await session.call_tool("create_agent", {"name": "Sneaky"})
+                started = await session.call_tool("run_orchestration", {"orchestration_id": "x"})
+                listed = await session.call_tool("list_agents", {})
+
+        assert "list_agents" in names and "get_run" in names
+        assert not names & {"create_agent", "update_orchestration", "run_orchestration", "answer_run",
+                            "chat_with_agent"}
+        assert not [n for n in names if n.startswith("run_")]
+        assert built.isError and "build" in built.content[0].text
+        assert started.isError and "run" in started.content[0].text
+        assert not listed.isError
+        assert ({"read"}, "build") in asked and ({"read"}, "run") in asked
+
+        from core.store.resources import load_agents
+        assert not [a for a in await load_agents() if a.get("name") == "Sneaky"]  # refused, not dispatched

@@ -5,7 +5,7 @@ Transport-free. `endpoint.py` serves it over streamable HTTP inside the backend;
 Nothing here runs outside the backend process, because only it holds the tool
 sessions and the store a builder tool or a run needs.
 
-Two hooks make it reusable by an embedder (cloud's hosted endpoint):
+Four hooks make it reusable by an embedder (cloud's hosted endpoint):
 
 * `authorize(request) -> principal | None` — who is calling, from the Starlette
   request (its headers; in cloud its app's state too). Checked at the HTTP edge
@@ -16,6 +16,10 @@ Two hooks make it reusable by an embedder (cloud's hosted endpoint):
 * `server_module()` — an async context yielding what a builder tool is handed as
   `server_module` (its tool sessions). This process's `core.server` by default;
   a fleet's per-tenant module, acquired and given back, in cloud.
+* `permits(principal, scope) -> bool` — whether the caller was granted a scope
+  (`catalog.SCOPES`). A tool it was not granted is not listed, and calling it is
+  refused by name. Everything is granted by default; cloud's OAuth tokens carry
+  scopes (D127).
 
 Where a run tool's run executes is `runs.set_run_backend`'s.
 """
@@ -36,6 +40,7 @@ _log = get_logger(__name__)
 Authorize = Callable[[Any], Awaitable[Any | None]]
 Bind = Callable[[Any], contextlib.AbstractAsyncContextManager]
 ServerModule = Callable[[], contextlib.AbstractAsyncContextManager]
+Permits = Callable[[Any, str], bool]
 
 #: The most text one tool result carries. `get_orchestration` and a run's state
 #: have no bound of their own, and a client model reads every character.
@@ -100,6 +105,11 @@ async def bind_settings(_principal: Any) -> AsyncIterator[None]:
         settings_runtime.reset(token)
 
 
+def permit_all(_principal: Any, _scope: str) -> bool:
+    """A key, and every self-hosted caller, is granted every scope."""
+    return True
+
+
 @contextlib.asynccontextmanager
 async def this_process() -> AsyncIterator[Any]:
     """The open-source server module: this backend's own tool sessions."""
@@ -158,7 +168,8 @@ async def _call(name: str, args: dict, server_module: ServerModule = this_proces
 
 
 def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_settings,
-                 name: str = "synapse", server_module: ServerModule = this_process) -> Server:
+                 name: str = "synapse", server_module: ServerModule = this_process,
+                 permits: Permits = permit_all) -> Server:
     server: Server = Server(name, version=synapse_version(), instructions=INSTRUCTIONS)
 
     async def _principal() -> Any | None:
@@ -178,13 +189,20 @@ def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_set
         async with bind(principal):
             fixed = _fixed_tools()
             named = await workflows.workflow_map(_reserved())
-            return fixed + [workflows.as_tool(n, o) for n, o in named.items()]
+            tools = fixed + [workflows.as_tool(n, o) for n, o in named.items()]
+            return [t for t in tools if permits(principal, catalog.scope_of(t.name))]
 
     @server.call_tool()
     async def call_tool(tool_name: str, arguments: dict) -> types.CallToolResult:
         principal = await _principal()
         if principal is None:
             return _error("A valid Synapse API key is required.")
+        scope = catalog.scope_of(tool_name)
+        if scope is not None and not permits(principal, scope):
+            return _error(
+                f"This connection was not granted '{scope}', which {tool_name} needs. "
+                f"Reconnect and allow '{scope}' to use it."
+            )
         async with bind(principal):
             try:
                 return await _call(tool_name, arguments or {}, server_module)

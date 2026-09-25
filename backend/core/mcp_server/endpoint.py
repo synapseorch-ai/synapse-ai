@@ -24,10 +24,12 @@ from starlette.requests import Request
 from core.mcp_server.server import (
     Authorize,
     Bind,
+    Permits,
     ServerModule,
     authorize_api_key,
     bind_settings,
     build_server,
+    permit_all,
     this_process,
 )
 
@@ -50,9 +52,9 @@ async def _send_json(send, status: int, body: dict, headers: list[tuple[bytes, b
 
 class McpEndpoint:
     def __init__(self, authorize: Authorize = authorize_api_key, bind: Bind = bind_settings,
-                 server_module: ServerModule = this_process) -> None:
+                 server_module: ServerModule = this_process, permits: Permits = permit_all) -> None:
         self._authorize = authorize
-        self.server = build_server(authorize, bind, server_module=server_module)
+        self.server = build_server(authorize, bind, server_module=server_module, permits=permits)
         self._manager = None
 
     @property
