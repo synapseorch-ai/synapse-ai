@@ -68,11 +68,12 @@ def _init_memory_store(settings: dict):
 
 @router.get("/api/status")
 async def get_status():
-    from core.routes.agents import load_user_agents, active_agent_id
+    from core.routes.agents import load_workspace_agents, active_agent_id
     from core.images import model_can_see_images
     from core.llm_providers import detect_provider_from_model
 
-    user_agents = await load_user_agents()
+    # The builder's own sub-agents are not the workspace's to chat with (F186).
+    user_agents = await load_workspace_agents()
     current_settings = load_settings()
     default_model = current_settings.get("model", "mistral")
 

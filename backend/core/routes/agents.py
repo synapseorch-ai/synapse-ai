@@ -30,21 +30,39 @@ async def save_user_agents(agents: list[dict]):
     await replace_agents(agents)
 
 
+#: What a chat turn with no agent to answer it says (F186).
+NO_AGENT_TO_ANSWER = (
+    "No agent to answer yet — create one in Agents, or ask the AI builder to make one."
+)
+
+
+async def load_workspace_agents() -> list[dict]:
+    """This workspace's agents, without the AI builder's own sub-agents."""
+    return [a for a in await load_user_agents() if not a.get("system")]
+
+
 async def get_active_agent_data():
-    """The selected agent, or the first one as a fallback.
+    """The selected agent, or the workspace's first one as a fallback.
 
     "The first one" is why load_agents() sorts by (created_at, id) rather than
     letting the database choose an order — otherwise which agent is the default
     would change between restarts.
+
+    Never one of the AI builder's `system` agents (F186). They are seeded at
+    first boot, so they sort first, and the fallback used to pick one: a chat
+    with nothing selected — every fresh install, and every backend restart,
+    since the selection is module memory — ran the Agent Creator, with its
+    tools for making agents, HTTP tools and skills. A builder agent is still
+    run by id wherever the builder names it; it is only never the default.
     """
-    agents = await load_user_agents()
+    agents = await load_workspace_agents()
     if active_agent_id:
         for a in agents:
             if a["id"] == active_agent_id:
                 return a
     if agents:
         return agents[0]
-    raise RuntimeError("No agents configured.")
+    raise RuntimeError(NO_AGENT_TO_ANSWER)
 
 
 @router.get("/api/agents")
@@ -55,7 +73,7 @@ async def get_agents():
     this table too, and every screen that wanted to hide them was matching on
     an id prefix of its own.
     """
-    return [a for a in await load_user_agents() if not a.get("system")]
+    return await load_workspace_agents()
 
 
 @router.post("/api/agents")
@@ -96,8 +114,8 @@ async def get_active_agent_endpoint():
 @router.post("/api/agents/active")
 async def set_active_agent_endpoint(req: AgentActiveRequest):
     global active_agent_id
-    # Validate
-    agents = await load_user_agents()
+    # Validate — a builder sub-agent is not the workspace's to select (F186).
+    agents = await load_workspace_agents()
     ids = [a["id"] for a in agents]
     if req.agent_id not in ids:
         raise HTTPException(status_code=404, detail="Agent not found")
