@@ -159,6 +159,25 @@ def _get_google_oauth_env() -> dict[str, str]:
     return {}
 
 
+def _filesystem_server_spec() -> dict:
+    """The Filesystem MCP server, rooted where agents may read.
+
+    The roots are `core/file_roots.allowed_roots()` — repositories, the vault,
+    then Settings → "Allowed Directories" — the same list the engine's own file
+    tools check against (S5), so the two cannot drift. Read fresh, so a restart
+    picks up edits without a backend reboot.
+    """
+    from core import file_roots
+
+    if not file_roots.repo_paths():
+        print("Warning: No repos configured — starting filesystem MCP server with vault access only.")
+    return {
+        "name": "Filesystem",
+        "command": _NPX_CMD,
+        "args": ["-y", "@modelcontextprotocol/server-filesystem"] + file_roots.allowed_roots(),
+    }
+
+
 def _build_native_mcp_servers() -> list[dict]:
     """
     Build the list of native MCP servers to connect at startup.
@@ -167,31 +186,7 @@ def _build_native_mcp_servers() -> list[dict]:
     servers = []
 
     # --- Filesystem MCP Server ---
-    repo_paths = _get_repo_paths()
-    vault_path = str(DATA_DIR / "vault")
-    # Always start with vault; include any configured repo paths on top.
-    fs_paths = repo_paths + [vault_path]
-    # Also include user-configured directories from General Settings ("Allowed
-    # Directories"). Read fresh so a restart picks up edits without a backend
-    # reboot. Filter to existing dirs and de-duplicate against paths we already
-    # have so the MCP server doesn't see the same root twice.
-    extra_dirs = [
-        d for d in load_settings().get("bash_allowed_dirs", [])
-        if d and os.path.isdir(d)
-    ]
-    seen = {os.path.realpath(p) for p in fs_paths}
-    for d in extra_dirs:
-        rp = os.path.realpath(d)
-        if rp not in seen:
-            fs_paths.append(d)
-            seen.add(rp)
-    if not repo_paths:
-        print("Warning: No repos configured — starting filesystem MCP server with vault access only.")
-    servers.append({
-        "name": "Filesystem",
-        "command": _NPX_CMD,
-        "args": ["-y", "@modelcontextprotocol/server-filesystem"] + fs_paths,
-    })
+    servers.append(_filesystem_server_spec())
 
     # --- Playwright MCP Server (browser automation) ---
     if _settings.get("browser_automation_enabled", True):
