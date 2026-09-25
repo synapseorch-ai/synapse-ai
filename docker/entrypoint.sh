@@ -71,4 +71,26 @@ if [ "$SYNAPSE_AUTOGEN_TOKEN" = "1" ] && [ -z "$SYNAPSE_INTERNAL_TOKEN" ]; then
     fi
 fi
 
+# ── The access link (D124) ────────────────────────────────────────────────────
+# With login off, Synapse opens only with a link carrying SYNAPSE_ACCESS_TOKEN,
+# not for anyone who can reach its port. Only the backend (generate role) needs
+# it; it is minted once and kept on the same volume as the internal token.
+# Pin one by setting SYNAPSE_ACCESS_TOKEN; delete the file and restart to
+# rotate it (everyone using the old link is signed out).
+ACCESS_FILE="$SYNAPSE_SECRETS_DIR/access_token"
+if [ "$SYNAPSE_AUTOGEN_TOKEN" = "1" ] && [ "$SYNAPSE_TOKEN_MODE" = "generate" ] && [ -z "$SYNAPSE_ACCESS_TOKEN" ]; then
+    if [ ! -s "$ACCESS_FILE" ]; then
+        mkdir -p "$SYNAPSE_SECRETS_DIR"
+        _tmp="$ACCESS_FILE.tmp.$$"
+        ( umask 077; _gen_token > "$_tmp" )
+        [ -s "$_tmp" ] && mv "$_tmp" "$ACCESS_FILE" || rm -f "$_tmp"
+    fi
+    SYNAPSE_ACCESS_TOKEN="$(cat "$ACCESS_FILE" 2>/dev/null || true)"
+    export SYNAPSE_ACCESS_TOKEN
+    if [ -n "$SYNAPSE_ACCESS_TOKEN" ]; then
+        echo "[entrypoint] Access link (used while login is off; share only with people who may use this Synapse):"
+        echo "[entrypoint]   http://localhost:${SYNAPSE_FRONTEND_PORT:-3000}/?token=$SYNAPSE_ACCESS_TOKEN"
+    fi
+fi
+
 exec "$@"

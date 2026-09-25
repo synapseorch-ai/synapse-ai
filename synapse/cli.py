@@ -667,6 +667,85 @@ def _ensure_internal_token():
         print(f"  The token is set in memory for this session.")
 
 
+ACCESS_TOKEN_VAR = "SYNAPSE_ACCESS_TOKEN"
+
+
+def _read_env_var(var: str) -> str:
+    """A variable's value from the process, else from .env, else ""."""
+    if os.environ.get(var):
+        return os.environ[var]
+    env_file = ROOT_DIR / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith(f"{var}=") and line.split("=", 1)[1].strip():
+                    return line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+    return ""
+
+
+def _ensure_access_token(rotate: bool = False) -> str:
+    """Ensure SYNAPSE_ACCESS_TOKEN exists in .env; generate (or replace) it.
+
+    With login off, Synapse is opened with a link carrying this token rather
+    than being open to anyone who can reach its port (D124). `rotate` replaces
+    it: sessions made from the old link stop working once Synapse restarts.
+    """
+    import secrets as _secrets
+
+    env_file = ROOT_DIR / ".env"
+    current = "" if rotate else _read_env_var(ACCESS_TOKEN_VAR)
+    if current:
+        os.environ[ACCESS_TOKEN_VAR] = current
+        return current
+
+    token = _secrets.token_urlsafe(32)
+    os.environ[ACCESS_TOKEN_VAR] = token
+    try:
+        lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+        lines = [l for l in lines if not l.strip().startswith(f"{ACCESS_TOKEN_VAR}=")]
+        if not any("access link" in l for l in lines):
+            lines.append("")
+            lines.append("# Access link token, for login-off installs (auto-generated)")
+        lines.append(f"{ACCESS_TOKEN_VAR}={token}")
+        env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        print(f"  Warning: could not write {ACCESS_TOKEN_VAR} to .env: {e}")
+        print(f"  The token is set in memory for this session.")
+    return token
+
+
+def _login_is_on() -> bool:
+    try:
+        from synapse import _store
+        _store.prepare()
+        s = _store.load_settings()
+        return bool(s.get("login_enabled") and s.get("login_username") and s.get("login_password_hash"))
+    except Exception:
+        return False
+
+
+def _access_link(frontend_port: int) -> str:
+    return f"http://localhost:{frontend_port}/?token={_read_env_var(ACCESS_TOKEN_VAR)}"
+
+
+def _access_link_command(rotate: bool = False):
+    """Print this install's access link; `--rotate` replaces it."""
+    port = int(os.getenv("SYNAPSE_FRONTEND_PORT", str(DEFAULT_FRONTEND_PORT)))
+    _ensure_access_token(rotate=rotate)
+    if _login_is_on():
+        print("  Login is on, so the access link does not open Synapse — sign in with your password.")
+        print("  (It works again if you turn login off.)")
+        return
+    print(f"  {_access_link(port)}")
+    print("  Anyone with this link can use this Synapse. Share it only with people who may.")
+    if rotate:
+        print("  New link made. Restart Synapse (synapse restart) to apply it —")
+        print("  everyone using the old link is signed out then.")
+
+
 def _ensure_jwt_secret():
     """Ensure SYNAPSE_JWT_SECRET exists in .env. Generate if missing."""
     env_file = ROOT_DIR / ".env"
@@ -868,6 +947,7 @@ def _start_command(
     check_prerequisites()
     _ensure_internal_token()
     _ensure_jwt_secret()
+    _ensure_access_token()
 
     # First run — nothing configured yet, so run the wizard before starting.
     from synapse import _store
@@ -953,10 +1033,17 @@ def _start_command(
         sys.exit(1)
 
     url = f"http://localhost:{effective_frontend_port}"
+    # With login off, the browser is opened with the access link, so the person
+    # at this machine never sees the gate (D124). With login on, the plain URL.
+    link = url if _login_is_on() else _access_link(effective_frontend_port)
     if not no_browser and not detach:
-        threading.Thread(target=open_browser, args=(url,), daemon=True).start()
+        threading.Thread(target=open_browser, args=(link,), daemon=True).start()
 
     print(f"\nSynapse is running at {url}")
+    if link != url:
+        print(f"  Access link: {link}")
+        print("  Login is off: this link is the key. Share it only with people who may use")
+        print("  this Synapse, or turn on login in Settings. `synapse access-link` prints it again.")
     if detach:
         print(f"  Backend pid:  {_read_pidfile(BACKEND_PID_FILE)}  (port {effective_backend_port})")
         print(f"  Frontend pid: {_read_pidfile(FRONTEND_PID_FILE)}  (port {effective_frontend_port})")
@@ -1209,6 +1296,7 @@ def _upgrade_command():
     # the downloaded cli.py replaces us on disk mid-upgrade.
     _ensure_internal_token()
     _ensure_jwt_secret()
+    _ensure_access_token()
 
     # When we successfully apply a new release we re-exec this script using the
     # freshly-downloaded cli.py so that any changes to the upgrade logic itself
@@ -1897,6 +1985,11 @@ def main():
     # reset-password: reset the UI login password
     sub.add_parser("reset-password", help="Reset the Synapse UI login password")
 
+    # access-link: the link that opens a login-off Synapse (D124)
+    p_access = sub.add_parser("access-link", help="Print the link that opens Synapse while login is off")
+    p_access.add_argument("--rotate", action="store_true",
+                          help="Make a new link; everyone using the old one is signed out at the next restart")
+
     # api-keys: manage external API keys
     p_apikeys = sub.add_parser("api-keys", help="Manage API keys for external /api/v1/ access")
     p_apikeys.add_argument(
@@ -1959,6 +2052,8 @@ def main():
         )
     elif args.cmd == "reset-password":
         _reset_password_command()
+    elif args.cmd == "access-link":
+        _access_link_command(rotate=args.rotate)
     elif args.cmd == "api-keys":
         _api_keys_command(
             action=args.action,

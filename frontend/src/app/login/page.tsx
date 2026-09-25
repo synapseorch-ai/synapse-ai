@@ -1,3 +1,5 @@
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
+
 import { LoginForm } from './LoginForm';
 
 /**
@@ -18,5 +20,20 @@ export default async function LoginPage(props: {
     // would otherwise turn this into an open redirect.
     const redirectTo = requested.startsWith('/') && !requested.startsWith('//') ? requested : '/';
 
-    return <LoginForm redirectTo={redirectTo} />;
+    // Which gate this is: a password, or — with login off — the access link
+    // (D124). Asked of the backend, which owns both answers.
+    let mode: 'password' | 'access' = 'password';
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/auth/status`, {
+            headers: await sessionHeaders(),
+            cache: 'no-store',
+            signal: AbortSignal.timeout(2000),
+        });
+        if (res.ok && (await res.json()).access_required === true) mode = 'access';
+    } catch {
+        // Unreachable backend: show the password form, as before.
+    }
+    const link = typeof searchParams.link === 'string' ? searchParams.link : undefined;
+
+    return <LoginForm redirectTo={redirectTo} mode={mode} linkProblem={link} />;
 }

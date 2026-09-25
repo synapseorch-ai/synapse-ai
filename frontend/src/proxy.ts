@@ -63,18 +63,32 @@ let loginOffUntil = 0;
 /** Paths that look bypassed by prefix but must not be. */
 const AUTH_BYPASS_EXCEPTIONS = ['/embed/preview/'];
 
+/**
+ * Platform webhooks (Telegram, Slack, Discord, Teams, WhatsApp): posted by the
+ * platform, never a browser, and verified by each platform's own check. The
+ * rest of `/api/messaging/` stays behind the gate. Mirrors the backend's
+ * `_WEBHOOK` in core/internal_auth.py.
+ */
+const WEBHOOK = /^\/api\/messaging\/[^/]+\/webhook(\/|$)/;
+
 function shouldBypassAuth(pathname: string): boolean {
     if (AUTH_BYPASS_EXCEPTIONS.some(p => pathname.startsWith(p))) return false;
+    if (WEBHOOK.test(pathname)) return true;
     return AUTH_BYPASS_PREFIXES.some(p => pathname.startsWith(p));
 }
 
 async function verifyJwt(token: string, secret: string): Promise<boolean> {
     try {
-        await jwtVerify(token, new TextEncoder().encode(secret), {
+        const { payload } = await jwtVerify(token, new TextEncoder().encode(secret), {
             algorithms: ['HS256'],
             issuer: 'synapse',
         });
-        return true;
+        // An access-link session (D124) is valid only while its token is still
+        // the install's and login is still off — facts only the backend holds.
+        // Not trusted here: it falls through to /api/auth/status, so a rotated
+        // link or a newly-set password sends the browser to the gate rather than
+        // to pages whose every call the backend refuses.
+        return payload.atf === undefined;
     } catch {
         return false;
     }
@@ -163,6 +177,19 @@ export async function proxy(request: NextRequest) {
         return res;
     }
 
+    // The access link (login off, D124): a page opened with `?token=` swaps it
+    // for a session at /api/auth/access, which comes straight back here with
+    // the token gone from the URL — so it never sits in history or a log line.
+    const linkToken = request.nextUrl.searchParams.get('token');
+    if (linkToken && !pathname.startsWith('/api/')) {
+        const clean = new URL(request.nextUrl);
+        clean.searchParams.delete('token');
+        const exchange = new URL('/api/auth/access', request.url);
+        exchange.searchParams.set('token', linkToken);
+        exchange.searchParams.set('redirect', clean.pathname + clean.search);
+        return NextResponse.redirect(exchange);
+    }
+
     // Bypass auth check for login page, auth API, external API, and static assets
     if (shouldBypassAuth(pathname)) {
         return NextResponse.next({ request: { headers: requestHeaders } });
@@ -205,7 +232,10 @@ export async function proxy(request: NextRequest) {
         });
         if (statusRes.ok) {
             const status = await statusRes.json();
-            loginRequired = status.login_enabled === true && status.login_configured === true;
+            // A password, or — with login off — this install's access link.
+            loginRequired =
+                (status.login_enabled === true && status.login_configured === true) ||
+                status.access_required === true;
             authenticated = status.authenticated === true;
             answered = true;
         }

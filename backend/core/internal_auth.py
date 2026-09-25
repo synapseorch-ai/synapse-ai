@@ -12,8 +12,8 @@ Rules:
 - /docs, /openapi.json, /redoc  → SKIP (FastAPI docs)
 - /auth/*            → SKIP (OAuth redirects; browser-navigated, cannot carry a header)
 - /api/*, /chat*     → REQUIRE X-Synapse-Internal header
-- When login is on, an internal request ALSO needs a valid session (S9) — see
-  `_needs_session` below.
+- When login is on, or an access token is configured (login off, D124), an
+  internal request ALSO needs a valid session (S9) — see `_needs_session` below.
 - If SYNAPSE_INTERNAL_TOKEN is not set → LOOPBACK-ONLY: allow requests whose
   direct peer is 127.0.0.1/::1 (local dev, same-container proxy) and 403 any
   remote caller. This closes the unauthenticated-RCE hole on network-exposed
@@ -30,6 +30,7 @@ Why /chat is gated even though it is not under /api/:
   (frontend/src/app/api/chat/**), which already sends X-Synapse-Internal via
   backendHeaders(), so gating it is transparent to the UI.
 """
+import hmac
 import ipaddress
 import os
 import re
@@ -87,6 +88,11 @@ def _is_loopback(request: Request) -> bool:
 #: `/api/v<N>` (an API key) and the OAuth callback are skipped before this runs.
 _SESSIONLESS_PREFIXES = ("/api/auth/", "/api/widget/")
 
+#: Platform webhooks: Telegram, Slack, Discord, Teams and WhatsApp post here with
+#: no browser and no session, and each is verified by its platform's own check.
+#: The rest of `/api/messaging/` (channel settings) stays behind the gate.
+_WEBHOOK = re.compile(r"^/api/messaging/[^/]+/webhook(/|$)")
+
 SESSION_HEADER = "X-Synapse-Session"
 SESSION_COOKIE = "synapse_session"
 
@@ -101,19 +107,45 @@ def _login_required() -> bool:
     )
 
 
-def _session_user(token: str) -> str | None:
-    from core.user_auth import verify_session_token
+def _gate_required() -> bool:
+    """A session is needed: login is on, or login is off but an access token
+    is configured, so the install is reachable only with its link (D124)."""
+    from core.user_auth import access_token
 
-    return verify_session_token(token) if token else None
+    return _login_required() or bool(access_token())
+
+
+def session_ok(token: str) -> bool:
+    """Whether this session opens the app now.
+
+    A password session is valid while it is ours and unexpired. An access-link
+    session (it carries `atf`) also needs login to be off and the token it was
+    made from to still be the install's — so turning login on, or rotating the
+    link, ends it.
+    """
+    from core.user_auth import access_fingerprint, access_token, session_claims
+
+    claims = session_claims(token)
+    if claims is None:
+        return False
+    atf = claims.get("atf")
+    if atf is None:
+        return True
+    current = access_token()
+    return bool(current) and not _login_required() and hmac.compare_digest(
+        str(atf), access_fingerprint(current)
+    )
 
 
 def _needs_session(path: str) -> bool:
+    if _WEBHOOK.match(path):
+        return False
     return not any(path.startswith(p) for p in _SESSIONLESS_PREFIXES)
 
 
 def _has_session(request: Request) -> bool:
     token = request.headers.get(SESSION_HEADER) or request.cookies.get(SESSION_COOKIE) or ""
-    return _session_user(token) is not None
+    return session_ok(token)
 
 
 _LOGIN_REQUIRED = JSONResponse(status_code=401, content={"detail": "Login required"})
@@ -186,7 +218,9 @@ class InternalTokenMiddleware(BaseHTTPMiddleware):
 
         # With login on, the token (or loopback) proves the request came
         # through our proxy; it does not prove a signed-in person sent it (S9).
-        if _needs_session(path) and _login_required() and not _has_session(request):
+        # With login off and an access token configured, the same: the link
+        # is the credential (D124).
+        if _needs_session(path) and _gate_required() and not _has_session(request):
             return _LOGIN_REQUIRED
 
         return await call_next(request)
