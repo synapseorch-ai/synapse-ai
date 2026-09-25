@@ -4,10 +4,11 @@ from mcp.server.stdio import stdio_server
 import mcp.types as types
 import asyncio
 import json
-import requests
 import pdfplumber
 import io
 from typing import List
+
+from core.safe_fetch import fetch_bytes
 
 # Initialize MCP Server
 app = Server("pdf-parser-mcp-server")
@@ -39,10 +40,9 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent | type
             raise ValueError("file_url is required")
 
         try:
-            # Download PDF
-            response = requests.get(file_url)
-            response.raise_for_status()
-            pdf_bytes = io.BytesIO(response.content)
+            # The URL is model-supplied: checked at every hop, capped, and
+            # given a deadline (S6).
+            pdf_bytes = io.BytesIO(await fetch_bytes(file_url))
 
             output_text = []
             
