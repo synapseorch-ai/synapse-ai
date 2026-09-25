@@ -23,6 +23,7 @@ import type { AppDispatch } from "@/store";
 import { addMcpServer, removeMcpServer, updateMcpServerStatus } from "@/store/settingsSlice";
 
 import { McpServersTab, type McpNotice } from "./McpServersTab";
+import { StdioPolicy } from "./StdioPolicy";
 import { useSettingsData } from "./hooks/useSettingsData";
 
 type DraftServer = {
@@ -213,6 +214,10 @@ export function McpServersScreen() {
                 notice={notice}
                 onNotice={show}
             />
+
+            <div className="mt-8">
+                <StdioPolicy />
+            </div>
 
             <ConfirmDialog
                 open={!!confirmDelete}
