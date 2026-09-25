@@ -4,9 +4,10 @@ from mcp.server.stdio import stdio_server
 import mcp.types as types
 import asyncio
 import json
-import requests
 import pandas as pd
 import io
+
+from core.safe_fetch import fetch_bytes
 
 # Initialize MCP Server
 app = Server("xlsx-parser-mcp-server")
@@ -40,7 +41,7 @@ async def list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="parse_xlsx",
-            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
+            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
             description="Parse an Excel file (XLSX) from a URL. Extracts sheets and converts them to Markdown tables.",
             inputSchema={
                 "type": "object",
@@ -63,10 +64,9 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent | type
             raise ValueError("file_url is required")
 
         try:
-            # Download XLSX
-            response = requests.get(file_url)
-            response.raise_for_status()
-            xlsx_bytes = io.BytesIO(response.content)
+            # The URL is model-supplied: checked at every hop, capped, and
+            # given a deadline (S6).
+            xlsx_bytes = io.BytesIO(await fetch_bytes(file_url))
 
             output_text = []
 
