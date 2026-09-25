@@ -67,15 +67,24 @@ def install_provider() -> None:
 
 
 def _provider() -> dict:
+    """The bound settings — as a copy, so no reader can change them (S10).
+
+    It used to hand back the cached snapshot itself, and `GET /api/settings`
+    popped the password hash off what it was handed: opening the Settings page
+    deleted the hash from the live settings, and until the cache refreshed
+    login read as not configured — the gate open to anyone. Writers call
+    `save_settings()` with their own dict; nothing needs the shared one.
+    Shallow: ~70 top-level keys, read a handful of times per step.
+    """
     from core.config import default_settings
 
     settings = _current.get()
     if settings is not None:
-        return settings
+        return dict(settings)
 
     entry = _cache.get(get_tenant())
     if entry is not None:
-        return entry[1]
+        return dict(entry[1])
 
     return default_settings()
 

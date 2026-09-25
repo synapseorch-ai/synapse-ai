@@ -108,7 +108,8 @@ async def get_status():
 
 @router.get("/api/settings")
 async def get_settings():
-    settings = load_settings()
+    # A copy: the hash is left out of the answer, never out of the settings (S10).
+    settings = dict(load_settings())
     settings.pop("login_password_hash", None)
     return settings
 
