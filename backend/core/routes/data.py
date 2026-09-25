@@ -13,7 +13,7 @@ from pydantic import BaseModel
 import httpx
 
 from core.config import load_settings
-from core.llm_providers import _make_aws_client, _ollama_base_url, cli_takes_effort, is_openai_chat_model
+from core.llm_providers import _make_aws_client, _ollama_base_url, cli_takes_effort, is_gemini_chat_model, is_openai_chat_model
 from core.session import session_state, clear_all_chat_sessions
 from services.synthetic_data import generate_synthetic_data, SyntheticDataRequest, current_job, DATASETS_PREFIX
 
@@ -265,7 +265,9 @@ async def get_models():
     settings = load_settings()
 
     # --- Fallback model lists (used when API calls fail) ---
-    GEMINI_FALLBACK = ["gemini-2.5-pro-preview-05-06", "gemini-2.5-flash-preview-04-17", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"]
+    # Current stable ids (F187): the old list named only retired 1.5 / 2.0 /
+    # preview models, so a failed fetch offered models no call could reach.
+    GEMINI_FALLBACK = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-pro-latest", "gemini-flash-latest"]
     ANTHROPIC_FALLBACK = ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
     OPENAI_FALLBACK = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]
     BEDROCK_FALLBACK = ["bedrock.anthropic.claude-3-5-sonnet-20240620-v1:0", "bedrock.anthropic.claude-3-sonnet-20240229-v1:0"]
@@ -375,7 +377,9 @@ async def get_models():
                     for m in data:
                         name = m.get("name", "").replace("models/", "")
                         methods = m.get("supportedGenerationMethods", [])
-                        if "generateContent" in methods:
+                        # Listing generateContent is not being a chat model:
+                        # speech, image and music models list it too (F187).
+                        if "generateContent" in methods and is_gemini_chat_model(name):
                             chat_models.append(name)
                         if "embedContent" in methods:
                             embed_models.append(name)

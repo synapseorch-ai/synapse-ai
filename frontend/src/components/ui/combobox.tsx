@@ -124,6 +124,9 @@ export function Combobox<T extends string = string>({
               <Command.Input
                 autoFocus
                 placeholder={searchPlaceholder}
+                // A placeholder is not a name: without this the field read as an
+                // unnamed text box to a screen reader (F187).
+                aria-label={ariaLabel ? `Search ${ariaLabel}` : "Search options"}
                 // The popover is the focused surface — it has a border, a
                 // shadow and a highlighted item. A ring around the field inside
                 // it is a second box saying the same thing, and it is the first

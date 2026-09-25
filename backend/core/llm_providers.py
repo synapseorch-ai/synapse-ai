@@ -366,6 +366,31 @@ def is_openai_chat_model(model_id: str) -> bool:
     return _is_openai_model(m) and not _OPENAI_NOT_CHAT_RE.search(m)
 
 
+def _is_gemini_model(m: str) -> bool:
+    """Gemini, Gemma and Lyria ids — the ones the router sends to Google."""
+    return m.startswith(("gemini", "gemma", "lyria"))
+
+
+#: Gemini ids that list `generateContent` but are not chat models (F187):
+#: speech, image and music generation, transcription and computer use. Google's
+#: own list offers all of them beside the chat models.
+_GEMINI_NOT_CHAT_RE = re.compile(
+    r"(?:^|-)(?:tts|image|transcribe|computer-use)(?:-|$)|^lyria|embedding|aqa|imagen|veo"
+)
+
+
+def is_gemini_chat_model(model_id: str) -> bool:
+    """A Gemini model this engine can chat with — what the model list offers (F187).
+
+    The same family test the router uses, so a listed model is always routed to
+    Google (the list used to offer `nano-banana-*`, `deep-research-*` and
+    `antigravity-*`, which the router sent to Ollama), minus the ids that
+    `generateContent` serves but a chat cannot use.
+    """
+    m = model_id.lower()
+    return _is_gemini_model(m) and not _GEMINI_NOT_CHAT_RE.search(m)
+
+
 def detect_mode_from_model(model_name: str) -> str:
     """Detect the provider mode from a model name prefix.
 
@@ -388,7 +413,7 @@ def detect_mode_from_model(model_name: str) -> str:
         return "cloud"
     if m.startswith("claude"):
         return "cloud"
-    if m.startswith("gemini") or m.startswith("gemma") or m.startswith("lyria"):
+    if _is_gemini_model(m):
         return "cloud"
     if m.startswith("bedrock"):
         return "bedrock"
@@ -429,7 +454,7 @@ def detect_provider_from_model(model_name: str) -> str:
         return "openai"
     if m.startswith("claude"):
         return "anthropic"
-    if m.startswith("gemini") or m.startswith("gemma") or m.startswith("lyria"):
+    if _is_gemini_model(m):
         return "gemini"
     if m.startswith("bedrock"):
         return "bedrock"
