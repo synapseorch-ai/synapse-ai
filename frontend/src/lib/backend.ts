@@ -16,30 +16,45 @@ function getInternalToken(): string {
 }
 
 /**
- * Returns headers object with the internal token for backend requests.
- * Merge with any additional headers you need.
+ * The signed-in person's session, forwarded to the backend (S9).
+ *
+ * With login on, the backend asks every internal request for a session as well
+ * as the internal token: the token proves a call came through this app, not
+ * that a signed-in person made it, and the proxy's login gate had been skipped
+ * for a cookie any client could forge. A route handler's own `fetch` carries
+ * none of the browser's cookies, so these read `synapse_session` from the
+ * request and send it as `X-Synapse-Session`.
+ *
+ * Async, and named differently from the synchronous helpers they replaced, so a
+ * missing `await` is a type error rather than a spread of a Promise that quietly
+ * drops the token. Call them in the handler, not inside a stream callback: the
+ * request's cookies are only readable in its scope.
  */
-export function backendHeaders(extra?: Record<string, string>): Record<string, string> {
+async function sessionToken(): Promise<string> {
+    const { cookies } = await import('next/headers');
+    return (await cookies()).get('synapse_session')?.value ?? '';
+}
+
+/** Content-Type, the internal token and the session, for a backend `fetch`. */
+export async function sessionHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
         'Content-Type': 'application/json',
+        ...(await internalHeaders()),
     };
-    const token = getInternalToken();
-    if (token) {
-        headers['X-Synapse-Internal'] = token;
-    }
     if (extra) {
         Object.assign(headers, extra);
     }
     return headers;
 }
 
-/**
- * Returns just the internal token header for http.request() options.
- */
-export function internalTokenHeader(): Record<string, string> {
+/** Just the internal token and the session, for `http.request()` options. */
+export async function internalHeaders(): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {};
     const token = getInternalToken();
-    if (!token) return {};
-    return { 'X-Synapse-Internal': token };
+    if (token) headers['X-Synapse-Internal'] = token;
+    const session = await sessionToken();
+    if (session) headers['X-Synapse-Session'] = session;
+    return headers;
 }
 
 export { BACKEND_URL, getInternalToken };

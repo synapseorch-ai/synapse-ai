@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,7 +11,7 @@ export async function GET(
     try {
         const res = await fetch(`${BACKEND_URL}/api/logs/${type}/${run_id}`, {
             cache: 'no-store',
-            headers: backendHeaders(),
+            headers: await sessionHeaders(),
         });
         if (!res.ok) return NextResponse.json({ error: 'Not found' }, { status: res.status });
         const text = await res.text();
@@ -33,7 +33,7 @@ export async function DELETE(
         const res = await fetch(`${BACKEND_URL}/api/logs/${type}/${run_id}`, {
             method: 'DELETE',
             cache: 'no-store',
-            headers: backendHeaders(),
+            headers: await sessionHeaders(),
         });
         const data = await res.json();
         return NextResponse.json(data, { status: res.status });
