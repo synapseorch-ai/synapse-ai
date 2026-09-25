@@ -60,8 +60,11 @@ class TelegramAdapter(MessagingAdapter):
         # Register plain text handler
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message))
 
+        # getMe, here rather than inside the task: a bad token is the
+        # channel's error now, not a task that dies unread (F207).
+        await app.initialize()
+
         async def _run():
-            await app.initialize()
             await app.start()
             await app.updater.start_polling(drop_pending_updates=True)
             logger.info("[Telegram] Polling started for channel %s", self.channel_id)
@@ -69,7 +72,7 @@ class TelegramAdapter(MessagingAdapter):
             while True:
                 await asyncio.sleep(3600)
 
-        self._task = asyncio.create_task(_run())
+        self._task = self._run_in_background(_run(), name=f"telegram-{self.channel_id}")
         logger.info("[Telegram] Adapter started for channel %s", self.channel_id)
 
     async def _start_webhook(self) -> None:
@@ -134,8 +137,8 @@ class TelegramAdapter(MessagingAdapter):
             self._task.cancel()
             try:
                 await self._task
-            except asyncio.CancelledError:
-                pass
+            except (asyncio.CancelledError, Exception):
+                pass  # a loop that died has already been reported
         if self._app:
             try:
                 await self._app.updater.stop()

@@ -156,6 +156,32 @@ async def save_channel(channel: dict) -> dict:
     return channel
 
 
+#: Credentials that are secrets (F207): never served back, never written into a
+#: reason or a log line, and kept when a save leaves them blank.
+SECRET_CREDENTIALS = frozenset({
+    "bot_token", "app_token", "app_password", "access_token", "app_secret", "signing_secret",
+})
+#: Minted by the server (Telegram webhook mode) and never shown, not even as set.
+SERVER_ONLY_CREDENTIALS = frozenset({"webhook_secret"})
+
+
+def redact_secrets(text, channel: dict):
+    """`text` with this channel's secret credential values blanked out.
+
+    A platform library's own refusal can quote the credential it refused —
+    python-telegram-bot's reads "The token `<token>` was rejected by the
+    server." — and that text becomes the channel's `last_error` and a log line.
+    """
+    if not text:
+        return text
+    text = str(text)
+    for key, value in (channel.get("credentials") or {}).items():
+        if (key in SECRET_CREDENTIALS or key in SERVER_ONLY_CREDENTIALS) \
+                and isinstance(value, str) and len(value) >= 6:
+            text = text.replace(value, "[redacted]")
+    return text
+
+
 async def update_channel_status(channel_id: str, status: str, last_error: Optional[str] = None) -> None:
     """Update only the runtime status fields (called by manager)."""
     data = await _load_raw()

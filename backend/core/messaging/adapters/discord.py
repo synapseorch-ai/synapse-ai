@@ -102,10 +102,16 @@ class DiscordAdapter(MessagingAdapter):
             async with message.channel.typing():
                 await self._dispatch(chat_id, text, user_id, session_id)
 
-        async def _run():
-            await client.start(self.bot_token)
+        # `client.start` is login + connect. The login — the token check — is
+        # here, so a bad token is the channel's error rather than a task that
+        # dies unread (F207); the connection is the long-lived part.
+        try:
+            await client.login(self.bot_token)
+        except Exception:
+            await client.close()
+            raise
 
-        self._task = asyncio.create_task(_run())
+        self._task = self._run_in_background(client.connect(), name=f"discord-{self.channel_id}")
         logger.info("[Discord] Adapter started for channel %s", self.channel_id)
 
     async def _start_webhook(self) -> None:

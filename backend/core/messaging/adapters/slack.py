@@ -108,6 +108,10 @@ class SlackAdapter(MessagingAdapter):
 
             await self._dispatch(chat_id, text, user_id, session_id)
 
+        # The bot token before the socket: a bad one is the channel's error
+        # now, not a socket task that dies unread (F207).
+        await self._check_bot_token()
+
         self._slack_app = app
         handler = AsyncSocketModeHandler(app, self.app_token)
         self._handler = handler
@@ -116,7 +120,7 @@ class SlackAdapter(MessagingAdapter):
             logger.info("[Slack] Starting Socket Mode for channel %s", self.channel_id)
             await handler.start_async()
 
-        self._task = asyncio.create_task(_run())
+        self._task = self._run_in_background(_run(), name=f"slack-{self.channel_id}")
         logger.info("[Slack] Adapter started for channel %s", self.channel_id)
 
     async def _start_webhook(self) -> None:
@@ -126,13 +130,22 @@ class SlackAdapter(MessagingAdapter):
         now surfaces a bad token as the channel's error instead of as silence
         when the first event arrives.
         """
-        import httpx
-
         if not self.channel.get("credentials", {}).get("signing_secret"):
             raise RuntimeError(
                 "Webhook mode needs the app's Signing Secret in the channel "
                 "credentials — it is what authenticates each delivery."
             )
+        body = await self._check_bot_token()
+        logger.info(
+            "[Slack] Webhook mode ready for channel %s (bot %s)",
+            self.channel_id,
+            body.get("user"),
+        )
+
+    async def _check_bot_token(self) -> dict:
+        """`auth.test` — the cheapest authenticated call Slack has."""
+        import httpx
+
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 "https://slack.com/api/auth.test",
@@ -143,11 +156,7 @@ class SlackAdapter(MessagingAdapter):
                 raise RuntimeError(
                     f"auth.test failed: {body.get('error') or resp.status_code}"
                 )
-        logger.info(
-            "[Slack] Webhook mode ready for channel %s (bot %s)",
-            self.channel_id,
-            body.get("user"),
-        )
+        return body
 
     async def stop(self) -> None:
         if self.mode == "webhook":

@@ -67,6 +67,33 @@ class MessagingAdapter(ABC):
         # schedule completion notifications when no notify_chat_id is configured.
         self._last_chat_id: Optional[str] = None
 
+    #: What ended this adapter's background task, if something did.
+    failure: Optional[BaseException] = None
+
+    def _run_in_background(self, coro, name: str) -> asyncio.Task:
+        """Run the adapter's long-lived loop, and report it if it dies (F207).
+
+        Polling and socket modes start their loop as a task, so `start()` has
+        returned — and the channel says RUNNING — before the loop has done
+        anything. A loop that then died (a token revoked, a second poller on
+        the same bot) died unread, and the channel said RUNNING for ever.
+        """
+        task = asyncio.create_task(coro, name=name)
+        task.add_done_callback(self._background_done)
+        return task
+
+    def _background_done(self, task: asyncio.Task) -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        self.failure = task.exception()
+        from core.messaging.store import redact_secrets
+        logger.error("[%s] Channel %s stopped: %s", self.platform, self.channel_id,
+                     redact_secrets(str(self.failure), self.channel))
+        if self.manager is not None:
+            from core.background import spawn_background
+            spawn_background(self.manager.adapter_failed(self),
+                             name=f"messaging-failed-{self.channel_id}")
+
     # ------------------------------------------------------------------ #
     # Abstract interface
     # ------------------------------------------------------------------ #

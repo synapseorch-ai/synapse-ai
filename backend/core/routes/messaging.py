@@ -12,6 +12,11 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core.messaging import store as channel_store
+from core.messaging.store import (
+    SECRET_CREDENTIALS,
+    SERVER_ONLY_CREDENTIALS as _SERVER_ONLY_CREDENTIALS,
+    redact_secrets,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -26,6 +31,25 @@ def _get_manager(request: Request):
             detail="Messaging is not enabled. Set messaging_enabled=true in setup.py and restart."
         )
     return manager
+
+
+def _public_channel(ch: dict) -> dict:
+    """A channel as the browser may see it: no secrets (F207, F135's pattern).
+
+    Every bot token and app password used to be served in clear by the list,
+    the save and the enable. The screen needs to know which are set, and the
+    plain fields (an app id, a phone number id, a channel restriction) as they
+    are. A copy: the store's document is not touched.
+    """
+    creds = ch.get("credentials") or {}
+    view = dict(ch)
+    view["credentials"] = {
+        k: ("" if k in SECRET_CREDENTIALS else v)
+        for k, v in creds.items() if k not in _SERVER_ONLY_CREDENTIALS
+    }
+    view["credentials_set"] = {k: bool(v) for k, v in creds.items() if k in SECRET_CREDENTIALS}
+    view["last_error"] = redact_secrets(ch.get("last_error"), ch)
+    return view
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -45,7 +69,7 @@ async def list_channels(request: Request, agent_id: str | None = None):
         channels = [c for c in channels if c["id"] in assigned]
     for ch in channels:
         ch["agent_ids"] = await channel_store.get_agent_ids_for_channel(ch["id"])
-    return channels
+    return [_public_channel(ch) for ch in channels]
 
 
 @router.post("/api/messaging/channels")
@@ -55,8 +79,18 @@ async def create_or_update_channel(request: Request):
     # Strip runtime-only fields from client payload
     body.pop("status", None)
     body.pop("last_error", None)
+    body.pop("credentials_set", None)
+    # A save is a full replace, and the screen never has the secrets to send
+    # back: one it leaves blank keeps what is stored (F207).
+    existing = await channel_store.get_channel(body["id"]) if body.get("id") else None
+    if existing:
+        creds = dict(body.get("credentials") or {})
+        for k, v in (existing.get("credentials") or {}).items():
+            if (k in SECRET_CREDENTIALS or k in _SERVER_ONLY_CREDENTIALS) and not creds.get(k):
+                creds[k] = v
+        body["credentials"] = creds
     saved = await channel_store.save_channel(body)
-    return saved
+    return _public_channel(saved)
 
 
 @router.delete("/api/messaging/channels/{channel_id}")
@@ -161,7 +195,7 @@ async def enable_channel(channel_id: str, request: Request):
     await manager.start_channel(channel_id)
 
     updated = await channel_store.get_channel(channel_id)
-    return updated
+    return _public_channel(updated)
 
 
 @router.post("/api/messaging/channels/{channel_id}/disable")
@@ -214,7 +248,7 @@ async def test_channel(channel_id: str, request: Request):
                     "message": f"Bot @{me.username} is alive and listening.",
                 }
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": redact_secrets(str(e), ch)}
 
     # For Discord
     if platform == "discord":

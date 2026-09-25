@@ -26,6 +26,9 @@ interface Channel {
     mode?: DeliveryMode;
     enabled: boolean;
     credentials: Record<string, string>;
+    /** Which secret credentials are stored. The server never sends a secret
+     *  back (F207): its field arrives blank, and a blank one on save keeps it. */
+    credentials_set?: Record<string, boolean>;
     status?: 'running' | 'stopped' | 'error';
     last_error?: string | null;
 }
@@ -140,6 +143,10 @@ const SETUP_GUIDES: Record<Platform, { title: string; steps: string[] }> = {
         ],
     },
 };
+
+/** A secret field's placeholder: say it is stored rather than show it. */
+const credPlaceholder = (draft: Channel, key: string, secret: boolean | undefined, fallback: string) =>
+    secret && draft.credentials_set?.[key] ? 'Saved — leave blank to keep' : fallback;
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
@@ -296,16 +303,20 @@ export const MessagingTab = () => {
             if (!res.ok) throw new Error('Save failed');
             const saved = await res.json();
 
-            // Enable
-            await fetch(`/api/messaging/channels/${saved.id}/enable`, { method: 'POST' });
+            // Enable. It answers with the channel as it now stands: a token the
+            // platform refused is `error` with the reason, not "started" (F207).
+            const enableRes = await fetch(`/api/messaging/channels/${saved.id}/enable`, { method: 'POST' });
+            const started: Channel | null = enableRes.ok ? await enableRes.json().catch(() => null) : null;
 
             await fetchChannels();
             setSelectedId(saved.id);
             // `saved` is the channel document; `agent_ids` is a read projection
             // of the join that only the list route adds. Saving changes no
             // assignment, so carry the ones already on screen.
-            setDraft({ ...saved, agent_ids: draft.agent_ids ?? [] });
-            showToast('✅ Channel saved and started');
+            setDraft({ ...(started ?? saved), agent_ids: draft.agent_ids ?? [] });
+            showToast(started?.status === 'error'
+                ? `⚠️ Saved, but it did not start: ${started.last_error || 'unknown error'}`
+                : '✅ Channel saved and started');
         } catch (e: any) {
             showToast(`❌ ${e.message}`);
         } finally {
@@ -814,7 +825,7 @@ export const MessagingTab = () => {
                                                         type={f.secret ? 'password' : 'text'}
                                                         value={draft.credentials[f.key] || ''}
                                                         onChange={e => updateCred(f.key, e.target.value)}
-                                                        placeholder={f.placeholder}
+                                                        placeholder={credPlaceholder(draft, f.key, f.secret, f.placeholder)}
                                                         className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none font-mono rounded-md"
                                                     />
                                                     {f.note && <p className="text-[9px] text-text-faint">{f.note}</p>}
@@ -870,7 +881,7 @@ export const MessagingTab = () => {
                                                 type={f.secret ? 'password' : 'text'}
                                                 value={draft.credentials[f.key] || ''}
                                                 onChange={e => updateCred(f.key, e.target.value)}
-                                                placeholder={f.placeholder}
+                                                placeholder={credPlaceholder(draft, f.key, f.secret, f.placeholder)}
                                                 className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none font-mono rounded-md"
                                             />
                                             {f.note && (

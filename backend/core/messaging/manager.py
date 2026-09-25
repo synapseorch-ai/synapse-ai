@@ -95,13 +95,38 @@ class MessagingManager:
         try:
             AdapterClass = _import_adapter(platform)
             adapter = AdapterClass(ch, self)
+            # Each adapter checks its credentials inside start() (Telegram's
+            # getMe, Discord's login, Slack's auth.test), so a bad token lands
+            # in the except below as the channel's error (F207).
             await adapter.start()
             self._adapters[channel_id] = adapter
             await channel_store.update_channel_status(channel_id, "running")
+            if adapter.failure is not None:
+                # Its loop died while "running" was being written; say so last.
+                await self.adapter_failed(adapter)
+                return
             logger.info("[Manager] Channel %s (%s) started", channel_id, platform)
         except Exception as e:
-            logger.error("[Manager] Failed to start channel %s: %s", channel_id, e)
-            await channel_store.update_channel_status(channel_id, "error", str(e))
+            reason = channel_store.redact_secrets(_reason(e), ch)
+            logger.error("[Manager] Failed to start channel %s: %s", channel_id, reason)
+            await channel_store.update_channel_status(channel_id, "error", reason)
+
+    async def adapter_failed(self, adapter) -> None:
+        """An adapter's background loop died: the channel is an error, not RUNNING.
+
+        Dropped from the running set — `get_status` reports any adapter in it as
+        running — stopped to release what it held, and its reason recorded.
+        """
+        channel_id = adapter.channel_id
+        if self._adapters.get(channel_id) is adapter:
+            self._adapters.pop(channel_id, None)
+        try:
+            await adapter.stop()
+        except Exception as e:
+            logger.warning("[Manager] Error stopping failed channel %s: %s", channel_id, e)
+        await channel_store.update_channel_status(
+            channel_id, "error", channel_store.redact_secrets(_reason(adapter.failure), adapter.channel)
+        )
 
     async def stop_channel(self, channel_id: str) -> None:
         """Stop and remove an adapter."""
@@ -337,6 +362,13 @@ class MessagingManager:
 
     def get_whatsapp_adapter(self, channel_id: str):
         return self._whatsapp_adapters.get(channel_id)
+
+
+def _reason(exc: BaseException | None) -> str:
+    """An exception as the channel's `last_error`: its message, else its type."""
+    if exc is None:
+        return "stopped"
+    return str(exc) or type(exc).__name__
 
 
 #: How far back a reply looks for a run waiting on its channel.
