@@ -22,13 +22,24 @@ import json
 import os
 
 import pytest
+import pytest_asyncio
 from fastapi import HTTPException
 
 SECRET = "SECRET-TOKEN-9f3a"
 
 
-@pytest.fixture
-def layout(tmp_path, monkeypatch):
+async def _save_allowed_dirs(dirs):
+    """Settings → Allowed Directories, written the way the settings route writes it."""
+    from core.config import default_settings
+    from core.store.settings import save_many
+
+    settings = default_settings()
+    settings["bash_allowed_dirs"] = [str(d) for d in dirs]
+    await save_many(settings)
+
+
+@pytest_asyncio.fixture
+async def layout(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     vault = tmp_path / "vault"
     allowed = tmp_path / "allowed"
@@ -64,7 +75,7 @@ def layout(tmp_path, monkeypatch):
     monkeypatch.setattr(collections, "load", fake_load)
     monkeypatch.setattr("core.vault._vault_root", lambda: vault)
     monkeypatch.setattr("tools.sandbox._vault_root", lambda: vault)
-    monkeypatch.setattr("core.config.load_settings", lambda: {"bash_allowed_dirs": [str(allowed)]})
+    await _save_allowed_dirs([allowed])
     return {"repo": repo, "vault": vault, "allowed": allowed, "outside": outside, "sibling": sibling}
 
 
@@ -215,13 +226,10 @@ async def test_the_filesystem_server_is_started_on_the_same_roots(layout):
     assert spec["args"][2:] == await file_roots.allowed_roots()
 
 
-async def test_an_allowed_directory_already_covered_is_not_passed_twice(layout, monkeypatch):
+async def test_an_allowed_directory_already_covered_is_not_passed_twice(layout):
     from core import file_roots
 
-    monkeypatch.setattr(
-        "core.config.load_settings",
-        lambda: {"bash_allowed_dirs": [str(layout["vault"]), str(layout["allowed"]), "/no/such/dir"]},
-    )
+    await _save_allowed_dirs([layout["vault"], layout["allowed"], "/no/such/dir"])
     assert await file_roots.allowed_roots() == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
 
 
@@ -247,3 +255,28 @@ async def test_the_native_server_list_still_builds(layout, monkeypatch):
     assert by_name["Filesystem"]["args"][2:] == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
     browser = by_name["Browser Automation"]["args"]
     assert browser[browser.index("--output-dir") + 1] == str(layout["vault"] / "playwright")
+
+
+async def test_an_allowed_directory_saved_after_the_tools_started_reaches_them(layout, tmp_path):
+    """The file tools are stdio subprocesses that read the settings once, at
+    bootstrap, and serve that snapshot for their lifetime. A folder added under
+    Allowed Directories while they run never reached them, though the Filesystem
+    server, restarted on every settings save, had it (found by the OSS test pass,
+    2026-09-25). The roots are read from the store on every call, like the repos.
+    """
+    from core import file_roots, settings_runtime
+    from tools import file_reader
+
+    # The subprocess's state: its bootstrap snapshot, taken before the save below.
+    await settings_runtime.refresh()
+    late = tmp_path / "added-later"
+    late.mkdir()
+    (late / "notes.txt").write_text("added later\n")
+    await _save_allowed_dirs([layout["allowed"], late])
+
+    assert str(late) in await file_roots.allowed_roots()
+    result = await file_reader.call_tool(
+        "read_file_by_lines", {"file_path": str(late / "notes.txt"), "start_line": 1, "end_line": 5}
+    )
+    assert "Access denied" not in result[0].text
+    assert "added later" in result[0].text

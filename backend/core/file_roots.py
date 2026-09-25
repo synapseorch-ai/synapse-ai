@@ -41,11 +41,24 @@ async def repo_paths() -> list[str]:
         return []
 
 
-def _allowed_dirs() -> list[str]:
-    from core.config import load_settings
+async def _allowed_dirs() -> list[str]:
+    """Settings → Allowed Directories, read from the store on every call.
 
+    Not `load_settings()`: the file tools run as stdio subprocesses, which read
+    the settings once at bootstrap and serve that snapshot for their lifetime,
+    so a folder added while they ran never reached them (F213). The Filesystem
+    server gets the fresh list because a settings save restarts it; the tools
+    are not restarted, so they read the row themselves, as `repo_paths()` does.
+    """
+    from core.store.settings import load_settings_for_tenant
+
+    try:
+        settings = await load_settings_for_tenant()
+    except Exception as e:  # noqa: BLE001
+        print(f"Warning: Could not load Allowed Directories: {e}")
+        return []
     return [
-        d for d in (load_settings().get("bash_allowed_dirs") or [])
+        d for d in (settings.get("bash_allowed_dirs") or [])
         if d and os.path.isdir(d)
     ]
 
@@ -60,7 +73,7 @@ async def allowed_roots() -> list[str]:
 
     roots = await repo_paths() + [str(_vault_root())]
     seen = {os.path.realpath(p) for p in roots}
-    for d in _allowed_dirs():
+    for d in await _allowed_dirs():
         real = os.path.realpath(d)
         if real not in seen:
             roots.append(d)
