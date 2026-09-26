@@ -3849,6 +3849,51 @@ async def check_promptwriter(browser) -> str:
             pass
 
 
+@check
+async def check_streamdocs(browser) -> str:
+    """The API reference never shows a stream example the API refuses (F199).
+
+    V2's React example opened `new EventSource(…/stream?token=YOUR_API_KEY)`.
+    The key is read only from the Authorization header, which EventSource cannot
+    send: that example got 401 on v1 and v2 alike. Every stream example now reads
+    with fetch and the header, and V1 says how to follow a run at all.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/settings/api_keys", wait_until="domcontentloaded")
+        opener = page.get_by_role("button", name=re.compile("view docs", re.I))
+        await opener.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await opener.click()
+        await asyncio.sleep(0.8)
+        drawer = page.locator(".fixed", has=page.locator("h2", has_text="API Reference")).last
+        shown = {}
+        for version in ("V1", "V2"):
+            await drawer.get_by_role("button", name=version, exact=True).click()
+            await asyncio.sleep(0.4)
+            # Sections start closed; open every one so each code block is in the page.
+            # A header is a button around an upper-case title; a closed one has no body after it.
+            await drawer.evaluate("""(root) => {
+              for (const b of root.querySelectorAll('button')) {
+                if (b.querySelector(':scope > span.uppercase') && !b.nextElementSibling) b.click();
+              }
+            }""")
+            await asyncio.sleep(0.4)
+            shown[version] = await drawer.locator("pre").all_inner_texts()
+        for version, blocks in shown.items():
+            if any("new EventSource(" in b or "?token=" in b for b in blocks):
+                raise AssertionError(f"{version}'s docs still open a stream the API refuses (EventSource / ?token=)")
+        if not any("/events/stream" in b for b in shown["V1"]):
+            raise AssertionError("V1's docs never say how to follow a run")
+        hook = next((b for b in shown["V2"] if "function useOrchestrationRun" in b), "")
+        if "Authorization" not in hook or "Last-Event-ID" not in hook:
+            raise AssertionError("V2's React example does not send the key in its header, or cannot resume")
+        return "every stream example sends the key in its header, and V1 shows how to follow a run"
+    finally:
+        await ctx.close()
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

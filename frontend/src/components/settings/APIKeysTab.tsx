@@ -37,12 +37,26 @@ const CodeBlock = ({ code }: { code: string }) => {
     );
 };
 
+// Every streaming example reads the key from the Authorization header, the only
+// place the API looks. `new EventSource(…?token=KEY)` cannot send one, so it is
+// refused with 401 on v1 and v2 alike (F199), and a key in a URL lands in logs.
+const StreamAuthNote = () => (
+    <p className="text-xs text-text-faint">
+        Read streams with <code className="font-code text-text-muted">fetch</code>, not{' '}
+        <code className="font-code text-text-muted">EventSource</code>: the key goes in the{' '}
+        <code className="font-code text-text-muted">Authorization</code> header, which{' '}
+        <code className="font-code text-text-muted">EventSource</code> cannot send, and a key in the URL is refused.
+        Keep the key on a server; a browser app calls your own backend, which adds it.
+    </p>
+);
+
 const Section = ({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) => {
     const [open, setOpen] = useState(defaultOpen);
     return (
         <div className="border border-border">
             <button
                 onClick={() => setOpen(o => !o)}
+                aria-expanded={open}
                 className="w-full flex items-center justify-between px-4 py-3 bg-surface hover:bg-surface-2 transition-colors text-left"
             >
                 <span className="text-xs uppercase font-bold text-text tracking-wider">{title}</span>
@@ -114,6 +128,9 @@ const V1Docs = ({ BASE }: { BASE: string }) => (
                 <EndpointRow method="POST" path="/orchestrations/{id}/run/stream" desc="Start orchestration — SSE" />
                 <EndpointRow method="POST" path="/orchestrations/runs/{run_id}/resume" desc="Resume after human step — sync" />
                 <EndpointRow method="POST" path="/orchestrations/runs/{run_id}/resume/stream" desc="Resume after human step — SSE" />
+                <EndpointRow method="GET"  path="/orchestrations/runs/{run_id}" desc="A run's state and, once ended, its result" />
+                <EndpointRow method="GET"  path="/orchestrations/runs/{run_id}/events" desc="A run's events so far — JSON" />
+                <EndpointRow method="GET"  path="/orchestrations/runs/{run_id}/events/stream" desc="Follow a run — SSE, resumable" />
             </div>
         </Section>
 
@@ -146,6 +163,52 @@ const V1Docs = ({ BASE }: { BASE: string }) => (
 # data: {"type": "response", "content": "...", "session_id": "api_abc123"}
 # data: {"type": "done"}`} />
             </div>
+        </Section>
+
+        <Section title="Follow a Run (SSE)">
+            <StreamAuthNote />
+            <CodeBlock code={`curl -N "${BASE}/orchestrations/runs/RUN_ID/events/stream?after=0" \\
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+# id: 1
+# data: {"type": "orchestration_start", "run_id": "RUN_ID", ...}
+# id: 2
+# data: {"type": "step_start", "orch_step_id": "step_research", ...}
+# ...
+# data: {"type": "stream_complete"}      ← the run has ended; the server closes
+
+# Dropped? Carry on from the last id: seen, either way:
+#   ?after=12        or        -H "Last-Event-ID: 12"`} />
+            <CodeBlock code={`// fetch, not EventSource: EventSource cannot send the Authorization header.
+async function followRun(runId: string, onEvent: (e: any) => void) {
+  let lastId = "0";
+  for (;;) {
+    const res = await fetch(\`${BASE}/orchestrations/runs/\${runId}/events/stream?after=\${lastId}\`, {
+      headers: { Authorization: "Bearer YOUR_API_KEY" },
+    });
+    if (!res.ok) throw new Error(\`stream refused: \${res.status}\`);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;                                  // dropped: reconnect below
+      buf += decoder.decode(value, { stream: true });
+      const frames = buf.split("\\n\\n");
+      buf = frames.pop()!;
+      for (const frame of frames) {
+        for (const line of frame.split("\\n")) {
+          if (line.startsWith("id: ")) lastId = line.slice(4);
+          if (!line.startsWith("data: ")) continue;
+          const event = JSON.parse(line.slice(6));
+          if (event.type === "stream_complete") return;
+          onEvent(event);
+        }
+      }
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}`} />
         </Section>
 
         <Section title="Agents & Orchestrations">
@@ -619,26 +682,60 @@ for await (const event of streamEvents(runId)) {
         </Section>
 
         <Section title="Example — React Hook (Live Step Feed)">
+            <StreamAuthNote />
             <CodeBlock code={`import { useState, useEffect } from "react";
 
+// Point BASE at your own server route that adds the key: a browser app never ships it.
 const BASE = "${BASE}";
+const HEADERS = { Authorization: "Bearer YOUR_API_KEY" };
 
 function useOrchestrationRun(runId: string | null) {
   const [events, setEvents] = useState<any[]>([]);
-  const [status, setStatus] = useState<"idle" | "running" | "done">("idle");
+  const [status, setStatus] = useState<"idle" | "running" | "done" | "refused">("idle");
 
   useEffect(() => {
     if (!runId) return;
+    const stop = new AbortController();
     setStatus("running");
-    const es = new EventSource(
-      \`\${BASE}/orchestrations/runs/\${runId}/stream?token=YOUR_API_KEY\`
-    );
-    es.onmessage = (e) => {
-      const event = JSON.parse(e.data);
-      setEvents((prev) => [...prev, event]);
-      if (event.type === "done" || event.type === "stream_complete") { setStatus("done"); es.close(); }
-    };
-    return () => es.close();
+    (async () => {
+      let lastId = "";                                  // resend it to replay what was missed
+      while (!stop.signal.aborted) {
+        try {
+          const res = await fetch(\`\${BASE}/orchestrations/runs/\${runId}/stream\`, {
+            headers: lastId ? { ...HEADERS, "Last-Event-ID": lastId } : HEADERS,
+            signal: stop.signal,
+          });
+          if (!res.ok) { setStatus("refused"); return; }  // 401: the key; 404: the run
+          const reader = res.body!.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;                            // dropped: reconnect below
+            buf += decoder.decode(value, { stream: true });
+            const frames = buf.split("\\n\\n");
+            buf = frames.pop()!;
+            for (const frame of frames) {
+              for (const line of frame.split("\\n")) {
+                if (line.startsWith("id: ")) lastId = line.slice(4);
+                if (!line.startsWith("data: ")) continue;
+                const event = JSON.parse(line.slice(6));
+                if (event.type === "done" || event.type === "stream_complete") {
+                  setStatus("done");
+                  stop.abort();
+                  return;
+                }
+                setEvents((prev) => [...prev, event]);
+              }
+            }
+          }
+        } catch {
+          if (stop.signal.aborted) return;
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    })();
+    return () => stop.abort();
   }, [runId]);
 
   return { events, status };
