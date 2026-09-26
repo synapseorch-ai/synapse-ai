@@ -33,9 +33,10 @@ class TestSchedulesCrud:
                 "prompt": "run", "schedule_type": "interval",
                 "interval_value": 5, "interval_unit": "minutes"}
 
-    async def test_schedule_create_get_update_delete(self, client, test_app):
+    async def test_schedule_create_get_update_delete(self, client, test_app, seed_agent):
         # create/update only gate on a non-None manager; the work uses the store.
         test_app.state.schedule_manager = object()
+        await seed_agent(id="a1")  # a schedule's target must exist (F197)
         created = await client.post("/api/schedules", json=self._body())
         assert created.status_code == 200
         sid = created.json()["id"]

@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 
-from core.models_schedule import ScheduleCreate, ScheduleUpdate
+from core.models_schedule import ScheduleCreate, ScheduleInvalid, ScheduleUpdate, validate_timing
 from core.scheduler import compute_next_run, _utc_now, _iso
 from core.store import schedules as schedule_store
 
@@ -18,6 +18,41 @@ def _get_manager(request: Request):
     if mgr is None:
         raise HTTPException(status_code=503, detail="Schedule manager not available")
     return mgr
+
+
+# -- Checks (F197) -------------------------------------------------------
+# The answers are cloud's (`api/control/routes/schedules.py`), so a v1 request
+# gets one answer on both products: 422 for timing it cannot run, 404 for a
+# target that is not there. Each `detail` is a sentence — the form toasts it.
+
+_TIMING_KEYS = {"schedule_type", "interval_value", "interval_unit", "cron_expression"}
+_TARGET_KEYS = {"target_type", "target_id"}
+
+
+def _check_timing(schedule: dict) -> None:
+    try:
+        validate_timing(schedule)
+    except ScheduleInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+async def _check_target(schedule: dict) -> None:
+    """The agent or orchestration must be the workspace's own.
+
+    A schedule whose target does not exist fires into nothing for ever. The AI
+    builder's own agents and orchestration are not the workspace's, so they are
+    not there either — the builder's `create_schedule` has refused both since
+    D115.
+    """
+    from core.builder_tools import _is_visible
+    from core.store.resources import get_agent, get_orchestration
+
+    kind = schedule.get("target_type")
+    target_id = schedule.get("target_id") or ""
+    load = get_agent if kind == "agent" else get_orchestration
+    found = await load(target_id) if target_id else None
+    if found is None or not _is_visible(found):
+        raise HTTPException(status_code=404, detail=f"No such {kind}: {target_id}.")
 
 
 # -- List ----------------------------------------------------------------
@@ -36,6 +71,8 @@ async def create_schedule(body: ScheduleCreate, request: Request):
     _get_manager(request)
 
     schedule = body.model_dump()
+    _check_timing(schedule)
+    await _check_target(schedule)
     schedule["id"] = f"sched_{uuid.uuid4().hex[:8]}"
     schedule["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     schedule["last_run_at"] = None
@@ -70,6 +107,8 @@ async def update_schedule(schedule_id: str, body: ScheduleCreate, request: Reque
         raise HTTPException(status_code=404, detail="Schedule not found")
 
     updated = body.model_dump()
+    _check_timing(updated)
+    await _check_target(updated)
     updated["id"] = schedule_id
     updated["created_at"] = existing.get("created_at", "")
     updated["last_run_at"] = existing.get("last_run_at")
@@ -85,7 +124,12 @@ async def update_schedule(schedule_id: str, body: ScheduleCreate, request: Reque
 
 @router.patch("/api/schedules/{schedule_id}")
 async def patch_schedule(schedule_id: str, body: ScheduleUpdate, request: Request):
-    """Partial update. If re-enabling, recomputes next_run_at from now."""
+    """Partial update. If re-enabling, recomputes next_run_at from now.
+
+    Checked as a whole only where the patch reaches: its timing, its target, or
+    turning it on. Switching a schedule off is never refused, so one saved
+    before the checks (F197) can always be stopped.
+    """
     _get_manager(request)
 
     s = await schedule_store.get(schedule_id)
@@ -97,13 +141,16 @@ async def patch_schedule(schedule_id: str, body: ScheduleUpdate, request: Reques
     was_disabled = not s.get("enabled", True)
     re_enabling = patch.get("enabled") is True and was_disabled
 
-    # Apply patch fields
-    for k, v in patch.items():
-        s[k] = v
+    patched = {**s, **patch}
+    retimed = bool(_TIMING_KEYS.intersection(patch))
+    if retimed or re_enabling:
+        _check_timing(patched)
+    if _TARGET_KEYS.intersection(patch):
+        await _check_target(patched)
+    s = patched
 
     # If the schedule is being re-enabled or schedule timing changed, recalculate next_run_at
-    timing_keys = {"schedule_type", "interval_value", "interval_unit", "cron_expression"}
-    if re_enabling or timing_keys.intersection(patch.keys()):
+    if re_enabling or retimed:
         now = _utc_now()
         s["next_run_at"] = _iso(compute_next_run(s, now))
 

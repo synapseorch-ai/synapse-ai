@@ -2210,6 +2210,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": f"Invalid schedule: {exc.errors()[0]['msg']}"}
 
         schedule = body.model_dump()
+        # The routes' own check (F197): -5 minutes is a next run in the past.
+        from core.models_schedule import ScheduleInvalid, validate_timing
+        try:
+            validate_timing(schedule)
+        except ScheduleInvalid as exc:
+            return {"error": f"Invalid schedule: {exc}"}
         # F155 (D122): always created paused, whatever was asked. The builder's
         # schedules began each run with a restatement of the task rather than its
         # input ("Pull the latest blog posts from our client's three competitors"

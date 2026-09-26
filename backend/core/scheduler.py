@@ -21,7 +21,9 @@ def compute_next_run(schedule: dict, from_dt: datetime) -> datetime:
     Always returns a timezone-aware UTC datetime.
     """
     if schedule.get("schedule_type") == "interval":
-        val = schedule.get("interval_value") or 1
+        # At least 1: a row saved before F197 checked it could hold -5, a next
+        # run in the past, and fire on every tick.
+        val = max(schedule.get("interval_value") or 1, 1)
         unit = schedule.get("interval_unit") or "minutes"
         if unit == "minutes":
             delta = timedelta(minutes=val)

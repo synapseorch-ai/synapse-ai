@@ -192,8 +192,9 @@ _WEEKLY = {"name": "Weekly", "target_type": "orchestration", "target_id": "orch_
 
 
 class TestSchedules:
-    async def test_create_read_pause_resume_delete(self, client, api_key, schedule_manager):
+    async def test_create_read_pause_resume_delete(self, client, api_key, schedule_manager, seed_orchestration):
         h = api_key["headers"]
+        await seed_orchestration(id="orch_x")  # a schedule's target must exist (F197)
         made = await client.post("/api/v1/schedules", json={**_WEEKLY, "enabled": False}, headers=h)
         assert made.status_code == 200, made.text
         sid = made.json()["id"]
