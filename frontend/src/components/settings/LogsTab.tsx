@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Trash2, Bot, Workflow, ScrollText, Clock } from 'lucide-react';
 import { Combobox } from '@/components/ui';
+import { LocalTime } from '@/components/LocalTime';
 
 type LogType = 'agents' | 'orchestrations' | 'schedules';
 
@@ -290,7 +291,8 @@ export const LogsTab = () => {
                                                         )}
                                                         <span className="flex w-full items-center justify-between">
                                                             {log.started_at && (
-                                                                <span className="text-[10px] text-text-faint">{log.started_at}</span>
+                                                                // Written in UTC with no zone; shown in the reader's time (F205).
+                                                                <LocalTime iso={log.started_at} className="text-[10px] text-text-faint" />
                                                             )}
                                                             {log.file_size_kb !== undefined && (
                                                                 <span className="text-[10px] text-text-faint">{log.file_size_kb}KB</span>

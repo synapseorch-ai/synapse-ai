@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Spinner } from '@/components/ui';
 import { usd } from '@/lib/money';
+import { parseStamp } from '@/components/LocalTime';
 import {
     ScrollText, Coins, Workflow, Clock, MessageSquare, Bot, X,
 } from 'lucide-react';
@@ -43,9 +44,11 @@ interface AgentMetrics {
 }
 
 const fmtInt = (n: number) => n.toLocaleString();
+// Run-log stamps are UTC with no zone, which `new Date` read as local time, so a
+// run's start was off by the reader's offset (F205). parseStamp reads them as UTC.
 const fmtDate = (s?: string | null) => {
     if (!s) return '—';
-    const d = new Date(s);
+    const d = parseStamp(s);
     return isNaN(d.getTime()) ? s : d.toLocaleString();
 };
 

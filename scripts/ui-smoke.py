@@ -4262,6 +4262,62 @@ async def check_evalsactions(browser) -> str:
         drop_fixture(bare)
 
 
+@check
+async def check_plurals(browser) -> str:
+    """Counts agree with their nouns and stamps are in the reader's time (F205).
+
+    Evals said "1 criteria"; its golden-set history and Runs & Logs printed UTC
+    with no zone ("2026-09-25 10:08:03") beside local times everywhere else. The
+    run-log stamps carry no zone, so a reader in IST saw them 5½ hours out. Read
+    here from Asia/Kolkata, where UTC and local cannot be mistaken for each other.
+    """
+    stamp = int(time.time())
+    oid = f"orch_uismoke_tz_{stamp}"
+    rubric = api("/api/rubrics", "POST", {"name": f"Smoke tz {stamp}", "criteria": [{"name": "Clear"}]})
+    api("/api/orchestrations", "POST", print_orchestration(oid, f"ui-smoke tz {stamp}"))
+    run_id = run_to_end(oid)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]}, timezone_id="Asia/Kolkata")
+    page = await ctx.new_page()
+    hydration: list[str] = []
+    page.on("console", lambda m: hydration.append(m.text) if "ydrat" in m.text else None)
+    try:
+        await page.goto(f"{APP}/evals", wait_until="domcontentloaded")
+        item = page.get_by_role("button", name=re.compile(f"^Smoke tz {stamp}"))
+        await item.wait_for(timeout=30_000)
+        line = " ".join((await item.inner_text()).split())
+        if "1 criterion " not in line + " ":
+            raise AssertionError(f"a rubric with one criterion reads {line!r}")
+
+        await page.goto(f"{APP}/runs", wait_until="domcontentloaded")
+        tab = page.get_by_role("button", name=re.compile("Orchestration Logs"))
+        await tab.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await tab.click()
+        row = page.get_by_role("button", name=re.compile("^" + re.escape(f"ui-smoke tz {stamp}")))
+        await row.wait_for(timeout=20_000)
+        await asyncio.sleep(1.0)
+        shown = await row.inner_text()
+        raw = next((log["started_at"] for log in api("/api/logs/orchestrations?limit=50") if log["run_id"] == run_id), None)
+        if not raw:
+            raise AssertionError("the fixture run wrote no log, so this checks nothing")
+        if raw in shown:
+            raise AssertionError(f"Runs & Logs prints the log's UTC stamp {raw!r} as it was written")
+        local = await page.evaluate("(s) => new Date(s.replace(' ', 'T') + 'Z').toLocaleString()", raw)
+        if local not in shown:
+            raise AssertionError(f"Runs & Logs shows {shown!r} for {raw} UTC, not the reader's {local!r}")
+        if hydration:
+            raise AssertionError(f"a local time broke hydration: {hydration[0][:120]}")
+        return "counts agree with their nouns, and log and eval times are the reader's"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+        for path in (f"/api/rubrics/{rubric.get('id')}", f"/api/logs/orchestrations/{run_id}"):
+            try:
+                api(path, "DELETE")
+            except Exception:
+                pass
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

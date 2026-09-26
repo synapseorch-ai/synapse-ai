@@ -22,6 +22,8 @@ import {
     Badge, Button, Card, CardBody, Combobox, ConfirmDialog, EmptyState, Field, IconButton,
     Input, Label, Muted, Select, Stat, Textarea, Toast, useToast,
 } from "@/components/ui";
+import { LocalTime } from "@/components/LocalTime";
+import { count } from "@/lib/copy";
 import { modelOptions, withUnreachable } from "@/lib/models";
 
 import { useSettingsData } from "./hooks/useSettingsData";
@@ -248,7 +250,7 @@ export function EvalsScreen() {
                 show("No finished runs to score yet. Run it first.", "warning");
             } else {
                 show(
-                    `Scored ${scored} of ${requested} run${requested === 1 ? "" : "s"}.`,
+                    `Scored ${scored} of ${count(requested, "run")}.`,
                     scored === requested ? "success" : "warning",
                 );
             }
@@ -304,10 +306,10 @@ export function EvalsScreen() {
                                             <Badge size="sm">v{rubric.version}</Badge>
                                         </div>
                                         <Muted className="mt-0.5 block truncate text-xs">
-                                            {rubric.criteria.length} criteria ·{" "}
+                                            {count(rubric.criteria.length, "criterion", "criteria")} ·{" "}
                                             {bound.length === 0
                                                 ? "not bound"
-                                                : `scoring ${bound.length} orchestration${bound.length > 1 ? "s" : ""}`}
+                                                : `scoring ${count(bound.length, "orchestration")}`}
                                         </Muted>
                                     </button>
                                 </li>
@@ -840,7 +842,7 @@ function GoldenSets({
                                             onClick={() => setOpenId(open ? null : suite.id)}>
                                         <span className="text-sm">{suite.name}</span>
                                         <Muted className="ml-2 text-xs">
-                                            {suite.estimate.cases} case{suite.estimate.cases === 1 ? "" : "s"}
+                                            {count(suite.estimate.cases, "case")}
                                         </Muted>
                                     </button>
                                     {suite.running ? (
@@ -889,7 +891,7 @@ function GoldenSets({
                                                         <Badge size="sm" tone="warning">{run.status}</Badge>
                                                     )}
                                                     <Muted className="ml-auto">
-                                                        {run.started_at.slice(0, 16).replace("T", " ")}
+                                                        <LocalTime iso={run.started_at} />
                                                     </Muted>
                                                 </div>
                                             ))
@@ -904,7 +906,7 @@ function GoldenSets({
             <ConfirmDialog
                 open={confirmRun !== null}
                 onClose={() => setConfirmRun(null)}
-                title={`Run all ${confirmRun?.estimate.runs ?? 0} case${confirmRun?.estimate.runs === 1 ? "" : "s"}?`}
+                title={confirmRun?.estimate.runs === 1 ? "Run its one case?" : `Run all ${confirmRun?.estimate.runs ?? 0} cases?`}
                 description={confirmRun ? runCost(confirmRun, orchestrations) : undefined}
                 confirmLabel="Run set"
                 onConfirm={() => confirmRun && start(confirmRun)}
@@ -918,12 +920,12 @@ function runCost(suite: Suite, orchestrations: Orchestration[]): string {
     const orch = orchestrations.find((o) => o.id === suite.orchestration_id);
     const name = orch?.name ?? "the orchestration";
     const { runs, judge_calls } = suite.estimate;
-    const runsText = `${runs} full run${runs === 1 ? "" : "s"} of “${name}”`;
+    const runsText = `${count(runs, "full run")} of “${name}”`;
     if (!orch?.rubric_id) {
         return `That is ${runsText}, billed as usual. No rubric is bound to it, so they will not be scored: ` +
             "bind one in its Guardrails tab first to score them. Cases run one at a time and you can stop it.";
     }
-    return `That is ${runsText} plus ${judge_calls} judge call${judge_calls === 1 ? "" : "s"}, all billed as usual. ` +
+    return `That is ${runsText} plus ${count(judge_calls, "judge call")}, all billed as usual. ` +
         "Cases run one at a time and you can stop it.";
 }
 
@@ -970,7 +972,7 @@ function TrendView({
                     tone={scoreTone(latest.score, scaleMax)}
                     hint={latest.regression ? `Flagged — ${latest.rule}` : "Within expectation"}
                 />
-                <Stat label="Average" value={mean.toFixed(1)} hint={`over ${scores.length} runs`} />
+                <Stat label="Average" value={mean.toFixed(1)} hint={`over ${count(scores.length, "run")}`} />
                 <Stat
                     label="Judge vs people"
                     value={
@@ -1028,7 +1030,7 @@ function TrendView({
                                             tone={net < 0 ? "danger" : "default"}
                                             onClick={() => onRate(score.run_id, net < 0 ? 0 : -1)}
                                         />
-                                        <Muted className="text-xs">{score.judged_at.slice(0, 16).replace("T", " ")}</Muted>
+                                        <Muted className="text-xs"><LocalTime iso={score.judged_at} /></Muted>
                                     </div>
                                 </div>
                                 {score.reasoning && (
@@ -1089,7 +1091,7 @@ function Sparkline({ scores, scaleMax }: { scores: Score[]; scaleMax: number }) 
                     viewBox={`0 0 ${width} ${height}`}
                     className="h-24 w-full overflow-visible"
                     role="img"
-                    aria-label={`Score trend over ${scores.length} runs, most recent ${scores[scores.length - 1].score.toFixed(1)}`}
+                    aria-label={`Score trend over ${count(scores.length, "run")}, most recent ${scores[scores.length - 1].score.toFixed(1)}`}
                 >
                     {segments.map((segment, index) => (
                         <polyline
