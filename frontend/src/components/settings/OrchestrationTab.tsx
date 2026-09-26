@@ -463,9 +463,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                         {fmtDuration(run.started_at, run.ended_at)}
                                     </td>
                                     <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                        <span className="text-[11px] text-text-faint group-hover:text-zinc-300 transition-colors">
+                                        {/* The row opens on a click; this is the same for a keyboard (F219). */}
+                                        <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); restoreRun(run); }}
+                                            aria-label={`View run ${run.run_id}`}
+                                            className="text-[11px] text-text-faint group-hover:text-zinc-300 hover:text-zinc-100 transition-colors rounded-sm"
+                                        >
                                             View →
-                                        </span>
+                                        </button>
                                     </td>
                                 </tr>
                             );
@@ -1692,9 +1698,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                                             ) : <span className="text-text-faint">never</span>}
                                                         </td>
                                                         <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                                            <span className="text-[11px] text-text-faint group-hover:text-zinc-300 transition-colors">
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => { e.stopPropagation(); selectOrchestration(o.id); }}
+                                                                aria-label={`Open ${o.name}`}
+                                                                className="text-[11px] text-text-faint group-hover:text-zinc-300 hover:text-zinc-100 transition-colors rounded-sm"
+                                                            >
                                                                 Open →
-                                                            </span>
+                                                            </button>
                                                         </td>
                                                     </tr>
                                                 );

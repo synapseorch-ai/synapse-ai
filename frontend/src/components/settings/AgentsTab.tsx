@@ -407,47 +407,56 @@ export const AgentsTab = ({
                         </div>
                     )}
                     {visibleAgents.map((a: any) => (
-                        <div
-                            key={a.id}
-                            onClick={() => {
-                                if (a.id === selectedAgentId) return;
-                                guard(() => {
-                                    setSelectedAgentId(a.id);
-                                    loadDraftAgent({ ...a });
-                                });
-                            }}
-                            className={`p-3 border cursor-pointer transition-all group relative
-                            ${selectedAgentId === a.id
-                                    ? 'bg-surface-2 border-accent shadow-lg'
-                                    : 'bg-surface border-border hover:border-border-strong'
-                                } rounded-md`}
-                        >
-                            <div className="flex items-center gap-3">
-                                <div className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold
-                                ${selectedAgentId === a.id ? 'bg-accent text-accent-fg' : 'bg-surface-2 text-text-muted'}
-                            `}>
-                                    {a.name.substring(0, 2).toUpperCase()}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="text-xs font-bold text-text truncate">{a.name}</div>
-                                    <div className="text-2xs text-text-faint truncate">{a.description}</div>
-                                </div>
-                            </div>
+                        // The row is a button, so a keyboard opens an agent as a click
+                        // does (F219); Duplicate and Delete are its siblings, shown
+                        // whenever the row has focus as well as on hover.
+                        <div key={a.id} className="group relative">
                             <button
+                                type="button"
+                                onClick={() => {
+                                    if (a.id === selectedAgentId) return;
+                                    guard(() => {
+                                        setSelectedAgentId(a.id);
+                                        loadDraftAgent({ ...a });
+                                    });
+                                }}
+                                aria-current={selectedAgentId === a.id ? 'true' : undefined}
+                                className={`block w-full p-3 border text-left transition-all
+                                ${selectedAgentId === a.id
+                                        ? 'bg-surface-2 border-accent shadow-lg'
+                                        : 'bg-surface border-border hover:border-border-strong'
+                                    } rounded-md`}
+                            >
+                                <span className="flex items-center gap-3">
+                                    <span className={`h-8 w-8 shrink-0 rounded-full flex items-center justify-center text-xs font-bold
+                                    ${selectedAgentId === a.id ? 'bg-accent text-accent-fg' : 'bg-surface-2 text-text-muted'}
+                                `}>
+                                        {a.name.substring(0, 2).toUpperCase()}
+                                    </span>
+                                    <span className="block flex-1 min-w-0">
+                                        <span className="block text-xs font-bold text-text truncate">{a.name}</span>
+                                        <span className="block text-2xs text-text-faint truncate">{a.description}</span>
+                                    </span>
+                                </span>
+                            </button>
+                            <button
+                                type="button"
                                 onClick={(e) => handleDuplicate(a, e)}
-                                className="absolute top-2 right-7 p-1 text-text-faint hover:text-accent opacity-0 group-hover:opacity-100 transition-opacity"
+                                className="absolute top-2 right-7 p-1 text-text-faint hover:text-accent opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+                                aria-label={`Duplicate ${a.name}`}
                                 title="Duplicate agent"
                             >
                                 <Copy className="h-3 w-3" />
                             </button>
                             <button
+                                type="button"
                                 onClick={(e) => {
                                     e.stopPropagation();
                                     onDeleteAgent(a.id);
                                 }}
                                 aria-label={`Delete ${a.name}`}
                                 title={`Delete ${a.name}`}
-                                className="absolute top-2 right-2 p-1 text-text-faint hover:text-danger opacity-0 group-hover:opacity-100 transition-opacity"
+                                className="absolute top-2 right-2 p-1 text-text-faint hover:text-danger opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
                             >
                                 <Trash className="h-3 w-3" />
                             </button>

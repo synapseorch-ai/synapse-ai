@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { Trash2, AlertCircle, CheckCircle2, MessageSquare, BarChart2, GitBranch, Server, Activity, Bot } from 'lucide-react';
 import { ConfirmationModal } from './ConfirmationModal';
+import { Checkbox } from '@/components/ui';
 
 type ClearItem = 'chat_history' | 'orchestration_history' | 'agent_logs' | 'usage' | 'repos' | 'db_configs';
 
@@ -118,32 +119,32 @@ export const MemoryTab = () => {
                 {ITEMS.map((item) => {
                     const Icon = item.icon;
                     const isChecked = selected[item.id];
+                    // A real checkbox inside a label: Tab reaches it, Space ticks it
+                    // and a screen reader hears its state; the whole card still
+                    // toggles on a click (F219).
                     return (
-                        <div
+                        <label
                             key={item.id}
-                            onClick={() => toggle(item.id)}
                             className={`flex items-start gap-4 p-4 border transition-all cursor-pointer group ${
-                                isChecked 
-                                    ? 'bg-red-950/20 border-red-900/50' 
+                                isChecked
+                                    ? 'bg-red-950/20 border-red-900/50'
                                     : 'bg-zinc-900/40 border-zinc-800/50 hover:border-zinc-700/50 hover:bg-zinc-900/80'
                             } rounded-md`}
                         >
-                            {/* Custom checkbox */}
-                            <div className={`mt-0.5 h-4 w-4 flex-shrink-0 flex items-center justify-center transition-colors border ${isChecked ? 'bg-red-500 border-red-500' : 'bg-zinc-950 border-zinc-700 group-hover:border-zinc-500'} rounded-md`}>
-                                {isChecked && (
-                                    <svg className="h-3 w-3 text-accent-fg" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                        <polyline points="2,6 5,9 10,3" />
-                                    </svg>
-                                )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
+                            <Checkbox
+                                checked={isChecked}
+                                onChange={() => toggle(item.id)}
+                                label={item.label}
+                                className="mt-0.5 bg-zinc-950 border-zinc-700 group-hover:border-zinc-500 data-[state=checked]:bg-red-500 data-[state=checked]:border-red-500"
+                            />
+                            <span className="block flex-1 min-w-0">
+                                <span className="flex items-center gap-2 mb-1">
                                     <Icon className={`h-4 w-4 flex-shrink-0 transition-colors ${isChecked ? 'text-red-400' : 'text-text-faint group-hover:text-zinc-400'}`} />
-                                    <div className={`text-sm font-bold tracking-wide transition-colors ${isChecked ? 'text-red-200' : 'text-zinc-200 group-hover:text-zinc-100'}`}>{item.label}</div>
-                                </div>
-                                <div className={`text-xs transition-colors mt-1.5 leading-relaxed ${isChecked ? 'text-red-400':'text-text-faint group-hover:text-zinc-400'}`}>{item.description}</div>
-                            </div>
-                        </div>
+                                    <span className={`text-sm font-bold tracking-wide transition-colors ${isChecked ? 'text-red-200' : 'text-zinc-200 group-hover:text-zinc-100'}`}>{item.label}</span>
+                                </span>
+                                <span className={`block text-xs transition-colors mt-1.5 leading-relaxed ${isChecked ? 'text-red-400':'text-text-faint group-hover:text-zinc-400'}`}>{item.description}</span>
+                            </span>
+                        </label>
                     );
                 })}
             </div>

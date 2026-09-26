@@ -3519,6 +3519,140 @@ async def check_cancelquestion(browser) -> str:
         drop_fixture(oid)
 
 
+def run_to_end(oid: str) -> str:
+    """Run a model-free orchestration through the API and return its run id.
+
+    The run route answers with its event stream, which `api` cannot parse; this
+    reads it to the end, which for a Print-only flow is the finished run.
+    """
+    req = urllib.request.Request(
+        f"{API}/api/orchestrations/{oid}/run", method="POST", data=b"{}",
+        headers={"Content-Type": "application/json", "X-Synapse-Internal": TOKEN},
+    )
+    with urllib.request.urlopen(req, timeout=60) as r:
+        raw = r.read().decode()
+    found = re.search(r'"run_id": "([^"]+)"', raw)
+    if not found:
+        raise AssertionError(f"the fixture run never named itself: {raw[:200]}")
+    return found.group(1)
+
+
+def print_orchestration(oid: str, name: str) -> dict:
+    """Two Print steps and an End: a run of it costs nothing and finishes at once."""
+    return {
+        "id": oid, "name": name, "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_a",
+        "steps": [
+            {"id": f"{oid}_a", "name": "First", "type": "print", "print_content": "one",
+             "next_step_id": f"{oid}_b", "output_key": "one"},
+            {"id": f"{oid}_b", "name": "Second", "type": "print", "print_content": "two",
+             "next_step_id": f"{oid}_end", "output_key": "two"},
+            {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None},
+        ],
+    }
+
+
+@check
+async def check_keyrows(browser) -> str:
+    """Every row a mouse opens, a keyboard opens too (F219).
+
+    The Agents list, the vault tree, the Memory cards and the Orchestrations
+    landing's tables were `div`s and `tr`s with a click handler and nothing
+    else: Tab skipped them (or landed on a hidden Delete), and a screen reader
+    heard no control. On the canvas a focused node took Enter and selected
+    itself, but its settings opened on a mouse click only, so a step could not
+    be configured without a mouse.
+    """
+    stamp = int(time.time())
+    aid, oid = f"agent_uismoke_keys_{stamp}", f"orch_uismoke_keys_{stamp}"
+    agent_name, orch_name, vault_file = f"Keys {stamp}", f"ui-smoke keys {stamp}", f"uismoke-keys-{stamp}.md"
+    api("/api/agents", "POST", _agent(aid, agent_name))
+    api("/api/vault/file", "POST", {"name": vault_file, "path": "", "content": "keyboard"})
+    api("/api/orchestrations", "POST", print_orchestration(oid, orch_name))
+    run_id = run_to_end(oid)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        row = page.get_by_role("button", name=agent_name)
+        try:
+            await row.first.wait_for(timeout=30_000)
+        except Exception:
+            raise AssertionError("an agent in the list is not a control a keyboard can reach")
+        await asyncio.sleep(SETTLE)
+        await row.first.focus()
+        await page.keyboard.press("Enter")
+        await asyncio.sleep(1.0)
+        if await row.first.get_attribute("aria-current") != "true":
+            raise AssertionError("Enter on an agent did not open it")
+
+        await page.goto(f"{APP}/vault", wait_until="domcontentloaded")
+        item = page.get_by_role("button", name=vault_file, exact=True)
+        try:
+            await item.wait_for(timeout=30_000)
+        except Exception:
+            raise AssertionError("a vault file is not a control a keyboard can reach")
+        await asyncio.sleep(SETTLE)
+        async with page.expect_request(lambda r: "/api/vault/file?" in r.url, timeout=10_000):
+            await item.focus()
+            await page.keyboard.press("Enter")
+
+        await page.goto(f"{APP}/settings/memory", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        boxes = page.get_by_role("checkbox")
+        if await boxes.count() != 6:
+            raise AssertionError(f"Settings → Memory has {await boxes.count()} checkboxes, not its six cards")
+        first = boxes.first
+        await first.focus()
+        await page.keyboard.press(" ")
+        await asyncio.sleep(0.3)
+        if await first.get_attribute("aria-checked") != "true":
+            raise AssertionError("Space on a Memory card's checkbox did not tick it")
+
+        await page.goto(f"{APP}/orchestrations", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 1.0)
+        await page.get_by_role("button", name=re.compile(r"^Recent")).click()
+        try:
+            await page.get_by_role("button", name=f"View run {run_id}").wait_for(timeout=20_000)
+        except Exception:
+            raise AssertionError("a run in the Recent table is not a control a keyboard can reach")
+        await page.get_by_role("button", name=re.compile(r"^Orchestrations")).click()
+        opener = page.get_by_role("button", name=f"Open {orch_name}")
+        try:
+            await opener.wait_for(timeout=20_000)
+        except Exception:
+            raise AssertionError("an orchestration in the list is not a control a keyboard can reach")
+        await opener.focus()
+        await page.keyboard.press("Enter")
+        node = page.locator(f'.react-flow__node[data-id="{oid}_b"]')
+        await node.wait_for(timeout=30_000)
+        await asyncio.sleep(1.0)
+        if await node.get_attribute("aria-label") != "Second":
+            raise AssertionError(f"a focused step is announced as {await node.get_attribute('aria-label')!r}")
+        await node.focus()
+        await page.keyboard.press("Enter")
+        panel = page.locator('aside[aria-label="Step configuration"]')
+        try:
+            await panel.wait_for(timeout=5_000)
+        except Exception:
+            raise AssertionError("Enter on a focused step selects it but does not open its settings")
+        await node.focus()
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
+        if await panel.count():
+            raise AssertionError("Escape on a focused step leaves its settings open")
+        return "agents, vault files, Memory cards, runs, orchestrations and canvas steps open from the keyboard"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+        for path, body in ((f"/api/agents/{aid}", None), ("/api/vault/item", {"path": vault_file})):
+            try:
+                api(path, "DELETE", body)
+            except Exception:
+                pass
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

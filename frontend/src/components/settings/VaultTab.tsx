@@ -51,49 +51,63 @@ function TreeNode({
 
     return (
         <div>
+            {/* The name is a button, so a keyboard opens a file or a folder as a
+                click does (F219); the actions beside it are its siblings, shown
+                whenever the row has focus as well as on hover. */}
             <div
-                className={`group flex items-center gap-1.5 px-2 py-1 cursor-pointer transition-colors rounded-md text-xs
+                className={`group flex items-center gap-1 pr-2 transition-colors rounded-md text-xs
                     ${isSelected ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50'}`}
-                style={{ paddingLeft: `${8 + depth * 16}px` }}
-                onClick={handleClick}
             >
-                {/* Expand/collapse arrow for folders */}
-                {isFolder ? (
-                    <span className="text-text-faint flex-shrink-0">
-                        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                    </span>
-                ) : (
-                    <span className="w-3 flex-shrink-0" />
-                )}
+                <button
+                    type="button"
+                    onClick={handleClick}
+                    aria-expanded={isFolder ? expanded : undefined}
+                    aria-current={isSelected ? 'true' : undefined}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left rounded-md"
+                    style={{ paddingLeft: `${8 + depth * 16}px` }}
+                >
+                    {/* Expand/collapse arrow for folders */}
+                    {isFolder ? (
+                        <span className="text-text-faint flex-shrink-0">
+                            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                        </span>
+                    ) : (
+                        <span className="w-3 flex-shrink-0" />
+                    )}
 
-                {/* Icon */}
-                {isFolder ? (
-                    expanded
-                        ? <FolderOpen className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
-                        : <Folder className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
-                ) : node.ext === '.json' ? (
-                    <FileJson className="h-3.5 w-3.5 text-amber-300 flex-shrink-0" />
-                ) : node.ext === '.txt' ? (
-                    <AlignLeft className="h-3.5 w-3.5 text-zinc-400 flex-shrink-0" />
-                ) : (
-                    <FileText className="h-3.5 w-3.5 text-blue-400 flex-shrink-0" />
-                )}
+                    {/* Icon */}
+                    {isFolder ? (
+                        expanded
+                            ? <FolderOpen className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
+                            : <Folder className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
+                    ) : node.ext === '.json' ? (
+                        <FileJson className="h-3.5 w-3.5 text-amber-300 flex-shrink-0" />
+                    ) : node.ext === '.txt' ? (
+                        <AlignLeft className="h-3.5 w-3.5 text-zinc-400 flex-shrink-0" />
+                    ) : (
+                        <FileText className="h-3.5 w-3.5 text-blue-400 flex-shrink-0" />
+                    )}
 
-                <span className="flex-1 truncate font-mono">{node.name}</span>
+                    <span className="flex-1 truncate font-mono">{node.name}</span>
+                </button>
 
                 {/* Folder actions: + new file, delete */}
                 {isFolder && (
                     <button
-                        onClick={(e) => { e.stopPropagation(); onCreateInFolder(node.path); }}
-                        className="opacity-0 group-hover:opacity-100 text-text-faint hover:text-emerald-400 transition-all p-0.5 flex-shrink-0"
+                        type="button"
+                        onClick={() => onCreateInFolder(node.path)}
+                        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-text-faint hover:text-emerald-400 transition-all p-0.5 flex-shrink-0"
+                        aria-label={`New file in ${node.name}`}
                         title={`New file in ${node.name}`}
                     >
                         <FilePlus className="h-3 w-3" />
                     </button>
                 )}
                 <button
-                    onClick={(e) => { e.stopPropagation(); onDelete(node); }}
-                    className="opacity-0 group-hover:opacity-100 text-text-faint hover:text-red-500 transition-opacity p-0.5 flex-shrink-0"
+                    type="button"
+                    onClick={() => onDelete(node)}
+                    className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-text-faint hover:text-red-500 transition-opacity p-0.5 flex-shrink-0"
+                    aria-label={`Delete ${node.name}`}
                     title={`Delete ${node.name}`}
                 >
                     <Trash2 className="h-3 w-3" />

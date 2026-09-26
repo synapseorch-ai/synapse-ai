@@ -88,6 +88,8 @@ function stepsToNodes(
                 issues: issuesByStep[step.id],
             },
             selected: step.id === selectedStepId,
+            // A focused node is announced by its step's name, not as an unnamed group.
+            ariaLabel: step.name || step.id,
         };
     });
 }
@@ -498,11 +500,24 @@ export function WorkflowCanvas({
         selectStep(null);
     }, [selectStep]);
 
+    // xyflow selects a focused node on Enter or Space, but calls `onNodeClick`
+    // only for a mouse click, so a keyboard could select a step and never open
+    // its settings (F219). The same keys open them here; Escape closes them, as a
+    // click on the pane does. Selection on mouse-down is left alone, so dragging a
+    // node still does not open anything.
+    const onCanvasKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Escape') return;
+        const node = (e.target as HTMLElement).closest?.('.react-flow__node');
+        const id = node?.getAttribute('data-id');
+        if (!id || node !== e.target) return;
+        selectStep(e.key === 'Escape' ? null : id);
+    }, [selectStep]);
+
     const canvasButtonCls =
         'flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-2 text-xs text-text-muted shadow-md transition-colors hover:text-text';
 
     return (
-        <div className="h-full w-full">
+        <div className="h-full w-full" onKeyDown={onSelectStep ? onCanvasKeyDown : undefined}>
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
