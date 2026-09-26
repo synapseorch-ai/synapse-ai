@@ -137,6 +137,11 @@ async def sweep_interrupted_runs() -> list[str]:
     as before. Accepted gap: in-process runs have no owner column, so a second
     API replica restarting fails the in-process runs a live replica is executing.
 
+    A nested run (`parent__step`) is left to its parent, which this fails and
+    whose resume re-enters it. The AI builder's own runs are swept like any
+    other: skipping every "structural" run left an interrupted build `running`
+    for ever with no pump behind it (F230).
+
     Returns the swept run ids.
     """
     from datetime import timedelta
@@ -145,7 +150,6 @@ async def sweep_interrupted_runs() -> list[str]:
 
     from core.orchestration.journal import FileRunJournal
     from core.orchestration.state import SharedState
-    from core.orchestration.state_store import _is_structural
     from core.store import session
     from core.store.models import OrchestrationRunDB
     from core.tenancy import get_tenant
@@ -174,7 +178,7 @@ async def sweep_interrupted_runs() -> list[str]:
     swept: list[str] = []
     now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     for run_id, worker_id in running:
-        if _is_structural(run_id or "") or (worker_id and worker_id in live):
+        if "__" in (run_id or "") or (worker_id and worker_id in live):
             continue
         try:
             restored = await SharedState.restore(run_id)

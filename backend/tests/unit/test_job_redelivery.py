@@ -308,6 +308,27 @@ class TestTheBootSweep:
         assert await sweep_interrupted_runs() == ["run_inproc"]
         assert (await _run("run_inproc")).status == "failed"
 
+    async def test_a_builder_run_the_previous_server_ran_is_failed(self):
+        """F230: builder runs were skipped as "structural", so one interrupted by
+        a restart said `running` for ever with no pump behind it. The builder
+        panel ignores such a row (F214), but nothing ever closed it."""
+        from core.scale.heartbeat import sweep_interrupted_runs
+        await _running_run("builder_abc123", None)
+
+        assert await sweep_interrupted_runs() == ["builder_abc123"]
+        assert (await _run("builder_abc123")).status == "failed"
+
+    async def test_a_nested_run_is_left_to_its_parent(self):
+        """A nested run (`parent__step`) is resumed through its parent, which the
+        sweep fails; the child is not the sweep's to close."""
+        from core.scale.heartbeat import sweep_interrupted_runs
+        await _running_run("run_parent", None)
+        await _running_run("run_parent__delegate", None)
+        await _running_run("builder_abc__saver", None)
+
+        assert await sweep_interrupted_runs() == ["run_parent"]
+        assert (await _run("run_parent__delegate")).status == "running"
+
     async def test_a_replay_names_the_worker_running_it(
         self, seed_orchestration, agents, worker, fake_redis, monkeypatch,
     ):
