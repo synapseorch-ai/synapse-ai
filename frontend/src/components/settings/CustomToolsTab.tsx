@@ -106,7 +106,7 @@ export const CustomToolsTab = ({
             return <span className="text-2xs font-bold bg-accent-subtle border border-accent/40 text-accent px-1.5 py-0.5 rounded-md">🐍 PYTHON</span>;
         }
         if (t.workflowId || t.url?.includes('webhook')) {
-            return <span className="text-2xs font-bold bg-warning/30 border border-warning/50 text-warning px-1.5 py-0.5 rounded-md">n8n</span>;
+            return <span className="text-2xs font-bold bg-warning/20 border border-warning/50 text-warning px-1.5 py-0.5 rounded-md">n8n</span>;
         }
         return <span className="text-2xs font-bold bg-surface-2 border border-border-strong text-text-muted px-1.5 py-0.5 rounded-md">HTTP</span>;
     };
@@ -545,7 +545,7 @@ export const CustomToolsTab = ({
                                 const allGood = dockerStatus.installed && dockerStatus.running && dockerStatus.image_exists;
                                 if (allGood && !dockerBuildError) {
                                     return (
-                                        <div className="flex items-center gap-2 px-3 py-2 bg-success/30 border border-success/40 rounded-md text-xs text-success">
+                                        <div className="flex items-center gap-2 px-3 py-2 bg-success/20 border border-success/40 rounded-md text-xs text-success">
                                             <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                                             Docker sandbox is ready
                                             <button onClick={checkDockerStatus} disabled={dockerChecking} className="ml-auto text-success hover:opacity-80 transition-opacity disabled:opacity-50">
@@ -555,7 +555,7 @@ export const CustomToolsTab = ({
                                     );
                                 }
                                 return (
-                                    <div className="p-3 bg-warning/30 border border-warning/50 rounded-md space-y-2">
+                                    <div className="p-3 bg-warning/20 border border-warning/50 rounded-md space-y-2">
                                         <div className="flex items-start gap-2">
                                             <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
                                             <div className="flex-1 space-y-1">

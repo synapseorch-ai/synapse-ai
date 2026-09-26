@@ -210,9 +210,13 @@
   --danger: #b91c1c;
   --danger-fg: #ffffff;
   --danger-subtle: #fef2f2;
-  --warning: #a16207;
+  /* Status text sits on a tint of its own colour (a /20 badge), not only on
+     white: #a16207 and #15803d read 3.78:1 and 3.82:1 there, so the MCP
+     servers' "Disconnected" and "Active" failed AA. The 800s read 5.0 and
+     5.2 on those tints and 6.9 and 7.1 on white (F223). */
+  --warning: #854d0e;
   --warning-subtle: #fefce8;
-  --success: #15803d;
+  --success: #166534;
   --success-subtle: #f0fdf4;
 
   --surface-header: #fafafa;
@@ -287,12 +291,23 @@
                                   Un-inverted it was #fee685 on #fffbeb — 1.2:1,
                                   which is not faint text, it is no text (F43) */
 
+  /* --- YELLOW PALETTE INVERSION (run status, toasts, import warnings) --- */
+  /* Yellow had no inversion at all, so "Needs input" kept its dark-mode
+     #ffdf20 on a light ground: 1.25:1 (F223). The same shades amber takes. */
+  --color-yellow-950: #fefce8;
+  --color-yellow-900: #fef9c3;
+  --color-yellow-600: #854d0e;   /* yellow-800 */
+  --color-yellow-500: #a16207;   /* yellow-700 */
+  --color-yellow-400: #854d0e;   /* yellow-800 */
+  --color-yellow-300: #713f12;   /* yellow-900 */
+
   /* --- BLUE PALETTE INVERSION (for badges/links) --- */
   --color-blue-950: #eff6ff;
   --color-blue-900: #dbeafe;
   --color-blue-800: #bfdbfe;
   --color-blue-600: #2563eb;
   --color-blue-400: #1d4ed8;
+  --color-blue-300: #1e40af;     /* blue-800. The Active tab's count read #8ec5ff on its own tint, 1.42:1 (F223) */
 
   /* --- PURPLE/VIOLET PALETTE INVERSION (for orchestration) --- */
   --color-purple-950: #faf5ff;

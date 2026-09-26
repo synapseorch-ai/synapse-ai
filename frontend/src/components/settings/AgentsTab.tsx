@@ -814,7 +814,7 @@ export const AgentsTab = ({
                                                                 <span className="block text-xs font-bold text-text">All Agents</span>
                                                                 <span className="block text-2xs text-text-faint">Allow delegation to any available agent</span>
                                                             </span>
-                                                            {allSelected && <span className="text-2xs px-1.5 py-0.5 bg-success/50 text-success border border-success/40 rounded-md">ACTIVE</span>}
+                                                            {allSelected && <span className="text-2xs px-1.5 py-0.5 bg-success/20 text-success border border-success/40 rounded-md">ACTIVE</span>}
                                                         </label>
 
                                                         {/* Individual agents */}
@@ -1028,7 +1028,7 @@ export const AgentsTab = ({
                                                 .filter(Boolean)
                                                 .join(', or ');
                                             return (
-                                                <div className="mt-3 bg-warning/30 border border-warning/50 p-3 rounded-md">
+                                                <div className="mt-3 bg-warning/20 border border-warning/50 p-3 rounded-md">
                                                     <p className="text-2xs text-text">
                                                         <span className="font-bold">{bound.length === 1 ? 'A chat widget publishes' : 'Chat widgets publish'} this agent</span>{' '}
                                                         ({names}). A visitor there is not a member of this workspace and cannot

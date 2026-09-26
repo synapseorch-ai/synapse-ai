@@ -4114,6 +4114,67 @@ async def check_humandictwarn(browser) -> str:
         drop_fixture(oid)
 
 
+@check
+async def check_badgecontrast(browser) -> str:
+    """Status badges meet AA in both themes with the data that shows them (F223).
+
+    `contrast` walks every screen, but these badges only render with a paused
+    run, an n8n tool or MCP servers in the store, so a clean store passed while
+    a used one read "Needs input" at 1.25:1 and the Active tab's count at 1.42:1
+    (dark-palette yellow and blue kept on a light ground), n8n at 3.27:1 and
+    MCP's Active and Disconnected at 3.82:1 and 3.78:1. The data is stubbed
+    here, so the check sees them on any store.
+    """
+    now = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+    runs = [{"run_id": "run_uismoke_badge", "orchestration_id": "orch_uismoke_badge", "status": "paused",
+             "waiting_for_human": True, "started_at": now, "ended_at": None, "current_step_id": "ask",
+             "steps_completed": 1, "last_step_name": "Ask", "total_cost_usd": 0.0, "score": None,
+             "score_regression": False, "session_id": None},
+            {"run_id": "run_uismoke_badge2", "orchestration_id": "orch_uismoke_badge", "status": "running",
+             "waiting_for_human": False, "started_at": now, "ended_at": None, "current_step_id": "a",
+             "steps_completed": 0, "last_step_name": None, "total_cost_usd": 0.0, "score": None,
+             "score_regression": False, "session_id": None}]
+    tools = [{"name": "uismoke_n8n", "generalName": "Smoke n8n", "description": "an n8n workflow",
+              "tool_type": "http", "url": "http://127.0.0.2:9/webhook/x", "method": "POST", "workflowId": "wf_1"}]
+    servers = [{"name": "uismoke_on", "label": "Smoke on", "server_type": "remote", "status": "connected",
+                "url": "http://127.0.0.2:9/mcp", "token_set": False},
+               {"name": "uismoke_off", "label": "Smoke off", "server_type": "remote", "status": "disconnected",
+                "url": "http://127.0.0.2:9/mcp", "token_set": False},
+               {"name": "uismoke_auth", "label": "Smoke auth", "server_type": "remote", "status": "reauth_needed",
+                "url": "http://127.0.0.2:9/mcp", "token_set": False}]
+    bad: list[str] = []
+    for theme in ("light", "dark"):
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+        def serving(body):
+            # One argument only: Playwright hands a two-argument handler the request too.
+            async def fulfil(route):
+                if route.request.method != "GET":
+                    return await route.continue_()
+                await route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+            return fulfil
+        for pattern, body in (("**/api/orchestrations/runs", runs), ("**/api/tools/custom", tools),
+                              ("**/api/mcp/servers", servers)):
+            await ctx.route(pattern, serving(body))
+        page = await ctx.new_page()
+        try:
+            # Each fixture's own label: "n8n" alone also names a hidden control.
+            for path, shows in (("/orchestrations", "Needs input"), ("/tools", "Smoke n8n"), ("/mcp-servers", "Smoke off")):
+                await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+                try:
+                    await page.get_by_text(shows, exact=True).first.wait_for(timeout=20_000)
+                except Exception:
+                    raise AssertionError(f"{path} never showed {shows!r}, so this checks nothing")
+                await asyncio.sleep(1.0)
+                for row in await page.evaluate(CONTRAST):
+                    bad.append(f"{theme} {path}: {row['ratio']}:1 {row['fg']} on {row['bg']} — {row['txt'][:20]!r}")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError(f"{len(bad)} under AA — " + "; ".join(bad[:6]))
+    return "run, tool and MCP status badges meet AA in both themes"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
