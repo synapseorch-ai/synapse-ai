@@ -11,6 +11,7 @@
 
 import type { Orchestration, StepIssue } from '@/types/orchestration';
 import { BUILTIN_STATE_KEYS } from './graph';
+import { normalizeStateType } from './stateTypes';
 
 export interface ValidationResult {
     byStep: Record<string, StepIssue[]>;
@@ -218,6 +219,40 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
         for (const key of s.input_keys || []) {
             if (!knownKeys.has(key)) {
                 add(s.id, warning(`Input key “${key}” is not in the state schema and no step outputs it`));
+            }
+        }
+    }
+
+    // --- A human step's answer and the key it lands in (F189) ---
+    // The builder's validator raises the same two. A human step with fields
+    // stores the mapping {field: value} it was answered with under its key, so
+    // a key the schema types as text or a number holds the wrong thing, and a
+    // Print that shows the key whole prints a Python dict. Warnings, not
+    // errors: the run works, it just says the wrong thing.
+    const schema = orch.state_schema || {};
+    const fielded = new Map<string, { stepName: string; field: string }>();
+    for (const s of orch.steps) {
+        if (s.type !== 'human') continue;
+        const names = (s.human_fields || []).map((f) => f?.name).filter((n): n is string => !!n);
+        if (!names.length) continue;
+        const key = s.output_key?.trim() || 'human_response';
+        fielded.set(key, { stepName: s.name, field: names[0] });
+        const declared = normalizeStateType(schema[key]?.type);
+        if (declared && declared !== 'dict') {
+            add(s.id, warning(
+                `Collects fields (${names.join(', ')}), so “${key}” holds a mapping {field: value}, not ${declared}: ` +
+                `declare it dict in the state schema and read one field as {state.${key}.${names[0]}}`,
+            ));
+        }
+    }
+    for (const s of orch.steps) {
+        if (s.type !== 'print') continue;
+        for (const [key, { stepName, field }] of fielded) {
+            if ((s.print_content || '').includes(`{state.${key}}`)) {
+                add(s.id, warning(
+                    `Shows {state.${key}}, “${stepName}”’s whole answer, which prints as a Python dict: ` +
+                    `show one field, {state.${key}.${field}}`,
+                ));
             }
         }
     }

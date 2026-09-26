@@ -4054,6 +4054,66 @@ async def check_resumesettle(browser) -> str:
         drop_fixture(oid)
 
 
+def review_dict_orchestration(oid: str, repaired: bool) -> dict:
+    """F189's shape: a review step with one field whose key is named after it."""
+    key = "final_summary"
+    return {
+        "id": oid, "name": "ui-smoke review dict", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "trigger": "manual", "entry_step_id": f"{oid}_ask",
+        "state_schema": {key: {"type": "dict" if repaired else "str", "default": {} if repaired else "", "description": ""}},
+        "steps": [
+            {"id": f"{oid}_ask", "name": "Review", "type": "human", "human_prompt": "Summarise the run",
+             "position_x": 0, "position_y": 0,
+             "human_fields": [{"name": key, "type": "text", "label": "Summary"}],
+             "next_step_id": f"{oid}_print", "output_key": key},
+            {"id": f"{oid}_print", "name": "Print", "type": "print", "next_step_id": None, "output_key": "out",
+             "position_x": 0, "position_y": 320,
+             "print_content": f"Final Summary: {{state.{key}.{key}}}" if repaired else f"Final Summary: {{state.{key}}}"},
+        ],
+    }
+
+
+@check
+async def check_humandictwarn(browser) -> str:
+    """The editor warns where the builder's validator does: a fielded answer read as text (F189's twin).
+
+    A human step with fields stores the mapping it was answered with, so a key
+    the schema types as `str` holds a dict, and a Print of `{state.key}` shows
+    a Python repr. The builder's validator catches both since B3; a flow made by
+    hand in the editor got no word of either.
+    """
+    oid = f"orch_uismoke_dict_{int(time.time())}"
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    panel = page.locator('aside[aria-label="Step configuration"]')
+
+    async def said(step_id: str) -> str:
+        # By id: the Print's card carries the warning, which names "Review".
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        node = page.locator(f'.react-flow__node[data-id="{step_id}"]')
+        await node.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await node.focus()
+        await page.keyboard.press("Enter")
+        await asyncio.sleep(1.0)
+        return await panel.inner_text() if await panel.count() else ""
+    try:
+        api("/api/orchestrations", "POST", review_dict_orchestration(oid, repaired=False))
+        ask, show = await said(f"{oid}_ask"), await said(f"{oid}_print")
+        if "holds a mapping" not in ask:
+            raise AssertionError("a fielded review step whose key is typed str gets no warning")
+        if "Python dict" not in show:
+            raise AssertionError("a Print of a fielded answer's whole key gets no warning")
+        api("/api/orchestrations", "POST", review_dict_orchestration(oid, repaired=True))
+        ask, show = await said(f"{oid}_ask"), await said(f"{oid}_print")
+        if "holds a mapping" in ask or "Python dict" in show:
+            raise AssertionError("the repair the warnings name still warns")
+        return "a fielded answer typed as text, or printed whole, is warned about, and its repair is not"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
