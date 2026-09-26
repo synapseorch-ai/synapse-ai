@@ -17,6 +17,7 @@ this product and the commercial one.
 import asyncio
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -161,9 +162,16 @@ async def _selected_model(request_model: str | None) -> str | None:
     return load_settings().get("builder_model") or None
 
 
-def _session_id(client_session_id: str) -> str:
+#: Marks a conversation held by the builder panel. The chat page's builder-typed
+#: agent starts runs of the same orchestration under its own chat session id, so
+#: without this the panel could reopen a chat conversation as its own (F214).
+PANEL = "panel:"
+
+
+def _session_id(client_session_id: str, *, panel: bool = False) -> str:
     from core.tenancy import get_tenant
-    return f"builder:{get_tenant()}:{client_session_id or 'default'}"
+    key = client_session_id or "default"
+    return f"builder:{get_tenant()}:{PANEL if panel else ''}{key}"
 
 
 async def reject_unseeable_images(request: BuilderChatRequest) -> None:
@@ -196,13 +204,16 @@ MISSING_BUILDER = {
 }
 
 
-async def prepare_builder_run(request: BuilderChatRequest, server_module):
+async def prepare_builder_run(request: BuilderChatRequest, server_module, *, panel: bool = False):
     """Everything up to the first step: the run's id and the engine's generator.
 
     Separate from the streaming so the caller can decide *where* the run is
-    spawned, and that turns out to matter — see `builder_chat`.
+    spawned, and that turns out to matter — see `builder_chat`. `panel` is the
+    builder panel's own door, whose conversations it can reopen (F214).
     """
     from core.store.resources import get_orchestration
+
+    session_id = _session_id(request.client_session_id, panel=panel)
 
     orch_data = await get_orchestration(NATIVE_BUILDER_ORCH_ID)
     if not orch_data:
@@ -229,7 +240,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module):
         **await _target_state(
             request.message,
             request.current_orchestration_id,
-            await _previous_matches(_session_id(request.client_session_id)),
+            await _previous_matches(session_id),
         ),
         "org_profile": await _workspace_profile(),
         "requirements": "",
@@ -243,7 +254,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module):
     return run_id, engine.run(
         initial_input=request.message,
         run_id=run_id,
-        session_id=_session_id(request.client_session_id),
+        session_id=session_id,
         initial_state=initial_state,
     )
 
@@ -313,6 +324,167 @@ def _refuse_if_active(run_id: str) -> None:
         raise HTTPException(status_code=409, detail="Run is already active")
 
 
+#: How long a builder run may wait on its question before it is cancelled
+#: (F214, Naveen 2026-09-26). Long enough for a plan left overnight.
+PARKED_BUILDER_TTL = timedelta(hours=24)
+
+#: How many of a conversation's turns come back with it: its newest runs.
+HISTORY_TURNS = 10
+
+#: A builder run someone can come back to: parked on a question, or working.
+_OPEN = ("running", "paused")
+
+
+def _parked_since(step_history: list | None, created_at: datetime | None) -> datetime | None:
+    """When the run's newest question was asked: its pause entry, else the run."""
+    for entry in reversed(step_history or []):
+        if isinstance(entry, dict) and entry.get("status") == "paused" and entry.get("started_at"):
+            try:
+                return datetime.strptime(entry["started_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                break
+    if created_at is not None and created_at.tzinfo is None:
+        return created_at.replace(tzinfo=timezone.utc)  # SQLite hands back naive UTC
+    return created_at
+
+
+async def _expire_parked() -> list[str]:
+    """Cancel this workspace's builder runs that have waited on a question too long.
+
+    Nothing else ever ends one. The panel's own New conversation cancels the run
+    it holds, but a reload, a closed tab or a second browser left it paused for
+    good, on no screen (builder runs are hidden, F162). Run whenever the builder
+    is used, rather than on a timer: an install nobody opens loses nothing by
+    waiting. Only the builder's orchestration: a workflow's own run waiting on a
+    person is that person's to answer, however long it takes.
+    """
+    from sqlalchemy import select
+
+    from core.orchestration.cancel import cancel_run
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        rows = (await s.execute(
+            select(OrchestrationRunDB.run_id, OrchestrationRunDB.step_history,
+                   OrchestrationRunDB.created_at)
+            .where(
+                OrchestrationRunDB.tenant_id == get_tenant(),
+                OrchestrationRunDB.orchestration_id == NATIVE_BUILDER_ORCH_ID,
+                OrchestrationRunDB.status == "paused",
+                OrchestrationRunDB.waiting_for_human.is_(True),
+            )
+        )).all()
+    cutoff = datetime.now(timezone.utc) - PARKED_BUILDER_TTL
+    expired = []
+    for run_id, history, created_at in rows:
+        since = _parked_since(history, created_at)
+        if since is not None and since < cutoff:
+            try:
+                await cancel_run(run_id)
+                expired.append(run_id)
+            except Exception:  # noqa: BLE001 — one run that will not cancel must not stop the builder
+                _log.warning("could not expire parked builder run %s", run_id, exc_info=True)
+    return expired
+
+
+async def _open_conversation() -> dict | None:
+    """The panel's newest conversation that is still open, from its run rows (F214).
+
+    The panel held its conversation in React state only, so a reload showed the
+    greeting while the server finished the turn, and a plan waiting for approval
+    sat paused on no screen. Cloud's F148, in open source: read back from the
+    runs rather than the run's event journal, so the turns survive whatever the
+    journal does not. A `running` run is offered only while this process drives
+    it — after a restart one is left `running` with nothing writing to it, and
+    following it would wait for ever.
+    """
+    from sqlalchemy import select
+
+    from core.orchestration.pauses import asking_step_id
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    prefix = f"builder:{get_tenant()}:{PANEL}"
+    async with session() as s:
+        candidates = (await s.execute(
+            select(OrchestrationRunDB)
+            .where(
+                OrchestrationRunDB.tenant_id == get_tenant(),
+                OrchestrationRunDB.orchestration_id == NATIVE_BUILDER_ORCH_ID,
+                OrchestrationRunDB.session_id.like(f"{prefix}%"),
+                OrchestrationRunDB.status.in_(_OPEN),
+            )
+            .order_by(OrchestrationRunDB.created_at.desc())
+            .limit(5)
+        )).scalars().all()
+
+        def live(row) -> bool:
+            if not (row.session_id or "").startswith(prefix):
+                return False  # LIKE's `_` matches any one character
+            if row.status == "paused":
+                return bool(row.waiting_for_human)
+            task = _active_tasks.get(row.run_id)
+            return task is not None and not task.done()
+
+        run = next((row for row in candidates if live(row)), None)
+        if run is None:
+            return None
+        rows = (await s.execute(
+            select(OrchestrationRunDB.run_id, OrchestrationRunDB.shared_state,
+                   OrchestrationRunDB.human_prompt)
+            .where(
+                OrchestrationRunDB.tenant_id == get_tenant(),
+                OrchestrationRunDB.session_id == run.session_id,
+            )
+            .order_by(OrchestrationRunDB.created_at.desc())
+            .limit(HISTORY_TURNS)
+        )).all()
+
+    turns = []
+    for run_id, state, asked in reversed(rows):
+        state = state or {}
+        # The open run's question is `pending`, not something already said.
+        said = "" if run_id == run.run_id else str(
+            state.get("summary") or asked or state.get("requirements") or "")
+        turns.append({"user": str(state.get("user_message") or ""), "assistant": said.strip()})
+
+    # Where the run's journal stood when it was read. A working run is followed
+    # from its journal's start, which replays the questions it has already had
+    # answered; only one past this is the question it is asking now.
+    from core.orchestration.journal import open_journal
+    journal = open_journal(run.run_id) if run.status == "running" else None
+    cursor = journal.last_id() if journal is not None else 0
+
+    pending = None
+    if run.status == "paused":
+        fields = run.human_fields if isinstance(run.human_fields, list) else []
+        first = fields[0] if fields and isinstance(fields[0], dict) else {}
+        pending = {
+            "run_id": run.run_id,
+            "field": first.get("name") or "feedback",
+            "step_id": asking_step_id(run.step_history, run.current_step_id),
+            "prompt": run.human_prompt or "",
+        }
+    return {
+        "client_session_id": run.session_id[len(prefix):],
+        "run_id": run.run_id,
+        "status": run.status,
+        "turns": turns,
+        "pending": pending,
+        "cursor": str(cursor),
+    }
+
+
+@router.get("/api/builder/conversation")
+async def builder_conversation():
+    """The panel's conversation that is still open, if any, to redraw after a reload."""
+    await _expire_parked()
+    return {"conversation": await _open_conversation()}
+
+
 @router.post("/api/builder/chat")
 async def builder_chat(request: BuilderChatRequest, http_request: Request):
     """Start a build and stream it.
@@ -329,7 +501,9 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
     every route.
     """
     await reject_unseeable_images(request)
-    prepared = await prepare_builder_run(request, http_request.app.state.server_module)
+    await _expire_parked()
+    prepared = await prepare_builder_run(
+        request, http_request.app.state.server_module, panel=True)
     if prepared is None:
         return _one(dict(MISSING_BUILDER))
     run_id, agen = prepared

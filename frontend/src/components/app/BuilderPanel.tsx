@@ -126,22 +126,34 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
 }
 
 /**
- * A question the run is waiting on — usually the plan, which runs long.
+ * A question the run asked — usually the plan, which runs long.
  *
  * `onStop` on the question still open, and only there. The composer below is
  * for the answer, so the other way out of a question belongs on the question —
  * the same pair the run page's own card offers. Without it a build parked on a
  * question can only be answered, and walking away leaves it paused for good.
+ *
+ * Only the open question says it needs an answer. Every card used to, answered
+ * or not; a conversation brought back by a reload (F214) replays the questions
+ * already answered without the answers, and each one read as still waiting.
  */
-function HumanPromptCard({ content, onStop }: { content: string; onStop?: () => void }) {
+function HumanPromptCard({ content, onStop, open }: { content: string; onStop?: () => void; open: boolean }) {
     const [expanded, setExpanded] = useState(false);
     const isLong = content.length > COLLAPSE_THRESHOLD;
     const visible = isLong && !expanded ? `${content.slice(0, COLLAPSE_THRESHOLD)}…` : content;
 
     return (
-        <div className="overflow-hidden rounded-lg border border-warning/40 bg-warning-subtle/40">
-            <div className="border-b border-warning/30 px-3 py-1.5">
-                <span className="font-code text-[9px] uppercase tracking-widest text-warning">Needs your answer</span>
+        <div className={cn(
+            'overflow-hidden rounded-lg border',
+            open ? 'border-warning/40 bg-warning-subtle/40' : 'border-border bg-surface-2/40',
+        )}>
+            <div className={cn('border-b px-3 py-1.5', open ? 'border-warning/30' : 'border-border')}>
+                <span className={cn(
+                    'font-code text-[9px] uppercase tracking-widest',
+                    open ? 'text-warning' : 'text-text-faint',
+                )}>
+                    {open ? 'Needs your answer' : 'Asked'}
+                </span>
             </div>
             <div className="px-3 py-2.5 text-[12px] leading-relaxed text-text">
                 {renderTextContent(visible)}
@@ -332,6 +344,7 @@ export function BuilderPanel() {
                                 <HumanPromptCard
                                     key={message.key}
                                     content={message.content}
+                                    open={message.key === openQuestionKey}
                                     onStop={message.key === openQuestionKey ? () => void stop() : undefined}
                                 />
                             );

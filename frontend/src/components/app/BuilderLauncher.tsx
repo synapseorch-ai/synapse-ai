@@ -12,7 +12,10 @@ import { Hint, Mark } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
 
 export function BuilderLauncher() {
-    const { isOpen, open, streaming } = useBuilder();
+    const { isOpen, open, streaming, state } = useBuilder();
+    // A question waiting on the person, whether asked in this page or brought
+    // back by a reload (F214): with the panel closed, this is the only sign.
+    const waiting = state.pending !== null;
 
     if (isOpen) return null;
 
@@ -31,7 +34,7 @@ export function BuilderLauncher() {
                 <button
                     type="button"
                     onClick={() => open()}
-                    aria-label="Open the AI builder"
+                    aria-label={waiting ? 'Open the AI builder (waiting for your answer)' : 'Open the AI builder'}
                     className={cn(
                         // `relative`, because the fixed position that used to
                         // anchor the streaming dot now lives on the wrapper.
@@ -42,9 +45,12 @@ export function BuilderLauncher() {
                     )}
                 >
                     <Mark size={22} compact={false} aria-hidden />
-                    {streaming && (
+                    {(streaming || waiting) && (
                         <span
-                            className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-accent"
+                            className={cn(
+                                'absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full',
+                                waiting ? 'bg-warning' : 'bg-accent',
+                            )}
                             aria-hidden
                         />
                     )}

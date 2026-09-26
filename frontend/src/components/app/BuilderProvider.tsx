@@ -24,6 +24,7 @@ import {
     type SavedResource,
 } from '@/lib/builderEvents';
 import { usePersisted } from '@/components/ui';
+import { isPanelEvent, reattachedState, type OpenConversation } from '@/lib/builderReattach';
 import type { ProviderModels } from '@/lib/models';
 import { readWithStallTimeout } from '@/lib/sse';
 
@@ -59,6 +60,37 @@ const WELCOME: BuilderMessage = {
         '- "Add a tool that files a ticket in our issue tracker"\n' +
         '- "Change the research workflow to ask me before it sends anything"',
 };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RunEvent = Record<string, any>;
+
+/**
+ * A journal event shrunk past 32 KB, completed from the run itself. The journal
+ * marks what it cut `truncated: true`, and may have cut a completion's summary
+ * or a plan down to 2,000 characters, or to its type alone; the run's own row
+ * holds the whole of both.
+ */
+async function fromTheRun(runId: string, event: RunEvent): Promise<RunEvent> {
+    try {
+        const response = await fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}`);
+        if (!response.ok) return event;
+        const run = await response.json();
+        if (event.type === 'orchestration_complete') {
+            return { ...event, run_id: runId, final_state: run.shared_state ?? {} };
+        }
+        if (event.type === 'human_input_required') {
+            return {
+                ...event, run_id: runId,
+                prompt: run.human_prompt ?? event.prompt,
+                fields: run.human_fields ?? event.fields,
+                orch_step_id: event.orch_step_id ?? run.current_step_id,
+            };
+        }
+    } catch {
+        /* the shrunk event is still better than none */
+    }
+    return event;
+}
 
 function newSessionId(): string {
     return typeof crypto !== 'undefined' && crypto.randomUUID
@@ -157,6 +189,12 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const pendingRef = useRef<BuilderState['pending']>(null);
     /** Set by `stop`, so an aborted stream reads as stopped rather than as a fault. */
     const stopRequested = useRef(false);
+    /**
+     * Whether this page has used the panel yet. The conversation a reload brings
+     * back (F214) is drawn only onto a panel nobody has typed into: a message
+     * sent before the lookup answered must not be replaced by an older one.
+     */
+    const touched = useRef(false);
     //: The pending unmount at the end of the close transition, so `open` can cancel it.
     const exitTimer = useRef<number | null>(null);
 
@@ -237,6 +275,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     }, []);
 
     const newConversation = useCallback(() => {
+        touched.current = true;
         // A run parked on a question has nothing else to end it: walking away
         // leaves it paused for good. A run still *working* is left alone —
         // stopping it mid-build could strand half of what it was writing, and
@@ -253,13 +292,29 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         window.dispatchEvent(new CustomEvent(RESOURCE_SAVED_EVENT, { detail: saved }));
     }, []);
 
+    /**
+     * Read a run's events into the panel.
+     *
+     * `following` is set when the stream is the run's journal rather than the
+     * response to a message (a reload brought the run back, F214). The journal
+     * stays open across a pause, where this product answers through
+     * `/api/builder/resume`'s own stream, so reading stops at the question the
+     * run is asking now — the journal replays the ones already answered, which
+     * sit at or before `following.cursor`. It also shrinks an event past 32 KB,
+     * so a shrunk completion or question is re-read from the run itself.
+     */
     const consume = useCallback(
-        async (response: Response) => {
+        async (
+            response: Response,
+            following?: { runId: string; cursor: number },
+        ): Promise<'paused' | 'ended'> => {
             const reader = response.body?.getReader();
-            if (!reader) return;
+            if (!reader) return 'ended';
             const decoder = new TextDecoder();
             let buffer = '';
             let seq = 0;
+            // The journal's id for the event that follows (`id: N`).
+            let eventId: number | null = null;
 
             for (;;) {
                 const { done, value } = await readWithStallTimeout(reader, abortRef.current!);
@@ -268,28 +323,116 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 const lines = buffer.split('\n');
                 buffer = lines.pop() ?? '';
                 for (const line of lines) {
+                    if (line.startsWith('id: ')) {
+                        eventId = Number(line.slice(4));
+                        continue;
+                    }
                     if (!line.startsWith('data: ')) continue;
+                    const thisId = eventId;
+                    eventId = null;
                     let event: unknown;
                     try {
                         event = JSON.parse(line.slice(6));
                     } catch {
                         continue; // a heartbeat or a half-written frame
                     }
+                    let parsed = event as RunEvent;
+                    if (!isPanelEvent(parsed?.type)) continue;
+                    if (following && parsed.truncated) parsed = await fromTheRun(following.runId, parsed);
                     seq += 1;
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    const parsed = event as any;
                     setState((prev) => applyBuilderEvent(prev, parsed, seq));
                     if (parsed?.type === 'resource_saved') announce(parsed as SavedResource);
+                    if (following && parsed?.type === 'human_input_required') {
+                        // Answered before the conversation was read: history.
+                        const replayed = thisId !== null && Number.isFinite(thisId) && thisId <= following.cursor;
+                        if (!replayed) {
+                            await reader.cancel().catch(() => undefined);
+                            return 'paused';
+                        }
+                    }
                 }
             }
+            return 'ended';
         },
         [announce],
     );
+
+    /** A failed or stopped stream, said in the conversation. */
+    const reportStreamEnd = useCallback((error: unknown) => {
+        const aborted = (error as Error)?.name === 'AbortError';
+        // Stop gave up waiting for the run's own cancel event. Say so
+        // here, because nothing else will now.
+        if (aborted && stopRequested.current) {
+            setState((prev) => ({
+                ...prev,
+                status: null, pending: null, done: true, error: null,
+                messages: [
+                    ...prev.messages,
+                    { role: 'assistant', content: 'Stopped.', kind: 'text', key: `stopped-${prev.messages.length}` },
+                ],
+            }));
+        } else if (!aborted) {
+            const message = (error as Error)?.message ?? 'Something went wrong.';
+            setState((prev) => ({
+                ...prev,
+                error: message,
+                messages: [
+                    ...prev.messages,
+                    { role: 'assistant', content: `**${message}**`, kind: 'text', key: `error-${prev.messages.length}` },
+                ],
+            }));
+        }
+    }, []);
+
+    /** Follow a run the panel did not start, from its journal's beginning (F214). */
+    const follow = useCallback(async (runId: string, cursor: number) => {
+        const controller = new AbortController();
+        abortRef.current = controller;
+        setStreaming(true);
+        try {
+            const response = await fetch(
+                `/api/orchestrations/runs/${encodeURIComponent(runId)}/events/stream?after=0`,
+                { signal: controller.signal },
+            );
+            if (!response.ok) throw new Error(`The build could not be followed (${response.status}).`);
+            await consume(response, { runId, cursor });
+        } catch (error) {
+            reportStreamEnd(error);
+        } finally {
+            setStreaming(false);
+            if (abortRef.current === controller) abortRef.current = null;
+            stopRequested.current = false;
+        }
+    }, [consume, reportStreamEnd]);
+
+    // A reload brings back the conversation still open (F214): the panel is
+    // redrawn from the run rows, and a run still working is followed.
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const response = await fetch('/api/builder/conversation');
+                if (!response.ok || cancelled || touched.current) return;
+                const { conversation } = (await response.json()) as { conversation: OpenConversation | null };
+                if (!conversation || cancelled || touched.current) return;
+                touched.current = true;
+                clientSessionId.current = conversation.client_session_id;
+                setState(reattachedState(conversation, WELCOME));
+                if (conversation.status === 'running') {
+                    void follow(conversation.run_id, Number(conversation.cursor ?? 0) || 0);
+                }
+            } catch {
+                /* the panel opens on its greeting, as before */
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [follow]);
 
     const send = useCallback(
         async (text: string, images: string[] = []) => {
             // An image on its own is a message. Only an empty one is nothing.
             if ((!text.trim() && !images.length) || streaming) return;
+            touched.current = true;
             const pending = state.pending;
 
             setState((prev) => ({
@@ -345,36 +488,14 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 if (!response.ok) throw new Error(`The builder could not be reached (${response.status}).`);
                 await consume(response);
             } catch (error) {
-                const aborted = (error as Error)?.name === 'AbortError';
-                // Stop gave up waiting for the run's own cancel event. Say so
-                // here, because nothing else will now.
-                if (aborted && stopRequested.current) {
-                    setState((prev) => ({
-                        ...prev,
-                        status: null, pending: null, done: true, error: null,
-                        messages: [
-                            ...prev.messages,
-                            { role: 'assistant', content: 'Stopped.', kind: 'text', key: `stopped-${prev.messages.length}` },
-                        ],
-                    }));
-                } else if (!aborted) {
-                    const message = (error as Error)?.message ?? 'Something went wrong.';
-                    setState((prev) => ({
-                        ...prev,
-                        error: message,
-                        messages: [
-                            ...prev.messages,
-                            { role: 'assistant', content: `**${message}**`, kind: 'text', key: `error-${prev.messages.length}` },
-                        ],
-                    }));
-                }
+                reportStreamEnd(error);
             } finally {
                 setStreaming(false);
                 abortRef.current = null;
                 stopRequested.current = false;
             }
         },
-        [consume, conversationId, sessionModel, state.messages, state.pending, streaming],
+        [consume, conversationId, reportStreamEnd, sessionModel, state.messages, state.pending, streaming],
     );
 
     /**

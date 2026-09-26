@@ -3008,6 +3008,149 @@ async def check_turnpause(browser) -> str:
             raise AssertionError(f"{what}: a turn waiting for its answer is reported as a dropped connection")
     return "a tool approval and a human step each wait without a failure bar"
 
+
+#: The builder's conversation as the backend would bring it back after a
+#: reload, and every stream the panel then opens held open by the test:
+#: `/api/builder/resume` and a run's journal (`/events/stream`). Each call is
+#: recorded with its body.
+BUILDER_BACK = r"""
+window.__calls = [];
+window.__follow = {};
+const _backFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || 'GET').toUpperCase();
+  if (url.includes('/api/builder/conversation')) {
+    return Promise.resolve(new Response(JSON.stringify({conversation: window.__conversation}), {
+      status: 200, headers: {'Content-Type': 'application/json'},
+    }));
+  }
+  if (url.includes('/api/builder/') || url.includes('/events/stream')) {
+    window.__calls.push({url: url, method: method, body: init && init.body ? String(init.body) : null});
+    const body = new ReadableStream({
+      start(c) {
+        window.__follow.push = (event, id) => c.enqueue(new TextEncoder().encode(
+          (id != null ? 'id: ' + id + '\n' : '') + 'data: ' + JSON.stringify(event) + '\n\n'));
+        window.__follow.close = () => { try { c.close(); } catch (e) {} };
+      },
+      cancel() { window.__follow.cancelled = true; },
+    });
+    return Promise.resolve(new Response(body, {
+      status: 200, headers: {'Content-Type': 'text/event-stream'},
+    }));
+  }
+  return _backFetch(input, init);
+};
+"""
+
+
+async def _builder_back(browser, conversation: dict):
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(f"window.__conversation = {json.dumps(conversation)};")
+    await ctx.add_init_script(BUILDER_BACK)
+    page = await ctx.new_page()
+    await page.goto(APP, wait_until="domcontentloaded")
+    await asyncio.sleep(SETTLE + 1.0)
+    return ctx, page
+
+
+async def _panel_text(page) -> str:
+    return await page.evaluate(
+        "() => (document.querySelector('aside[aria-label=\"AI builder\"]') || {}).innerText || ''")
+
+
+@check
+async def check_builderreload(browser) -> str:
+    """A reload brings the builder's conversation back (F214).
+
+    The panel held its conversation in React state only: a reload showed the
+    greeting while the server finished the turn, and a plan waiting for
+    approval stayed paused on no screen, for ever. Both shapes are checked: a
+    plan waiting (redrawn, and the next message answers it), and a build still
+    working (followed from its journal until it asks).
+    """
+    # ── a plan waiting for approval ─────────────────────────────────────────
+    parked = {
+        "client_session_id": "conv-uismoke", "run_id": RUN_ID, "status": "paused",
+        "turns": [{"user": "a weekly digest of the tickets", "assistant": ""}],
+        "pending": {"run_id": RUN_ID, "field": "feedback", "step_id": "step_human_review",
+                    "prompt": "Here is the proposed plan: one step that summarises."},
+    }
+    ctx, page = await _builder_back(browser, parked)
+    try:
+        launcher = page.get_by_role("button", name=re.compile("Open the AI builder"))
+        named = await launcher.get_attribute("aria-label") or ""
+        if "waiting" not in named:
+            raise AssertionError(f"a plan waiting after a reload does not show on the launcher ({named!r})")
+        await launcher.click()
+        await asyncio.sleep(0.5)
+        text = await _panel_text(page)
+        for shown in ("a weekly digest of the tickets", "Here is the proposed plan: one step that summarises."):
+            if shown not in text:
+                raise AssertionError(f"after a reload the panel does not show {shown!r}")
+        await page.locator('aside[aria-label="AI builder"] textarea').fill("approve")
+        # With a question open, Send is named for what it does.
+        send = page.get_by_role("button", name="Send your answer", exact=True)
+        for _ in range(20):
+            if not await send.is_disabled():
+                break
+            await asyncio.sleep(0.1)
+        await send.click()
+        await asyncio.sleep(0.5)
+        calls = await page.evaluate("() => window.__calls")
+    finally:
+        await ctx.close()
+    if any("/api/builder/chat" in c["url"] for c in calls):
+        raise AssertionError("answering the plan brought back by a reload started a new conversation")
+    resumed = [json.loads(c["body"]) for c in calls if "/api/builder/resume" in c["url"] and c["body"]]
+    if not resumed or resumed[0].get("run_id") != RUN_ID or resumed[0].get("response") != {"feedback": "approve"}:
+        raise AssertionError(f"the answer did not resume the waiting run: {calls}")
+
+    # ── a build still working ───────────────────────────────────────────────
+    # Its journal is replayed from the start, so the question it already had
+    # answered (id 3, at or before the cursor) comes past again; reading must
+    # not stop there, only at a question asked after the conversation was read.
+    running = {
+        "client_session_id": "conv-uismoke", "run_id": RUN_ID, "status": "running",
+        "turns": [{"user": "build the digest", "assistant": ""}], "pending": None, "cursor": "5",
+    }
+    ctx, page = await _builder_back(browser, running)
+    try:
+        for _ in range(40):
+            if await page.evaluate("() => typeof (window.__follow || {}).push === 'function'"):
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise AssertionError("a build still working after a reload is not followed")
+        await page.evaluate(
+            f"(id) => {{ window.__follow.push({{type: 'human_input_required', run_id: id,"
+            f" orch_step_id: 'step_human_clarify', prompt: 'Which tickets?', fields: [{{name: 'answer'}}]}}, 3);"
+            " window.__follow.push({type: '_step_progress', orch_step_id: 's1'}, 4);"
+            " window.__follow.push({type: 'step_start', orch_step_id: 's1', step_name: 'Draft the plan'}, 6); }", RUN_ID)
+        await asyncio.sleep(0.5)
+        if await page.evaluate("() => !!window.__follow.cancelled"):
+            raise AssertionError("reading stopped at a question the build had already had answered")
+        await page.get_by_role("button", name=re.compile("Open the AI builder")).click()
+        await asyncio.sleep(0.5)
+        if "Draft the plan" not in await _panel_text(page):
+            raise AssertionError("the followed build's progress never reached the panel")
+        await page.evaluate(
+            f"(id) => window.__follow.push({{type: 'human_input_required', run_id: id,"
+            f" orch_step_id: 'step_human_review', prompt: 'Is this plan right?',"
+            f" fields: [{{name: 'feedback'}}]}}, 7)", RUN_ID)
+        state = await _settle(page, "(s) => s.parked && s.textareaDisabled === false")
+        stopped = await page.evaluate("() => !!window.__follow.cancelled")
+        calls = await page.evaluate("() => window.__calls")
+    finally:
+        await ctx.close()
+    if not any(f"/runs/{RUN_ID}/events/stream?after=0" in c["url"] for c in calls):
+        raise AssertionError(f"the build was not read from its journal's start: {calls}")
+    if not state.get("parked") or state.get("textareaDisabled") is not False:
+        raise AssertionError(f"the followed build's question cannot be answered: {state}")
+    if not stopped:
+        raise AssertionError("the panel kept reading the journal past the question it answers elsewhere")
+    return "a waiting plan comes back and is answered; a working build is followed until it asks"
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
