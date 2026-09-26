@@ -69,10 +69,26 @@ function applyStepHistory(
 ): Record<string, RunStepStatus> {
     const next = { ...prev };
     for (const h of stepHistory) {
-        if (h?.step_id) next[h.step_id] = h.status === 'failed' ? 'failed' : 'completed';
+        if (!h?.step_id) continue;
+        // A question closed by a cancel was never answered: not green (F193).
+        next[h.step_id] = h.status === 'failed' ? 'failed' : h.status === 'cancelled' ? 'pending' : 'completed';
     }
     return next;
 }
+
+// A cancelled run is not asking anything: the step that asked stops waiting (F193).
+function settleQuestion(prev: Record<string, RunStepStatus>): Record<string, RunStepStatus> {
+    if (!Object.values(prev).includes('paused')) return prev;
+    const next = { ...prev };
+    for (const k in next) { if (next[k] === 'paused') next[k] = 'pending'; }
+    return next;
+}
+
+// Every cancel says this on a run's stream: the pump, the fleet and `cancel_run`.
+const isCancel = (event: { type?: string; error?: unknown }) =>
+    event?.type === 'orchestration_error' && event.error === 'Cancelled';
+
+const CANCELLED_LINE = '[Cancelled]';
 
 const EMPTY_ORCHESTRATION: Orchestration = {
     id: '',
@@ -497,10 +513,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         // Restore step statuses + human-input state from the persisted checkpoint
         // so the canvas is meaningful before (and in case of a pre-journal run,
         // without) the journal replay.
+        let recorded: string | undefined;  // the run's status in its record
         try {
             const res = await fetch(`/api/orchestrations/runs/${runInfo.run_id}`);
             if (res.ok) {
                 const data = await res.json();
+                recorded = data.status;
                 if (Array.isArray(data.step_history)) {
                     setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
                     historyErrorsRef.current = stepErrorsFrom(data.step_history);
@@ -518,6 +536,16 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         // Full-fidelity replay + live tail from the event journal. Falls back to
         // status polling for runs that predate the journal.
         const hasJournal = await streamRunJournal(runInfo.run_id, 0);
+        // The replay rebuilt the question a finished run once asked. A cancel
+        // is in the journal since F193, but not in one written before it, and
+        // the record is the authority either way: a finished run asks nothing.
+        if (currentRunIdRef.current !== runInfo.run_id) return;  // switched runs meanwhile
+        if (recorded === 'cancelled' || recorded === 'completed' || recorded === 'failed') {
+            setHumanPrompt(null);
+            setHumanContext(null);
+            setRunStepStatuses(settleQuestion);
+            setRunStatus(recorded);
+        }
         if (!hasJournal) {
             setRunLog(['[This run predates event journaling — showing checkpoint status only.]']);
             if (runInfo.status === 'running') {
@@ -1218,8 +1246,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 setLiveActivity(null);
                 setHumanPrompt(null);
                 setHumanContext(null);
-                setRunStatus('failed');
-                setRunLog(prev => [...prev, line('error', `Error: ${data.error}`)]);
+                if (isCancel(data)) {
+                    // Not a failure. The tab that cancelled has said so already.
+                    setRunStatus('cancelled');
+                    setRunStepStatuses(settleQuestion);
+                    setRunLog(prev => prev[prev.length - 1] === CANCELLED_LINE ? prev : [...prev, CANCELLED_LINE]);
+                } else {
+                    setRunStatus('failed');
+                    setRunLog(prev => [...prev, line('error', `Error: ${data.error}`)]);
+                }
                 if (!fromJournal) {
                     abortRef.current?.abort();
                     abortRef.current = null;
@@ -1299,7 +1334,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
             } catch { /* ignore */ }
         }
         setRunStatus('cancelled');
-        setRunLog(prev => [...prev, '[Cancelled]']);
+        setRunStepStatuses(settleQuestion);
+        setRunLog(prev => [...prev, CANCELLED_LINE]);
     };
 
     const submitHumanInput = async () => {

@@ -78,7 +78,7 @@ export function NotificationBell() {
                                     {n.body && <span className="block text-[11px] text-text-faint truncate">{n.body}</span>}
                                     <span className="block text-[10px] text-text-faint mt-0.5">
                                         {new Date(n.ts * 1000).toLocaleTimeString()}
-                                        {answered ? ' · answered' : ''}
+                                        {answered ? (n.resolved_as === 'cancelled' ? ' · cancelled' : ' · answered') : ''}
                                     </span>
                                 </span>
                             </button>

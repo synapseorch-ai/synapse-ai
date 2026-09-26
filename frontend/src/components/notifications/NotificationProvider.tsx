@@ -15,6 +15,8 @@ export type RunNotification = {
     data: Record<string, any>;
     // Set server-side once the requested input was submitted (or the run ended).
     resolved?: boolean;
+    /** How a human_input item was resolved: answered, or its run cancelled (F193). */
+    resolved_as?: 'answered' | 'cancelled';
 };
 
 type Toast = { key: number; message: string; type: 'success' | 'warning' | 'error' };

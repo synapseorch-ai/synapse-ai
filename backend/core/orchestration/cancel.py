@@ -19,6 +19,10 @@ from typing import Any, Optional
 #: Statuses a run does not leave by being cancelled.
 FINISHED = frozenset({"completed", "failed", "cancelled"})
 
+#: What a cancel says on a run's stream: the pump's words for a running run,
+#: the fleet's (`_finish_cancelled`) and cloud's (`run_cancel.py`) too.
+CANCELLED_EVENT = {"type": "orchestration_error", "error": "Cancelled"}
+
 
 def _close_open_question(step_history: list) -> None:
     """Close the `paused` entry a cancelled run was waiting on (F141).
@@ -54,6 +58,33 @@ class Cancelled:
     stopped: bool
     #: The run's status afterwards, when it has one.
     status: Optional[str]
+
+
+async def _announce(run_id: str, redis: Any = None) -> None:
+    """Tell everything fed by the run's events that it was cancelled (F193).
+
+    A running run's pump says so itself when its task is cancelled. A paused
+    run has no pump — it ended at the pause — so its cancel was silent: the
+    bell kept its "needs your input" item open, and a reopened run replayed
+    its journal to the question and offered Answer again. The same two events
+    the pump would have written go through the pump's observers: the journal,
+    a live tail and the notification hub. With Redis, a scale-mode reader gets
+    them too, as the fleet's `_finish_cancelled` sends them.
+    """
+    from core.orchestration.journal import aclose_journal
+    from core.orchestration.runner import _observe
+
+    await _observe(run_id, dict(CANCELLED_EVENT))
+    await _observe(run_id, {"type": "run_stream_end", "paused": False})
+    await aclose_journal(run_id)
+    if redis is not None:
+        try:
+            from core.scale.pubsub import RunEventPublisher
+            publisher = RunEventPublisher(redis, run_id)
+            await publisher.publish(dict(CANCELLED_EVENT))
+            await publisher.publish_done()
+        except Exception:  # noqa: BLE001 — no Redis is not a failure to cancel here
+            pass
 
 
 async def cancel_run(run_id: str, *, redis: Any = None) -> Cancelled:
@@ -95,6 +126,7 @@ async def cancel_run(run_id: str, *, redis: Any = None) -> Cancelled:
         restored = None
     if restored is not None:
         status = restored.run.status
+        was_paused = status == "paused"
         if status not in FINISHED:
             restored.run.status = "cancelled"
             restored.run.ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -108,5 +140,7 @@ async def cancel_run(run_id: str, *, redis: Any = None) -> Cancelled:
             _close_open_question(restored.run.step_history)
             await restored.checkpoint()
             status, stopped = "cancelled", True
+            if was_paused and not live:
+                await _announce(run_id, redis)
 
     return Cancelled(found=restored is not None or stopped, stopped=stopped, status=status)

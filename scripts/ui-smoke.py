@@ -3464,6 +3464,61 @@ async def check_stepreason(browser) -> str:
         await ctx.close()
         drop_fixture(oid)
 
+QUESTION_FRAME = """(sid) => {
+  const card = document.querySelector(`.react-flow__node[data-id="${sid}"] > div`);
+  return card ? (card.className.match(/border-(warning|success|danger|accent|border-strong)/) || [card.className])[0] : null;
+}"""
+
+
+@check
+async def check_cancelquestion(browser) -> str:
+    """A cancelled run's question is closed: on its step, in the bell, and reopened (F193).
+
+    Cancelling a run parked on a person took the answer strip away (F141) and
+    nothing else: the step that asked stayed amber, its "needs your input"
+    item stayed open (a restart later called it *answered*), no "cancelled"
+    notification came, and the run reopened from its link replayed its journal
+    to the question and offered Answer again — `cancelanswer` reloads `?id=`,
+    which never reopens the run.
+    """
+    oid = f"orch_uismoke_cancelq_{int(time.time())}"
+    api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    asking = f"{oid}_human"
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2.0)
+        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_text("Waiting for your input").first.wait_for(timeout=60_000)
+        await asyncio.sleep(0.5)
+        run_id = await page.evaluate("() => (document.body.innerText.match(/Started run (\\S+)/) || [])[1] || null")
+        if await page.evaluate(QUESTION_FRAME, asking) != "border-warning":
+            raise AssertionError("the question never showed as waiting, so this checks nothing")
+
+        await page.get_by_role("button", name="Cancel", exact=True).click()
+        await asyncio.sleep(2.0)
+        if await page.evaluate(QUESTION_FRAME, asking) == "border-warning":
+            raise AssertionError("the step that asked still shows as waiting after the cancel")
+        mine = [n for n in api("/api/notifications")["notifications"] if n.get("run_id") == run_id]
+        asked = [n for n in mine if n.get("kind") == "human_input"]
+        if not asked or not all(n.get("resolved") and n.get("resolved_as") == "cancelled" for n in asked):
+            raise AssertionError(f"the question's notification is {asked}")
+        if not any(n.get("title", "").endswith("cancelled") for n in mine):
+            raise AssertionError(f"no notification says the run was cancelled: {[n.get('title') for n in mine]}")
+
+        await page.goto(f"{APP}/orchestrations?run={run_id}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 4.0)
+        if await page.get_by_text("Waiting for your input").count():
+            raise AssertionError("reopened from its link, the cancelled run asks again")
+        if await page.evaluate(QUESTION_FRAME, asking) == "border-warning":
+            raise AssertionError("reopened, the step that asked shows as waiting")
+        return "a cancelled run's question is closed on its step, in the bell (as cancelled) and reopened"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

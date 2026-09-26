@@ -136,7 +136,7 @@ class NotificationHub:
             # run emits no orchestration_start) and means any pending
             # human-input request for this run was answered.
             self._terminal_notified.discard(run_id)
-            self._resolve_human_input(run_id)
+            self._resolve_human_input(run_id, "answered")
         elif etype == "human_input_required":
             name = await self._orch_name(run_id)
             self.publish(
@@ -146,31 +146,39 @@ class NotificationHub:
                 data={"step_id": event.get("orch_step_id")},
             )
         elif etype == "orchestration_complete":
-            self._resolve_human_input(run_id)
+            status = event.get("status", "completed")
+            self._resolve_human_input(run_id, "cancelled" if status == "cancelled" else "answered")
             if run_id in self._terminal_notified:
                 return
             self._terminal_notified.add(run_id)
             name = await self._orch_name(run_id)
-            status = event.get("status", "completed")
             if status == "completed":
                 self.publish("run_completed", f"{name} completed", run_id=run_id)
             else:
                 self.publish("run_failed", f"{name} {status}", run_id=run_id)
         elif etype == "orchestration_error":
-            self._resolve_human_input(run_id)
+            # A cancel is announced as this, with these words, by the pump,
+            # the fleet and `cancel_run` alike (F193): it is not a failure.
+            cancelled = event.get("error") == "Cancelled"
+            self._resolve_human_input(run_id, "cancelled" if cancelled else "answered")
             if run_id in self._terminal_notified:
                 return
             self._terminal_notified.add(run_id)
             name = await self._orch_name(run_id)
-            self.publish("run_failed", f"{name} failed",
-                         body=str(event.get("error") or ""), run_id=run_id)
+            if cancelled:
+                self.publish("run_failed", f"{name} cancelled", run_id=run_id)
+            else:
+                self.publish("run_failed", f"{name} failed",
+                             body=str(event.get("error") or ""), run_id=run_id)
         elif etype == "run_stream_end" and not event.get("paused"):
             self._orch_names.pop(run_id, None)
 
-    def _resolve_human_input(self, run_id: str):
-        """Mark this run's human-input notifications answered. The updated
-        items (same id, resolved=true) are re-pushed to live subscribers;
-        clients upsert by id so the bell stops showing them as actionable."""
+    def _resolve_human_input(self, run_id: str, how: str = "answered"):
+        """Mark this run's human-input notifications resolved, and how:
+        `answered`, or `cancelled` when the run was cancelled while asking
+        (F193) — the bell said "answered" for both. The updated items (same id,
+        resolved=true) are re-pushed to live subscribers; clients upsert by id
+        so the bell stops showing them as actionable."""
         updated = [
             item for item in self._items
             if item["run_id"] == run_id and item["kind"] == "human_input"
@@ -180,6 +188,7 @@ class NotificationHub:
             return
         for item in updated:
             item["resolved"] = True
+            item["resolved_as"] = how
         self._persist()
         for queue in list(self._subs):
             for item in updated:
@@ -215,7 +224,9 @@ class NotificationHub:
                 if i["kind"] == "human_input" and not i.get("resolved")
             }
             paused_waiting: set[str] = set()
+            statuses: dict[str, str] = {}
             for summary in await SharedState.list_runs(limit=limit):
+                statuses[summary.get("run_id") or ""] = summary.get("status") or ""
                 if summary.get("status") != "paused":
                     continue
                 run_id = summary.get("run_id") or ""
@@ -236,7 +247,8 @@ class NotificationHub:
             # Inverse sweep: unresolved items whose run is no longer waiting
             # (answered/failed/swept while we were down) get resolved.
             for run_id in notified_runs - paused_waiting:
-                self._resolve_human_input(run_id)
+                self._resolve_human_input(
+                    run_id, "cancelled" if statuses.get(run_id) == "cancelled" else "answered")
         except Exception as e:
             print(f"Warning: notification reconstruction failed: {e}", flush=True)
 
