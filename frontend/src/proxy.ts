@@ -21,7 +21,8 @@
  *      validates the session (via the forwarded X-Synapse-Session header) and
  *      returns `authenticated`. This is the authoritative gate — it works even
  *      when the local fast-path can't (empty/mismatched secret in this process).
- *   d. If login required and not authenticated → redirect to /login?redirect=<original_path>
+ *   d. If login required and not authenticated → a page is redirected to
+ *      /login?redirect=<original_path>; an /api/* call gets 401 JSON (F178)
  *   e. If login not required → cache result for 60s and proceed
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -263,7 +264,15 @@ export async function proxy(request: NextRequest) {
         return res;
     }
 
-    // Login required and user is not authenticated → redirect to /login
+    // Login required and user is not authenticated. An API call is answered
+    // as one, with the backend's own 401 for the same condition (F178): the
+    // redirect sent fetches and streams a 10 KB sign-in page they could not
+    // read, and a stream retrying that every 5 s cost a page render and a
+    // backend call each time for as long as the tab stayed open.
+    if (pathname.startsWith('/api/')) {
+        return NextResponse.json({ detail: 'Login required' }, { status: 401 });
+    }
+    // A page → the sign-in form, and back here after it.
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('redirect', pathname + request.nextUrl.search);
     return NextResponse.redirect(loginUrl);

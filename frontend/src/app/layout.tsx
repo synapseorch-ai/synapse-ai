@@ -3,7 +3,6 @@ import { Geist_Mono, Inter } from "next/font/google";
 // @ts-ignore: CSS module declarations are not present in this repo setup
 import "./globals.css";
 import { StoreProvider } from "./StoreProvider";
-import { NotificationProvider } from "@/components/notifications/NotificationProvider";
 
 /*
  * Two families, and only two.
@@ -37,10 +36,12 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${geistMono.variable}`}>
       <body className="antialiased">
+        {/* No NotificationProvider here: it belongs to the app shell,
+            (app)/layout.tsx. Up here it also ran on /login and inside every
+            widget iframe, where nobody is signed in, and polled the stream
+            every 5 s for as long as the page stayed open (F178). */}
         <StoreProvider>
-          <NotificationProvider>
-            {children}
-          </NotificationProvider>
+          {children}
         </StoreProvider>
       </body>
     </html>

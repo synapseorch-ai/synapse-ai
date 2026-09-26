@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { CheckCircle2, AlertCircle, PauseCircle, X } from 'lucide-react';
+import { CheckCircle2, AlertCircle, LogIn, PauseCircle, X } from 'lucide-react';
 import { readWithStallTimeout } from '@/lib/sse';
 
 export type RunNotification = {
@@ -50,6 +50,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     const [seenId, setSeenId] = useState(0);
     const [toasts, setToasts] = useState<Toast[]>([]);
     const [browserEnabled, setBrowserEnabled] = useState(false);
+    // The session ended while this tab was open (expired, signed out elsewhere,
+    // the access link rotated). Said once and kept on screen, rather than
+    // retried every 5 s or sent to /login under the person's unsaved work.
+    const [signedOut, setSignedOut] = useState(false);
     const browserEnabledRef = useRef(false);
     const lastIdRef = useRef(0);
     const toastKeyRef = useRef(0);
@@ -116,6 +120,11 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                     // updates to old items (resolved flags) survive reconnects.
                     const res = await fetch('/api/notifications/stream?after=0',
                         { signal: abort.signal });
+                    // Not signed in: no retry would change that (F178).
+                    if (res.status === 401) {
+                        if (!stopped) setSignedOut(true);
+                        return;
+                    }
                     if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
                     const reader = res.body.getReader();
                     const decoder = new TextDecoder();
@@ -183,6 +192,24 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                 builder's launcher below it. Two things cannot own that corner,
                 and the launcher is the one the user goes looking for. */}
             <div className="fixed bottom-20 right-6 z-[9999] flex flex-col gap-2 items-end pointer-events-none">
+                {signedOut && (
+                    <div
+                        role="status"
+                        className="pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-xl text-sm max-w-sm bg-amber-950/95 border-amber-800 text-amber-200"
+                    >
+                        <LogIn size={15} className="shrink-0" aria-hidden />
+                        <span className="flex-1 min-w-0">You&apos;re signed out.</span>
+                        {/* A full navigation, and only when asked: whatever is
+                            unsaved on this page stays until then. */}
+                        <button
+                            onClick={() => window.location.assign(
+                                `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`)}
+                            className="shrink-0 font-semibold underline underline-offset-2 hover:opacity-80"
+                        >
+                            Sign in
+                        </button>
+                    </div>
+                )}
                 {toasts.map(t => (
                     <div
                         key={t.key}

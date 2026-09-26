@@ -18,6 +18,7 @@ import { BuilderPanel } from '@/components/app/BuilderPanel';
 import { BuilderProvider } from '@/components/app/BuilderProvider';
 import { AppRail, type ThemeMode } from '@/components/app/AppRail';
 import { NavGuardProvider } from '@/components/app/NavGuard';
+import { NotificationProvider } from '@/components/notifications/NotificationProvider';
 
 /**
  * Variables for `{{ global.… }}` suggestions in every editor, fetched on the
@@ -74,6 +75,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     return (
         <NavGuardProvider>
+            {/* Run notifications are the signed-in app's, so the stream is
+                opened here and not in the root layout, which /login and the
+                widget's iframe share (F178). */}
+            <NotificationProvider>
             {/* One provider for the app. Nested providers each keep their own
                 open-delay timer, so tooltips start behaving differently
                 depending on which subtree they happen to be in. */}
@@ -95,6 +100,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </BuilderProvider>
             </TemplateSourcesProvider>
             </TooltipProvider>
+            </NotificationProvider>
         </NavGuardProvider>
     );
 }
