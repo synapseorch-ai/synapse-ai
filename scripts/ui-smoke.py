@@ -2958,6 +2958,56 @@ async def check_firstrun(browser) -> str:
         raise AssertionError(f"a model that can answer reads {greeting}")
     return "not ready says why and links to Settings → Models; a model failure does too; ready says Ready"
 
+
+@check
+async def check_turnpause(browser) -> str:
+    """A turn that stops to ask is waiting, not broken (F209).
+
+    The stream closes at a pause by design — a tool call waiting for approval,
+    or an orchestrator agent's human step — and the page read that close as a
+    dropped connection: the question, and under it "The connection to this turn
+    ended before it finished. — Try again", offering to re-run a turn that was
+    only waiting for its answer.
+    """
+    pauses = {
+        "a tool approval": ({
+            "type": "human_input_required", "kind": "tool_approval",
+            "prompt": "vault_delete wants to run", "tool_name": "vault_delete",
+            "tool_args": {"path": "old.md"}, "category": "destructive",
+            "approval_id": "ap_uismoke", "fields": [],
+        }, "Permission needed"),
+        "a human step": ({
+            "type": "human_input_required", "run_id": "run_uismoke_pause",
+            "orch_step_id": "s_ask", "prompt": "Your answer?",
+            "fields": [{"name": "ans", "label": "Answer", "type": "text"}],
+        }, "Your answer?"),
+    }
+    for what, (event, shown) in pauses.items():
+        ctx, page = await _chat_page(browser, f"uismoke-pause-{event.get('kind') or 'human'}")
+        try:
+            box = page.locator("main textarea").last
+            await box.fill("do the thing")
+            await box.press("Enter")
+            await _stream_open(page, "post")
+            await page.evaluate(
+                f"() => {{ window.__streams.post.push({json.dumps(_frame(event, 'p-1'))});"
+                f" window.__streams.post.push({json.dumps(_frame({'type': 'done'}, 'p-2'))});"
+                " window.__streams.post.close(); }")
+            # `innerText` applies text-transform, so compare without case.
+            for _ in range(30):
+                if shown.lower() in (await page.evaluate("() => document.body.innerText")).lower():
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                raise AssertionError(f"{what}: the pause never rendered ({shown!r})")
+            await asyncio.sleep(1.0)
+            text = await page.evaluate("() => document.querySelector('main').innerText")
+        finally:
+            await ctx.close()
+        if "connection to this turn ended" in text or "Try again" in text:
+            raise AssertionError(f"{what}: a turn waiting for its answer is reported as a dropped connection")
+    return "a tool approval and a human step each wait without a failure bar"
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

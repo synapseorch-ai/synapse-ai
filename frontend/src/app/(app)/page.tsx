@@ -1613,6 +1613,11 @@ export default function Home() {
         break;
 
       case 'human_input_required':
+        // A pause is how this turn ends: the stream closes on purpose, and
+        // the turn goes on once it is answered. Read as unanswered, the close
+        // drew "The connection to this turn ended — Try again" under the
+        // question (F209), offering to re-run a turn that was only waiting.
+        turnAnsweredRef.current = true;
         setStreamingActivity(null);
         setMessages(prev => [...prev, {
           role: 'assistant',
