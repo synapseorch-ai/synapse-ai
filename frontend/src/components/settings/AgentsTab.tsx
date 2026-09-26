@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Bot, Plus, Save, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
-import { Checkbox, Combobox, Label, MarkdownEditor, SearchInput, Select, Spinner } from '@/components/ui';
+import { Checkbox, Combobox, ErrorNote, Label, MarkdownEditor, SearchInput, Select, Spinner } from '@/components/ui';
+import Link from 'next/link';
 import { matchesQuery } from '@/lib/search';
 import { humanizeToolName } from '@/lib/toolNames';
 import { vaultMentions } from '@/components/VaultMention';
@@ -66,6 +67,12 @@ export const AgentsTab = ({
     const [expandedCaps, setExpandedCaps] = useState<Set<string>>(new Set());
     const [promptDescription, setPromptDescription] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
+    // Why the Prompt Writer wrote nothing, shown under its field (F183). Kept
+    // with the agent it was for, so opening another agent does not show it.
+    const [promptFailure, setPromptFailure] = useState<{ agentId: string; text: string } | null>(null);
+    const promptError = promptFailure && promptFailure.agentId === (draftAgent?.id ?? '') ? promptFailure.text : null;
+    const setPromptError = (text: string | null) =>
+        setPromptFailure(text === null ? null : { agentId: draftAgent?.id ?? '', text });
     const [agentSubTab, setAgentSubTab] = useState<'config' | 'messaging' | ActivityTab>('config');
     const [agentChannels, setAgentChannels] = useState<any[]>([]);
     // The workspace floor an unset category inherits, and the widgets that
@@ -270,6 +277,7 @@ export const AgentsTab = ({
     const generatePrompt = async () => {
         if (!promptDescription.trim()) return;
         setIsGenerating(true);
+        setPromptError(null);
         try {
             // Collect selected tool names with descriptions
             const agentType = draftAgent.type || 'conversational';
@@ -308,12 +316,22 @@ export const AgentsTab = ({
                 }),
                 signal: AbortSignal.timeout(180_000), // 3 minutes timeout for LLM generation
             });
-            if (!res.ok) throw new Error('Failed to generate prompt');
+            if (!res.ok) {
+                // A model that cannot answer is a 502 with the provider's words; say
+                // them here rather than only in the console (F183).
+                const failure = await res.json().catch(() => ({}));
+                const detail = typeof failure?.detail === 'string' ? failure.detail : '';
+                setPromptError(detail || `The prompt writer failed (${res.status}). The prompt was not changed.`);
+                return;
+            }
             const data = await res.json();
             setDraftAgent({ ...draftAgent, system_prompt: data.system_prompt });
             setPromptDescription('');
         } catch (err) {
             console.error('Failed to generate prompt:', err);
+            setPromptError(err instanceof DOMException && err.name === 'TimeoutError'
+                ? 'The model took more than 3 minutes and was stopped. The prompt was not changed.'
+                : 'The prompt writer could not be reached. The prompt was not changed.');
         } finally {
             setIsGenerating(false);
         }
@@ -1120,6 +1138,12 @@ export const AgentsTab = ({
                                             </button>
                                         </div>
                                         <p className="text-2xs text-text-faint">Describe the agent&apos;s purpose and the AI will generate a comprehensive system prompt. Tools and date/time context are auto-injected at runtime.</p>
+                                        {promptError && (
+                                            <ErrorNote className="text-xs">
+                                                {promptError}{' '}
+                                                <Link href="/settings/models" className="whitespace-nowrap font-medium underline underline-offset-2">Settings → Models</Link>
+                                            </ErrorNote>
+                                        )}
                                     </div>
 
                                     {/* System prompt — the kit's markdown editor. `global` because a

@@ -16,8 +16,11 @@ export async function POST(req: Request) {
         });
 
         if (!backendResponse.ok) {
+            // The backend's own `{"detail": …}` is the sentence the editor shows (F183).
             const text = await backendResponse.text();
-            return NextResponse.json({ error: `Backend Error ${backendResponse.status}: ${text}` }, { status: backendResponse.status });
+            let failure: unknown;
+            try { failure = JSON.parse(text); } catch { failure = { detail: text || `Backend error ${backendResponse.status}` }; }
+            return NextResponse.json(failure, { status: backendResponse.status });
         }
 
         const data = await backendResponse.json();
@@ -25,6 +28,6 @@ export async function POST(req: Request) {
 
     } catch (error: any) {
         console.error("Generate prompt proxy error:", error);
-        return NextResponse.json({ error: `Proxy Error: ${error.message}` }, { status: 500 });
+        return NextResponse.json({ detail: `The prompt writer could not reach the server: ${error.message}` }, { status: 502 });
     }
 }

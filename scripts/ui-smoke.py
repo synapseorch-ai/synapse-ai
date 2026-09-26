@@ -3806,6 +3806,49 @@ async def check_drawers(browser) -> str:
         await ctx.close()
 
 
+@check
+async def check_promptwriter(browser) -> str:
+    """The AI Prompt Writer says why it wrote nothing (F183).
+
+    A default model the provider refused made `generate-prompt` answer 500, and
+    the agent editor showed nothing — only a console line — with the prompt left
+    as it was. The route's refusal is stubbed here, as the backend now sends it
+    (502, `detail` holding the provider's words), so the check needs no model.
+    """
+    aid = f"agent_uismoke_writer_{int(time.time())}"
+    name = f"Writer {aid[-6:]}"
+    said = "The model couldn't write the prompt: this model is no longer available to new users"
+    api("/api/agents", "POST", _agent(aid, name))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+    await page.route("**/api/agents/generate-prompt", lambda route: route.fulfill(
+        status=502, content_type="application/json", body=json.dumps({"detail": said})))
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        await page.get_by_text(name, exact=True).first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_text(name, exact=True).first.click()
+        await page.wait_for_function(
+            "(n) => [...document.querySelectorAll('input')].some(i => i.value === n)", arg=name, timeout=20_000)
+        await page.locator("#agn-prompt-description").fill("a helper for the smoke test")
+        await page.get_by_role("button", name=re.compile("generate", re.I)).click()
+        note = page.get_by_role("alert").filter(has_text="no longer available to new users")
+        try:
+            await note.wait_for(timeout=10_000)
+        except Exception:
+            raise AssertionError("a refused Prompt Writer call shows nothing on the page")
+        if not await note.get_by_role("link", name=re.compile("Settings → Models")).count():
+            raise AssertionError("the Prompt Writer's failure does not point to Settings → Models")
+        return "a refused Prompt Writer call says why under its field and points to Settings → Models"
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

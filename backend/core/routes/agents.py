@@ -3,6 +3,7 @@ Agent management endpoints (CRUD + active agent).
 """
 import os
 import json
+import logging
 import datetime
 import zoneinfo
 
@@ -11,9 +12,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from core.models import AGENT_NAME_MAX, Agent, AgentActiveRequest, GeneratePromptRequest
 from core.config import load_settings
-from core.llm_providers import generate_response as llm_generate_response, detect_mode_from_model
+from core.llm_providers import LLMError, generate_response as llm_generate_response, detect_mode_from_model
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Module-level state
 active_agent_id: str | None = None
@@ -465,6 +467,13 @@ async def generate_agent_prompt(req: GeneratePromptRequest):
             current_settings=settings,
         )
         return {"system_prompt": result}
+    except LLMError as e:
+        # The model could not answer: a refused or retired model, a missing key,
+        # an empty reply. That is the provider's answer, not this server's
+        # fault, and the editor shows it under the field (F183). This route is a
+        # member's, so the provider's own words are kept (as chat keeps them).
+        logger.warning("Prompt Writer: the model could not answer: %s", e)
+        raise HTTPException(status_code=502, detail=f"The model couldn't write the prompt: {e}")
     except Exception as e:
-        print(f"Error generating prompt: {e}")
+        logger.exception("Prompt Writer failed")
         raise HTTPException(status_code=500, detail=f"Failed to generate prompt: {str(e)}")
