@@ -475,6 +475,11 @@ async def _answer_run(args: dict) -> dict:
     # v1's shape: text is `{"response": text}`, which a step with no fields
     # keeps as the text itself (F106).
     response = {"response": answer} if isinstance(answer, str) else answer
+    from core.orchestration.answers import EmptyAnswer, refuse_empty
+    try:
+        refuse_empty(response)
+    except EmptyAnswer as exc:
+        raise ToolRefusal(str(exc))
     queue = await get_run_backend().answer(run_id, response)
     return await _settle(run_id, queue, _wait(args, DEFAULT_WAIT_SECONDS), answered)
 

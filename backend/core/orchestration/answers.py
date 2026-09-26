@@ -37,6 +37,38 @@ class RunNotWaiting(Exception):
         )
 
 
+class EmptyAnswer(ValueError):
+    """An answer with nothing in it (F232)."""
+
+
+EMPTY_ANSWER = "The answer is empty. Send text, or an object keyed by the question's field names."
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip()) or value == {}
+
+
+def refuse_empty(response: Any) -> None:
+    """Raise `EmptyAnswer` for an answer that says nothing (F232).
+
+    v1's resume defaulted a missing `response` to `{}`, so a caller that
+    misspelt the field answered a person's question with nothing and the run
+    carried on. Blank text, an empty mapping, and text wrapped the way v1 and
+    MCP wrap it (`{"response": <blank>}`) say nothing. A mapping whose fields are
+    blank does say something — it is what a form sends for a fielded question
+    nobody filled in.
+
+    Called by the API doors (v1, v2, MCP's `answer_run`), not here in
+    `answer_paused_run`: the app's chat page can send an empty text answer to a
+    no-field question, and whether it should is the page's call (Naveen,
+    2026-09-26).
+    """
+    if _blank(response) or (
+        isinstance(response, dict) and list(response) == ["response"] and _blank(response["response"])
+    ):
+        raise EmptyAnswer(EMPTY_ANSWER)
+
+
 class RunAlreadyActive(Exception):
     """Another answer already has this run: a pump driving it in this process,
     an answer being applied here, or one just queued for the fleet."""

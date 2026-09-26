@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core.images import checked_images
 
@@ -46,7 +46,11 @@ class V2OrchestrationRunRequest(BaseModel):
 
 
 class V2ResumeRequest(BaseModel):
-    response: dict | str = {}
+    # v1's rules (F232): a misspelt field is refused by name rather than
+    # answering the question with `{}`, and an empty answer is refused.
+    model_config = ConfigDict(extra="forbid")
+
+    response: dict | str
     webhook_url: str | None = None
     webhook_secret: str | None = None
 
@@ -414,6 +418,11 @@ async def v2_resume_run(
 ):
     """Enqueue a resume job for a paused run (after human input)."""
     _require_scale_mode(request)
+    from core.orchestration.answers import EmptyAnswer, refuse_empty
+    try:
+        refuse_empty(body.response)
+    except EmptyAnswer as exc:
+        raise HTTPException(422, detail=str(exc))
     arq_redis = _get_arq_redis(request)
     sf = _get_pg_session_factory(request)
 

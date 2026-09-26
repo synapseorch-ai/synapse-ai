@@ -32,7 +32,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.api_key_middleware import require_api_key
 from core.images import checked_images
@@ -43,8 +43,14 @@ log = logging.getLogger("api_v1")
 
 
 # ── Request / Response Models ────────────────────────────────────────────────
+# Every body refuses a field it does not know (422 naming it), as cloud's v1
+# does: a misspelt field used to be dropped, so `{"human_response": …}` answered
+# a person's question with the default `{}` (F232), and `{"input": …}` started a
+# run with no message.
 
 class V1ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str
     agent: str | None = None          # agent name or ID (optional — first agent if omitted)
     session_id: str | None = None     # for conversation continuity (auto-generated if omitted)
@@ -55,6 +61,8 @@ class V1ChatRequest(BaseModel):
 
 
 class V1OrchestrationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str = ""
     # The run's inputs, merged into its shared state (cloud's `RunRequest` has
     # the same field). A leading underscore is the engine's own bookkeeping
@@ -71,10 +79,15 @@ class V1OrchestrationRunRequest(BaseModel):
 
 
 class V1ResumeRequest(BaseModel):
-    response: dict | str = {}         # human input fields
+    model_config = ConfigDict(extra="forbid")
+
+    # Required, and never empty (`refuse_empty`): text, or the question's fields.
+    response: dict | str
 
 
 class V1ApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     approve: bool
     reason: str = ""
     # The call this answers, as `awaiting_approval` named it. When given and it
@@ -460,7 +473,13 @@ async def _refuse_builder_run(run_id: str) -> None:
 
 async def _answer(request: Request, run_id: str, human_response):
     """Resume a paused run once — the helper the app and a channel reply use."""
-    from core.orchestration.answers import RunAlreadyActive, RunNotWaiting, answer_paused_run
+    from core.orchestration.answers import (
+        EmptyAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run, refuse_empty,
+    )
+    try:
+        refuse_empty(human_response)
+    except EmptyAnswer as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     await _refuse_builder_run(run_id)
     try:
         return await answer_paused_run(request.app.state, run_id, human_response)
