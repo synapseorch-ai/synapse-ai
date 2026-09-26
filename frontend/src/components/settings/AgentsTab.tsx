@@ -12,6 +12,9 @@ import { ToastNotification } from './ToastNotification';
 import { AgentActivity, ActivityTab } from './AgentActivity';
 import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, type ToolPolicy } from './ToolPolicy';
 
+/** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
+const AGENT_NAME_MAX = 100;
+
 interface AgentsTabProps {
     agents: any[];
     selectedAgentId: string | null;
@@ -83,7 +86,8 @@ export const AgentsTab = ({
     };
 
     const duplicate = async (agent: any) => {
-        const copy = { ...agent, id: `agent_${Date.now()}`, name: `${agent.name} (Copy)` };
+        // The original is clipped, not the marker, so a copy of a long name still says so.
+        const copy = { ...agent, id: `agent_${Date.now()}`, name: `${String(agent.name).slice(0, AGENT_NAME_MAX - 7).trimEnd()} (Copy)` };
         delete copy.created_at;
         delete copy.updated_at;
         try {
@@ -143,6 +147,12 @@ export const AgentsTab = ({
 
     const handleSaveAgent = async () => {
         if (!draftAgent) return;
+        // An agent saved before the limit can hold a longer name; say so rather
+        // than let the server's 422 read as "Failed to save agent".
+        if ((draftAgent.name || '').length > AGENT_NAME_MAX) {
+            showToast(`An agent's name is at most ${AGENT_NAME_MAX} characters.`, 'error');
+            return;
+        }
         setIsSaving(true);
         try {
             const res = await fetch('/api/agents', {
@@ -531,6 +541,7 @@ export const AgentsTab = ({
                                             <Label htmlFor="age-draftagent-name" className="block">Name</Label>
                                             <input id="age-draftagent-name"
                                                 type="text"
+                                                maxLength={AGENT_NAME_MAX}
                                                 value={draftAgent.name}
                                                 onChange={e => setDraftAgent({ ...draftAgent, name: e.target.value })}
                                                 className="w-full bg-bg border border-border p-3 text-xs text-text focus:border-border-strong focus:outline-none rounded-md"

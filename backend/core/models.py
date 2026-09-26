@@ -3,7 +3,7 @@ Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.images import checked_images
 
@@ -45,9 +45,15 @@ class DBConfig(BaseModel):
     error_message: str | None = None
 
 
+#: The longest agent name any path will write (F217, Naveen 2026-09-26). No path
+#: had one: a 203-character name was saved, and the chat's empty state spelled
+#: it out 1,742 px wide, off both edges of the page.
+AGENT_NAME_MAX = 100
+
+
 class Agent(BaseModel):
     id: str
-    name: str
+    name: str = Field(max_length=AGENT_NAME_MAX)
     description: str
     avatar: str = "default"
     type: str = "conversational"  # conversational | analysis | code | orchestrator

@@ -9,7 +9,7 @@ import zoneinfo
 from fastapi import APIRouter, HTTPException
 
 from pydantic import BaseModel
-from core.models import Agent, AgentActiveRequest, GeneratePromptRequest
+from core.models import AGENT_NAME_MAX, Agent, AgentActiveRequest, GeneratePromptRequest
 from core.config import load_settings
 from core.llm_providers import generate_response as llm_generate_response, detect_mode_from_model
 
@@ -276,7 +276,9 @@ async def build_agent(req: BuildAgentRequest):
     agent_id = f"agent_{int(datetime.datetime.now(zoneinfo.ZoneInfo('UTC')).timestamp() * 1000)}"
     agent_dict = {
         "id": agent_id,
-        "name": config.get("name", "New Agent"),
+        # Clipped rather than refused: the name is the model's, and one over
+        # the limit should not fail the whole build (F217).
+        "name": str(config.get("name") or "New Agent")[:AGENT_NAME_MAX],
         "description": config.get("description", ""),
         "avatar": "default",
         "type": agent_type,

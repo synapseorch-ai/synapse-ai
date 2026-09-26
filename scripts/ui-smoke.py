@@ -3263,6 +3263,82 @@ async def check_newchatrace(browser) -> str:
         raise AssertionError(f"the message after New Chat went into the old conversation: {sent}")
     return "New Chat holds against a reopen still waiting on its history"
 
+
+LAYOUT_WIDTHS = """() => {
+  const pane = document.querySelector('main .overflow-y-auto');
+  const label = [...document.querySelectorAll('main span')].find((s) => /tracking-\\[0\\.2em\\]/.test(s.className));
+  const tag = [...document.querySelectorAll('main div')].find((d) => /-top-3/.test(d.className) && /tracking-wider/.test(d.className));
+  const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return {left: r.left, right: r.right, height: r.height, text: el.textContent.slice(0, 30)}; };
+  return {
+    pane: pane ? {scroll: pane.scrollWidth, client: pane.clientWidth, right: pane.getBoundingClientRect().right} : null,
+    label: box(label), tag: box(tag), bubble: box(tag && tag.parentElement), vw: innerWidth,
+  };
+}"""
+
+
+@check
+async def check_longcontent(browser) -> str:
+    """Long content stays inside the chat: a long token wraps, a long name truncates (F217).
+
+    A 400-character unbroken token (a URL, a path, base64) ran out of its
+    message across the avatar and slid the pane sideways; a long agent name was
+    spelled out 1,742 px wide in the empty state's letter-spaced label, off
+    both edges, and wrapped the answer's name tag over the answer itself.
+    """
+    name = "Very Long Agent Name " * 10 + "End"
+    token = "x" * 400
+    status = {**_status(True), "agents": {"agent_long": {"name": name, "status": "online", "can_see_images": True}},
+              "active_agent_id": "agent_long"}
+    # Both of the page's sources for the name: it takes whichever answers last.
+    settings = """
+const _settingsFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || 'GET').toUpperCase();
+  if (/\\/api\\/settings$/.test(url) && method === 'GET') {
+    return Promise.resolve(new Response(JSON.stringify({agent_name: %s}), {
+      status: 200, headers: {'Content-Type': 'application/json'},
+    }));
+  }
+  return _settingsFetch(input, init);
+};
+""" % json.dumps(name)
+    # 360px as well as wide: below `sm` an answer had less room beside the
+    # avatar than its 288px minimum, and ran out of the pane on any content.
+    for width in (WIDE, (360, 780)):
+        ctx, page = await _chat_page(browser, "uismoke-long",
+                                     extra_init=SERVE_STATUS % json.dumps(status) + settings, width=width)
+        try:
+            empty = await page.evaluate(LAYOUT_WIDTHS)
+            box = page.locator("main textarea").last
+            await box.fill("words before the token " + token + " and after")
+            await box.press("Enter")
+            await _stream_open(page, "post")
+            await page.evaluate(
+                f"() => {{ window.__streams.post.push({json.dumps(_frame({'type': 'response', 'content': 'Here: ' + token + ' — done.', 'intent': 'chat'}, 'l-1'))});"
+                f" window.__streams.post.push({json.dumps(_frame({'type': 'done'}, 'l-2'))}); }}")
+            await _on_screen(page, "— done.")
+            await asyncio.sleep(0.5)
+            answered = await page.evaluate(LAYOUT_WIDTHS)
+        finally:
+            await ctx.close()
+        problems = []
+        label = empty["label"]
+        # One line, and no wider than its 36rem: the label spanned the whole pane.
+        if not label or label["left"] < 0 or label["right"] - label["left"] > 600 or label["height"] > 30:
+            problems.append(f"the empty state's label spans {label} in a {empty['vw']}px window")
+        pane = answered["pane"]
+        if not pane or pane["scroll"] > pane["client"] + 1:
+            problems.append(f"the pane scrolls sideways: {pane}")
+        tag, bubble = answered["tag"], answered["bubble"]
+        # One line (the tag inherits the bubble's 28px line height) inside the bubble.
+        if not tag or "VERY LONG" not in tag["text"].upper() or tag["height"] > 40 or tag["right"] > bubble["right"] + 1:
+            problems.append(f"the answer's name tag is {tag} on a bubble {bubble}")
+        if problems:
+            raise AssertionError(f"at {width[0]}px: " + "; ".join(problems))
+    return "at 1600 and 360px a 400-character token wraps inside its message; a long name stays on one line"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

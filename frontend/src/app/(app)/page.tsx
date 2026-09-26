@@ -222,7 +222,10 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
 function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div className="flex flex-col self-start min-w-72 max-w-full gap-2">
+    // The 288px floor keeps a short answer from looking like a chip, and only
+    // from `sm` up: a phone has less than that beside the avatar, so every
+    // answer ran 45px out of the pane at 360px.
+    <div className="flex flex-col self-start sm:min-w-72 max-w-full min-w-0 gap-2">
       {msg.reasoning && msg.reasoning.length > 0 && (
         <ReasoningCollapsible reasoning={msg.reasoning} />
       )}
@@ -231,7 +234,12 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
         msg.intent ? "pt-6" : "pt-4"
       )}>
         {msg.intent && (
-          <div className="absolute -top-3 left-2 bg-zinc-950 border border-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-400 font-mono rounded-md">
+          // One line, whatever the name: at three lines this tag covered the
+          // answer it labels (F217).
+          <div
+            className="absolute -top-3 left-2 max-w-[calc(100%-1rem)] truncate bg-zinc-950 border border-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-400 font-mono rounded-md"
+            title={agentName}
+          >
             {agentName}
           </div>
         )}
@@ -539,14 +547,19 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, onPrompt, onNaviga
       {/* Greeting. "Ready" is said only once the backend has checked that the
           model can answer; it used to be said unconditionally, above a first
           message that then failed with an HTTP library's text (F182). */}
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex max-w-[min(36rem,100%)] items-center gap-2">
         <div className={cn(
-          "h-1.5 w-1.5 rounded-full",
+          "h-1.5 w-1.5 shrink-0 rounded-full",
           modelReady === true ? "bg-green-400 shadow-[0_0_8px_#4ade80] animate-pulse"
             : modelReady === false ? "bg-warning" : "bg-zinc-600",
         )} />
-        <span className="text-[11px] font-mono uppercase tracking-[0.2em] text-text-faint">
-          {agentName}{modelReady === true ? '\u00a0· Ready' : modelReady === false ? '\u00a0· Model not ready' : ''}
+        {/* Truncated, with the whole name on hover: letter-spaced capitals ran
+            a long name 1,742 px wide, off both edges of the page (F217). */}
+        <span className="flex min-w-0 text-[11px] font-mono uppercase tracking-[0.2em] text-text-faint">
+          <span className="min-w-0 truncate" title={agentName}>{agentName}</span>
+          {modelReady !== undefined && (
+            <span className="shrink-0">{modelReady ? '\u00a0· Ready' : '\u00a0· Model not ready'}</span>
+          )}
         </span>
       </div>
       {modelReady === false && modelProblem && (
@@ -1906,7 +1919,7 @@ export default function Home() {
       return (
         <div key={idx} className="flex items-center gap-2 max-w-4xl py-0.5 pl-11 text-[11px] text-text-faint font-sans">
           <span className="h-px w-4 bg-zinc-800 shrink-0" aria-hidden />
-          <span className="min-w-0">{msg.content}</span>
+          <span className="min-w-0 break-words">{msg.content}</span>
         </div>
       );
     }

@@ -136,7 +136,10 @@ export function Markdown({
 }) {
   if (!children) return null;
   return (
-    <div className={cn("text-sm text-text", className)}>
+    // `break-words`: a long unbroken token — a URL, a path, base64 — breaks
+    // inside its line instead of running out of the message (F217). It does
+    // not change a table's or a code block's own width, so both still scroll.
+    <div className={cn("text-sm text-text break-words", className)}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={COMPONENTS}>
         {children}
       </ReactMarkdown>

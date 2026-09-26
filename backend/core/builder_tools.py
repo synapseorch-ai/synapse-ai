@@ -1289,6 +1289,15 @@ _current_run: _contextvars.ContextVar[str | None] = _contextvars.ContextVar(
 
 # ─── Tool Implementations ──────────────────────────────────────────────────────
 
+def _long_agent_name(name) -> str | None:
+    """The refusal for an agent name past the limit (F217), or None."""
+    from core.models import AGENT_NAME_MAX
+    if isinstance(name, str) and len(name) > AGENT_NAME_MAX:
+        return (f"An agent's name is at most {AGENT_NAME_MAX} characters; this one is "
+                f"{len(name)}. Choose a shorter name.")
+    return None
+
+
 async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -> str:
     """Dispatch a builder tool call and return a JSON string result."""
     output, _events = await execute_builder_tool_with_events(tool_name, args, server_module)
@@ -1368,6 +1377,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         return agent
 
     elif tool_name == "create_agent":
+        if (too_long := _long_agent_name(args.get("name"))) is not None:
+            return {"error": too_long}
         if (refusal := await _refused("agent", 1)) is not None:
             return refusal
         agents = await load_user_agents()
@@ -1417,6 +1428,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     errors.append({"index": i, "role": spec.get("role"), "error": f"missing required field '{field}'"})
                     break
             else:
+                if (too_long := _long_agent_name(spec["name"])) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": too_long})
+                    continue
                 # Guarantee uniqueness even when called repeatedly in the same millisecond.
                 new_id = _random_id("agent_", length=10)
                 while new_id in existing_ids:
@@ -1461,6 +1475,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # Marking an agent as the builder's own hides it from every list (F158).
         if "system" in fields or fields.get("type") == "builder":
             return {"error": "An agent cannot be made part of the builder: `system` and type 'builder' are not editable."}
+        if "name" in fields and (too_long := _long_agent_name(fields["name"])) is not None:
+            return {"error": too_long}
         agent.update(fields)
         agent["id"] = args["agent_id"]  # the id is not patchable
         await save_agent(agent)
