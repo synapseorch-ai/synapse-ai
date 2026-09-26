@@ -114,11 +114,14 @@ export function DBsTab() {
         }
     };
 
+    // The status tokens, which hold AA in both themes on their -subtle grounds.
+    // Raw 500s on a tint of themselves read 4.16:1 in light ("untested"), and
+    // emerald and red 500 had no light inversion at all (F239).
     const getStatusColor = (status: string) => {
         switch (status) {
-            case 'connected': return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20';
-            case 'error': return 'bg-red-500/10 text-red-500 border-red-500/20';
-            default: return 'bg-amber-500/10 text-amber-500 border-amber-500/20';
+            case 'connected': return 'bg-success-subtle text-success border-success/30';
+            case 'error': return 'bg-danger-subtle text-danger border-danger/30';
+            default: return 'bg-warning-subtle text-warning border-warning/30';
         }
     };
 
