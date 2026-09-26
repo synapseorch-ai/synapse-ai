@@ -480,11 +480,16 @@ export const MessagingTab = () => {
                                     aria-current={isSelected ? 'true' : undefined}
                                     className="flex w-full items-center gap-3 p-3 pr-24 text-left"
                                 >
-                                    <span className={`h-8 w-8 flex-shrink-0 flex items-center justify-center border ${pm?.color ?? ''}`}>
-                                        <img src={pm?.icon} alt={pm?.label} className="h-5 w-5 object-contain" />
+                                    {/* The icon is decoration: inside a button its alt was read out
+                                        beside the name, so the platform is said once, in words. */}
+                                    <span aria-hidden className={`h-8 w-8 flex-shrink-0 flex items-center justify-center border ${pm?.color ?? ''}`}>
+                                        <img src={pm?.icon} alt="" className="h-5 w-5 object-contain" />
                                     </span>
                                     <span className="block flex-1 min-w-0">
-                                        <span className="block text-xs font-bold text-white truncate">{ch.name}</span>
+                                        <span className="block text-xs font-bold text-white truncate">
+                                            {ch.name}
+                                            {pm?.label && <span className="sr-only">, {pm.label}</span>}
+                                        </span>
                                         <span className="block text-[10px] text-text-faint truncate">
                                             {(() => {
                                                 const ids = ch.agent_ids?.length
