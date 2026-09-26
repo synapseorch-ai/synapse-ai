@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Bot, Plus, Save, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, MessageSquare, ExternalLink, CheckCircle, XCircle, Square } from 'lucide-react';
-import { Combobox, Label, MarkdownEditor, SearchInput, Select, Spinner } from '@/components/ui';
+import { Checkbox, Combobox, Label, MarkdownEditor, SearchInput, Select, Spinner } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
 import { humanizeToolName } from '@/lib/toolNames';
 import { vaultMentions } from '@/components/VaultMention';
@@ -47,6 +47,11 @@ interface AgentsTabProps {
 }
 
 import React, { useState, useEffect } from 'react';
+
+// A tool's box keeps the card's colours: green when on, amber when a group is partly on.
+const CAP_BOX =
+    'data-[state=checked]:bg-success data-[state=checked]:border-success ' +
+    'data-[state=indeterminate]:bg-warning data-[state=indeterminate]:border-warning';
 
 export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
@@ -226,17 +231,16 @@ export const AgentsTab = ({
     };
 
     const toggleGroupTools = (cap: any) => {
-        const allGroupEnabled = cap.tools.every((t: string) => draftAgent.tools.includes(t));
         if (draftAgent.tools.includes("all")) {
-            // Switch from "all" to explicit list minus this group
+            // "all" holds every group, so the only change is switching this one
+            // off: the explicit list minus this group. Asking whether the group's
+            // own names were listed read false, re-added them beside "all", and
+            // the box could never be turned off (F235).
             const allToolsFlat = availableCapabilities.flatMap((c: any) => c.tools);
-            if (allGroupEnabled) {
-                const newTools = allToolsFlat.filter((t: string) => !cap.tools.includes(t));
-                setDraftAgent({ ...draftAgent, tools: newTools });
-            } else {
-                setDraftAgent({ ...draftAgent, tools: [...draftAgent.tools, ...cap.tools] });
-            }
+            const newTools = allToolsFlat.filter((t: string) => !cap.tools.includes(t));
+            setDraftAgent({ ...draftAgent, tools: newTools });
         } else {
+            const allGroupEnabled = cap.tools.every((t: string) => draftAgent.tools.includes(t));
             if (allGroupEnabled) {
                 const newTools = draftAgent.tools.filter((t: string) => !cap.tools.includes(t));
                 setDraftAgent({ ...draftAgent, tools: newTools });
@@ -428,7 +432,7 @@ export const AgentsTab = ({
                                     } rounded-md`}
                             >
                                 <span className="flex items-center gap-3">
-                                    <span className={`h-8 w-8 shrink-0 rounded-full flex items-center justify-center text-xs font-bold
+                                    <span aria-hidden className={`h-8 w-8 shrink-0 rounded-full flex items-center justify-center text-xs font-bold
                                     ${selectedAgentId === a.id ? 'bg-accent text-accent-fg' : 'bg-surface-2 text-text-muted'}
                                 `}>
                                         {a.name.substring(0, 2).toUpperCase()}
@@ -773,52 +777,57 @@ export const AgentsTab = ({
                                                 }
                                                 return (
                                                     <div className="space-y-2">
-                                                        {/* All agents toggle */}
-                                                        <div
-                                                            onClick={() => setDraftAgent({ ...draftAgent, delegate_agent_ids: [] })}
-                                                            className={`p-3 border cursor-pointer transition-all flex items-center gap-3
-                                                                ${allSelected ? 'bg-surface-2 border-border-strong' : 'bg-surface border-border hover:border-border-strong'} rounded-md`}
+                                                        {/* All agents: ticked while no agent is picked. Ticking it
+                                                            clears the picks; it is unticked by picking agents below,
+                                                            so while ticked it is disabled rather than a box that
+                                                            refuses to untick (F184). */}
+                                                        <label
+                                                            className={`p-3 border transition-all flex items-center gap-3
+                                                                ${allSelected ? 'bg-surface-2 border-border-strong' : 'cursor-pointer bg-surface border-border hover:border-border-strong'} rounded-md`}
                                                         >
-                                                            <div className={`w-3 h-3 border flex-shrink-0 flex items-center justify-center
-                                                                ${allSelected ? 'bg-success border-success/40' : 'border-text-faint'} rounded-md`}
+                                                            <Checkbox
+                                                                checked={allSelected}
+                                                                disabled={allSelected}
+                                                                onChange={() => setDraftAgent({ ...draftAgent, delegate_agent_ids: [] })}
+                                                                label="All Agents"
+                                                                className={`${CAP_BOX} disabled:opacity-100`}
                                                             />
-                                                            <div className="flex-1 min-w-0">
-                                                                <div className="text-xs font-bold text-text">All Agents</div>
-                                                                <div className="text-2xs text-text-faint">Allow delegation to any available agent</div>
-                                                            </div>
+                                                            <span className="block flex-1 min-w-0">
+                                                                <span className="block text-xs font-bold text-text">All Agents</span>
+                                                                <span className="block text-2xs text-text-faint">Allow delegation to any available agent</span>
+                                                            </span>
                                                             {allSelected && <span className="text-2xs px-1.5 py-0.5 bg-success/50 text-success border border-success/40 rounded-md">ACTIVE</span>}
-                                                        </div>
+                                                        </label>
 
                                                         {/* Individual agents */}
                                                         <div className="grid grid-cols-2 gap-2">
                                                             {otherAgents.map((a: any) => {
                                                                 const isSelected = selectedIds.includes(a.id);
                                                                 return (
-                                                                    <div
+                                                                    <label
                                                                         key={a.id}
-                                                                        onClick={() => {
-                                                                            let newIds: string[];
-                                                                            if (isSelected) {
-                                                                                newIds = selectedIds.filter((id: string) => id !== a.id);
-                                                                            } else {
-                                                                                newIds = [...selectedIds, a.id];
-                                                                            }
-                                                                            setDraftAgent({ ...draftAgent, delegate_agent_ids: newIds });
-                                                                        }}
-                                                                        className={`p-3 border cursor-pointer transition-all
+                                                                        className={`block p-3 border cursor-pointer transition-all
                                                                             ${isSelected ? 'bg-surface-2 border-border-strong' : allSelected ? 'bg-surface/60 border-border opacity-60' : 'bg-surface border-border hover:border-border-strong'} rounded-md`}
                                                                     >
-                                                                        <div className="flex items-center gap-2">
-                                                                            <div className={`w-3 h-3 border flex-shrink-0
-                                                                                ${isSelected ? 'bg-success border-success/40' : 'border-text-faint'} rounded-md`}
+                                                                        <span className="flex items-center gap-2">
+                                                                            <Checkbox
+                                                                                checked={isSelected}
+                                                                                onChange={() => {
+                                                                                    const newIds = isSelected
+                                                                                        ? selectedIds.filter((id: string) => id !== a.id)
+                                                                                        : [...selectedIds, a.id];
+                                                                                    setDraftAgent({ ...draftAgent, delegate_agent_ids: newIds });
+                                                                                }}
+                                                                                label={a.name}
+                                                                                className={CAP_BOX}
                                                                             />
-                                                                            <div className="flex-1 min-w-0">
-                                                                                <div className="text-xs font-bold text-text truncate">{a.name}</div>
-                                                                                <div className="text-2xs text-text-faint truncate">{a.description}</div>
-                                                                            </div>
+                                                                            <span className="block flex-1 min-w-0">
+                                                                                <span className="block text-xs font-bold text-text truncate">{a.name}</span>
+                                                                                <span className="block text-2xs text-text-faint truncate">{a.description}</span>
+                                                                            </span>
                                                                             <span className="text-2xs px-1 bg-surface-2 text-text-faint rounded-md capitalize flex-shrink-0">{a.type}</span>
-                                                                        </div>
-                                                                    </div>
+                                                                        </span>
+                                                                    </label>
                                                                 );
                                                             })}
                                                         </div>
@@ -874,50 +883,53 @@ export const AgentsTab = ({
                                                                                 : 'bg-surface border-border opacity-60'
                                                                     } rounded-md`}
                                                             >
-                                                                <div className={`p-4 flex items-center gap-2 transition-colors ${isAutoGroup ? 'cursor-default' : 'cursor-pointer hover:bg-surface-2/30'}`}
-                                                                    onClick={() => {
-                                                                        if (isAutoGroup) return;
-                                                                        if (hasMultipleTools) {
-                                                                            toggleExpand(cap.id);
-                                                                        } else {
-                                                                            toggleGroupTools(cap);
-                                                                        }
-                                                                    }}
-                                                                >
-                                                                    {isAutoGroup ? (
-                                                                        <Lock className="w-3 h-3 text-accent flex-shrink-0" />
-                                                                    ) : (
-                                                                        <div
-                                                                            onClick={(e) => {
-                                                                                if (hasMultipleTools) {
-                                                                                    e.stopPropagation();
-                                                                                    toggleGroupTools(cap);
-                                                                                }
-                                                                            }}
-                                                                            className={`w-3 h-3 border flex-shrink-0 flex items-center justify-center cursor-pointer
-                                                                        ${allGroupEnabled
-                                                                                    ? 'bg-success border-success/40'
-                                                                                    : someEnabled
-                                                                                        ? 'bg-warning border-warning/40'
-                                                                                        : 'border-text-faint'
-                                                                                } rounded-md`}
+                                                                {/* A real checkbox per group, so a keyboard can give an agent
+                                                                    tools and a screen reader hears each one's state (F184). A
+                                                                    group of several tools keeps its box and its expander apart:
+                                                                    one ticks the whole group, the other opens it. */}
+                                                                {isAutoGroup ? (
+                                                                    <div className="p-4 flex items-center gap-2">
+                                                                        <Lock className="w-3 h-3 text-accent flex-shrink-0" aria-hidden />
+                                                                        <span className="text-xs font-bold text-text truncate flex-1">{cap.label}</span>
+                                                                        <span className="text-2xs px-1.5 py-0.5 bg-accent/50 text-accent border border-accent/40 rounded-md">DEFAULT</span>
+                                                                    </div>
+                                                                ) : hasMultipleTools ? (
+                                                                    <div className="p-4 flex items-center gap-2 transition-colors hover:bg-surface-2/30">
+                                                                        <Checkbox
+                                                                            checked={allGroupEnabled ? true : someEnabled ? 'indeterminate' : false}
+                                                                            onChange={() => toggleGroupTools(cap)}
+                                                                            label={cap.label}
+                                                                            className={CAP_BOX}
+                                                                        />
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => toggleExpand(cap.id)}
+                                                                            aria-expanded={isExpanded}
+                                                                            aria-label={`${cap.label} tools, ${enabledCount} of ${cap.tools.length} on`}
+                                                                            className="flex min-w-0 flex-1 items-center gap-2 text-left rounded-sm"
                                                                         >
-                                                                            {someEnabled && <div className="w-1.5 h-0.5 bg-white"></div>}
-                                                                        </div>
-                                                                    )}
-                                                                    <span className="text-xs font-bold text-text truncate flex-1">{cap.label}</span>
-                                                                    {isAutoGroup && <span className="text-2xs px-1.5 py-0.5 bg-accent/50 text-accent border border-accent/40 rounded-md">DEFAULT</span>}
-                                                                    {!isAutoGroup && cap.toolType === 'custom' && <span className="text-2xs px-1 bg-surface-2 text-text-muted rounded-md">CUSTOM</span>}
-                                                                    {!isAutoGroup && cap.toolType === 'mcp' && <span className="text-2xs px-1 bg-accent/50 text-accent border border-accent/40 rounded-md">MCP</span>}
-                                                                    {!isAutoGroup && hasMultipleTools && (
-                                                                        <span className="text-2xs text-text-faint">{enabledCount}/{cap.tools.length}</span>
-                                                                    )}
-                                                                    {!isAutoGroup && hasMultipleTools && (
-                                                                        isExpanded
-                                                                            ? <ChevronDown className="h-3 w-3 text-text-faint flex-shrink-0" />
-                                                                            : <ChevronRight className="h-3 w-3 text-text-faint flex-shrink-0" />
-                                                                    )}
-                                                                </div>
+                                                                            <span className="text-xs font-bold text-text truncate flex-1">{cap.label}</span>
+                                                                            {cap.toolType === 'custom' && <span className="text-2xs px-1 bg-surface-2 text-text-muted rounded-md">CUSTOM</span>}
+                                                                            {cap.toolType === 'mcp' && <span className="text-2xs px-1 bg-accent/50 text-accent border border-accent/40 rounded-md">MCP</span>}
+                                                                            <span className="text-2xs text-text-faint">{enabledCount}/{cap.tools.length}</span>
+                                                                            {isExpanded
+                                                                                ? <ChevronDown className="h-3 w-3 text-text-faint flex-shrink-0" aria-hidden />
+                                                                                : <ChevronRight className="h-3 w-3 text-text-faint flex-shrink-0" aria-hidden />}
+                                                                        </button>
+                                                                    </div>
+                                                                ) : (
+                                                                    <label className="p-4 flex items-center gap-2 transition-colors cursor-pointer hover:bg-surface-2/30">
+                                                                        <Checkbox
+                                                                            checked={allGroupEnabled}
+                                                                            onChange={() => toggleGroupTools(cap)}
+                                                                            label={cap.label}
+                                                                            className={CAP_BOX}
+                                                                        />
+                                                                        <span className="text-xs font-bold text-text truncate flex-1">{cap.label}</span>
+                                                                        {cap.toolType === 'custom' && <span className="text-2xs px-1 bg-surface-2 text-text-muted rounded-md">CUSTOM</span>}
+                                                                        {cap.toolType === 'mcp' && <span className="text-2xs px-1 bg-accent/50 text-accent border border-accent/40 rounded-md">MCP</span>}
+                                                                    </label>
+                                                                )}
 
                                                                 {!isExpanded && (
                                                                     <div className="px-4 pb-3 -mt-1">
@@ -932,35 +944,35 @@ export const AgentsTab = ({
                                                                         {toolDetails.map((tool: { name: string, description: string }) => {
                                                                             const isToolAuto = autoTools.has(tool.name);
                                                                             const isToolEnabled = isToolAuto || draftAgent.tools.includes("all") || draftAgent.tools.includes(tool.name);
+                                                                            const Row = isToolAuto ? 'div' : 'label';
                                                                             return (
-                                                                                <div
+                                                                                <Row
                                                                                     key={tool.name}
-                                                                                    onClick={() => !isToolAuto && toggleSingleTool(tool.name, cap)}
                                                                                     className={`flex gap-2.5 py-1.5 px-2 rounded-md transition-colors ${isToolAuto ? 'cursor-default opacity-60' : 'cursor-pointer hover:bg-surface-2/40'}`}
                                                                                 >
                                                                                     {isToolAuto ? (
-                                                                                        <Lock className="w-2.5 h-2.5 text-accent flex-shrink-0 mt-[3px]" />
+                                                                                        <Lock className="w-2.5 h-2.5 text-accent flex-shrink-0 mt-[3px]" aria-hidden />
                                                                                     ) : (
-                                                                                        <div className={`w-2.5 h-2.5 border flex-shrink-0 mt-[3px]
-                                                                                    ${isToolEnabled
-                                                                                                ? 'bg-success border-success/40'
-                                                                                                : 'border-text-faint'
-                                                                                            } rounded-md`}
-                                                                                        ></div>
+                                                                                        <Checkbox
+                                                                                            checked={isToolEnabled}
+                                                                                            onChange={() => toggleSingleTool(tool.name, cap)}
+                                                                                            label={humanizeToolName(tool.name)}
+                                                                                            className={`${CAP_BOX} mt-px`}
+                                                                                        />
                                                                                     )}
-                                                                                    <div className="min-w-0 flex-1">
+                                                                                    <span className="block min-w-0 flex-1">
                                                                                         {/* Humanized name leads; the dispatch key stays beside it
                                                                                             (small, mono) because it is what a step stores and what
                                                                                             a run log prints. */}
-                                                                                        <div className="text-2xs text-text">
+                                                                                        <span className="block text-2xs text-text">
                                                                                             {humanizeToolName(tool.name)}
                                                                                             <span className="ml-1.5 font-mono text-[10px] text-text-faint" translate="no">{tool.name}</span>
-                                                                                        </div>
+                                                                                        </span>
                                                                                         {tool.description && (
-                                                                                            <p className="text-2xs text-text-faint mt-0.5 leading-tight line-clamp-2">{tool.description}</p>
+                                                                                            <span className="block text-2xs text-text-faint mt-0.5 leading-tight line-clamp-2">{tool.description}</span>
                                                                                         )}
-                                                                                    </div>
-                                                                                </div>
+                                                                                    </span>
+                                                                                </Row>
                                                                             );
                                                                         })}
                                                                     </div>

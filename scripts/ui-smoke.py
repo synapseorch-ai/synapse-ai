@@ -3653,6 +3653,60 @@ async def check_keyrows(browser) -> str:
                 pass
 
 
+@check
+async def check_agenttools(browser) -> str:
+    """An agent's tools are checkboxes a keyboard can tick, and "all" can be narrowed (F184, F235).
+
+    The Capabilities cards were `div`s with a click handler: no role, no state,
+    out of the tab order, and nothing else in the product gives an agent tools.
+    Beside that, with the agent on "all" a group's box could never be turned
+    off: it re-added the group's names next to "all".
+    """
+    aid = f"agent_uismoke_tools_{int(time.time())}"
+    name = f"Tools {aid[-6:]}"
+    api("/api/agents", "POST", {**_agent(aid, name), "tools": ["all"]})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        await page.get_by_text(name, exact=True).first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_text(name, exact=True).first.click()
+        await page.wait_for_function(
+            "(n) => [...document.querySelectorAll('input')].some(i => i.value === n)", arg=name, timeout=20_000)
+        await asyncio.sleep(1.0)
+        box = page.get_by_role("checkbox", name="Time & Date", exact=True)
+        if not await box.count():
+            raise AssertionError("a Capabilities card is not a checkbox")
+        if await box.get_attribute("aria-checked") != "true":
+            raise AssertionError("on an agent with every tool, Time & Date does not read as ticked")
+        await box.focus()
+        await page.keyboard.press(" ")
+        await asyncio.sleep(0.4)
+        if await box.get_attribute("aria-checked") != "false":
+            raise AssertionError("on an agent with every tool, Space does not turn a group off")
+        await page.keyboard.press(" ")
+        await asyncio.sleep(0.4)
+        if await box.get_attribute("aria-checked") != "true":
+            raise AssertionError("Space does not turn the group back on")
+        expander = page.locator("button[aria-expanded]", has_text="/").first
+        if not await expander.count():
+            raise AssertionError("a group of several tools has no control that opens it")
+        await expander.focus()
+        await page.keyboard.press("Enter")
+        await asyncio.sleep(0.4)
+        if await expander.get_attribute("aria-expanded") != "true":
+            raise AssertionError("Enter on a group's expander does not open it")
+        return "tool groups and their tools are checkboxes a keyboard ticks, and \"all\" narrows"
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
