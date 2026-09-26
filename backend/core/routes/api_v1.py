@@ -93,7 +93,7 @@ class V1ApprovalRequest(BaseModel):
     # The call this answers, as `awaiting_approval` named it. When given and it
     # is not the call the conversation is waiting on, the answer is refused.
     approval_id: str | None = None
-    agent: str | None = None          # the conversation's agent (first agent if omitted)
+    agent: str | None = None          # the conversation's agent (the one waiting, if omitted)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -133,6 +133,35 @@ async def _agent_or_error(agent_identifier: str | None) -> dict:
     if agent_identifier:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_identifier}' not found")
     raise HTTPException(status_code=400, detail="No agents configured")
+
+
+async def _waiting_agent(session_id: str, approval_id: str | None) -> dict:
+    """The agent whose tool call this conversation is waiting on (F211).
+
+    The approve used to fall back to the workspace's first agent when none was
+    named, so a conversation with any other agent answered "not waiting on an
+    approval". The conversation already names it, as cloud's approve reads it.
+    `approval_id` picks one when two agents in one conversation both wait.
+    """
+    from core.store import sessions as _sessions
+
+    agents = {a["id"]: a for a in await _api_agents()}
+    waiting = [(agent_id, pending) for agent_id, pending in await _sessions.pending_approvals(session_id)
+               if agent_id in agents]
+    if approval_id is not None and len(waiting) > 1:
+        waiting = [(agent_id, pending) for agent_id, pending in waiting
+                   if pending.get("approval_id") == approval_id]
+        if not waiting:
+            raise HTTPException(status_code=409, detail="That approval is not the one this conversation is waiting on.")
+    if not waiting:
+        raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
+    if len(waiting) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="This conversation is waiting on more than one agent's approval. "
+                   "Name the agent, or the approval_id.",
+        )
+    return agents[waiting[0][0]]
 
 
 def _build_chat_request(body: V1ChatRequest, agent: dict) -> "ChatRequest":
@@ -402,7 +431,8 @@ async def v1_approve_chat_tool(session_id: str, body: V1ApprovalRequest,
     from core.store import sessions as _sessions
     import core.server as _server
 
-    agent = await _agent_or_error(body.agent)
+    agent = (await _agent_or_error(body.agent) if body.agent is not None
+             else await _waiting_agent(session_id, body.approval_id))
     try:
         with chat_turns.claim(session_id, agent_key=agent["id"]) as turn:
             pending = await _sessions.get_pending_approval(session_id, agent["id"])

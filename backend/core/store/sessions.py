@@ -193,6 +193,27 @@ async def get_pending_approval(session_id: str, agent_id: str) -> dict | None:
         return (row.pending_approval or None) if row is not None else None
 
 
+async def pending_approvals(session_id: str) -> list[tuple[str, dict]]:
+    """Every agent in this conversation with a tool call parked, as `(agent_id, pending)`.
+
+    A session id names one conversation per agent (see `ChatSessionDB`), so an
+    answer that does not name the agent finds it here (F211).
+    """
+    from core.store import session
+    from core.store.models import ChatSessionDB
+
+    async with session() as s:
+        rows = (
+            await s.execute(
+                select(ChatSessionDB.agent_id, ChatSessionDB.pending_approval).where(
+                    ChatSessionDB.tenant_id == get_tenant(),
+                    ChatSessionDB.session_id == session_id,
+                )
+            )
+        ).all()
+    return [(agent_id, pending) for agent_id, pending in rows if pending]
+
+
 async def set_cli_session_id(session_id: str, agent_id: str, provider_key: str, cli_id: str) -> None:
     from core.store import session
     from core.store.models import ChatSessionDB
