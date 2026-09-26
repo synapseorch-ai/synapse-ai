@@ -247,7 +247,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         }
     };
 
-    const handleSaveLogin = async (enabled: boolean, username: string, password: string) => {
+    /** True once saved; `loginEnabled` changes only then, so the switch never
+     * shows a state the backend does not hold (F222). */
+    const handleSaveLogin = async (enabled: boolean, username: string, password: string): Promise<boolean> => {
         setIsLoginSaving(true);
         try {
             const res = await fetch('/api/settings/login', {
@@ -262,8 +264,10 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             setLoginEnabled(enabled);
             setLoginUsername(username);
             showToast(enabled ? 'Login enabled' : 'Login disabled', 'success');
+            return true;
         } catch (e: any) {
             showToast(e.message || 'Failed to save login settings', 'error');
+            return false;
         } finally {
             setIsLoginSaving(false);
         }
@@ -516,7 +520,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         transformRuntime={transformRuntime}
                         setTransformRuntime={setTransformRuntime}
                         loginEnabled={loginEnabled}
-                        setLoginEnabled={setLoginEnabled}
                         loginUsername={loginUsername}
                         setLoginUsername={setLoginUsername}
                         onSaveLogin={handleSaveLogin}

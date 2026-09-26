@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { Button, Input, Label, Modal, Spinner } from '@/components/ui';
+import { Button, ConfirmDialog, Input, Label, Modal, Spinner } from '@/components/ui';
 import { ToolPolicyFields, type ToolPolicy } from './ToolPolicy';
 
 type EmbedIssue = 'no_psql' | 'no_db' | 'existing_url_broken' | 'no_pgvector' | 'connection_error';
@@ -39,11 +39,12 @@ interface GeneralTabProps {
     setBashAllowedDirs: (v: string[]) => void;
     transformRuntime: 'docker' | 'host';
     setTransformRuntime: (v: 'docker' | 'host') => void;
+    /** Whether login is on, as saved. Only a successful save changes it. */
     loginEnabled: boolean;
-    setLoginEnabled: (v: boolean) => void;
     loginUsername: string;
     setLoginUsername: (v: string) => void;
-    onSaveLogin: (enabled: boolean, username: string, password: string) => Promise<void>;
+    /** Resolves true once the backend has saved it. */
+    onSaveLogin: (enabled: boolean, username: string, password: string) => Promise<boolean>;
     isLoginSaving?: boolean;
     onSave: () => void;
     isSaving?: boolean;
@@ -60,7 +61,7 @@ export function GeneralTab({
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
     transformRuntime, setTransformRuntime,
-    loginEnabled, setLoginEnabled,
+    loginEnabled,
     loginUsername, setLoginUsername,
     onSaveLogin, isLoginSaving,
     onSave, isSaving,
@@ -70,11 +71,23 @@ export function GeneralTab({
     const [vaultDraft, setVaultDraft] = useState(String(vaultThreshold));
     const [compactDraft, setCompactDraft] = useState(String(autoCompactThreshold));
 
-    // Login form local state
+    // Login form local state. The switch shows what is saved, or that login
+    // is being turned on while its form is open (`enabling`) — never an "off"
+    // that was not sent (F222).
     const [showLoginForm, setShowLoginForm] = useState(false);
+    const [enabling, setEnabling] = useState(false);
+    const [confirmLoginOff, setConfirmLoginOff] = useState(false);
     const [loginPassword, setLoginPassword] = useState('');
     const [loginConfirmPassword, setLoginConfirmPassword] = useState('');
     const [loginFormError, setLoginFormError] = useState('');
+    /** Back to what is saved: nothing typed here was sent. */
+    const closeLoginForm = () => {
+        setShowLoginForm(false);
+        setEnabling(false);
+        setLoginFormError('');
+        setLoginPassword('');
+        setLoginConfirmPassword('');
+    };
 
     // Confirmation modal shown when user tries to flip transform runtime to "host".
     // Going back to "docker" doesn't need confirmation (safe default).
@@ -639,22 +652,44 @@ export function GeneralTab({
                     </div>
                     <button
                         role="switch"
-                        aria-checked={loginEnabled}
+                        aria-checked={loginEnabled || enabling}
                         aria-label="Require login"
+                        disabled={isLoginSaving}
                         onClick={() => {
-                            if (!loginEnabled) {
+                            setLoginFormError('');
+                            if (loginEnabled) {
+                                // Off is saved at once, after a confirm; the
+                                // switch moves when the save succeeds.
+                                setConfirmLoginOff(true);
+                            } else if (enabling) {
+                                closeLoginForm();
+                            } else {
+                                // On needs credentials first: the form saves it.
+                                setEnabling(true);
                                 setShowLoginForm(true);
                             }
-                            setLoginEnabled(!loginEnabled);
-                            setLoginFormError('');
                         }}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 ${loginEnabled ? 'bg-accent' : 'bg-surface-2'}`}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none flex-shrink-0 ml-4 disabled:opacity-60 ${loginEnabled || enabling ? 'bg-accent' : 'bg-surface-2'}`}
                     >
-                        <span className={`inline-block h-4 w-4 transform rounded-full transition-transform ${loginEnabled ? 'translate-x-6 bg-accent-fg' : 'translate-x-1 bg-text-muted'}`} />
+                        <span className={`inline-block h-4 w-4 transform rounded-full transition-transform ${loginEnabled || enabling ? 'translate-x-6 bg-accent-fg' : 'translate-x-1 bg-text-muted'}`} />
                     </button>
                 </div>
 
-                {/* Configured state: show summary + actions */}
+                <ConfirmDialog
+                    open={confirmLoginOff}
+                    onClose={() => setConfirmLoginOff(false)}
+                    onConfirm={async () => {
+                        await onSaveLogin(false, '', '');
+                        setConfirmLoginOff(false);
+                    }}
+                    title="Turn off login?"
+                    description="Anyone who can open this address will be able to use Synapse, with no password. You can turn it back on at any time."
+                    confirmLabel="Turn off login"
+                    busy={isLoginSaving}
+                />
+
+                {/* Configured state: show summary + actions. Turning login off
+                    is the switch's job, so it has no second control here. */}
                 {loginEnabled && !showLoginForm && loginUsername && (
                     <div className="p-3 bg-surface border border-border space-y-2 rounded-md">
                         <p className="text-xs text-text-muted">
@@ -667,18 +702,12 @@ export function GeneralTab({
                             >
                                 Change Password
                             </button>
-                            <button
-                                onClick={() => onSaveLogin(false, '', '')}
-                                className="text-xs text-danger hover:opacity-80 transition-opacity"
-                            >
-                                Disable Login
-                            </button>
                         </div>
                     </div>
                 )}
 
                 {/* Credentials form */}
-                {loginEnabled && (showLoginForm || !loginUsername) && (
+                {(loginEnabled || enabling) && (showLoginForm || !loginUsername) && (
                     <div className="p-4 bg-surface border border-border space-y-3 rounded-md">
                         <p className="text-xs font-bold text-text">
                             {loginUsername ? 'Update Credentials' : 'Set Login Credentials'}
@@ -746,10 +775,10 @@ export function GeneralTab({
                                         setLoginFormError('Password must be at least 8 characters.');
                                         return;
                                     }
-                                    await onSaveLogin(true, loginUsername, loginPassword);
-                                    setShowLoginForm(false);
-                                    setLoginPassword('');
-                                    setLoginConfirmPassword('');
+                                    // A failed save keeps the form, and what was typed.
+                                    if (await onSaveLogin(true, loginUsername, loginPassword)) {
+                                        closeLoginForm();
+                                    }
                                 }}
                                 disabled={isLoginSaving}
                                 className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all disabled:opacity-50"
@@ -758,13 +787,7 @@ export function GeneralTab({
                                 {isLoginSaving ? 'Saving…' : 'Save Login Settings'}
                             </button>
                             <button
-                                onClick={() => {
-                                    setShowLoginForm(false);
-                                    setLoginFormError('');
-                                    setLoginPassword('');
-                                    setLoginConfirmPassword('');
-                                    if (!loginUsername) setLoginEnabled(false);
-                                }}
+                                onClick={closeLoginForm}
                                 className="px-3 py-2 text-xs text-text-faint hover:text-text transition-colors"
                             >
                                 Cancel
