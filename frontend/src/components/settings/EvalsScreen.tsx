@@ -19,9 +19,12 @@ import { useCallback, useEffect, useState } from "react";
 import { ListChecks, Play, Plus, Sparkles, Square, Target, ThumbsDown, ThumbsUp, Trash } from "lucide-react";
 
 import {
-    Badge, Button, Card, CardBody, ConfirmDialog, EmptyState, Field, IconButton,
+    Badge, Button, Card, CardBody, Combobox, ConfirmDialog, EmptyState, Field, IconButton,
     Input, Label, Muted, Select, Stat, Textarea, Toast, useToast,
 } from "@/components/ui";
+import { modelOptions, withUnreachable } from "@/lib/models";
+
+import { useSettingsData } from "./hooks/useSettingsData";
 
 type Criterion = { id?: string; name: string; weight?: number; guidance?: string };
 
@@ -82,9 +85,14 @@ type SuiteRun = {
     case_count: number;
     scored_count: number;
     mean_score: number | null;
+    /** "" when the orchestration had no rubric: its cases ran and nothing was scored. */
+    rubric_id: string;
     rubric_version: number;
     started_at: string;
 };
+
+/** The judge-model picker's "nothing chosen" row: blank means the workspace's, then the default. */
+const JUDGE_DEFAULT = "__default__";
 
 const BLANK: Omit<Rubric, "id" | "version"> = {
     name: "",
@@ -126,6 +134,8 @@ export function EvalsScreen() {
     const [orchId, setOrchId] = useState<string>("");
     const [trend, setTrend] = useState<Trend | null>(null);
     const [trendBusy, setTrendBusy] = useState(false);
+    const [backfilling, setBackfilling] = useState(false);
+    const { models } = useSettingsData();
 
     const refresh = useCallback(async () => {
         try {
@@ -222,7 +232,40 @@ export function EvalsScreen() {
         }
     }
 
+    // Scores the runs an orchestration already has, which the empty state used
+    // to promise with no way to do it but the API (F204).
+    async function backfill(id: string) {
+        setBackfilling(true);
+        try {
+            const res = await fetch(`/api/evals/orchestrations/${encodeURIComponent(id)}/backfill`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: "{}",
+            });
+            if (!res.ok) throw new Error();
+            const { requested, scored } = (await res.json()) as { requested: number; scored: number };
+            if (requested === 0) {
+                show("No finished runs to score yet. Run it first.", "warning");
+            } else {
+                show(
+                    `Scored ${scored} of ${requested} run${requested === 1 ? "" : "s"}.`,
+                    scored === requested ? "success" : "warning",
+                );
+            }
+            await loadTrend(id);
+        } catch {
+            show("Could not score the earlier runs.", "danger");
+        } finally {
+            setBackfilling(false);
+        }
+    }
+
     const scaleMax = trend?.rubric?.scale?.max ?? 10;
+    const picked = orchestrations.find((o) => o.id === orchId);
+    const judgeOptions = [
+        { value: JUDGE_DEFAULT, label: "Workspace judge model, or the default model" },
+        ...withUnreachable(modelOptions(models.providers ?? {}), draft?.judge_model || undefined),
+    ];
 
     return (
         <div className="grid gap-6 lg:grid-cols-[20rem_1fr]">
@@ -415,12 +458,15 @@ export function EvalsScreen() {
 
                             <Field
                                 label="Judge model"
-                                hint="Blank uses the workspace judge model, then the default model."
+                                hint="The model that scores each run against this rubric."
                             >
-                                <Input
-                                    value={draft.judge_model}
-                                    onChange={(e) => setDraft({ ...draft, judge_model: e.target.value })}
-                                    placeholder="default"
+                                <Combobox
+                                    // "default", as the free-text box suggested, means the same as blank.
+                                    value={!draft.judge_model || draft.judge_model === "default" ? JUDGE_DEFAULT : draft.judge_model}
+                                    onChange={(v) => setDraft({ ...draft, judge_model: v === JUDGE_DEFAULT ? "" : v })}
+                                    options={judgeOptions}
+                                    searchPlaceholder="Search models…"
+                                    aria-label="Judge model"
                                 />
                             </Field>
 
@@ -456,10 +502,25 @@ export function EvalsScreen() {
                                 Scores appear here once a rubric is bound to it and it has run.
                             </EmptyState>
                         ) : !trend || trend.scores.length === 0 ? (
-                            <EmptyState title="Nothing scored yet">
-                                Bind a rubric on the orchestration, then run it — or backfill
-                                the runs it already has.
-                            </EmptyState>
+                            picked?.rubric_id ? (
+                                <EmptyState
+                                    title="Nothing scored yet"
+                                    action={
+                                        <Button size="sm" variant="secondary"
+                                                onClick={() => backfill(orchId)} disabled={backfilling}>
+                                            <Target className="h-3.5 w-3.5" aria-hidden />
+                                            {backfilling ? "Scoring…" : "Score earlier runs"}
+                                        </Button>
+                                    }
+                                >
+                                    Every run from now on is scored. Runs it already has can be scored too.
+                                </EmptyState>
+                            ) : (
+                                <EmptyState title="Nothing scored yet">
+                                    No rubric is bound to this orchestration. Bind one in its
+                                    Guardrails tab, and its runs are scored from then on.
+                                </EmptyState>
+                            )
                         ) : (
                             <TrendView
                                 trend={trend}
@@ -520,6 +581,7 @@ function GoldenSets({
     const [proposed, setProposed] = useState<Case[] | null>(null);
     const [busy, setBusy] = useState(false);
     const [history, setHistory] = useState<SuiteRun[]>([]);
+    const [confirmRun, setConfirmRun] = useState<Suite | null>(null);
 
     const refresh = useCallback(async () => {
         try {
@@ -544,18 +606,19 @@ function GoldenSets({
     }, []);
 
     // While a suite is running the tally is written as each case lands, so a
-    // poll is what turns that into progress somebody can watch.
+    // poll is what turns that into progress somebody can watch. It runs while
+    // any set runs, open or not: polled only for the open card, a set started
+    // collapsed kept its Stop button after it had finished (F204).
+    const anyRunning = suites.some((s) => s.running);
     useEffect(() => {
-        if (!openId) return;
-        void loadHistory(openId);
-        const running = suites.find((s) => s.id === openId)?.running;
-        if (!running) return;
+        if (openId) void loadHistory(openId);
+        if (!anyRunning) return;
         const timer = setInterval(() => {
-            void loadHistory(openId);
+            if (openId) void loadHistory(openId);
             void refresh();
         }, 2500);
         return () => clearInterval(timer);
-    }, [openId, suites, loadHistory, refresh]);
+    }, [openId, anyRunning, loadHistory, refresh]);
 
     async function save() {
         if (!draft) return;
@@ -607,20 +670,19 @@ function GoldenSets({
         }
     }
 
+    // Asked in the kit's dialog, not window.confirm (F204). With no rubric bound
+    // the cases run and nothing is scored, so it says that rather than pricing
+    // judge calls that will never be made.
     async function start(suite: Suite) {
-        const { runs, judge_calls } = suite.estimate;
-        const ok = window.confirm(
-            `Run all ${runs} case${runs === 1 ? "" : "s"}?\n\n` +
-            `That is ${runs} full run${runs === 1 ? "" : "s"} of “${
-                orchestrations.find((o) => o.id === suite.orchestration_id)?.name ?? "the orchestration"
-            }” plus ${judge_calls} judge call${judge_calls === 1 ? "" : "s"}, all billed as usual. ` +
-            `Cases run one at a time and you can stop it.`,
-        );
-        if (!ok) return;
+        setConfirmRun(null);
+        const scored = !!orchestrations.find((o) => o.id === suite.orchestration_id)?.rubric_id;
         try {
             const res = await fetch(`/api/evals/suites/${suite.id}/run`, { method: "POST" });
             if (!res.ok) throw new Error((await res.json()).detail);
-            onToast("Running. Cases are scored as they finish.");
+            onToast(scored
+                ? "Running. Cases are scored as they finish."
+                : "Running. No rubric is bound, so the cases will not be scored.",
+                scored ? "success" : "warning");
             await refresh();
         } catch (e) {
             onToast(e instanceof Error && e.message ? e.message : "Could not start the set.", "danger");
@@ -786,7 +848,7 @@ function GoldenSets({
                                             <Square className="h-3.5 w-3.5" /> Stop
                                         </Button>
                                     ) : (
-                                        <Button size="sm" variant="ghost" onClick={() => start(suite)}
+                                        <Button size="sm" variant="ghost" onClick={() => setConfirmRun(suite)}
                                                 disabled={suite.estimate.cases === 0}>
                                             <Play className="h-3.5 w-3.5" /> Run
                                         </Button>
@@ -813,10 +875,16 @@ function GoldenSets({
                                                            tone={run.mean_score === null ? "neutral" : "accent"}>
                                                         {run.mean_score === null ? "—" : run.mean_score.toFixed(1)}
                                                     </Badge>
-                                                    <span className="text-text-muted">
-                                                        {run.scored_count}/{run.case_count} scored
-                                                    </span>
-                                                    <Badge size="sm">v{run.rubric_version}</Badge>
+                                                    {run.rubric_id ? (
+                                                        <>
+                                                            <span className="text-text-muted">
+                                                                {run.scored_count}/{run.case_count} scored
+                                                            </span>
+                                                            <Badge size="sm">v{run.rubric_version}</Badge>
+                                                        </>
+                                                    ) : (
+                                                        <span className="text-text-muted">not scored: no rubric</span>
+                                                    )}
                                                     {run.status !== "completed" && (
                                                         <Badge size="sm" tone="warning">{run.status}</Badge>
                                                     )}
@@ -833,8 +901,30 @@ function GoldenSets({
                     );
                 })
             )}
+            <ConfirmDialog
+                open={confirmRun !== null}
+                onClose={() => setConfirmRun(null)}
+                title={`Run all ${confirmRun?.estimate.runs ?? 0} case${confirmRun?.estimate.runs === 1 ? "" : "s"}?`}
+                description={confirmRun ? runCost(confirmRun, orchestrations) : undefined}
+                confirmLabel="Run set"
+                onConfirm={() => confirmRun && start(confirmRun)}
+            />
         </div>
     );
+}
+
+/** What running a set costs, said before it starts: it is the most expensive action here. */
+function runCost(suite: Suite, orchestrations: Orchestration[]): string {
+    const orch = orchestrations.find((o) => o.id === suite.orchestration_id);
+    const name = orch?.name ?? "the orchestration";
+    const { runs, judge_calls } = suite.estimate;
+    const runsText = `${runs} full run${runs === 1 ? "" : "s"} of “${name}”`;
+    if (!orch?.rubric_id) {
+        return `That is ${runsText}, billed as usual. No rubric is bound to it, so they will not be scored: ` +
+            "bind one in its Guardrails tab first to score them. Cases run one at a time and you can stop it.";
+    }
+    return `That is ${runsText} plus ${judge_calls} judge call${judge_calls === 1 ? "" : "s"}, all billed as usual. ` +
+        "Cases run one at a time and you can stop it.";
 }
 
 

@@ -4175,6 +4175,93 @@ async def check_badgecontrast(browser) -> str:
     return "run, tool and MCP status badges meet AA in both themes"
 
 
+@check
+async def check_evalsactions(browser) -> str:
+    """Evals does what it says: a backfill button, an honest run confirm, Stop that clears (F204).
+
+    The empty state promised a backfill no button offered. A golden set on an
+    orchestration with no rubric ran after a native confirm pricing judge calls
+    that never happen, then finished saying nothing. A set started from a
+    collapsed card kept its Stop button after it had ended, because only the
+    open card was polled. The rubric's judge model was a free-text box. The
+    backfill is stubbed, so no judge model is called; the set that runs has no
+    rubric, so nothing is scored either.
+    """
+    stamp = int(time.time())
+    scored, bare = f"orch_uismoke_evs_{stamp}", f"orch_uismoke_evu_{stamp}"
+    rubric = api("/api/rubrics", "POST", {"name": f"Smoke rubric {stamp}", "criteria": [{"name": "Clear"}],
+                                          "judge_model": "default"})
+    api("/api/orchestrations", "POST", {**print_orchestration(scored, f"ui-smoke scored {stamp}"),
+                                        "rubric_id": rubric["id"]})
+    slow = print_orchestration(bare, f"ui-smoke unscored {stamp}")
+    slow["steps"][0] = {"id": f"{bare}_a", "name": "Wait", "type": "transform", "output_key": "one",
+                        "transform_code": "import time\ntime.sleep(4)\nresult = 1", "next_step_id": f"{bare}_end"}
+    api("/api/orchestrations", "POST", slow)
+    suite = api("/api/evals/suites", "POST", {"name": f"Smoke set {stamp}", "orchestration_id": bare,
+                                              "cases": [{"name": "one", "input": "hi", "notes": ""}]})
+    native: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    page.on("dialog", lambda d: (native.append(d.message), asyncio.ensure_future(d.dismiss())))
+    backfills: list[str] = []
+
+    async def stub_backfill(route):
+        backfills.append(route.request.post_data or "")
+        await route.fulfill(status=200, content_type="application/json",
+                            body=json.dumps({"requested": 2, "scored": 2, "scores": []}))
+    await page.route("**/api/evals/orchestrations/*/backfill", stub_backfill)
+    try:
+        await page.goto(f"{APP}/evals", wait_until="domcontentloaded")
+        await page.get_by_text(f"Smoke set {stamp}", exact=True).wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("combobox").first.click()
+        await page.get_by_role("option", name=f"ui-smoke scored {stamp}").click()
+        button = page.get_by_role("button", name=re.compile("score earlier runs", re.I))
+        try:
+            await button.wait_for(timeout=10_000)
+        except Exception:
+            raise AssertionError("an orchestration with a rubric and nothing scored offers no backfill")
+        await button.click()
+        await page.get_by_text("Scored 2 of 2 runs.").wait_for(timeout=10_000)
+        if not backfills:
+            raise AssertionError("the backfill button sent nothing")
+
+        row = page.get_by_role("button", name=re.compile(f"^Smoke set {stamp}")).locator("xpath=..")
+        await row.get_by_role("button", name="Run", exact=True).click()
+        await asyncio.sleep(0.8)
+        if native:
+            raise AssertionError(f"running a set asks with a native dialog: {native[0][:80]!r}")
+        dialog = page.get_by_role("dialog")
+        text = await dialog.inner_text()
+        if "not be scored" not in text or "judge call" in text:
+            raise AssertionError(f"a set with no rubric is confirmed as {text[:160]!r}")
+        await dialog.get_by_role("button", name="Run set").click()
+        await row.get_by_role("button", name=re.compile("Stop")).wait_for(timeout=10_000)
+        stopped = False
+        for _ in range(30):
+            await asyncio.sleep(1.0)
+            if not await row.get_by_role("button", name=re.compile("Stop")).count():
+                stopped = True
+                break
+        if not stopped:
+            raise AssertionError("a set run from a collapsed card still shows Stop after it has ended")
+
+        await page.get_by_role("button", name=re.compile(f"^Smoke rubric {stamp}")).click()
+        judge = page.get_by_role("button", name="Judge model")
+        if not await judge.count():
+            raise AssertionError("the rubric's judge model is not a model picker")
+        return "Evals backfills, confirms a set honestly in its own dialog, clears Stop, and picks the judge from the models"
+    finally:
+        await ctx.close()
+        for path in (f"/api/evals/suites/{suite.get('id')}", f"/api/rubrics/{rubric.get('id')}"):
+            try:
+                api(path, "DELETE")
+            except Exception:
+                pass
+        drop_fixture(scored)
+        drop_fixture(bare)
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
