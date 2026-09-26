@@ -28,13 +28,44 @@ export const metadata: Metadata = {
   description: "Synapse AI",
 };
 
+/*
+ * The theme, before the first paint (F220).
+ *
+ * The app shell applies the saved theme after hydration, so a light or system
+ * theme used to paint dark first on every load. This runs while <head> is
+ * parsed, so the first frame already has the class, and `color-scheme` makes
+ * scrollbars, selects and date pickers follow it. The shell still owns both
+ * afterwards: it applies a change, follows the OS and clears them on leaving.
+ *
+ * Not on /login (dark by design) or /embed/* (a widget is themed by its own
+ * settings, and a `color-scheme` there would stop the iframe being
+ * transparent over a light host page).
+ */
+const THEME_BEFORE_PAINT = `(function () {
+  try {
+    var path = location.pathname;
+    if (path === '/login' || path.indexOf('/login/') === 0 || path.indexOf('/embed/') === 0) return;
+    var mode = localStorage.getItem('synapseTheme');
+    var light = mode === 'light'
+      || (mode === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches);
+    var root = document.documentElement;
+    if (light) root.classList.add('light-mode');
+    root.style.colorScheme = light ? 'light' : 'dark';
+  } catch (e) {}
+})();`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${geistMono.variable}`}>
+    // suppressHydrationWarning: the script below sets a class and a style on
+    // <html> that the server could not know. It covers this element only.
+    <html lang="en" className={`${inter.variable} ${geistMono.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BEFORE_PAINT }} />
+      </head>
       <body className="antialiased">
         {/* No NotificationProvider here: it belongs to the app shell,
             (app)/layout.tsx. Up here it also ran on /login and inside every

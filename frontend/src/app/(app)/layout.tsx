@@ -44,19 +44,28 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     // `--background` against itself, so a .light-mode starting below body left
     // the page ground dark behind a light app — visible on overscroll and
     // behind the app-wide toast host, which renders outside this shell.
+    //
+    // The first paint is the root layout's script's (F220); this keeps the class
+    // and `color-scheme` in step from then on, and clears both on leaving the
+    // shell (/login is dark by design).
     useEffect(() => {
         const root = document.documentElement;
         const media = window.matchMedia('(prefers-color-scheme: light)');
         const apply = () => {
             const light = mode === 'light' || (mode === 'system' && media.matches);
             root.classList.toggle('light-mode', light);
+            root.style.colorScheme = light ? 'light' : 'dark';
+        };
+        const clear = () => {
+            root.classList.remove('light-mode');
+            root.style.colorScheme = '';
         };
         apply();
-        if (mode !== 'system') return () => root.classList.remove('light-mode');
+        if (mode !== 'system') return clear;
         media.addEventListener('change', apply);
         return () => {
             media.removeEventListener('change', apply);
-            root.classList.remove('light-mode');
+            clear();
         };
     }, [mode]);
 
