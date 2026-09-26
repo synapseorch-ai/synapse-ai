@@ -80,6 +80,36 @@ class TestWhoSeesAFailedRunsWords:
                                    headers=api_key["headers"])
         assert WORDS not in stream.text
 
+    async def test_a_v1_caller_is_told_which_run_failed(
+        self, client, api_key, seed_orchestration, failing_step, caplog,
+    ):
+        """B2's wording (D134): the failure is named, with the run to read back.
+
+        An API-key holder may read the run's step errors at the v1 read-back
+        (F117), so the id is the useful part; the words themselves stay out.
+        It used to be "An internal error occurred. Check server logs for
+        details." and a full traceback in the log.
+        """
+        from core.orchestration.run_view import list_runs
+
+        agent = await _orchestrator(seed_orchestration, "agent_f231_v1_words")
+        with caplog.at_level("ERROR", logger="api_v1"):
+            sync = await client.post("/api/v1/chat", json={"message": "go", "agent": agent["id"]},
+                                     headers=api_key["headers"])
+        run_id = (await list_runs(limit=1))[0]["run_id"]
+        said = (f"The agent's workflow failed before answering. "
+                f"Read run {run_id} at /api/v1/orchestrations/runs/{run_id}.")
+        assert sync.status_code == 500
+        assert sync.json()["detail"] == said
+        assert not [r for r in caplog.records if r.exc_info], "one log line, not a traceback"
+
+        stream = await client.post("/api/v1/chat/stream", json={"message": "go", "agent": agent["id"]},
+                                   headers=api_key["headers"])
+        frames = [json.loads(line[6:]) for line in stream.text.split("\n") if line.startswith("data: {")]
+        (error,) = [f for f in frames if f.get("type") == "error"]
+        assert error["run_id"] == (await list_runs(limit=1))[0]["run_id"]
+        assert error["message"].startswith("The agent's workflow failed before answering.")
+
     async def test_not_someone_on_a_channel(self, wired, seed_orchestration, failing_step):
         from core.messaging import store as channel_store
         agent = await _orchestrator(seed_orchestration, "agent_f231_chan")

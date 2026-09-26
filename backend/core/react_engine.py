@@ -2335,7 +2335,12 @@ class RunFailed(RuntimeError):
     """An orchestrator agent's run failed, so its turn has no answer (F231).
 
     The message is the run's own last line — for the person in the app.
+    `run_id` names the run, which an API caller may read back instead.
     """
+
+    def __init__(self, message: str, run_id: str | None = None):
+        super().__init__(message)
+        self.run_id = run_id
 
 
 async def run_orchestrator_agent(
@@ -2457,11 +2462,13 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         answer = None
         failed = False
         failure = None
+        failed_run = None
         async for event in run_orchestrator_agent(
             active_agent, user_message, server_module, session_id=session_id,
         ):
             if event.get("type") == "orchestration_complete" and event.get("status") == "failed":
                 failed = True
+                failed_run = event.get("run_id")
             if event.get("type") == "final" and not event.get("orch_step_id"):
                 if failed:
                     # A failed run's last line is not the agent's answer (F231),
@@ -2491,7 +2498,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             except Exception as mem_err:
                 _log.warning(f"Session save failed (non-fatal): {mem_err}")
         if failure is not None:
-            raise RunFailed(failure)
+            raise RunFailed(failure, run_id=failed_run)
         return
 
     # --- Standard single-agent ReAct loop ---

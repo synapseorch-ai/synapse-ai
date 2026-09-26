@@ -192,7 +192,7 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
     """
     from core import chat_turns
     from core.llm_providers import LLMError
-    from core.react_engine import run_react_loop
+    from core.react_engine import RunFailed, run_react_loop
 
     turn = chat_turns.current_turn.get()
 
@@ -268,6 +268,13 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
 
             await asyncio.sleep(0)
 
+    except RunFailed as exc:
+        # An orchestrator agent's workflow failed (F231). Its words are the
+        # workspace's, read in the app; an API caller is told which run it was,
+        # which it may read back (`GET /orchestrations/runs/{id}`, F117).
+        log.error("[v1/chat] Workflow failed session=%s run=%s: %s",
+                  chat_request.session_id, exc.run_id, exc)
+        yield {"type": "error", "message": _failed_workflow(exc.run_id), "run_id": exc.run_id}
     except LLMError as exc:
         # The model failed (F133): the turn raises rather than answering with the
         # provider's words, and an API caller hears what it hears of any agent
@@ -277,6 +284,13 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
     except Exception:
         log.exception("[v1/chat] Unhandled error session=%s", chat_request.session_id)
         yield {"type": "error", "message": "An internal error occurred. Check server logs for details."}
+
+
+def _failed_workflow(run_id: str | None) -> str:
+    said = "The agent's workflow failed before answering."
+    if run_id:
+        said += f" Read run {run_id} at /api/v1/orchestrations/runs/{run_id}."
+    return said
 
 
 def _v1_start(body: V1ChatRequest, agent: dict, _server):
