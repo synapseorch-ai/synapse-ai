@@ -8,6 +8,19 @@ from core.models import DBConfig
 
 router = APIRouter()
 
+#: The drivers that take `connect_timeout` (psycopg2, psycopg, pymysql). SQLite's
+#: has no such argument and refused every refresh (F208); the rest name theirs
+#: differently, so they get none rather than a wrong one.
+_TIMEOUT_BACKENDS = {"postgresql", "mysql", "mariadb"}
+
+
+def _connect_args(connection_string: str) -> dict:
+    from sqlalchemy.engine import make_url
+    if make_url(connection_string).get_backend_name() in _TIMEOUT_BACKENDS:
+        return {"connect_timeout": 10}
+    return {}
+
+
 async def load_db_configs() -> list[dict]:
     from core.store import collections
     return await collections.load("db_configs")
@@ -58,7 +71,7 @@ async def refresh_db_schema(config_id: str):
     try:
         from sqlalchemy import create_engine, inspect, text
 
-        engine = create_engine(connection_string, connect_args={"connect_timeout": 10})
+        engine = create_engine(connection_string, connect_args=_connect_args(connection_string))
         inspector = inspect(engine)
 
         schema_lines = []
