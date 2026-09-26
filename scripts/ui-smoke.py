@@ -4381,6 +4381,51 @@ async def check_skillhint(browser) -> str:
         await ctx.close()
 
 
+@check
+async def check_agentname(browser) -> str:
+    """The chat page names the active agent, whichever request answers first (F229).
+
+    The page set its agent name from `/api/status` (the active agent) and from
+    `/api/settings` (the workspace's own name, "Synapse"). Both wrote the name,
+    so when status answered first the header and the welcome line said
+    "Synapse". Here status is served at once and settings late, which is the
+    order that lost. The status is stubbed so the install's own active agent is
+    left alone.
+    """
+    aid = f"agent_uismoke_named_{int(time.time())}"
+    name = f"Named {aid[-6:]}"
+    api("/api/agents", "POST", _agent(aid, name))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+
+    async def active(route):
+        response = await route.fetch()
+        status = await response.json()
+        status["active_agent_id"] = aid
+        status.setdefault("agents", {})[aid] = {"name": name}
+        await route.fulfill(response=response, json=status)
+
+    async def late(route):
+        await asyncio.sleep(1.5)
+        await route.continue_()
+    await page.route("**/api/status", active)
+    await page.route("**/api/settings", late)
+    try:
+        await page.goto(f"{APP}/", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 3.0)
+        text = await page.locator("main").inner_text()
+        if name.lower() not in text.lower():
+            workspace = api("/api/settings").get("agent_name")
+            raise AssertionError(f"with {name!r} active, the chat page names {workspace!r} once settings answers")
+        return "the chat page names the active agent, even when settings answers last"
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

@@ -655,6 +655,11 @@ export default function Home() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [agentName, setAgentName] = useState('Loading...');
+  // Whether the name came from the active agent. The workspace's own name, from
+  // settings, is only the fallback when no agent is active: both requests set
+  // the name, and when /api/status answered first the page said "Synapse" in
+  // place of the agent that answers (F229).
+  const agentNamedRef = useRef(false);
   const router = useRouter();
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [streamingActivity, setStreamingActivity] = useState<string | null>(null);
@@ -856,6 +861,7 @@ export default function Home() {
       if (d.active_agent_id && d.agents && d.agents[d.active_agent_id]) {
         const info = d.agents[d.active_agent_id];
         const name = typeof info === 'string' ? d.active_agent_id : info.name;
+        agentNamedRef.current = true;
         setAgentName(name);
         setCurrentAgentId(d.active_agent_id);
       }
@@ -872,7 +878,7 @@ export default function Home() {
     fetch('/api/settings')
       .then(r => r.json())
       .then(d => {
-        setAgentName(d.agent_name || 'System Agent');
+        if (!agentNamedRef.current) setAgentName(d.agent_name || 'System Agent');
         // Show example banner if installed_at exists and within 12 days
         if (d.installed_at) {
           const installedMs = new Date(d.installed_at).getTime();
@@ -884,7 +890,7 @@ export default function Home() {
           setShowExamplesBanner(true);
         }
       })
-      .catch(() => setAgentName('Offline'));
+      .catch(() => { if (!agentNamedRef.current) setAgentName('Offline'); });
 
     // 2. Restore last used agent, then its conversation
     const initAgent = async () => {
@@ -987,6 +993,7 @@ export default function Home() {
         setSystemStatus(statusData);
         const name = statusData.agents[agentId]?.name || agentId;
         if (statusData.agents[agentId]) {
+          agentNamedRef.current = true;
           setAgentName(name);
         }
         setCurrentAgentId(agentId);
