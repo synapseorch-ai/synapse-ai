@@ -4142,6 +4142,10 @@ async def check_badgecontrast(browser) -> str:
                 "url": "http://127.0.0.2:9/mcp", "token_set": False},
                {"name": "uismoke_auth", "label": "Smoke auth", "server_type": "remote", "status": "reauth_needed",
                 "url": "http://127.0.0.2:9/mcp", "token_set": False}]
+    # DB Configs' badges were raw 500s on a tint of themselves (F239).
+    dbs = [{"id": f"db_smoke_{status}", "name": f"Smoke {status}", "db_type": "sqlite",
+            "connection_string": "sqlite:///smoke.db", "status": status, "description": ""}
+           for status in ("untested", "connected", "error")]
     bad: list[str] = []
     for theme in ("light", "dark"):
         ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
@@ -4154,12 +4158,13 @@ async def check_badgecontrast(browser) -> str:
                 await route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
             return fulfil
         for pattern, body in (("**/api/orchestrations/runs", runs), ("**/api/tools/custom", tools),
-                              ("**/api/mcp/servers", servers)):
+                              ("**/api/mcp/servers", servers), ("**/api/db-configs", dbs)):
             await ctx.route(pattern, serving(body))
         page = await ctx.new_page()
         try:
             # Each fixture's own label: "n8n" alone also names a hidden control.
-            for path, shows in (("/orchestrations", "Needs input"), ("/tools", "Smoke n8n"), ("/mcp-servers", "Smoke off")):
+            for path, shows in (("/orchestrations", "Needs input"), ("/tools", "Smoke n8n"), ("/mcp-servers", "Smoke off"),
+                                ("/settings/db_configs", "Smoke untested")):
                 await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
                 try:
                     await page.get_by_text(shows, exact=True).first.wait_for(timeout=20_000)
@@ -4172,7 +4177,7 @@ async def check_badgecontrast(browser) -> str:
             await ctx.close()
     if bad:
         raise AssertionError(f"{len(bad)} under AA — " + "; ".join(bad[:6]))
-    return "run, tool and MCP status badges meet AA in both themes"
+    return "run, tool, MCP and DB Configs status badges meet AA in both themes"
 
 
 @check
