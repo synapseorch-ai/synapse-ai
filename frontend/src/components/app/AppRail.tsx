@@ -7,7 +7,8 @@
  * list. The bell sits in the header beside the mark, the one control in the
  * rail that changes on its own; the foot holds Settings and a single "More"
  * menu for the things that are not destinations — the theme, the docs, the
- * changelog — instead of a stack of one-line buttons.
+ * changelog, and Sign out when login is on — instead of a stack of one-line
+ * buttons.
  *
  * Collapses to icons, by choice (persisted) or because the viewport is narrow.
  * Under `md` it is always collapsed — a 240px rail on a phone leaves nothing
@@ -15,14 +16,16 @@
  */
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import {
-    BookOpen, LifeBuoy, Megaphone, Monitor, Moon, MoreHorizontal, PanelLeftClose,
+    BookOpen, LifeBuoy, LogOut, Megaphone, Monitor, Moon, MoreHorizontal, PanelLeftClose,
     PanelLeftOpen, Settings, Sun,
 } from 'lucide-react';
 
 import {
-    Label, Mark, Menu, MenuLabel, MenuLink, MenuSegment, MenuSeparator, usePersisted,
+    Label, Mark, Menu, MenuItem, MenuLabel, MenuLink, MenuSegment, MenuSeparator, usePersisted,
 } from '@/components/ui';
+import { AUTH_CHANGED_EVENT, canSignOut, readAuthStatus } from '@/lib/auth';
 import { PRIMARY_NAV, type NavEntry } from '@/lib/nav';
 import { useNotifications } from '@/components/notifications/NotificationProvider';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
@@ -115,6 +118,27 @@ export function AppRail({
     const [collapsedFlag, setCollapsed] = usePersisted<'0' | '1'>(
         'synapseRailCollapsed', raw => (raw === '1' ? '1' : '0'), '0');
     const collapsed = collapsedFlag === '1';
+
+    // Sign out is offered only where there is a password to sign back in with
+    // (F221). Read again when Settings turns login on or off.
+    const [signOutShown, setSignOutShown] = useState(false);
+    useEffect(() => {
+        let live = true;
+        const read = () => readAuthStatus().then(s => { if (live) setSignOutShown(canSignOut(s)); });
+        read();
+        window.addEventListener(AUTH_CHANGED_EVENT, read);
+        return () => { live = false; window.removeEventListener(AUTH_CHANGED_EVENT, read); };
+    }, []);
+
+    const signOut = async () => {
+        if (!mayLeave()) return;
+        try {
+            await fetch('/api/auth/logout', { method: 'POST' });
+        } finally {
+            // A full navigation: nothing of the signed-in app stays in memory.
+            window.location.assign('/login');
+        }
+    };
 
     // Chat registers a guard while a run is streaming; honour it before moving.
     const onNavigate = (e: React.MouseEvent, href: string) => {
@@ -252,6 +276,12 @@ export function AppRail({
                     <MenuLink href={DOCS_URL} icon={BookOpen} external>Documentation</MenuLink>
                     <MenuLink href="/settings/support" icon={LifeBuoy}>Help &amp; support</MenuLink>
                     <MenuLink href={CHANGELOG_URL} icon={Megaphone} external>What&apos;s new</MenuLink>
+                    {signOutShown && (
+                        <>
+                            <MenuSeparator />
+                            <MenuItem icon={LogOut} onSelect={signOut}>Sign out</MenuItem>
+                        </>
+                    )}
                 </Menu>
             </div>
         </nav>

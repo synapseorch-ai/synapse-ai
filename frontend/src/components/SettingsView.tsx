@@ -13,6 +13,7 @@ import { fetchAllSettingsData } from '@/store/settingsSlice';
 import type { Tab } from './settings/types';
 import { LinkButton, Screen } from '@/components/ui';
 import { isSettingsEntry, navEntryFor } from '@/lib/nav';
+import { AUTH_CHANGED_EVENT, readAuthStatus } from '@/lib/auth';
 import { GeneralTab } from './settings/GeneralTab';
 import type { ToolPolicy } from './settings/ToolPolicy';
 import { PersonalDetailsTab } from './settings/PersonalDetailsTab';
@@ -247,6 +248,23 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         }
     };
 
+    /**
+     * Turning login on must not sign out the person doing it (F221). With a
+     * password just typed, sign in with it; otherwise (on again with the saved
+     * one) a session this browser already holds is enough.
+     */
+    const staySignedIn = async (username: string, password: string): Promise<boolean> => {
+        if (password) {
+            const res = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password }),
+            }).catch(() => null);
+            if (res?.ok) return true;
+        }
+        return (await readAuthStatus())?.authenticated === true;
+    };
+
     /** True once saved; `loginEnabled` changes only then, so the switch never
      * shows a state the backend does not hold (F222). */
     const handleSaveLogin = async (enabled: boolean, username: string, password: string): Promise<boolean> => {
@@ -263,7 +281,15 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             }
             setLoginEnabled(enabled);
             setLoginUsername(username);
-            showToast(enabled ? 'Login enabled' : 'Login disabled', 'success');
+            if (enabled && !(await staySignedIn(username, password))) {
+                // No session and no password to make one: sign in once, then
+                // come back here — rather than a page whose every call is now
+                // refused, with no word why.
+                window.location.assign(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
+                return true;
+            }
+            showToast(enabled ? `Login is on — you're signed in as ${username}` : 'Login disabled', 'success');
+            window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
             return true;
         } catch (e: any) {
             showToast(e.message || 'Failed to save login settings', 'error');
