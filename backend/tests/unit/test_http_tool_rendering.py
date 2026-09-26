@@ -184,6 +184,42 @@ class TestSingleBraceStillWorks:
         assert outbound.calls[0]["url"] == "https://api.test/{nope}"
 
 
+def _as_sent(call: dict) -> str:
+    """The URL httpx builds from a captured call: it merges `params` itself."""
+    return str(httpx.Request(call["method"], call["url"], params=call.get("params")).url)
+
+
+class TestAGetKeepsTheQueryItsUrlWrites:
+    """A GET or DELETE tool's URL query reaches the server (F233).
+
+    httpx replaces a URL's query with `params` whenever `params` is given, even
+    an empty one, and `build_request` always gave it for GET and DELETE. So
+    `…/echo?static=1&tag={{tag}}` called with `tag` and `note` went out as
+    `/echo?note=hi`: the written parameter and the filled one both gone, and a
+    `?key={{global.key}}` would have gone the same way. Measured on a scratch
+    install against an echo server.
+    """
+
+    async def _call(self, args):
+        return await TestTheToolStepMatchesTheAgent()._call(args)
+
+    @pytest.mark.parametrize("method", ["GET", "DELETE"])
+    async def test_the_written_and_filled_parameters_are_sent_with_the_rest(self, outbound, method):
+        await _tool(method=method, url="https://api.test/echo?static=1&tag={{tag}}", body="")
+        await self._call({"tag": "red", "note": "n"})
+        assert _as_sent(outbound.calls[0]) == "https://api.test/echo?static=1&tag=red&note=n"
+
+    async def test_a_query_with_nothing_left_over_is_sent_as_written(self, outbound):
+        await _tool(method="GET", url="https://api.test/echo?q=a%20b&x=1", body="")
+        await self._call({})
+        assert _as_sent(outbound.calls[0]) == "https://api.test/echo?q=a%20b&x=1"
+
+    async def test_an_argument_the_query_already_names_is_not_sent_twice(self, outbound):
+        await _tool(method="GET", url="https://api.test/echo?limit=10", body="")
+        await self._call({"limit": 5, "note": "n"})
+        assert _as_sent(outbound.calls[0]) == "https://api.test/echo?limit=10&note=n"
+
+
 class TestEgressAtTheMomentOfTheCall:
     """S4: the URL a custom tool dials is checked when it is dialled.
 

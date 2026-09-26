@@ -21,6 +21,9 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import parse_qsl
+
+import httpx
 
 from core import templating
 
@@ -113,10 +116,27 @@ def build_request(
 
     if method in ("GET", "DELETE"):
         remaining = {k: v for k, v in args.items() if k not in consumed}
-        request["params"] = {
+        params = {
             k: (json.dumps(v) if isinstance(v, (dict, list)) else str(v))
             for k, v in remaining.items()
         }
+        base, sep, rest = url.partition("?")
+        if not sep:
+            request["params"] = params
+            return request
+        # A query written into the URL. httpx replaces a URL's query with
+        # `params` whenever `params` is given, even an empty one, so every GET
+        # or DELETE tool sent only its leftover arguments: `?static=1&tag=red`
+        # went out as `?note=hi` (F233). The leftovers join the written query
+        # instead, which is kept byte for byte; one it already names is not
+        # sent again.
+        query, hash_sep, fragment = rest.partition("#")
+        named = {k for k, _ in parse_qsl(query, keep_blank_values=True)}
+        extra = {k: v for k, v in params.items() if k not in named}
+        if extra:
+            encoded = str(httpx.QueryParams(extra))
+            query = f"{query}&{encoded}" if query else encoded
+        request["url"] = base + (f"?{query}" if query else "") + (hash_sep + fragment if hash_sep else "")
         return request
 
     if not template.strip():
