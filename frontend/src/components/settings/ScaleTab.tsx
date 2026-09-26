@@ -272,7 +272,14 @@ const ScaleDocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void
                 className={`fixed inset-0 z-40 bg-scrim/50 transition-opacity duration-300 ${open ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
                 onClick={onClose}
             />
-            <div className={`fixed top-0 right-0 z-50 h-full w-full md:w-3/4 bg-bg border-l border-border flex flex-col shadow-2xl transition-transform duration-300 ease-in-out ${open ? 'translate-x-0' : 'translate-x-full'}`}>
+            {/* Closed, the guide is only moved off-screen for the slide, so it is
+                inert too: nothing in it takes focus or is read out (F179). */}
+            <div
+                role="dialog"
+                aria-label="Scale Deployment Guide"
+                inert={!open}
+                className={`fixed top-0 right-0 z-50 h-full w-full md:w-3/4 bg-bg border-l border-border flex flex-col shadow-2xl transition-transform duration-300 ease-in-out ${open ? 'translate-x-0' : 'translate-x-full'}`}
+            >
                 {/* Header */}
                 <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
                     <div className="flex items-center gap-3">

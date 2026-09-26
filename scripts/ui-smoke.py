@@ -3754,6 +3754,58 @@ async def check_logrows(browser) -> str:
             pass
 
 
+#: What a keyboard or a screen reader can reach inside the drawer titled `title`.
+DRAWER_REACH = """(title) => {
+  const h = [...document.querySelectorAll('h2')].find(x => x.textContent.trim() === title);
+  if (!h) return null;
+  const d = h.closest('.fixed');
+  const reach = [...d.querySelectorAll('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter(e => !e.closest('[inert]') && !e.closest('[aria-hidden="true"]'));
+  return {reach: reach.length,
+          unnamed: reach.filter(b => b.tagName === 'BUTTON' && !b.getAttribute('aria-label') && !b.textContent.trim()).length};
+}"""
+
+
+@check
+async def check_drawers(browser) -> str:
+    """A closed drawer is out of reach, and an open one's close button has a name (F179).
+
+    The API reference (Settings → API Keys) and the Scale deployment guide slide
+    off-screen when closed but stayed in the page: 13 and 10 controls a keyboard
+    tabbed into and a screen reader read while nothing was visible, and the API
+    reference's close × had no name.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        for path, title, opener in (
+            ("/settings/api_keys", "API Reference", re.compile("view docs", re.I)),
+            ("/settings/scale", "Scale Deployment Guide", re.compile("deploy docs", re.I)),
+        ):
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await page.get_by_role("button", name=opener).first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            closed = await page.evaluate(DRAWER_REACH, title)
+            if closed is None:
+                raise AssertionError(f"{path}: no drawer titled {title!r}, so this checks nothing")
+            if closed["reach"]:
+                raise AssertionError(f"{path}: the closed {title} still has {closed['reach']} controls in reach")
+            await page.get_by_role("button", name=opener).first.click()
+            await asyncio.sleep(0.8)
+            opened = await page.evaluate(DRAWER_REACH, title)
+            if not opened["reach"]:
+                raise AssertionError(f"{path}: the open {title} has nothing in reach")
+            if opened["unnamed"]:
+                raise AssertionError(f"{path}: the open {title} has {opened['unnamed']} unnamed button(s)")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.8)
+            if (await page.evaluate(DRAWER_REACH, title))["reach"]:
+                raise AssertionError(f"{path}: closed with Escape, the {title} is back in reach")
+        return "closed drawers are out of reach; open ones have named buttons"
+    finally:
+        await ctx.close()
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
