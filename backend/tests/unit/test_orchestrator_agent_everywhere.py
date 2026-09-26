@@ -5,7 +5,8 @@ Only chat routed an orchestrator agent to its orchestration (`run_react_loop`).
 A messaging channel and an agent schedule called `run_agent_step` directly, so
 the agent answered as a plain ReAct agent with no tools — it chatted instead of
 running the workflow it exists for. Both now go through the same routing, and
-say what happened: the orchestration's answer, its error, or where it paused.
+say what happened: the orchestration's answer, that it failed, or where it
+paused. A failure's own words stay with a member in the app (F231).
 """
 import types
 
@@ -55,7 +56,11 @@ class TestOnAChannel:
         sent = await self._talk(wired, agent)
 
         assert len(sent) == 1 and sent[0].startswith("⚠️"), sent
-        assert "nope" in sent[0]
+        # Reported, once — in the channel's own words, not the run's (F231,
+        # Naveen's call): F133 keeps a failure's words for a member in the app,
+        # and this reply carried the step's exception to whoever wrote in.
+        from core.messaging.manager import FAILED_REPLY
+        assert sent == [FAILED_REPLY] and "nope" not in sent[0]
 
     async def test_a_pause_elsewhere_says_where_to_answer(self, wired, fake_llm):
         agent = await _orchestrator(_orch("orch_pauses", _asks(), "h"))

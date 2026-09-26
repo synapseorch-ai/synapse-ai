@@ -73,6 +73,9 @@ STOPPED_ANSWER = "(Stopped before answering.)"
 #: the app sees them as the turn's error; the conversation keeps that the
 #: question went unanswered.
 FAILED_ANSWER = "(The model failed before answering.)"
+#: The same marker for an orchestrator agent whose run failed (F231): the run's
+#: own words went to the person in the app, never into the conversation.
+FAILED_RUN_ANSWER = "(The workflow failed before answering.)"
 
 HEARTBEAT = ": ping\n\n"
 

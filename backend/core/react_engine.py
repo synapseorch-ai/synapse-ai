@@ -2331,6 +2331,13 @@ async def run_agent_step(
     yield {"type": "final", "response": final_response, "intent": last_intent, "data": last_data, "tool_name": tool_name}
 
 
+class RunFailed(RuntimeError):
+    """An orchestrator agent's run failed, so its turn has no answer (F231).
+
+    The message is the run's own last line — for the person in the app.
+    """
+
+
 async def run_orchestrator_agent(
     agent: dict,
     message: str,
@@ -2448,24 +2455,43 @@ async def run_react_loop(request, server_module, should_stop=None, *,
     # --- Orchestrator delegation ---
     if active_agent.get("type") == "orchestrator":
         answer = None
+        failed = False
+        failure = None
         async for event in run_orchestrator_agent(
             active_agent, user_message, server_module, session_id=session_id,
         ):
+            if event.get("type") == "orchestration_complete" and event.get("status") == "failed":
+                failed = True
             if event.get("type") == "final" and not event.get("orch_step_id"):
+                if failed:
+                    # A failed run's last line is not the agent's answer (F231),
+                    # as a failed model call is not (F133): it carries the
+                    # step's own words ("Orchestration failed. Error: …"), which
+                    # a widget passed to a visitor, a channel posted, v1 returned
+                    # as `completed` and the conversation kept as what was said.
+                    # Held back here and raised below, so each caller reports a
+                    # failed turn its own way: a member in the app sees these
+                    # words, everyone else a generic line.
+                    failure = event.get("response") or "The workflow failed."
+                    continue
                 answer = event.get("response", "")
             yield event
         # Saved as any agent's turn is at the end of `run_agent_step`, which an
         # orchestrator never reaches — so a reopened conversation lost it once
         # its event log went (F115). Only a turn that answered: a stopped one is
-        # saved by its caller, and one waiting on a person has not answered.
-        if answer is not None:
+        # saved by its caller, and one waiting on a person has not answered. A
+        # failed one keeps the question, answered by a marker.
+        if answer is not None or failure is not None:
+            from core.chat_turns import FAILED_RUN_ANSWER
             try:
                 await _save_conversation_turn(
                     session_id=session_id, agent_id=active_agent.get("id"),
-                    user=user_message, assistant=answer,
+                    user=user_message, assistant=answer if failure is None else FAILED_RUN_ANSWER,
                 )
             except Exception as mem_err:
                 _log.warning(f"Session save failed (non-fatal): {mem_err}")
+        if failure is not None:
+            raise RunFailed(failure)
         return
 
     # --- Standard single-agent ReAct loop ---

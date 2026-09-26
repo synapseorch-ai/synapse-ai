@@ -298,10 +298,13 @@ class MessagingManager:
             logger.error("[Manager] orchestrator agent %s failed: %s", agent.get("id"), e)
             error = str(e)
 
-        if error:
-            return f"⚠️ Error: {error}"
-        if failed:
-            return f"⚠️ {final_response or 'The workflow failed.'}"
+        if error or failed:
+            # The run's own words are the workspace's to read (F231, F133's rule
+            # for a model failure): the person on the channel gets the generic
+            # line, the operator the log.
+            logger.warning("[Manager] orchestrator agent %s: run failed: %s",
+                           agent.get("id"), error or final_response or "failed")
+            return FAILED_REPLY
         if paused:
             if channel_id and paused.get("channel_id") == channel_id:
                 # The step asked its question in this channel already, and a
