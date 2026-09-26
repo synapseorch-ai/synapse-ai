@@ -25,10 +25,22 @@ from core.session import (
 router = APIRouter()
 
 
+def _the_builders_own(session: dict) -> bool:
+    """A conversation the AI builder keeps for one of its own sub-agents.
+
+    Every builder run keeps one per sub-agent, under a `builder:` session id,
+    and chat's History listed them — each previewing its whole step prompt
+    (F228, F186's class). A builder-typed agent the person made keeps its chat
+    turns under the chat's own id, so it is not caught here.
+    """
+    return (str(session.get("session_id") or "").startswith("builder:")
+            or str(session.get("agent_id") or "").startswith("agent_native_builder"))
+
+
 @router.get("/api/sessions")
 async def get_sessions(agent_id: str | None = Query(default=None)):
-    """List all persisted chat sessions, newest first."""
-    return await list_chat_sessions(agent_id=agent_id)
+    """List the person's chat sessions, newest first."""
+    return [s for s in await list_chat_sessions(agent_id=agent_id) if not _the_builders_own(s)]
 
 
 @router.get("/api/sessions/{session_id}/history")
