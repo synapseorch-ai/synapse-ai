@@ -1008,11 +1008,11 @@ class TestAReadOfAKeyTheEngineWrites:
     Create Saver acts on these literally: it deleted the read, and Naveen's
     Test Harness ran three iterations of the same question with no query.
 
-    The keys, and only these: a **for-each** loop's `loop_item_key` and
-    `loop_index_key` (`steps.py` writes them under `if mode == "foreach"` —
-    a count or a while loop writes neither), and `human_response`, which
-    `engine.py` writes after every human step whatever that step's own
-    output_key is.
+    The keys, and only these: every loop's `loop_index_key` (F212), a
+    **for-each** loop's `loop_item_key` (`steps.py` writes it under
+    `if mode == "foreach"` — a count or a while loop has no item), and
+    `human_response`, which `engine.py` writes after every human step whatever
+    that step's own output_key is.
     """
 
     @staticmethod
@@ -1047,16 +1047,26 @@ class TestAReadOfAKeyTheEngineWrites:
         assert self._reads(issues, "query") == [], issues
         assert self._reads(issues, "nth") == [], issues
 
-    def test_a_count_loop_writes_neither_so_the_read_is_still_flagged(self):
+    def test_a_count_loop_writes_no_item_so_the_read_is_still_flagged(self):
         # `mode == "foreach"` is the gate in the executor, so it is the gate
         # here. Silencing this would hide a read that really does resolve to
         # the schema default for ever.
         issues = self._issues({"loop_count": 3}, ["loop_item"])
         assert self._reads(issues, "loop_item"), issues
 
-    def test_a_while_loop_writes_neither_either(self):
+    def test_a_while_loop_writes_no_item_either(self):
         issues = self._issues({"loop_while_condition": "state.go"}, ["loop_item"])
         assert self._reads(issues, "loop_item"), issues
+
+    @pytest.mark.parametrize("mode", [{"loop_count": 3}, {"loop_while_condition": "state.go"}],
+                             ids=["count", "while"])
+    def test_every_loop_writes_its_index(self, mode):
+        # F212: a question in a count loop asked "Iteration {state.loop_index}?"
+        # and the person read the template, because only for-each wrote it.
+        issues = self._issues(mode, ["loop_index"])
+        assert self._reads(issues, "loop_index") == [], issues
+        renamed = self._issues({**mode, "loop_index_key": "nth"}, ["nth"])
+        assert self._reads(renamed, "nth") == [], renamed
 
     def test_a_step_after_a_human_step_may_read_human_response(self):
         # The engine writes the answer to the step's output_key *and* always to

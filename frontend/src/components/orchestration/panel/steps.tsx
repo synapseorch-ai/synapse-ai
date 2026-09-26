@@ -469,26 +469,15 @@ function LoopSection({ step, update, otherSteps }: StepSectionProps) {
                             onCommit={(v) => update({ loop_over: v })}
                         />
                     </Field>
-                    <div className="grid grid-cols-2 gap-2">
-                        <Field label="Item key" hint="Each item lands here">
-                            <LocalInput
-                                size="sm"
-                                aria-label="Item key"
-                                placeholder="loop_item"
-                                value={step.loop_item_key || ''}
-                                onCommit={(v) => update({ loop_item_key: v || undefined })}
-                            />
-                        </Field>
-                        <Field label="Index key" hint="0-based position">
-                            <LocalInput
-                                size="sm"
-                                aria-label="Index key"
-                                placeholder="loop_index"
-                                value={step.loop_index_key || ''}
-                                onCommit={(v) => update({ loop_index_key: v || undefined })}
-                            />
-                        </Field>
-                    </div>
+                    <Field label="Item key" hint="Each item lands here">
+                        <LocalInput
+                            size="sm"
+                            aria-label="Item key"
+                            placeholder="loop_item"
+                            value={step.loop_item_key || ''}
+                            onCommit={(v) => update({ loop_item_key: v || undefined })}
+                        />
+                    </Field>
                 </>
             )}
 
@@ -503,6 +492,18 @@ function LoopSection({ step, update, otherSteps }: StepSectionProps) {
                     />
                 </Field>
             )}
+
+            {/* Every mode writes it (F212): a question in the body can say which
+                iteration is asking. */}
+            <Field label="Index key" hint="0-based position, written before each iteration">
+                <LocalInput
+                    size="sm"
+                    aria-label="Index key"
+                    placeholder="loop_index"
+                    value={step.loop_index_key || ''}
+                    onCommit={(v) => update({ loop_index_key: v || undefined })}
+                />
+            </Field>
 
             <Field label="Stop early when" hint="Optional. Checked after each iteration.">
                 <LocalInput

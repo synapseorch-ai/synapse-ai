@@ -1311,10 +1311,13 @@ class LoopStepExecutor:
     behaving exactly as it did:
 
       for-each  ``loop_over`` — an expression yielding a list. Each item is
-                written to ``loop_item_key`` and its 0-based position to
-                ``loop_index_key`` before the body runs.
+                written to ``loop_item_key`` before the body runs.
       while     ``loop_while_condition`` — re-evaluated before every iteration.
       count     ``loop_count`` — the original behaviour.
+
+    Every mode writes the iteration's 0-based position to ``loop_index_key``
+    before the body runs, so a body — a question to a person above all — can
+    say which iteration it is (F212). Only for-each has an item.
 
     ``loop_break_condition`` stops any of the three after the iteration in
     which it becomes true, and ``loop_max_iterations`` caps all of them.
@@ -1470,7 +1473,7 @@ class LoopStepExecutor:
 
                 if mode == "foreach":
                     run.shared_state[step.loop_item_key] = items[iteration - 1]
-                    run.shared_state[step.loop_index_key] = iteration - 1
+                run.shared_state[step.loop_index_key] = iteration - 1
                 # The keys context.build_prompt reads to tell a body agent where
                 # it is. Popped again by _restore() so they never reach final state.
                 run.shared_state["_loop_current_iteration"] = iteration
@@ -1711,6 +1714,24 @@ class LoopStepExecutor:
             _restore()
 
 
+def render_state_refs(text: str, state: dict) -> str:
+    """`{state.key}` and `{state.key.nested.path}` in text, from shared state.
+
+    A reference that resolves to nothing is left as written, so a typo shows
+    rather than vanishing. A human step's prompt and a Print's content read
+    through this one function; the prompt used to read only top-level keys.
+    """
+    def _resolve(match: re.Match) -> str:
+        val = state
+        for part in match.group(1).split("."):
+            val = val.get(part) if isinstance(val, dict) else None
+            if val is None:
+                break
+        return str(val) if val is not None else match.group(0)
+
+    return re.sub(r"\{state\.([\w.]+)\}", _resolve, text)
+
+
 class HumanStepExecutor:
     """Pause execution and request human input.
 
@@ -1723,12 +1744,8 @@ class HumanStepExecutor:
     async def execute(
         self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
     ) -> AsyncGenerator[dict, None]:
-        prompt = step.human_prompt or "Please provide input to continue."
-        prompt = re.sub(
-            r"\{state\.(\w+)\}",
-            lambda m: str(run.shared_state.get(m.group(1), f"{{state.{m.group(1)}}}")),
-            prompt,
-        )
+        prompt = render_state_refs(
+            step.human_prompt or "Please provide input to continue.", run.shared_state)
 
         run.human_prompt = prompt
         run.human_fields = step.human_fields
@@ -2196,20 +2213,7 @@ class PrintStepExecutor:
                 run.shared_state[step.output_key] = ""
             return
 
-        # Interpolate {state.key} and {state.key.nested.path}
-        def _resolve_ref(match: re.Match) -> str:
-            path = match.group(1)  # e.g. "result.flag"
-            parts = path.split('.')
-            val = run.shared_state
-            for part in parts:
-                if isinstance(val, dict):
-                    val = val.get(part)
-                else:
-                    val = None
-                    break
-            return str(val) if val is not None else match.group(0)  # keep original if not found
-
-        rendered = re.sub(r'\{state\.([\w.]+)\}', _resolve_ref, content)
+        rendered = render_state_refs(content, run.shared_state)
 
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[Print] {rendered[:500]}"}

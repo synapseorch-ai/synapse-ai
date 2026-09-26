@@ -781,7 +781,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "loop_count": {"type": "integer", "description": "Number of loop iterations (fixed-count loops)"},
                     "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count. Same restricted expression syntax as if_condition; filter a list in a transform step and loop over what it writes."},
                     "loop_item_key": {"type": "string", "description": "State key each for-each item is written to (default `loop_item`)"},
-                    "loop_index_key": {"type": "string", "description": "State key each for-each 0-based index is written to (default `loop_index`)"},
+                    "loop_index_key": {"type": "string", "description": "State key each iteration's 0-based index is written to, in every loop mode (default `loop_index`)"},
                     "loop_while_condition": {"type": "string", "description": "Condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps). Same restricted expression syntax as if_condition."},
                     "loop_break_condition": {"type": "string", "description": "Condition evaluated after each iteration; True stops the loop (loop steps). Same restricted expression syntax as if_condition."},
                     "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
@@ -880,7 +880,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "loop_count": {"type": "integer"},
                                 "loop_over": {"type": "string", "description": "Expression over shared state yielding a list, e.g. `state.tickets` (loop steps). When set, the loop runs once per item instead of loop_count. Same restricted expression syntax as if_condition; filter a list in a transform step and loop over what it writes."},
                                 "loop_item_key": {"type": "string", "description": "State key each for-each item is written to (default `loop_item`)"},
-                                "loop_index_key": {"type": "string", "description": "State key each for-each 0-based index is written to (default `loop_index`)"},
+                                "loop_index_key": {"type": "string", "description": "State key each iteration's 0-based index is written to, in every loop mode (default `loop_index`)"},
                                 "loop_while_condition": {"type": "string", "description": "Condition re-evaluated before each iteration, e.g. `(state.n or 0) < 5` (loop steps). Same restricted expression syntax as if_condition."},
                                 "loop_break_condition": {"type": "string", "description": "Condition evaluated after each iteration; True stops the loop (loop steps). Same restricted expression syntax as if_condition."},
                                 "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
@@ -2551,13 +2551,14 @@ def _validate_orchestration(orch: dict) -> dict:
         if ok:
             writable.add(ok)
         # `output_key` is not the only way a key reaches shared state (F123).
-        # A **for-each** loop writes its item and its index before the body
-        # runs (`steps.py`, under `if mode == "foreach"`); a count loop and a
-        # while loop write neither, so they stay unwritable here and a body
+        # Every loop writes its iteration's index before the body runs (F212),
+        # and a **for-each** loop its item too (`steps.py`, under
+        # `if mode == "foreach"`); a count or while loop has no item, so a body
         # reading `loop_item` there is still told so.
-        if s.get("type") == "loop" and s.get("loop_over"):
-            writable.add(s.get("loop_item_key") or "loop_item")
+        if s.get("type") == "loop":
             writable.add(s.get("loop_index_key") or "loop_index")
+            if s.get("loop_over"):
+                writable.add(s.get("loop_item_key") or "loop_item")
         # And the engine writes a human answer to `human_response` as well as
         # to the step's own output_key, so evaluators that check it still work.
         if s.get("type") == "human":
