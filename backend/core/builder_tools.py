@@ -767,7 +767,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "human_prompt": {"type": "string", "description": "Prompt shown to user (human steps)"},
                     "human_fields_json": {
                         "type": "string",
-                        "description": "JSON string of field definitions. Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"}]'",
+                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{state.review.feedback}`. Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"}]'",
                     },
                     "forced_tool": {"type": "string", "description": "Tool name for tool steps"},
                     "merge_strategy": {
@@ -2375,6 +2375,8 @@ def _validate_orchestration(orch: dict) -> dict:
         default)
       - every state_schema entry declares a type we can read, and its default
         is of that type
+      - a human step with fields writes a mapping, so its key is not declared
+        as text or a number, and no Print shows that mapping whole (F189)
     """
     issues: list[str] = []
     steps = orch.get("steps", []) or []
@@ -2633,6 +2635,46 @@ def _validate_orchestration(orch: dict) -> dict:
             for nxt_id in successors:
                 if nxt_id not in visited:
                     queue.append(nxt_id)
+
+    # ── A human step's answer and the key it lands in (F189) ────────────────
+    # A human step with fields stores a mapping {field: value} under its output
+    # key (F106: a step that declares fields keeps the mapping it was answered
+    # with); one with no fields stores the text. The builder named a review
+    # step's key after its one field and typed it `str`, so the Print after it
+    # showed "Final Summary: {'final_summary': …}". The repair leads, as every
+    # message here does, because the savers act on these literally.
+    schema = orch.get("state_schema") or {}
+    fielded: dict[str, tuple[str, str]] = {}  # key -> (the step that asks, its first field)
+    for s in steps:
+        if s.get("type") != "human":
+            continue
+        fields = s.get("human_fields")
+        if fields is None and "human_fields_json" in s:
+            fields = _parse_json_field(s.get("human_fields_json"), [])
+        names = [f["name"] for f in (fields or []) if isinstance(f, dict) and f.get("name")]
+        if not names:
+            continue
+        hid, key = s.get("id", "?"), s.get("output_key") or "human_response"
+        fielded[key] = (hid, names[0])
+        entry = schema.get(key)
+        declared = normalize_state_type(entry.get("type")) if isinstance(entry, dict) else None
+        if declared and declared != "dict":
+            issues.append(
+                f"Human step '{hid}' collects fields ({', '.join(names)}), so '{key}' holds a mapping "
+                f"{{field: value}}, not {declared}: declare '{key}' as dict in state_schema and read one "
+                f"field as {{state.{key}.{names[0]}}}. Clearer still, name the output_key for the step "
+                f"(e.g. 'review'), not after one of its fields."
+            )
+    for s in steps:
+        if s.get("type") != "print":
+            continue
+        for key, (hid, field) in fielded.items():
+            if f"{{state.{key}}}" in (s.get("print_content") or ""):
+                issues.append(
+                    f"Print step '{s.get('id', '?')}' shows {{state.{key}}}, human step '{hid}'s whole "
+                    f"answer, which is a mapping and prints as a Python dict: show one field, "
+                    f"{{state.{key}.{field}}}."
+                )
 
     # ── State schema ─────────────────────────────────────────────────────────
     # Nothing used to look at `state_schema` at all. A key could carry no type,

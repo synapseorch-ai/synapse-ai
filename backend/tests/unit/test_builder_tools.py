@@ -1092,6 +1092,63 @@ class TestAReadOfAKeyTheEngineWrites:
         assert "delete" not in head and "remove" not in head, issue
 
 
+class TestAHumanStepsAnswerHasTheShapeItsKeyDeclares:
+    """A review step's answer is read the way it is stored (F189).
+
+    The builder made `step_review` with one field `final_summary` **and**
+    `output_key: final_summary`, typed `str` in its schema. A human step with
+    fields stores a mapping (F106: a step that declares fields keeps the
+    mapping it was answered with), so the key held `{"final_summary": "…"}`
+    and the Print after it showed *"Final Summary: {'final_summary': …}"* — a
+    Python repr in the output. Nothing flagged it, and strict types would not
+    have either. The validator now says so, repair first, and so does a Print
+    that shows such a mapping whole.
+    """
+
+    @staticmethod
+    def _issues(human, schema, printed="Final Summary: {state.final_summary}"):
+        from core.builder_tools import _validate_orchestration
+        steps = [
+            {"id": "step_review", "name": "Review", "type": "human", "human_prompt": "Review it",
+             "output_key": "final_summary", "next_step_id": "step_print", **human},
+            {"id": "step_print", "name": "Show", "type": "print", "print_content": printed,
+             "output_key": "shown", "next_step_id": "done"},
+            {"id": "done", "name": "Done", "type": "end"},
+        ]
+        return _validate_orchestration({
+            "id": "o", "entry_step_id": "step_review", "steps": steps, "state_schema": schema,
+        })["issues"]
+
+    FIELD = {"human_fields": [{"name": "final_summary", "type": "textarea", "label": "Summary"}]}
+
+    def test_the_pass_s_review_step_is_flagged_with_the_repair(self):
+        issues = self._issues(self.FIELD, {"final_summary": {"type": "str", "default": ""}})
+        shape = [i for i in issues if "Human step 'step_review'" in i]
+        assert shape, issues
+        assert "mapping" in shape[0] and "{state.final_summary.final_summary}" in shape[0], shape
+        assert "dict" in shape[0], "the repair names the type to declare"
+
+    def test_a_print_that_shows_the_mapping_whole_is_flagged(self):
+        issues = self._issues(self.FIELD, {"final_summary": {"type": "dict", "default": {}}})
+        shown = [i for i in issues if "Print step 'step_print'" in i]
+        assert shown and "{state.final_summary.final_summary}" in shown[0], issues
+        assert not [i for i in issues if "Human step 'step_review'" in i], "dict is the right type"
+
+    def test_reading_one_field_with_a_dict_key_is_clean(self):
+        issues = self._issues(self.FIELD, {"final_summary": {"type": "dict", "default": {}}},
+                              printed="Final Summary: {state.final_summary.final_summary}")
+        assert issues == [], issues
+
+    def test_a_no_field_step_holds_text_and_is_not_flagged(self):
+        issues = self._issues({"human_fields": []}, {"final_summary": {"type": "str", "default": ""}})
+        assert issues == [], issues
+
+    def test_an_undeclared_key_is_left_to_the_print_check(self):
+        issues = self._issues(self.FIELD, {})
+        assert not [i for i in issues if "Human step 'step_review'" in i], issues
+        assert [i for i in issues if "Print step 'step_print'" in i], issues
+
+
 class TestAContainerMemberEndsWithItsContainer:
     """A loop body step and a parallel branch step need no successor (F124).
 
