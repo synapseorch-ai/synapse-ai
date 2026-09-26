@@ -376,6 +376,66 @@ _filesystem_manager_task: Optional[asyncio.Task] = None     # the long-running m
 _filesystem_ready: Optional[asyncio.Event] = None           # set once initial FS MCP connection attempt finishes
 memory_store: Any = None
 mcp_manager: Optional[MCPClientManager] = None
+_mcp_boot_retry_task: Optional[asyncio.Task] = None
+
+#: How long the boot retry below waits for this backend to start listening.
+MCP_BOOT_RETRY_WAIT_SECONDS = 30
+
+
+async def _listening(port: int, seconds: float) -> bool:
+    """Whether 127.0.0.1:`port` accepts a connection within `seconds`."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + seconds
+    while True:
+        try:
+            _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        except OSError:
+            if loop.time() >= end:
+                return False
+            await asyncio.sleep(0.25)
+            continue
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return True
+
+
+async def _retry_failed_remote_mcp(manager, register, *, port: Optional[int] = None) -> list[str]:
+    """One more try, once this backend listens, for remote MCP servers that failed at boot (F237).
+
+    `connect_all` runs in the lifespan, before uvicorn binds its port, so a
+    remote server at this install's own `/api/v1/mcp` was refused on every
+    restart and read Disconnected until someone pressed Retry. A server started
+    beside this one (a compose file, say) could lose the same race. So each
+    remote server left disconnected or waiting for re-auth is tried once more
+    after the port accepts connections (or after the wait runs out). A server
+    with no token reconnects with its cached OAuth token only; no sign-in flow
+    starts from here. Returns the names that connected.
+    """
+    failed = [
+        c["name"] for c in manager.servers_config
+        if c.get("server_type") == "remote"
+        and c.get("status") in ("disconnected", "reauth_needed")
+        and c.get("name") and c["name"] not in manager.sessions
+    ]
+    if not failed:
+        return []
+    if port is None:
+        port = int(os.getenv("SYNAPSE_BACKEND_PORT", "8765"))
+    await _listening(port, MCP_BOOT_RETRY_WAIT_SECONDS)
+    connected: list[str] = []
+    for name in failed:
+        try:
+            if await manager.reconnect_server(name):
+                await register(name)
+                connected.append(name)
+        except Exception as exc:
+            print(f"  MCP boot retry of '{name}' failed: {exc}")
+    if connected:
+        print(f"Connected external MCP server(s) on retry: {', '.join(connected)}")
+    return connected
 messaging_manager: Any = None  # MessagingManager (set in lifespan if enabled)
 schedule_manager: Any = None   # ScheduleManager (set in lifespan)
 
@@ -590,7 +650,16 @@ async def lifespan(app: FastAPI):
                 print(f"  Error listing tools for {name}: {e}")
                 import traceback
                 traceback.print_exc()
-                
+
+        # A remote server that could not be reached while this backend was still
+        # starting (its own /api/v1/mcp above all) gets one more try once the
+        # port accepts connections (F237). Not awaited: startup does not wait.
+        from core.routes.tools import _register_session
+        global _mcp_boot_retry_task
+        _mcp_boot_retry_task = asyncio.create_task(
+            _retry_failed_remote_mcp(mcp_manager, _register_session), name="mcp-boot-retry",
+        )
+
         # Initialize Memory Store
         if MemoryStore:
             print("Initializing Memory Store...")
@@ -763,6 +832,12 @@ async def lifespan(app: FastAPI):
                 await schedule_manager.stop()
             except Exception as e:
                 print(f"Warning: Schedule manager shutdown error: {e}")
+        if _mcp_boot_retry_task and not _mcp_boot_retry_task.done():
+            _mcp_boot_retry_task.cancel()
+            try:
+                await _mcp_boot_retry_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if _filesystem_manager_task and not _filesystem_manager_task.done():
             _filesystem_manager_task.cancel()
             try:
