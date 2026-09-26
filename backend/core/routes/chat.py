@@ -269,7 +269,10 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 yield f"data: {json.dumps({'type': 'step_complete', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name'), 'duration_seconds': event.get('duration_seconds')}, default=str)}\n\n"
 
             elif etype == "step_error":
-                yield f"data: {json.dumps({'type': 'step_error', 'orch_step_id': event.get('orch_step_id'), 'error': event.get('error')}, default=str)}\n\n"
+                # `reason` is the step's own words (F195). This stream is the
+                # member's chat page; the widget reads the turn through its own
+                # allowlist, which drops `step_error` altogether.
+                yield f"data: {json.dumps({'type': 'step_error', 'orch_step_id': event.get('orch_step_id'), 'error': event.get('error'), 'reason': event.get('reason')}, default=str)}\n\n"
 
             elif etype == "orchestration_complete":
                 yield f"data: {json.dumps({'type': 'orchestration_complete', 'run_id': event.get('run_id'), 'status': event.get('status')}, default=str)}\n\n"

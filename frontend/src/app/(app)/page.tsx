@@ -1604,7 +1604,9 @@ export default function Home() {
         setStreamingActivity(`✗ Step failed`);
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: `❌ Step failed: ${(data.error as string) || 'Unknown error'}`,
+          // The step's own words when the stream carries them (F195); the
+          // sentence in `error` is what a reader that cannot see them gets.
+          content: `❌ Step failed: ${(data.reason as string) || (data.error as string) || 'Unknown error'}`,
           msgType: 'orchestration_complete',
         }]);
         break;

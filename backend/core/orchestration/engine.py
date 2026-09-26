@@ -394,6 +394,7 @@ class OrchestrationEngine:
                     yield {
                         "type": "step_error", "orch_step_id": step.id,
                         "error": f"Step '{step.name}' timed out after {step_timeout}s",
+                        "reason": f"Timed out after {step_timeout}s",
                     }
                     end_step(run.step_history, {
                         "step_id": step.id, "step_name": step.name,
@@ -489,11 +490,15 @@ class OrchestrationEngine:
 
             except Exception as e:
                 import traceback; _log.debug(f"ENGINE: ❌ EXCEPTION in step '{step.id}': {e}\n{traceback.format_exc()}")
-                # The stream gets a sanitised message — that choice was
+                # The stream's `error` is a sanitised sentence — that choice was
                 # deliberate, an exception's text can carry anything. The run
                 # record gets the real one, bounded: an operator reading a
                 # failed run's history should not have to grep worker stdout
-                # to learn whether it was a 401 or a KeyError.
+                # to learn whether it was a 401 or a KeyError. The same words
+                # ride the event as `reason` (F195), which the run log and the
+                # step card show: every reader of this stream is a member or an
+                # API key, both of which read the record anyway, and the widget
+                # drops `step_error` altogether.
                 safe_error = "An internal error occurred while executing this step."
                 real_error = f"{type(e).__name__}: {str(e)[:300]}"
                 end_step(run.step_history, {
@@ -509,7 +514,8 @@ class OrchestrationEngine:
                 run.status = "failed"
                 if logger:
                     logger.step_end(step.id, "failed", real_error)
-                yield {"type": "step_error", "orch_step_id": step.id, "error": safe_error}
+                yield {"type": "step_error", "orch_step_id": step.id,
+                       "error": safe_error, "reason": real_error}
                 # Persist the failure here: between this and the finalize
                 # checkpoint is exactly where a second crash would lose it.
                 try:

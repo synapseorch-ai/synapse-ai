@@ -36,6 +36,8 @@ interface WorkflowCanvasProps {
     /** Required unless `readOnly`: every edit on the canvas arrives here. */
     onUpdateOrchestration?: (orch: Orchestration) => void;
     runStepStatuses?: Record<string, 'pending' | 'running' | 'paused' | 'completed' | 'failed'>;
+    /** Why each failed step failed, in its own words (F195); shown on its card. */
+    runStepErrors?: Record<string, string>;
     /** The palette rail is part of the canvas; a shell that renders its own can turn it off. */
     showPalette?: boolean;
     /** Look, don't touch: no drag, connect, delete, drop, palette, Tidy up or issue badges. See `canvasFlags`. */
@@ -68,6 +70,7 @@ function stepsToNodes(
     selectedStepId: string | null,
     runStatuses: Record<string, string> | undefined,
     issuesByStep: Record<string, StepIssue[]>,
+    runErrors?: Record<string, string>,
 ): Node<StepNodeData>[] {
     return steps.map((step) => {
         const agent = agents.find((a: any) => a.id === step.agent_id);
@@ -81,6 +84,7 @@ function stepsToNodes(
                 isSelected: step.id === selectedStepId,
                 agentName: agent?.name,
                 runStatus: runStatuses?.[step.id] as any,
+                runError: runErrors?.[step.id],
                 issues: issuesByStep[step.id],
             },
             selected: step.id === selectedStepId,
@@ -308,6 +312,7 @@ export function WorkflowCanvas({
     onSelectStep,
     onUpdateOrchestration = noop,
     runStepStatuses,
+    runStepErrors,
     showPalette = true,
     readOnly = false,
 }: WorkflowCanvasProps) {
@@ -334,8 +339,8 @@ export function WorkflowCanvas({
     );
 
     const computedNodes = useMemo(
-        () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep),
-        [orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep]
+        () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors),
+        [orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors]
     );
     const computedEdges = useMemo(
         () => stepsToEdges(orchestration.steps, flags.edits),

@@ -3397,6 +3397,73 @@ async def check_chatsend(browser) -> str:
         raise AssertionError(" | ".join(bad))
     return "Send is the thing under every point of it, and named, from 360 to 1600px"
 
+
+# ── the engine: what a run says (B3) ─────────────────────────────────────────
+
+def failing_orchestration(oid: str, words: str) -> dict:
+    """One Transform that raises `words`: a real step failure, with no model."""
+    return {
+        "id": oid,
+        "name": "ui-smoke failing step",
+        "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "steps": [{
+            "id": f"{oid}_t", "name": "Crunch", "type": "transform",
+            "transform_code": f"raise Exception({words!r})",
+            "next_step_id": None, "output_key": "out",
+        }],
+        "entry_step_id": f"{oid}_t",
+        "state_schema": {},
+        "trigger": "manual",
+    }
+
+
+STEP_REASON = """() => ({
+  log: Array.from(document.querySelectorAll('span')).map(s => s.innerText)
+    .filter(t => t.startsWith('Step error:')),
+  card: Array.from(document.querySelectorAll('.react-flow__node .text-danger')).map(e => e.innerText),
+  run: (document.body.innerText.match(/Started run (\\S+)/) || [])[1] || null,
+})"""
+
+
+@check
+async def check_stepreason(browser) -> str:
+    """A failed step says why, on its card and in the run log (F195).
+
+    The engine sent every step failure to the stream as "An internal error
+    occurred while executing this step." and kept the real one in the run
+    record, which no screen read: a Transform's own exception, a model's 422
+    and an HTTP tool's 404 all looked the same. Checked live and on a run
+    reopened from its link, which reads the journal and the record.
+    """
+    oid = f"orch_uismoke_reason_{int(time.time())}"
+    api("/api/orchestrations", "POST", failing_orchestration(oid, "smoke boom"))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2.0)
+        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_text("Done — status: failed").first.wait_for(timeout=60_000)
+        await asyncio.sleep(0.5)
+        live = await page.evaluate(STEP_REASON)
+        if not any("smoke boom" in line for line in live["log"]):
+            raise AssertionError(f"the run log does not say why: {live['log']}")
+        if live["card"] != ["Exception: smoke boom"]:
+            raise AssertionError(f"the failed step's card says {live['card']}")
+        if not live["run"]:
+            raise AssertionError("the run log never named its run")
+
+        await page.goto(f"{APP}/orchestrations?run={live['run']}", wait_until="domcontentloaded")
+        await page.get_by_text("Done — status: failed").first.wait_for(timeout=60_000)
+        await asyncio.sleep(0.5)
+        again = await page.evaluate(STEP_REASON)
+        if not any("smoke boom" in line for line in again["log"]) or again["card"] != ["Exception: smoke boom"]:
+            raise AssertionError(f"reopened, the run says {again['log']} and its card {again['card']}")
+        return "a failed step's own exception is on its card and in the run log, live and reopened"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

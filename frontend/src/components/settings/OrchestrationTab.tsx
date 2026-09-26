@@ -11,6 +11,7 @@ import { validateOrchestration } from '../orchestration/validate';
 import { useBuilderShortcuts, useDraftHistory } from '../orchestration/use-draft-history';
 import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
+import { failureReason, stepErrorsFrom } from '@/lib/runErrors';
 import { ReactFlowProvider } from '@xyflow/react';
 import { WorkflowCanvas } from '../orchestration/WorkflowCanvas';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
@@ -168,6 +169,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     // --- Run state ---
     const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'>('idle');
     const [runStepStatuses, setRunStepStatuses] = useState<Record<string, 'pending' | 'running' | 'paused' | 'completed' | 'failed'>>({});
+    // Why each failed step failed, in its own words (F195): shown on its card and in the run log.
+    const [runStepErrors, setRunStepErrors] = useState<Record<string, string>>({});
     const [runId, setRunId] = useState<string | null>(null);
     const [runInput, setRunInput] = useState('');
     const [runLog, setRunLog] = useState<LogEntry[]>([]);
@@ -180,6 +183,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     const [humanFields, setHumanFields] = useState<HumanField[]>([]);
     const [humanValues, setHumanValues] = useState<HumanValues>({});
     const abortRef = useRef<AbortController | null>(null);
+    // A reopened run's failed steps from its record, for a journal written
+    // before `step_error` carried its reason (F195).
+    const historyErrorsRef = useRef<Record<string, string>>({});
     // Mirrors `runId` so the streamSSE catch / wake handler can read the live run
     // id without a stale closure. Timestamp of the last byte (incl. heartbeats)
     // tells a healthy stream from a dead one after sleep. reattachActiveRef
@@ -485,6 +491,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         const seeded: Record<string, RunStepStatus> = {};
         orch.steps.forEach(s => { seeded[s.id] = 'pending'; });
         setRunStepStatuses(seeded);
+        historyErrorsRef.current = {};
+        setRunStepErrors({});
 
         // Restore step statuses + human-input state from the persisted checkpoint
         // so the canvas is meaningful before (and in case of a pre-journal run,
@@ -495,6 +503,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 const data = await res.json();
                 if (Array.isArray(data.step_history)) {
                     setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
+                    historyErrorsRef.current = stepErrorsFrom(data.step_history);
+                    setRunStepErrors(historyErrorsRef.current);
                 }
                 if (data.waiting_for_human && data.human_prompt) {
                     setHumanPrompt(data.human_prompt);
@@ -525,6 +535,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         setSelectedStepId(null);
         setRunStatus('idle');
         setRunStepStatuses({});
+        setRunStepErrors({});
+        historyErrorsRef.current = {};
         setRunLog([]);
         setHumanPrompt(null);
         if (id) {
@@ -861,6 +873,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 // Sync step statuses from the persisted history
                 if (Array.isArray(data.step_history)) {
                     setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
+                    setRunStepErrors(prev => ({ ...prev, ...stepErrorsFrom(data.step_history) }));
                 }
 
                 if (data.status === 'running') {
@@ -975,6 +988,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         const statuses: Record<string, 'pending' | 'running' | 'completed' | 'failed'> = {};
         draft.steps.forEach(s => { statuses[s.id] = 'pending'; });
         setRunStepStatuses(statuses);
+        setRunStepErrors({});
+        historyErrorsRef.current = {};
         setRunStatus('running');
         setRunLog([]);
         setHumanPrompt(null);
@@ -1004,6 +1019,13 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 setHumanContext(null);
                 setRunStatus('running');
                 setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'running' }));
+                // A step run again (resume from failure) is not failing yet.
+                setRunStepErrors(prev => {
+                    if (!(data.orch_step_id in prev)) return prev;
+                    const next = { ...prev };
+                    delete next[data.orch_step_id];
+                    return next;
+                });
                 setRunLog(prev => [...prev, line('start', `${data.step_name} (${data.step_type})`)]);
                 // Begin tracking response for agent/llm/print/extract_json steps, keyed by step id
                 if (data.step_type === 'agent' || data.step_type === 'llm' || data.step_type === 'print' || data.step_type === 'extract_json') {
@@ -1038,12 +1060,17 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 break;
             }
 
-            case 'step_error':
+            case 'step_error': {
+                // The event's `error` is a sanitised sentence; the reason is the
+                // step's own words, which a member reading this log is owed (F195).
+                const reason = failureReason(data, historyErrorsRef.current);
                 setLiveActivity(null);
                 setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'failed' }));
-                setRunLog(prev => [...prev, line('error', `Step error: ${data.error}`)]);
+                setRunStepErrors(prev => ({ ...prev, [data.orch_step_id]: reason }));
+                setRunLog(prev => [...prev, line('error', `Step error: ${reason}`)]);
                 pendingStepResultRef.current.delete(data.orch_step_id);
                 break;
+            }
 
             case 'llm_reasoning':
                 if (data.reasoning) {
@@ -1690,6 +1717,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                     onSelectStep={setSelectedStepId}
                                     onUpdateOrchestration={updateOrchestration}
                                     runStepStatuses={runStepStatuses}
+                                    runStepErrors={runStepErrors}
                                 />
                             </ReactFlowProvider>
                         </div>

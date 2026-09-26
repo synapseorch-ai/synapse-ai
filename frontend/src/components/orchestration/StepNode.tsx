@@ -6,6 +6,7 @@ import { AlertTriangle, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, 
 import { STEP_TYPE_META } from '@/types/orchestration';
 import type { StepConfig, StepIssue, StepType } from '@/types/orchestration';
 import { ROUTE_COLORS } from './graph';
+import { reasonHeadline } from '@/lib/runErrors';
 
 const ICONS: Record<string, React.FC<{ size?: number; className?: string }>> = {
     Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText,
@@ -77,6 +78,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const step: StepConfig = data.step;
     const isEntry: boolean = data.isEntry;
     const runStatus: string | undefined = data.runStatus;
+    const runError: string | undefined = runStatus === 'failed' ? data.runError : undefined;
     const agentName: string | undefined = data.agentName;
     const issues: StepIssue[] | undefined = data.issues;
     const meta = STEP_TYPE_META[step.type as StepType];
@@ -182,6 +184,13 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                 {step.output_key && (
                     <div className="truncate text-[10px] text-text-faint" translate="no">
                         <span className="opacity-70">out:</span> {step.output_key}
+                    </div>
+                )}
+                {/* Why it failed, where the eye already is (F195). The run log
+                    has the whole text; the card keeps it for a hover. */}
+                {runError && (
+                    <div className="line-clamp-2 break-words text-[10px] text-danger" title={runError} translate="no">
+                        {reasonHeadline(runError)}
                     </div>
                 )}
             </div>

@@ -168,6 +168,8 @@ export interface StepNodeData {
     isSelected: boolean;
     agentName?: string;
     runStatus?: 'pending' | 'running' | 'completed' | 'failed';
+    /** Why the step failed in the run on screen, in its own words (F195). */
+    runError?: string;
     issues?: StepIssue[];
     [key: string]: unknown;
 }

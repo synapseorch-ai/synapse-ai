@@ -114,3 +114,56 @@ class TestTheRealErrorReachesTheRecord:
         assert [h["status"] for h in run.step_history] == ["completed"]
 
 
+
+
+class TestTheStreamCarriesTheReasonBesideItsSentence:
+    """A member watching a run is told why a step failed (F195).
+
+    The stream's `error` stays the sanitised sentence, for whatever forwards it
+    unread; `reason` is the history's own words, which the run log and the step
+    card show. Every surface that reads this stream is a member's or an API
+    key's, and both already read the same words in the run record; the widget
+    drops `step_error` altogether.
+    """
+
+    async def test_a_raised_step_carries_the_history_error_as_its_reason(self):
+        from core.models_orchestration import Orchestration, StepType
+        from core.orchestration.engine import OrchestrationEngine
+        from core.orchestration.state import SharedState
+
+        class Boom:
+            async def execute(self, step, run, engine):
+                raise KeyError("missing_config_key")
+                yield  # pragma: no cover — makes this an async generator
+
+        orch = S.make_orchestration(id="orch_reason", entry_step_id="p", steps=[_print("p")])
+        engine = OrchestrationEngine(Orchestration.model_validate(orch), _server())
+        engine.executors = {**engine.executors, StepType.PRINT: Boom()}
+        events = await _run(orch, run_id="run_reason", engine=engine)
+
+        err = next(e for e in events if e.get("type") == "step_error")
+        entry = (await SharedState.restore("run_reason")).run.step_history[-1]
+        assert err["reason"] == entry["error"] == "KeyError: 'missing_config_key'"
+        assert err["error"] == "An internal error occurred while executing this step."
+
+    async def test_a_timed_out_step_carries_its_reason_too(self):
+        import asyncio
+
+        from core.models_orchestration import Orchestration, StepType
+        from core.orchestration.engine import OrchestrationEngine
+        from core.orchestration.state import SharedState
+
+        class Slow:
+            async def execute(self, step, run, engine):
+                await asyncio.sleep(5)
+                yield {"type": "never"}  # pragma: no cover
+
+        orch = S.make_orchestration(id="orch_reason_slow", entry_step_id="p", steps=[
+            {**_print("p"), "timeout_seconds": 1}])
+        engine = OrchestrationEngine(Orchestration.model_validate(orch), _server())
+        engine.executors = {**engine.executors, StepType.PRINT: Slow()}
+        events = await _run(orch, run_id="run_reason_slow", engine=engine)
+
+        err = next(e for e in events if e.get("type") == "step_error")
+        entry = (await SharedState.restore("run_reason_slow")).run.step_history[-1]
+        assert err["reason"] == entry["error"] == "Timed out after 1s"

@@ -101,6 +101,29 @@ class TestOrchestratorAgentFailure:
         assert resp.status_code == 200
         assert "error" in [e.get("type") for e in _sse_json(resp.text)]
 
+    async def test_chat_stream_tells_the_member_why_a_step_failed(
+        self, client, monkeypatch, seed_orchestration
+    ):
+        """The chat page is a member's: its step failure carries the step's
+        own words beside the sanitised sentence (F195)."""
+        from core.orchestration import steps as steps_mod
+
+        async def boom(self, step, run, engine):
+            raise KeyError("missing_config_key")
+            yield  # pragma: no cover — makes this an async generator
+
+        monkeypatch.setattr(steps_mod.PrintStepExecutor, "execute", boom)
+        orch = await seed_orchestration()  # single print step
+        agent = S.make_orchestrator_agent(orch["id"])
+        await S.seed_agents([agent])
+
+        resp = await client.post("/chat/stream",
+                                 json={"message": "go", "agent_id": agent["id"]})
+        failed = [e for e in _sse_json(resp.text) if e.get("type") == "step_error"]
+        assert failed, [e.get("type") for e in _sse_json(resp.text)]
+        assert failed[0]["error"] == "An internal error occurred while executing this step."
+        assert failed[0]["reason"] == "KeyError: 'missing_config_key'"
+
 
 class TestChatLaunchedRunParity:
     async def test_command_bar_run_is_registered_and_cancellable_mid_step(
