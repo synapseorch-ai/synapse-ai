@@ -76,11 +76,18 @@ function applyStepHistory(
     return next;
 }
 
-// A cancelled run is not asking anything: the step that asked stops waiting (F193).
-function settleQuestion(prev: Record<string, RunStepStatus>): Record<string, RunStepStatus> {
-    if (!Object.values(prev).includes('paused')) return prev;
+// A run that has ended asks nothing and runs nothing. A cancelled one's
+// question stops waiting (F193); and no step keeps pulsing: one still marked
+// waiting or running is done if the run completed, and not reached otherwise
+// (F190). End, for one, never gets a step_complete of its own.
+function settleRun(
+    prev: Record<string, RunStepStatus>,
+    outcome: 'completed' | 'failed' | 'cancelled',
+): Record<string, RunStepStatus> {
+    if (!Object.values(prev).some(v => v === 'paused' || v === 'running')) return prev;
+    const to: RunStepStatus = outcome === 'completed' ? 'completed' : 'pending';
     const next = { ...prev };
-    for (const k in next) { if (next[k] === 'paused') next[k] = 'pending'; }
+    for (const k in next) { if (next[k] === 'paused' || next[k] === 'running') next[k] = to; }
     return next;
 }
 
@@ -185,6 +192,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     // --- Run state ---
     const [runStatus, setRunStatus] = useState<'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'>('idle');
     const [runStepStatuses, setRunStepStatuses] = useState<Record<string, 'pending' | 'running' | 'paused' | 'completed' | 'failed'>>({});
+    // The step whose question is open, so the step that starts after the answer
+    // can close it (F190).
+    const askedStepRef = useRef<string | null>(null);
     // Why each failed step failed, in its own words (F195): shown on its card and in the run log.
     const [runStepErrors, setRunStepErrors] = useState<Record<string, string>>({});
     const [runId, setRunId] = useState<string | null>(null);
@@ -513,6 +523,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         const seeded: Record<string, RunStepStatus> = {};
         orch.steps.forEach(s => { seeded[s.id] = 'pending'; });
         setRunStepStatuses(seeded);
+        askedStepRef.current = null;
         historyErrorsRef.current = {};
         setRunStepErrors({});
 
@@ -549,7 +560,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         if (recorded === 'cancelled' || recorded === 'completed' || recorded === 'failed') {
             setHumanPrompt(null);
             setHumanContext(null);
-            setRunStepStatuses(settleQuestion);
+            setRunStepStatuses(prev => settleRun(prev, recorded));
             setRunStatus(recorded);
         }
         if (!hasJournal) {
@@ -1022,6 +1033,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         const statuses: Record<string, 'pending' | 'running' | 'completed' | 'failed'> = {};
         draft.steps.forEach(s => { statuses[s.id] = 'pending'; });
         setRunStepStatuses(statuses);
+        askedStepRef.current = null;
         setRunStepErrors({});
         historyErrorsRef.current = {};
         setRunStatus('running');
@@ -1052,7 +1064,20 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 setHumanPrompt(null);
                 setHumanContext(null);
                 setRunStatus('running');
-                setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'running' }));
+                {
+                    // Another step starting is the answer having been taken, so the
+                    // step that asked is done: the engine sends no step_complete for
+                    // it (F190). Live, on a replay, and after a refused answer alike.
+                    const asked = askedStepRef.current;
+                    if (asked && asked !== data.orch_step_id) askedStepRef.current = null;
+                    setRunStepStatuses(prev => {
+                        const next: Record<string, RunStepStatus> = { ...prev, [data.orch_step_id]: 'running' };
+                        if (asked && asked !== data.orch_step_id && (prev[asked] === 'paused' || prev[asked] === 'running')) {
+                            next[asked] = 'completed';
+                        }
+                        return next;
+                    });
+                }
                 // A step run again (resume from failure) is not failing yet.
                 setRunStepErrors(prev => {
                     if (!(data.orch_step_id in prev)) return prev;
@@ -1218,13 +1243,17 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 break;
 
             case 'orchestration_end':
+                if (data.orch_step_id) setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'completed' }));
                 setRunLog(prev => [...prev, line('end', 'End node reached')]);
                 break;
 
             case 'human_input_required':
                 setLiveActivity(null);
                 setRunStatus('paused');
-                if (data.orch_step_id) setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'paused' }));
+                if (data.orch_step_id) {
+                    askedStepRef.current = data.orch_step_id;
+                    setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'paused' }));
+                }
                 setHumanPrompt(data.prompt || 'Please provide input:');
                 setHumanContext(data.agent_context || null);
                 setHumanFields(fieldList(data.fields));
@@ -1241,6 +1270,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 setHumanPrompt(null);
                 setHumanContext(null);
                 setRunStatus(data.status === 'completed' ? 'completed' : 'failed');
+                setRunStepStatuses(prev => settleRun(prev, data.status === 'completed' ? 'completed' : 'failed'));
                 setRunLog(prev => [...prev, line(data.status === 'completed' ? 'ok' : 'error', `Done — status: ${data.status}`)]);
                 if (!fromJournal) {
                     abortRef.current?.abort();
@@ -1255,10 +1285,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 if (isCancel(data)) {
                     // Not a failure. The tab that cancelled has said so already.
                     setRunStatus('cancelled');
-                    setRunStepStatuses(settleQuestion);
+                    setRunStepStatuses(prev => settleRun(prev, 'cancelled'));
                     setRunLog(prev => prev[prev.length - 1] === CANCELLED_LINE ? prev : [...prev, CANCELLED_LINE]);
                 } else {
                     setRunStatus('failed');
+                    setRunStepStatuses(prev => settleRun(prev, 'failed'));
                     setRunLog(prev => [...prev, line('error', `Error: ${data.error}`)]);
                 }
                 if (!fromJournal) {
@@ -1340,7 +1371,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
             } catch { /* ignore */ }
         }
         setRunStatus('cancelled');
-        setRunStepStatuses(settleQuestion);
+        setRunStepStatuses(prev => settleRun(prev, 'cancelled'));
         setRunLog(prev => [...prev, CANCELLED_LINE]);
     };
 

@@ -3992,6 +3992,68 @@ async def check_duplicateurl(browser) -> str:
             drop_fixture(copy_id)
 
 
+#: Every canvas node's frame: its status colour, and whether it pulses (running).
+NODE_FRAMES = """() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map(n => {
+  const cls = (n.querySelector(':scope > div') || {}).className || '';
+  return [n.getAttribute('data-id'),
+          (cls.match(/border-(warning|success|danger|accent|border-strong)/) || ['?'])[0]
+          + (/animate-pulse/.test(cls) ? '+pulse' : '')];
+}))"""
+
+
+@check
+async def check_resumesettle(browser) -> str:
+    """A resumed run that completes leaves no step pulsing, live or reopened (F190).
+
+    Run → a person answers → Print → End → "Done — status: completed", and the
+    step that asked and the End kept the running pulse for as long as the page
+    stayed open: the engine sends no step_complete for either. Reopened from
+    its link, the step that asked turned grey and End still pulsed.
+    """
+    oid = f"orch_uismoke_settle_{int(time.time())}"
+    steps = [
+        {"id": f"{oid}_a", "name": "Research", "type": "print", "print_content": "researching",
+         "next_step_id": f"{oid}_ask", "output_key": "research"},
+        {"id": f"{oid}_ask", "name": "Review", "type": "human", "human_prompt": "Approve?",
+         "next_step_id": f"{oid}_b", "output_key": "approval"},
+        {"id": f"{oid}_b", "name": "Print", "type": "print", "print_content": "approved",
+         "next_step_id": f"{oid}_end", "output_key": "out"},
+        {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None},
+    ]
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "ui-smoke settle", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": steps[0]["id"], "steps": steps})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_text("Waiting for your input").first.wait_for(timeout=60_000)
+        await asyncio.sleep(0.5)
+        run_id = await page.evaluate("() => (document.body.innerText.match(/Started run (\\S+)/) || [])[1] || null")
+        await page.get_by_text("Waiting for your input").first.click()
+        await asyncio.sleep(0.8)
+        await page.get_by_role("textbox", name="Your answer").fill("yes")
+        await page.get_by_role("button", name="Submit", exact=True).click()
+        await page.get_by_text("Done — status: completed").first.wait_for(timeout=60_000)
+        await asyncio.sleep(1.5)
+        live = await page.evaluate(NODE_FRAMES)
+        if any(v != "border-success" for v in live.values()):
+            raise AssertionError(f"after the resumed run completed, the canvas shows {live}")
+        await page.goto(f"{APP}/orchestrations?run={run_id}", wait_until="domcontentloaded")
+        await page.get_by_text("Done — status: completed").first.wait_for(timeout=60_000)
+        await asyncio.sleep(SETTLE)
+        again = await page.evaluate(NODE_FRAMES)
+        if any(v != "border-success" for v in again.values()):
+            raise AssertionError(f"reopened from its link, the completed run shows {again}")
+        return "a resumed run that completes leaves every step done, live and reopened"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
