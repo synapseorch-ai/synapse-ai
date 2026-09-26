@@ -21,7 +21,7 @@ export async function POST(
 
     // Read here, in the request's scope: the executor below cannot await.
     const auth = await internalHeaders();
-    const webStream = await new Promise<ReadableStream>((resolve, reject) => {
+    const upstream = await new Promise<{ stream: ReadableStream; status: number; contentType: string }>((resolve, reject) => {
         const options: http.RequestOptions = {
             hostname: BACKEND_HOST,
             port: BACKEND_PORT,
@@ -36,7 +36,11 @@ export async function POST(
         };
 
         const proxyReq = http.request(options, (proxyRes) => {
-            resolve(Readable.toWeb(proxyRes) as ReadableStream);
+            resolve({
+                stream: Readable.toWeb(proxyRes) as ReadableStream,
+                status: proxyRes.statusCode || 200,
+                contentType: String(proxyRes.headers['content-type'] || 'application/json'),
+            });
         });
 
         proxyReq.on('error', reject);
@@ -44,7 +48,17 @@ export async function POST(
         proxyReq.end();
     });
 
-    return new NextResponse(webStream, {
+    // A refusal is the backend's own answer, status and body (F215): the
+    // losing answer of a race gets its 409, an unknown run its 404. Relabelled
+    // as a 200 event stream, the loser was told its answer had applied.
+    if (upstream.status < 200 || upstream.status >= 300) {
+        return new NextResponse(upstream.stream, {
+            status: upstream.status,
+            headers: { 'Content-Type': upstream.contentType },
+        });
+    }
+
+    return new NextResponse(upstream.stream, {
         headers: {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',

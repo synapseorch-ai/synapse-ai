@@ -10,6 +10,7 @@ import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration
 import { validateOrchestration } from '../orchestration/validate';
 import { useBuilderShortcuts, useDraftHistory } from '../orchestration/use-draft-history';
 import { readWithStallTimeout } from '@/lib/sse';
+import { refusedAnswerMessage } from '@/lib/answers';
 import { ReactFlowProvider } from '@xyflow/react';
 import { WorkflowCanvas } from '../orchestration/WorkflowCanvas';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
@@ -891,7 +892,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     }, []);
 
     // --- SSE stream reader helper (POST run/resume/human-input streams) ---
-    const streamSSE = async (url: string, body: Record<string, any>) => {
+    const streamSSE = async (
+        url: string,
+        body: Record<string, any>,
+        /** A caller that can say why its request was refused, and what now. */
+        onRefused?: (res: Response) => Promise<void>,
+    ) => {
         const controller = new AbortController();
         abortRef.current?.abort();  // e.g. close a reattach tail before resuming
         abortRef.current = controller;
@@ -904,6 +910,10 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 body: JSON.stringify(body),
                 signal: controller.signal,
             });
+            if (!res.ok && onRefused) {
+                await onRefused(res);
+                return;
+            }
             if (!res.ok || !res.body) {
                 setRunStatus('failed');
                 setRunLog(prev => [...prev, `[HTTP ${res.status}]`]);
@@ -1279,7 +1289,17 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         const response = humanFields.length ? humanAnswer(humanFields, humanValues) : humanResponse;
         setHumanResponse('');
 
-        streamSSE(`/api/orchestrations/runs/${runId}/human-input`, { response });
+        streamSSE(`/api/orchestrations/runs/${runId}/human-input`, { response }, async (res) => {
+            // Refused (F215): most often someone else answered first. Say so,
+            // then follow the run on from the last event this tab saw, which
+            // keeps this line in the log; a replay from 0 would rebuild it.
+            const message = await refusedAnswerMessage(res);
+            showToast(message, 'warning');
+            setRunLog(prev => [...prev, `[${message}]`]);
+            if (res.status === 404) { setRunStatus('failed'); return; }
+            const hasJournal = await streamRunJournal(runId, lastEventIdRef.current);
+            if (!hasJournal) await pollRunStatus(runId, { silent: true });
+        });
     };
 
     const resumeRun = async () => {

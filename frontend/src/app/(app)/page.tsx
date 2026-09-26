@@ -12,6 +12,7 @@ import { Markdown, Spinner } from '@/components/ui';
 
 import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
+import { refusedAnswerMessage } from '@/lib/answers';
 import { Message, OrchMsgType, SystemStatus } from '@/types';
 
 // ─── LLM Thought Collapsible ────────────────────────────────────────────────
@@ -1749,7 +1750,13 @@ export default function Home() {
         signal: controller.signal,
       });
 
-      if (!response.ok) throw new Error(`Resume failed: ${response.status}`);
+      // Refused (F215): most often someone else answered first. Say why,
+      // rather than the generic error below.
+      if (!response.ok) {
+        const reason = await refusedAnswerMessage(response);
+        setMessages(prev => [...prev, { role: 'assistant', content: reason }]);
+        return;
+      }
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No reader available');
