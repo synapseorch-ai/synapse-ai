@@ -9,7 +9,7 @@ import { CollectDataForm } from '@/components/CollectDataForm';
 import { HumanStepAnswer } from '@/components/HumanStepAnswer';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
-import { Markdown, Spinner } from '@/components/ui';
+import { Markdown, Menu, MenuItem, Spinner } from '@/components/ui';
 
 import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
@@ -2173,51 +2173,56 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Status Indicators */}
-              {/* Agents Hover Status */}
-              <div className="group relative hidden sm:flex items-center gap-2 cursor-pointer border-r border-border pl-4 pr-4 hover:bg-surface-2 transition-colors">
-                <span className="text-xs font-bold text-zinc-400 tracking-widest uppercase group-hover:text-zinc-200 transition-colors">AGENTS</span>
+              {/* The agent switcher. It was a <div> whose list opened on hover:
+                  no keyboard or touch path, hidden below `sm`, and its rows
+                  stayed in the tab order while invisible (F185). The kit's
+                  menu opens on click, Enter or Space, walks with the arrow
+                  keys, closes on Escape and hands focus back. */}
+              <Menu
+                align="end"
+                trigger={
+                  <button
+                    type="button"
+                    className="flex items-center gap-1.5 self-stretch border-r border-border px-2 sm:px-4 text-zinc-400 hover:bg-surface-2 hover:text-zinc-200 data-[state=open]:bg-surface-2 data-[state=open]:text-zinc-200 transition-colors"
+                  >
+                    <Bot className="h-4 w-4 sm:hidden" aria-hidden />
+                    <span className="sr-only sm:not-sr-only text-xs font-bold tracking-widest uppercase">Agents</span>
+                    <ChevronDown className="hidden sm:block h-3 w-3" aria-hidden />
+                  </button>
+                }
+              >
+                {(() => {
+                  // Hide native-builder machinery agents (ids prefixed `agent_native_builder`);
+                  // show only user-facing agents.
+                  const visibleAgents = systemStatus?.agents
+                    ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
+                    : [];
 
-                {/* Dropdown on Hover */}
-                <div className="absolute right-0 top-full mt-0 w-64 bg-zinc-950 border border-zinc-800 p-2 shadow-2xl opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all pointer-events-none group-hover:pointer-events-auto z-50 max-h-[60vh] overflow-y-auto custom-scrollbar rounded-md">
-                  <div className="space-y-1">
-                    {(() => {
-                      // Hide native-builder machinery agents (ids prefixed `agent_native_builder`);
-                      // show only user-facing agents.
-                      const visibleAgents = systemStatus?.agents
-                        ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
-                        : [];
+                  if (visibleAgents.length === 0) {
+                    return <div className="text-xs text-text-faint italic px-3 py-2">No agents detected.</div>;
+                  }
 
-                      if (visibleAgents.length === 0) {
-                        return <div className="text-xs text-text-faint italic px-3 py-2">No agents detected.</div>;
-                      }
+                  return visibleAgents.map(([id, info]) => {
+                    const isActive = systemStatus?.active_agent_id === id;
+                    // Handle legacy string vs new object structure if backend update lags (safety)
+                    const name = typeof info === 'string' ? id : info.name;
+                    const status = typeof info === 'string' ? info : info.status;
 
-                      return visibleAgents.map(([id, info]) => {
-                        const isActive = systemStatus?.active_agent_id === id;
-                        // Handle legacy string vs new object structure if backend update lags (safety)
-                        const name = typeof info === 'string' ? id : info.name;
-                        const status = typeof info === 'string' ? info : info.status;
-
-                        return (
-                          <button
-                            key={id}
-                            onClick={() => handleSwitchAgent(id)}
-                            className={cn(
-                              "nav-button w-full flex items-center justify-between px-3 py-2 text-xs uppercase tracking-wider text-left border border-transparent hover:border-zinc-700 transition-all",
-                              isActive ? "bg-zinc-900 text-white border-zinc-800" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/50"
-                            )}>
-                            <div className="flex items-center gap-2">
-                              <div className={cn("h-1.5 w-1.5 rounded-full", status === 'online' ? "bg-green-500 shadow-[0_0_5px_#22c55e]" : "bg-red-500")}></div>
-                              <span className="truncate max-w-[200px]">{name}</span>
-                            </div>
-                            {isActive && <div className="h-1.5 w-1.5 bg-white rounded-full animate-pulse"></div>}
-                          </button>
-                        );
-                      });
-                    })()}
-                  </div>
-                </div>
-              </div>
+                    return (
+                      <MenuItem key={id} onSelect={() => handleSwitchAgent(id)}>
+                        <div className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status === 'online' ? "bg-green-500" : "bg-red-500")} aria-hidden />
+                        <span className="min-w-0 flex-1 truncate" title={name}>{name}</span>
+                        {isActive && (
+                          <>
+                            <Check className="size-4 shrink-0 text-accent" aria-hidden />
+                            <span className="sr-only">(current)</span>
+                          </>
+                        )}
+                      </MenuItem>
+                    );
+                  });
+                })()}
+              </Menu>
 
               <button
                 onClick={handleNewChat}

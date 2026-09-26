@@ -3151,6 +3151,64 @@ async def check_builderreload(browser) -> str:
         raise AssertionError("the panel kept reading the journal past the question it answers elsewhere")
     return "a waiting plan comes back and is answered; a working build is followed until it asks"
 
+
+#: Agent switches recorded instead of sent: the stub's agents do not exist.
+RECORD_SWITCH = """
+window.__switches = [];
+const _switchFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || 'GET').toUpperCase();
+  if (url.includes('/api/agents/active') && method === 'POST') {
+    window.__switches.push(JSON.parse((init && init.body) || '{}'));
+    return Promise.resolve(new Response('{}', {status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  return _switchFetch(input, init);
+};
+"""
+
+
+@check
+async def check_agentmenu(browser) -> str:
+    """Chat's agent switcher opens from the keyboard, and at phone width (F185).
+
+    It was a `<div>` whose list appeared on hover: not focusable, no keyboard or
+    touch path, and hidden below `sm`, so a phone could not change agent at all.
+    Its rows stayed in the tab order while invisible.
+    """
+    status = {**_status(True), "agents": {
+        "agent_alpha": {"name": "Alpha", "status": "online", "can_see_images": True},
+        "agent_beta": {"name": "Beta", "status": "online", "can_see_images": True},
+    }, "active_agent_id": "agent_alpha"}
+    for width in (WIDE, PHONE):
+        ctx, page = await _chat_page(
+            browser, "uismoke-agentmenu", width=width,
+            extra_init=SERVE_STATUS % json.dumps(status) + RECORD_SWITCH)
+        try:
+            trigger = page.get_by_role("button", name=re.compile(r"^agents", re.I))
+            if not await trigger.count() or not await trigger.first.is_visible():
+                raise AssertionError(f"at {width[0]}px there is no visible button that switches agent")
+            await trigger.first.focus()
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.5)
+            items = await page.get_by_role("menuitem").all_inner_texts()
+            if not any("Beta" in t for t in items) or not any("Alpha" in t for t in items):
+                raise AssertionError(f"at {width[0]}px the switcher lists {items}")
+            await page.get_by_role("menuitem", name=re.compile("Beta")).focus()
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.8)
+            switched = await page.evaluate("() => window.__switches")
+            hidden_rows = await page.evaluate(
+                "() => [...document.querySelectorAll('header button')]"
+                ".filter(b => /^(Alpha|Beta)/.test(b.innerText.trim())).length")
+        finally:
+            await ctx.close()
+        if switched[-1:] != [{"agent_id": "agent_beta"}]:
+            raise AssertionError(f"at {width[0]}px choosing Beta sent {switched}")
+        if hidden_rows:
+            raise AssertionError(f"at {width[0]}px the closed switcher leaves {hidden_rows} agent rows in the header")
+    return "a named button at both widths; Enter opens it, Enter on an agent switches to it"
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
