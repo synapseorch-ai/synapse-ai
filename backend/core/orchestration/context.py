@@ -207,6 +207,29 @@ def build_execution_trace(events: list[dict]) -> dict:
     }
 
 
+def answered_human_keys(run: "OrchestrationRun", engine: "OrchestrationEngine") -> set[str]:
+    """The keys a person's answer has been written to in this run (F194).
+
+    A human step's output key is in state from the first step whenever the
+    schema declares it — a default, not an answer — so presence says nothing.
+    The run's history does: an answered question leaves a `completed` entry
+    under the human step that asked, and the engine wrote the answer to that
+    step's output key and to `human_response`. An entry under any other step
+    (a nested run's question, recorded on the step that ran it) is not an
+    answer written into this run's state.
+    """
+    keys: set[str] = set()
+    for entry in run.step_history:
+        if entry.get("status") != "completed":
+            continue
+        asker = engine.step_map.get(entry.get("step_id"))
+        if asker is None or not asker.type or asker.type.value != "human":
+            continue
+        keys.add(asker.output_key or "human_response")
+        keys.add("human_response")
+    return keys
+
+
 def snapshot_inputs(
     step: "StepConfig",
     run: "OrchestrationRun",
@@ -223,12 +246,8 @@ def snapshot_inputs(
     if "user_input" in run.shared_state:
         snap["user_input"] = _truncate(str(run.shared_state["user_input"]), max_chars)
 
-    # Human response keys (mirrors logic in build_origin_aware_context)
-    human_keys = {"human_response"}
-    for s in engine.step_map.values():
-        if s.type and s.type.value == "human" and s.output_key:
-            human_keys.add(s.output_key)
-    for hkey in human_keys:
+    # Answered human keys (mirrors logic in build_origin_aware_context)
+    for hkey in answered_human_keys(run, engine):
         if hkey in run.shared_state and hkey not in snap:
             snap[hkey] = _truncate(str(run.shared_state[hkey]), max_chars)
 
@@ -861,12 +880,11 @@ def build_origin_aware_context(
     # input_keys, the explicit-input loop below will skip it for the same
     # reason.
 
-    # Human response keys (always inject unless already listed)
-    human_keys = {"human_response"}
-    for s in engine.step_map.values():
-        if s.type and s.type.value == "human" and s.output_key:
-            human_keys.add(s.output_key)
-    for hkey in sorted(human_keys):
+    # Human response keys: every key a person has answered in this run, unless
+    # the step lists it itself. Not one that only holds its schema default —
+    # "Source: human response {}" before anyone was asked told the model a
+    # person had answered (F194).
+    for hkey in sorted(answered_human_keys(run, engine)):
         if (
             hkey in run.shared_state
             and hkey not in (step.input_keys or [])
