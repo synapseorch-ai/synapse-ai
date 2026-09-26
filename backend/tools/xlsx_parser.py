@@ -86,7 +86,9 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent | type
             return [types.TextContent(type="text", text="".join(output_text))]
 
         except Exception as e:
-            return [types.TextContent(type="text", text=f"Error parsing XLSX: {str(e)}")]
+            # Raised, so the call is an MCP error (`isError`): returned as text,
+            # a Tool step ended `completed` with this as its output (F174).
+            raise RuntimeError(f"Error parsing XLSX: {e}") from e
 
     raise ValueError(f"Tool {name} not found")
 

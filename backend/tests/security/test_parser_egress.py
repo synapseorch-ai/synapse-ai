@@ -134,12 +134,21 @@ def _public_is_127(monkeypatch):
     egress_guard._resolve_cache.clear()
 
 
+async def _tool_text(module, tool: str, url: str) -> str:
+    """What a client reads, through a real MCP session. A refusal is an error
+    result since F174, and its text is the refusal."""
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    async with create_connected_server_and_client_session(module.app) as client:
+        return (await client.call_tool(tool, {"file_url": url})).content[0].text
+
+
 async def _pdf_text(url: str) -> str:
-    return (await pdf_parser.call_tool("parse_pdf", {"file_url": url}))[0].text
+    return await _tool_text(pdf_parser, "parse_pdf", url)
 
 
 async def _xlsx_text(url: str) -> str:
-    return (await xlsx_parser.call_tool("parse_xlsx", {"file_url": url}))[0].text
+    return await _tool_text(xlsx_parser, "parse_xlsx", url)
 
 
 PARSERS = [pytest.param(_pdf_text, "doc.pdf", id="pdf"), pytest.param(_xlsx_text, "sheet.xlsx", id="xlsx")]
