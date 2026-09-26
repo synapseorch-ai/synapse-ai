@@ -105,22 +105,49 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         }
     }, [toast, openRun]);
 
-    // Notification SSE: replay-then-tail with reconnect from the last id.
+    // Notifications: history first, then the live tail, on every connection.
+    //
+    // What the ring already holds when this page connects is history — listed
+    // and badged, never toasted (F216). It used to be told apart by timing: the
+    // stream's first read chunk and a 5 s clock window, with the flag kept
+    // across reconnects. A replay longer than one chunk, or any reconnect (a
+    // backend restart, a dropped relay), toasted old runs again — a failure
+    // since resumed among them — and raised them as OS notifications in a
+    // hidden tab. Now the boundary is an id, and an id is announced once.
     useEffect(() => {
         let stopped = false;
         const controller = { current: null as AbortController | null };
+        const announced = new Set<number>();
 
         const connect = async () => {
-            let liveAfterReplay = false;
             while (!stopped) {
                 const abort = new AbortController();
                 controller.current = abort;
                 try {
-                    // Always replay the full ring: re-received ids are upserted, and
-                    // updates to old items (resolved flags) survive reconnects.
-                    const res = await fetch('/api/notifications/stream?after=0',
-                        { signal: abort.signal });
+                    // The ring as it is now. Read on each connection, so a
+                    // reconnect also picks up what changed meanwhile (a
+                    // resolved flag).
+                    const listRes = await fetch('/api/notifications?after=0', { signal: abort.signal });
                     // Not signed in: no retry would change that (F178).
+                    if (listRes.status === 401) {
+                        if (!stopped) setSignedOut(true);
+                        return;
+                    }
+                    if (!listRes.ok) throw new Error(`HTTP ${listRes.status}`);
+                    const history = (await listRes.json()) as { notifications?: RunNotification[]; last_id?: number };
+                    let boundary = history.last_id ?? 0;
+                    for (const item of history.notifications ?? []) {
+                        announced.add(item.id);
+                        boundary = Math.max(boundary, item.id);
+                        handleNotification(item, false);
+                    }
+                    if (boundary > lastIdRef.current) lastIdRef.current = boundary;
+
+                    // The tail from there. The server subscribes before it
+                    // replays, so anything published after the list arrives
+                    // here; an id already announced is an update, not news.
+                    const res = await fetch(`/api/notifications/stream?after=${boundary}`,
+                        { signal: abort.signal });
                     if (res.status === 401) {
                         if (!stopped) setSignedOut(true);
                         return;
@@ -129,8 +156,6 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                     const reader = res.body.getReader();
                     const decoder = new TextDecoder();
                     let buffer = '';
-                    // Everything already in the ring at connect time is history.
-                    const replayCutoff = Date.now() / 1000 - 5;
                     while (true) {
                         const { done, value } = await readWithStallTimeout(reader, abort);
                         if (done) break;
@@ -142,11 +167,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                                 try {
                                     const item = JSON.parse(line.slice(6)) as RunNotification;
                                     if (item.id > lastIdRef.current) lastIdRef.current = item.id;
-                                    handleNotification(item, liveAfterReplay || item.ts > replayCutoff);
+                                    const news = !announced.has(item.id);
+                                    announced.add(item.id);
+                                    handleNotification(item, news);
                                 } catch { /* ignore */ }
                             }
                         }
-                        liveAfterReplay = true;
                     }
                 } catch { /* fall through to retry */ }
                 if (stopped) return;
