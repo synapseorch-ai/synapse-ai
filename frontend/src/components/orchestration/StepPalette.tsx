@@ -36,9 +36,19 @@ export const STEP_DRAG_TYPE = 'application/x-synapse-step-type';
  */
 export const PALETTE_CLEARANCE_PX = 224 + 8 + 24;
 
-/** Whether the palette is folded to its "Steps" button — shared with the canvas's fit-view. */
+/**
+ * Whether the palette is folded to its "Steps" button — shared with the canvas's fit-view.
+ *
+ * With no choice stored it starts folded below `sm`: open, its 240 px covered
+ * most of a phone's canvas and fit-view squeezed the graph into what was left
+ * (F218). A choice the person made wins at every width.
+ */
 export function usePaletteCollapsed() {
-    return usePersisted<'0' | '1'>('orch-palette-collapsed', (raw) => (raw === '1' ? '1' : '0'), '0');
+    return usePersisted<'0' | '1'>(
+        'orch-palette-collapsed',
+        (raw) => (raw === '1' || raw === '0' ? raw : window.matchMedia('(max-width: 639px)').matches ? '1' : '0'),
+        '0',
+    );
 }
 
 export function StepPalette({ onAdd }: { onAdd: (type: StepType) => void }) {

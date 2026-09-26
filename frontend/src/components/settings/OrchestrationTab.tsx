@@ -2,8 +2,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowDown, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX } from 'lucide-react';
-import { Button, Combobox, Hint, IconButton, Mark, Markdown, Modal, SearchInput, Spinner } from '@/components/ui';
+import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowDown, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX, MoreHorizontal } from 'lucide-react';
+import { Button, buttonStyles, Combobox, Hint, IconButton, Mark, Markdown, Menu, MenuItem, MenuSeparator, Modal, SearchInput, Spinner } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
@@ -1492,9 +1492,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     return (
         <div className="flex flex-col h-full relative">
             {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
-            {/* Toolbar: orchestration picker + actions */}
-            <div className="flex items-center gap-3 px-4 py-2.5 border-b border-zinc-800 shrink-0">
-                <div className="flex items-center gap-2 flex-1 min-w-0">
+            {/* Toolbar: orchestration picker + actions. One row from `sm` up; below
+                it the actions take a second row, because at 360 px the two groups
+                overlapped and Back, New, Build with AI, Undo and Redo could not be
+                tapped (F218). */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 border-b border-zinc-800 shrink-0">
+                <div className="flex items-center gap-2 w-full min-w-0 sm:w-auto sm:flex-1">
                     {draft && (
                         <button
                             onClick={backToList}
@@ -1511,25 +1514,27 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                         searchPlaceholder="Search orchestrations…"
                         aria-label="Orchestration"
                         size="sm"
-                        className="max-w-[240px]"
+                        className="max-w-[240px] min-w-0"
                         options={orchestrations.map(o => ({ value: o.id, label: o.name }))}
                     />
                     <button
                         onClick={createNew}
-                        className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                        aria-label="New orchestration"
+                        className="flex shrink-0 items-center gap-1 px-2 sm:px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white transition-colors"
                     >
-                        <Plus size={14} /> New
+                        <Plus size={14} aria-hidden /> <span className="hidden sm:inline">New</span>
                     </button>
                     <button
                         onClick={() => openBuilder()}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent hover:bg-accent-hover text-accent-fg transition-colors"
+                        aria-label="Build with AI"
+                        className="flex shrink-0 items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs whitespace-nowrap bg-accent hover:bg-accent-hover text-accent-fg transition-colors"
                     >
-                        <Mark size={14} /> Build with AI
+                        <Mark size={14} /> <span className="hidden sm:inline">Build with AI</span>
                     </button>
                 </div>
 
                 {draft && (
-                    <div className="flex items-center gap-1.5 pr-6">
+                    <div className="ml-auto flex items-center gap-1.5 sm:pr-6">
                         {validation && validation.errorCount + validation.warningCount > 0 && (
                             <Hint
                                 content={[
@@ -1562,16 +1567,40 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                 <Square size={14} aria-hidden /> Cancel
                             </Button>
                         )}
-                        <Button size="sm" variant="secondary" onClick={handleDeploy}>
-                            Deploy as Agent
-                        </Button>
-                        <Button size="sm" variant="secondary" onClick={handleDuplicate} disabled={saving}>
-                            <Copy size={13} aria-hidden /> Duplicate
-                        </Button>
-                        <div className="mx-1 h-5 w-px bg-border-strong" />
-                        <Button size="sm" variant="ghost" className="text-text-faint hover:text-danger" onClick={handleDelete}>
-                            <Trash size={13} aria-hidden /> Delete
-                        </Button>
+                        {/* Below `sm` the row has no room for these three: they were cut off
+                            past the edge at 360 px (F218), so a ⋯ menu holds them there. */}
+                        <span className="hidden sm:contents">
+                            <Button size="sm" variant="secondary" onClick={handleDeploy}>
+                                Deploy as Agent
+                            </Button>
+                            <Button size="sm" variant="secondary" onClick={handleDuplicate} disabled={saving}>
+                                <Copy size={13} aria-hidden /> Duplicate
+                            </Button>
+                            <span className="mx-1 h-5 w-px bg-border-strong" />
+                            <Button size="sm" variant="ghost" className="text-text-faint hover:text-danger" onClick={handleDelete}>
+                                <Trash size={13} aria-hidden /> Delete
+                            </Button>
+                        </span>
+                        <span className="sm:hidden">
+                            <Menu
+                                align="end"
+                                trigger={
+                                    <button
+                                        type="button"
+                                        aria-label="More actions"
+                                        title="More actions"
+                                        className={buttonStyles({ variant: 'secondary', size: 'sm', iconOnly: true })}
+                                    >
+                                        <MoreHorizontal size={14} aria-hidden />
+                                    </button>
+                                }
+                            >
+                                <MenuItem icon={Bot} onSelect={handleDeploy}>Deploy as Agent</MenuItem>
+                                <MenuItem icon={Copy} onSelect={handleDuplicate} disabled={saving}>Duplicate</MenuItem>
+                                <MenuSeparator />
+                                <MenuItem icon={Trash} tone="danger" onSelect={handleDelete}>Delete</MenuItem>
+                            </Menu>
+                        </span>
                     </div>
                 )}
             </div>

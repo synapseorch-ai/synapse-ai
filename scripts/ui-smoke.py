@@ -3894,6 +3894,64 @@ async def check_streamdocs(browser) -> str:
         await ctx.close()
 
 
+#: Each toolbar control's box and whether a tap at its centre reaches it. A
+#: disabled control lets the hit through, so it is only checked for place.
+TOOLBAR_REACH = """(names) => {
+  const vw = document.documentElement.clientWidth;
+  const out = {};
+  for (const name of names) {
+    const b = [...document.querySelectorAll('main button')]
+      .find(x => (x.getAttribute('aria-label') || x.textContent.trim()) === name);
+    if (!b) { out[name] = 'missing'; continue; }
+    const r = b.getBoundingClientRect();
+    if (!r.width) { out[name] = 'hidden'; continue; }
+    if (r.right > vw + 1 || r.left < 0) { out[name] = 'off-screen'; continue; }
+    if (b.disabled) { out[name] = 'ok'; continue; }
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    out[name] = hit && (hit === b || b.contains(hit)) ? 'ok'
+      : 'covered by ' + ((hit && hit.closest('button') && (hit.closest('button').getAttribute('aria-label') || hit.closest('button').textContent.trim())) || (hit && hit.tagName));
+  }
+  return out;
+}"""
+
+
+@check
+async def check_phonetoolbar(browser) -> str:
+    """At phone width every editor action can be tapped (F218).
+
+    At 360 px the toolbar sat in one clipped row: Deploy as Agent, Duplicate
+    and Delete were past the edge, and the two halves overlapped, so a tap on
+    New or Build with AI landed on Save or Run. Below `sm` the rarer three now
+    sit in a ⋯ menu, the actions take a second row, and the step palette, which
+    covered most of the canvas, starts folded.
+    """
+    oid = f"orch_uismoke_phone_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, "ui-smoke phone toolbar"))
+    ctx = await browser.new_context(viewport={"width": 360, "height": 780})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        names = ["Back", "Orchestration", "New orchestration", "Build with AI", "Undo (Ctrl+Z)",
+                 "Save", "Run", "More actions"]
+        reach = await page.evaluate(TOOLBAR_REACH, names)
+        bad = {k: v for k, v in reach.items() if v != "ok"}
+        if bad:
+            raise AssertionError(f"at 360 px these editor controls cannot be tapped: {bad}")
+        await page.get_by_role("button", name="More actions").click()
+        items = await page.get_by_role("menuitem").all_inner_texts()
+        if [i.strip() for i in items] != ["Deploy as Agent", "Duplicate", "Delete"]:
+            raise AssertionError(f"the ⋯ menu holds {items}")
+        await page.keyboard.press("Escape")
+        if not await page.get_by_role("button", name="Show step palette").count():
+            raise AssertionError("with no choice stored, the step palette opens over a phone's canvas")
+        return "at 360 px every editor action can be tapped, the rare ones behind ⋯, and the palette starts folded"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
