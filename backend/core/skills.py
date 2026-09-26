@@ -214,8 +214,36 @@ MAX_INSTALL_OUTPUT_CHARS = 8_000
 
 #: The CLI is a rich terminal UI — its output carries ~100 colour escapes per
 #: run, which render as literal garbage in a browser. Stripped before the
-#: output is shown to anyone.
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+#: output is shown to anyone: CSI (colour, cursor), OSC (titles, links), and the
+#: two-byte escapes.
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+
+#: How the CLI redraws its spinner: back to the line's start (`\r`, `ESC[G`,
+#: `ESC[1G`), then draw the next frame over the last. A terminal shows only the
+#: last; a browser showed every frame run together ("Fetching skills…◐  Fetching
+#: skills…◓ …"), so only what follows the last return on a line is kept (F203).
+_REDRAW_RE = re.compile(r"\r|\x1b\[1?G")
+
+#: The CLI's art: its name in block letters, and the rules of its boxes — lines
+#: of nothing but block and box-drawing glyphs. Six lines of banner pushed the
+#: one sentence that mattered below the dialog's box (F203). A line with words
+#: in it is kept, glyphs and all.
+_BANNER_RE = re.compile(r"^[\s█▀▄▌▐░▒▓╔╗╚╝║═╠╣╦╩╬─━├┤┬┴┼╭╮╯╰┌┐└┘]+$")
+
+#: A line that is only the CLI's left-hand gutter.
+_GUTTER_RE = re.compile(r"^[\s│┃|]*$")
+
+
+def _readable_cli_output(raw: str) -> str:
+    """What the CLI said, as a terminal would have left it, without the art."""
+    lines = []
+    for line in raw.split("\n"):
+        # A line ending "\r\n" (npx on Windows) is not a redraw.
+        line = _ANSI_RE.sub("", _REDRAW_RE.split(line.rstrip("\r"))[-1]).rstrip()
+        if (line.strip() and _BANNER_RE.match(line)) or _GUTTER_RE.match(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 class SkillInstallError(RuntimeError):
@@ -287,7 +315,7 @@ async def install_from_cli(package: str) -> dict:
     except OSError as exc:
         raise SkillInstallError(f"could not run {command}: {exc}") from exc
 
-    output = _ANSI_RE.sub("", (stdout or b"").decode("utf-8", errors="replace"))
+    output = _readable_cli_output((stdout or b"").decode("utf-8", errors="replace"))
     output = output[-MAX_INSTALL_OUTPUT_CHARS:]
     # Exit code is not the signal. A real run that installed the skill for this
     # machine still exited 0 while printing "Failed to install 1" for a

@@ -349,6 +349,58 @@ class TestCliInstall:
             await skills_mod.install_from_cli("nobody/nothing")
         assert "package not found" in str(exc.value)
 
+    async def test_a_failure_reads_as_the_cli_s_words_not_its_banner(self, monkeypatch):
+        """The Skills dialog showed the CLI's block-letter logo and spinner frames (F203).
+
+        Captured from `npx -y skills add vercel-labs/agent-skills@react-best-practices`
+        on 2026-09-26: the useful line, "No matching skills found", sat below a
+        six-line banner and a run of spinner frames the terminal would have drawn
+        over one another (`ESC[1G ESC[J`), where the dialog's box cut it off.
+        """
+        monkeypatch.setattr("shutil.which", lambda _cmd: "/usr/bin/npx")
+        banner = (
+            "███████╗██╗  ██╗██╗██╗     ██╗     ███████╗\n"
+            "██╔════╝██║ ██╔╝██║██║     ██║     ██╔════╝\n"
+            "╚══════╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚══════╝\n"
+        )
+        spin = "".join(f"{glyph}  Fetching skills…\x1b[1G\x1b[J" for glyph in "◒◐◓◑◒◐")
+        raw = (
+            f"{banner}\n\x1b[?25l┌   skills \n│\n"
+            "◇  Source: https://github.com/vercel-labs/agent-skills.git @react-best-practices\n"
+            f"\x1b[?25h\x1b[?25l│\n{spin}◇  Found 1 skill\n\x1b[?25h│\n"
+            "■  No matching skills found for: react-best-practices\n│\n●  Available skills:\n│\n"
+            "│    - vercel-react-best-practices\n"
+        ).encode()
+
+        class FailingProc:
+            returncode = 1
+
+            async def communicate(self):
+                return (raw, b"")
+
+        async def fake_exec(*argv, **kwargs):
+            return FailingProc()
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+        with pytest.raises(skills_mod.SkillInstallError) as exc:
+            await skills_mod.install_from_cli("vercel-labs/agent-skills@react-best-practices")
+        said = str(exc.value)
+        assert "No matching skills found for: react-best-practices" in said
+        assert "vercel-react-best-practices" in said
+        assert "Found 1 skill" in said
+        assert "█" not in said and "╚" not in said          # no banner
+        assert "Fetching skills" not in said                  # the frames were drawn over
+        assert "\x1b" not in said
+        assert "\n│\n" not in said                            # no gutter-only lines
+
+    def test_box_rules_go_and_their_words_stay(self):
+        said = skills_mod._readable_cli_output("│\n├──────────╯\n■  Failed to install 2\n└  Done!  Review skills before use.\n")
+        assert said == "■  Failed to install 2\n└  Done!  Review skills before use."
+
+    def test_windows_line_endings_are_not_redraws(self):
+        said = skills_mod._readable_cli_output("■  No matching skills found for: x\r\n│\r\n●  Available skills:\r\n")
+        assert said == "■  No matching skills found for: x\n●  Available skills:"
+
 
 class TestCliRoutes:
     async def test_status_and_refusal(self, client, monkeypatch):

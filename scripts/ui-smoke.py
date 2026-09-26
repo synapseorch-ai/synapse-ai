@@ -4352,6 +4352,35 @@ async def check_pricingnames(browser) -> str:
         await ctx.close()
 
 
+@check
+async def check_skillhint(browser) -> str:
+    """The skills.sh dialog's own example is one the CLI can install (F203).
+
+    Its hint offered `vercel-labs/agent-skills@react-best-practices`; the skill
+    is `vercel-react-best-practices` now, so the example failed with the CLI's
+    banner and spinner frames above "No matching skills found". The backend now
+    strips those (`tests/unit/test_skills.py`); this checks the example.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/skills", wait_until="domcontentloaded")
+        opener = page.get_by_role("button", name=re.compile(r"skills\.sh", re.I)).first
+        await opener.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await opener.click()
+        dialog = page.get_by_role("dialog")
+        await dialog.wait_for(timeout=5_000)
+        text = await dialog.inner_text()
+        if "agent-skills@react-best-practices" in text:
+            raise AssertionError("the dialog's example names a skill the CLI no longer has")
+        if "agent-skills@vercel-react-best-practices" not in text:
+            raise AssertionError(f"the dialog's example is not the current one: {text[:200]!r}")
+        return "the skills.sh dialog's example names a skill the CLI has"
+    finally:
+        await ctx.close()
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

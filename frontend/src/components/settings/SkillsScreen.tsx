@@ -347,7 +347,7 @@ export function SkillsScreen() {
                     <Field
                         label="Package"
                         required
-                        hint={<>From <span className="font-mono">skills.sh</span> — e.g. <span className="font-mono">anthropics/skills</span> or <span className="font-mono">vercel-labs/agent-skills@react-best-practices</span></>}
+                        hint={<>From <span className="font-mono">skills.sh</span> — e.g. <span className="font-mono">anthropics/skills</span> or <span className="font-mono">vercel-labs/agent-skills@vercel-react-best-practices</span></>}
                     >
                         <Input
                             value={installPackage}
