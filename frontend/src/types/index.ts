@@ -72,4 +72,8 @@ export interface SystemStatus {
     mode: 'local' | 'cloud' | 'bedrock';
     active_agent_id?: string;
     provider?: string;
+    /** Whether the model the page will use can answer at all (F182). Nothing paid is tried. */
+    model_ready?: boolean;
+    /** Why it cannot, in a sentence; null when nothing is known to stop it. */
+    model_problem?: string | null;
 }

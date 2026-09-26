@@ -332,6 +332,34 @@ def _ollama_base_url(settings: dict | None = None) -> str:
     configured = (settings or {}).get("ollama_base_url") or ""
     return configured.strip() or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
+
+class _OllamaRefused(Exception):
+    """Ollama answered, and not with a reply. Wrapped as an LLMError below."""
+
+
+def _ollama_refusal(response, base: str) -> "_OllamaRefused | None":
+    """Ollama's own sentence for a call it refused (F182).
+
+    Ollama explains itself in a JSON body — `{"error": "model 'mistral' not
+    found, try pulling it first"}` — and `raise_for_status` threw that away for
+    httpx's text: "Server error '500 …' for url … For more information check:
+    https://developer.mozilla.org/…", which is what a fresh install's first
+    message showed.
+    """
+    if response.status_code < 400:
+        return None
+    said = ""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            said = str(body.get("error") or "").strip()
+    except Exception:
+        pass
+    if not said:
+        said = (response.text or "").strip()[:300]
+    return _OllamaRefused(
+        f"Ollama at {base} answered {response.status_code}" + (f": {said}" if said else "."))
+
 OLLAMA_MODEL = "llama3"
 
 
@@ -3313,6 +3341,7 @@ async def generate_response_ex(
         # Local Ollama
         # Strip the ollama. prefix — the Ollama API expects bare model names
         _ollama_model = current_model[len("ollama."):] if current_model.startswith("ollama.") else current_model
+        _ollama_base = _ollama_base_url(current_settings)
         async with httpx.AsyncClient() as client:
             try:
                 # Try specific Ollama Tool Call format if tools are provided
@@ -3347,11 +3376,12 @@ async def generate_response_ex(
                         # below covers that case, so this is safe to send blind.
                         _chat_body["think"] = _reasoning_plan.enabled
                     response = await client.post(
-                        f"{_ollama_base_url(current_settings)}/api/chat",
+                        f"{_ollama_base}/api/chat",
                         json=_chat_body,
                         timeout=180.0
                     )
-                    response.raise_for_status()
+                    if (refused := _ollama_refusal(response, _ollama_base)) is not None:
+                        raise refused
                     data = response.json()
                     msg = data.get("message", {})
 
@@ -3399,7 +3429,7 @@ async def generate_response_ex(
                             prompt_for_generate = f"Conversation so far:\n{prior}\n\nUser: {prompt_msg}".strip()
 
                     response = await client.post(
-                        f"{_ollama_base_url(current_settings)}/api/generate",
+                        f"{_ollama_base}/api/generate",
                         json={
                             "model": _ollama_model,
                             "prompt": prompt_for_generate,
@@ -3408,7 +3438,8 @@ async def generate_response_ex(
                         },
                         timeout=180.0
                     )
-                    response.raise_for_status()
+                    if (refused := _ollama_refusal(response, _ollama_base)) is not None:
+                        raise refused
                     data = response.json()
                     result_text, _reasoning = _split_think_tags(data.get("response", ""))
                     if not result_text.strip():
@@ -3421,6 +3452,10 @@ async def generate_response_ex(
                 # Already the right exception, carrying its reasoning and stop
                 # reason; re-wrapping would lose both (F137).
                 raise
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                # httpx says "All connection attempts failed"; the person needs
+                # to know it was Ollama, and where it was looked for (F182).
+                raise LLMError(f"Local Agent Error: Ollama is not reachable at {_ollama_base}.") from e
             except Exception as e:
                 raise LLMError(f"Local Agent Error: {e}") from e
 

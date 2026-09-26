@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Square, Pencil, RotateCcw} from 'lucide-react';
 
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { CollectDataForm } from '@/components/CollectDataForm';
 import { HumanStepAnswer } from '@/components/HumanStepAnswer';
@@ -447,7 +448,21 @@ function ToolApprovalCard({
   );
 }
 
-function WelcomeScreen({ agentName, onPrompt, onNavigate, showExamplesBanner, onDismissBanner }: { agentName: string; onPrompt: (text: string) => void; onNavigate: (path: string) => void; showExamplesBanner: boolean; onDismissBanner: () => void; }) {
+/** A sentence from the backend, with `ollama pull …` shown as code. */
+function WithCode({ text }: { text: string }) {
+  return (
+    <>
+      {text.split('`').map((part, i) => (i % 2
+        ? <code key={i} className="font-code text-[12px] text-text">{part}</code>
+        : <span key={i}>{part}</span>))}
+    </>
+  );
+}
+
+/** Where every "the model cannot answer" message points (F182). */
+const MODELS_SETTINGS = '/settings/models';
+
+function WelcomeScreen({ agentName, modelReady, modelProblem, onPrompt, onNavigate, showExamplesBanner, onDismissBanner }: { agentName: string; modelReady?: boolean; modelProblem?: string | null; onPrompt: (text: string) => void; onNavigate: (path: string) => void; showExamplesBanner: boolean; onDismissBanner: () => void; }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -521,11 +536,27 @@ function WelcomeScreen({ agentName, onPrompt, onNavigate, showExamplesBanner, on
         </div>
       )}
 
-      {/* Greeting */}
+      {/* Greeting. "Ready" is said only once the backend has checked that the
+          model can answer; it used to be said unconditionally, above a first
+          message that then failed with an HTTP library's text (F182). */}
       <div className="mb-2 flex items-center gap-2">
-        <div className="h-1.5 w-1.5 rounded-full bg-green-400 shadow-[0_0_8px_#4ade80] animate-pulse" />
-        <span className="text-[11px] font-mono uppercase tracking-[0.2em] text-text-faint">{agentName}&nbsp;· Ready</span>
+        <div className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          modelReady === true ? "bg-green-400 shadow-[0_0_8px_#4ade80] animate-pulse"
+            : modelReady === false ? "bg-warning" : "bg-zinc-600",
+        )} />
+        <span className="text-[11px] font-mono uppercase tracking-[0.2em] text-text-faint">
+          {agentName}{modelReady === true ? '\u00a0· Ready' : modelReady === false ? '\u00a0· Model not ready' : ''}
+        </span>
       </div>
+      {modelReady === false && modelProblem && (
+        <p className="mb-4 max-w-md text-center text-[13px] leading-relaxed text-text-muted">
+          <WithCode text={modelProblem} />{' '}
+          <Link href={MODELS_SETTINGS} className="whitespace-nowrap font-medium text-accent underline-offset-2 hover:underline">
+            Open Settings → Models
+          </Link>
+        </p>
+      )}
       <h2 className="text-3xl md:text-4xl font-bold text-zinc-100 tracking-tight mb-1 text-center">
         What can I help you Achieve?
       </h2>
@@ -669,7 +700,9 @@ export default function Home() {
   // How the last turn ended, when it did not end with an answer. Drives the
   // retry bar: a turn that broke is the one case where the person is left with
   // nothing to do and no way to try again, which until now meant retyping.
-  const [turnOutcome, setTurnOutcome] = useState<null | { kind: 'failed' | 'cancelled'; message?: string }>(null);
+  // `model`: the model failed rather than the app (F182), so the bar points at
+  // Settings → Models as well as offering the turn again.
+  const [turnOutcome, setTurnOutcome] = useState<null | { kind: 'failed' | 'cancelled'; message?: string; model?: boolean }>(null);
   // What to send if they do. Held in a ref rather than state because the retry
   // reads it from inside a handler, not during a render.
   const lastSentRef = useRef<{ content: string; images?: string[] } | null>(null);
@@ -1209,7 +1242,11 @@ export default function Home() {
       }
     } catch (e) {
       if ((e as { engineError?: boolean })?.engineError) {
-        setTurnOutcome({ kind: 'failed', message: (e as Error).message });
+        setTurnOutcome({
+          kind: 'failed',
+          message: (e as Error).message,
+          model: Boolean((e as Error & { modelError?: boolean }).modelError),
+        });
       } else if (!(controller.signal.aborted && controller.signal.reason !== 'recover')) {
         console.error('Lost the resumed turn — reading it again', e);
         await recoverTurn(sessionId, question);
@@ -1271,7 +1308,11 @@ export default function Home() {
       // An `error` event is the engine telling us the turn failed. Running it
       // again does not fix that — Retry is there, and the person decides.
       console.error('[SSE] the turn failed:', error);
-      setTurnOutcome({ kind: 'failed', message: (error as Error).message });
+      setTurnOutcome({
+        kind: 'failed',
+        message: (error as Error).message,
+        model: Boolean((error as Error & { modelError?: boolean }).modelError),
+      });
     } finally {
       // A turn that produced nothing and said nothing about why. The functional
       // setter is deliberate: an outcome already recorded — a stop, an engine
@@ -1666,8 +1707,9 @@ export default function Home() {
         return { done: true };
 
       case 'error': {
-        const err = new Error(data.message as string) as Error & { engineError?: boolean };
+        const err = new Error(data.message as string) as Error & { engineError?: boolean; modelError?: boolean };
         err.engineError = true;
+        err.modelError = data.kind === 'model';
         return { done: false, error: err };
       }
 
@@ -2082,7 +2124,14 @@ export default function Home() {
         <header className="h-14 shrink-0 border-b border-border bg-surface px-3 md:px-6 z-10">
           <div className='w-full md:max-w-5xl mx-auto h-full flex items-center justify-between gap-2'>
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="size-2 shrink-0 bg-success rounded-full animate-pulse"></div>
+              <div
+                className={cn(
+                  "size-2 shrink-0 rounded-full",
+                  systemStatus?.model_ready === true ? "bg-success animate-pulse"
+                    : systemStatus?.model_ready === false ? "bg-warning" : "bg-zinc-600",
+                )}
+                title={systemStatus?.model_problem || undefined}
+              ></div>
               <h1
                 className="min-w-0 truncate text-sm font-semibold tracking-tight text-text"
                 title={agentName}
@@ -2196,6 +2245,8 @@ export default function Home() {
             /* ── Welcome Screen ── */
             <WelcomeScreen
               agentName={agentName}
+              modelReady={systemStatus?.model_ready}
+              modelProblem={systemStatus?.model_problem}
               onPrompt={(text) => { setInput(text); setTimeout(() => textareaRef.current?.focus(), 50); }}
               onNavigate={(path) => router.push(path)}
               showExamplesBanner={showExamplesBanner}
@@ -2260,7 +2311,9 @@ export default function Home() {
                 person deciding. */}
             {turnOutcome && !isLoading && (
               <div className={cn(
-                "flex items-center gap-3 mb-3 px-3 py-2.5 border text-xs rounded-md",
+                // Wraps: at phone width the actions go under the sentence
+                // rather than squeezing it to nothing.
+                "flex flex-wrap items-center gap-x-3 gap-y-2 mb-3 px-3 py-2.5 border text-xs rounded-md",
                 turnOutcome.kind === 'failed'
                   ? "border-red-900/50 bg-red-950/20 text-red-300"
                   : "border-zinc-800 bg-zinc-950/80 text-zinc-400",
@@ -2268,30 +2321,47 @@ export default function Home() {
                 {turnOutcome.kind === 'failed'
                   ? <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                   : <Square className="h-3 w-3 shrink-0 fill-current" />}
-                <span className="min-w-0 flex-1 truncate font-sans">
+                {/* Clamped, not truncated: the provider's own words are the
+                    useful part, and a one-line cut kept only the start. */}
+                <span
+                  className="min-w-[12rem] flex-1 font-sans break-words line-clamp-3"
+                  title={turnOutcome.kind === 'failed' ? turnOutcome.message : undefined}
+                >
                   {turnOutcome.kind === 'failed'
-                    ? (turnOutcome.message || 'That turn failed before it finished.')
+                    ? (turnOutcome.model
+                      ? <><span className="font-semibold">The model couldn&apos;t answer.</span> {turnOutcome.message}</>
+                      : (turnOutcome.message || 'That turn failed before it finished.'))
                     : 'Stopped.'}
                 </span>
-                <button
-                  type="button"
-                  onClick={handleRetry}
-                  className={cn(
-                    "shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-colors",
-                    "border-border-strong text-text hover:bg-row-hover hover:border-accent",
+                <div className="ml-auto flex shrink-0 items-center gap-3">
+                  {turnOutcome.kind === 'failed' && turnOutcome.model && (
+                    <Link
+                      href={MODELS_SETTINGS}
+                      className="shrink-0 font-medium text-text underline underline-offset-2 hover:text-accent"
+                    >
+                      Settings → Models
+                    </Link>
                   )}
-                >
-                  <RotateCcw className="h-3 w-3" />
-                  Try again
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTurnOutcome(null)}
-                  aria-label="Dismiss"
-                  className="shrink-0 p-1 rounded-md text-text-faint hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
-                >
-                  <X className="h-3 w-3" />
-                </button>
+                  <button
+                    type="button"
+                    onClick={handleRetry}
+                    className={cn(
+                      "shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-colors",
+                      "border-border-strong text-text hover:bg-row-hover hover:border-accent",
+                    )}
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    Try again
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTurnOutcome(null)}
+                    aria-label="Dismiss"
+                    className="shrink-0 p-1 rounded-md text-text-faint hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
               </div>
             )}
 

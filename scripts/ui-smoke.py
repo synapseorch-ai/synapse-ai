@@ -2493,12 +2493,15 @@ def _frame(event: dict, cursor: str | None = None) -> str:
     return (f"id: {cursor}\n" if cursor else "") + f"data: {json.dumps(event)}\n\n"
 
 
-async def _chat_page(browser, session_id: str, history: dict | None = None):
-    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+async def _chat_page(browser, session_id: str, history: dict | None = None,
+                     extra_init: str | None = None, width=WIDE):
+    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
     await ctx.add_init_script(CHAT_STUB)
     await ctx.add_init_script(
         f"try {{ localStorage.setItem('synapseSessionId', {json.dumps(session_id)}); }} catch (e) {{}}"
         + (f"\nwindow.__fakeHistory = {json.dumps(history)};" if history else ""))
+    if extra_init:
+        await ctx.add_init_script(extra_init)
     page = await ctx.new_page()
     await page.goto(APP, wait_until="domcontentloaded")
     await asyncio.sleep(SETTLE)
@@ -2872,6 +2875,88 @@ async def check_prepaint(browser) -> str:
     finally:
         await ctx.close()
 
+
+# ── chat and the builder (B5) ────────────────────────────────────────────────
+
+#: `/api/status` as the test says it is, for a page that must describe it.
+SERVE_STATUS = """
+window.__status = %s;
+const _statusFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  if (/\\/api\\/status(\\?|$)/.test(url)) {
+    return Promise.resolve(new Response(JSON.stringify(window.__status), {
+      status: 200, headers: {'Content-Type': 'application/json'},
+    }));
+  }
+  return _statusFetch(input, init);
+};
+"""
+
+
+def _status(ready: bool, problem: str | None = None) -> dict:
+    return {"agents": {}, "active_agent_id": None, "overall": "operational",
+            "model": "ollama.mistral", "mode": "local", "provider": "ollama",
+            "model_ready": ready, "model_problem": problem}
+
+
+GREETING = """() => {
+  const label = [...document.querySelectorAll('main span')]
+    .find((s) => /tracking-\\[0\\.2em\\]/.test(s.className));
+  return {
+    label: label ? label.textContent : null,
+    toModels: [...document.querySelectorAll('main a')]
+      .filter((a) => a.getAttribute('href') === '/settings/models').length,
+  };
+}"""
+
+
+@check
+async def check_firstrun(browser) -> str:
+    """A page no model can answer says so, and where to fix it (F182).
+
+    A fresh install's default model is Ollama's; with nothing listening the
+    page said "Ready" and answered the first message with httpx's own text —
+    "Local Agent Error: Server error '500 …' … developer.mozilla.org …" — cut
+    off by a one-line banner, and nothing pointed at Settings → Models.
+    """
+    problem = "Ollama is not reachable at http://127.0.0.1:11434."
+    ctx, page = await _chat_page(browser, "uismoke-firstrun",
+                                 extra_init=SERVE_STATUS % json.dumps(_status(False, problem)))
+    try:
+        greeting = await page.evaluate(GREETING)
+        if "not ready" not in (greeting["label"] or "").lower():
+            raise AssertionError(f"with no model able to answer the greeting reads {greeting['label']!r}")
+        if not await _on_screen(page, problem):
+            raise AssertionError("the greeting does not say what is wrong")
+        if not greeting["toModels"]:
+            raise AssertionError("the greeting does not point at Settings → Models")
+
+        box = page.locator("main textarea").last
+        await box.fill("hello")
+        await box.press("Enter")
+        await _stream_open(page, "post")
+        await page.evaluate(
+            f"() => {{ window.__streams.post.push({json.dumps(_frame({'type': 'error', 'kind': 'model', 'message': 'Local Agent Error: ' + problem}, 'f-1'))});"
+            f" window.__streams.post.push({json.dumps(_frame({'type': 'done'}, 'f-2'))}); window.__streams.post.close(); }}")
+        if not await _on_screen(page, "The model couldn't answer."):
+            raise AssertionError("a model failure is shown as a bare error, not as the model's")
+        links = await page.evaluate(
+            "() => [...document.querySelectorAll('main a')].filter(a => a.getAttribute('href') === '/settings/models').length")
+        if not links:
+            raise AssertionError("the failed turn does not point at Settings → Models")
+    finally:
+        await ctx.close()
+
+    ctx, page = await _chat_page(browser, "uismoke-firstrun-ok",
+                                 extra_init=SERVE_STATUS % json.dumps(_status(True)))
+    try:
+        greeting = await page.evaluate(GREETING)
+    finally:
+        await ctx.close()
+    if not (greeting["label"] or "").rstrip().endswith("Ready") or greeting["toModels"]:
+        raise AssertionError(f"a model that can answer reads {greeting}")
+    return "not ready says why and links to Settings → Models; a model failure does too; ready says Ready"
 
 async def main() -> int:
     global APP, API

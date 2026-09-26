@@ -322,7 +322,13 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
         print(f"ERROR in SSE stream: {e}")
         import traceback
         traceback.print_exc()
-        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        from core.llm_providers import LLMError
+        frame = {'type': 'error', 'message': str(e)}
+        if isinstance(e, LLMError):
+            # The model failed, not the app: the page points at Settings →
+            # Models rather than only offering the same turn again (F182).
+            frame['kind'] = 'model'
+        yield f"data: {json.dumps(frame)}\n\n"
 
 
 @router.post("/chat/{session_id}/cancel")

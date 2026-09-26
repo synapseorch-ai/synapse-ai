@@ -96,6 +96,10 @@ async def get_status():
         resolved_model = active_agent["model"]
 
     provider = detect_provider_from_model(resolved_model)
+    # Whether that model can answer at all, so the page stops saying "Ready"
+    # when nothing can (F182). Free: no model call, no key tried.
+    from core.model_readiness import model_problem
+    problem = await model_problem(current_settings, resolved_model)
 
     return {
         "agents": agents_status,
@@ -104,6 +108,8 @@ async def get_status():
         "model": resolved_model,
         "mode": current_settings.get("mode", "local"),
         "provider": provider,
+        "model_ready": problem is None,
+        "model_problem": problem,
     }
 
 
