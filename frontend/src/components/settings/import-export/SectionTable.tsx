@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
+import { Checkbox } from "@/components/ui";
+
 export function SectionTable<T>({
   title, icon: Icon, items, selected, locked,
   getId, getLabel, getDesc, onToggle,
@@ -44,40 +46,35 @@ export function SectionTable<T>({
             const isLocked = locked.has(getId(item));
             const desc = getDesc?.(item);
             return (
-              <div
+              // A real checkbox inside a label: the row said role="checkbox" but
+              // took no focus and no key, so a keyboard could pick nothing (F236).
+              <label
                 key={id || `fallback-${index}`}
-                role="checkbox"
-                aria-checked={isSelected}
-                onClick={() => {
-                  const rawId = getId(item);
-                  if (!isLocked && rawId) onToggle(rawId, !isSelected);
-                }}
                 className={`flex items-start gap-3 px-4 py-3 transition-colors select-none ${isLocked ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-zinc-900/60"} ${isSelected ? "bg-zinc-900/40" : ""}`}
               >
-                <div
-                  className={`mt-0.5 h-4 w-4 flex-shrink-0 flex items-center justify-center border transition-colors ${
-                    isSelected ? "bg-accent border-accent" : "bg-bg border-border-strong"
-                  } rounded-md`}
-                >
-                  {isSelected && (
-                    <svg className="h-2.5 w-2.5 text-accent-fg" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="2,6 5,9 10,3" />
-                    </svg>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
+                <Checkbox
+                  className="mt-0.5"
+                  checked={isSelected}
+                  disabled={isLocked}
+                  label={getLabel(item)}
+                  onChange={(checked) => {
+                    const rawId = getId(item);
+                    if (!isLocked && rawId) onToggle(rawId, checked);
+                  }}
+                />
+                <span className="block flex-1 min-w-0">
+                  <span className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-bold text-zinc-200">{getLabel(item)}</span>
                     {isLocked && (
                       <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 text-text-faint tracking-wider rounded-md">
                         auto
                       </span>
                     )}
-                  </div>
-                  {desc && <p className="text-xs text-text-faint mt-0.5 line-clamp-1">{desc}</p>}
-                  <p className="text-[10px] text-text-faint font-mono mt-0.5">{getId(item)}</p>
-                </div>
-              </div>
+                  </span>
+                  {desc && <span className="block text-xs text-text-faint mt-0.5 line-clamp-1">{desc}</span>}
+                  <span className="block text-[10px] text-text-faint font-mono mt-0.5">{getId(item)}</span>
+                </span>
+              </label>
             );
           })}
         </div>

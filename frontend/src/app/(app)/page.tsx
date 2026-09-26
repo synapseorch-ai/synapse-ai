@@ -248,12 +248,19 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
           <div className="flex flex-wrap gap-3 mt-4">
             {msg.images.map((img, imgIdx) => (
               <div key={imgIdx} className="relative group">
-                <img
-                  src={img}
-                  alt={`Attached ${imgIdx + 1}`}
-                  className="h-[4.5rem] w-[4.5rem] object-cover border border-zinc-700/60 rounded-xl cursor-pointer hover:border-zinc-400 hover:scale-[1.03] hover:shadow-lg transition-all"
+                {/* A button, so a keyboard opens the image as a click does (F236). */}
+                <button
+                  type="button"
                   onClick={() => window.open(img, '_blank')}
-                />
+                  aria-label={`Open attached image ${imgIdx + 1}`}
+                  className="block rounded-xl"
+                >
+                  <img
+                    src={img}
+                    alt=""
+                    className="h-[4.5rem] w-[4.5rem] object-cover border border-zinc-700/60 rounded-xl hover:border-zinc-400 hover:scale-[1.03] hover:shadow-lg transition-all"
+                  />
+                </button>
               </div>
             ))}
           </div>
@@ -854,6 +861,15 @@ export default function Home() {
   };
 
   // Helper to refresh status
+  // Escape closes the History drawer: its backdrop closes it on a click, and a
+  // keyboard had no way out at all (F236).
+  useEffect(() => {
+    if (!isHistoryOpen) return;
+    const close = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsHistoryOpen(false); };
+    document.addEventListener('keydown', close);
+    return () => document.removeEventListener('keydown', close);
+  }, [isHistoryOpen]);
+
   const refreshSystemStatus = () => {
     fetch('/api/status').then(r => r.json()).then(d => {
       setSystemStatus(d);
@@ -2023,12 +2039,19 @@ export default function Home() {
                 <div className="flex flex-wrap gap-3 mt-4">
                   {msg.images.map((img, imgIdx) => (
                     <div key={imgIdx} className="relative group">
-                      <img
-                        src={img}
-                        alt={`Attached ${imgIdx + 1}`}
-                        className="h-[4.5rem] w-[4.5rem] object-cover border border-zinc-700/60 rounded-xl cursor-pointer hover:border-zinc-400 hover:scale-[1.03] hover:shadow-lg transition-all"
+                      {/* A button, so a keyboard opens the image as a click does (F236). */}
+                      <button
+                        type="button"
                         onClick={() => window.open(img, '_blank')}
-                      />
+                        aria-label={`Open attached image ${imgIdx + 1}`}
+                        className="block rounded-xl"
+                      >
+                        <img
+                          src={img}
+                          alt=""
+                          className="h-[4.5rem] w-[4.5rem] object-cover border border-zinc-700/60 rounded-xl hover:border-zinc-400 hover:scale-[1.03] hover:shadow-lg transition-all"
+                        />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -2068,7 +2091,7 @@ export default function Home() {
             onClick={() => setIsHistoryOpen(false)}
           />
           {/* Panel */}
-          <div className="relative z-10 w-80 max-w-full h-full bg-zinc-950 border-r border-zinc-800 flex flex-col shadow-2xl">
+          <div role="dialog" aria-label="Chat history" className="relative z-10 w-80 max-w-full h-full bg-zinc-950 border-r border-zinc-800 flex flex-col shadow-2xl">
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 shrink-0">
               <div className="flex items-center gap-2">
@@ -2086,9 +2109,14 @@ export default function Home() {
                 </button>
                 <button
                   onClick={() => setIsHistoryOpen(false)}
+                  aria-label="Close chat history"
+                  title="Close chat history"
+                  // Focus lands in the drawer on open, so a keyboard is not left
+                  // behind it on the page (F236).
+                  autoFocus
                   className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-400 hover:text-white transition-colors"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className="h-3.5 w-3.5" aria-hidden />
                 </button>
               </div>
             </div>
@@ -2105,11 +2133,12 @@ export default function Home() {
                 </div>
               )}
               {sessions.map(s => (
+                // The row is a button, so a keyboard opens a conversation as a
+                // click does; Delete is its sibling, named and shown on focus (F236).
                 <div
                   key={`${s.agent_id}_${s.session_id}`}
-                  onClick={() => handleSelectSession(s)}
                   className={cn(
-                    "group relative px-4 py-3 border-b border-zinc-900 cursor-pointer hover:bg-zinc-900/60 transition-colors",
+                    "group relative border-b border-zinc-900 hover:bg-zinc-900/60 transition-colors",
                     s.session_id === sessionId && "bg-zinc-900"
                   )}
                 >
@@ -2117,34 +2146,41 @@ export default function Home() {
                   {s.session_id === sessionId && (
                     <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-white" />
                   )}
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <span className="text-[10px] uppercase tracking-wider text-text-faint font-mono truncate">
-                      {s.agent_id || 'default'}
-                    </span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <span className="text-[10px] text-text-faint font-mono">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectSession(s)}
+                    aria-current={s.session_id === sessionId ? 'true' : undefined}
+                    className="block w-full px-4 py-3 pr-9 text-left"
+                  >
+                    <span className="flex items-start justify-between gap-2 mb-1">
+                      <span className="text-[10px] uppercase tracking-wider text-text-faint font-mono truncate">
+                        {s.agent_id || 'default'}
+                      </span>
+                      <span className="text-[10px] text-text-faint font-mono shrink-0">
                         {formatRelativeTime(s.last_updated)}
                       </span>
-                      <button
-                        onClick={(e) => handleDeleteSession(e, s)}
-                        className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-400 text-text-faint transition-all"
-                        title="Delete session"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                  <p className="text-[12px] text-zinc-300 leading-5 line-clamp-2">
-                    {s.first_user_message || '(no messages)'}
-                  </p>
-                  {s.last_response && (
-                    <p className="text-[11px] text-text-faint mt-1 truncate">
-                      ↩ {s.last_response.slice(0, 80)}{s.last_response.length > 80 ? '…' : ''}
-                    </p>
-                  )}
-                  <div className="text-[10px] text-text-faint mt-1 font-mono">
-                    {s.turn_count} turn{s.turn_count !== 1 ? 's' : ''}
-                  </div>
+                    </span>
+                    <span className="block text-[12px] text-zinc-300 leading-5 line-clamp-2">
+                      {s.first_user_message || '(no messages)'}
+                    </span>
+                    {s.last_response && (
+                      <span className="block text-[11px] text-text-faint mt-1 truncate">
+                        ↩ {s.last_response.slice(0, 80)}{s.last_response.length > 80 ? '…' : ''}
+                      </span>
+                    )}
+                    <span className="block text-[10px] text-text-faint mt-1 font-mono">
+                      {s.turn_count} turn{s.turn_count !== 1 ? 's' : ''}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteSession(e, s)}
+                    className="absolute top-2.5 right-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 p-0.5 hover:text-red-400 text-text-faint transition-all"
+                    aria-label={`Delete the conversation "${(s.first_user_message || 'no messages').slice(0, 40)}"`}
+                    title="Delete session"
+                  >
+                    <Trash2 className="h-3 w-3" aria-hidden />
+                  </button>
                 </div>
               ))}
             </div>

@@ -420,7 +420,14 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                 <div className="flex justify-between items-start mb-2">
                                     <div>
                                         <h4 className="font-bold text-white text-lg flex items-center gap-2">
-                                            {repo.name}
+                                            {/* The card opens on a click; its name does the same for a keyboard (F236). */}
+                                            <button
+                                                type="button"
+                                                onClick={e => { e.stopPropagation(); setDraftRepo(repo); }}
+                                                className="text-left rounded-sm"
+                                            >
+                                                {repo.name}
+                                            </button>
                                             <span className={`text-[10px] font-bold px-2 py-0.5 border uppercase tracking-wide inline-flex items-center gap-1 ${getStatusColor(repo.status)}`}>
                                                 {(isIndexing || isStopping) && <Spinner size={10} />}
                                                 {!embedCode && repo.status === 'pending' ? 'not indexed' : repo.status}
@@ -429,12 +436,13 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                         <p className="text-xs text-text-faint font-mono truncate max-w-lg mt-1">{repo.path}</p>
                                     </div>
 
-                                    {/* Action buttons — only visible on hover */}
-                                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    {/* Action buttons — visible on hover, and on focus for a keyboard */}
+                                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
                                         {embedCode && (isIndexing || isStopping ? (
                                             /* Stop / Force-reset button */
                                             <button
                                                 onClick={e => handleStop(repo.id, e)}
+                                                aria-label={`${isStopping ? 'Force reset' : 'Stop indexing'} ${repo.name}`}
                                                 title={isStopping ? 'Force reset stuck status' : 'Stop Indexing'}
                                                 className={`p-2 transition-colors rounded-md ${
                                                     isStopping
@@ -448,6 +456,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                             /* Re-index button — when idle */
                                             <button
                                                 onClick={e => handleReindex(repo.id, e)}
+                                                aria-label={`Re-index ${repo.name}`}
                                                 title="Re-Index"
                                                 className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors rounded-md"
                                             >
@@ -456,6 +465,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                         ))}
                                         <button
                                             onClick={e => { e.stopPropagation(); setConfirmDeleteId(repo.id); }}
+                                            aria-label={`Delete ${repo.name}`}
                                             disabled={isIndexing && !isStopping}
                                             title={isIndexing && !isStopping ? 'Cannot delete while indexing' : 'Delete'}
                                             className={`p-2 transition-colors rounded-md ${

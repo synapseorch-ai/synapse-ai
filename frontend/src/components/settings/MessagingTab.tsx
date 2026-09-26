@@ -466,19 +466,26 @@ export const MessagingTab = () => {
                         const pm = PLATFORMS.find(p => p.id === ch.platform);
                         const isSelected = selectedId === ch.id;
                         return (
+                            // The row is a button, so a keyboard opens a channel as a click
+                            // does; its quick actions are siblings, shown on focus as well as
+                            // hover, and named (F236).
                             <div
                                 key={ch.id}
-                                onClick={() => selectChannel(ch)}
-                                className={`p-3 border cursor-pointer transition-all group relative
+                                className={`border transition-all group relative
                                     ${isSelected ? 'bg-zinc-900 border-white' : 'bg-black border-zinc-800 hover:border-zinc-600'} rounded-md`}
                             >
-                                <div className="flex items-center gap-3">
-                                    <div className={`h-8 w-8 flex-shrink-0 flex items-center justify-center border ${pm?.color ?? ''}`}>
+                                <button
+                                    type="button"
+                                    onClick={() => selectChannel(ch)}
+                                    aria-current={isSelected ? 'true' : undefined}
+                                    className="flex w-full items-center gap-3 p-3 pr-24 text-left"
+                                >
+                                    <span className={`h-8 w-8 flex-shrink-0 flex items-center justify-center border ${pm?.color ?? ''}`}>
                                         <img src={pm?.icon} alt={pm?.label} className="h-5 w-5 object-contain" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <div className="text-xs font-bold text-white truncate">{ch.name}</div>
-                                        <div className="text-[10px] text-text-faint truncate">
+                                    </span>
+                                    <span className="block flex-1 min-w-0">
+                                        <span className="block text-xs font-bold text-white truncate">{ch.name}</span>
+                                        <span className="block text-[10px] text-text-faint truncate">
                                             {(() => {
                                                 const ids = ch.agent_ids?.length
                                                     ? ch.agent_ids
@@ -487,26 +494,33 @@ export const MessagingTab = () => {
                                                 if (ids.length <= 2) return agentNames(ids).join(', ');
                                                 return `${agentNames(ids)[0]} +${ids.length - 1} more`;
                                             })()}
-                                        </div>
-                                    </div>
-                                    {/* Status badge: hidden on hover */}
-                                    <div className="group-hover:hidden flex-shrink-0">
+                                        </span>
+                                    </span>
+                                </button>
+                                <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center">
+                                    {/* Status badge: hidden while the actions show */}
+                                    <div className="group-hover:hidden group-focus-within:hidden flex-shrink-0">
                                         <StatusBadge status={ch.status} lastError={ch.last_error} />
                                     </div>
-                                    {/* Quick actions: shown on hover */}
-                                    <div className="hidden group-hover:flex gap-1 flex-shrink-0">
+                                    {/* Quick actions: shown on hover or focus */}
+                                    <div className="hidden group-hover:flex group-focus-within:flex gap-1 flex-shrink-0">
                                         <button
-                                            onClick={e => { e.stopPropagation(); toggleEnable(ch); }}
+                                            type="button"
+                                            onClick={() => toggleEnable(ch)}
                                             className={`p-1 transition-colors ${ch.status === 'running' ? 'text-orange-400 hover:text-orange-300' : 'text-green-400 hover:text-green-300'}`}
+                                            aria-label={`${ch.status === 'running' ? 'Stop' : 'Start'} ${ch.name}`}
                                             title={ch.status === 'running' ? 'Stop' : 'Start'}
                                         >
-                                            {ch.status === 'running' ? <Square className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                                            {ch.status === 'running' ? <Square className="h-3 w-3" aria-hidden /> : <Play className="h-3 w-3" aria-hidden />}
                                         </button>
                                         <button
-                                            onClick={e => { e.stopPropagation(); setConfirmDeleteId(ch.id || null); }}
+                                            type="button"
+                                            onClick={() => setConfirmDeleteId(ch.id || null)}
                                             className="p-1 text-text-faint hover:text-red-400 transition-colors"
+                                            aria-label={`Delete ${ch.name}`}
+                                            title="Delete"
                                         >
-                                            <Trash className="h-3 w-3" />
+                                            <Trash className="h-3 w-3" aria-hidden />
                                         </button>
                                     </div>
                                 </div>

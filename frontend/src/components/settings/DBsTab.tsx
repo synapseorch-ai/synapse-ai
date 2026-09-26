@@ -244,7 +244,14 @@ export function DBsTab() {
                             <div className="flex justify-between items-start mb-2">
                                 <div>
                                     <h4 className="font-bold text-white text-lg flex items-center gap-2">
-                                        {config.name}
+                                        {/* The card opens on a click; its name does the same for a keyboard (F236). */}
+                                        <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); setDraftConfig(config); }}
+                                            className="text-left rounded-sm"
+                                        >
+                                            {config.name}
+                                        </button>
                                         <span className={`text-[10px] font-bold px-2 py-0.5 border uppercase tracking-wide ${getStatusColor(config.status)}`}>
                                             {config.status}
                                         </span>
@@ -256,9 +263,10 @@ export function DBsTab() {
                                         {config.connection_string.replace(/:\/\/[^@]+@/, '://***@')}
                                     </p>
                                 </div>
-                                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
                                     <button
                                         onClick={(e) => handleRefreshSchema(config.id, e)}
+                                        aria-label={`Refresh the schema of ${config.name}`}
                                         className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
                                         title="Refresh Schema"
                                         disabled={isRefreshing}
@@ -271,6 +279,7 @@ export function DBsTab() {
                                             setConfirmDeleteId(config.id);
                                         }}
                                         className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                                        aria-label={`Delete ${config.name}`}
                                         title="Delete"
                                     >
                                         <Trash2 className="w-4 h-4" />

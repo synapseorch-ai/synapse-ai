@@ -308,18 +308,21 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   // ── Upload ────────────────────────────────────────────────────────────────
   if (step === "upload") return (
     <div className="space-y-4">
-      <div
+      {/* A button, still a drop target: a keyboard reached only the invisible
+          file input inside it before (F236). */}
+      <button
+        type="button"
         onDragOver={e => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={handleDrop}
         onClick={() => fileRef.current?.click()}
-        className={`flex flex-col items-center justify-center border border-dashed py-14 px-8 cursor-pointer transition-colors ${dragging ? "border-white bg-zinc-800" : "border-zinc-700 bg-zinc-900/30 hover:border-zinc-500 hover:bg-zinc-900/60"} rounded-md`}
+        className={`flex w-full flex-col items-center justify-center border border-dashed py-14 px-8 transition-colors ${dragging ? "border-white bg-zinc-800" : "border-zinc-700 bg-zinc-900/30 hover:border-zinc-500 hover:bg-zinc-900/60"} rounded-md`}
       >
-        <Upload className="h-8 w-8 text-text-faint mb-3" />
-        <p className="text-zinc-300 text-sm font-bold">Drop your export file here</p>
-        <p className="text-text-faint text-xs mt-1">or click to browse · JSON files only</p>
-        <input ref={fileRef} type="file" accept=".json" className="sr-only" onChange={e => { const f = e.target.files?.[0]; if (f) parseFile(f); e.target.value = ""; }} />
-      </div>
+        <Upload className="h-8 w-8 text-text-faint mb-3" aria-hidden />
+        <span className="block text-zinc-300 text-sm font-bold">Drop your export file here</span>
+        <span className="block text-text-faint text-xs mt-1">or click to browse · JSON files only</span>
+      </button>
+      <input ref={fileRef} type="file" accept=".json" className="hidden" tabIndex={-1} aria-hidden onChange={e => { const f = e.target.files?.[0]; if (f) parseFile(f); e.target.value = ""; }} />
       {parseError && (
         <div className="flex items-center gap-2 text-red-400 text-xs p-3 border border-red-900/50 bg-red-950/10 rounded-md">
           <XCircle className="h-4 w-4 flex-shrink-0" /> {parseError}

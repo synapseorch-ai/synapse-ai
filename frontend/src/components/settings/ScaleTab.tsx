@@ -968,20 +968,22 @@ export function ScaleTab() {
                                 ) : (
                                     <div className="space-y-1">
                                         {searchSessionRuns.map(run => (
-                                            <div
+                                            // A button, so a keyboard opens a run as a click does (F236).
+                                            <button
+                                                type="button"
                                                 key={run.run_id}
-                                                className="flex items-center justify-between border border-border p-2.5 hover:bg-surface/50 cursor-pointer transition-colors rounded-md"
+                                                className="flex w-full items-center justify-between border border-border p-2.5 text-left hover:bg-surface/50 transition-colors rounded-md"
                                                 onClick={() => { setSearchQuery(run.run_id); handleSearch(run.run_id); }}
                                             >
-                                                <div className="flex items-center gap-2 min-w-0">
+                                                <span className="flex items-center gap-2 min-w-0">
                                                     <span className="font-mono text-2xs text-text-muted truncate">{run.run_id}</span>
                                                     <StatusBadge status={run.status} />
-                                                </div>
-                                                <div className="flex items-center gap-3 text-2xs text-text-faint shrink-0">
+                                                </span>
+                                                <span className="flex items-center gap-3 text-2xs text-text-faint shrink-0">
                                                     <span>{formatDuration(run.started_at, run.ended_at)}</span>
                                                     <span>{usd(run.total_cost_usd)}</span>
-                                                </div>
-                                            </div>
+                                                </span>
+                                            </button>
                                         ))}
                                     </div>
                                 )}
@@ -1026,14 +1028,24 @@ export function ScaleTab() {
                                             >
                                                 <td className="py-2 pr-4">
                                                     <div className="flex items-center gap-1.5">
-                                                        <span className="font-mono text-text truncate max-w-[140px]" title={run.run_id}>
-                                                            {run.run_id.length > 20 ? `${run.run_id.slice(0, 20)}…` : run.run_id}
-                                                        </span>
+                                                        {/* The row opens on a click; its id does the same for a keyboard (F236). */}
                                                         <button
+                                                            type="button"
+                                                            onClick={e => { e.stopPropagation(); setSearchQuery(run.run_id); handleSearch(run.run_id); }}
+                                                            className="font-mono text-text truncate max-w-[140px] text-left rounded-sm"
+                                                            title={run.run_id}
+                                                            aria-label={`Open run ${run.run_id}`}
+                                                        >
+                                                            {run.run_id.length > 20 ? `${run.run_id.slice(0, 20)}…` : run.run_id}
+                                                        </button>
+                                                        <button
+                                                            type="button"
                                                             onClick={e => { e.stopPropagation(); copyToClipboard(run.run_id); }}
                                                             className="text-text-faint hover:text-text-muted shrink-0"
+                                                            aria-label={`Copy run id ${run.run_id}`}
+                                                            title="Copy run id"
                                                         >
-                                                            <Copy className="h-3 w-3" />
+                                                            <Copy className="h-3 w-3" aria-hidden />
                                                         </button>
                                                     </div>
                                                 </td>

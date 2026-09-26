@@ -4426,6 +4426,124 @@ async def check_agentname(browser) -> str:
             pass
 
 
+@check
+async def check_morerows(browser) -> str:
+    """The F219 pattern, on the screens no batch owned, opens from the keyboard (F236).
+
+    Messaging channels, Repos, DB Configs, Scale's runs, Import's drop zone and
+    section rows, and chat's History rows were `div`s and `tr`s with a click
+    handler: out of the tab order, or (Messaging) with actions that did not even
+    exist until hovered. The History drawer had no way out but a mouse. Each
+    list is stubbed, so a real install gains no channel, repo or config.
+    """
+    now = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+    stubs = {
+        "**/api/messaging/channels": [{"id": "ch_smoke", "name": "Smoke channel", "platform": "telegram",
+                                       "status": "stopped", "agent_ids": [], "credentials": {}}],
+        "**/api/repos": [{"id": "repo_smoke", "name": "Smoke repo", "path": "/tmp/smoke", "status": "indexed",
+                          "file_count": 1, "description": ""}],
+        "**/api/db-configs": [{"id": "db_smoke", "name": "Smoke db", "db_type": "sqlite",
+                               "connection_string": "sqlite:///smoke.db", "status": "untested", "description": ""}],
+        "**/api/scale/runs?limit=20": [{"run_id": "run_smoke_scale", "status": "completed", "orchestration_id": "o",
+                                        "started_at": now, "ended_at": now, "total_cost_usd": 0.0}],
+        "**/api/sessions": [{"session_id": "sess_smoke", "agent_id": "agent_smoke", "last_updated": now,
+                             "first_user_message": "smoke question", "last_response": "smoke answer", "turn_count": 1}],
+    }
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+
+    def serving(body):
+        async def fulfil(route):
+            if route.request.method != "GET":
+                return await route.continue_()
+            await route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+        return fulfil
+    for pattern, body in stubs.items():
+        await ctx.route(pattern, serving(body))
+    page = await ctx.new_page()
+
+    async def reach(path: str, name: str, why: str):
+        await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+        control = page.get_by_role("button", name=re.compile(name)).first
+        try:
+            await control.wait_for(timeout=30_000)
+        except Exception:
+            raise AssertionError(f"{path}: {why} is not a control a keyboard can reach")
+        await asyncio.sleep(SETTLE)
+        return control
+
+    async def next_stop() -> dict:
+        await page.keyboard.press("Tab")
+        return await page.evaluate(
+            "() => ({label: document.activeElement.getAttribute('aria-label'),"
+            " opacity: getComputedStyle(document.activeElement).opacity})")
+    try:
+        row = await reach("/settings/messaging", "Smoke channel", "a channel")
+        await row.focus()
+        after = await next_stop()
+        if after["label"] != "Start Smoke channel" or after["opacity"] != "1":
+            raise AssertionError(f"after a channel, Tab reaches {after}, not its named Start action")
+
+        for path, name, action in (("/settings/repos", "Smoke repo", "Delete Smoke repo"),
+                                   ("/settings/db_configs", "Smoke db", "Refresh the schema of Smoke db")):
+            control = await reach(path, f"^{name}$", "an item's name")
+            await control.focus()
+            stops = [await next_stop() for _ in range(3)]
+            if not any(s["label"] == action and s["opacity"] == "1" for s in stops):
+                raise AssertionError(f"{path}: Tab from {name!r} never reaches a visible {action!r}: {stops}")
+
+        await reach("/settings/scale", "^Open run run_smoke_scale$", "a recent run")
+        if not await page.get_by_role("button", name=re.compile("^Copy run id")).count():
+            raise AssertionError("/settings/scale: a run's copy button has no name")
+
+        await page.goto(f"{APP}/settings/import_export", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        tab = page.get_by_role("button", name=re.compile("^Import$"))
+        if await tab.count():
+            await tab.first.click()
+        zone = page.get_by_role("button", name=re.compile("Drop your export file here"))
+        try:
+            await zone.wait_for(timeout=10_000)
+        except Exception:
+            raise AssertionError("Import's drop zone is not a control a keyboard can reach")
+        bundle = {"synapse_export": True, "version": "1.0", "exported_at": now, "has_python_tools": False,
+                  "orchestrations": [], "agents": [{"id": "agent_smoke_import", "name": "Smoke import agent",
+                                                    "description": "d", "tools": [], "system_prompt": "p"}],
+                  "custom_tools": [], "mcp_servers": []}
+        await page.locator("input[type=file]").set_input_files(
+            files=[{"name": "export.json", "mimeType": "application/json", "buffer": json.dumps(bundle).encode()}])
+        box = page.get_by_role("checkbox", name="Smoke import agent")
+        try:
+            await box.wait_for(timeout=10_000)
+        except Exception:
+            raise AssertionError("an item to import is not a checkbox a keyboard can tick")
+        before = await box.get_attribute("aria-checked")
+        await box.focus()
+        await page.keyboard.press(" ")
+        if await box.get_attribute("aria-checked") == before:
+            raise AssertionError("Space on an item to import does not change it")
+
+        await page.goto(f"{APP}/", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 1.0)
+        await page.get_by_role("button", name=re.compile("history", re.I)).first.click()
+        drawer = page.get_by_role("dialog", name="Chat history")
+        try:
+            await drawer.wait_for(timeout=10_000)
+        except Exception:
+            raise AssertionError("the chat History drawer is not a named dialog")
+        focused = await page.evaluate("() => document.activeElement.getAttribute('aria-label')")
+        if focused != "Close chat history":
+            raise AssertionError(f"opening History leaves focus on {focused!r}, not in the drawer")
+        if not await drawer.get_by_role("button", name=re.compile("smoke question")).count():
+            raise AssertionError("a History row is not a control a keyboard can reach")
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
+        if await drawer.count():
+            raise AssertionError("Escape does not close the History drawer")
+        return "channels, repos, DB configs, Scale runs, Import and chat History all work from the keyboard"
+    finally:
+        await ctx.close()
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
