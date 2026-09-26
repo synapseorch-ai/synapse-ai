@@ -3339,6 +3339,54 @@ window.fetch = function (input, init) {
     return "at 1600 and 360px a 400-character token wraps inside its message; a long name stays on one line"
 
 
+
+SEND_HIT = """() => {
+  const send = document.querySelector('main form button[type="submit"]');
+  if (!send) return {send: false};
+  const r = send.getBoundingClientRect();
+  const points = [[r.left + r.width / 2, r.top + r.height / 2], [r.right - 3, r.bottom - 3],
+                  [r.right - 3, r.top + 3], [r.left + 3, r.bottom - 3], [r.left + 3, r.top + 3]];
+  const covered = points.filter(([x, y]) => {
+    const hit = document.elementFromPoint(x, y);
+    return !(hit && (hit === send || send.contains(hit)));
+  }).map(([x, y]) => {
+    const hit = document.elementFromPoint(x, y);
+    return (hit && (hit.getAttribute('aria-label') || hit.tagName)) + ' at ' + Math.round(x) + ',' + Math.round(y);
+  });
+  return {send: true, covered, name: (send.getAttribute('aria-label') || send.innerText || '').trim()};
+}"""
+
+
+@check
+async def check_chatsend(browser) -> str:
+    """Chat's Send can be tapped at every width, and it has a name (F181).
+
+    The AI builder's launcher owns the bottom-right corner (44px, 20px in, fixed)
+    and sat over Send's corner at every width where the composer reaches the
+    edge — measured at 360, 400, 640, 768 and 1024px; at phone width a tap on
+    Send's centre opened the builder. Below 768px Send was an icon with no
+    accessible name.
+    """
+    bad = []
+    for width in ((360, 780), PHONE, (640, 900), (768, 900), (1024, 800), WIDE):
+        ctx, page = await _chat_page(browser, "uismoke-send", width=width)
+        try:
+            await page.locator("main textarea").last.fill("something to send")
+            await asyncio.sleep(0.3)
+            probe = await page.evaluate(SEND_HIT)
+        finally:
+            await ctx.close()
+        if not probe["send"]:
+            bad.append(f"{width[0]}px: no Send button")
+            continue
+        if probe["covered"]:
+            bad.append(f"{width[0]}px: Send is covered ({'; '.join(probe['covered'])})")
+        if not probe["name"]:
+            bad.append(f"{width[0]}px: Send has no name")
+    if bad:
+        raise AssertionError(" | ".join(bad))
+    return "Send is the thing under every point of it, and named, from 360 to 1600px"
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

@@ -495,7 +495,7 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, onPrompt, onNaviga
   ];
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-full px-4 pb-28 pt-6 md:pb-36 md:pt-10 select-none">
+    <div className="flex flex-col items-center justify-center min-h-full px-4 pb-36 pt-6 md:pb-41 md:pt-10 2xl:pb-36 select-none">
       {/* ── Welcome Examples Banner (12-day, session-dismissible) ── */}
       {showExamplesBanner && (
         <div className="w-full max-w-2xl mb-8 relative overflow-hidden rounded-sm border border-accent/40 bg-accent-subtle bg-gradient-to-br from-accent/15 to-transparent backdrop-blur-sm shadow-lg shadow-accent/20">
@@ -2293,7 +2293,7 @@ export default function Home() {
               onDismissBanner={() => setShowExamplesBanner(false)}
             />
           ) : (
-            <div className="p-3 pb-32 md:p-6 md:pb-36">
+            <div className="p-3 pb-40 md:p-6 md:pb-41 2xl:pb-36">
               <div className="w-full md:max-w-5xl mx-auto space-y-6">
                 {messages.map((msg, idx) => renderMessage(msg, idx))}
 
@@ -2340,7 +2340,14 @@ export default function Home() {
         </div>
 
         {/* Input Area */}
-        <div className="absolute bottom-0 left-0 right-0 px-3 pb-3 pt-6 md:p-6 bg-gradient-to-t from-bg via-bg to-transparent">
+        {/* Lifted clear of the AI builder's launcher, which owns the bottom-right
+            corner (44px, 20px in, fixed): wherever the composer reaches the
+            right edge — measured up to ~1400px with the rail open — the
+            launcher sat over Send's corner, and at phone width a tap on Send
+            opened the builder (F181). Lifted below `2xl`, the nearest named
+            breakpoint; the lists above carry the same extra room so their
+            last line is not hidden. */}
+        <div className="absolute bottom-0 left-0 right-0 px-3 pb-11 pt-6 md:px-6 md:pt-6 md:pb-11 2xl:pb-6 bg-gradient-to-t from-bg via-bg to-transparent">
           <div className="w-full md:max-w-5xl mx-auto">
             {/* The turn ended without an answer.
 
@@ -2495,6 +2502,8 @@ export default function Home() {
               ) : (
                 <button
                   type="submit"
+                  // Named at every width: below md it is an icon alone (F181).
+                  aria-label={editingIndex !== null ? 'Resend' : 'Execute'}
                   disabled={!input.trim() && attachedImages.length === 0}
                   className="px-4 py-2 bg-accent text-accent-fg font-semibold text-[11px] uppercase tracking-wider border border-transparent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all self-end mb-1 shrink-0 flex items-center justify-center rounded-md"
                 >
