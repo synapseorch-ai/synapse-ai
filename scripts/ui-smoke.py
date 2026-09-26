@@ -4318,6 +4318,40 @@ async def check_plurals(browser) -> str:
                 pass
 
 
+#: Buttons in <main> a screen reader would announce as just "button".
+UNNAMED_BUTTONS = """() => [...document.querySelectorAll('main button')]
+  .filter(b => b.getBoundingClientRect().width > 0)
+  .filter(b => !b.getAttribute('aria-label') && !b.getAttribute('aria-labelledby') && !b.textContent.trim() && !b.title)
+  .length"""
+
+
+@check
+async def check_pricingnames(browser) -> str:
+    """Every button on the pricing reference has a name (F180).
+
+    `/usage` → Pricing Reference: each row's delete × was a button with no name
+    (31 of them on a default rate card), and so was the add row's ✓. The
+    spinbuttons beside them were already named after their model.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/usage", wait_until="domcontentloaded")
+        await page.locator('input[aria-label$="input price per million tokens"]').first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        unnamed = await page.evaluate(UNNAMED_BUTTONS)
+        if unnamed:
+            raise AssertionError(f"/usage has {unnamed} unnamed buttons")
+        await page.get_by_role("button", name=re.compile("Add model")).first.click()
+        await asyncio.sleep(0.8)
+        unnamed = await page.evaluate(UNNAMED_BUTTONS)
+        if unnamed:
+            raise AssertionError(f"with the add row open, /usage has {unnamed} unnamed buttons")
+        return "every pricing row's remove button, and the add row's, has a name"
+    finally:
+        await ctx.close()
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Select } from '@/components/ui';
 import { usd } from '@/lib/money';
+import { count } from '@/lib/copy';
 
 // -------------------------------------------------------------
 // Types
@@ -757,7 +758,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                                 <div className="flex items-center gap-2">
                                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.dot }} />
                                     <span className={`text-xs font-semibold uppercase tracking-wider ${meta.text}`}>{meta.label}</span>
-                                    <span className="text-xs text-text-faint">({models.length} models)</span>
+                                    <span className="text-xs text-text-faint">({count(models.length, 'model')})</span>
                                 </div>
                                 <button onClick={() => openAddForm(provider)}
                                     className="flex items-center gap-1 text-xs text-text-faint hover:text-white transition-colors">
@@ -803,8 +804,10 @@ function PricingEditor({ initialPricing, onSaved }: {
                                         />
                                     </div>
                                     <button onClick={() => removeModel(model)}
+                                        aria-label={`Remove ${model} pricing`}
+                                        title={`Remove ${model} pricing`}
                                         className="text-text-faint hover:text-red-400 transition-colors flex items-center justify-center">
-                                        <X className="w-3.5 h-3.5" />
+                                        <X className="w-3.5 h-3.5" aria-hidden />
                                     </button>
                                 </div>
                             ))}
@@ -860,8 +863,10 @@ function PricingEditor({ initialPricing, onSaved }: {
                                         />
                                     </div>
                                     <button onClick={() => addModel(provider)}
+                                        aria-label={`Add ${meta.label} model`}
+                                        title={`Add ${meta.label} model`}
                                         className="text-emerald-400 hover:text-emerald-300 transition-colors flex items-center justify-center">
-                                        <Check className="w-4 h-4" />
+                                        <Check className="w-4 h-4" aria-hidden />
                                     </button>
                                 </div>
                             )}
