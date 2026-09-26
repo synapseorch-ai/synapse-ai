@@ -2711,6 +2711,168 @@ async def check_cancelanswer(browser) -> str:
         drop_fixture(oid)
 
 
+# ── shell: notifications and theme (B4) ──────────────────────────────────────
+
+def notify_orchestration(oid: str) -> dict:
+    """One print step: a run of it ends in a second with a run_completed notification."""
+    return {
+        "id": oid,
+        "name": "ui-smoke notify",
+        "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "steps": [{
+            "id": f"{oid}_say", "name": "Say", "type": "print", "print_content": "hello",
+            "next_step_id": None, "output_key": "said",
+        }],
+        "entry_step_id": f"{oid}_say",
+        "state_schema": {},
+        "trigger": "manual",
+    }
+
+
+def run_to_end(oid: str, timeout: int = 60) -> None:
+    """Run an orchestration and read its event stream until the server closes it."""
+    req = urllib.request.Request(
+        f"{API}/api/orchestrations/{oid}/run",
+        method="POST",
+        data=json.dumps({"message": "go"}).encode(),
+        headers={"Content-Type": "application/json", "X-Synapse-Internal": TOKEN},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        r.read()
+
+
+#: The app-wide toast host (NotificationProvider).
+TOASTS = "div.fixed.bottom-20.right-6 > div"
+
+
+async def _toasts_during(page, seconds: float) -> list[str]:
+    """Every toast that appears over `seconds`, in order, each counted once."""
+    seen: list[str] = []
+    end = time.time() + seconds
+    while time.time() < end:
+        for text in await page.locator(TOASTS).all_inner_texts():
+            text = text.strip()
+            if text and text not in seen:
+                seen.append(text)
+        await asyncio.sleep(0.2)
+    return seen
+
+
+@check
+async def check_replaytoast(browser) -> str:
+    """Notifications already in the ring are history, on every connection (F216).
+
+    The provider used to call an item live once the stream's first read chunk
+    had been handled, and kept that across reconnects: a longer replay, or any
+    reconnect (a backend restart, a dropped proxy), toasted old runs again. The
+    first stream here is answered with one that ends at once, so the page goes
+    through exactly that reconnect. A run finished while it watches must still
+    toast once, or "no toasts" would pass for a provider that never toasts.
+    """
+    oid = f"orch_uismoke_notify_{int(time.time())}"
+    api("/api/orchestrations", "POST", notify_orchestration(oid))
+    run_to_end(oid)                                     # something in the ring
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    first = {"done": False}
+
+    async def cut_first_stream(route):
+        if first["done"]:
+            await route.continue_()
+            return
+        first["done"] = True
+        await route.fulfill(status=200, content_type="text/event-stream", body=": gone\n\n")
+
+    try:
+        await page.route("**/api/notifications/stream*", cut_first_stream)
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        # load, the ended stream, the 5 s retry, the second connection
+        replayed = await _toasts_during(page, 12.0)
+        if replayed:
+            raise AssertionError(f"old notifications toasted again on load/reconnect: {replayed}")
+        await asyncio.to_thread(run_to_end, oid)
+        fresh = await _toasts_during(page, 4.0)
+        if fresh != ["ui-smoke notify completed"]:
+            raise AssertionError(f"a run that finished while the page was open toasted {fresh}, not once")
+        return "a load and a reconnect toast nothing old; a new run toasts once"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+
+
+@check
+async def check_bellmenu(browser) -> str:
+    """The bell's menu opens on screen, closes on Escape, and the bell is named (F192).
+
+    Anchored by its right edge under a bell at the top of a 240px rail, the
+    panel opened at x = -97 with every title cut, and with unread items the
+    button's whole name was its badge ("9+").
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        bad: list[str] = []
+        for collapsed in ("0", "1"):
+            await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+            await page.evaluate(f"() => localStorage.setItem('synapseRailCollapsed', '{collapsed}')")
+            await page.reload(wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            where = "collapsed rail" if collapsed == "1" else "open rail"
+            if not await page.get_by_role("button", name=re.compile(r"^Notifications")).count():
+                bad.append(f"{where}: the bell's accessible name does not start with Notifications")
+            await page.locator('button[title="Notifications"]').click()
+            panel = page.get_by_text("Browser notifications when tab is in background") \
+                .locator("xpath=ancestor::div[contains(@class, 'w-80')][1]")
+            await panel.wait_for()
+            box = await panel.bounding_box()
+            if box["x"] < 0 or box["x"] + box["width"] > WIDE[0]:
+                bad.append(f"{where}: the panel spans {box['x']:.0f}..{box['x'] + box['width']:.0f}, off the screen")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.4)
+            if await panel.count():
+                bad.append(f"{where}: Escape leaves the panel open")
+        if bad:
+            raise AssertionError("; ".join(bad))
+        return "on screen with the rail open and collapsed, named, closed by Escape"
+    finally:
+        await ctx.close()
+
+
+#: Records <html>'s theme the moment <body> is inserted, before anything paints.
+PREPAINT_PROBE = """(() => {
+  try { localStorage.setItem('synapseTheme', 'light'); } catch (e) {}
+  new MutationObserver((m, o) => {
+    if (!document.body) return;
+    o.disconnect();
+    const h = document.documentElement;
+    window.__firstPaint = { light: h.classList.contains('light-mode'), scheme: getComputedStyle(h).colorScheme };
+  }).observe(document, { childList: true, subtree: true });
+})()"""
+
+
+@check
+async def check_prepaint(browser) -> str:
+    """A saved light theme is light from the first frame, native controls too (F220).
+
+    The shell applied the theme after hydration, so every load painted dark
+    first; `color-scheme` stayed "normal", so scrollbars and selects never
+    followed the theme.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(PREPAINT_PROBE)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        first = await page.evaluate("() => window.__firstPaint")
+        if not first or not first["light"]:
+            raise AssertionError(f"a saved light theme paints dark first: {first}")
+        if first["scheme"] != "light":
+            raise AssertionError(f"color-scheme is {first['scheme']!r} under the light theme")
+        return "light, with color-scheme light, when <body> is inserted"
+    finally:
+        await ctx.close()
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
