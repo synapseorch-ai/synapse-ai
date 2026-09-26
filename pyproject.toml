@@ -26,7 +26,8 @@ classifiers = [
 # spec here is how mcp 2.0.0 reached users and broke every native tool server.
 #
 # mcp<2 is load-bearing: 2.0 removed the lowlevel Server decorator API that all
-# of backend/tools/ depends on. See backend/requirements.txt for the full note.
+# of backend/tools/ depends on. See backend/requirements.txt for the full note,
+# including what staying costs: MCP protocol 2026-07-28 is 2.x only (F175).
 dependencies = [
     "cffi>=2.0.0,<3",
     "fastapi>=0.110,<1",

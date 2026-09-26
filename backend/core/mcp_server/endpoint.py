@@ -12,6 +12,12 @@ a POST. The wrapper sits outside every other middleware, so:
   `/api/v1`, which `InternalTokenMiddleware` leaves to the API key, the same as
   every v1 route;
 * CORS does not apply, so a browser page on another origin cannot call it.
+
+Protocol: MCP up to 2025-11-25, the newest the pinned 1.x SDK speaks (F175).
+A 2026-07-28 client opens with a `server/discover` probe; the SDK answers it
+400 "Unsupported protocol version" and the client falls back to `initialize`,
+which negotiates 2025-11-25 — measured with mcp 2.2.0's own `Client` (D134).
+Claude Code sends that one 400 per session and carries on (D127).
 """
 from __future__ import annotations
 

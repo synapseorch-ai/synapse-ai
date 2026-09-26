@@ -12,6 +12,13 @@
 # of backend/tools/ uses and changed ClientSession read_timeout_seconds from
 # timedelta to float. Upstream's guidance for anyone not ready to migrate is to
 # stay on 1.x, which is in maintenance mode.
+#
+# The cost of staying (F175, measured 2026-09-26, D134): 1.x speaks MCP up to
+# 2025-11-25 — 1.30.0, the newest 1.x, too. Only 2.x speaks 2026-07-28. A
+# 2026-07-28 client probes with `server/discover`, our endpoint answers 400
+# "Unsupported protocol version", and the client falls back to `initialize`
+# and works (mcp 2.2.0's own Client, measured). Moving to 2.x means porting
+# every lowlevel `Server` (backend/tools/*, core/mcp_server/server.py).
 
 cffi>=2.0.0,<3
 fastapi>=0.110,<1
