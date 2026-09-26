@@ -3952,6 +3952,46 @@ async def check_phonetoolbar(browser) -> str:
         drop_fixture(oid)
 
 
+@check
+async def check_duplicateurl(browser) -> str:
+    """After Duplicate the address names the copy, so a reload reopens it (F198).
+
+    Duplicate opened the copy in the editor and left `?id=<original>`: a reload
+    or a shared link reopened the original, and the person carried on editing
+    the wrong one.
+    """
+    oid = f"orch_uismoke_dup_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, f"ui-smoke dup {oid[-6:]}"))
+    copy_id = None
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        async with page.expect_response(
+            lambda r: r.url.endswith("/api/orchestrations") and r.request.method == "POST", timeout=20_000,
+        ) as made:
+            await page.get_by_role("button", name="Duplicate", exact=True).click()
+        copy_id = (await (await made.value).json())["id"]
+        await asyncio.sleep(1.0)
+        if f"id={copy_id}" not in page.url:
+            raise AssertionError(f"after Duplicate the address is {page.url}, not the copy {copy_id}")
+        await page.reload(wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        shown = await page.get_by_role("button", name="Orchestration", exact=True).inner_text()
+        if "(Copy)" not in shown:
+            raise AssertionError(f"reloaded after Duplicate, the editor shows {shown!r}, not the copy")
+        return "after Duplicate the address names the copy, and a reload reopens it"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+        if copy_id:
+            drop_fixture(copy_id)
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

@@ -1461,6 +1461,28 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         return () => setCurrentOrchestration(null);
     }, [realOrchId, setCurrentOrchestration]);
 
+    // The address names what is open, so a reload or a shared link reopens it:
+    // `?id=` follows the orchestration on screen, and the list is bare
+    // `/orchestrations`. Duplicate opened the copy under the original's `?id=`,
+    // and a reload went back to the original (F198). A `?run=` link stays only
+    // while the orchestration it opened is still the one shown. Written with
+    // `history.replaceState`, which Next keeps in step, so nothing re-renders.
+    const urlOrchRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (initialRunId && !initialRunConsumedRef.current) return;  // the run link is still to open
+        const url = new URL(window.location.href);
+        const run = url.searchParams.get('run');
+        const next = new URLSearchParams();
+        if (realOrchId) {
+            next.set('id', realOrchId);
+            if (run && urlOrchRef.current === null) next.set('run', run);
+        }
+        urlOrchRef.current = realOrchId;
+        const search = next.toString();
+        if (search === url.searchParams.toString()) return;
+        window.history.replaceState(null, '', `${url.pathname}${search ? `?${search}` : ''}`);
+    }, [realOrchId, initialRunId]);
+
     useBuilderShortcuts({
         enabled: !!draft,
         undo,
