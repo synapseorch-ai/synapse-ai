@@ -348,6 +348,19 @@ async def _open_http_session(
         ) from None
 
 
+def _http_opener(url: str, http_client: httpx.AsyncClient):
+    """An opener for `MCPClientManager._hold`: this client, the transport, the session."""
+    async def opener(stack: AsyncExitStack) -> ClientSession:
+        client = await stack.enter_async_context(http_client)
+        read, write = await _open_http_session(stack, url, client)
+        session = await stack.enter_async_context(
+            ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
+        )
+        await session.initialize()
+        return session
+    return opener
+
+
 # ── Manager ────────────────────────────────────────────────────────────────────
 
 class MCPClientManager:
@@ -359,6 +372,78 @@ class MCPClientManager:
         # registrations live in the store now. The one construction site awaits
         # connect_all() on the next line, which loads first.
         self.servers_config: List[Dict[str, Any]] = []
+        # name → (the task that holds the session open, the event that closes it)
+        self._owners: Dict[str, tuple[asyncio.Task, asyncio.Event]] = {}
+        # Closed with the app: a callback, not an entered context, so pushing
+        # it from here touches no task's cancel scopes.
+        exit_stack.push_async_callback(self.close_all)
+
+    # ── Session ownership (F200) ───────────────────────────────────────────────
+
+    async def _hold(self, name: str, opener) -> ClientSession:
+        """Open a session in a task of its own, which holds it until it is closed.
+
+        `opener(stack)` enters the transport and the `ClientSession` on `stack`
+        and initializes. A transport is an anyio task group, which must be
+        entered and left on one task. Opened in the caller's task — a request's,
+        for Add server and Retry — it was entered inside the request's middleware
+        scopes and parked on the lifespan's exit stack; when the request
+        returned, Starlette's middleware left its own scope while the
+        transport's was still open ("Attempted to exit a cancel scope that isn't
+        the current tasks's current cancel scope") and the transport's tasks
+        went with it. The server showed Connected and its tools never appeared
+        (F200). Only a server connected at startup, in the lifespan's task, worked.
+
+        A session opened again under the same name (a Retry) replaces the old
+        one, which is closed rather than left running.
+        """
+        opened: asyncio.Future = asyncio.get_running_loop().create_future()
+        stop = asyncio.Event()
+
+        async def own() -> None:
+            try:
+                async with AsyncExitStack() as stack:
+                    session = await opener(stack)
+                    opened.set_result(session)
+                    await stop.wait()
+            except Exception as exc:  # noqa: BLE001 — reported to the opener, or logged
+                if not opened.done():
+                    opened.set_exception(exc)
+                else:
+                    _log.info(f"[MCP] Session '{name}' closed with an error: {exc!r}")
+            except BaseException as exc:
+                if not opened.done():
+                    opened.set_exception(exc)
+                raise
+
+        task = asyncio.create_task(own(), name=f"mcp-session:{name}")
+        try:
+            session = await opened
+        except BaseException:
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        await self._close(name)
+        self._owners[name] = (task, stop)
+        return session
+
+    async def _close(self, name: str) -> None:
+        """Close the session held under `name`, on the task that opened it."""
+        owner = self._owners.pop(name, None)
+        if owner is None:
+            return
+        task, stop = owner
+        stop.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        except asyncio.TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        except Exception:  # noqa: BLE001 — a close that failed is still closed
+            pass
+
+    async def close_all(self) -> None:
+        for name in list(self._owners):
+            await self._close(name)
 
     # ── Persistence ────────────────────────────────────────────────────────────
 
@@ -439,25 +524,24 @@ class MCPClientManager:
         env.update(env_vars)
 
         _log.info(f"Connecting to stdio MCP server '{name}' ({command} {args})...")
-        inner_stack = AsyncExitStack()
-        try:
+
+        async def opener(stack: AsyncExitStack) -> ClientSession:
             params = StdioServerParameters(command=command, args=args, env=env)
-            read, write = await inner_stack.enter_async_context(stdio_client(params))
-            session = await inner_stack.enter_async_context(
+            read, write = await stack.enter_async_context(stdio_client(params))
+            session = await stack.enter_async_context(
                 ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
             )
             await session.initialize()
-            await self.exit_stack.enter_async_context(inner_stack)
-            self.sessions[name] = session
-            _log.info(f"Connected to stdio MCP server '{name}'.")
             return session
-        except BaseException as e:
+
+        try:
+            session = await self._hold(name, opener)
+        except Exception as e:
             _log.info(f"Failed stdio connect '{name}': {e}")
-            try:
-                await inner_stack.aclose()
-            except BaseException:
-                pass
             return None
+        self.sessions[name] = session
+        _log.info(f"Connected to stdio MCP server '{name}'.")
+        return session
 
     # ── Remote connection: bearer token ───────────────────────────────────────
 
@@ -469,27 +553,14 @@ class MCPClientManager:
 
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         _log.info(f"Connecting to remote MCP server '{name}' ({url})...")
-        inner_stack = AsyncExitStack()
         try:
-            http_client = await inner_stack.enter_async_context(
-                httpx.AsyncClient(headers=headers, follow_redirects=True)
-            )
-            read, write = await _open_http_session(inner_stack, url, http_client)
-            session = await inner_stack.enter_async_context(
-                ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
-            )
-            await session.initialize()
-            await self.exit_stack.enter_async_context(inner_stack)
-            self.sessions[name] = session
-            _log.info(f"Connected to remote MCP server '{name}'.")
-            return session
-        except BaseException as e:
+            session = await self._hold(name, _http_opener(url, httpx.AsyncClient(headers=headers, follow_redirects=True)))
+        except Exception as e:
             _log.info(f"Failed remote connect '{name}': {e}")
-            try:
-                await inner_stack.aclose()
-            except BaseException:
-                pass
             return None
+        self.sessions[name] = session
+        _log.info(f"Connected to remote MCP server '{name}'.")
+        return session
 
     # ── Remote connection: OAuth (background task) ─────────────────────────────
 
@@ -531,14 +602,8 @@ class MCPClientManager:
         )
 
         try:
-            http_client = await self.exit_stack.enter_async_context(
-                httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)
-            )
-            read, write = await _open_http_session(self.exit_stack, url, http_client)
-            session = await self.exit_stack.enter_async_context(
-                ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
-            )
-            await session.initialize()
+            session = await self._hold(
+                name, _http_opener(url, httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)))
             self.sessions[name] = session
 
             # Record where a refresh goes, now, while the provider still holds
@@ -680,50 +745,25 @@ class MCPClientManager:
                 redirect_handler=noop_redirect,
                 callback_handler=noop_callback,
             )
-            inner_stack = AsyncExitStack()
             try:
-                http_client = await inner_stack.enter_async_context(
-                    httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)
-                )
-                read, write = await _open_http_session(inner_stack, url, http_client)
-                session = await inner_stack.enter_async_context(
-                    ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
-                )
-                await session.initialize()
-                await self.exit_stack.enter_async_context(inner_stack)
+                session = await self._hold(
+                    name, _http_opener(url, httpx.AsyncClient(auth=oauth_provider, follow_redirects=True)))
                 self.sessions[name] = session
                 _log.debug(f"[MCP] Reconnected '{name}' with cached OAuth tokens.")
                 return session
-            except BaseException as e:
+            except Exception as e:
                 _log.debug(f"[MCP] Cached OAuth reconnect failed for '{name}': {e}. Falling back to direct connect.")
-                try:
-                    await inner_stack.aclose()
-                except BaseException:
-                    pass
 
         # ── Direct path: no token, no OAuth — server may not need auth ───────
         _log.debug(f"[MCP] Attempting direct (no-auth) connection to '{name}' ({url})...")
-        inner_stack = AsyncExitStack()
         try:
-            http_client = await inner_stack.enter_async_context(
-                httpx.AsyncClient(follow_redirects=True)
-            )
-            read, write = await _open_http_session(inner_stack, url, http_client)
-            session = await inner_stack.enter_async_context(
-                ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
-            )
-            await session.initialize()
-            await self.exit_stack.enter_async_context(inner_stack)
-            self.sessions[name] = session
-            _log.debug(f"[MCP] Connected '{name}' via direct (no-auth) connection.")
-            return session
-        except BaseException as e:
+            session = await self._hold(name, _http_opener(url, httpx.AsyncClient(follow_redirects=True)))
+        except Exception as e:
             _log.debug(f"[MCP] Direct connect also failed for '{name}': {e}")
-            try:
-                await inner_stack.aclose()
-            except BaseException:
-                pass
             return None
+        self.sessions[name] = session
+        _log.debug(f"[MCP] Connected '{name}' via direct (no-auth) connection.")
+        return session
 
     # ── connect_all (startup) ──────────────────────────────────────────────────
 
@@ -862,6 +902,7 @@ class MCPClientManager:
         self.servers_config = [s for s in self.servers_config if s["name"] != name]
         await self.save_servers()
         self.sessions.pop(name, None)
+        await self._close(name)
         await StoreTokenStorage(name).delete_all()
         return True
 
