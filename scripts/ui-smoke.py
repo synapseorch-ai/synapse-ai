@@ -214,7 +214,7 @@ async def check_runbar(browser) -> str:
                   const hits = pts.map(([x, y]) => {
                     const el = document.elementFromPoint(x, y);
                     if (!el) return 'nothing';
-                    if (el.closest('button[aria-label="Open the AI builder"]')) return 'the AI-builder launcher';
+                    if (el.closest('button[aria-label^="Open the AI builder"]')) return 'the AI-builder launcher';
                     return bar.contains(el) ? 'the strip' : el.tagName.toLowerCase();
                   });
                   // The toast host owns the other end of the same corner. It is
@@ -268,6 +268,12 @@ const _fetch = window.fetch;
 window.fetch = function (input, init) {
   const url = String((input && input.url) || input || '');
   const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  // A fresh panel: a conversation left open in the store would be reopened (F214).
+  if (url.includes('/api/builder/conversation')) {
+    return Promise.resolve(new Response('{"conversation": null}', {
+      status: 200, headers: {'Content-Type': 'application/json'},
+    }));
+  }
   if (url.includes('/api/builder/chat')) {
     const body = new ReadableStream({
       start(c) {
@@ -585,7 +591,8 @@ async def check_layout(browser) -> str:
         # The launcher's own label, where a person would look for it.
         await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
-        launcher = page.locator('button[aria-label="Open the AI builder"]')
+        # By its name's start: with a builder question waiting it says so (F214).
+        launcher = page.locator('button[aria-label^="Open the AI builder"]')
         box = await launcher.bounding_box()
         if box is None:
             raise AssertionError("no AI-builder launcher on /dashboard")
@@ -944,6 +951,9 @@ async def check_builderctx(browser) -> str:
             sent.append(body.get("current_orchestration_id"))
             await route.fulfill(status=200, content_type="text/event-stream", body=BUILDER_TURN)
         await page.route("**/api/builder/chat", stub)
+        # A fresh panel: a conversation left open in the store would be reopened (F214).
+        await page.route("**/api/builder/conversation", lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"conversation": null}'))
 
         async def say(text: str):
             box = page.locator("textarea").last
