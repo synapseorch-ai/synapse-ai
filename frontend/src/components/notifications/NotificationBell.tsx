@@ -1,53 +1,58 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
+import * as RPopover from '@radix-ui/react-popover';
 import { Bell, CheckCircle2, AlertCircle, PauseCircle } from 'lucide-react';
 import { useNotifications } from './NotificationProvider';
 
 // Header bell: unseen-count badge, dropdown of recent run notifications
 // (click-through to the run view) and the browser-notification opt-in.
-export function NotificationBell({ placement = 'below-right' }: {
-    /**
-     * 'below-right' anchors under the button (chat header). 'above-left' opens
-     * upward from the left edge, for the rail foot at the bottom of the screen.
-     */
-    placement?: 'below-right' | 'above-left';
-} = {}) {
+//
+// On Radix, like the kit's menus and combobox (F192): it used to be a
+// hand-placed panel anchored by its right edge under the bell, which from the
+// rail's header put 97 px of it off the left of the screen. Radix places it
+// against the viewport, portals it out of the rail, closes it on Escape and
+// outside clicks, and hands focus back to the bell.
+export function NotificationBell() {
     const {
         notifications, unseenCount, markAllSeen, openRun,
         browserNotificationsEnabled, setBrowserNotificationsEnabled,
     } = useNotifications();
     const [open, setOpen] = useState(false);
-    const panelRef = useRef<HTMLDivElement>(null);
-
-    useEffect(() => {
-        if (!open) return;
-        markAllSeen();
-        const onClick = (e: MouseEvent) => {
-            if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false);
-        };
-        document.addEventListener('mousedown', onClick);
-        return () => document.removeEventListener('mousedown', onClick);
-    }, [open, markAllSeen]);
 
     const recent = [...notifications].sort((a, b) => b.id - a.id).slice(0, 15);
 
     return (
-        <div className="relative" ref={panelRef}>
-            <button
-                onClick={() => setOpen(o => !o)}
-                className="relative p-2 hover:bg-zinc-900 rounded-md text-zinc-400 hover:text-white transition-colors"
+        <RPopover.Root
+            open={open}
+            onOpenChange={next => {
+                setOpen(next);
+                if (next) markAllSeen();
+            }}
+        >
+            <RPopover.Trigger
+                // The name is the control's, with the count beside it — the
+                // badge alone used to be the whole name ("6").
+                aria-label={unseenCount > 0 ? `Notifications, ${unseenCount} unread` : 'Notifications'}
                 title="Notifications"
+                className="relative p-2 hover:bg-zinc-900 rounded-md text-zinc-400 hover:text-white transition-colors data-[state=open]:bg-zinc-900 data-[state=open]:text-white"
             >
-                <Bell className="h-4 w-4" />
+                <Bell className="h-4 w-4" aria-hidden />
                 {unseenCount > 0 && (
-                    <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-semibold flex items-center justify-center">
+                    <span aria-hidden className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-semibold flex items-center justify-center">
                         {unseenCount > 9 ? '9+' : unseenCount}
                     </span>
                 )}
-            </button>
+            </RPopover.Trigger>
 
-            {open && (
-                <div className={`absolute w-80 rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl z-[999] overflow-hidden ${placement === 'above-left' ? 'bottom-full left-0 mb-1' : 'right-0 top-full mt-1'}`}>
+            <RPopover.Portal>
+                <RPopover.Content
+                    side="bottom"
+                    align="start"
+                    sideOffset={4}
+                    collisionPadding={8}
+                    aria-label="Notifications"
+                    className="z-50 w-80 max-w-[calc(100vw-16px)] rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl overflow-hidden"
+                >
                     <div className="px-3 py-2 border-b border-zinc-800 text-xs font-semibold text-zinc-300 uppercase tracking-wider">
                         Notifications
                     </div>
@@ -91,8 +96,8 @@ export function NotificationBell({ placement = 'below-right' }: {
                             Browser notifications when tab is in background
                         </span>
                     </label>
-                </div>
-            )}
-        </div>
+                </RPopover.Content>
+            </RPopover.Portal>
+        </RPopover.Root>
     );
 }

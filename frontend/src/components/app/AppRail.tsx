@@ -179,7 +179,7 @@ export function AppRail({
                     Collapse moved to the foot: three controls in a 240px
                     header left the name clipped. */}
                 <div className={cn('shrink-0', collapsed ? '' : 'ml-auto')}>
-                    <NotificationBell placement="below-right" />
+                    <NotificationBell />
                 </div>
             </div>
 
