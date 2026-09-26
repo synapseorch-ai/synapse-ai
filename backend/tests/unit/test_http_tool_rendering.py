@@ -220,6 +220,79 @@ class TestAGetKeepsTheQueryItsUrlWrites:
         assert _as_sent(outbound.calls[0]) == "https://api.test/echo?limit=10&note=n"
 
 
+class TestAMissingArgumentIsNeverSentAsText:
+    """A `{{ arg }}` the call left out is never sent to someone else's server (F196).
+
+    A tool whose URL was `…/echo?tag={{ tag }}`, called with only `note`, went
+    out as `/echo?tag={{%20tag%20}}`. Now a query parameter whose whole value is
+    a missing argument the schema does not require is left out, as an optional
+    parameter would be; anywhere else — a path segment, a header, a body
+    template — or for a required argument, the call fails naming it and nothing
+    is sent. An agent's model reads that sentence and can call again; a Tool
+    step's next attempt is told it too. `{{ global.* }}` and single braces are
+    unchanged (both pinned above).
+    """
+
+    async def _call(self, args):
+        return await TestTheToolStepMatchesTheAgent()._call(args)
+
+    async def test_an_optional_query_parameter_is_left_out(self, outbound):
+        await _tool(method="GET", url="https://api.test/echo?tag={{ tag }}&x=1", body="")
+        await self._call({"note": "n"})
+        assert _as_sent(outbound.calls[0]) == "https://api.test/echo?x=1&note=n"
+
+    async def test_the_only_query_parameter_left_out_takes_the_question_mark(self, outbound):
+        await _tool(method="GET", url="https://api.test/echo?tag={{tag}}", body="")
+        await self._call({})
+        assert _as_sent(outbound.calls[0]) == "https://api.test/echo"
+
+    async def test_a_present_argument_still_fills_the_query(self, outbound):
+        await _tool(method="GET", url="https://api.test/echo?tag={{ tag }}&x=1", body="")
+        await self._call({"tag": "red"})
+        assert _as_sent(outbound.calls[0]) == "https://api.test/echo?tag=red&x=1"
+
+    async def test_a_required_query_argument_fails_the_call_by_name(self, outbound):
+        from core.http_tool import MissingArgument
+        schema = {"type": "object", "properties": {"tag": {"type": "string"}}, "required": ["tag"]}
+        await _tool(method="GET", url="https://api.test/echo?tag={{ tag }}", body="", inputSchema=schema)
+        with pytest.raises(MissingArgument, match="`tag`"):
+            await self._call({"note": "n"})
+        assert outbound.calls == [], "nothing is sent"
+
+    @pytest.mark.parametrize("where", [
+        {"url": "https://api.test/things/{{id}}"},
+        {"url": "https://api.test/q?x={{id}}-v2"},
+        {"url": "https://api.test/q", "headers": {"X-Id": "{{ id }}"}},
+        {"url": "https://api.test/q", "body": '{"ref": "{{id}}", "n": 1}'},
+    ], ids=["path", "part-of-a-query-value", "header", "body-template"])
+    async def test_anywhere_else_it_fails_the_call_by_name(self, outbound, where):
+        from core.http_tool import MissingArgument
+        await _tool(method="POST", **where)
+        with pytest.raises(MissingArgument, match="`id`"):
+            await self._call({"note": "n"})
+        assert outbound.calls == [], "nothing is sent"
+
+    async def test_an_argument_whose_value_holds_braces_is_sent_as_given(self, outbound):
+        """The check reads the tool's templates, not what rendering produced."""
+        await _tool(url="https://api.test/q", body='{"note": "{{note}}"}')
+        await self._call({"note": "literally {{ tag }}"})
+        assert outbound.calls[0]["json"] == {"note": "literally {{ tag }}"}
+
+    async def test_a_lone_body_reference_that_is_missing_still_sends_no_body(self, outbound):
+        await _tool(url="https://api.test/q", body="{{body}}")
+        await self._call({"note": "n"})
+        assert outbound.calls[0]["json"] is None
+
+    async def test_the_agent_is_told_and_nothing_is_sent(self, fake_llm, outbound):
+        await _tool(url="https://api.test/things/{{id}}")
+        agent = S.make_agent(tools=["post_thing"], skip_default_tools=True)
+        await _drive(agent, fake_llm, [tool_call("post_thing", note="n"), "done"],
+                     tools_override=[_schema("post_thing")], tool_executor=None)
+        assert outbound.calls == []
+        told = str(fake_llm.calls[-1])
+        assert "`id`" in told, "the model reads which argument it left out"
+
+
 class TestEgressAtTheMomentOfTheCall:
     """S4: the URL a custom tool dials is checked when it is dialled.
 

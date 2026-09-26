@@ -32,6 +32,72 @@ from core import templating
 _SINGLE = re.compile(r"\{([^{}]+)\}")
 
 
+class MissingArgument(ValueError):
+    """The call left out an argument the tool's URL, a header or its body names (F196).
+
+    Rendering leaves an unknown `{{ … }}` as written, which is right for a
+    prompt and wrong for a request: the template text went to someone else's
+    server (`/echo?tag={{%20tag%20}}`). A `ValueError`, so every caller that
+    already reports one reports this: an agent's model reads the sentence and
+    can call again, and a Tool step's next attempt is told it.
+    """
+
+    def __init__(self, names: list[str], places: list[str]):
+        self.names = names
+        listed = ", ".join(f"`{n}`" for n in names)
+        noun = "argument" if len(names) == 1 else "arguments"
+        super().__init__(
+            f"The call left out the {noun} {listed}, which this tool's "
+            f"{' and '.join(places)} {'needs' if len(places) == 1 else 'need'}. "
+            f"Nothing was sent; call it again with {'it' if len(names) == 1 else 'them'}."
+        )
+
+
+def _argument_of(reference: str) -> str | None:
+    """The argument a `{{ … }}` reference reads, or None for `global.*`/`state.*`/`{{args}}`."""
+    parts = reference.split(".")
+    if parts[0] == "args":
+        return parts[1] if len(parts) > 1 else None
+    return None if parts[0] in templating.NAMESPACES else parts[0]
+
+
+def _missing(text: str, args: dict[str, Any]) -> list[str]:
+    """The arguments `text`'s references read that the call did not supply."""
+    out: list[str] = []
+    for reference in templating.references(text):
+        name = _argument_of(reference)
+        if name is None or name in out:
+            continue
+        found, _ = templating.lookup(reference, {"args": args}, bare="args")
+        if not found:
+            out.append(name)
+    return out
+
+
+def _drop_optional_query(url: str, args: dict[str, Any], required: set[str]) -> str:
+    """The URL without query parameters that are only a missing, optional argument.
+
+    `?tag={{ tag }}` with no `tag` in the call is an optional parameter not
+    given: leaving it out is what the tool's author meant. A parameter the
+    schema requires, or one whose value is more than the reference, stays for
+    `build_request` to refuse by name.
+    """
+    base, sep, rest = url.partition("?")
+    if not sep:
+        return url
+    query, hash_sep, fragment = rest.partition("#")
+    kept = []
+    for pair in query.split("&"):
+        _, eq, value = pair.partition("=")
+        whole = templating.REF.fullmatch(value.strip()) if eq else None
+        name = _argument_of(whole.group(1)) if whole else None
+        if name and name not in required and _missing(value, args):
+            continue
+        kept.append(pair)
+    query = "&".join(kept)
+    return base + ("?" + query if query else "") + (hash_sep + fragment if hash_sep else "")
+
+
 def _walk(obj: Any, path: str) -> str | None:
     """Follow a dot-separated path into `obj`, rendered as text."""
     cur = obj
@@ -93,20 +159,41 @@ def build_request(
     `params` / `json` / `content`.
 
     Raises `ValueError` when the tool has no URL, which is the one thing about a
-    tool document this cannot work around.
+    tool document this cannot work around, and `MissingArgument` when the call
+    left out an argument a template names (F196) — read from the templates,
+    not the rendered request, so an argument whose value holds braces is sent
+    as given.
     """
     method = str(tool.get("method") or "POST").upper()
     url = tool.get("url") or ""
     if not url:
         raise ValueError("No URL configured for this tool.")
 
-    context = {"global": global_variables, "args": args}
-    url, consumed = render_url(url, args, global_variables)
-    headers = templating.render_mapping(dict(tool.get("headers") or {}), context, bare="args")
-
+    schema = tool.get("inputSchema") or tool.get("input_schema") or {}
+    required = set(schema.get("required") or []) if isinstance(schema, dict) else set()
+    url = _drop_optional_query(url, args, required)
+    raw_headers = dict(tool.get("headers") or {})
     # `body_template` is where the AI builder stored the template before F2; a
     # tool saved then still sends it.
     template = tool.get("body") or tool.get("body_template") or ""
+
+    missing: dict[str, list[str]] = {}
+    for place, text in (
+        ("URL", url),
+        ("headers", " ".join(v for v in raw_headers.values() if isinstance(v, str))),
+        # A lone `{{body}}` that is missing sends no body, as it always has:
+        # nothing of the template reaches the server.
+        ("body", "" if templating.REF.fullmatch(template.strip()) else template),
+    ):
+        for name in _missing(text, args):
+            missing.setdefault(name, []).append(place)
+    if missing:
+        places = [p for p in ("URL", "headers", "body") if any(p in v for v in missing.values())]
+        raise MissingArgument(sorted(missing), places)
+
+    context = {"global": global_variables, "args": args}
+    url, consumed = render_url(url, args, global_variables)
+    headers = templating.render_mapping(raw_headers, context, bare="args")
     body, body_consumed = templating.request_body(
         template, args, {"global": global_variables}
     )
