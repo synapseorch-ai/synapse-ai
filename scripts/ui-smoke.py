@@ -3209,6 +3209,60 @@ async def check_agentmenu(browser) -> str:
             raise AssertionError(f"at {width[0]}px the closed switcher leaves {hidden_rows} agent rows in the header")
     return "a named button at both widths; Enter opens it, Enter on an agent switches to it"
 
+
+#: A conversation's history held until the test lets it go, and every chat
+#: message's body recorded: the race is between a reopen still waiting on its
+#: history and whatever the person does meanwhile.
+HOLD_HISTORY = """
+window.__sent = [];
+const _holdFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  if (/\\/api\\/sessions\\/[^/?]+\\/history/.test(url)) {
+    return new Promise((resolve) => { window.__releaseHistory = () => resolve(_holdFetch(input, init)); });
+  }
+  if (url.includes('/api/chat/stream') && init && init.body) window.__sent.push(JSON.parse(init.body));
+  return _holdFetch(input, init);
+};
+"""
+
+
+@check
+async def check_newchatrace(browser) -> str:
+    """New Chat pressed while the page is still reopening is not undone (F188).
+
+    The reopen applied its conversation whenever its history arrived: pressed
+    before that, New Chat emptied the page, the old conversation was drawn
+    back over it, and the next message went into the old conversation.
+    """
+    history = {"turns": [{"user": "an old question", "assistant": "an old answer", "tools": [], "timestamp": ""}],
+               "pending_approval": None, "running": None}
+    ctx, page = await _chat_page(browser, "uismoke-old-conversation", history, extra_init=HOLD_HISTORY)
+    try:
+        for _ in range(40):
+            if await page.evaluate("() => typeof window.__releaseHistory === 'function'"):
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise AssertionError("the page never asked for its conversation's history")
+        await page.get_by_role("button", name="New Chat").click()
+        await asyncio.sleep(0.3)
+        await page.evaluate("() => window.__releaseHistory()")
+        await asyncio.sleep(1.0)
+        redrawn = "an old question" in await page.evaluate("() => document.querySelector('main').innerText")
+        box = page.locator("main textarea").last
+        await box.fill("a new question")
+        await box.press("Enter")
+        await _stream_open(page, "post")
+        sent = await page.evaluate("() => window.__sent")
+    finally:
+        await ctx.close()
+    if redrawn:
+        raise AssertionError("the old conversation was drawn back over New Chat")
+    if not sent or sent[-1].get("session_id") == "uismoke-old-conversation":
+        raise AssertionError(f"the message after New Chat went into the old conversation: {sent}")
+    return "New Chat holds against a reopen still waiting on its history"
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

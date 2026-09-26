@@ -710,6 +710,12 @@ export default function Home() {
   // one — a proxy timing out mid-turn, a worker recycled — and that used to
   // look exactly like a finished conversation: the transcript simply stopped.
   const turnAnsweredRef = useRef(false);
+  // Which conversation is on screen, as a count. New Chat, picking one from
+  // History and switching agent each move it; a reopen that finds it moved
+  // once its history arrives draws nothing. The reopen used to apply whenever
+  // it answered, so New Chat pressed before then was undone and the next
+  // message went into the old conversation (F188).
+  const conversationEpochRef = useRef(0);
   // Index of the user message being rewritten, or null. Editing one drops it
   // and everything after it — a conversation cannot fork.
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -784,18 +790,22 @@ export default function Home() {
    * turn is read from its start (F49). Used when the page opens on the last
    * conversation and when one is picked from History.
    */
-  const reopenConversation = async (sid: string, agentId: string | null) => {
-    const running = await loadConversation(sid, agentId);
-    if (running) await watchTurn(sid, running.cursor, running.message);
+  const reopenConversation = async (sid: string, agentId: string | null, epoch = conversationEpochRef.current) => {
+    const running = await loadConversation(sid, agentId, epoch);
+    if (running && epoch === conversationEpochRef.current) await watchTurn(sid, running.cursor, running.message);
   };
 
   /** Draw the conversation as stored; the turn still being written, if any, is returned to be followed. */
-  const loadConversation = async (sid: string, agentId: string | null): Promise<RunningTurn | null> => {
+  const loadConversation = async (
+    sid: string, agentId: string | null, epoch = conversationEpochRef.current,
+  ): Promise<RunningTurn | null> => {
     try {
       const url = `/api/sessions/${encodeURIComponent(sid)}/history${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''}`;
       const res = await fetch(url);
       if (!res.ok) return null;
       const data = await res.json();
+      // Another conversation was put on screen while this one loaded (F188).
+      if (epoch !== conversationEpochRef.current) return null;
       const turns: SessionTurn[] = data.turns || [];
       const parked: ParkedApproval | null = data.pending_approval ?? null;
       const running: RunningTurn | null = data.running ?? null;
@@ -865,6 +875,9 @@ export default function Home() {
 
     // 2. Restore last used agent, then its conversation
     const initAgent = async () => {
+      // Taken before anything is awaited: New Chat pressed while this runs
+      // moves it, and the old conversation is then not drawn back (F188).
+      const epoch = conversationEpochRef.current;
       const savedAgent = typeof window !== 'undefined' ? localStorage.getItem('synapseAgentId') : null;
       const savedSession = typeof window !== 'undefined' ? localStorage.getItem('synapseSessionId') : null;
       if (savedAgent) {
@@ -879,7 +892,7 @@ export default function Home() {
         }
       }
       refreshSystemStatus();
-      if (savedSession) await reopenConversation(savedSession, savedAgent);
+      if (savedSession && epoch === conversationEpochRef.current) await reopenConversation(savedSession, savedAgent, epoch);
     };
 
     initAgent();
@@ -905,6 +918,7 @@ export default function Home() {
   };
 
   const handleNewChat = () => {
+    conversationEpochRef.current += 1;
     stopReading();
     setSessionId(generateSessionId());
     setMessages([]);
@@ -921,9 +935,10 @@ export default function Home() {
   };
 
   const handleSelectSession = async (s: SessionSummary) => {
+    const epoch = ++conversationEpochRef.current;
     setIsHistoryOpen(false);
     stopReading();
-    await reopenConversation(s.session_id, s.agent_id);
+    await reopenConversation(s.session_id, s.agent_id, epoch);
     // Switch agent if needed
     if (s.agent_id && s.agent_id !== currentAgentId) {
       try {
@@ -944,6 +959,8 @@ export default function Home() {
   };
 
   const handleSwitchAgent = async (agentId: string) => {
+    // The new agent's conversation replaces whatever is still loading.
+    conversationEpochRef.current += 1;
     try {
       const res = await fetch('/api/agents/active', {
         method: 'POST',
