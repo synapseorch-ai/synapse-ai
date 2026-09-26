@@ -1,6 +1,7 @@
 """
 DB configuration management endpoints (CRUD + schema refresh).
 """
+import asyncio
 import os
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
@@ -19,6 +20,25 @@ def _connect_args(connection_string: str) -> dict:
     if make_url(connection_string).get_backend_name() in _TIMEOUT_BACKENDS:
         return {"connect_timeout": 10}
     return {}
+
+
+def _read_schema(connection_string: str) -> str:
+    """The database's tables and columns, as agents are shown them. Blocking."""
+    from sqlalchemy import create_engine, inspect
+
+    engine = create_engine(connection_string, connect_args=_connect_args(connection_string))
+    try:
+        inspector = inspect(engine)
+        schema_lines = []
+        for table_name in inspector.get_table_names():
+            columns = inspector.get_columns(table_name)
+            col_defs = ", ".join(
+                f"{col['name']} ({str(col['type'])})" for col in columns
+            )
+            schema_lines.append(f"  {table_name}({col_defs})")
+    finally:
+        engine.dispose()
+    return "Tables:\n" + "\n".join(schema_lines) if schema_lines else "No tables found."
 
 
 async def load_db_configs() -> list[dict]:
@@ -69,24 +89,10 @@ async def refresh_db_schema(config_id: str):
         raise HTTPException(status_code=400, detail="No connection string configured")
 
     try:
-        from sqlalchemy import create_engine, inspect, text
-
-        engine = create_engine(connection_string, connect_args=_connect_args(connection_string))
-        inspector = inspect(engine)
-
-        schema_lines = []
-        table_names = inspector.get_table_names()
-
-        for table_name in table_names:
-            columns = inspector.get_columns(table_name)
-            col_defs = ", ".join(
-                f"{col['name']} ({str(col['type'])})" for col in columns
-            )
-            schema_lines.append(f"  {table_name}({col_defs})")
-
-        schema_info = "Tables:\n" + "\n".join(schema_lines) if schema_lines else "No tables found."
-
-        engine.dispose()
+        # In a worker thread: the driver's connect blocks, and on the event
+        # loop it froze every other request for as long as the database took
+        # to answer — 9 s behind an unreachable host (F234).
+        schema_info = await asyncio.to_thread(_read_schema, connection_string)
 
         config["schema_info"] = schema_info
         config["status"] = "connected"

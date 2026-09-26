@@ -45,3 +45,38 @@ async def test_a_sqlite_config_fetches_its_schema(client, sqlite_db):
 def test_the_timeout_goes_only_where_the_driver_takes_it(url, args):
     from core.routes.db_configs import _connect_args
     assert _connect_args(url) == args
+
+
+async def test_a_slow_database_does_not_freeze_the_backend(client, monkeypatch):
+    """F234: the connect ran on the event loop, so every other request waited
+    for as long as the database did (a GET took 9.1 s behind an unreachable
+    Postgres). A connect that takes a second must leave the loop turning."""
+    import asyncio
+    import time
+
+    import sqlalchemy
+
+    def slow_engine(*args, **kwargs):
+        time.sleep(1.0)
+        raise sqlalchemy.exc.OperationalError("connect", {}, Exception("timeout expired"))
+
+    monkeypatch.setattr(sqlalchemy, "create_engine", slow_engine)
+    config = {"id": "db_f234", "name": "Far", "db_type": "postgres",
+              "connection_string": "postgresql://u:p@10.255.255.1:5432/app"}
+    assert (await client.post("/api/db-configs", json=config)).status_code == 200
+
+    ticks = 0
+    done = asyncio.Event()
+
+    async def tick():
+        nonlocal ticks
+        while not done.is_set():
+            ticks += 1
+            await asyncio.sleep(0.02)
+
+    ticker = asyncio.create_task(tick())
+    resp = await client.post("/api/db-configs/db_f234/refresh-schema")
+    done.set()
+    await ticker
+    assert resp.status_code == 400 and "timeout expired" in resp.json()["detail"]
+    assert ticks >= 20, f"the loop turned {ticks} times in a 1 s connect"
