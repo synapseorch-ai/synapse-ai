@@ -3707,6 +3707,53 @@ async def check_agenttools(browser) -> str:
             pass
 
 
+@check
+async def check_logrows(browser) -> str:
+    """A log opens from the keyboard, and its Delete is not the only stop (F191).
+
+    Every log row was a `div` with a click handler; the one focusable thing in
+    it was its Delete button, invisible until hovered. Tab landed on Delete, and
+    a log could be deleted from the keyboard but never read.
+    """
+    oid = f"orch_uismoke_logs_{int(time.time())}"
+    name = f"ui-smoke logs {oid[-10:]}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, name))
+    run_id = run_to_end(oid)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/runs", wait_until="domcontentloaded")
+        tab = page.get_by_role("button", name=re.compile("Orchestration Logs"))
+        await tab.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await tab.click()
+        row = page.get_by_role("button", name=re.compile("^" + re.escape(name)))
+        try:
+            await row.wait_for(timeout=20_000)
+        except Exception:
+            raise AssertionError("a log in the list is not a control a keyboard can reach")
+        await row.focus()
+        async with page.expect_request(lambda r: f"/api/logs/orchestrations/{run_id}" in r.url, timeout=10_000):
+            await page.keyboard.press("Enter")
+        await asyncio.sleep(0.5)
+        if await row.get_attribute("aria-current") != "true":
+            raise AssertionError("Enter on a log fetched it but did not mark it open")
+        await page.keyboard.press("Tab")
+        after = await page.evaluate(
+            "() => ({label: document.activeElement.getAttribute('aria-label'),"
+            " opacity: getComputedStyle(document.activeElement).opacity})")
+        if after["label"] != f"Delete log {name}" or after["opacity"] != "1":
+            raise AssertionError(f"the next stop after an open log is {after}")
+        return "a log opens on Enter, and its Delete is named and visible when reached"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+        try:
+            api(f"/api/logs/orchestrations/{run_id}", "DELETE")
+        except Exception:
+            pass
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

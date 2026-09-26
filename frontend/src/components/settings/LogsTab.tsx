@@ -267,36 +267,45 @@ export const LogsTab = () => {
                                                     ? log.orchestration_id
                                                     : log.target_type;
 
+                                            // The row is a button, so a keyboard opens a log as a click
+                                            // does (F191); Delete is its sibling, named for the log and
+                                            // shown whenever the row has focus as well as on hover.
                                             return (
                                                 <div
                                                     key={log.run_id}
-                                                    onClick={() => fetchContent(log.run_id)}
-                                                    className={`group cursor-pointer px-4 py-3 border-b border-border last:border-b-0 flex flex-col gap-1 transition-colors ${isSelected
+                                                    className={`group relative border-b border-border last:border-b-0 transition-colors ${isSelected
                                                         ? 'bg-surface-2 border-l-2 border-l-white'
                                                         : 'hover:bg-surface-2 border-l-2 border-l-transparent'
                                                         }`}
                                                 >
-                                                    <div className="flex items-start justify-between gap-2">
-                                                        <span className="text-xs text-white font-semibold leading-tight truncate">{name}</span>
-                                                        <button
-                                                            onClick={(e) => deleteLog(log.run_id, e)}
-                                                            className="opacity-0 group-hover:opacity-100 p-0.5 text-text-faint hover:text-red-400 transition-all shrink-0 mt-0.5"
-                                                            title="Delete log"
-                                                        >
-                                                            <Trash2 className="h-3 w-3" />
-                                                        </button>
-                                                    </div>
-                                                    {subtitle && (
-                                                        <span className="text-[10px] text-text-faint truncate">{subtitle}</span>
-                                                    )}
-                                                    <div className="flex items-center justify-between">
-                                                        {log.started_at && (
-                                                            <span className="text-[10px] text-text-faint">{log.started_at}</span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => fetchContent(log.run_id)}
+                                                        aria-current={isSelected ? 'true' : undefined}
+                                                        className="flex w-full flex-col gap-1 py-3 pl-4 pr-9 text-left"
+                                                    >
+                                                        <span className="block text-xs text-white font-semibold leading-tight truncate">{name}</span>
+                                                        {subtitle && (
+                                                            <span className="block text-[10px] text-text-faint truncate">{subtitle}</span>
                                                         )}
-                                                        {log.file_size_kb !== undefined && (
-                                                            <span className="text-[10px] text-text-faint">{log.file_size_kb}KB</span>
-                                                        )}
-                                                    </div>
+                                                        <span className="flex w-full items-center justify-between">
+                                                            {log.started_at && (
+                                                                <span className="text-[10px] text-text-faint">{log.started_at}</span>
+                                                            )}
+                                                            {log.file_size_kb !== undefined && (
+                                                                <span className="text-[10px] text-text-faint">{log.file_size_kb}KB</span>
+                                                            )}
+                                                        </span>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => deleteLog(log.run_id, e)}
+                                                        className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 p-0.5 text-text-faint hover:text-red-400 transition-all"
+                                                        aria-label={`Delete log ${name}`}
+                                                        title="Delete log"
+                                                    >
+                                                        <Trash2 className="h-3 w-3" />
+                                                    </button>
                                                 </div>
                                             );
                                         })}
