@@ -273,12 +273,32 @@ class MessagingAdapter(ABC):
         # Track most recent chat_id for proactive schedule notifications
         self._last_chat_id = chat_id
 
+        # -- 0. Who is on the other end (F282) ----------------------------
+        # A channel has no sender list, so its setting decides: a workspace
+        # user (the default), or a visitor held to the channel's own tool list,
+        # with no memory. Read per message rather than kept from construction,
+        # so an edit needs no restart (the lesson D72 paid for once).
+        from core import visitor as _visitor
+        from core.messaging import store as _channel_store
+
+        channel = await _channel_store.get_channel(self.channel_id) or {}
+        scope = None
+        if channel.get("senders_are_members", True) is False:
+            scope = _visitor.VisitorScope(
+                "channel", frozenset(_visitor.clean_tools(channel.get("visitor_tools"))))
+        with _visitor.scope(scope):
+            await self._answer(chat_id, user_text, session_id, send, visitor=scope)
+
+    async def _answer(self, chat_id, user_text, session_id, send, *, visitor) -> None:
+        """`_dispatch`'s body, run as whoever the sender is (`visitor`, or a member)."""
         # -- 1. A run waiting on this channel for an answer ---------------
         # A human step that names this channel asked its question here; the
         # reply answers the newest run waiting on it, the way the app's Answer
-        # control does.
+        # control does. Only a workspace user answers one: a visitor's reply
+        # is an ordinary message (F282).
         try:
-            answered = await self.manager.answer_from_channel(self.channel_id, user_text)
+            answered = (await self.manager.answer_from_channel(self.channel_id, user_text)
+                        if visitor is None else False)
         except QuestionExpired:
             # Past the step's window: refused in words, and the run keeps
             # waiting for the app — not handed to the agent as chat (F93).
