@@ -1892,10 +1892,12 @@ async def run_agent_step(
                             continue
                         if _held_key in _approved_calls:
                             _approved_calls.discard(_held_key)  # a person allowed it: save it below
-                        elif not (persist_turn and (source == "chat" or source.startswith("orchestration"))):
-                            # Nobody here can answer a card — a schedule's run, or a
-                            # delegate whose pause the lead would replay as its own
-                            # call, into its own memory. Refused, with the reason.
+                        elif not (persist_turn and (source == "chat" or source.startswith("orchestration"))
+                                  and _chat_approval.approvals_answerable()):
+                            # Nobody here can answer a card — a schedule's run, a
+                            # messaging channel's turn, or a delegate whose pause the
+                            # lead would replay as its own call, into its own memory.
+                            # Refused, with the reason.
                             _not_saved = ("Memory not saved: this turn read content from a file or a tool, "
                                           "and saving that to memory needs a person's approval, which nobody "
                                           "can give here. Report it in your answer instead.")
@@ -2114,6 +2116,10 @@ async def run_agent_step(
                             # under the delegate's session id.
                             history_override=[],
                             persist_turn=False,
+                            # The hand-off is written by an agent that may have read
+                            # a file or a tool's result: the delegate starts as
+                            # marked as the lead is (F279).
+                            untrusted_message=_memory_tainted,
                         ):
                             if sub_event.get("type") == "final":
                                 # Capture only — do NOT propagate. A delegate sub-agent's

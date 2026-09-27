@@ -249,18 +249,24 @@ class MessagingManager:
         if agent and agent.get("type") == "orchestrator":
             return await self._run_orchestrator(agent, message, session_id, channel_id)
 
+        from core.chat_approval import nobody_to_ask
+
         final_response = ""
         try:
-            async for event in run_agent_step(
-                message=message,
-                agent_id=agent_id,
-                session_id=session_id,
-                server_module=self.server_module,
-                max_turns=15,
-                allowed_tools_override=None,
-            ):
-                if event.get("type") == "final":
-                    final_response = event.get("response", "")
+            # A channel parks no approval, so nobody can answer one here: a
+            # `remember` that would ask is refused with the reason instead, and
+            # the person gets a reply rather than silence (F279).
+            with nobody_to_ask():
+                async for event in run_agent_step(
+                    message=message,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    server_module=self.server_module,
+                    max_turns=15,
+                    allowed_tools_override=None,
+                ):
+                    if event.get("type") == "final":
+                        final_response = event.get("response", "")
         except Exception as e:
             # Whoever is talking to the bot is told something went wrong, not
             # what: a model's failure is the provider's words about the

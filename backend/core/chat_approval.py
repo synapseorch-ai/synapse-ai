@@ -21,7 +21,28 @@ test can assert the shape without a database.
 
 from __future__ import annotations
 
-from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator
+
+#: Set where a turn runs with nobody to answer an approval card: a messaging
+#: channel's agent turn parks nothing, so a pause there ends the turn in silence.
+_nobody_to_ask: ContextVar[bool] = ContextVar("synapse_nobody_to_ask", default=False)
+
+
+def approvals_answerable() -> bool:
+    """Whether a pause for approval in this turn can be answered by anyone."""
+    return not _nobody_to_ask.get()
+
+
+@contextmanager
+def nobody_to_ask() -> Iterator[None]:
+    """Run what starts inside this block where no approval card can be answered."""
+    token = _nobody_to_ask.set(True)
+    try:
+        yield
+    finally:
+        _nobody_to_ask.reset(token)
 
 
 def parked_payload(event: dict, *, message: str, progress: dict | None) -> dict[str, Any]:

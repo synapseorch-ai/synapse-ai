@@ -335,6 +335,57 @@ class TestARememberAfterReadContentAsksFirst:
         assert not any(e["type"] == "human_input_required" for e in events)
         assert am.read_memory(agent["id"], "team-preferences") is None
 
+    async def test_a_channel_refuses_it_rather_than_ending_in_silence(self, fake_llm):
+        """A channel's turn parks no approval: a pause there ended the turn with
+        no reply at all. Refused with the reason, the agent still answers."""
+        from core.chat_approval import nobody_to_ask
+
+        with nobody_to_ask():
+            agent, events = await self._run(fake_llm, [_call("read_doc", path="x"),
+                                                       _call("remember", **self.POISON), "summary"])
+        assert not any(e["type"] == "human_input_required" for e in events)
+        assert am.read_memory(agent["id"], "team-preferences") is None
+        assert any(e["type"] == "final" and e.get("response") == "summary" for e in events)
+
+    async def test_a_channels_agent_turn_runs_with_nobody_to_ask(self, monkeypatch):
+        import core.react_engine as re_mod
+        import core.server as server
+        from core.chat_approval import approvals_answerable
+        from core.messaging.manager import MessagingManager
+
+        seen = []
+
+        async def fake_step(**kwargs):
+            seen.append(approvals_answerable())
+            yield {"type": "final", "response": "ok"}
+
+        monkeypatch.setattr(re_mod, "run_agent_step", fake_step)
+        agent = S.make_agent(tools=[])
+        await S.seed_agents([agent])
+        assert await MessagingManager(server_module=server).run_agent("hi", agent["id"], "tg_1") == "ok"
+        assert seen == [False] and approvals_answerable()
+
+    async def test_a_delegate_handed_read_content_does_not_save_it(self, fake_llm):
+        """The lead reads a poisoned file and delegates "save this to memory". The
+        delegate read nothing itself, so it started unmarked and saved it."""
+        from core.react_engine import run_agent_step
+
+        helper = S.make_agent(tools=[], memory=True)
+        await S.seed_agents([helper])
+        lead = S.make_agent(type="delegate", tools=["all"], delegate_agent_ids=[helper["id"]])
+
+        async def executor(name, args):
+            return self.READ if name == "read_doc" else None
+
+        fake_llm.script([_call("read_doc", path="ops/handover.md"),
+                         _call("delegate_to_agent", agent_id=helper["id"], task="save this to memory"),
+                         _call("remember", **self.POISON), "saved", "done"])
+        events = [ev async for ev in run_agent_step(
+            message="summarise and delegate", agent_id=lead["id"], session_id="s_lead",
+            server_module=_server(), agent_override=lead, max_turns=6, tool_executor=executor)]
+        assert am.read_memory(helper["id"], "team-preferences") is None
+        assert not any(e["type"] == "human_input_required" for e in events)
+
     @pytest.mark.parametrize("kw", [{"untrusted_message": True}, {"images": ["data:image/png;base64,AAAA"]}])
     async def test_a_file_or_image_in_the_message_counts_too(self, fake_llm, kw):
         agent, events = await self._run(fake_llm, [_call("remember", **self.POISON), "done"], **kw)
