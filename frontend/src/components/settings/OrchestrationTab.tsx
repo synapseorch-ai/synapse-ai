@@ -111,6 +111,58 @@ const EMPTY_ORCHESTRATION: Orchestration = {
     result_key: '',
 };
 
+/** Step events a nested run forwards that belong to its own steps (F251). */
+const NESTED_STEP_EVENTS = new Set(['step_start', 'step_complete', 'step_error', 'final',
+    'tasks_updated', 'orchestration_error']);
+
+interface NestedRun {
+    run_id: string;
+    orchestration_id: string;
+    status: string;
+    steps_completed: number;
+    total_cost_usd?: number;
+    error?: string | null;
+}
+
+/** The runs nested directly under this run — one per run of a nested step (F251). */
+function NestedRuns({ runId, refreshKey, names }: { runId: string; refreshKey: string; names: Record<string, string> }) {
+    const [children, setChildren] = useState<NestedRun[]>([]);
+    useEffect(() => {
+        let live = true;
+        fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}/children`)
+            .then(r => (r.ok ? r.json() : []))
+            .then(rows => { if (live) setChildren(Array.isArray(rows) ? rows : []); })
+            .catch(() => { if (live) setChildren([]); });
+        return () => { live = false; };
+    }, [runId, refreshKey]);
+    if (children.length === 0) return null;
+    return (
+        <div className="rounded-md border border-border bg-surface-2/40 px-2.5 py-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-text-faint mb-1">
+                Nested runs ({children.length})
+            </div>
+            <ul className="space-y-0.5">
+                {children.map(c => (
+                    <li key={c.run_id} className="flex items-baseline gap-2 text-[11px]">
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            c.status === 'completed' ? 'bg-green-400' :
+                            c.status === 'failed' ? 'bg-red-400' :
+                            c.status === 'cancelled' ? 'bg-zinc-500' :
+                            c.status === 'paused' ? 'bg-yellow-400' : 'bg-blue-400 animate-pulse'
+                        }`} aria-hidden />
+                        <span className="text-zinc-300 truncate">{names[c.orchestration_id] || c.orchestration_id}</span>
+                        <span className="text-text-faint capitalize">{c.status}</span>
+                        <span className="text-text-faint">
+                            {c.steps_completed} step{c.steps_completed === 1 ? '' : 's'}
+                        </span>
+                        {c.error && <span className="text-red-300/90 truncate" title={c.error}>{c.error}</span>}
+                    </li>
+                ))}
+            </ul>
+        </div>
+    );
+}
+
 /** The keys a run's result can name: each written by a step, labelled with the
  *  steps that write it. A saved key no step writes stays listed, so the select
  *  shows what is stored rather than silently reading as the default (F249). */
@@ -1069,6 +1121,55 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     // abort the feed there — the server signals the real end with
     // `stream_complete`. Aborting on the live POST stream stays correct.
     const handleSSEEvent = (data: any, fromJournal = false) => {
+        // A nested run's own step events arrive under the step that called it
+        // (F251): they are logged with both names and never move that step's
+        // card — a child's step ending used to read as the parent step's.
+        const handleNestedStepEvent = (data: any) => {
+            const where = `${data.step_name} › ${data.nested_step_name || 'a nested step'}`;
+            const key = `${data.nested_run_id}:${data.nested_step_id || ''}`;
+            switch (data.type) {
+                case 'step_start':
+                    setRunLog(prev => [...prev, line('start', `${where} (${data.step_type})`)]);
+                    if (['agent', 'llm', 'print', 'extract_json'].includes(data.step_type)) {
+                        pendingStepResultRef.current.set(key, { step_name: where, step_type: data.step_type, content: '' });
+                    }
+                    break;
+                case 'step_complete': {
+                    const pending = pendingStepResultRef.current.get(key);
+                    setRunLog(prev => {
+                        const next = [...prev, line('ok', `${where} completed (${data.duration_seconds?.toFixed(1)}s)`)];
+                        if (pending && pending.content.trim()) {
+                            next.splice(next.length - 1, 0, {
+                                kind: 'step_result',
+                                step_name: pending.step_name,
+                                step_type: pending.step_type,
+                                content: pending.content.trim(),
+                            } as StepResultLogEntry);
+                        }
+                        return next;
+                    });
+                    pendingStepResultRef.current.delete(key);
+                    break;
+                }
+                case 'step_error':
+                    setRunLog(prev => [...prev, line('error', `${where}: ${failureReason(data, historyErrorsRef.current)}`)]);
+                    pendingStepResultRef.current.delete(key);
+                    break;
+                case 'final':
+                    if (data.intent !== 'orchestration' && data.response && pendingStepResultRef.current.has(key)) {
+                        pendingStepResultRef.current.get(key)!.content = data.response;
+                    }
+                    break;
+                default:
+                    // The child's own task list and its own end: the parent's step
+                    // reports how it went.
+                    break;
+            }
+        };
+        if (data.nested_run_id && NESTED_STEP_EVENTS.has(data.type)) {
+            handleNestedStepEvent(data);
+            return;
+        }
         switch (data.type) {
             case 'orchestration_start':
                 setRunId(data.run_id);
@@ -1908,6 +2009,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                             onOpenResponseModal={setResponseModal}
                             runId={runId}
                             rubrics={rubrics}
+                            orchestrationNames={Object.fromEntries(orchestrations.map(o => [o.id, o.name]))}
                             onResumeRun={resumeRun}
                             pastRuns={pastRuns}
                             onRestoreRun={restoreRun}
@@ -2046,7 +2148,7 @@ function BottomPanel({
     draft, setDraft, runStatus, liveActivity, runLog, runInput, setRunInput, onStartRun,
     humanPrompt, humanContext, humanResponse, setHumanResponse, onSubmitHuman, onOpenResponseModal,
     humanFields, humanValues, setHumanValues,
-    runId, onResumeRun, pastRuns, onRestoreRun, rubrics,
+    runId, onResumeRun, pastRuns, onRestoreRun, rubrics, orchestrationNames,
 }: {
     draft: Orchestration;
     setDraft: (o: Orchestration) => void;
@@ -2070,6 +2172,8 @@ function BottomPanel({
     pastRuns: { run_id: string; orchestration_id: string; status: string; started_at?: string | null; ended_at?: string | null }[];
     onRestoreRun: (run: { run_id: string; orchestration_id: string; status: string }) => void;
     rubrics: { id: string; name: string }[];
+    /** Orchestration names by id, to name a nested run (F251). */
+    orchestrationNames: Record<string, string>;
 }) {
     const [activeSection, setActiveSection] = useState<'state' | 'guardrails' | 'run' | 'recent'>('run');
     const [panelHeight, setPanelHeight] = useState(280);
@@ -2504,6 +2608,14 @@ function BottomPanel({
                                 })
                             )}
                         </div>
+
+                        {runId && (
+                            <NestedRuns
+                                runId={runId}
+                                refreshKey={`${runStatus}:${runLog.length > 0}`}
+                                names={orchestrationNames}
+                            />
+                        )}
 
                         {/* Centred, not in the bottom-right corner the builder launcher
                             owns (F37). Not while a question is up: the run is waiting,

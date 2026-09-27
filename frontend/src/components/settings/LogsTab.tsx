@@ -120,14 +120,38 @@ export const LogsTab = () => {
     const groupedLogs: Record<string, LogSummary[]> = {};
     const sessionOrder: string[] = [];
 
+    // A nested run's log goes under the run that started it (F251), right after
+    // it: its id is that run's plus `__…`. It used to be a group of its own,
+    // with no link back — a different session from its parent's, or none.
+    const rootOf = (runId: string) => runId.split('__')[0];
+    const groupOf = (log: LogSummary): string => {
+        const root = rootOf(log.run_id);
+        const rootLog = root !== log.run_id ? filteredLogs.find(l => l.run_id === root) : undefined;
+        const anchor = rootLog ?? log;
+        return anchor.session_id || `nosession_${root}`;
+    };
     filteredLogs.forEach(log => {
-        const sid = log.session_id || `nosession_${log.run_id}`;
+        const sid = groupOf(log);
         if (!groupedLogs[sid]) {
             groupedLogs[sid] = [];
             sessionOrder.push(sid);
         }
         groupedLogs[sid].push(log);
     });
+    for (const sid of sessionOrder) {
+        const group = groupedLogs[sid];
+        const tops = group.filter(l => rootOf(l.run_id) === l.run_id);
+        const placed = new Set<string>();
+        const ordered: LogSummary[] = [];
+        for (const top of tops) {
+            ordered.push(top);
+            placed.add(top.run_id);
+            group.filter(l => l.run_id !== top.run_id && rootOf(l.run_id) === top.run_id)
+                .sort((a, b) => (a.started_at || '').localeCompare(b.started_at || ''))
+                .forEach(child => { ordered.push(child); placed.add(child.run_id); });
+        }
+        groupedLogs[sid] = [...ordered, ...group.filter(l => !placed.has(l.run_id))];
+    }
 
     const renderLogContent = (text: string) => {
         const segments: Array<{ type: 'text' | 'compact'; content: string }> = [];
@@ -257,6 +281,7 @@ export const LogsTab = () => {
                                         </div>
                                         {sessionLogs.map(log => {
                                             const isSelected = selectedId === log.run_id;
+                                            const nested = log.run_id.includes('__');
                                             const name = logType === 'agents'
                                                 ? (log.agent_name || log.run_id)
                                                 : logType === 'orchestrations'
@@ -283,9 +308,12 @@ export const LogsTab = () => {
                                                         type="button"
                                                         onClick={() => fetchContent(log.run_id)}
                                                         aria-current={isSelected ? 'true' : undefined}
-                                                        className="flex w-full flex-col gap-1 py-3 pl-4 pr-9 text-left"
+                                                        className={`flex w-full flex-col gap-1 py-3 pr-9 text-left ${nested ? 'pl-8' : 'pl-4'}`}
                                                     >
                                                         <span className="block text-xs text-white font-semibold leading-tight truncate">{name}</span>
+                                                        {nested && (
+                                                            <span className="block text-[10px] text-text-faint truncate">Nested run</span>
+                                                        )}
                                                         {subtitle && (
                                                             <span className="block text-[10px] text-text-faint truncate">{subtitle}</span>
                                                         )}
