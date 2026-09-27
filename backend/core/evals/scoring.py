@@ -63,7 +63,10 @@ async def score_run(run, orch, settings: dict, suite_run_id: str | None = None) 
     if not rubric:
         return None
 
-    verdict = await _judge.judge_run(run, rubric, settings)
+    result_key = getattr(orch, "result_key", None) or (
+        orch.get("result_key") if isinstance(orch, dict) else None
+    ) or ""
+    verdict = await _judge.judge_run(run, rubric, settings, result_key=result_key)
     if verdict is None:
         return None
 

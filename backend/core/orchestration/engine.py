@@ -623,7 +623,7 @@ class OrchestrationEngine:
             logger.run_end(run.status)
             await logger.aclose()
 
-        final_output = self._build_final_response(run)
+        final_output = self._build_final_response(run, getattr(self.orch, "result_key", "") or "")
 
         yield {
             "type": "orchestration_complete",
@@ -1002,7 +1002,6 @@ class OrchestrationEngine:
 
         from .steps import NestedOutcome
 
-        final_response: str | None = None
         sub_outcome = NestedOutcome()
         sub_events: list[dict] = []
 
@@ -1055,9 +1054,6 @@ class OrchestrationEngine:
                 }
                 return
 
-            if sub_event.get("type") == "final" and sub_event.get("intent") == "orchestration":
-                final_response = sub_event.get("response", "")
-
             # Skip sub-orch lifecycle meta-events (same filter as initial execution)
             if sub_event.get("type") in _NESTED_FILTER_TYPES:
                 continue
@@ -1074,28 +1070,20 @@ class OrchestrationEngine:
         # A sub-run that did not complete fails the step waiting on it, with its
         # reason — as it does when it fails without a pause (F253). Its final
         # text used to be taken as the result whatever its status.
-        from core.models_orchestration import Orchestration
         from core.scale.context import resolve_orchestration
+        from .results import nested_result
+        sub_orch_data = await resolve_orchestration(nested_orch_id) if nested_orch_id else None
         failure = None
         if sub_outcome.status != "completed":
-            sub_orch_data = await resolve_orchestration(nested_orch_id) if nested_orch_id else None
             failure = sub_outcome.failure(
                 (sub_orch_data or {}).get("name") or nested_orch_id or "sub-orchestration")
 
-        # Fallback: extract result from orchestration_complete if no "final" event was emitted
-        if not failure and final_response is None:
-            sub_orch_data = await resolve_orchestration(nested_orch_id)
-            if sub_orch_data:
-                sub_orch = Orchestration.model_validate(sub_orch_data)
-                for ev in reversed(sub_events):
-                    if ev.get("type") == "orchestration_complete":
-                        state_data = ev.get("final_state") or {}
-                        for sub_step in reversed(sub_orch.steps):
-                            if sub_step.output_key and sub_step.output_key in state_data:
-                                final_response = str(state_data[sub_step.output_key])
-                                break
-                        break
-            if final_response is None:
+        # What it made, as the value it is — the rule a child that finished in
+        # one go is read by (F249), not its closing question's answer.
+        result = None
+        if not failure:
+            result = nested_result(sub_events, (sub_orch_data or {}).get("result_key") or "")
+            if result is None:
                 failure = "Nested orchestration failed to produce a result after human input"
 
         if failure:
@@ -1130,9 +1118,9 @@ class OrchestrationEngine:
 
         # Write sub-orch result into parent shared_state
         if parent_step and parent_step.output_key:
-            run.shared_state[parent_step.output_key] = final_response
+            run.shared_state[parent_step.output_key] = result
         if parent_step is not None:
-            await self._remember_nested_result(run, parent_step, nested_orch_id, final_response)
+            await self._remember_nested_result(run, parent_step, nested_orch_id, result)
 
         # The step's pause entry is its one entry: closed where it stands, with
         # no duration — the time was a person's, spent in the sub-run. Appending
@@ -1160,7 +1148,7 @@ class OrchestrationEngine:
         outcome["status"] = "done"
 
     async def _remember_nested_result(
-        self, run: OrchestrationRun, step: StepConfig, sub_orch_id: str | None, result: str,
+        self, run: OrchestrationRun, step: StepConfig, sub_orch_id: str | None, result: object,
     ) -> None:
         """Record a nested step finished by an answer, as one finished in one go is.
 
@@ -1800,12 +1788,15 @@ class OrchestrationEngine:
                 _log.warning(f"memory summary for '{agent_id}' failed: {exc}")
 
     @staticmethod
-    def _build_final_response(run: OrchestrationRun) -> str:
+    def _build_final_response(run: OrchestrationRun, result_key: str = "") -> str:
         """Build a human-readable summary from the run.
 
-        From the run alone, so a run's answer can be read back from its
-        checkpoint after the run is over (v1's run read, F117).
+        From the run and its orchestration's `result_key` alone, so a run's
+        answer can be read back from its checkpoint after the run is over (v1's
+        run read, F117). What it made is `results.result_of`'s rule (F249).
         """
+        from .results import result_of
+
         if run.status == "failed":
             last_error = None
             for h in reversed(run.step_history):
@@ -1817,13 +1808,7 @@ class OrchestrationEngine:
         if run.status == "paused":
             return "Orchestration paused, waiting for human input."
 
-        # Try to find the last agent output in shared state
-        last_output = None
-        for h in reversed(run.step_history):
-            output_key = h.get("output_key")
-            if output_key and output_key in run.shared_state:
-                last_output = run.shared_state[output_key]
-                break
+        last_output = result_of(run.step_history, run.shared_state, result_key)
 
         if last_output:
             return str(last_output) if not isinstance(last_output, str) else last_output

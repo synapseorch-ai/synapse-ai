@@ -339,7 +339,6 @@ class AgentStepExecutor:
         # wrong step-start banners, etc.).
         _NESTED_FILTER_TYPES = {"orchestration_start", "orchestration_complete", "orchestration_end"}
 
-        final_response: str | None = None
         outcome = NestedOutcome()
         sub_events: list[dict] = []
         try:
@@ -350,9 +349,6 @@ class AgentStepExecutor:
             ):
                 sub_events.append(sub_event)
                 outcome.read(sub_event)
-                # Capture the sub-engine's terminal final response
-                if sub_event.get("type") == "final" and sub_event.get("intent") == "orchestration":
-                    final_response = sub_event.get("response", "")
 
                 # Skip sub-orch lifecycle events — they pollute the parent's UI
                 if sub_event.get("type") in _NESTED_FILTER_TYPES:
@@ -384,26 +380,19 @@ class AgentStepExecutor:
         if failure:
             raise RuntimeError(failure)
 
-        if final_response is None:
-            # Sub-orch finished without a final event (failed or empty). Fall back
-            # to the orchestration_complete event's last shared_state value.
-            for ev in reversed(sub_events):
-                if ev.get("type") == "orchestration_complete":
-                    state = ev.get("final_state") or {}
-                    # last output_key in the sub-orch's steps
-                    for sub_step in reversed(sub_orch.steps):
-                        if sub_step.output_key and sub_step.output_key in state:
-                            final_response = str(state[sub_step.output_key])
-                            break
-                    break
-
-        if final_response is None:
+        # What the child made, as the value it is (F249): its `result_key`, or
+        # its last content step — not its closing question or route label, which
+        # its final text used to be. A list stays a list.
+        from .results import nested_result
+        result = nested_result(sub_events, sub_orch.result_key)
+        if result is None:
             raise RuntimeError(
                 f"Sub-orchestration '{sub_orch.name}' ended without a final response"
             )
 
         if step.output_key:
-            run.shared_state[step.output_key] = final_response
+            run.shared_state[step.output_key] = result
+        final_response = result if isinstance(result, str) else str(result)
 
         # Record memory so re-invocations see what the sub-orch returned.
         from .context import build_execution_trace, store_execution_memory

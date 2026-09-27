@@ -41,8 +41,20 @@ async def read_run(run_id: str) -> dict | None:
         "step_history": run.step_history,
     }
     if run.status in ("completed", "failed", "cancelled"):
-        body["response"] = OrchestrationEngine._build_final_response(run)
+        body["response"] = OrchestrationEngine._build_final_response(run, await _result_key(run))
     return body
+
+
+async def _result_key(run) -> str:
+    """The orchestration's `result_key`, so a read names what the run made (F249).
+
+    A run of an orchestration deleted since reads by the default rule.
+    """
+    from core.scale.context import resolve_orchestration
+    try:
+        return ((await resolve_orchestration(run.orchestration_id)) or {}).get("result_key") or ""
+    except Exception:  # noqa: BLE001 — a lookup for a label; the default rule still answers
+        return ""
 
 
 async def run_orchestration_id(run_id: str) -> str | None:

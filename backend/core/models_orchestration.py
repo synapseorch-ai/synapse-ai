@@ -219,6 +219,13 @@ class Orchestration(BaseModel):
     #: rubric was deleted — reads the same as unset rather than failing a run.
     rubric_id: str = ""
 
+    #: The state key whose value is what a run of this orchestration made (F249):
+    #: its chat answer as an agent, v1's `response`, what the judge scores, and
+    #: what a parent gets back when this runs nested. Empty means the last step
+    #: that produced content — a person's answer, an evaluator's route label and
+    #: an End are not what a run made (`core.orchestration.results`).
+    result_key: str = ""
+
     created_at: str | None = None
     updated_at: str | None = None
 

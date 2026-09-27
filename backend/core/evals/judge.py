@@ -65,19 +65,20 @@ def _truncate(text: str, limit: int) -> str:
     return smart_truncate(text, limit) if len(text) > limit else text
 
 
-def final_output_of(run) -> str:
+def final_output_of(run, result_key: str = "") -> str:
     """What the run produced, re-derived from durable state.
 
     The engine computes this at finalize and *emits* it; it is never stored.
-    Rather than duplicate the walk, this mirrors `_build_final_response`'s rule
-    — the last step whose `output_key` is present in `shared_state` — so the
-    judge scores the same text a person was shown.
+    It reads the one rule `_build_final_response` reads (`results.result_of`,
+    F249) — the orchestration's `result_key`, else the last step that produced
+    content — so the judge scores the same text a person was shown, not a
+    closing approval or an evaluator's route label.
     """
-    for entry in reversed(run.step_history or []):
-        key = entry.get("output_key")
-        if key and key in (run.shared_state or {}):
-            value = run.shared_state[key]
-            return value if isinstance(value, str) else str(value)
+    from core.orchestration.results import result_of
+
+    value = result_of(run.step_history, run.shared_state, result_key)
+    if value is not None:
+        return value if isinstance(value, str) else str(value)
     if run.status == "failed":
         for entry in reversed(run.step_history or []):
             if entry.get("error"):
@@ -86,7 +87,7 @@ def final_output_of(run) -> str:
     return ""
 
 
-def _evidence(run) -> str:
+def _evidence(run, result_key: str = "") -> str:
     """The run, rendered for a model to read.
 
     Ordered so the most important thing is first and the bulk is last: a judge
@@ -96,7 +97,7 @@ def _evidence(run) -> str:
 
     parts.append(f"RUN STATUS: {run.status}")
 
-    output = final_output_of(run)
+    output = final_output_of(run, result_key)
     if output:
         parts.append("FINAL OUTPUT:\n" + _truncate(output, MAX_OUTPUT_CHARS))
 
@@ -179,7 +180,7 @@ def _step_traces(run) -> list[str]:
     return out
 
 
-def build_prompt(run, rubric: dict) -> str:
+def build_prompt(run, rubric: dict, *, result_key: str = "") -> str:
     """The judge's instructions. Ends with the output contract, not the data."""
     scale = rubric.get("scale") or {"min": 0.0, "max": 10.0}
     lo, hi = scale.get("min", 0.0), scale.get("max", 10.0)
@@ -209,7 +210,7 @@ def build_prompt(run, rubric: dict) -> str:
         f"Score the workflow run below against each criterion, on a scale from "
         f"{lo} to {hi}.\n\n"
         f"CRITERIA:\n{criteria_text}\n\n"
-        f"{_evidence(run)}\n\n"
+        f"{_evidence(run, result_key)}\n\n"
         f"Also give each step its own score on the same scale, so the weakest "
         f"part of the run can be identified. Step ids: {steps_line}\n\n"
         f"Respond with ONLY a JSON object of this exact shape:\n"
@@ -354,7 +355,7 @@ def parse_verdict(
     }
 
 
-async def judge_run(run, rubric: dict, settings: dict) -> dict | None:
+async def judge_run(run, rubric: dict, settings: dict, *, result_key: str = "") -> dict | None:
     """Score one run. Returns the verdict, or None if the judge did not answer.
 
     The call is attributed with `source="orchestration:judge"` and the run's own
@@ -374,7 +375,7 @@ async def judge_run(run, rubric: dict, settings: dict) -> dict | None:
     if model.strip().lower() == "default":
         model = settings.get("model", "mistral")
 
-    prompt = build_prompt(run, rubric)
+    prompt = build_prompt(run, rubric, result_key=result_key)
     started = time.time()
     try:
         text = await asyncio.wait_for(

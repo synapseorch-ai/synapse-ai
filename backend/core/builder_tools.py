@@ -658,6 +658,17 @@ BUILDER_TOOL_SCHEMAS = [
                             "and the run log says so. Turn it on only when asked to."
                         ),
                     },
+                    "result_key": {
+                        "type": "string",
+                        "description": (
+                            "The state key whose value is what this orchestration makes: its "
+                            "answer when chatted with as an agent, and what a parent gets back "
+                            "when it runs nested. Leave empty for the last step that produces "
+                            "content (a human step's answer, an evaluator's route label and an "
+                            "end step never count). Set it when the result is not the last step's "
+                            "output — a workflow ending in an approval of its report, say."
+                        ),
+                    },
                 },
                 "required": ["orch_id"],
             },
@@ -1907,12 +1918,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # works for callers that haven't migrated yet.
         raw_fields = dict(args.get("fields") or {})
         for key in ("name", "description", "entry_step_id", "state_schema_json",
-                    "max_total_turns", "timeout_minutes"):
+                    "max_total_turns", "timeout_minutes", "result_key"):
             if key in args and args[key] is not None:
                 raw_fields[key] = args[key]
         _normalize_state_schema_arg(raw_fields)
         allowed = {"name", "description", "entry_step_id", "state_schema",
-                   "max_total_turns", "timeout_minutes", "strict_state_types"}
+                   "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"}
         fields = {k: v for k, v in raw_fields.items() if k in allowed}
         if not fields:
             return {"error": f"No allowed meta fields to set. Allowed: {sorted(allowed)}"}
@@ -2593,6 +2604,14 @@ def _validate_orchestration(orch: dict) -> dict:
                     f"earlier step '{k}' as its output_key, or change the read to a key that "
                     f"is already written. Remove the read only if the step does not need that value."
                 )
+    # What a run makes (F249): a result_key no step writes is never the result.
+    result_key = orch.get("result_key") or ""
+    if result_key and result_key not in writable:
+        issues.append(
+            f"result_key '{result_key}' is written by no step — name the output_key of the step "
+            f"whose output is this orchestration's result, or leave result_key empty for the last "
+            f"step that produces content."
+        )
 
     # Reachability walk: every reachable step must be able to hit an `end`.
     # Dead-end non-end steps (no next_step_id / routes / branches) are bugs —
