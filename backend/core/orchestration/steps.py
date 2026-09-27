@@ -230,7 +230,10 @@ class AgentStepExecutor:
                         await SharedState(run).checkpoint(columns=("step_progress",))
                     except Exception as ckpt_err:
                         _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
-                    yield {**event, "orch_step_id": step.id, "step_name": step.name}
+                    # Naming its run, so an answer given where it is shown —
+                    # a chat with this workflow's agent — resumes this run
+                    # rather than starting the workflow again (F290).
+                    yield {**event, "orch_step_id": step.id, "step_name": step.name, "run_id": run.run_id}
                     return
 
                 if event.get("type") == "_step_progress":

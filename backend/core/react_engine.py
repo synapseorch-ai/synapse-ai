@@ -2731,6 +2731,35 @@ async def run_orchestrator_agent(
         yield {"type": "error", "message": f"Orchestration error: {e}"}
 
 
+async def _resume_workflow_run(resume_state: dict, server_module):
+    """Carry on the run a chat's approval answered (F290), yielding its events.
+
+    Only while it is still waiting on a person and nothing is running it — an
+    answer given elsewhere first (the run's own screen) wins, and this one says
+    so rather than applying twice.
+    """
+    from core.orchestration.engine import OrchestrationEngine
+    from core.orchestration.runner import _active_tasks, stream_engine_events
+    from core.orchestration.state import SharedState
+
+    run_id = resume_state["run_id"]
+    call = resume_state.get("pending_call") or {}
+    try:
+        run = (await SharedState.restore(run_id)).run
+    except FileNotFoundError:
+        yield {"type": "error", "message": "The workflow run that asked is gone."}
+        return
+    active = _active_tasks.get(run_id)
+    if run.status != "paused" or not run.waiting_for_human or (active is not None and not active.done()):
+        yield {"type": "error", "message": "That question has already been answered."}
+        return
+    answer = {"approve": bool(call.get("approved")), "reason": call.get("reason") or ""}
+    async for event in stream_engine_events(
+        OrchestrationEngine.resume(run_id, answer, server_module), run_id,
+    ):
+        yield event
+
+
 async def resolve_agent_for_run(agent_id: str | None) -> dict | None:
     """The agent a run names — Postgres first (worker mode), the store otherwise."""
     from core.scale.context import resolve_agent as _ctx_resolve_agent
@@ -2810,9 +2839,16 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         failed = False
         failure = None
         failed_run = None
-        async for event in run_orchestrator_agent(
-            active_agent, user_message, server_module, session_id=session_id, with_history=True,
-        ):
+        if resume_state and resume_state.get("run_id"):
+            # An answer to a call the workflow's own run is waiting on (F290):
+            # that run carries on. Starting the workflow again left it paused
+            # for ever and asked the same question in a second run.
+            source = _resume_workflow_run(resume_state, server_module)
+        else:
+            source = run_orchestrator_agent(
+                active_agent, user_message, server_module, session_id=session_id, with_history=True,
+            )
+        async for event in source:
             if event.get("type") == "orchestration_complete" and event.get("status") == "failed":
                 failed = True
                 failed_run = event.get("run_id")

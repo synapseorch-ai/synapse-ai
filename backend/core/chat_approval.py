@@ -53,7 +53,7 @@ def parked_payload(event: dict, *, message: str, progress: dict | None) -> dict[
     transcript. `progress` is the last `_step_progress` the loop emitted —
     never forwarded to a client, because it is engine state and not an event.
     """
-    return {
+    payload = {
         "tool_name": event.get("tool_name"),
         "tool_args": event.get("tool_args") or {},
         "approval_id": event.get("approval_id"),
@@ -61,6 +61,11 @@ def parked_payload(event: dict, *, message: str, progress: dict | None) -> dict[
         "message": message or "",
         "progress": progress or {},
     }
+    if event.get("run_id"):
+        # A workflow's call, asked in a chat with its agent: the answer resumes
+        # that run (F290). Re-running the chat turn started the workflow again.
+        payload["run_id"] = event["run_id"]
+    return payload
 
 
 def approval_prompt(tool_name: str | None, category: str | None) -> str:
@@ -125,6 +130,8 @@ def resume_state_for(pending: dict, *, approve: bool, reason: str = "") -> dict[
     }
     if not approve and reason:
         state["denied_reasons"] = {**(progress.get("denied_reasons") or {}), approval_id: reason}
+    if pending.get("run_id"):
+        state["run_id"] = pending["run_id"]
     return state
 
 
