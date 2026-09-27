@@ -25,7 +25,6 @@ Endpoints:
 import asyncio
 import json
 import logging
-import time
 import uuid
 
 from typing import Literal
@@ -37,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from core.api_key_middleware import require_api_key
 from core.images import checked_images
 from core.models_schedule import ScheduleCreate, ScheduleUpdate
+from core.run_ids import new_run_id
 
 router = APIRouter()
 log = logging.getLogger("api_v1")
@@ -558,7 +558,7 @@ async def v1_orchestration_run(
 
     orch_data = await _workspace_orchestration(orch_id)
 
-    run_id = f"run_{orch_id}_{int(time.time() * 1000)}"
+    run_id = new_run_id(orch_id)
     orch = Orchestration.model_validate(orch_data)
     engine = OrchestrationEngine(orch, _server)
 
@@ -627,7 +627,7 @@ async def v1_orchestration_run_stream(
 
     orch_data = await _workspace_orchestration(orch_id)
 
-    run_id = f"run_{orch_id}_{int(time.time() * 1000)}"
+    run_id = new_run_id(orch_id)
     orch = Orchestration.model_validate(orch_data)
     engine = OrchestrationEngine(orch, _server)
 

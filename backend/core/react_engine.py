@@ -2560,6 +2560,7 @@ async def run_orchestrator_agent(
         from core.models_orchestration import Orchestration
         from core.orchestration.engine import OrchestrationEngine
         from core.orchestration.runner import stream_engine_events
+        from core.run_ids import new_run_id
         from core.scale.context import resolve_orchestration
 
         orch_data = await resolve_orchestration(orch_id)
@@ -2568,7 +2569,7 @@ async def run_orchestrator_agent(
             return
         orch = Orchestration.model_validate(orch_data)
         engine = OrchestrationEngine(orch, server_module)
-        run_id = run_id or f"run_{orch_id}_{int(time.time() * 1000)}"
+        run_id = run_id or new_run_id(orch_id)
         # Route through the shared runner, exactly as the editor's run endpoint
         # does: the engine holds anyio cancel scopes across yields, so it must be
         # advanced from a single task no matter how the caller consumes us

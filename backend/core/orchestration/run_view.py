@@ -49,16 +49,16 @@ async def run_orchestration_id(run_id: str) -> str | None:
     """The orchestration a run belongs to, from its checkpoint or its id.
 
     A run inside its first step has no checkpoint; its id is
-    `run_{orchestration_id}_{ms}` (v1 and MCP both mint it that way).
+    `run_{orchestration_id}_{ms}_{hex}` (`core.run_ids`, which v1 and MCP both
+    mint through).
     """
     from core.orchestration.state import SharedState
+    from core.run_ids import orchestration_of
 
     try:
         return (await SharedState.restore(run_id)).run.orchestration_id
     except FileNotFoundError:
-        if run_id.startswith("run_") and run_id.count("_") >= 2:
-            return run_id[len("run_"):].rsplit("_", 1)[0]
-        return None
+        return orchestration_of(run_id)
 
 
 #: The most runs one list call returns.

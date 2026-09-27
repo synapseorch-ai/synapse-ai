@@ -322,8 +322,9 @@ class InProcessRuns:
         from core.models_orchestration import Orchestration
         from core.orchestration.engine import OrchestrationEngine
         from core.orchestration.runner import spawn_engine_run
+        from core.run_ids import new_run_id
 
-        run_id = f"run_{orch['id']}_{int(time.time() * 1000)}"
+        run_id = new_run_id(orch["id"])
         engine = OrchestrationEngine(Orchestration.model_validate(orch), _server)
         _task, queue = spawn_engine_run(engine.run(message, run_id, initial_state=inputs or None), run_id)
         return run_id, queue

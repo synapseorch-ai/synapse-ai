@@ -95,8 +95,9 @@ def _get_pg_session_factory(request: Request):
     return sf
 
 
-def _new_run_id() -> str:
-    return f"run_{uuid.uuid4().hex[:12]}_{int(time.time() * 1000)}"
+def _new_run_id(orch_id: str) -> str:
+    from core.run_ids import new_run_id
+    return new_run_id(orch_id)
 
 
 def _new_session_id() -> str:
@@ -281,7 +282,7 @@ async def v2_run_orchestration(
     await _check_tenant_quota(sf, tenant_id, redis)
     await _check_global_queue_depth(redis, queue_name, cfg.max_global_queue_depth)
 
-    run_id = _new_run_id()
+    run_id = _new_run_id(orch_id)
 
     # Pre-create run row so status polling works immediately
     await _create_run_row(sf, run_id, orch_id, tenant_id)

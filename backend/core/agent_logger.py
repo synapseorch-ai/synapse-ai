@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 
+from core.run_ids import new_run_id
+
 #: Blob key prefix for finished logs. The blob store applies the tenant
 #: prefix itself; this used to be a flat prefix on a shared bucket.
 _BLOB_PREFIX = "logs/agent"
@@ -85,9 +87,10 @@ class AgentLogger:
         source: str,
         user_message: str,
     ):
-        # run_id encodes the agent and timestamp for easy identification
+        # run_id encodes the agent and timestamp for easy identification; the
+        # suffix keeps two runs in one millisecond apart (F259)
         short_id = agent_id.replace("agent_", "") if agent_id.startswith("agent_") else agent_id
-        self.run_id = f"agentrun_{short_id}_{int(time.time() * 1000)}"
+        self.run_id = new_run_id(short_id, prefix="agentrun")
         self.path = _logs_dir() / f"{self.run_id}.log"
         self._start_time = time.time()
         self._q: queue.SimpleQueue = queue.SimpleQueue()

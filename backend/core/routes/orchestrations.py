@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from core.models_orchestration import Orchestration
 from core.react_engine import drain_queue_with_heartbeat
+from core.run_ids import new_run_id
 # Registry of active run tasks (for mid-step cancellation), owned by the runner
 # so non-route callers can register runs too.
 from core.orchestration.runner import SENTINEL, _active_tasks, spawn_engine_run
@@ -364,7 +365,7 @@ async def run_orchestration(orch_id: str, request: Request):
 
     body = await request.json()
     user_input = body.get("message", "")
-    run_id = f"run_{orch_id}_{int(time.time() * 1000)}"
+    run_id = new_run_id(orch_id)
 
     orch = Orchestration.model_validate(orch_data)
     server_module = request.app.state.server_module
