@@ -733,15 +733,31 @@ async def _run_spawn_subtask_batch(
     server_module,
     source: str,
     run_id: str | None,
+    policy: dict | None = None,
+    declarations: dict | None = None,
 ) -> list[tuple[str, str]]:
     """Run a batch of spawn_subtask calls in parallel.
 
     Each call gets an ephemeral agent config with only the requested tools
     (validated as a subset of the parent's available tools). Returns a list of
     (name, result_text) tuples in the same order as subtask_calls.
+
+    A sub-agent can do no more than its parent may (F266). `policy` is the
+    parent's *resolved* tool policy and `declarations` its tools by name: a tool
+    the parent would be refused, or would have to ask a person about, is not
+    given to the sub-agent — a sub-agent cannot show a card, and it used to run
+    such a tool with no card and no refusal. The result says what was withheld,
+    so the parent can call it itself, where the person is asked.
     """
     import uuid
     import asyncio
+
+    policy = dict(policy) if policy else dict(_tool_policy.DEFAULT_POLICY)
+    declarations = declarations or {}
+
+    def _decision(tool_name: str) -> tuple[str, str]:
+        declared = declarations.get(tool_name)
+        return _tool_policy.decide(declared if declared is not None else _UndeclaredTool(tool_name), policy)
 
     async def _run_one(args: dict) -> tuple[str, str]:
         task = args.get("task", "")
@@ -749,8 +765,22 @@ async def _run_spawn_subtask_batch(
         name = args.get("name") or task[:40]
         # Enforce subset — sub-agent can only use tools the parent actually has
         valid_tools = [t for t in requested_tools if t in available_tools]
-        if not valid_tools:
-            valid_tools = available_tools[:5]
+        withheld: list[str] = []
+        if valid_tools:
+            granted = []
+            for tool_name in valid_tools:
+                decision, category = _decision(tool_name)
+                if decision == "allow":
+                    granted.append(tool_name)
+                elif decision == "deny":
+                    withheld.append(f"{tool_name} (your tool policy blocks it: {_tool_policy.explain(category)})")
+                else:
+                    withheld.append(f"{tool_name} (it needs a person's approval — call it yourself "
+                                    "and they will be asked)")
+            valid_tools = granted
+        else:
+            # Nothing it asked for exists: the first few it may run outright.
+            valid_tools = [t for t in available_tools if _decision(t)[0] == "allow"][:5]
 
         ephemeral_agent = {
             "id": f"subtask_{uuid.uuid4().hex[:8]}",
@@ -763,6 +793,9 @@ async def _run_spawn_subtask_batch(
             ),
             "tools": valid_tools,
             "max_turns": 10,
+            # The parent's resolved policy, with nobody to ask: a backstop for a
+            # name the sub-agent is offered that was never judged above.
+            "tool_policy": {c: ("deny" if d == "confirm" else d) for c, d in policy.items()},
         }
 
         sub_final = ""
@@ -784,6 +817,8 @@ async def _run_spawn_subtask_batch(
             _log.warning(f"❌ spawn_subtask '{name}' failed: {exc}")
 
         _log.debug(f"✅ spawn_subtask '{name}' completed ({len(sub_final)} chars)")
+        if withheld:
+            sub_final = f"Not given to the sub-agent: {'; '.join(withheld)}.\n\n{sub_final}"
         return (name, sub_final)
 
     return list(await asyncio.gather(*[_run_one(args) for args in subtask_calls]))
@@ -1318,6 +1353,12 @@ async def run_agent_step(
         # Nobody on a public surface can answer an approval card (F280).
         _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
 
+    # What a sub-agent may be given: what this agent may use here, a step's
+    # narrowing included (F266) — `_spawn_subtask_available_tools` is every
+    # tool it was offered, before `allowed_tools` narrowed them.
+    _spawn_grantable = [n for n in _spawn_subtask_available_tools
+                        if "all" in allowed_tools or n in allowed_tools or n in always_allowed]
+
     # Browser tools produce DOM snapshots that are only useful for the current turn.
     # Previous snapshots become stale the moment the page changes, so we skip
     # appending them to the accumulated context and only keep a short summary.
@@ -1689,7 +1730,19 @@ async def run_agent_step(
             # Collect all spawn_subtask calls from this turn and run them in parallel
             # BEFORE the sequential tool loop. Results are consumed in order below.
             _spawn_subtask_result_queue: list[tuple[str, str]] = []
-            if _spawn_subtask_enabled:
+            # Only when the spawn itself would pass the guard and the policy
+            # below (F266): it declares nothing, so `undeclared` decides it, and
+            # a step can take it away. Otherwise each call meets the gate in the
+            # loop — refused, or a card — and an approved one runs there.
+            _spawn_may_run = (
+                ("all" in allowed_tools or SPAWN_SUBTASK_TOOL_NAME in allowed_tools
+                 or SPAWN_SUBTASK_TOOL_NAME in always_allowed)
+                and _tool_policy.decide(
+                    _tool_by_name.get(SPAWN_SUBTASK_TOOL_NAME) or _UndeclaredTool(SPAWN_SUBTASK_TOOL_NAME),
+                    _policy,
+                )[0] == "allow"
+            )
+            if _spawn_subtask_enabled and _spawn_may_run:
                 _spawn_calls_this_turn = [
                     tc.get("arguments", {})
                     for tc in tool_calls
@@ -1701,11 +1754,13 @@ async def run_agent_step(
                     _spawn_subtask_result_queue = await _run_spawn_subtask_batch(
                         subtask_calls=_spawn_calls_this_turn,
                         parent_agent_id=agent_id_for_session,
-                        available_tools=_spawn_subtask_available_tools,
+                        available_tools=_spawn_grantable,
                         session_id=session_id,
                         server_module=server_module,
                         source=source,
                         run_id=run_id,
+                        policy=_policy,
+                        declarations=_tool_by_name,
                     )
 
             for tool_call in tool_calls:
@@ -2009,11 +2064,13 @@ async def run_agent_step(
                         results = await _run_spawn_subtask_batch(
                             subtask_calls=[tool_args],
                             parent_agent_id=agent_id_for_session,
-                            available_tools=_spawn_subtask_available_tools,
+                            available_tools=_spawn_grantable,
                             session_id=session_id,
                             server_module=server_module,
                             source=source,
                             run_id=run_id,
+                            policy=_policy,
+                            declarations=_tool_by_name,
                         )
                         sub_name, result_text = results[0] if results else (sub_name, "No result")
 
