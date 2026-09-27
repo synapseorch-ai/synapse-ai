@@ -4,6 +4,7 @@ Yields structured event dicts that callers can handle differently
 (collect for sync response, or stream as SSE).
 """
 import asyncio
+import contextvars
 import contextlib
 import json
 import sys
@@ -2119,6 +2120,19 @@ async def run_agent_step(
                     _log.debug(f"🤝 Delegate → agent '{agent_name}' ({target_agent_id})")
                     yield {"type": "thinking", "message": f"Delegating to {agent_name}..."}
 
+                    # A workflow agent runs its workflow (F262), as an Agent step
+                    # and a schedule do. Run as a chat agent it had no tools of
+                    # its own and a stub for a prompt, answered from the model's
+                    # knowledge, and was reported as the workflow's result.
+                    if target_agent.get("type") == "orchestrator":
+                        sub_final = await _delegate_to_workflow(target_agent, task_message, server_module)
+                        raw_output = maybe_vault(tool_name, sub_final)
+                        current_context_text += f"\n[Turn {turn + 1} — Observation] Agent '{agent_name}' response:\n{raw_output}\n"
+                        tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
+                        preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
+                        continue
+
                     # Run the sub-agent's full ReAct loop
                     sub_final = ""
                     try:
@@ -2537,6 +2551,58 @@ class RunFailed(RuntimeError):
         self.run_id = run_id
 
 
+async def _delegate_to_workflow(target: dict, task: str, server_module) -> str:
+    """Run a delegated workflow agent's orchestration; what the lead reads back (F262).
+
+    Its result is the run's answer. A failure is told as one — its reason to a
+    member, a plain line to a visitor, whose turn this may be. A pause for a
+    person is not the lead's to answer, and forwarded it would be parked as the
+    lead's own question: the lead is told where it waits instead, as a channel
+    is. It starts fresh — no conversation — as any delegate does.
+    """
+    from core import visitor as _visitor_mod
+
+    orch_id = target.get("orchestration_id")
+    name = target.get("name") or target.get("id")
+    if orch_id and orch_id in _WORKFLOW_CHAIN.get():
+        return (f"Not delegated: the workflow '{name}' is already running further up this chain, "
+                f"so this would run it inside itself. Continue without it.")
+    answer = None
+    failed = False
+    paused = None
+    run_id = None
+    error = None
+    async for event in run_orchestrator_agent(target, task, server_module):
+        etype = event.get("type")
+        if etype == "orchestration_start" and not run_id:
+            run_id = event.get("run_id")
+        elif etype == "error":
+            error = str(event.get("message") or "the workflow could not start")
+        elif etype == "orchestration_complete" and event.get("status") in ("failed", "cancelled"):
+            failed = True
+        elif etype == "human_input_required":
+            paused = event
+        elif etype == "final" and not event.get("orch_step_id"):
+            answer = event.get("response", "")
+    if error or failed:
+        if _visitor_mod.current() is not None:
+            return f"The workflow '{name}' could not finish."
+        return f"The workflow '{name}' failed: {error or answer or 'it did not finish'}"
+    if paused:
+        return (f"⏸ The workflow '{name}' is waiting for a person: "
+                f"{paused.get('prompt') or 'it needs input'} — answer it in SynapseOrch (run {run_id}). "
+                f"It carries on from there; its result is not available to you now.")
+    return answer or ""
+
+
+#: The orchestrations running up this call chain through `run_orchestrator_agent`
+#: (F262). A delegation into one of them would run the workflow inside itself,
+#: and nothing else bounds that: the nesting cap counts nested steps, and a
+#: workflow started from a step here is a top-level run.
+_WORKFLOW_CHAIN: "contextvars.ContextVar[tuple[str, ...]]" = contextvars.ContextVar(
+    "synapse_workflow_chain", default=())
+
+
 async def run_orchestrator_agent(
     agent: dict,
     message: str,
@@ -2589,13 +2655,20 @@ async def run_orchestrator_agent(
                 from core.session import get_recent_history_messages
                 history = await get_recent_history_messages(session_id, agent_id=agent.get("id"))
             initial_state = {"history": history}
+        chain = _WORKFLOW_CHAIN.get() + (orch_id,)
+
+        async def _in_chain():
+            # Set inside the runner's own task, which copies this context: the
+            # mark reaches every step of this run and nothing outside it.
+            _WORKFLOW_CHAIN.set(chain)
+            async for ev in engine.run(message, run_id, session_id=session_id, initial_state=initial_state):
+                yield ev
+
         # Route through the shared runner, exactly as the editor's run endpoint
         # does: the engine holds anyio cancel scopes across yields, so it must be
         # advanced from a single task no matter how the caller consumes us
         # (issue #356). It also registers the run for cancel/reconnect.
-        async for event in stream_engine_events(
-            engine.run(message, run_id, session_id=session_id, initial_state=initial_state), run_id
-        ):
+        async for event in stream_engine_events(_in_chain(), run_id):
             yield event
     except Exception as e:
         yield {"type": "error", "message": f"Orchestration error: {e}"}
