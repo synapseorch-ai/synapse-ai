@@ -185,6 +185,8 @@ class AgentStepExecutor:
                 # mid-transcript will not see them again.
                 images=(getattr(engine, "images", None) or None) if step.pass_images else None,
                 should_stop=getattr(engine, "cancel_hook", None),
+                # A vault file the step's prompt read in is content nobody typed (F279).
+                untrusted_message=any(getattr(m, "outcome", "") == "inlined" for m in mentions),
             ):
                 if event.get("type") == "tasks_updated":
                     # Task state lives on the run, not in a tool's process
@@ -228,6 +230,9 @@ class AgentStepExecutor:
                         "has_compacted": event.get("has_compacted"),
                         "browser_actions": event.get("browser_actions"),
                         "tools_used": event.get("tools_used"),
+                        # Whether the step has read content nobody typed (F279) —
+                        # a resume must not forget it.
+                        "memory_tainted": event.get("memory_tainted"),
                         "attempt": resume_attempt,
                     }
                     try:

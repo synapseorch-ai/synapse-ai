@@ -85,6 +85,10 @@ REASONS = {
     "destructive": "it can modify data in a way that cannot be undone",
     "open_world": "it reaches systems outside this workspace",
     "undeclared": "it does not declare what it does",
+    # Not a policy category: a `remember` in a turn that read a file or a
+    # tool's result is always held for a person (F279, `react_engine`).
+    "memory_from_content": ("it would save something this turn read from a file or a tool "
+                            "into the agent's permanent memory"),
 }
 
 
