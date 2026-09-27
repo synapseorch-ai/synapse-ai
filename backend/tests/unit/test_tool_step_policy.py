@@ -146,6 +146,37 @@ class TestConfirmPausesTheRunLikeAnAgentStep:
         assert done[-1]["status"] == "completed"
         assert done[-1]["final_state"]["result"] == "ran-danger"
 
+    async def test_the_spent_approval_is_saved_before_the_call_runs(self, fake_llm, server, monkeypatch):
+        """Otherwise a crash mid-call finds the approval again on recovery and
+        runs the call a second time."""
+        from core.orchestration.state import SharedState
+
+        agent = S.make_agent(tools=["danger"], tool_policy={"destructive": "confirm"})
+        await S.seed_agents([agent])
+        fake_llm.script([tool_call("danger", cmd="rm -rf build")])
+        await _run(_orch(agent_id=agent["id"]), server, run_id="run_tp_ck")
+
+        order: list[str] = []
+        real = SharedState.checkpoint
+
+        async def checkpoint(self, *a, **k):
+            progress = (self.run.step_progress or {}).get("call") or {}
+            order.append("saved-with-approval" if progress.get("pending_call") else "saved")
+            return await real(self, *a, **k)
+
+        real_call = server.session.call_tool
+
+        async def call_tool(name, args, **kw):
+            order.append("ran")
+            return await real_call(name, args, **kw)
+
+        monkeypatch.setattr(SharedState, "checkpoint", checkpoint)
+        monkeypatch.setattr(server.session, "call_tool", call_tool)
+        await _resume("run_tp_ck", {"approve": True}, server)
+        ran = order.index("ran")
+        assert "saved" in order[:ran], "the spent approval was saved before the call"
+        assert "saved-with-approval" not in order[ran:]
+
     async def test_refusing_fails_the_step_with_the_reason(self, fake_llm, server):
         agent = S.make_agent(tools=["danger"], tool_policy={"destructive": "confirm"})
         await S.seed_agents([agent])
@@ -173,6 +204,20 @@ class TestTheStepRunsOnlyItsOwnTool:
         assert server.session.calls == [("clock", {})]
         assert done[-1]["status"] == "completed"
         assert "clock" in str(fake_llm.calls[1]), "the retry was told which tool to call"
+
+
+    async def test_a_bare_name_for_the_same_namespaced_tool_runs_it(self, fake_llm, server):
+        """A model that drops the `server__` prefix names the same tool, not another."""
+        from core.tool_router import ToolRouter
+
+        router = ToolRouter({})
+        router["acme__clock"] = ("fake", "clock")
+        server.tool_router = router
+        server.declared["acme__clock"] = VirtualTool("acme__clock", "time", {}, CLOCK.annotations)
+        fake_llm.script([tool_call("clock")])
+        _, done = await _run(_orch(tool="acme__clock"), server, run_id="run_tp_f281c")
+        assert server.session.calls == [("clock", {})]
+        assert done[-1]["status"] == "completed"
 
 
 class TestAStrangersReadOnlyClaimIsNotBelieved:

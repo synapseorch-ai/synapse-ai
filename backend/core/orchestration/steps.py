@@ -502,6 +502,17 @@ class ToolStepExecutor:
         from core.orchestration.state import SharedState
         from core.react_engine import _approval_id
 
+        from core.tool_router import ToolRouter
+
+        _router = getattr(engine.server_module, "tool_router", None)
+        if not isinstance(_router, ToolRouter):
+            _router = ToolRouter(_router or {})
+
+        def _same_tool(named: str, forced: str) -> bool:
+            """`server__tool` and a bare `tool` the router sends to it are one tool."""
+            key = _router.resolve(named) if isinstance(named, str) else None
+            return key is not None and key == _router.resolve(forced)
+
         _policy = _tool_policy.resolve_policy(active_agent, settings)
         if _visitor is not None:
             _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
@@ -514,6 +525,12 @@ class ToolStepExecutor:
         _replay: dict | None = None
         if _answered:
             run.step_progress.pop(step.id, None)
+            # Spent before the call runs, and saved: a crash mid-call must not
+            # find the approval again on recovery and run the call a second time.
+            try:
+                await SharedState(run).checkpoint(columns=("step_progress",))
+            except Exception as ckpt_err:
+                _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
             if not _answered.get("approved"):
                 reason = _answered.get("reason") or ""
                 message = (f"Tool step '{step.name}' did not run '{tool_name}': a person refused it"
@@ -604,7 +621,7 @@ class ToolStepExecutor:
 
             called_tool = tool_call.get("tool", "")
             tool_args = tool_call.get("arguments", {})
-            if called_tool != tool_obj.name:
+            if called_tool != tool_obj.name and not _same_tool(called_tool, tool_obj.name):
                 # This step's tool is the only one it runs (F281). The name in
                 # the model's JSON used to be looked up across every server,
                 # custom tool and builder tool, so a reply naming `run_bash` on a
@@ -613,6 +630,9 @@ class ToolStepExecutor:
                               f'Answer with {{"tool": "{tool_obj.name}", "arguments": {{...}}}}')
                 _log.debug(f"TOOL STEP: ⚠ model named '{called_tool}' instead of '{tool_obj.name}'")
                 continue
+            # The forced tool runs, by its own name — a bare name the model used
+            # for a namespaced tool dispatches to the same place.
+            called_tool = tool_obj.name
             last_tool_args = tool_args
 
             if _decision == "confirm" and not _replaying:
