@@ -494,6 +494,40 @@ class ToolStepExecutor:
             yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
             raise RuntimeError(message)
 
+        # ── Tool policy (F267): the step's agent's, or the workspace's ──────
+        # An Agent step's calls went through the policy and a Tool step's did
+        # not, so `run_bash` forced in a Tool step ran under a `deny`.
+        from core import tool_policy as _tool_policy
+        from core.chat_approval import approval_prompt
+        from core.orchestration.state import SharedState
+        from core.react_engine import _approval_id
+
+        _policy = _tool_policy.resolve_policy(active_agent, settings)
+        if _visitor is not None:
+            _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
+        _decision, _category = _tool_policy.decide(tool_obj, _policy)
+
+        # A person's answer to a pause this step made: the call they allowed is
+        # the one that runs — the model is not asked again, it might ask for
+        # something else — and a refusal fails the step with their reason.
+        _answered = (run.step_progress.get(step.id) or {}).get("pending_call")
+        _replay: dict | None = None
+        if _answered:
+            run.step_progress.pop(step.id, None)
+            if not _answered.get("approved"):
+                reason = _answered.get("reason") or ""
+                message = (f"Tool step '{step.name}' did not run '{tool_name}': a person refused it"
+                           + (f": {reason}" if reason else ""))
+                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+                raise RuntimeError(message)
+            _replay = {"tool": tool_name, "arguments": _answered.get("arguments") or {}}
+        elif _decision == "deny":
+            # Refused before the model is asked for arguments.
+            message = (f"Tool step '{step.name}' did not run '{tool_name}': the tool policy blocks it "
+                       f"because {_tool_policy.explain(_category)}")
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
+
         # Build evaluator-style prompt: ask LLM to output JSON tool call (no tools= API param)
         tool_schema_str = str(tool_obj.inputSchema)
         tool_prompt = (
@@ -523,38 +557,44 @@ class ToolStepExecutor:
                 turn_prompt += f"\n\nPrevious attempt failed: {last_error}\nPlease try again with correct arguments."
 
             _log.debug(f"TOOL STEP: turn {turn + 1}/{max_turns} model={model} tool={tool_name}")
-            try:
-                tool_sys_prompt = "You are a tool-calling assistant. Output ONLY valid JSON."
-                if system_prompt_prefix:
-                    tool_sys_prompt = system_prompt_prefix + "\n\n" + tool_sys_prompt
-                from core.model_wait import ModelWait
+            _replaying = _replay is not None
+            if _replaying:
+                # The approved call, as it was approved — once.
+                response, _replay = json.dumps(_replay), None
+            else:
+                try:
+                    tool_sys_prompt = "You are a tool-calling assistant. Output ONLY valid JSON."
+                    if system_prompt_prefix:
+                        tool_sys_prompt = system_prompt_prefix + "\n\n" + tool_sys_prompt
+                    from core.model_wait import ModelWait
 
-                _wait = ModelWait(llm_generate(
-                    prompt_msg=turn_prompt,
-                    sys_prompt=tool_sys_prompt,
-                    mode=mode,
-                    current_model=model,
-                    current_settings=settings,
-                    # The workspace's effort, as an agent without its own gets
-                    # (F77); passing nothing meant "medium" whatever it said.
-                    reasoning_effort=settings.get("reasoning_effort"),
-                    session_id=run.session_id,
-                    agent_id=step.agent_id or "tool_step",
-                    source="orchestration",
-                    run_id=run.run_id,
-                ), label=f"Tool step '{step.name}'", extra={"orch_step_id": step.id})
-                async for _wait_event in _wait.events():
-                    yield _wait_event
-                response = _wait.result
-            except Exception as e:
-                from core.llm_providers import LLMError
-                if isinstance(e, LLMError):
-                    raise
-                raise RuntimeError(f"Tool step '{step.name}' LLM call failed: {e}") from e
+                    _wait = ModelWait(llm_generate(
+                        prompt_msg=turn_prompt,
+                        sys_prompt=tool_sys_prompt,
+                        mode=mode,
+                        current_model=model,
+                        current_settings=settings,
+                        # The workspace's effort, as an agent without its own gets
+                        # (F77); passing nothing meant "medium" whatever it said.
+                        reasoning_effort=settings.get("reasoning_effort"),
+                        session_id=run.session_id,
+                        agent_id=step.agent_id or "tool_step",
+                        source="orchestration",
+                        run_id=run.run_id,
+                    ), label=f"Tool step '{step.name}'", extra={"orch_step_id": step.id})
+                    async for _wait_event in _wait.events():
+                        yield _wait_event
+                    response = _wait.result
+                except Exception as e:
+                    from core.llm_providers import LLMError
+                    if isinstance(e, LLMError):
+                        raise
+                    raise RuntimeError(f"Tool step '{step.name}' LLM call failed: {e}") from e
 
-            # Log the LLM response (mirrors _log_evaluator for evaluator steps)
-            yield {"type": "_log_tool_step_llm", "orch_step_id": step.id,
-                   "prompt": turn_prompt, "llm_response": response}
+            if not _replaying:
+                # Log the LLM response (mirrors _log_evaluator for evaluator steps)
+                yield {"type": "_log_tool_step_llm", "orch_step_id": step.id,
+                       "prompt": turn_prompt, "llm_response": response}
 
             tool_call, json_error = parse_tool_call(response)
             if not tool_call:
@@ -564,7 +604,44 @@ class ToolStepExecutor:
 
             called_tool = tool_call.get("tool", "")
             tool_args = tool_call.get("arguments", {})
+            if called_tool != tool_obj.name:
+                # This step's tool is the only one it runs (F281). The name in
+                # the model's JSON used to be looked up across every server,
+                # custom tool and builder tool, so a reply naming `run_bash` on a
+                # step forced to read the clock ran `run_bash`.
+                last_error = (f"This step calls only '{tool_obj.name}'; '{called_tool}' is not it. "
+                              f'Answer with {{"tool": "{tool_obj.name}", "arguments": {{...}}}}')
+                _log.debug(f"TOOL STEP: ⚠ model named '{called_tool}' instead of '{tool_obj.name}'")
+                continue
             last_tool_args = tool_args
+
+            if _decision == "confirm" and not _replaying:
+                # Held for a person, exactly as an Agent step's gated call is: the
+                # run pauses here with the call, and the resume re-enters this
+                # step with the answer (`OrchestrationEngine._resume_tool_approval`).
+                approval_id = _approval_id(called_tool, tool_args)
+                progress = dict(run.step_progress.get(step.id) or {})
+                progress["pending_approval"] = {
+                    "approval_id": approval_id, "tool_name": called_tool,
+                    "tool_args": tool_args, "category": _category,
+                }
+                run.step_progress[step.id] = progress
+                try:
+                    await SharedState(run).checkpoint(columns=("step_progress",))
+                except Exception as ckpt_err:
+                    _log.warning(f"tool-approval checkpoint failed: {ckpt_err}")
+                yield {
+                    "type": "human_input_required", "kind": "tool_approval",
+                    "prompt": approval_prompt(called_tool, _category),
+                    "tool_name": called_tool, "tool_args": tool_args, "category": _category,
+                    "approval_id": approval_id,
+                    "fields": [
+                        {"name": "approve", "type": "boolean", "label": f"Run {called_tool}?"},
+                        {"name": "reason", "type": "text", "label": "Reason (optional)"},
+                    ],
+                    "orch_step_id": step.id, "step_name": step.name,
+                }
+                return
 
             # tool_execution matches the event type the logger and react_engine emit
             yield {

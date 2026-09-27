@@ -276,8 +276,12 @@ async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_
                 continue
             opt_in = session_key in OPT_IN_SERVERS
             if key in allowed or permits(allowed, name, opt_in=opt_in):
+                # An external server's hints are a claim: untrusted, exactly as
+                # `aggregate_all_tools` declares them. Without the mark a Tool
+                # step's policy check believed a third party's "I only read".
                 return VirtualTool(name, t.description, t.inputSchema,
-                                   getattr(t, "annotations", None))
+                                   getattr(t, "annotations", None),
+                                   trusted=not session_key.startswith("ext_mcp_"))
             return None
 
     for vt in build_virtual_tools():
