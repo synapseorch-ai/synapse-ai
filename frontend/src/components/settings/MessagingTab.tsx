@@ -6,7 +6,7 @@ import {
     Info, RefreshCw,
 } from 'lucide-react';
 import { ConfirmationModal } from './ConfirmationModal';
-import { Select, Spinner } from '@/components/ui';
+import { Badge, Checkbox, Select, Spinner, type BadgeTone } from '@/components/ui';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,7 +31,23 @@ interface Channel {
     credentials_set?: Record<string, boolean>;
     status?: 'running' | 'stopped' | 'error';
     last_error?: string | null;
+    /** Whether the people messaging this bot are workspace users (F282). On
+     *  unless set false — every channel saved before the setting existed. */
+    senders_are_members?: boolean;
+    /** When they are not: the tools a sender may use. None unless ticked. */
+    visitor_tools?: string[];
 }
+
+/** A tool an assigned agent could let a sender use, with what it does
+ *  (`GET /api/widgets/visitor-tools`, the same list the widget editor shows). */
+interface SenderToolChoice { name: string; category: string }
+
+const TOOL_CATEGORY: Record<string, { label: string; tone: BadgeTone }> = {
+    destructive: { label: 'Changes data', tone: 'danger' },
+    open_world: { label: 'Reaches outside', tone: 'warning' },
+    read_only: { label: 'Reads your data', tone: 'warning' },
+    undeclared: { label: 'Does not say what it does', tone: 'warning' },
+};
 
 type DeliveryMode = 'polling' | 'webhook';
 
@@ -197,6 +213,26 @@ export const MessagingTab = () => {
     // Public HTTPS address webhook-mode channels register with their platform.
     const [webhookBase, setWebhookBase] = useState('');
     const [webhookBaseDraft, setWebhookBaseDraft] = useState('');
+    // The tools the channel's agents hold, for the sender setting (F282):
+    // keyed by the assignment, so a changed set never shows the old list.
+    const [toolChoices, setToolChoices] = useState<{ key: string; tools: SenderToolChoice[] } | null>(null);
+    const assignedKey = (draft?.agent_ids?.length ? draft.agent_ids : draft?.agent_id ? [draft.agent_id] : []).join(',');
+    useEffect(() => {
+        if (!assignedKey) return;
+        let cancelled = false;
+        void (async () => {
+            const lists = await Promise.all(assignedKey.split(',').map(id =>
+                fetch(`/api/widgets/visitor-tools?agent_id=${encodeURIComponent(id)}`)
+                    .then(r => (r.ok ? r.json() : { tools: [] }))
+                    .catch(() => ({ tools: [] }))));
+            const merged = new Map<string, SenderToolChoice>();
+            for (const list of lists) for (const t of (list.tools ?? []) as SenderToolChoice[]) merged.set(t.name, t);
+            if (!cancelled) {
+                setToolChoices({ key: assignedKey, tools: [...merged.values()].sort((a, b) => a.name.localeCompare(b.name)) });
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [assignedKey]);
     const agentNameRef = useRef('');  // Settings.agent_name is required on POST
     useEffect(() => {
         fetch('/api/settings').then(r => r.json())
@@ -423,6 +459,9 @@ export const MessagingTab = () => {
     const webhookUrl = draft?.id && webhookBase
         ? `${webhookBase}/api/messaging/${platform}/webhook/${draft.id}`
         : '';
+    const sendersAreMembers = draft?.senders_are_members !== false;
+    const senderTools = toolChoices?.key === assignedIds.join(',') ? toolChoices.tools : null;
+    const memoryAgents = agentNames(assignedIds.filter(id => agents.find(a => a.id === id)?.memory));
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-12 gap-10">
@@ -737,6 +776,77 @@ export const MessagingTab = () => {
                                     </p>
                                 )}
                             </div>
+                        </div>
+
+                        {/* ── Who is messaging (F282) ────────────────────── */}
+                        <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-md space-y-3">
+                            <div className="flex items-start gap-4">
+                                <input
+                                    id="senders-are-members"
+                                    type="checkbox"
+                                    checked={sendersAreMembers}
+                                    onChange={e => setDraft({ ...draft, senders_are_members: e.target.checked })}
+                                    className="mt-1 accent-[var(--accent)]"
+                                />
+                                <div className="flex-1">
+                                    <label htmlFor="senders-are-members" className="text-xs font-bold text-white cursor-pointer block leading-tight">
+                                        Everyone who messages this bot is a workspace user
+                                    </label>
+                                    <p className="text-[10px] text-text-faint mt-1.5 leading-relaxed">
+                                        {sendersAreMembers
+                                            ? 'They use the agents as you do: every tool, the agents\' memory, and a reply here can answer a workflow waiting on this channel. Keep it on for a bot only you or your team can reach.'
+                                            : 'They are visitors: the agents use only the tools ticked below, never their memory, and a reply here does not answer a waiting workflow.'}
+                                    </p>
+                                    {sendersAreMembers && ((senderTools?.length ?? 0) > 0 || memoryAgents.length > 0) && (
+                                        <p className="text-[10px] text-amber-400/80 mt-1.5 leading-relaxed">
+                                            Anyone who can message this bot can use
+                                            {(senderTools?.length ?? 0) > 0 && (
+                                                <> {senderTools!.slice(0, 4).map(t => t.name).join(', ')}
+                                                    {senderTools!.length > 4 && ` and ${senderTools!.length - 4} more`}</>
+                                            )}
+                                            {(senderTools?.length ?? 0) > 0 && memoryAgents.length > 0 && ', and'}
+                                            {memoryAgents.length > 0 && ` ${memoryAgents.join(', ')}'s memory`}.
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                            {!sendersAreMembers && (
+                                <div className="pl-7">
+                                    <p className="text-[10px] font-bold text-text-faint uppercase mb-1.5">What senders can use</p>
+                                    {!assignedIds.length ? (
+                                        <p className="text-[10px] text-text-faint">Assign an agent to choose its tools.</p>
+                                    ) : senderTools === null ? (
+                                        <p className="text-[10px] text-text-faint">Loading the agents&apos; tools…</p>
+                                    ) : senderTools.length === 0 ? (
+                                        <p className="text-[10px] text-text-faint">These agents have no tools to offer.</p>
+                                    ) : (
+                                        <ul className="space-y-1.5">
+                                            {senderTools.map(tool => {
+                                                const id = `channel-sender-tool-${tool.name}`;
+                                                const ticked = draft.visitor_tools ?? [];
+                                                const category = TOOL_CATEGORY[tool.category] ?? TOOL_CATEGORY.undeclared;
+                                                return (
+                                                    <li key={tool.name} className="flex items-center gap-2">
+                                                        <Checkbox
+                                                            id={id}
+                                                            label={`Senders can use ${tool.name}`}
+                                                            checked={ticked.includes(tool.name)}
+                                                            onChange={on => setDraft({
+                                                                ...draft,
+                                                                visitor_tools: on
+                                                                    ? [...ticked.filter(n => n !== tool.name), tool.name]
+                                                                    : ticked.filter(n => n !== tool.name),
+                                                            })}
+                                                        />
+                                                        <label htmlFor={id} className="text-xs font-code text-white">{tool.name}</label>
+                                                        <Badge tone={category.tone}>{category.label}</Badge>
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    )}
+                                </div>
+                            )}
                         </div>
 
                         {/* ── Delivery mode ──────────────────────────────── */}
