@@ -1527,8 +1527,14 @@ class OrchestrationEngine:
         Top-level runs only — a nested sub-orchestration's work is part of its
         parent's story. LLM-compressed when a model is reachable, truncated
         otherwise (`compress_for_context`'s own fallback).
+
+        Never for a visitor's run (F276): an orchestrator agent on a widget runs
+        its workflow in the visitor's turn, and the summary would write their
+        words into the owner's memory.
         """
-        if self.depth > 0:
+        from core import visitor as _visitor_mod
+
+        if self.depth > 0 or _visitor_mod.current() is not None:
             return
         agent_ids = {s.agent_id for s in self.orch.steps if getattr(s, "agent_id", None)}
         if not agent_ids:

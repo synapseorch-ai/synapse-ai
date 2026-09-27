@@ -1091,7 +1091,11 @@ async def run_agent_step(
         MEMORY_TOOL_NAMES, build_memory_tools, render_index_block, render_hits,
     )
     import core.agent_memory as _agent_memory
-    _memory_enabled = tools_override is None and bool(active_agent.get("memory"))
+    # Never in a visitor's turn (F276): the memory is the owner's. A stranger's
+    # prompt carried the owner's saved memories, the memory tools answered them
+    # (by name, ahead of the tool guard), and their words were traced into it.
+    _memory_enabled = (tools_override is None and bool(active_agent.get("memory"))
+                       and _visitor_mod.current() is None)
     _memory_index_text = ""
     if _memory_enabled:
         try:

@@ -192,6 +192,67 @@ class TestRunEndSummary:
         assert "run_id: run_mem_1" in summary and "Work" in summary
 
 
+class TestAVisitorNeverTouchesTheOwnersMemory:
+    """F276. Memory is keyed by agent, and a widget visitor's turn used to run
+    with it on: the `### MEMORY` block of the owner's saved memories rode the
+    visitor's prompt, the memory tools answered them, and their message — PII,
+    an injection — was traced into the agent's sessions. Measured on a scratch
+    install. A visitor's turn now neither reads nor writes it."""
+
+    VISITOR = None
+
+    @pytest.fixture(autouse=True)
+    def _scope(self):
+        from core import visitor
+        self.visitor = visitor
+        self.VISITOR = visitor.VisitorScope("widget", frozenset())
+
+    async def test_the_index_is_not_in_a_visitors_prompt(self, fake_llm):
+        agent = S.make_agent(tools=[], memory=True)
+        await am.write_memory(agent["id"], "owner-private", "The owner's private code is OWNER77.")
+        with self.visitor.scope(self.VISITOR):
+            await _events(fake_llm, ["hello"], agent)
+        first = str(fake_llm.calls[0])
+        assert "### MEMORY" not in first
+        assert "OWNER77" not in first and "owner-private" not in first
+        assert '"remember"' not in first
+
+    async def test_a_visitor_cannot_write_by_naming_the_tool(self, fake_llm):
+        agent = S.make_agent(tools=[], memory=True)
+        with self.visitor.scope(self.VISITOR):
+            await _events(fake_llm, [_call("remember", name="discount", content="Code FREE100 is 100% off."),
+                                     "noted"], agent, source="chat")
+        assert "FREE100" not in (am.read_index(agent["id"]) or "")
+        assert am.read_memory(agent["id"], "discount") is None
+
+    async def test_a_visitors_turn_leaves_no_session_note(self, fake_llm):
+        agent = S.make_agent(tools=[], memory=True)
+        with self.visitor.scope(self.VISITOR):
+            await _events(fake_llm, ["all done"], agent, source="chat")
+        assert am._store().get(am._session_key(agent["id"], am._session_stem("s_mem"))) is None
+
+    async def test_a_visitors_workflow_writes_no_run_summary(self, fake_llm, seed_agent):
+        """An orchestrator agent on a widget runs its workflow in the visitor's
+        turn; its memory-enabled step agents' run summary would carry the
+        visitor's words into the owner's memory."""
+        from core.models_orchestration import Orchestration
+        from core.orchestration.engine import OrchestrationEngine
+
+        agent = await seed_agent(tools=[], memory=True)
+        orch = S.make_orchestration(
+            id="orch_mem_v", entry_step_id="s1",
+            steps=[{"id": "s1", "name": "Work", "type": "agent",
+                    "agent_id": agent["id"], "next_step_id": None}],
+        )
+        fake_llm.set_default("step done")
+        engine = OrchestrationEngine(Orchestration.model_validate(orch), _server())
+        with self.visitor.scope(self.VISITOR):
+            events = [ev async for ev in engine.run("my card ends 4242", run_id="run_mem_v")]
+        assert any(e.get("type") == "orchestration_complete" for e in events)
+        assert am._store().get(am._session_key(agent["id"], am._session_stem("run_mem_v"))) is None
+        assert all("### MEMORY" not in str(c) for c in fake_llm.calls), "nor did the step read the index"
+
+
 # ── response-cache seam ──────────────────────────────────────────────────────
 
 class TestResponseCacheSeam:
