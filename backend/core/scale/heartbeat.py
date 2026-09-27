@@ -175,6 +175,10 @@ async def sweep_interrupted_runs() -> list[str]:
         if status == "online" and beat is not None and beat >= cutoff:
             live.add(worker_id)
 
+    from core.orchestration.descendants import FINISHED, settle_descendants
+    from core.orchestration.run_error import set_run_error
+
+    reason = "Server restarted while the run was in progress"
     swept: list[str] = []
     now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     for run_id, worker_id in running:
@@ -184,7 +188,11 @@ async def sweep_interrupted_runs() -> list[str]:
             restored = await SharedState.restore(run_id)
             restored.run.status = "failed"
             restored.run.ended_at = now_str
+            # Why, on the run itself (F257): it has no failed step to say it.
+            set_run_error(restored.run, reason)
             await restored.checkpoint()
+            # What it was running nested stopped with it (F257).
+            await settle_descendants(run_id, "failed", reason)
             # Explain the stop to journal replays (reattach UI).
             if FileRunJournal.exists(run_id):
                 journal = FileRunJournal(run_id)
@@ -194,4 +202,25 @@ async def sweep_interrupted_runs() -> list[str]:
             swept.append(run_id)
         except Exception:
             pass
+
+    # Nested runs left open by a root that had already stopped — before this
+    # sweep settled a root's children, every timeout, cancel and crash left
+    # some. A root still running on a live worker, or paused on a real
+    # question, keeps its children as they are.
+    async with session() as s:
+        open_children = (await s.execute(
+            select(OrchestrationRunDB.run_id)
+            .where(OrchestrationRunDB.tenant_id == get_tenant())
+            .where(OrchestrationRunDB.run_id.contains("__", autoescape=True))
+            .where(OrchestrationRunDB.status.in_(("running", "paused", "queued")))
+        )).scalars().all()
+    for root_id in sorted({cid.split("__", 1)[0] for cid in open_children} - set(swept)):
+        try:
+            root_status = (await SharedState.restore(root_id)).run.status
+        except FileNotFoundError:
+            root_status = None
+        except Exception:  # noqa: BLE001
+            continue
+        if root_status is None or root_status in FINISHED:
+            await settle_descendants(root_id, "failed", "Stopped: the run that called it had already ended")
     return swept

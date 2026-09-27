@@ -40,6 +40,10 @@ async def read_run(run_id: str) -> dict | None:
         "shared_state": _public_run_view(run)["shared_state"],
         "step_history": run.step_history,
     }
+    from core.orchestration.run_error import failure_reason
+    error = failure_reason(run.status, run.step_history, run.step_progress)
+    if error:
+        body["error"] = error
     if run.status in ("completed", "failed", "cancelled"):
         body["response"] = OrchestrationEngine._build_final_response(run, await _result_key(run))
     return body

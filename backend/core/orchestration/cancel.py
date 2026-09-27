@@ -12,6 +12,7 @@ stale tab, an API retry — rewrote its history.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -36,18 +37,8 @@ def _close_open_question(step_history: list) -> None:
     (`api/control/run_cancel._close_paused_step`); this is the shape it follows,
     with `cancelled` where a resume writes `completed`.
     """
-    now = time.gmtime()
-    for entry in reversed(step_history or []):
-        if not isinstance(entry, dict) or entry.get("status") != "paused":
-            continue
-        entry["status"] = "cancelled"
-        entry["ended_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", now)
-        try:
-            began = time.strptime(str(entry.get("started_at")), "%Y-%m-%dT%H:%M:%SZ")
-            entry["duration_seconds"] = max(0.0, time.mktime(now) - time.mktime(began))
-        except (ValueError, TypeError):
-            entry["duration_seconds"] = 0.0
-        return
+    from core.orchestration.descendants import close_open_question
+    close_open_question(step_history, "cancelled")
 
 
 @dataclass
@@ -99,6 +90,8 @@ async def cancel_run(run_id: str, *, redis: Any = None) -> Cancelled:
     task = _active_tasks.get(run_id)
     live = task is not None and not task.done()
     if status in FINISHED and not live:
+        # Anything still open under it is an orphan of an earlier stop (F257).
+        await _settle_children(run_id)
         return Cancelled(found=True, stopped=False, status=status)
 
     # Signal the engine loop to exit on its next iteration (in-process path)…
@@ -109,6 +102,11 @@ async def cancel_run(run_id: str, *, redis: Any = None) -> Cancelled:
         _active_tasks.pop(run_id, None)
         task.cancel()
         stopped = True
+        # Let the cancel land before the record is written: a checkpoint the
+        # task was in the middle of must not come after ours. Bounded, and
+        # nothing is waited on for a run with no task here.
+        if task is not asyncio.current_task():
+            await asyncio.wait({task}, timeout=5)
 
     # Distributed cancel: workers on other machines watch this key.
     if redis is not None:
@@ -142,5 +140,12 @@ async def cancel_run(run_id: str, *, redis: Any = None) -> Cancelled:
             status, stopped = "cancelled", True
             if was_paused and not live:
                 await _announce(run_id, redis)
+    await _settle_children(run_id)
 
     return Cancelled(found=restored is not None or stopped, stopped=stopped, status=status)
+
+
+async def _settle_children(run_id: str) -> None:
+    """Every run nested under a cancelled one is cancelled too, saying so (F257)."""
+    from core.orchestration.descendants import settle_descendants
+    await settle_descendants(run_id, "cancelled", "Stopped: the run that called it was cancelled")

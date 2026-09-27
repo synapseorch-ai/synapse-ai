@@ -260,6 +260,11 @@ class AgentStepExecutor:
                 yield {**event, "orch_step_id": step.id, "step_name": step.name}
                 if event.get("type") == "final":
                     final_response = event.get("response", "")
+        except asyncio.CancelledError:
+            # A step timeout, a cancel, a parent's stop — not an Exception, so
+            # it used to reach the `finally` still reading "completed" (F257).
+            _log_status = "cancelled"
+            raise
         except Exception:
             _log_status = "error"
             raise

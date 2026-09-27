@@ -412,7 +412,11 @@ def _public_run_view(run) -> dict:
     `_exec_memory_*` grows with every rerun; nothing outside the engine reads
     either, and the frontend never renders shared_state at all.
     """
+    from core.orchestration.run_error import failure_reason
+
     doc = run.model_dump()
+    # Why a failed run stopped, read before its engine bookkeeping goes (F257).
+    doc["error"] = failure_reason(run.status, run.step_history, run.step_progress)
     doc.pop("step_progress", None)
     doc["shared_state"] = {
         k: v for k, v in (doc.get("shared_state") or {}).items()

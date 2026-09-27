@@ -286,6 +286,12 @@ class WorkerEngineAdapter:
         # keep_position: a cancelled run resumes from the step it was in,
         # and its mid-step progress is already in its column.
         await self._sync_final_state("cancelled", keep_position=True)
+        # The runs nested under it stopped with it; their records say so (F257).
+        try:
+            from core.orchestration.descendants import settle_descendants
+            await settle_descendants(self._run_id, "cancelled", "Stopped: the run that called it was cancelled")
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await self._publisher.publish_done()
         except Exception:  # noqa: BLE001

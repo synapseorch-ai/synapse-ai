@@ -228,6 +228,7 @@ class StoreStateBackend:
     async def list_runs(
         self, limit: int = 20, orchestration_ids: set[str] | None = None
     ) -> list[dict]:
+        from core.orchestration.run_error import failure_reason
         from core.store import session
         from core.store.models import OrchestrationRunDB
 
@@ -264,6 +265,8 @@ class StoreStateBackend:
                 "last_step_name": (history[-1].get("step_name") if history else None),
                 "waiting_for_human": bool(row.waiting_for_human),
                 "total_cost_usd": row.total_cost_usd,
+                # Why it stopped, for a failed or cancelled run (F257).
+                "error": failure_reason(row.status, history, row.step_progress),
             })
         return summaries
 
@@ -290,3 +293,24 @@ def _to_document(row) -> dict:
         "started_at": _iso_utc(row.started_at),
         "ended_at": _iso_utc(row.ended_at),
     }
+
+
+async def unfinished_descendants(run_id: str) -> list[str]:
+    """Ids of the runs nested under `run_id`, at any depth, that have not finished (F257).
+
+    A nested run's id is its parent's plus `__…`. `autoescape` is not optional:
+    run ids are full of `_`, which LIKE reads as "any one character", so an
+    unescaped `run_x__%` would also match another run whose id merely starts
+    with `run_x` and two more characters.
+    """
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+
+    async with session() as s:
+        rows = (await s.execute(
+            select(OrchestrationRunDB.run_id)
+            .where(OrchestrationRunDB.tenant_id == get_tenant())
+            .where(OrchestrationRunDB.run_id.startswith(f"{run_id}__", autoescape=True))
+            .where(OrchestrationRunDB.status.in_(("running", "paused", "queued")))
+        )).scalars().all()
+    return sorted(rows)

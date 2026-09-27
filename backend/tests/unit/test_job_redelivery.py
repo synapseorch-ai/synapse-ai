@@ -318,16 +318,20 @@ class TestTheBootSweep:
         assert await sweep_interrupted_runs() == ["builder_abc123"]
         assert (await _run("builder_abc123")).status == "failed"
 
-    async def test_a_nested_run_is_left_to_its_parent(self):
-        """A nested run (`parent__step`) is resumed through its parent, which the
-        sweep fails; the child is not the sweep's to close."""
+    async def test_a_nested_run_stops_with_its_parent(self):
+        """A nested run (`parent__step`) is not a run the sweep fails in its own
+        right — the list it returns is still its parent alone — but it stopped
+        with that parent, and now says so (F257). It used to be left `running`
+        for a Replay of the parent to overwrite, and was `running` for ever when
+        nothing replayed it; a builder's nested run whose root is gone likewise."""
         from core.scale.heartbeat import sweep_interrupted_runs
         await _running_run("run_parent", None)
         await _running_run("run_parent__delegate", None)
         await _running_run("builder_abc__saver", None)
 
         assert await sweep_interrupted_runs() == ["run_parent"]
-        assert (await _run("run_parent__delegate")).status == "running"
+        assert (await _run("run_parent__delegate")).status == "failed"
+        assert (await _run("builder_abc__saver")).status == "failed"
 
     async def test_a_replay_names_the_worker_running_it(
         self, seed_orchestration, agents, worker, fake_redis, monkeypatch,

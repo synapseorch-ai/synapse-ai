@@ -14,6 +14,7 @@ from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_STEP_TIMEOUT
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
+from .run_error import failure_reason, run_error, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
@@ -252,8 +253,25 @@ class OrchestrationEngine:
             return spent_before + (time.time() - loop_start_time)
 
         def stamp() -> None:
-            """Put the time worked so far on the run, for its next checkpoint."""
-            run.step_progress[ACTIVE_TIME_KEY] = {"active_seconds": round(active_seconds(), 2)}
+            """Put the time worked so far on the run, for its next checkpoint.
+
+            Merged, not replaced: the entry also holds the run's own failure
+            reason (F257).
+            """
+            run.step_progress[ACTIVE_TIME_KEY] = {
+                **(run.step_progress.get(ACTIVE_TIME_KEY) or {}),
+                "active_seconds": round(active_seconds(), 2)}
+
+        def fail_run(error: str) -> dict:
+            """Fail the run outside any step: the reason is kept on the run (F257).
+
+            With no history entry to carry it, the reason used to be said once
+            on the stream and lost — the run's answer, v1 and the run list read
+            "Unknown error".
+            """
+            run.status = "failed"
+            set_run_error(run, error)
+            return {"type": "orchestration_error", "error": error}
 
         while run.current_step_id and run.status == "running":
             # Checkpoint between steps — ensures MCP background tasks
@@ -282,30 +300,26 @@ class OrchestrationEngine:
             # Global timeout guard
             elapsed = active_seconds()
             if elapsed > timeout_seconds:
-                run.status = "failed"
-                yield {"type": "orchestration_error", "error": (
+                yield fail_run(
                     f"Global timeout ({self.orch.timeout_minutes} min) exceeded after "
-                    f"{round(elapsed / 60, 1)} min of work — time waiting for a person is not counted")}
+                    f"{round(elapsed / 60, 1)} min of work — time waiting for a person is not counted")
                 break
 
             step = self.step_map.get(run.current_step_id)
             _log.debug(f"ENGINE: ▶ step='{run.current_step_id}' type={step.type if step else None} status={run.status}")
             if not step:
-                run.status = "failed"
-                yield {"type": "orchestration_error", "error": f"Step '{run.current_step_id}' not found"}
+                yield fail_run(f"Step '{run.current_step_id}' not found")
                 break
 
             executor = self.executors.get(step.type)
             if not executor:
-                run.status = "failed"
-                yield {"type": "orchestration_error", "error": f"No executor for step type '{step.type}'"}
+                yield fail_run(f"No executor for step type '{step.type}'")
                 break
 
             # Global turn guard
             total_turns += 1
             if total_turns > self.orch.max_total_turns:
-                run.status = "failed"
-                yield {"type": "orchestration_error", "error": f"Global turn limit ({self.orch.max_total_turns}) exceeded"}
+                yield fail_run(f"Global turn limit ({self.orch.max_total_turns}) exceeded")
                 break
 
             step_start_time = time.time()
@@ -534,7 +548,6 @@ class OrchestrationEngine:
                 # that quietly loses it is a worse record than one saying "this
                 # ran, and the run stopped because of what it wrote".
                 if unconvertible and self.orch.strict_state_types:
-                    run.status = "failed"
                     named = ", ".join(f"'{k}' ({t})" for k, t in unconvertible)
                     error = (
                         f"Step '{step.name}' wrote text that will not become the "
@@ -543,7 +556,7 @@ class OrchestrationEngine:
                     )
                     if logger:
                         logger.run_end("failed")
-                    yield {"type": "orchestration_error", "error": error}
+                    yield fail_run(error)
                     try:
                         stamp()
                         await state.checkpoint()
@@ -610,6 +623,19 @@ class OrchestrationEngine:
         else:
             stamp()
         await state.checkpoint()
+
+        # A run that stopped short stops what it had started under it (F257). A
+        # nested child runs inside this task, so a step timeout or a cancel took
+        # it down too — but its record kept `running` (or `paused` on a question
+        # nobody could answer) for ever. Its own failure is already recorded; a
+        # finished child keeps its ending.
+        if run.status in ("failed", "cancelled"):
+            from .descendants import settle_descendants
+            why = failure_reason(run.status, run.step_history, run.step_progress)
+            verb = "failed" if run.status == "failed" else "was cancelled"
+            await settle_descendants(
+                run.run_id, run.status,
+                f"Stopped: the run that called it {verb}" + (f" — {why}" if why else ""))
 
         # Memory-enabled agents keep a summary of what this run did — the
         # crisp end signal chat never has. Never allowed to fail the run.
@@ -723,9 +749,12 @@ class OrchestrationEngine:
 
         # A person asked to carry on: the run gets its budget again (F258) —
         # a run that failed on its time budget could not be replayed otherwise.
-        # A job handed out again after its worker stopped keeps counting.
+        # A job handed out again after its worker stopped keeps counting. Either
+        # way the reason it stopped is not this attempt's (F257).
         if not interrupted:
             run.step_progress.pop(ACTIVE_TIME_KEY, None)
+        else:
+            set_run_error(run, None)
 
         run.status = "running"
 
@@ -1076,8 +1105,10 @@ class OrchestrationEngine:
                     # The sub-run worked since the answer, for this run (F258).
                     resumed_at = getattr(self, "_resumed_at", None)
                     if resumed_at is not None:
-                        run.step_progress[ACTIVE_TIME_KEY] = {"active_seconds": round(
-                            self._active_seconds(run) + time.time() - resumed_at, 2)}
+                        run.step_progress[ACTIVE_TIME_KEY] = {
+                            **(run.step_progress.get(ACTIVE_TIME_KEY) or {}),
+                            "active_seconds": round(
+                                self._active_seconds(run) + time.time() - resumed_at, 2)}
                     state = SharedState(run)
                     await state.checkpoint()
                     outcome["status"] = "paused"
@@ -1851,11 +1882,14 @@ class OrchestrationEngine:
         from .results import result_of
 
         if run.status == "failed":
-            last_error = None
+            # The run's own reason first — one that failed outside any step has
+            # no history entry to carry it (F257) — then its newest step error.
+            last_error = run_error(run)
             for h in reversed(run.step_history):
+                if last_error:
+                    break
                 if h.get("error"):
                     last_error = h["error"]
-                    break
             return f"Orchestration failed. Error: {last_error or 'Unknown error'}"
 
         if run.status == "paused":
