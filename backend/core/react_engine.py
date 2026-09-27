@@ -25,6 +25,7 @@ from core.model_wait import ModelWait
 from core.tools import aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
 from core import chat_approval as _chat_approval
+from core import visitor as _visitor_mod
 import anyio as _anyio
 import re as _re
 from datetime import timedelta
@@ -1117,6 +1118,41 @@ async def run_agent_step(
         _log.debug(f"🧠 memory enabled for agent '{agent_id_for_session}' "
               f"({len(_memory_index_text.splitlines())} index lines)")
 
+    # ── VISITOR: a stranger's turn holds only what its owner ticked (F280) ──
+    # Applied last, over everything assembled above — the agent's own tools,
+    # the defaults its type carries, the delegate and subtask tools — so
+    # whatever the agent holds, a visitor's turn is offered and may run only
+    # the widget's (or channel's) list plus the engine's task list and skills.
+    # A category policy cannot do this: a trusted read-only tool always passes
+    # it, and `read_file` reads the owner's files for a stranger as well as for
+    # a member. See core/visitor.py. A subtask, a delegate and an orchestrator
+    # agent's steps run in this same context, so they are held to it too.
+    _visitor = _visitor_mod.current()
+    if _visitor is not None:
+        def _tool_label(t):
+            return t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")
+        all_tools = [t for t in all_tools if _visitor.allows(_tool_label(t))]
+        ollama_tools = [t for t in ollama_tools if _visitor.allows(t.get("function", {}).get("name", ""))]
+        tool_schema_map = {n: s for n, s in tool_schema_map.items() if _visitor.allows(n)}
+        tools_json = str([
+            {"tool": _tool_label(t),
+             "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+             "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+            for t in all_tools
+        ])
+        # What the execution guard admits: exactly what was offered. The agent's
+        # `["all"]` is not carried over — it would admit any name.
+        allowed_tools = [_tool_label(t) for t in all_tools]
+        # The subtask batch runs before the guard, so it is switched off rather
+        # than only not offered; the delegate map goes with the tool.
+        if not _visitor.allows(SPAWN_SUBTASK_TOOL_NAME):
+            _spawn_subtask_enabled = False
+        _spawn_subtask_available_tools = [n for n in _spawn_subtask_available_tools if _visitor.allows(n)]
+        if not _visitor.allows("delegate_to_agent"):
+            _delegate_agents_map = {}
+        _log.debug(f"🚪 visitor turn ({_visitor.surface}) for '{agent_id_for_session}': "
+                   f"{len(all_tools)} tools")
+
 
     async def generate_response(prompt_msg, sys_prompt, tools=None, history_messages=None, memory_context_text="",
                                 images_for_turn=None, tool_name_for_log=None,
@@ -1244,6 +1280,12 @@ async def run_agent_step(
         always_allowed.add(SKILL_TOOL_NAME)
     if _memory_enabled:
         always_allowed |= set(MEMORY_TOOL_NAMES)  # injected via the memory flag, same reason
+    if _visitor is not None:
+        # The default file tools are admitted here by the agent's *type*, not by
+        # what it was offered. For a visitor the guard admits what was offered
+        # (`allowed_tools`, already the owner's list) and the engine's own tools
+        # — so a ticked name narrows the agent and never grants it (F280).
+        always_allowed = {n for n in always_allowed if n in _visitor_mod.ENGINE_TOOLS}
 
     # name -> declaration, for the annotation-aware policy check below.
     _tool_by_name = {getattr(t, 'name', None) or t.get('function', {}).get('name'): t
@@ -1254,6 +1296,9 @@ async def run_agent_step(
     MAX_PARSE_RETRIES = 1
 
     _policy = _tool_policy.resolve_policy(active_agent, current_settings)
+    if _visitor is not None:
+        # Nobody on a public surface can answer an approval card (F280).
+        _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
 
     # Browser tools produce DOM snapshots that are only useful for the current turn.
     # Previous snapshots become stale the moment the page changes, so we skip

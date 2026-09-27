@@ -37,8 +37,15 @@ key is not.
 **What a widget deliberately does not have**, each for the same reason — the
 person on the other end is a stranger, not a member:
 
-* *No tool-approval card.* An agent whose policy would stop and ask is refused at
-  bind time (``gating_categories``), and a gate that somehow happens at run time
+* *Only the tools the owner ticked.* A visitor's turn runs in a visitor scope
+  (``core.visitor``): it is offered, and may run, only the widget's
+  ``visitor_tools`` — nothing by default — in the agent itself and in every agent
+  or step the turn reaches. Every tool an agent held used to be a stranger's
+  too, ``run_bash`` and the file readers included (F280).
+* *No memory.* The agent's memory is the owner's; a visitor neither reads it nor
+  writes it (F276).
+* *No tool-approval card.* Nobody here can answer one, so for a visitor a
+  ``confirm`` is a ``deny`` in the engine; a pause that somehow happens anyway
   ends the turn with a sentence instead of showing a stranger a dialog with raw
   SQL in it.
 * *No attachments.* Uploads need their own door with their own limits; anonymous
@@ -63,6 +70,7 @@ from core.chat_widgets import origins as _origins
 from core.chat_widgets import store as _store
 from core.models import ChatRequest
 from core import chat_turns
+from core import visitor as _visitor
 from core.routes import chat as _chat
 from core.routes.chat import TURN_RUNNING, _read, _sse
 from core.widget_token import VisitorClaims, mint, refresh, verify
@@ -253,7 +261,7 @@ async def widget_chat(
                     detail="This chat has reached its limit for today. Please try again tomorrow.",
                 )
 
-            await _refuse_a_gated_agent(claims.agent_id)
+            await _refuse_an_unpublishable_agent(claims.agent_id)
 
             visitor_turn = ChatRequest(
                 message=body.message,
@@ -263,8 +271,11 @@ async def widget_chat(
             # Started here, not inside the response: a visitor clicking through
             # the host site reloads this frame, and that must not end the turn
             # (F49). A visitor is not a member: their `@[path]` must not read
-            # the vault.
-            turn.start(_chat._event_stream(visitor_turn, _server, None, expand_mentions=False))
+            # the vault, and their turn holds only the tools the owner ticked —
+            # the task copies this context, so the scope outlives the block.
+            scope = _visitor.VisitorScope("widget", frozenset(_visitor.clean_tools(widget.get("visitor_tools"))))
+            with _visitor.scope(scope):
+                turn.start(_chat._event_stream(visitor_turn, _server, None, expand_mentions=False))
     except chat_turns.TurnAlreadyRunning:
         raise HTTPException(status_code=409, detail=TURN_RUNNING)
     return _sse(_for_a_visitor(_read(turn)))
@@ -313,9 +324,9 @@ _VISITOR_EVENTS = frozenset((
 
 #: `human_input_required` is the tool-approval card and the workflow pause. Both
 #: ask a *member* to decide something; neither has an answer a stranger on a
-#: marketing page could give. `_refuse_a_gated_agent` stops the ordinary case at
-#: bind time and again before the turn — this is the backstop for a policy edited
-#: mid-conversation, or a pause the agent reaches some other way.
+#: marketing page could give. A visitor's `confirm` is a `deny` in the engine
+#: (`core.visitor`) — this is the backstop for a pause the turn reaches some other
+#: way, a workflow's human step among them.
 _PAUSE_EVENTS = frozenset(("human_input_required",))
 
 _PAUSED_MESSAGE = (
@@ -449,6 +460,9 @@ class WidgetBody(BaseModel):
     launcher_label: str = Field(default="", max_length=40)
     title: str = Field(default="", max_length=80)
     daily_message_cap: int = Field(default=500, ge=0, le=1_000_000)
+    #: The tools a visitor's turn may hold (F280). Nothing unless ticked; cleaned
+    #: by the store (`core.visitor.clean_tools`), never shown to a visitor.
+    visitor_tools: list[str] = Field(default_factory=list, max_length=_visitor.MAX_TOOLS)
 
     # Branding. Every one of these is a closed vocabulary validated in
     # `core.chat_widgets.branding`; the model only bounds the length so a
@@ -462,16 +476,24 @@ class WidgetBody(BaseModel):
     #: because bytes are the only thing we can check the magic numbers of.
 
 
-async def _refuse_a_gated_agent(agent_id: str) -> None:
-    """A widget will not bind an agent that would stop and ask a person.
+async def _refuse_an_unpublishable_agent(agent_id: str) -> None:
+    """A widget will not bind the AI builder's own agents.
 
-    Checked here, at bind time, so it fails in front of the owner rather than in
-    front of a visitor mid-sentence. It is checked again at run time by the
-    stream, because a policy can be edited after the binding was made.
+    They create and change the workspace's agents and orchestrations, and are
+    nobody's to publish; the agents list already hides them and v1 refuses them
+    (`api_v1._is_system_agent`). Measured before this: a widget on
+    `agent_native_builder_saver_create` was accepted.
+
+    Checked at bind time, so it fails in front of the owner rather than in front
+    of a visitor mid-sentence, and again before every turn.
+
+    This used to refuse an agent whose tool policy would stop and ask a person.
+    That refusal pushed owners to `allow` — the one policy under which a visitor
+    drove every tool the agent held — and it is no longer needed: a visitor's
+    `confirm` is a `deny` (`core.visitor`).
     """
     if not agent_id:
         return
-    from core.config import load_settings
     from core.scale.context import resolve_agent
 
     try:
@@ -480,33 +502,11 @@ async def _refuse_a_gated_agent(agent_id: str) -> None:
         agent = None
     if agent is None:
         raise HTTPException(status_code=404, detail=f"No agent '{agent_id}'.")
-
-    gating = _store.gating_categories(agent, load_settings())
-    if gating:
-        raise HTTPException(status_code=409, detail=_gated_refusal(gating))
-
-
-def _gated_refusal(categories: list[str]) -> str:
-    """The sentence an owner reads when their agent cannot be published.
-
-    `explain()` returns independent clauses that each begin with "it" — "it
-    reaches systems outside this workspace" — so they are joined as clauses and
-    introduced with a colon. Splicing them after "tools that" produced "tools
-    that it reaches systems outside this workspace", which is what shipped to a
-    screenshot before anybody read it aloud.
-    """
-    from core.tool_policy import explain
-
-    reasons = [explain(c) for c in categories]
-    if len(reasons) > 1:
-        joined = "; ".join(reasons[:-1]) + "; and " + reasons[-1]
-    else:
-        joined = reasons[0]
-    return (
-        f"This agent's tool policy stops and asks a person before some calls: {joined}. "
-        "A widget visitor is not a member of this workspace and cannot answer that, so it "
-        "cannot be published. Change the agent's tool policy, or publish a different agent."
-    )
+    if agent.get("system") or agent.get("type") == "builder":
+        raise HTTPException(
+            status_code=409,
+            detail="The AI builder's own agents cannot be published on a widget. Choose one of your agents.",
+        )
 
 
 @router.get("/api/widgets")
@@ -514,9 +514,69 @@ async def list_widgets():
     return await _store.list_widgets()
 
 
+@router.get("/api/widgets/visitor-tools")
+async def visitor_tool_choices(agent_id: str):
+    """What an owner can let a widget's visitors use: every tool a visitor's turn
+    on this agent could reach, each with what it does.
+
+    For an orchestrator agent that is its workflow's — each Agent step's agent's
+    tools and each Tool step's tool, through nested workflows — because a
+    visitor's turn runs the workflow and the list holds in every step (F280).
+    The engine's own tools (the task list, skills) are always a visitor's and
+    memory never is, so neither is offered here.
+    """
+    import core.server as _server
+    from core.scale.context import resolve_agent, resolve_custom_tools, resolve_orchestration
+    from core.tool_policy import DEFAULT_POLICY, decide
+    from core.tools import aggregate_all_tools, resolve_one_tool
+
+    agent = await resolve_agent(agent_id) if agent_id else None
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"No agent '{agent_id}'.")
+    custom = await resolve_custom_tools()
+    found: dict[str, str] = {}
+
+    def note(tool) -> None:
+        name = getattr(tool, "name", "") or ""
+        if name and name not in found and name not in _visitor.ENGINE_TOOLS \
+                and name not in _visitor.NEVER_FOR_VISITORS:
+            found[name] = decide(tool, DEFAULT_POLICY)[1]
+
+    async def walk(node: dict, depth: int) -> None:
+        if node.get("type") == "orchestrator":
+            # Three levels, as the engine nests.
+            orch = await resolve_orchestration(node.get("orchestration_id") or "") if depth < 3 else None
+            for step in (orch or {}).get("steps") or []:
+                if step.get("type") == "tool" and step.get("forced_tool"):
+                    tool = await resolve_one_tool(_server, step["forced_tool"], {}, custom)
+                    note(tool if tool is not None else _named(step["forced_tool"]))
+                elif step.get("type") == "agent" and step.get("agent_id"):
+                    child = await resolve_agent(step["agent_id"])
+                    if child is not None:
+                        await walk(child, depth + 1)
+            return
+        tools, *_ = await aggregate_all_tools(_server, node, custom)
+        for tool in tools:
+            note(tool)
+        if "spawn_subtask" in (node.get("tools") or []):
+            note(_named("spawn_subtask"))
+        if node.get("type") == "delegate":
+            note(_named("delegate_to_agent"))
+
+    await walk(agent, 0)
+    return {"tools": [{"name": n, "category": c} for n, c in sorted(found.items())]}
+
+
+def _named(name: str):
+    """A tool known only by name — it declares nothing, so it reads `undeclared`."""
+    from core.tools import VirtualTool
+
+    return VirtualTool(name, "", {}, None)
+
+
 @router.post("/api/widgets")
 async def create_widget(body: WidgetBody):
-    await _refuse_a_gated_agent(body.agent_id)
+    await _refuse_an_unpublishable_agent(body.agent_id)
     return await _store.save_widget(body.model_dump())
 
 
@@ -525,7 +585,7 @@ async def update_widget(widget_id: str, body: WidgetBody):
     existing = await _store.get_widget(widget_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="No such widget.")
-    await _refuse_a_gated_agent(body.agent_id)
+    await _refuse_an_unpublishable_agent(body.agent_id)
     payload = body.model_dump()
     payload["id"] = widget_id
     return await _store.save_widget(payload)

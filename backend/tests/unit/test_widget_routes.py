@@ -186,29 +186,31 @@ class TestLimits:
         assert "today" in second.json()["detail"]
 
 
-class TestGatedAgentsAreRefusedAtBindTime:
-    async def test_an_agent_that_would_ask_a_person_cannot_be_published(
+class TestWhatAWidgetWillBind:
+    """A widget used to refuse an agent whose policy would stop and ask a person,
+    because the approval card cannot be shown to a stranger. That refusal pushed
+    owners to `allow` — the one policy under which a visitor drove every tool the
+    agent held (F280). Since F280 a visitor's `confirm` is a `deny` in the engine
+    (`core.visitor`; `test_visitor_scope.TestNobodyIsAskedToApprove`), so nothing
+    can ask a stranger anything, and an owner keeps their stricter policy.
+
+    What a widget refuses now is the AI builder's own agents: they create and
+    change the workspace's orchestrations and agents, and are nobody's to publish."""
+
+    async def test_an_agent_that_would_ask_a_person_can_be_published(
         self, client, seed_agent
     ):
-        """The approval card renders the tool's raw arguments and is answered by
-        anyone with a role. A stranger on a marketing page has neither, so the
-        refusal lands here — in front of the person who can fix it."""
         agent = await seed_agent(tool_policy={"destructive": "confirm"})
         response = await client.post(
             "/api/widgets",
             json={"name": "Support", "agent_id": agent["id"],
                   "allowed_origins": ["https://acme.com"]},
         )
-        assert response.status_code == 409
-        detail = response.json()["detail"]
-        assert "cannot be published" in detail
+        assert response.status_code == 200, response.text
 
-    async def test_the_workspace_floor_gates_an_agent_that_says_nothing(
+    async def test_the_workspace_floor_does_not_block_publishing(
         self, client, seed_agent
     ):
-        """An agent inherits the workspace policy, so the bind check has to read
-        it. Reading only the agent's own document would publish a widget that
-        parks on the first tool call and tells a stranger to get in touch."""
         await client.post("/api/settings", json={
             "agent_name": "Synapse",
             "tool_policy_defaults": {"undeclared": "confirm"},
@@ -219,8 +221,7 @@ class TestGatedAgentsAreRefusedAtBindTime:
             json={"name": "Support", "agent_id": agent["id"],
                   "allowed_origins": ["https://acme.com"]},
         )
-        assert response.status_code == 409
-        assert "does not declare what it does" in response.json()["detail"]
+        assert response.status_code == 200, response.text
 
     async def test_a_deny_policy_is_fine(self, client, seed_agent):
         """`deny` asks nobody anything — it refuses the call and tells the model
@@ -232,6 +233,70 @@ class TestGatedAgentsAreRefusedAtBindTime:
                   "allowed_origins": ["https://acme.com"]},
         )
         assert response.status_code == 200
+
+    @pytest.mark.parametrize("marker", [{"system": "native_builder"}, {"type": "builder"}])
+    async def test_the_builders_own_agents_cannot_be_published(self, client, seed_agent, marker):
+        """Measured on a scratch install: `agent_native_builder_saver_create`, whose
+        tools create orchestrations, was accepted with a 200."""
+        agent = await seed_agent(**marker)
+        response = await client.post(
+            "/api/widgets",
+            json={"name": "Support", "agent_id": agent["id"],
+                  "allowed_origins": ["https://acme.com"]},
+        )
+        assert response.status_code == 409
+        assert "AI builder" in response.json()["detail"]
+
+
+class TestAVisitorHoldsOnlyTheTicked:
+    """The widget's own half of F280: the owner's list is stored, never shown to a
+    visitor, and is the scope the engine runs the visitor's turn in."""
+
+    async def test_the_list_is_stored_clean(self, client, seed_agent):
+        agent = await seed_agent()
+        widget = await _make_widget(client, agent["id"], visitor_tools=["peek", " peek", "remember"])
+        assert widget["visitor_tools"] == ["peek"]
+        listed = (await client.get("/api/widgets")).json()
+        rows = listed if isinstance(listed, list) else listed.get("widgets", [])
+        assert next(w for w in rows if w["id"] == widget["id"])["visitor_tools"] == ["peek"]
+
+    async def test_a_widget_without_a_list_gives_visitors_nothing(self, client, seed_agent):
+        agent = await seed_agent()
+        widget = await _make_widget(client, agent["id"])
+        assert widget["visitor_tools"] == []
+
+    async def test_a_visitor_never_sees_the_list(self, client, seed_agent):
+        agent = await seed_agent()
+        widget = await _make_widget(client, agent["id"], visitor_tools=["peek"])
+        response = await client.post(
+            "/api/widget/session",
+            json={"public_key": widget["public_key"], "origin": "https://acme.com"},
+        )
+        assert "visitor_tools" not in response.json()["widget"]
+
+    async def test_the_turn_runs_in_the_widgets_scope(self, client, seed_agent, monkeypatch):
+        from core import visitor
+        from core.routes import chat as chat_routes
+
+        seen = []
+
+        async def fake_stream(request, _server, resume_state=None, *, expand_mentions=False):
+            seen.append(visitor.current())
+            yield 'data: {"type": "final", "response": "ok"}\n\n'
+
+        monkeypatch.setattr(chat_routes, "_event_stream", fake_stream)
+        agent = await seed_agent()
+        widget = await _make_widget(client, agent["id"], visitor_tools=["peek"])
+        token = (await client.post(
+            "/api/widget/session",
+            json={"public_key": widget["public_key"], "origin": "https://acme.com"},
+        )).json()["token"]
+        response = await client.post("/api/widget/chat", json={"message": "hi"},
+                                     headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200, response.text
+        assert seen == [visitor.VisitorScope("widget", frozenset({"peek"}))]
+        # The request's own context is left as it was found.
+        assert visitor.current() is None
 
 
 class TestKeyRotation:
@@ -458,3 +523,56 @@ class TestThePreviewIsOwnerOnly:
         widget = await _make_widget(client, "")
         response = await client.post(f"/api/widgets/{widget['id']}/preview")
         assert response.status_code == 409
+
+
+class TestWhatAnOwnerCanTick:
+    """The editor's list: every tool a visitor's turn on this agent could reach,
+    with what it does — so an owner ticks `run_bash` knowing it changes things."""
+
+    @pytest.fixture
+    def two_tools(self, monkeypatch):
+        import core.tools as tools_mod
+        from mcp.types import ToolAnnotations
+        from core.tools import VirtualTool
+
+        danger = VirtualTool("danger", "d", {}, ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        peek = VirtualTool("peek", "d", {}, ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+
+        async def aggregated(server_module, agent, custom_tools):
+            held = [t for t in (danger, peek) if t.name in (agent.get("tools") or [])]
+            return held, {}, [], ""
+
+        async def one(server_module, name, agent, custom_tools):
+            return {"danger": danger, "peek": peek}.get(name)
+
+        monkeypatch.setattr(tools_mod, "aggregate_all_tools", aggregated)
+        monkeypatch.setattr(tools_mod, "resolve_one_tool", one)
+
+    async def test_an_agents_tools_with_what_they_do(self, client, seed_agent, two_tools):
+        agent = await seed_agent(tools=["danger", "peek", "spawn_subtask"], memory=True)
+        response = await client.get("/api/widgets/visitor-tools", params={"agent_id": agent["id"]})
+        assert response.status_code == 200, response.text
+        assert response.json()["tools"] == [
+            {"name": "danger", "category": "destructive"},
+            {"name": "peek", "category": "read_only"},
+            {"name": "spawn_subtask", "category": "undeclared"},
+        ]
+
+    async def test_a_workflows_steps_are_the_list(self, client, seed_agent, seed_orchestration, two_tools):
+        """A visitor on an orchestrator agent runs its workflow, so the list is
+        what its steps reach — a Tool step's tool and an Agent step's agent's."""
+        from _fakes import seed as S
+
+        worker = S.make_agent(tools=["peek"])
+        orch = await seed_orchestration(entry_step_id="t", steps=[
+            {"id": "t", "name": "T", "type": "tool", "forced_tool": "danger", "next_step_id": "a"},
+            {"id": "a", "name": "A", "type": "agent", "agent_id": worker["id"], "next_step_id": None},
+        ])
+        lead = S.make_orchestrator_agent(orch["id"])
+        await S.seed_agents([worker, lead])
+        response = await client.get("/api/widgets/visitor-tools", params={"agent_id": lead["id"]})
+        assert [t["name"] for t in response.json()["tools"]] == ["danger", "peek"]
+
+    async def test_an_unknown_agent_is_404(self, client):
+        response = await client.get("/api/widgets/visitor-tools", params={"agent_id": "nobody"})
+        assert response.status_code == 404

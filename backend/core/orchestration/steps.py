@@ -439,6 +439,18 @@ class ToolStepExecutor:
             yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
             raise RuntimeError(message)
 
+        from core import visitor as _visitor_mod
+        _visitor = _visitor_mod.current()
+        if _visitor is not None and not _visitor.allows(step.forced_tool):
+            # A workflow on a widget runs in the visitor's turn, and a Tool step
+            # is a tool call like any other: the owner's list holds here as it
+            # does for an agent (F280). Refused before the model is asked for
+            # arguments, so nothing about the tool is spent on a stranger.
+            message = (f"Tool step '{step.name}' uses '{step.forced_tool}', which visitors "
+                       f"on this {_visitor.surface} may not use")
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
+
         from .context import build_step_prompt, TransitionContext, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
         if transition is None:

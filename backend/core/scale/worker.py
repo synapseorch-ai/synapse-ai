@@ -567,6 +567,31 @@ async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
             await watcher
 
 
+async def _visitor_turn(visitor: dict | None, events):
+    """Drive `events` in `visitor`'s scope (`None` is a member's turn).
+
+    The scope is set around each step of the generator rather than around the
+    loop: the generator's body runs in the task that advances it, and this keeps
+    the job's own context untouched between steps.
+    """
+    from core import visitor as _visitor_mod
+
+    scope = _visitor_mod.VisitorScope.from_dict(visitor)
+    iterator = events.__aiter__()
+    try:
+        while True:
+            with _visitor_mod.scope(scope):
+                try:
+                    event = await iterator.__anext__()
+                except StopAsyncIteration:
+                    return
+            yield event
+    finally:
+        # Closed with this wrapper, as the loop was when it was iterated directly.
+        with _visitor_mod.scope(scope):
+            await iterator.aclose()
+
+
 # ---------------------------------------------------------------------------
 # Job: run an agent chat turn
 # ---------------------------------------------------------------------------
@@ -582,6 +607,7 @@ async def run_agent_chat_job(
     webhook_secret: str | None = None,
     resume_state: dict | None = None,
     expand_mentions: bool = False,
+    visitor: dict | None = None,
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
 
@@ -590,6 +616,12 @@ async def run_agent_chat_job(
     `expand_mentions` is the enqueuer's word on whose text `message` is: a
     member's (in-app chat, an API key, a schedule — `@[path]` reads the vault)
     or a widget visitor's or a channel's (it never does). Off unless said.
+
+    `visitor` is the enqueuer's word on whose *turn* it is (F280): `None` for a
+    member, or `VisitorScope.to_dict()` — `{"surface": "widget", "tools": [...]}`
+    — for a stranger on a public surface, whose turn then holds only those
+    tools, no memory, and no approval card (`core.visitor`). A widget or a
+    channel that enqueues without it runs its visitor as a member.
 
     `resume_state` picks a turn up from where a tool-approval pause left it,
     and is the queued twin of what `core/routes/chat.py` does in-process. Until
@@ -690,11 +722,11 @@ async def run_agent_chat_job(
             """Drive the loop. Separated so the cancel watcher has a task to
             cancel that is not the whole job."""
             nonlocal response_text, total_cost, latest_progress, paused_on
-            async for event in run_react_loop(
+            async for event in _visitor_turn(visitor, run_react_loop(
                 chat_request, server_module,
                 progress_events=True, resume_state=resume_state,
                 expand_mentions=expand_mentions,
-            ):
+            )):
                 etype = event.get("type")
 
                 # Engine state, not an event. It is what a resume is rebuilt

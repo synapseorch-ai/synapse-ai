@@ -25,14 +25,10 @@ from typing import Optional
 
 from core.chat_widgets import branding as _branding
 from core.chat_widgets import origins as _origins
+from core import visitor as _visitor
 from core.widget_token import new_public_key
 
 _COLLECTION = "chat_widgets"
-
-#: A visitor cannot be asked to approve a tool call — they are not a member, have
-#: no role, and cannot be trusted with a destructive one. So a widget refuses the
-#: whole class at bind time. See `gating_categories`.
-GATING_DECISIONS = frozenset(("confirm",))
 
 #: Fallbacks for a widget the customer has not themed. Kept here rather than in
 #: the UI so the embed page and the settings screen cannot disagree.
@@ -126,6 +122,10 @@ async def save_widget(widget: dict) -> dict:
         if widget.get(field) in (None, ""):
             widget[field] = value
     widget["allowed_origins"] = _origins.clean_list(widget.get("allowed_origins"))
+    # The tools a visitor's turn may hold — nothing unless the owner ticks it
+    # (F280, `core.visitor`). Never in `public_view`: it tells a stranger what
+    # the agent can reach.
+    widget["visitor_tools"] = _visitor.clean_tools(widget.get("visitor_tools"))
     # Validated here, once, so the embed page never has to defend itself against
     # a value the API let through — the accent in particular is interpolated
     # into a CSS custom property.
@@ -175,22 +175,3 @@ async def rotate_public_key(widget_id: str) -> Optional[dict]:
     data[idx]["updated_at"] = _now()
     await _save_raw(data)
     return data[idx]
-
-
-def gating_categories(agent: dict | None, settings: dict | None) -> list[str]:
-    """The tool-policy categories that would stop and ask a person.
-
-    A widget refuses to bind an agent with any of these, because the approval
-    card cannot be shown to an anonymous visitor: they are not a member, have no
-    role, and the card renders the tool's raw arguments — `run_sql_query` is one
-    door for `SELECT` and `DROP`. Refusing here means the failure lands in front
-    of the person who can fix it, rather than in front of a stranger mid-sentence.
-
-    `deny` is not in this set. A denied call never asks anyone anything; it is
-    refused and the model is told why, which is exactly the behaviour a widget
-    wants.
-    """
-    from core.tool_policy import CATEGORIES, resolve_policy
-
-    policy = resolve_policy(agent, settings)
-    return [c for c in CATEGORIES if policy.get(c) in GATING_DECISIONS]

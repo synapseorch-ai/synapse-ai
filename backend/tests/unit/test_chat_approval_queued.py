@@ -218,3 +218,28 @@ class TestResuming:
             {"role": "user", "content": "clean up the invoices"},
             {"role": "assistant", "content": "deleted them"},
         ]
+
+
+class TestAVisitorsTurnOnTheFleet:
+    """F280 on a worker: the enqueuer says whose turn it is, as it does for
+    `expand_mentions`, and the loop runs in that visitor's scope."""
+
+    async def test_the_enqueuers_visitor_is_the_loops_scope(self, chat_job, monkeypatch):
+        from core import visitor
+
+        seen = []
+
+        async def fake_loop(request, server_module, should_stop=None, **kwargs):
+            seen.append(visitor.current())
+            yield {"type": "final", "response": "ok"}
+
+        import core.react_engine as re_mod
+        monkeypatch.setattr(re_mod, "run_react_loop", fake_loop)
+        ctx = {"redis": _FakeRedis(), "session_factory": object()}
+
+        await worker.run_agent_chat_job(ctx, "chat_v", None, "hi",
+                                        visitor={"surface": "widget", "tools": ["peek"]})
+        await worker.run_agent_chat_job(ctx, "chat_m", None, "hi")
+
+        assert seen == [visitor.VisitorScope("widget", frozenset({"peek"})), None]
+        assert visitor.current() is None
