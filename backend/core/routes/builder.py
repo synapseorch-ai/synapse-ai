@@ -714,19 +714,22 @@ async def builder_duplicate():
         taken.add(new_id)
         return new_id
 
+    orch_id = _mint("orch_", taken_orchs)
     mapping: dict[str, str] = {}
     for agent in bundle["agents"]:
         copy = {k: v for k, v in agent.items() if k not in ("system", "system_role")}
         copy["id"] = _mint("agent_", taken_agents)
         copy["name"] = f"{agent['name']} (Copy)"
         mapping[agent["id"]] = copy["id"]
-        # The orchestrator shell points at the orchestration; fixed up below.
+        # The orchestrator shell runs the orchestration copied with it (F289).
+        # It was set to None here, "fixed up below", and nothing below did: the
+        # copy's workflow agent ran nothing and failed on its first message.
         if copy.get("orchestration_id"):
-            copy["orchestration_id"] = None
+            copy["orchestration_id"] = orch_id
         await save_agent(copy)
 
     orch = {k: v for k, v in bundle["orchestration"].items() if k != "system"}
-    orch["id"] = _mint("orch_", taken_orchs)
+    orch["id"] = orch_id
     orch["name"] = f"{bundle['orchestration']['name']} (Copy)"
     orch["steps"] = [
         {**s, "agent_id": mapping.get(s["agent_id"], s["agent_id"])} if s.get("agent_id") else s
