@@ -1171,9 +1171,20 @@ async def run_agent_step(
     if _visitor is not None:
         def _tool_label(t):
             return t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")
-        all_tools = [t for t in all_tools if _visitor.allows(_tool_label(t))]
-        ollama_tools = [t for t in ollama_tools if _visitor.allows(t.get("function", {}).get("name", ""))]
-        tool_schema_map = {n: s for n, s in tool_schema_map.items() if _visitor.allows(n)}
+        # The owner's list intersects what a member would be admitted here —
+        # a step's `allowed_tools` narrowing included — and never replaces it:
+        # an orchestrator agent's step narrowed to `peek` must not run a tool
+        # ticked for a different step.
+        _type_defaults = (set(DEFAULT_TOOLS_BY_TYPE.get("all_types", set()))
+                          | set(DEFAULT_TOOLS_BY_TYPE.get(agent_type, set())))
+
+        def _admits(name: str) -> bool:
+            return _visitor.allows(name) and (
+                "all" in allowed_tools or name in allowed_tools or name in _type_defaults
+                or name in _visitor_mod.ENGINE_TOOLS)
+        all_tools = [t for t in all_tools if _admits(_tool_label(t))]
+        ollama_tools = [t for t in ollama_tools if _admits(t.get("function", {}).get("name", ""))]
+        tool_schema_map = {n: s for n, s in tool_schema_map.items() if _admits(n)}
         tools_json = str([
             {"tool": _tool_label(t),
              "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
@@ -1185,10 +1196,10 @@ async def run_agent_step(
         allowed_tools = [_tool_label(t) for t in all_tools]
         # The subtask batch runs before the guard, so it is switched off rather
         # than only not offered; the delegate map goes with the tool.
-        if not _visitor.allows(SPAWN_SUBTASK_TOOL_NAME):
+        if not _admits(SPAWN_SUBTASK_TOOL_NAME):
             _spawn_subtask_enabled = False
-        _spawn_subtask_available_tools = [n for n in _spawn_subtask_available_tools if _visitor.allows(n)]
-        if not _visitor.allows("delegate_to_agent"):
+        _spawn_subtask_available_tools = [n for n in _spawn_subtask_available_tools if _admits(n)]
+        if not _admits("delegate_to_agent"):
             _delegate_agents_map = {}
         _log.debug(f"🚪 visitor turn ({_visitor.surface}) for '{agent_id_for_session}': "
                    f"{len(all_tools)} tools")

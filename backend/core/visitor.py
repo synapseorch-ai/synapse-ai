@@ -70,9 +70,16 @@ class VisitorScope:
 
     @classmethod
     def from_dict(cls, value) -> "VisitorScope | None":
-        """The fleet job's kwarg back into a scope. `None` is a member's turn."""
-        if not isinstance(value, dict):
+        """The fleet job's kwarg back into a scope. `None` is a member's turn.
+
+        Anything else that is not a dict — an enqueuer that passed a string, or
+        an object — is a visitor with no tools, never a member: a malformed
+        value must fail closed.
+        """
+        if value is None:
             return None
+        if not isinstance(value, dict):
+            return cls(surface="widget", tools=frozenset())
         surface = value.get("surface") if value.get("surface") in SURFACES else "widget"
         return cls(surface=surface, tools=frozenset(clean_tools(value.get("tools"))))
 

@@ -115,6 +115,30 @@ class TestAVisitorGetsOnlyWhatWasTicked:
         assert executed == []
 
 
+class TestTheListNeverWidensAStep:
+    async def test_a_steps_narrowing_still_holds_for_a_visitor(self, fake_llm, two_tools):
+        """An orchestrator agent on a widget: the owner ticked `danger` for one
+        step, and another step is narrowed to `peek`. That step must not run
+        `danger` for a visitor when it would not for a member."""
+        from core.react_engine import run_agent_step
+
+        executed = []
+
+        async def executor(name, args):
+            executed.append(name)
+            return f"ran-{name}"
+
+        fake_llm.script([tool_call("danger"), tool_call("peek"), "done"])
+        agent = S.make_agent(tools=["all"])
+        with visitor.scope(VisitorScope("widget", frozenset({"danger", "peek"}))):
+            [ev async for ev in run_agent_step(
+                message="go", agent_id=agent["id"], session_id="s_narrow", server_module=_server(),
+                agent_override=agent, tool_executor=executor, max_turns=6,
+                allowed_tools_override=["peek"])]
+        assert "danger" not in _offered(fake_llm)
+        assert executed == ["peek"]
+
+
 class TestNobodyIsAskedToApprove:
     async def test_confirm_is_a_deny_for_a_visitor(self, fake_llm, two_tools):
         """Nobody on a public surface can answer an approval card, so the call is
@@ -190,3 +214,7 @@ class TestTheListIsClean:
         scope = VisitorScope("channel", frozenset({"peek"}))
         assert VisitorScope.from_dict(scope.to_dict()) == scope
         assert VisitorScope.from_dict(None) is None
+
+    def test_a_malformed_kwarg_is_a_visitor_with_nothing_not_a_member(self):
+        assert VisitorScope.from_dict('{"surface": "widget"}') == VisitorScope("widget", frozenset())
+        assert VisitorScope.from_dict(["peek"]) == VisitorScope("widget", frozenset())
