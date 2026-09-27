@@ -378,6 +378,13 @@ class OrchestrationEngine:
                                 run.waiting_for_human = True
                                 run.status = "paused"
                                 run.current_step_id = step.id
+                                # The question this run waits on, whichever
+                                # step asked it (F288): a human step here sets
+                                # its own, but a nested one's or a tool
+                                # approval's reached no record, and v1 read a
+                                # paused nest with no prompt and no fields.
+                                run.human_prompt = event.get("prompt")
+                                run.human_fields = event.get("fields") or []
                                 # Track the sub-run that needs human input when the
                                 # request originated inside a nested orchestration.
                                 if event.get("nested_run_id"):
@@ -804,6 +811,10 @@ class OrchestrationEngine:
         # Answered: no longer waiting on a channel. Written at the next checkpoint;
         # a nested step that pauses again records its channel again.
         run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
+        # Nor on a question (F288): one already answered is not left for a later
+        # read to show. A pause after this records its own.
+        run.human_prompt = None
+        run.human_fields = []
         self.global_variables = await self._load_global_variables()
         self.agent_names = await self._load_agent_names()
         _log.debug(f"[engine.resume] 🗺  step_map keys: {list(self.step_map.keys())}")
@@ -1042,6 +1053,8 @@ class OrchestrationEngine:
                     # was resumed, so it is put back, not left as it was.
                     run.status = "paused"
                     run.waiting_for_human = True
+                    run.human_prompt = sub_event.get("prompt")
+                    run.human_fields = sub_event.get("fields") or []
                     # A new question opens an entry of its own (F140). Without one
                     # the parent's newest `paused` entry stayed the first
                     # question's, at the same index — so `pause_ordinal` did not
