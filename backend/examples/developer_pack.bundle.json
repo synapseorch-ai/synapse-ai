@@ -252,7 +252,7 @@
           "timeout_seconds": 600,
           "allowed_tools": null,
           "next_step_id": "step_eval_ticket",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -1100.0,
           "position_y": 0.0
         },
@@ -289,7 +289,7 @@
           "timeout_seconds": 60,
           "allowed_tools": null,
           "next_step_id": null,
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -800.0,
           "position_y": 0.0
         },
@@ -325,7 +325,7 @@
           "timeout_seconds": 86400,
           "allowed_tools": null,
           "next_step_id": "step_fetch_ticket",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -800.0,
           "position_y": 350.0
         },
@@ -385,7 +385,7 @@
           "timeout_seconds": 1800,
           "allowed_tools": null,
           "next_step_id": "step_human_pr_approval",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -450.0,
           "position_y": 0.0
         },
@@ -429,7 +429,7 @@
           "timeout_seconds": 86400,
           "allowed_tools": null,
           "next_step_id": "step_eval_pr_approval",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -100.0,
           "position_y": 0.0
         },
@@ -464,7 +464,7 @@
           "timeout_seconds": 30,
           "allowed_tools": null,
           "next_step_id": null,
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": 150.0,
           "position_y": 0.0
         },
@@ -1244,7 +1244,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": null,
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": 257.3888644424149,
           "position_y": 187.10688042849833
         },
@@ -1276,7 +1276,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": "step_89o6zkh",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": 689.9404965130425,
           "position_y": -38.54539792456313
         },
@@ -1314,7 +1314,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": null,
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": 586.810090945885,
           "position_y": -446.3045933707024
         },
@@ -1346,7 +1346,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": "step_po71f3z",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -731.5959808851785,
           "position_y": 83.33024972645819
         },
@@ -1384,7 +1384,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": null,
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -468.1265600200658,
           "position_y": 144.77969982981662
         },
@@ -1455,7 +1455,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": "step_1hdol9i",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": -111.4913145960916,
           "position_y": -419.72189975128487
         },
@@ -1493,7 +1493,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": null,
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": 225.7577514760373,
           "position_y": -124.08029554023562
         },
@@ -1525,7 +1525,7 @@
           "timeout_seconds": 300,
           "allowed_tools": null,
           "next_step_id": "step_0fj89jg",
-          "max_iterations": 3,
+          "max_iterations": 5,
           "position_x": 260.75370269874804,
           "position_y": -383.21205006979125
         },

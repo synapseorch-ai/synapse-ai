@@ -233,7 +233,7 @@
             "timeout_seconds": 600,
             "allowed_tools": null,
             "next_step_id": "step_clarify_route",
-            "max_iterations": 3,
+            "max_iterations": 6,
             "pass_images": true,
             "position_x": 600,
             "position_y": 0
@@ -271,7 +271,8 @@
             "timeout_seconds": 120,
             "allowed_tools": null,
             "next_step_id": null,
-            "max_iterations": 3,
+            "max_iterations": 5,
+            "on_exhausted_step_id": "step_draft_plan",
             "position_x": 900,
             "position_y": 0
         },
@@ -402,7 +403,7 @@
             "timeout_seconds": 120,
             "allowed_tools": null,
             "next_step_id": null,
-            "max_iterations": 3,
+            "max_iterations": 5,
             "position_x": 1800,
             "position_y": 0
         },
@@ -721,7 +722,7 @@
             "timeout_seconds": 120,
             "allowed_tools": null,
             "next_step_id": null,
-            "max_iterations": 3,
+            "max_iterations": 5,
             "position_x": 1800,
             "position_y": 400
         },

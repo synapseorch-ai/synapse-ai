@@ -43,6 +43,21 @@ def _seconds_since(iso_timestamp: str | None) -> float | None:
 MAX_NESTED_DEPTH = 3
 
 
+class RouteFailed(Exception):
+    """A route the run cannot take, so the run fails at the step routing it.
+
+    A step has used its Max iterations and names nowhere to go instead (F248), or a
+    Switch matched no case and has no default (F256). Both used to end the run
+    `completed`, the only trace an event nothing reads as a failure. `events` are
+    the routing events already decided, still worth yielding: they say why.
+    """
+
+    def __init__(self, message: str, events: list[dict] | None = None):
+        super().__init__(message)
+        self.message = message
+        self.events = list(events or [])
+
+
 #: Step types with no model to override: they run no LLM at all.
 _MODEL_FREE_STEP_TYPES = {"end", "human", "merge", "parallel", "loop", "print", "transform"}
 
@@ -446,6 +461,23 @@ class OrchestrationEngine:
                     "output_key": step.output_key,
                 })
 
+                # Where the run goes next, decided before the step is announced
+                # complete: a route the run cannot take fails it here, at the
+                # step that routes (F248, F256). `_resolve_next` only reads, and
+                # it runs after the entry above so a step routing to itself is
+                # counted. Caught on its own: the handler below would append a
+                # second, failed entry for a step that already has one.
+                try:
+                    next_step_id, extra_events = self._resolve_next(step, run)
+                except RouteFailed as stop:
+                    async for event in self._fail_route(run, step, stop):
+                        yield event
+                    try:
+                        await state.checkpoint()
+                    except Exception as ckpt_err:
+                        _log.warning(f"route-failure checkpoint failed: {ckpt_err}")
+                    break
+
                 if logger:
                     logger.step_end(step.id, "completed")
 
@@ -478,8 +510,6 @@ class OrchestrationEngine:
                         _log.warning(f"strict-type checkpoint failed: {ckpt_err}")
                     break
 
-                # Resolve next step
-                next_step_id, extra_events = self._resolve_next(step, run)
                 for extra_event in extra_events:
                     if logger:
                         logger.log_event(extra_event)
@@ -784,14 +814,24 @@ class OrchestrationEngine:
             # stays on the outermost, which is where `_execute_loop` starts.
             chain[-1]["answered"] = True
         elif answered and (done_with := self.step_map.get(resume_past) if resume_past else asker):
-            next_id, resume_events = self._resolve_next(done_with, run)
-            run.current_step_id = next_id
-            # A routing decision, a loop_limit_reached, or both. Dropping them
-            # meant a run that hit its iteration cap on the step right after a
-            # human pause said nothing about why it moved on.
-            for resume_event in resume_events:
-                yield resume_event
-            _log.debug(f"[engine.resume] ➡  _resolve_next({asker_id!r}) → next_step_id={next_id!r}")
+            try:
+                next_id, resume_events = self._resolve_next(done_with, run)
+            except RouteFailed as stop:
+                # The answer routes where the run cannot go (F248, F256). Failed
+                # here, then on to the checkpoint and `_execute_loop`, which
+                # finishes the run as failed: returning early would leave the
+                # fleet, which reads the status from `orchestration_complete`,
+                # recording it completed.
+                async for event in self._fail_route(run, done_with, stop):
+                    yield event
+            else:
+                run.current_step_id = next_id
+                # A routing decision, a loop_limit_reached, or both. Dropping them
+                # meant a run that hit its iteration cap on the step right after a
+                # human pause said nothing about why it moved on.
+                for resume_event in resume_events:
+                    yield resume_event
+                _log.debug(f"[engine.resume] ➡  _resolve_next({asker_id!r}) → next_step_id={next_id!r}")
 
         _log.debug(f"[engine.resume] 🚀 entering _execute_loop with current_step_id={run.current_step_id!r} status={run.status}")
         state = SharedState(run)
@@ -1265,8 +1305,7 @@ class OrchestrationEngine:
             events = [event] if event else []
             # Apply loop guard on target
             if next_id:
-                guarded_id, loop_event = self._apply_loop_guard(next_id, run)
-                return guarded_id, events + ([loop_event] if loop_event else [])
+                return self._guarded(next_id, run, events)
             return next_id, events
 
         # IF_ELSE — deterministic true/false branch
@@ -1291,8 +1330,7 @@ class OrchestrationEngine:
                 "target_step_id": target,
             }
             if target:
-                guarded_id, loop_event = self._apply_loop_guard(target, run)
-                return guarded_id, [event] + ([loop_event] if loop_event else [])
+                return self._guarded(target, run, [event])
             return target, [event]
 
         # SWITCH — deterministic case matching
@@ -1315,8 +1353,7 @@ class OrchestrationEngine:
             if target is None:
                 return None, [event]
             if target:
-                guarded_id, loop_event = self._apply_loop_guard(target, run)
-                return guarded_id, [event] + ([loop_event] if loop_event else [])
+                return self._guarded(target, run, [event])
             return target, [event]
 
         # Default linear routing
@@ -1324,10 +1361,37 @@ class OrchestrationEngine:
 
         # Apply loop guard
         if next_id:
-            guarded_id, loop_event = self._apply_loop_guard(next_id, run)
-            return guarded_id, [loop_event] if loop_event else []
+            return self._guarded(next_id, run, [])
 
         return next_id, []
+
+    async def _fail_route(
+        self, run: OrchestrationRun, step: StepConfig, stop: RouteFailed,
+    ) -> AsyncGenerator[dict, None]:
+        """Fail the run at `step`, which routes where the run cannot go (F248, F256).
+
+        The step ran and its entry is closed, so that entry is marked failed with
+        the reason rather than a second one added: one entry per execution is
+        what a timeline shows and what cloud prices. `current_step_id` stays on
+        the step, so a Replay (after the definition is fixed) runs it and routes
+        again.
+        """
+        logger = getattr(self, "logger", None)
+        for event in stop.events:
+            if logger:
+                logger.log_event(event)
+            yield event
+        for entry in reversed(run.step_history):
+            if entry.get("step_id") == step.id:
+                entry["status"] = "failed"
+                entry["error"] = stop.message
+                break
+        run.status = "failed"
+        run.waiting_for_human = False
+        if logger:
+            logger.step_end(step.id, "failed", stop.message)
+        yield {"type": "step_error", "orch_step_id": step.id, "step_name": step.name,
+               "error": stop.message, "reason": stop.message}
 
     def _engine_turns(self, run: OrchestrationRun) -> int:
         """How many turns this run has already spent against `max_total_turns`.
@@ -1352,8 +1416,18 @@ class OrchestrationEngine:
                 nested.update(branch)
         return sum(1 for h in run.step_history if h.get("step_id") not in nested)
 
-    def _apply_loop_guard(self, next_id: str, run: OrchestrationRun) -> tuple[str | None, dict | None]:
-        """Check if the target step has exceeded its max_iterations.
+    def _guarded(self, target: str, run: OrchestrationRun,
+                 events: list[dict]) -> tuple[str | None, list[dict]]:
+        """`target` through the loop guard, after the routing `events` already decided."""
+        try:
+            guarded_id, loop_event = self._apply_loop_guard(target, run)
+        except RouteFailed as stop:
+            stop.events = events + stop.events
+            raise
+        return guarded_id, events + ([loop_event] if loop_event else [])
+
+    def _executions(self, step_id: str, run: OrchestrationRun) -> int:
+        """How many times `step_id` has run in this run.
 
         Counted per step id, and **typed as the step**: an entry recorded
         against this step under another type is not an execution of it. That is
@@ -1363,26 +1437,55 @@ class OrchestrationEngine:
         are typed `human` and so still count, which is what keeps a loop
         containing one from iterating without limit.
         """
+        step_type = self.step_map[step_id].type.value
+        return sum(
+            1 for h in run.step_history
+            if h["step_id"] == step_id and h.get("step_type", step_type) == step_type
+        )
+
+    def _apply_loop_guard(self, next_id: str, run: OrchestrationRun) -> tuple[str | None, dict | None]:
+        """Route to `next_id`, unless it has already run `max_iterations` times.
+
+        Then the run goes to the step's `on_exhausted_step_id`, if it names one
+        (itself guarded: one fallback, not a chain), and otherwise fails with
+        `RouteFailed` — "'Coder' gave up after 3 attempts" (F248). The guard
+        used to fall back to the step's own `next_step_id`: a feedback loop whose
+        gate never passed went round once more without the fix, then ended
+        `completed` when the gate had nowhere left to go, and a failed quality
+        gate read as success everywhere a run's status is read.
+        """
         if next_id not in self.step_map:
             return next_id, None
 
-        step_type = self.step_map[next_id].type.value
-        exec_count = sum(
-            1 for h in run.step_history
-            if h["step_id"] == next_id and h.get("step_type", step_type) == step_type
-        )
-        max_iter = self.step_map[next_id].max_iterations
-        if exec_count >= max_iter:
-            loop_event = {
-                "type": "loop_limit_reached",
-                "orch_step_id": next_id,
-                "iterations": exec_count,
-                "max_iterations": max_iter,
-            }
-            fallback = self.step_map[next_id].next_step_id
-            return fallback, loop_event
+        target = self.step_map[next_id]
+        exec_count = self._executions(next_id, run)
+        max_iter = target.max_iterations
+        if exec_count < max_iter:
+            return next_id, None
 
-        return next_id, None
+        loop_event = {
+            "type": "loop_limit_reached",
+            "orch_step_id": next_id,
+            "iterations": exec_count,
+            "max_iterations": max_iter,
+        }
+        gave_up = (f"'{target.name}' gave up after {exec_count} attempts — raise its Max "
+                   f"iterations ({max_iter}) or give it a step for when it reaches the "
+                   f"limit, then Replay.")
+        fallback_id = target.on_exhausted_step_id
+        if not fallback_id:
+            raise RouteFailed(gave_up, [loop_event])
+        loop_event["on_exhausted_step_id"] = fallback_id
+
+        fallback = self.step_map.get(fallback_id)
+        if fallback is not None and self._executions(fallback_id, run) >= fallback.max_iterations:
+            raise RouteFailed(
+                f"'{target.name}' reached its Max iterations ({max_iter}), and '{fallback.name}', "
+                f"where it goes then, has used its own ({fallback.max_iterations}) — raise one, "
+                f"then Replay.",
+                [loop_event],
+            )
+        return fallback_id, loop_event
 
     def _pause_position(self, run: OrchestrationRun) -> tuple[list[dict], str | None, str | None]:
         """Where a paused run waits: the containers' pause records, the step

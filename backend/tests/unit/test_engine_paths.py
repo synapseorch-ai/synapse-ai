@@ -410,9 +410,10 @@ class TestRoutingAndTheLoopGuardAreTwoFacts:
                 {"id": "s", "name": "S", "type": "if_else", "if_condition": "state.k == 'yes'",
                  "if_true_step_id": "t", "if_false_step_id": "f", "next_step_id": None},
                 # `t` is out of iterations before the run starts, so routing to
-                # it must fall through to `after` and say so.
+                # it must go where it says for its limit — `after` — and say so.
                 {"id": "t", "name": "T", "type": "print", "print_content": "t",
-                 "output_key": "o", "max_iterations": 0, "next_step_id": "after"},
+                 "output_key": "o", "max_iterations": 0, "on_exhausted_step_id": "after",
+                 "next_step_id": None},
                 {"id": "f", "name": "F", "type": "print", "print_content": "f", "output_key": "o", "next_step_id": None},
                 {"id": "after", "name": "After", "type": "print", "print_content": "a", "output_key": "o", "next_step_id": None},
             ],
@@ -428,5 +429,32 @@ class TestRoutingAndTheLoopGuardAreTwoFacts:
         assert routed[0]["decision"] == "true"
         capped = [e for e in events if e.get("type") == "loop_limit_reached"][0]
         assert capped["orch_step_id"] == "t"
-        # Routing still lands on the guard's fallback, as it always did.
+        # Routing lands on the step `t` names for its limit (F248: it used to be
+        # `t`'s own next step, unasked).
         assert any(e.get("orch_step_id") == "after" for e in events)
+
+    async def test_with_nowhere_named_the_run_fails_after_saying_both(self):
+        """F248: an exhausted target with no `on_exhausted_step_id` fails the
+        run at the step that routes to it — both events still said first."""
+        orch = S.make_orchestration(
+            id="route_if_gave_up",
+            entry_step_id="s",
+            steps=[
+                {"id": "s", "name": "S", "type": "if_else", "if_condition": "state.k == 'yes'",
+                 "if_true_step_id": "t", "if_false_step_id": "f", "next_step_id": None},
+                {"id": "t", "name": "T", "type": "print", "print_content": "t",
+                 "output_key": "o", "max_iterations": 0, "next_step_id": "after"},
+                {"id": "f", "name": "F", "type": "print", "print_content": "f", "output_key": "o", "next_step_id": None},
+                {"id": "after", "name": "After", "type": "print", "print_content": "a", "output_key": "o", "next_step_id": None},
+            ],
+        )
+
+        events = await _run(orch, initial_state={"k": "yes"})
+        kinds = [e.get("type") for e in events]
+
+        assert kinds.index("routing_decision") < kinds.index("loop_limit_reached") < kinds.index("step_error")
+        error = next(e for e in events if e.get("type") == "step_error")
+        assert error["orch_step_id"] == "s" and "'T' gave up" in error["reason"]
+        assert not any(e.get("orch_step_id") == "after" for e in events)
+        complete = next(e for e in events if e.get("type") == "orchestration_complete")
+        assert complete["status"] == "failed"

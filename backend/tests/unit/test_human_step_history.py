@@ -125,9 +125,10 @@ class TestTheLoopGuardNowSeesIt:
     two *pre-existing* things would make an end-to-end version prove something
     other than what it claims, and both are worth writing down:
 
-    * the guard's fallback for an over-run step X is X's own `next_step_id`, so
-      it cannot break a cycle — X -> Y -> X exceeds, routes to Y, and comes back.
-      What actually stops a runaway loop is `max_total_turns` (100);
+    * the guard's fallback for an over-run step X was X's own `next_step_id`, so
+      it could not break a cycle — X -> Y -> X exceeded, routed to Y, and came
+      back. (Since F248 an over-run step fails the run, or goes to the step it
+      names in `on_exhausted_step_id`.);
     * `resume()` calls `_resolve_next` as `next_id, _ = ...`, discarding the
       event, so `loop_limit_reached` and routing decisions are never emitted
       when they happen at a resume boundary.
@@ -165,7 +166,27 @@ class TestTheLoopGuardNowSeesIt:
         )
 
     def test_a_human_steps_executions_are_counted(self):
+        from core.orchestration.engine import RouteFailed
+
         engine = self._engine(max_iterations=2)
+        history = [
+            {"step_id": "h", "step_name": "Approve", "step_type": "human", "status": "completed"},
+            {"step_id": "h", "step_name": "Approve", "step_type": "human", "status": "paused"},
+        ]
+
+        # Two executions reach the cap of two: the guard fires (F248: with
+        # nowhere named for the limit, the route fails the run).
+        with pytest.raises(RouteFailed) as stop:
+            engine._apply_loop_guard("h", self._run(history))
+
+        event = stop.value.events[0]
+        assert event["type"] == "loop_limit_reached"
+        assert event["iterations"] == 2
+        assert "'Approve' gave up after 2 attempts" in stop.value.message
+
+    def test_counted_the_same_way_it_takes_the_step_named_for_the_limit(self):
+        engine = self._engine(max_iterations=2)
+        engine.step_map["h"].on_exhausted_step_id = "exit"
         history = [
             {"step_id": "h", "step_name": "Approve", "step_type": "human", "status": "completed"},
             {"step_id": "h", "step_name": "Approve", "step_type": "human", "status": "paused"},
@@ -173,8 +194,7 @@ class TestTheLoopGuardNowSeesIt:
 
         next_id, event = engine._apply_loop_guard("h", self._run(history))
 
-        assert event is not None and event["type"] == "loop_limit_reached"
-        assert event["iterations"] == 2
+        assert event["type"] == "loop_limit_reached" and event["iterations"] == 2
         assert next_id == "exit"
 
     def test_under_the_limit_it_still_routes_to_the_step(self):

@@ -820,6 +820,8 @@ BUILDER_TOOL_SCHEMAS = [
                         ),
                     },
                     "switch_default_step_id": {"type": "string", "description": "Fallback step when no switch case matches"},
+                    "max_iterations": {"type": "integer", "description": "How many times this step may run in one run (default 3). A route to it after that fails the run, unless on_exhausted_step_id names where to go. Raise it for a cycle a person drives (a revision or clarification loop)."},
+                    "on_exhausted_step_id": {"type": "string", "description": "Step the run goes to when a route reaches this step after it has run max_iterations times, e.g. an escalation or a best-effort finish. Unset, the run fails with \"'<step>' gave up after N attempts\"."},
                     # ──────────────────────────────────────────────────────────
                     "max_turns": {"type": "integer", "description": "Max agent turns (default 15)"},
                     "timeout_seconds": {"type": "integer", "description": "Step timeout (default 300)"},
@@ -892,6 +894,8 @@ BUILDER_TOOL_SCHEMAS = [
                                 "switch_expression": {"type": "string", "description": "Expression to evaluate for switch steps. Same restricted expression syntax as if_condition."},
                                 "switch_cases_json": {"type": "string", "description": "JSON string: '{\"value\":\"step_id\"}'"},
                                 "switch_default_step_id": {"type": "string", "description": "Fallback step when no case matches"},
+                                "max_iterations": {"type": "integer", "description": "Times this step may run in one run (default 3); a route to it after that fails the run unless on_exhausted_step_id is set"},
+                                "on_exhausted_step_id": {"type": "string", "description": "Step to go to when this step has used its max_iterations"},
                                 "max_turns": {"type": "integer"},
                                 "timeout_seconds": {"type": "integer"},
                                 "model": {"type": "string"},
@@ -2415,6 +2419,12 @@ def _validate_orchestration(orch: dict) -> dict:
         nxt = s.get("next_step_id")
         if nxt and not _ref_ok(nxt):
             issues.append(f"Step '{sid}' next_step_id '{nxt}' points to unknown step.")
+        spent = s.get("on_exhausted_step_id")
+        if spent and not _ref_ok(spent):
+            issues.append(
+                f"Step '{sid}' goes to '{spent}' when it reaches its limit (on_exhausted_step_id), "
+                f"but no step '{spent}' exists."
+            )
         for label, target in (s.get("route_map") or {}).items():
             if target and not _ref_ok(target):
                 issues.append(
@@ -2625,7 +2635,8 @@ def _validate_orchestration(orch: dict) -> dict:
                     if bsid in by_id:
                         successors.append(bsid)
             # New branching step successors
-            for ref_key in ("if_true_step_id", "if_false_step_id", "switch_default_step_id"):
+            for ref_key in ("if_true_step_id", "if_false_step_id", "switch_default_step_id",
+                            "on_exhausted_step_id"):
                 ref = s.get(ref_key)
                 if ref and ref in by_id:
                     successors.append(ref)
@@ -2847,6 +2858,7 @@ def _fill_step_defaults(steps: list) -> list:
         s.setdefault("allowed_tools", None)
         s.setdefault("next_step_id", None)
         s.setdefault("max_iterations", 3)
+        s.setdefault("on_exhausted_step_id", None)
         # New deterministic step defaults
         s.setdefault("print_content", None)
         s.setdefault("if_condition", None)

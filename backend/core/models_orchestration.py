@@ -152,6 +152,9 @@ class StepConfig(BaseModel):
     # Graph routing
     next_step_id: str | None = None  # Linear next step / loop "done" path
     max_iterations: int = 3  # Max times this step can execute in one run (loop guard)
+    # Where a route to this step goes once it has run `max_iterations` times.
+    # Unset, the run fails: "'Coder' gave up after 3 attempts" (F248).
+    on_exhausted_step_id: str | None = None
 
     # Visual canvas position (for @xyflow/react)
     position_x: float = 0
