@@ -1918,7 +1918,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # works for callers that haven't migrated yet.
         raw_fields = dict(args.get("fields") or {})
         for key in ("name", "description", "entry_step_id", "state_schema_json",
-                    "max_total_turns", "timeout_minutes", "result_key"):
+                    "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"):
             if key in args and args[key] is not None:
                 raw_fields[key] = args[key]
         _normalize_state_schema_arg(raw_fields)

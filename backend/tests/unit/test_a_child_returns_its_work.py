@@ -201,3 +201,19 @@ class TestTheBuilderCanNameIt:
                          {"id": "e", "name": "End", "type": "end"}]}
         issues = _validate_orchestration(doc)["issues"]
         assert any("nothing_writes_this" in i for i in issues)
+
+
+class TestTheBuilderCanTurnOnStrictTypes:
+    """`set_orchestration_meta` listed `strict_state_types` as allowed and refused
+    it: the loop that copies flat arguments into the patch left it out (F287)."""
+
+    async def test_the_flat_flag_is_saved(self):
+        from core.builder_tools import execute_builder_tool
+        from core.store.resources import get_orchestration
+        orch = await _flat("orch_f287", [_print("only", key="made")], "only")
+
+        out = await execute_builder_tool("set_orchestration_meta",
+                                         {"orch_id": orch["id"], "strict_state_types": True}, _server())
+
+        assert "error" not in out
+        assert (await get_orchestration(orch["id"]))["strict_state_types"] is True
