@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { AlertCircle, Globe, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 
-import { Button, Input, Label, Modal } from '@/components/ui';
+import { Badge, Button, Checkbox, Input, Label, Modal, type BadgeTone } from '@/components/ui';
 
 interface WidgetRecord {
     id: string;
@@ -22,9 +22,25 @@ interface WidgetRecord {
     launcher: string;
     logo: string;
     position: string;
+    /** The tools a visitor's turn may use — none unless ticked (F280). Absent
+     *  on a widget saved before the list existed, which means none. */
+    visitor_tools?: string[];
 }
 
 interface AgentOption { id: string; name: string }
+
+/** One tool a visitor's turn on this widget's agent could reach, with what it
+ *  does (`GET /api/widgets/visitor-tools`, the tool policy's categories). */
+interface VisitorToolChoice { name: string; category: string }
+
+/** Said plainly, because the person ticking is deciding what a stranger may make
+ *  their agent do. A read-only tool is a warning too: it reads *their* files. */
+const TOOL_CATEGORY: Record<string, { label: string; tone: BadgeTone }> = {
+    destructive: { label: 'Changes data', tone: 'danger' },
+    open_world: { label: 'Reaches outside', tone: 'warning' },
+    read_only: { label: 'Reads your data', tone: 'warning' },
+    undeclared: { label: 'Does not say what it does', tone: 'warning' },
+};
 
 const BLANK = {
     name: '',
@@ -121,6 +137,22 @@ export const WidgetsTab = () => {
         [widgets, selectedId],
     );
 
+    // What the selected widget's agent could let a visitor use. Keyed by the
+    // agent, so switching widgets never shows the previous agent's list.
+    const [choices, setChoices] = useState<{ agentId: string; tools: VisitorToolChoice[] } | null>(null);
+    const selectedAgent = selected?.agent_id ?? '';
+    useEffect(() => {
+        if (!selectedAgent) return;
+        let cancelled = false;
+        void (async () => {
+            const response = await fetch(`/api/widgets/visitor-tools?agent_id=${encodeURIComponent(selectedAgent)}`);
+            const body = response.ok ? await response.json() : { tools: [] };
+            if (!cancelled) setChoices({ agentId: selectedAgent, tools: body.tools ?? [] });
+        })();
+        return () => { cancelled = true; };
+    }, [selectedAgent]);
+    const toolChoices = choices?.agentId === selectedAgent ? choices.tools : null;
+
     /**
      * Push the draft into the preview frame.
      *
@@ -215,9 +247,9 @@ export const WidgetsTab = () => {
             }),
         });
         if (!response.ok) {
-            // The 409 here is the tool-policy refusal, and its sentence names the
-            // agent's behaviour and what to do about it. The server's own words
-            // beat a paraphrase.
+            // A 409 here names what is wrong with the choice (the AI builder's
+            // own agents cannot be published). The server's own words beat a
+            // paraphrase.
             setError((await response.json().catch(() => ({}))).detail ?? 'Could not save.');
             return;
         }
@@ -334,6 +366,46 @@ export const WidgetsTab = () => {
                                     <code className="font-code">*.acme.com</code> covers subdomains but
                                     not <code className="font-code">acme.com</code> itself.
                                 </p>
+                            )}
+                        </div>
+
+                        <div>
+                            <Label>What visitors can use</Label>
+                            <p className="text-2xs text-text-faint mb-2">
+                                Anyone on the sites above can make the agent use a tool you tick here —
+                                a read-only one reads your files and data for them. Nothing is ticked
+                                until you tick it.
+                            </p>
+                            {toolChoices === null ? (
+                                <p className="text-2xs text-text-faint">Loading the agent&apos;s tools…</p>
+                            ) : toolChoices.length === 0 ? (
+                                <p className="text-2xs text-text-faint">This agent has no tools to offer visitors.</p>
+                            ) : (
+                                <ul className="space-y-1.5">
+                                    {toolChoices.map((tool) => {
+                                        const id = `widget-visitor-tool-${tool.name}`;
+                                        const ticked = selected.visitor_tools ?? [];
+                                        const category = TOOL_CATEGORY[tool.category] ?? TOOL_CATEGORY.undeclared;
+                                        return (
+                                            <li key={tool.name} className="flex items-center gap-2">
+                                                <Checkbox
+                                                    id={id}
+                                                    label={`Visitors can use ${tool.name}`}
+                                                    checked={ticked.includes(tool.name)}
+                                                    onChange={(on) => draft({
+                                                        visitor_tools: on
+                                                            ? [...ticked.filter((n) => n !== tool.name), tool.name]
+                                                            : ticked.filter((n) => n !== tool.name),
+                                                    })}
+                                                />
+                                                <label htmlFor={id} className="text-xs font-code text-text">
+                                                    {tool.name}
+                                                </label>
+                                                <Badge tone={category.tone}>{category.label}</Badge>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
                             )}
                         </div>
 
@@ -518,9 +590,9 @@ export const WidgetsTab = () => {
                         </p>
                     </div>
                     <p className="text-2xs text-text-faint border-t border-border pt-3">
-                        A widget has no file uploads and never asks a visitor to approve a tool call —
-                        they are not a member of this workspace and cannot answer that. An agent whose
-                        tool policy would stop and ask cannot be published here.
+                        A widget has no file uploads and never asks a visitor to approve anything —
+                        they are not a member of this workspace. Visitors can use none of the
+                        agent&apos;s tools until you tick them after creating the widget.
                     </p>
                     <div className="flex justify-end gap-2">
                         <Button variant="secondary" onClick={() => setCreating(false)}>Cancel</Button>
