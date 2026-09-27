@@ -1571,6 +1571,8 @@ class LoopStepExecutor:
 
             # ── Mode resolution ──
             items: list | None = None
+            #: More work than the cap allows, said before anything runs (F254).
+            over_cap: str | None = None
             if step.loop_over:
                 mode = "foreach"
                 # The resolved collection is snapshotted into the progress record
@@ -1600,6 +1602,12 @@ class LoopStepExecutor:
                                "message": f"loop_over '{step.loop_over}' is "
                                           f"{type(resolved).__name__}, not a list — zero iterations"}
                         items = []
+                    # Judged on the collection as evaluated, never on a resumed
+                    # snapshot: a run paused inside the loop carries on with
+                    # the items it was already iterating.
+                    if len(items) > cap:
+                        over_cap = (f"{len(items)} items exceed the {cap}-iteration cap of "
+                                    f"'{step.name}' — raise this loop's Max iterations")
                 total = min(len(items), cap)
             elif step.loop_while_condition:
                 mode = "while"
@@ -1607,6 +1615,17 @@ class LoopStepExecutor:
             else:
                 mode = "count"
                 total = min(max(1, step.loop_count), cap)
+                if step.loop_count > cap and not completed_iterations and pending_resume is None:
+                    over_cap = (f"A count of {step.loop_count} exceeds the {cap}-iteration cap of "
+                                f"'{step.name}' — raise this loop's Max iterations")
+
+            if over_cap:
+                # Fails the run before the first iteration (F254). A for-each
+                # over more items than the cap used to run the first `cap`,
+                # drop the rest and report "collection_exhausted": the ceiling
+                # warning was checked after `total`, so it could never fire.
+                yield {"type": "step_error", "orch_step_id": step.id, "error": over_cap}
+                raise RuntimeError(over_cap)
 
             _log.debug(f"LOOP: ▶ step='{step.id}' mode={mode} body_ids={body_ids} total={total}")
             if completed_iterations:

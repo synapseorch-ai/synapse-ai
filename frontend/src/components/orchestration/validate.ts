@@ -133,7 +133,7 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
                 if (!s.loop_over && !s.loop_while_condition) {
                     const count = s.loop_count ?? 3;
                     if (count < 1) add(s.id, error('Iteration count must be at least 1'));
-                    else if (count > cap) add(s.id, warning(`Iteration count (${count}) is above the ${cap}-iteration cap and will be clamped`));
+                    else if (count > cap) add(s.id, error(`Iteration count (${count}) is above the ${cap}-iteration cap — the run fails before the loop starts; raise Max iterations`));
                 }
                 if (s.loop_over && s.loop_while_condition) {
                     add(s.id, warning('Both a collection and a while condition are set — the collection wins'));

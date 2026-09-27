@@ -185,13 +185,17 @@ class TestForEach:
         assert _iterations(events) == []
         assert any(e.get("type") == "orchestration_complete" for e in events)
 
-    async def test_collection_is_capped_by_loop_max_iterations(self):
+    async def test_a_collection_over_loop_max_iterations_fails_the_loop(self):
+        """F254 (Naveen's call): a collection larger than the cap fails before
+        the first item. It was truncated to the cap and reported
+        "collection_exhausted", the rest silently dropped."""
         events = await _run(
             _orch({"loop_over": "state.items", "loop_max_iterations": 2}),
             initial_state={"items": [1, 2, 3, 4, 5]},
         )
-        assert _iterations(events) == [1, 2]
-        assert _loop_complete(events)["stopped_reason"] == "collection_exhausted"
+        assert _iterations(events) == []
+        complete = next(e for e in reversed(events) if e.get("type") == "orchestration_complete")
+        assert complete["status"] == "failed"
 
 
 class TestWhile:

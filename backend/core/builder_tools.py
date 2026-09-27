@@ -2525,7 +2525,8 @@ def _validate_orchestration(orch: dict) -> dict:
                 elif count > cap:
                     issues.append(
                         f"Loop step '{sid}' loop_count ({count}) exceeds its "
-                        f"loop_max_iterations ({cap}) and would be clamped."
+                        f"loop_max_iterations ({cap}), so the run fails before the loop starts — "
+                        f"raise loop_max_iterations or lower loop_count."
                     )
             for bsid in body:
                 bstep = by_id.get(bsid)
