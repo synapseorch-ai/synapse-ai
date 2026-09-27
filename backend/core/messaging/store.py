@@ -131,7 +131,9 @@ async def save_channel(channel: dict) -> dict:
     # call). On by default — what every channel did before, so nothing changes
     # on upgrade. Off, a sender is a visitor: only `visitor_tools`, no memory,
     # no answering a run waiting here (`core.visitor`, `base._dispatch`).
-    channel["senders_are_members"] = channel.get("senders_are_members", True) is not False
+    # Only a real `true` (or no value: a channel saved before the setting) is a
+    # member channel; the route saves raw JSON, and `"false"` must not read as on.
+    channel["senders_are_members"] = channel.get("senders_are_members", True) is True
     channel["visitor_tools"] = _visitor.clean_tools(channel.get("visitor_tools"))
 
     idx = next((i for i, c in enumerate(data) if c["id"] == channel["id"]), None)

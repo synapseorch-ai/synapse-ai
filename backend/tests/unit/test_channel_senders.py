@@ -86,6 +86,13 @@ class TestTheBoxAndItsDefault:
         assert ch["visitor_tools"] == ["peek"]
 
 
+    @pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
+    async def test_anything_but_a_real_true_is_a_visitor_channel(self, value):
+        """The route saves raw JSON: `"false"` used to be stored as on."""
+        ch = await _channel(senders_are_members=value)
+        assert ch["senders_are_members"] is False
+
+
 class TestWhoTheSenderIs:
     async def test_on_the_turn_runs_as_a_member(self, manager):
         ch = await _channel()
