@@ -185,8 +185,11 @@ class AgentStepExecutor:
                 # mid-transcript will not see them again.
                 images=(getattr(engine, "images", None) or None) if step.pass_images else None,
                 should_stop=getattr(engine, "cancel_hook", None),
-                # A vault file the step's prompt read in is content nobody typed (F279).
-                untrusted_message=any(getattr(m, "outcome", "") == "inlined" for m in mentions),
+                # A step's prompt is built from the run, not typed by a person: an
+                # earlier step's scraped page, a webhook's input, a vault file.
+                # So a `remember` in a workflow always asks (F279; Naveen,
+                # 2026-09-27: "every step asks"), and the run pauses for it.
+                untrusted_message=True,
             ):
                 if event.get("type") == "tasks_updated":
                     # Task state lives on the run, not in a tool's process
