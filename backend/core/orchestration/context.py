@@ -956,16 +956,7 @@ def build_origin_aware_context(
     # template takes the run's input as typed: the input is a value, not a
     # template (D97, as D95 ruled for `@[path]`), so text that an agent, a
     # channel or a parent run put there is never rendered.
-    if prompt_template is None:
-        prompt_template = step.prompt_template
-    if prompt_template:
-        task_text = _fill_task_template(
-            prompt_template,
-            run.shared_state,
-            getattr(engine, "global_variables", None) or {},
-        )
-    else:
-        task_text = str(run.shared_state.get("user_input") or "")
+    task_text = _task_text(step, run, engine, prompt_template)
 
     if is_rerun:
         task_header = "## ORIGINAL TASK (reference only)"
@@ -1013,6 +1004,9 @@ def build_origin_aware_context(
             f"You are revising your previous output based on evaluator feedback "
             f"(\"{transition.routing_decision}\")."
         )
+    called_from = _called_from_block(getattr(engine, "caller", None))
+    if called_from:
+        sys_lines += ["", called_from]
     system_prompt_extra = "\n".join(sys_lines)
 
     # ------------------------------------------------------------------
@@ -1038,6 +1032,63 @@ def build_origin_aware_context(
         )
 
     return prompt, system_prompt_extra, system_prompt_prefix
+
+
+def _task_text(step, run, engine, prompt_template: str | None = None) -> str:
+    """The step's task: its template rendered in one pass, or the run's input as typed."""
+    if prompt_template is None:
+        prompt_template = step.prompt_template
+    if prompt_template:
+        return _fill_task_template(
+            prompt_template,
+            run.shared_state,
+            getattr(engine, "global_variables", None) or {},
+        )
+    return str(run.shared_state.get("user_input") or "")
+
+
+def _called_from_block(caller: dict | None) -> str:
+    """Who called this nested run, for its model steps' system text (F252).
+
+    The parent's own prompt used to be the child's input, so a child knew its
+    caller only by carrying the caller's whole meta-prompt as its task. Now the
+    task is its own, and this says where it sits: the calling workflow and step,
+    and what that workflow is for — context, not instructions.
+    """
+    if not caller:
+        return ""
+    lines = [
+        "## CALLED FROM",
+        f"This workflow is running as step \"{caller.get('step') or '?'}\" of the workflow "
+        f"\"{caller.get('workflow') or '?'}\". Your task is the one given to you; this is context.",
+    ]
+    goal = str(caller.get("goal") or "").strip()
+    if goal:
+        if len(goal) > 2000:
+            from .summarizer import smart_truncate
+            goal = smart_truncate(goal, 2000)
+        lines.append(f"What that workflow is for:\n{goal}")
+    return "\n".join(lines)
+
+
+async def build_task_text(
+    step: "StepConfig",
+    run: "OrchestrationRun",
+    engine: "OrchestrationEngine",
+) -> tuple[str, list]:
+    """The step's task alone, with its `@[path]` mentions read — a nested child's input (F252).
+
+    What `build_step_prompt` puts under TASK, and nothing around it: a child
+    orchestration is handed this, not the parent step's whole prompt. The same
+    three passes, in the same order, for the same reason.
+    """
+    template = step.prompt_template or ""
+    if "@[" not in template:
+        return _task_text(step, run, engine), []
+    reader = _mention_reader(engine)
+    masked, raws = reader.mask(template)
+    text, mentions = await reader.fill(_task_text(step, run, engine, masked), raws)
+    return text, mentions
 
 
 async def build_step_prompt(

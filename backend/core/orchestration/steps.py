@@ -73,11 +73,36 @@ class AgentStepExecutor:
         from .resolved import resolve_for_run
         _log.debug(f"AGENT EXEC: agent_id={step.agent_id} step={step.id}")
 
-        from .context import build_step_prompt, snapshot_inputs
+        from .context import build_step_prompt, build_task_text, snapshot_inputs
         transition = getattr(engine, "current_transition", None)
         if transition is None:
             from .context import TransitionContext
             transition = TransitionContext(origin_type="entry", execution_number=1)
+
+        # ── Orchestrator-as-agent: delegate to a nested OrchestrationEngine ──
+        # Resolved once per run: the agent, the custom tools and the aggregated
+        # tool set are the same for every step and delegate that uses it. An
+        # orchestrator agent needs no tools, so it is resolved without them.
+        resolved = await resolve_for_run(engine, step.agent_id, tools=False)
+        target_agent = resolved.agent if resolved else None
+        if target_agent and target_agent.get("type") == "orchestrator":
+            # The child is handed this step's task, not the prompt an agent here
+            # would get (F252): that prompt — this workflow's role, goal and
+            # context around the task — became the child's input, and so its
+            # questions, its conditions and its logs' titles, nested again at
+            # every level. Who called it reaches its steps' system text instead.
+            task, mentions = await build_task_text(step, run, engine)
+            yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": task,
+                   "system_prompt_extra": "", "system_prompt_prefix": "",
+                   "mentions": [m.summary() for m in mentions]}
+            for warning in _mention_warnings(mentions):
+                yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
+            async for ev in self._execute_nested_orchestration(
+                step, run, engine, transition, target_agent, task, snapshot_inputs(step, run, engine)
+            ):
+                yield ev
+            return
+
         prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
             step, run, engine, transition
         )
@@ -90,19 +115,6 @@ class AgentStepExecutor:
                "mentions": [m.summary() for m in mentions]}
         for warning in _mention_warnings(mentions):
             yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
-
-        # ── Orchestrator-as-agent: delegate to a nested OrchestrationEngine ──
-        # Resolved once per run: the agent, the custom tools and the aggregated
-        # tool set are the same for every step and delegate that uses it. An
-        # orchestrator agent needs no tools, so it is resolved without them.
-        resolved = await resolve_for_run(engine, step.agent_id, tools=False)
-        target_agent = resolved.agent if resolved else None
-        if target_agent and target_agent.get("type") == "orchestrator":
-            async for ev in self._execute_nested_orchestration(
-                step, run, engine, transition, target_agent, prompt, inputs_snapshot
-            ):
-                yield ev
-            return
 
         if resolved is not None:
             resolved = await resolve_for_run(engine, step.agent_id, tools=True)
@@ -283,7 +295,10 @@ class AgentStepExecutor:
     ) -> AsyncGenerator[dict, None]:
         """Run an orchestrator-type agent as a nested sub-orchestration.
 
-        Input mapping:  the resolved prompt becomes the sub-orch's user_input.
+        Input mapping:  the step's task — its rendered template, or the run's
+                        input when it has none — becomes the sub-orch's
+                        user_input (F252); who called it rides on the
+                        sub-engine as `caller`, for its steps' system text.
         State scoping:  sub-orch gets a FRESH shared_state — parent's private
                         keys (_loop_*, _routing_*, _exec_memory_*) are not shared
                         to avoid collisions.
@@ -323,6 +338,7 @@ class AgentStepExecutor:
 
         sub_orch = Orchestration.model_validate(sub_orch_data)
         sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)
+        sub_engine.caller = engine.caller_for(run, step)
         sub_run_id = f"{run.run_id}__{step.id}_d{parent_depth + 1}"
         sub_session = run.session_id or f"orch_{run.run_id}"
 

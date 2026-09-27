@@ -120,6 +120,11 @@ class OrchestrationEngine:
         #: per run, checkpointed at every step boundary and fed to the memory
         #: summariser. Fine for a model name, not for 20 MB of image.
         self.images: list[str] = []
+        #: Who called this run when it runs nested — `{workflow, step, goal}` —
+        #: for its model steps' system text (F252). Rides on the engine, not in
+        #: shared state, for the reason `images` does; the parent hands it over
+        #: on the first run and again on every resume (`_resume_nested`).
+        self.caller: dict | None = None
         #: Agents (and their tool sets) resolved for this run, keyed by agent id
         #: — see core/orchestration/resolved.py. Nothing in it changes while a
         #: run is in flight, so it is never invalidated, only discarded with
@@ -729,7 +734,7 @@ class OrchestrationEngine:
     @classmethod
     async def resume(
         cls, run_id: str, human_response: dict, server_module, images: list[str] | None = None,
-        *, depth: int = 0,
+        *, depth: int = 0, caller: dict | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Resume a paused orchestration after human input.
 
@@ -745,7 +750,8 @@ class OrchestrationEngine:
         `depth` is the nesting depth of the run being resumed. A parent resuming
         the sub-orchestration it waits on passes its own plus one, so the child
         is not taken for a top-level run — which writes memory summaries and is
-        scored — and its nesting cap counts from where it really is.
+        scored — and its nesting cap counts from where it really is. It passes
+        `caller` too, so the child's steps are still told who called them.
         """
         from .state import SharedState as SS
 
@@ -766,6 +772,7 @@ class OrchestrationEngine:
         apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
         engine = cls(orch, server_module, depth=depth)
         engine.images = list(images or [])
+        engine.caller = caller
         async for event in engine.resume_paused(run, human_response):
             yield event
 
@@ -1007,6 +1014,7 @@ class OrchestrationEngine:
 
         async for sub_event in type(self).resume(
             nested_run_id, human_response, self.server_module, depth=self.depth + 1,
+            caller=self.caller_for(run, parent_step),
         ):
             sub_events.append(sub_event)
             sub_outcome.read(sub_event)
@@ -1146,6 +1154,14 @@ class OrchestrationEngine:
         run.waiting_for_human = False
         run.status = "running"
         outcome["status"] = "done"
+
+    def caller_for(self, run: OrchestrationRun, step: StepConfig | None) -> dict:
+        """What a child run started by `step` is told about who called it (F252)."""
+        return {
+            "workflow": self.orch.name,
+            "step": step.name if step is not None else "",
+            "goal": str(run.shared_state.get("user_input") or ""),
+        }
 
     async def _remember_nested_result(
         self, run: OrchestrationRun, step: StepConfig, sub_orch_id: str | None, result: object,
