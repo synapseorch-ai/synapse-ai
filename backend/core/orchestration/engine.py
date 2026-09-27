@@ -42,6 +42,12 @@ def _seconds_since(iso_timestamp: str | None) -> float | None:
 
 MAX_NESTED_DEPTH = 3
 
+#: The run's own entry in `step_progress`: the seconds it has worked so far,
+#: which `timeout_minutes` is measured against across resumes (F258). Kept
+#: there because the OSS store and cloud's engine table both mirror that
+#: column already — a new field on the run would need a migration on each.
+ACTIVE_TIME_KEY = "__run__"
+
 
 class RouteFailed(Exception):
     """A route the run cannot take, so the run fails at the step routing it.
@@ -219,12 +225,30 @@ class OrchestrationEngine:
         async for event in self._execute_loop(run, state):
             yield event
 
-    async def _execute_loop(self, run: OrchestrationRun, state: SharedState) -> AsyncGenerator[dict, None]:
-        """Core execution loop — shared between run() and resume()."""
+    async def _execute_loop(
+        self, run: OrchestrationRun, state: SharedState, started: float | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Core execution loop — shared between run() and resume().
+
+        `started` is when this stretch of work began, if before this call: a
+        resume passes its own start, so the sub-run it finished is counted.
+        """
         total_turns = self._engine_turns(run)
         logger = getattr(self, "logger", None)
-        loop_start_time = time.time()
+        loop_start_time = started if started is not None else time.time()
         timeout_seconds = (self.orch.timeout_minutes or ORCH_GLOBAL_TIMEOUT_MIN) * 60
+        # The budget counts the time this run has worked, across its pauses
+        # (F258). Each resume used to start it again, so a run with a person's
+        # pause in it could work past its budget without limit. What earlier
+        # stretches spent is on the run; waiting for a person is not in it.
+        spent_before = self._active_seconds(run)
+
+        def active_seconds() -> float:
+            return spent_before + (time.time() - loop_start_time)
+
+        def stamp() -> None:
+            """Put the time worked so far on the run, for its next checkpoint."""
+            run.step_progress[ACTIVE_TIME_KEY] = {"active_seconds": round(active_seconds(), 2)}
 
         while run.current_step_id and run.status == "running":
             # Checkpoint between steps — ensures MCP background tasks
@@ -251,10 +275,12 @@ class OrchestrationEngine:
                 break
 
             # Global timeout guard
-            elapsed = time.time() - loop_start_time
+            elapsed = active_seconds()
             if elapsed > timeout_seconds:
                 run.status = "failed"
-                yield {"type": "orchestration_error", "error": f"Global timeout ({self.orch.timeout_minutes} min) exceeded after {round(elapsed / 60, 1)} min"}
+                yield {"type": "orchestration_error", "error": (
+                    f"Global timeout ({self.orch.timeout_minutes} min) exceeded after "
+                    f"{round(elapsed / 60, 1)} min of work — time waiting for a person is not counted")}
                 break
 
             step = self.step_map.get(run.current_step_id)
@@ -286,7 +312,7 @@ class OrchestrationEngine:
             # is given 300s to do 900s of work, and the run dies mid-iteration.
             # The global timeout checked above is the real ceiling for these.
             if step.type in (StepType.LOOP, StepType.PARALLEL):
-                step_timeout = max(1.0, timeout_seconds - (time.time() - loop_start_time))
+                step_timeout = max(1.0, timeout_seconds - active_seconds())
 
             # Build and store TransitionContext so executors can access it
             from .context import build_transition_context
@@ -377,6 +403,7 @@ class OrchestrationEngine:
                                     run.shared_state[HUMAN_CHANNEL_KEY] = event["channel_id"]
                                 else:
                                     run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
+                                stamp()
                                 await state.checkpoint()
                                 if logger:
                                     logger.step_end(step.id, "paused")
@@ -473,6 +500,7 @@ class OrchestrationEngine:
                     async for event in self._fail_route(run, step, stop):
                         yield event
                     try:
+                        stamp()
                         await state.checkpoint()
                     except Exception as ckpt_err:
                         _log.warning(f"route-failure checkpoint failed: {ckpt_err}")
@@ -505,6 +533,7 @@ class OrchestrationEngine:
                         logger.run_end("failed")
                     yield {"type": "orchestration_error", "error": error}
                     try:
+                        stamp()
                         await state.checkpoint()
                     except Exception as ckpt_err:
                         _log.warning(f"strict-type checkpoint failed: {ckpt_err}")
@@ -516,6 +545,7 @@ class OrchestrationEngine:
                     yield extra_event
                 run.current_step_id = next_step_id
                 _log.debug(f"ENGINE: 💾 checkpointed → next='{run.current_step_id}'")
+                stamp()
                 await state.checkpoint()
 
             except Exception as e:
@@ -549,6 +579,7 @@ class OrchestrationEngine:
                 # Persist the failure here: between this and the finalize
                 # checkpoint is exactly where a second crash would lose it.
                 try:
+                    stamp()
                     await state.checkpoint()
                 except Exception as ckpt_err:
                     _log.warning(f"failure checkpoint failed: {ckpt_err}")
@@ -559,6 +590,13 @@ class OrchestrationEngine:
             run.status = "completed"
 
         run.ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if run.status == "completed":
+            # Nothing resumes a completed run, so it has no budget left to
+            # count; a finished run leaves no progress behind. A failed or
+            # cancelled one keeps its count for a Replay to judge.
+            run.step_progress.pop(ACTIVE_TIME_KEY, None)
+        else:
+            stamp()
         await state.checkpoint()
 
         # Memory-enabled agents keep a summary of what this run did — the
@@ -671,6 +709,12 @@ class OrchestrationEngine:
         # doesn't immediately re-cancel on the first iteration.
         _cancelled_run_ids.discard(run_id)
 
+        # A person asked to carry on: the run gets its budget again (F258) —
+        # a run that failed on its time budget could not be replayed otherwise.
+        # A job handed out again after its worker stopped keeps counting.
+        if not interrupted:
+            run.step_progress.pop(ACTIVE_TIME_KEY, None)
+
         run.status = "running"
 
         state = SharedState(run)
@@ -746,6 +790,10 @@ class OrchestrationEngine:
           progress): the step is re-entered with the decision, not stepped past;
         - anything else is a human step's answer.
         """
+        # Work resumes now; the wait before it is a person's and is not counted
+        # against `timeout_minutes` (F258). Set before a nested sub-run is
+        # resumed, so the work it does counts for this run too.
+        self._resumed_at = time.time()
         # Answered: no longer waiting on a channel. Written at the next checkpoint;
         # a nested step that pauses again records its channel again.
         run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
@@ -841,7 +889,7 @@ class OrchestrationEngine:
         # it as failed — so the fleet records `failed`, where it used to find no
         # `orchestration_complete` and record the run `completed`.
         await state.checkpoint()
-        async for event in self._execute_loop(run, state):
+        async for event in self._execute_loop(run, state, started=self._resumed_at):
             yield event
         _log.debug(f"[engine.resume] 🏁 _execute_loop finished, run.status={run.status} run.current_step_id={run.current_step_id!r}")
 
@@ -989,6 +1037,11 @@ class OrchestrationEngine:
                     run.shared_state[HUMAN_CHANNEL_KEY] = sub_event["channel_id"]
                 else:
                     run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
+                # The sub-run worked since the answer, for this run (F258).
+                resumed_at = getattr(self, "_resumed_at", None)
+                if resumed_at is not None:
+                    run.step_progress[ACTIVE_TIME_KEY] = {"active_seconds": round(
+                        self._active_seconds(run) + time.time() - resumed_at, 2)}
                 state = SharedState(run)
                 await state.checkpoint()
                 outcome["status"] = "paused"
@@ -1404,6 +1457,15 @@ class OrchestrationEngine:
             logger.step_end(step.id, "failed", stop.message)
         yield {"type": "step_error", "orch_step_id": step.id, "step_name": step.name,
                "error": stop.message, "reason": stop.message}
+
+    @staticmethod
+    def _active_seconds(run: OrchestrationRun) -> float:
+        """What earlier stretches of this run spent working (F258)."""
+        record = run.step_progress.get(ACTIVE_TIME_KEY) or {}
+        try:
+            return max(0.0, float(record.get("active_seconds") or 0))
+        except (TypeError, ValueError):
+            return 0.0
 
     def _engine_turns(self, run: OrchestrationRun) -> int:
         """How many turns this run has already spent against `max_total_turns`.
