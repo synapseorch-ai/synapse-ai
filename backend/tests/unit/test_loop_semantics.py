@@ -293,7 +293,10 @@ class TestAccounting:
         assert complete["status"] == "failed"
         assert not any(e.get("orch_step_id") == "after" for e in events)
 
-    async def test_a_timing_out_body_step_also_contributes_nothing(self, monkeypatch):
+    async def test_a_timing_out_body_step_contributes_nothing_and_fails_the_loop(self, monkeypatch):
+        """F253 (Naveen's call): a body step that times out fails the loop and
+        the run, as a timeout does at the top level. It used to be skipped and
+        the loop ran its second iteration on the same stale state."""
         _host_transforms(monkeypatch)
         orch = _orch(
             {"loop_count": 2},
@@ -303,7 +306,9 @@ class TestAccounting:
             after=False,
         )
         events = await _run(orch, initial_state={"risky": "STALE"})
-        assert _iterations(events) == [1, 2]
+        assert _iterations(events) == [1]
+        complete = next(e for e in reversed(events) if e.get("type") == "orchestration_complete")
+        assert complete["status"] == "failed"
         assert _final_state(events)["risky"] == "STALE"
 
     async def test_loop_summary_omits_steps_that_produced_nothing(self):

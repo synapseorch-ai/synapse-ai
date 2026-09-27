@@ -912,13 +912,17 @@ class OrchestrationEngine:
         nested_orch_id = run.nested_orch_id
         _NESTED_FILTER_TYPES = {"orchestration_start", "orchestration_complete", "orchestration_end"}
 
+        from .steps import NestedOutcome
+
         final_response: str | None = None
+        sub_outcome = NestedOutcome()
         sub_events: list[dict] = []
 
         async for sub_event in type(self).resume(
             nested_run_id, human_response, self.server_module, depth=self.depth + 1,
         ):
             sub_events.append(sub_event)
+            sub_outcome.read(sub_event)
 
             # Sub-orch hit another human step (multi-turn human interaction inside nested orch)
             if sub_event.get("type") == "human_input_required":
@@ -974,10 +978,19 @@ class OrchestrationEngine:
                 "nested_orch_id": nested_orch_id,
             }
 
+        # A sub-run that did not complete fails the step waiting on it, with its
+        # reason — as it does when it fails without a pause (F253). Its final
+        # text used to be taken as the result whatever its status.
+        from core.models_orchestration import Orchestration
+        from core.scale.context import resolve_orchestration
+        failure = None
+        if sub_outcome.status != "completed":
+            sub_orch_data = await resolve_orchestration(nested_orch_id) if nested_orch_id else None
+            failure = sub_outcome.failure(
+                (sub_orch_data or {}).get("name") or nested_orch_id or "sub-orchestration")
+
         # Fallback: extract result from orchestration_complete if no "final" event was emitted
-        if final_response is None:
-            from core.models_orchestration import Orchestration
-            from core.scale.context import resolve_orchestration
+        if not failure and final_response is None:
             sub_orch_data = await resolve_orchestration(nested_orch_id)
             if sub_orch_data:
                 sub_orch = Orchestration.model_validate(sub_orch_data)
@@ -989,14 +1002,36 @@ class OrchestrationEngine:
                                 final_response = str(state_data[sub_step.output_key])
                                 break
                         break
+            if final_response is None:
+                failure = "Nested orchestration failed to produce a result after human input"
 
-        if final_response is None:
+        if failure:
+            # The step's pause entry is its one entry: closed as failed, with the
+            # reason `_build_final_response` and the run's timeline read. The
+            # event is the step's, so the step card shows it (F195).
+            ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            for entry in reversed(run.step_history):
+                if entry.get("step_id") == step_id and entry.get("status") == "paused":
+                    entry.update({"status": "failed", "error": failure, "ended_at": ended_at})
+                    break
+            else:
+                run.step_history.append({
+                    "step_id": step_id,
+                    "step_name": parent_step.name if parent_step else "",
+                    "step_type": "agent", "status": "failed", "error": failure,
+                    "ended_at": ended_at,
+                })
             run.status = "failed"
             run.waiting_for_human = False
+            run.nested_run_id = None
+            run.nested_orch_id = None
             outcome["status"] = "failed"
             yield {
-                "type": "orchestration_error",
-                "error": "Nested orchestration failed to produce a result after human input",
+                "type": "step_error",
+                "orch_step_id": step_id,
+                "step_name": parent_step.name if parent_step else "",
+                "error": "An internal error occurred while executing this step.",
+                "reason": failure,
             }
             return
 

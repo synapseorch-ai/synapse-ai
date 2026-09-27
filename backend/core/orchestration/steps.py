@@ -340,6 +340,7 @@ class AgentStepExecutor:
         _NESTED_FILTER_TYPES = {"orchestration_start", "orchestration_complete", "orchestration_end"}
 
         final_response: str | None = None
+        outcome = NestedOutcome()
         sub_events: list[dict] = []
         try:
             async for sub_event in sub_engine.run(
@@ -348,6 +349,7 @@ class AgentStepExecutor:
                 session_id=sub_session,
             ):
                 sub_events.append(sub_event)
+                outcome.read(sub_event)
                 # Capture the sub-engine's terminal final response
                 if sub_event.get("type") == "final" and sub_event.get("intent") == "orchestration":
                     final_response = sub_event.get("response", "")
@@ -370,6 +372,17 @@ class AgentStepExecutor:
                 }
         except Exception:
             raise
+
+        # A child that did not complete fails this step, with its reason (F253).
+        # Its final text used to be taken as the result whatever its status, so
+        # "Orchestration failed. Error: … Traceback …" became the step's output,
+        # the next step used it, and the run completed; in a Loop the iteration
+        # was dropped and the loop carried on to the next item. Here, after the
+        # child's last event — a child that paused never gets this far, its
+        # parent stops at the pause.
+        failure = outcome.failure(sub_orch.name)
+        if failure:
+            raise RuntimeError(failure)
 
         if final_response is None:
             # Sub-orch finished without a final event (failed or empty). Fall back
@@ -401,6 +414,53 @@ class AgentStepExecutor:
         ]
         trace = build_execution_trace(synth_events)
         store_execution_memory(run, step, trace, agent_name, transition, inputs_snapshot)
+
+
+class NestedOutcome:
+    """How a nested run ended, read from its events as they pass (F253).
+
+    Its `orchestration_complete` says the status; its last `step_error` or
+    `orchestration_error` says why. The run's own final text is the fallback
+    reason: for a failed run it is "Orchestration failed. Error: …".
+    """
+
+    _FINAL_PREFIX = "Orchestration failed. Error: "
+    _PREFIX = "Sub-orchestration "
+
+    def __init__(self) -> None:
+        self.status: str | None = None
+        self.reason: str | None = None
+        self.response: str | None = None
+
+    def read(self, event: dict) -> None:
+        etype = event.get("type")
+        if etype == "orchestration_complete":
+            self.status = event.get("status")
+        elif etype == "step_error":
+            self.reason = event.get("reason") or event.get("error") or self.reason
+        elif etype == "orchestration_error":
+            self.reason = event.get("error") or self.reason
+        elif etype == "final" and event.get("intent") == "orchestration":
+            self.response = event.get("response")
+
+    def failure(self, name: str) -> str | None:
+        """Why the run did not complete, or None when it did.
+
+        A run that ended with no status at all — its resume gave up before it
+        started, say — did not complete either.
+        """
+        if self.status == "completed":
+            return None
+        reason = self.reason
+        if not reason and self.response:
+            reason = self.response.removeprefix(self._FINAL_PREFIX)
+        reason = (reason or "").removeprefix("RuntimeError: ")
+        if reason.startswith(self._PREFIX):
+            # A grandchild's failure, already named: one chain, so the innermost
+            # reason survives the engine's 300-character cap at every level.
+            return f"{self._PREFIX}'{name}' › {reason[len(self._PREFIX):]}"
+        verb = "was cancelled" if self.status == "cancelled" else "failed"
+        return f"{self._PREFIX}'{name}' {verb}: {reason or 'it ended without finishing'}"
 
 
 class ToolCallFailed(RuntimeError):
@@ -1335,7 +1395,11 @@ class ParallelStepExecutor:
                 })
                 yield {"type": "step_error", "orch_step_id": sub_step.id,
                        "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
-                continue
+                # Fails the branch and so the node, as a raise does (F88) and as
+                # a timeout does at the top level (F253); it used to be skipped
+                # and the branch went on without it. A RuntimeError, so the
+                # engine does not read it as the node's own timeout.
+                raise RuntimeError(f"Step '{sub_step.name}' timed out after {sub_timeout}s")
 
             if pending_human_event is not None:
                 pause_progress(branch_index, sid)
@@ -1440,9 +1504,10 @@ class LoopStepExecutor:
     which it becomes true, and ``loop_max_iterations`` caps all of them.
 
     Only body steps that actually *completed* contribute to the accumulators.
-    A step that errored or timed out contributes nothing rather than having
+    A step that reported an error contributes nothing rather than having
     whatever its output key happened to already hold recorded as this
-    iteration's result.
+    iteration's result. One that raised or timed out fails the loop, and the
+    run (F253).
     """
 
     async def execute(
@@ -1700,7 +1765,15 @@ class LoopStepExecutor:
                         })
                         yield {"type": "step_error", "orch_step_id": sub_step.id,
                                "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
-                        continue
+                        # Fails the loop and the run, as a timeout does at the
+                        # top level (F253). It used to be skipped: the next body
+                        # step ran on whatever state it found, and the loop went
+                        # on to the next iteration. Raised as a RuntimeError, not
+                        # a TimeoutError, which the engine would read as the loop
+                        # node itself running out of time. The iterations before
+                        # this one are checkpointed, so a Replay re-enters here.
+                        raise RuntimeError(f"Step '{sub_step.name}' timed out after {sub_timeout}s "
+                                           f"(iteration {iteration})")
 
                     if pending_human_event is not None:
                         # Keep the loop's place, so answering carries it on from
