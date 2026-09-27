@@ -119,10 +119,14 @@ export function removeStepFromGraph(orch: Orchestration, stepId: string): Orches
             }
             return patched;
         });
+    // The run's result named a key only the removed step wrote: left, it would
+    // point at nothing and quietly fall back to the last step (F249).
+    const resultKeyLeft = !!orch.result_key && steps.some((s) => s.output_key === orch.result_key);
     return {
         ...orch,
         steps,
         entry_step_id: orch.entry_step_id === stepId ? (steps[0]?.id || '') : orch.entry_step_id,
+        ...(orch.result_key && !resultKeyLeft ? { result_key: '' } : {}),
     };
 }
 

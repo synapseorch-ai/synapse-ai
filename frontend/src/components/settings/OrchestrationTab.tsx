@@ -108,7 +108,24 @@ const EMPTY_ORCHESTRATION: Orchestration = {
     timeout_minutes: 30,
     trigger: 'manual',
     rubric_id: '',
+    result_key: '',
 };
+
+/** The keys a run's result can name: each written by a step, labelled with the
+ *  steps that write it. A saved key no step writes stays listed, so the select
+ *  shows what is stored rather than silently reading as the default (F249). */
+function resultKeyOptions(orch: Orchestration): { key: string; label: string }[] {
+    const writers = new Map<string, string[]>();
+    for (const step of orch.steps) {
+        if (!step.output_key) continue;
+        writers.set(step.output_key, [...(writers.get(step.output_key) ?? []), step.name || step.id]);
+    }
+    const options = [...writers].map(([key, names]) => ({ key, label: `${key} — ${names.join(', ')}` }));
+    if (orch.result_key && !writers.has(orch.result_key)) {
+        options.push({ key: orch.result_key, label: `${orch.result_key} — written by no step` });
+    }
+    return options;
+}
 
 /** A human step's declared fields off the wire — anything else is no fields (F75). */
 function fieldList(raw: unknown): HumanField[] {
@@ -2208,6 +2225,25 @@ function BottomPanel({
                                     </span>
                                 </span>
                             </label>
+                        </div>
+                        <div className="col-span-3">
+                            <label htmlFor="orch-result" className="text-xs text-zinc-400 block mb-1">Result</label>
+                            <select
+                                id="orch-result"
+                                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
+                                value={draft.result_key ?? ''}
+                                onChange={(e) => setDraft({ ...draft, result_key: e.target.value })}
+                            >
+                                <option value="">Last step that produces content</option>
+                                {resultKeyOptions(draft).map(({ key, label }) => (
+                                    <option key={key} value={key}>{label}</option>
+                                ))}
+                            </select>
+                            <div className="text-[11px] text-text-faint mt-1">
+                                What a run makes: the answer when this is chatted with as an agent, what the API
+                                returns, and what a parent workflow gets back when it runs this one. Left on the
+                                last step, a person&apos;s answer, an evaluator&apos;s route and End never count.
+                            </div>
                         </div>
                         <div className="col-span-3">
                             <label htmlFor="orch-rubric" className="text-xs text-zinc-400 block mb-1">Score runs against</label>
