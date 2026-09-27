@@ -250,6 +250,10 @@ class AgentStepExecutor:
                         "memory_tainted": event.get("memory_tainted"),
                         "attempt": resume_attempt,
                     }
+                    # A delegate's question the step is about to pause on (F286):
+                    # kept with the lead's snapshot, as chat parks it.
+                    if event.get("delegate_pending"):
+                        run.step_progress[step.id]["delegate_pending"] = event["delegate_pending"]
                     try:
                         await SharedState(run).checkpoint(columns=("step_progress",))
                     except Exception as ckpt_err:

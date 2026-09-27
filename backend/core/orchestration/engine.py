@@ -1005,21 +1005,22 @@ class OrchestrationEngine:
 
         progress = dict(run.step_progress.get(step_id) or {})
         progress.pop("pending_approval", None)
+        # A person's answer is not a crash retry: the counter that discards a
+        # transcript after three interrupted attempts starts again (F286 made
+        # several answers in one step likely — a delegate asking each time).
+        progress.pop("attempt", None)
         # The call itself, so the step can act on the answer without asking the
         # model to make the same choice again — it might not, and then an
-        # approval a person gave would quietly do nothing.
-        progress["pending_call"] = {
+        # approval a person gave would quietly do nothing. The one shape chat
+        # resumes from, so a delegate's question inside the step is answered as
+        # the delegate's (F286).
+        from core.chat_approval import resume_state_for
+        run.step_progress[step_id] = resume_state_for({
             "approval_id": approval_id,
-            "tool": pending.get("tool_name"),
-            "arguments": pending.get("tool_args") or {},
-            "approved": approved,
-            "reason": reason,
-        }
-        bucket = "approved_calls" if approved else "denied_calls"
-        progress[bucket] = sorted(set(progress.get(bucket) or []) | {approval_id})
-        if not approved and reason:
-            progress["denied_reasons"] = {**(progress.get("denied_reasons") or {}), approval_id: reason}
-        run.step_progress[step_id] = progress
+            "tool_name": pending.get("tool_name"),
+            "tool_args": pending.get("tool_args") or {},
+            "progress": progress,
+        }, approve=approved, reason=reason)
 
         run.waiting_for_human = False
         run.status = "running"

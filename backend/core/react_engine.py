@@ -1294,6 +1294,17 @@ async def run_agent_step(
     # action rather than re-requested — the model asked once, a human answered,
     # and asking the model again could produce a different call or none at all.
     _pending_call = (resume_state or {}).get("pending_call") or None
+    # A delegation replayed after a person answered its delegate's question
+    # (F286): the delegate's own resume state, handed to it when the lead
+    # replays that `delegate_to_agent` call. Used once.
+    _delegate_resume = (resume_state or {}).get("delegate") or None
+    # The last turn-boundary snapshot this loop has — seeded from the one it
+    # resumed from — so a delegate that asks in the middle of a turn can park
+    # the lead where it stands (F286).
+    _last_progress: dict | None = (
+        {k: v for k, v in resume_state.items() if k not in ("pending_call", "delegate", "delegate_pending")}
+        if resume_state and resume_state.get("context_text") else None
+    )
     _replay_call: dict | None = None
     if _pending_call:
         if _pending_call.get("approved"):
@@ -2135,6 +2146,13 @@ async def run_agent_step(
 
                     # Run the sub-agent's full ReAct loop
                     sub_final = ""
+                    _call_args = {"agent_id": target_agent_id, "task": task_message}
+                    _resuming = None
+                    if _delegate_resume and _delegate_resume.get("arguments") == _call_args:
+                        # This very delegation, replayed after a person answered
+                        # the delegate's question: it picks its turn up again.
+                        _resuming, _delegate_resume = _delegate_resume.get("resume_state") or None, None
+                    _delegate_progress: dict | None = None
                     try:
                         async for sub_event in run_agent_step(
                             message=task_message,
@@ -2155,7 +2173,46 @@ async def run_agent_step(
                             # a file or a tool's result: the delegate starts as
                             # marked as the lead is (F279).
                             untrusted_message=_memory_tainted,
+                            # Its own snapshots, so a question it asks can be
+                            # answered and its turn picked up again (F286).
+                            progress_events=True,
+                            resume_state=_resuming,
                         ):
+                            if sub_event.get("type") == "_step_progress":
+                                # The delegate's state, not the lead's: forwarded,
+                                # chat would park it as the lead's own snapshot.
+                                _delegate_progress = {k: v for k, v in sub_event.items() if k != "type"}
+                                continue
+                            if (sub_event.get("type") == "human_input_required"
+                                    and sub_event.get("kind") == "tool_approval"):
+                                # The delegate's call waits on a person (F286). What
+                                # is parked is this lead's own delegate_to_agent
+                                # call, carrying the delegate's question and state:
+                                # answered, the lead replays the delegation and the
+                                # delegate runs — or is refused — the call as itself.
+                                # It used to be parked as the lead's call, and the
+                                # lead replayed it as its own (blocked, or run under
+                                # the lead's identity and policy).
+                                if progress_events and _chat_approval.approvals_answerable():
+                                    yield {"type": "_step_progress", **(_last_progress or {"turn": turn}),
+                                           "delegate_pending": {
+                                               **_call_args,
+                                               "progress": _delegate_progress or {},
+                                               "approval": {
+                                                   "approval_id": sub_event.get("approval_id"),
+                                                   "tool_name": sub_event.get("tool_name"),
+                                                   "tool_args": sub_event.get("tool_args") or {},
+                                                   "category": sub_event.get("category"),
+                                               }}}
+                                    yield {**sub_event, "delegate_from": agent_id_for_session,
+                                           "delegate_agent_name": agent_name}
+                                    return
+                                # Nobody can answer here (a channel, a schedule):
+                                # said to the lead, which carries on without it.
+                                sub_final = (f"Agent '{agent_name}' needed a person's approval to run "
+                                             f"'{sub_event.get('tool_name')}', and nobody can give it here. "
+                                             f"Continue without it.")
+                                continue   # the delegate has already stopped at its gate
                             if sub_event.get("type") == "final":
                                 # Capture only — do NOT propagate. A delegate sub-agent's
                                 # final has no orch_step_id, so chat.py would treat it as the
@@ -2480,8 +2537,7 @@ async def run_agent_step(
                 # Turn-boundary snapshot for mid-node crash recovery: everything
                 # needed to continue this loop after a process death. Consumed
                 # (persisted + swallowed) by AgentStepExecutor — never reaches SSE.
-                yield {
-                    "type": "_step_progress",
+                _last_progress = {
                     "turn": turn + 1,
                     "context_text": current_context_text[-200_000:],
                     "approved_calls": sorted(_approved_calls),
@@ -2493,6 +2549,7 @@ async def run_agent_step(
                     "tools_used": [s[:500] for s in tools_used_summary[-20:]],
                     "memory_tainted": _memory_tainted,
                 }
+                yield {"type": "_step_progress", **_last_progress}
 
     if not final_response:
         # Every turn was spent and none of them ended with an answer — the loop

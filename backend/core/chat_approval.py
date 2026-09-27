@@ -105,8 +105,11 @@ def resume_state_for(pending: dict, *, approve: bool, reason: str = "") -> dict[
     The verdict is recorded against `approval_id`, which is derived from the
     tool *and its arguments* — so allowing `ls` does not also allow `rm`.
     """
-    approval_id = pending.get("approval_id")
     progress = dict(pending.get("progress") or {})
+    delegated = progress.pop("delegate_pending", None)
+    if delegated:
+        return _delegated_resume_state(progress, delegated, approve=approve, reason=reason)
+    approval_id = pending.get("approval_id")
     bucket = "approved_calls" if approve else "denied_calls"
 
     state: dict[str, Any] = {
@@ -123,3 +126,33 @@ def resume_state_for(pending: dict, *, approve: bool, reason: str = "") -> dict[
     if not approve and reason:
         state["denied_reasons"] = {**(progress.get("denied_reasons") or {}), approval_id: reason}
     return state
+
+
+def _delegated_resume_state(progress: dict, delegated: dict, *, approve: bool, reason: str) -> dict[str, Any]:
+    """The lead's resume state when the question was its delegate's (F286).
+
+    The lead replays its own `delegate_to_agent` call — approved, since it had
+    already passed the lead's gate this turn — and hands the delegate its own
+    resume state: the delegate's snapshot and the person's answer on the
+    delegate's call. So the call runs, or is refused, under the delegate's tools
+    and policy. The lead's state approves the lead's call alone: approving the
+    delegate's call here would let the lead later run it as itself.
+    """
+    from core.react_engine import _approval_id
+
+    approval = delegated.get("approval") or {}
+    inner = resume_state_for({
+        "approval_id": approval.get("approval_id"),
+        "tool_name": approval.get("tool_name"),
+        "tool_args": approval.get("tool_args") or {},
+        "progress": delegated.get("progress") or {},
+    }, approve=approve, reason=reason)
+    arguments = {"agent_id": delegated.get("agent_id"), "task": delegated.get("task")}
+    lead_key = _approval_id("delegate_to_agent", arguments)
+    return {
+        **progress,
+        "approved_calls": sorted(set(progress.get("approved_calls") or []) | {lead_key}),
+        "pending_call": {"approval_id": lead_key, "tool": "delegate_to_agent", "arguments": arguments,
+                         "approved": True, "reason": ""},
+        "delegate": {"arguments": arguments, "resume_state": inner},
+    }
