@@ -999,7 +999,8 @@ class OrchestrationEngine:
           re-checkpointed, still waiting on it;
         - "done": it finished; its result is written to the step's output key,
           the step's history recorded, the parent un-paused;
-        - "failed": it produced nothing; the parent is failed.
+        - "failed": it produced nothing, or could not be resumed at all; the
+          parent is failed.
         Moving the parent on is the caller's.
         """
         parent_step = self.step_map.get(step_id)
@@ -1012,46 +1013,75 @@ class OrchestrationEngine:
         sub_outcome = NestedOutcome()
         sub_events: list[dict] = []
 
-        async for sub_event in type(self).resume(
-            nested_run_id, human_response, self.server_module, depth=self.depth + 1,
-            caller=self.caller_for(run, parent_step),
-        ):
-            sub_events.append(sub_event)
-            sub_outcome.read(sub_event)
+        # The run is working again from here, whatever depth the question was
+        # asked at (F250): the record said `paused` — to every list, v1 and the
+        # bell — for as long as the sub-run worked after the answer, until it
+        # asked again or ended. Each level records itself before it resumes the
+        # level it waits on; a sub-run that asks again puts it back below.
+        run.status = "running"
+        run.waiting_for_human = False
+        await SharedState(run).checkpoint()
 
-            # Sub-orch hit another human step (multi-turn human interaction inside nested orch)
-            if sub_event.get("type") == "human_input_required":
-                # Still waiting on the same sub-run. The event names whatever
-                # *it* waits on — a sub-run of its own, two levels down — and
-                # recording that here would make the next answer skip a level.
-                run.nested_run_id = nested_run_id
-                run.nested_orch_id = nested_orch_id
-                # A new question opens an entry of its own (F140). Without one
-                # the parent's newest `paused` entry stayed the first
-                # question's, at the same index — so `pause_ordinal` did not
-                # move, and an answer queued behind the first was applied to
-                # this one. A Loop's second question has always appended an
-                # entry, which is why F111 holds there and failed here.
-                #
-                # Typed `human`, not as the step: the step is executing, and
-                # this is a person's wait inside that one execution. That is
-                # what keeps the delegate to a single priced entry — appending
-                # a second `agent` one is the mistake the done path below
-                # records ("cloud priced both") — and out of active time and
-                # the executed-step count, which already exclude human steps.
-                self._reopen_nested_pause(run, step_id, parent_step)
-                if sub_event.get("channel_id"):
-                    run.shared_state[HUMAN_CHANNEL_KEY] = sub_event["channel_id"]
-                else:
-                    run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
-                # The sub-run worked since the answer, for this run (F258).
-                resumed_at = getattr(self, "_resumed_at", None)
-                if resumed_at is not None:
-                    run.step_progress[ACTIVE_TIME_KEY] = {"active_seconds": round(
-                        self._active_seconds(run) + time.time() - resumed_at, 2)}
-                state = SharedState(run)
-                await state.checkpoint()
-                outcome["status"] = "paused"
+        resume_error: str | None = None
+        try:
+            async for sub_event in type(self).resume(
+                nested_run_id, human_response, self.server_module, depth=self.depth + 1,
+                caller=self.caller_for(run, parent_step),
+            ):
+                sub_events.append(sub_event)
+                sub_outcome.read(sub_event)
+
+                # Sub-orch hit another human step (multi-turn human interaction inside nested orch)
+                if sub_event.get("type") == "human_input_required":
+                    # Still waiting on the same sub-run. The event names whatever
+                    # *it* waits on — a sub-run of its own, two levels down — and
+                    # recording that here would make the next answer skip a level.
+                    run.nested_run_id = nested_run_id
+                    run.nested_orch_id = nested_orch_id
+                    # Waiting again (F250): recorded running before the sub-run
+                    # was resumed, so it is put back, not left as it was.
+                    run.status = "paused"
+                    run.waiting_for_human = True
+                    # A new question opens an entry of its own (F140). Without one
+                    # the parent's newest `paused` entry stayed the first
+                    # question's, at the same index — so `pause_ordinal` did not
+                    # move, and an answer queued behind the first was applied to
+                    # this one. A Loop's second question has always appended an
+                    # entry, which is why F111 holds there and failed here.
+                    #
+                    # Typed `human`, not as the step: the step is executing, and
+                    # this is a person's wait inside that one execution. That is
+                    # what keeps the delegate to a single priced entry — appending
+                    # a second `agent` one is the mistake the done path below
+                    # records ("cloud priced both") — and out of active time and
+                    # the executed-step count, which already exclude human steps.
+                    self._reopen_nested_pause(run, step_id, parent_step)
+                    if sub_event.get("channel_id"):
+                        run.shared_state[HUMAN_CHANNEL_KEY] = sub_event["channel_id"]
+                    else:
+                        run.shared_state.pop(HUMAN_CHANNEL_KEY, None)
+                    # The sub-run worked since the answer, for this run (F258).
+                    resumed_at = getattr(self, "_resumed_at", None)
+                    if resumed_at is not None:
+                        run.step_progress[ACTIVE_TIME_KEY] = {"active_seconds": round(
+                            self._active_seconds(run) + time.time() - resumed_at, 2)}
+                    state = SharedState(run)
+                    await state.checkpoint()
+                    outcome["status"] = "paused"
+                    yield {
+                        **sub_event,
+                        "run_id": run.run_id,
+                        "orch_step_id": step_id,
+                        "step_name": parent_step.name if parent_step else "",
+                        "nested_run_id": nested_run_id,
+                        "nested_orch_id": nested_orch_id,
+                    }
+                    return
+
+                # Skip sub-orch lifecycle meta-events (same filter as initial execution)
+                if sub_event.get("type") in _NESTED_FILTER_TYPES:
+                    continue
+
                 yield {
                     **sub_event,
                     "run_id": run.run_id,
@@ -1060,20 +1090,12 @@ class OrchestrationEngine:
                     "nested_run_id": nested_run_id,
                     "nested_orch_id": nested_orch_id,
                 }
-                return
-
-            # Skip sub-orch lifecycle meta-events (same filter as initial execution)
-            if sub_event.get("type") in _NESTED_FILTER_TYPES:
-                continue
-
-            yield {
-                **sub_event,
-                "run_id": run.run_id,
-                "orch_step_id": step_id,
-                "step_name": parent_step.name if parent_step else "",
-                "nested_run_id": nested_run_id,
-                "nested_orch_id": nested_orch_id,
-            }
+        except Exception as exc:  # noqa: BLE001 — told to the run, not raised past it
+            # The sub-run cannot be picked up at all — its record is gone, say.
+            # The parent is working by now, so letting this escape would leave
+            # it `running` with nothing behind it; before, it stayed paused on a
+            # question the answer had already spent.
+            resume_error = f"{type(exc).__name__}: {str(exc)[:300]}"
 
         # A sub-run that did not complete fails the step waiting on it, with its
         # reason — as it does when it fails without a pause (F253). Its final
@@ -1081,10 +1103,12 @@ class OrchestrationEngine:
         from core.scale.context import resolve_orchestration
         from .results import nested_result
         sub_orch_data = await resolve_orchestration(nested_orch_id) if nested_orch_id else None
+        sub_name = (sub_orch_data or {}).get("name") or nested_orch_id or "sub-orchestration"
         failure = None
-        if sub_outcome.status != "completed":
-            failure = sub_outcome.failure(
-                (sub_orch_data or {}).get("name") or nested_orch_id or "sub-orchestration")
+        if resume_error:
+            failure = f"Sub-orchestration '{sub_name}' could not be resumed: {resume_error}"
+        elif sub_outcome.status != "completed":
+            failure = sub_outcome.failure(sub_name)
 
         # What it made, as the value it is — the rule a child that finished in
         # one go is read by (F249), not its closing question's answer.
