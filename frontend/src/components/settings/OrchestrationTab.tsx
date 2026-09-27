@@ -660,6 +660,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                   )
                 : undefined,
             switch_default_step_id: remap(step.switch_default_step_id) as string | undefined,
+            on_exhausted_step_id: remap(step.on_exhausted_step_id),
         }));
 
         const newId = 'orch_' + Math.random().toString(36).substring(2, 9);

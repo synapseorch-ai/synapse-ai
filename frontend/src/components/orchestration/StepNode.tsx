@@ -233,6 +233,17 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             ) : (
                 <Handle type="source" position={Position.Right} className="!size-2.5 !border-2 !border-[var(--bg)] !bg-text-faint" />
             )}
+            {/* Where a route to this step goes at its Max iterations (F248), when it names one. */}
+            {step.type !== 'end' && step.on_exhausted_step_id && (
+                <Handle
+                    type="source"
+                    position={Position.Bottom}
+                    id="limit"
+                    title="When it reaches the limit"
+                    className="!size-2.5 !border-2 !border-[var(--bg)]"
+                    style={{ backgroundColor: 'var(--warning)' }}
+                />
+            )}
         </div>
     );
 }

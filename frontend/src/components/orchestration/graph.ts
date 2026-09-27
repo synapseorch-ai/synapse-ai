@@ -105,6 +105,7 @@ export function removeStepFromGraph(orch: Orchestration, stepId: string): Orches
                 if_true_step_id: s.if_true_step_id === stepId ? undefined : s.if_true_step_id,
                 if_false_step_id: s.if_false_step_id === stepId ? undefined : s.if_false_step_id,
                 switch_default_step_id: s.switch_default_step_id === stepId ? undefined : s.switch_default_step_id,
+                on_exhausted_step_id: s.on_exhausted_step_id === stepId ? undefined : s.on_exhausted_step_id,
             };
             if (s.route_map) {
                 patched.route_map = Object.fromEntries(
@@ -141,6 +142,7 @@ export type EdgeKind =
     | 'loop_body'
     | 'loop_done'
     | 'parallel_entry'
+    | 'limit'
     | 'seq';
 
 export interface EdgeLink {
@@ -164,6 +166,8 @@ export function clearEdgeLink(orch: Orchestration, sourceId: string, targetId: s
                 return { ...s, if_false_step_id: undefined };
             case 'switch_default':
                 return { ...s, switch_default_step_id: undefined };
+            case 'limit':
+                return { ...s, on_exhausted_step_id: undefined };
             case 'route':
                 if (link.key === undefined || !s.route_map) return s;
                 return { ...s, route_map: { ...s.route_map, [link.key]: null } };
@@ -200,6 +204,7 @@ export function cloneStep(step: StepConfig): StepConfig {
             ? Object.fromEntries(Object.keys(step.switch_cases).map((k) => [k, null]))
             : undefined,
         switch_default_step_id: undefined,
+        on_exhausted_step_id: undefined,
         if_true_step_id: undefined,
         if_false_step_id: undefined,
         loop_step_ids: undefined,

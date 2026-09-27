@@ -142,6 +142,22 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
     const edges: Edge[] = [];
 
     for (const step of steps) {
+        // --- Any step: where a route to it goes once it has used its Max
+        // iterations (F248). Drawn from its own `limit` handle, dashed: a road
+        // taken instead of this step, not after it. ---
+        if (step.on_exhausted_step_id) {
+            edges.push(edge({
+                id: `${step.id}->limit->${step.on_exhausted_step_id}`,
+                source: step.id,
+                sourceHandle: 'limit',
+                target: step.on_exhausted_step_id,
+                link: { kind: 'limit' },
+                label: 'at limit',
+                color: 'var(--warning)',
+                dashed: true,
+            }));
+        }
+
         // --- EVALUATOR: one edge per route_map entry ---
         if (step.type === 'evaluator' && step.route_map) {
             const labels = Object.keys(step.route_map);
@@ -373,6 +389,9 @@ export function WorkflowCanvas({
             const updatedSteps = orchestration.steps.map((s) => {
                 // --- SOURCE step: update routing fields ---
                 if (s.id === connection.source) {
+                    if (connection.sourceHandle === 'limit') {
+                        return { ...s, on_exhausted_step_id: connection.target! };
+                    }
                     if (s.type === 'evaluator' && connection.sourceHandle?.startsWith('route_')) {
                         const label = connection.sourceHandle.replace('route_', '');
                         return { ...s, route_map: { ...(s.route_map || {}), [label]: connection.target! } };

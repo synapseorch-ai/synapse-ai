@@ -86,6 +86,8 @@ export interface StepConfig {
     // Graph routing
     next_step_id?: string;
     max_iterations?: number;
+    /** Where a route to this step goes once it has used max_iterations. Unset, the run fails (F248). */
+    on_exhausted_step_id?: string | null;
 
     // Visual canvas position
     position_x?: number;

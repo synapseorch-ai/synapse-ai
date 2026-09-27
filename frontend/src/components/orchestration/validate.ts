@@ -88,6 +88,8 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
 
     // --- Per step ---
     for (const s of orch.steps) {
+        // Any step may name where a route to it goes at its Max iterations (F248).
+        checkTarget(s.id, s.on_exhausted_step_id, '“When it reaches the limit”');
         switch (s.type) {
             case 'agent':
                 if (!s.agent_id) add(s.id, error('No agent selected'));
@@ -270,6 +272,7 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
             if (!s) continue;
             const targets: (string | null | undefined)[] = [
                 s.next_step_id, s.if_true_step_id, s.if_false_step_id, s.switch_default_step_id,
+                s.on_exhausted_step_id,
                 ...Object.values(s.route_map || {}),
                 ...Object.values(s.switch_cases || {}),
                 ...(s.loop_step_ids || []),

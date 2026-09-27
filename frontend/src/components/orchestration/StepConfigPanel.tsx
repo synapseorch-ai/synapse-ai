@@ -303,6 +303,15 @@ export function StepConfigPanel({
                                     <Input size="sm" type="number" value={step.max_iterations ?? ''} placeholder="3"
                                         onChange={(e) => update({ max_iterations: intOrUndefined(e.target.value) })} />
                                 </Field>
+                                <Field label="When it reaches the limit" hint="Where a route to this step goes once it has run Max iterations times.">
+                                    <StepTargetSelect
+                                        aria-label="When it reaches the limit"
+                                        value={step.on_exhausted_step_id}
+                                        onChange={(id) => update({ on_exhausted_step_id: id })}
+                                        otherSteps={otherSteps}
+                                        noneLabel="Fail the run"
+                                    />
+                                </Field>
                             </Frozen>
                         </Section>
 
