@@ -292,7 +292,9 @@ async def estimate_orchestration_cost(orch_id: str, sample_size: int = 5):
     raw = await get_usage_logs(limit=500, source="orchestration")
     by_run: dict[str, dict] = {}
     for r in raw:
-        rid = r.get("run_id") or ""
+        # A nested run's calls are part of the run that started it (F251): it
+        # counted as another run of this orchestration, halving the average.
+        rid = (r.get("run_id") or "").split("__", 1)[0]
         if not rid.startswith(f"run_{orch_id}_"):
             continue
         b = by_run.setdefault(rid, {
@@ -443,6 +445,17 @@ async def get_run_status(run_id: str):
         raise HTTPException(status_code=404, detail="Run not found")
 
 
+@router.get("/api/orchestrations/runs/{run_id}/children")
+async def list_run_children(run_id: str):
+    """The runs nested directly under a run — one per run of a nested step (F251).
+
+    Nested runs are hidden from every run list (their ids carry `__`); this is
+    where they are found: under the run that started them.
+    """
+    from core.orchestration.state_store import list_children
+    return await list_children(run_id)
+
+
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
     "X-Accel-Buffering": "no",
@@ -460,6 +473,15 @@ async def resume_failed_run(run_id: str, request: Request):
     signal (F61).
     """
     server_module = request.app.state.server_module
+
+    if "__" in run_id:
+        # A nested run is part of its parent's (F251): replayed on its own it
+        # would run as a top-level run nothing reads the result of. Its parent
+        # replays the step, which starts a new one.
+        raise HTTPException(
+            status_code=409,
+            detail="This is a nested run; replay the run that called it, which reruns this step.",
+        )
 
     from core.orchestration.answers import worker_run_row
     worker_run = await worker_run_row(request.app.state, run_id)

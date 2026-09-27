@@ -122,6 +122,18 @@ def driver(request, worker, fake_redis):
     return _Driver(request.param, worker, fake_redis)
 
 
+async def _child_ids(prefix):
+    """The nested runs whose ids start with `prefix`, oldest first (F251)."""
+    from sqlalchemy import select
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    async with session() as s:
+        return list((await s.execute(
+            select(OrchestrationRunDB.run_id)
+            .where(OrchestrationRunDB.run_id.startswith(prefix, autoescape=True))
+            .order_by(OrchestrationRunDB.created_at))).scalars().all())
+
+
 async def _run(run_id):
     from core.orchestration.state import SharedState
     return (await SharedState.restore(run_id)).run
@@ -282,8 +294,11 @@ class TestANestedStepInALoop:
         assert _results(run.shared_state["result"]) == ["got one", "got two"]
         assert run.shared_state["o_tail"] == "tail"
         assert run.nested_run_id is None
-        child = await _run("run_hnest__delegate_d1")
-        assert child.status == "completed" and child.shared_state["approval"] == "two"
+        # Each iteration waited on a sub-run of its own — since F251 one id per
+        # run of the step, so both are kept, where the second overwrote the first.
+        children = [await _run(c) for c in await _child_ids("run_hnest__delegate_d1_")]
+        assert [c.status for c in children] == ["completed", "completed"]
+        assert [c.shared_state["approval"] for c in children] == ["one", "two"]
 
 
 class TestANestedStepFinishedByAnAnswerIsRemembered:
@@ -409,15 +424,16 @@ class TestANestedResume:
         await S.seed_orchestrations([parent, middle, inner])
 
         assert await driver.start(parent, "run_n2") == "paused"
-        assert (await _run("run_n2")).nested_run_id == "run_n2__delegate_d1"
+        child_id = (await _run("run_n2")).nested_run_id
+        assert child_id.startswith("run_n2__delegate_d1_")          # its own id since F251
         assert await driver.answer("run_n2", "a") == "paused"
-        assert (await _run("run_n2")).nested_run_id == "run_n2__delegate_d1"
+        assert (await _run("run_n2")).nested_run_id == child_id     # still the same sub-run
         assert await driver.answer("run_n2", "b") == "completed"
 
         run = await _run("run_n2")
         assert run.shared_state["result"] == "got a and b"
         assert run.shared_state["o_tail"] == "tail"
-        assert (await _run("run_n2__delegate_d1")).status == "completed"
+        assert (await _run(child_id)).status == "completed"
 
     async def test_a_sub_run_that_cannot_finish_fails_its_parent(self, driver):
         """Its sub-orchestration deleted while the parent waited. The parent was
@@ -458,7 +474,9 @@ class TestANestedResume:
 
         assert await driver.answer("run_ndepth", "yes") == "completed"
         assert (await _run("run_ndepth")).shared_state["result"] == "got yes"
-        assert depths == {"run_ndepth__delegate_d1": 1, "run_ndepth": 0}
+        (child_id,) = [k for k in depths if k != "run_ndepth"]
+        assert child_id.startswith("run_ndepth__delegate_d1_")      # its own id since F251
+        assert depths == {child_id: 1, "run_ndepth": 0}
 
 
 class TestAToolApprovalInALoop:

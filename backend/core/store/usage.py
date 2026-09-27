@@ -142,7 +142,11 @@ async def query(
     if session_id:
         stmt = stmt.where(UsageLogDB.session_id == session_id)
     if run_id:
-        stmt = stmt.where(UsageLogDB.run_id == run_id)
+        # A run's calls include the runs nested under it (F251): its Usage row
+        # used to miss them, and its cost at the end summed its own alone.
+        # `autoescape`: run ids are full of `_`, LIKE's any-one-character.
+        stmt = stmt.where(or_(UsageLogDB.run_id == run_id,
+                              UsageLogDB.run_id.startswith(f"{run_id}__", autoescape=True)))
     if source:
         stmt = stmt.where(UsageLogDB.source == source)
     if agent_id:

@@ -232,10 +232,17 @@ class StoreStateBackend:
         from core.store import session
         from core.store.models import OrchestrationRunDB
 
+        # Structural runs are left out by the query, and the page is cut there
+        # too (F251): a run's children each have a row of their own now, one per
+        # run of a nested step, and reading every row of the tenant to keep a
+        # page of twenty grew with every loop iteration.
         stmt = (
             select(OrchestrationRunDB)
             .where(OrchestrationRunDB.tenant_id == get_tenant())
+            .where(~OrchestrationRunDB.run_id.contains("__", autoescape=True))
+            .where(~OrchestrationRunDB.run_id.startswith("builder_", autoescape=True))
             .order_by(OrchestrationRunDB.created_at.desc())
+            .limit(limit)
         )
         if orchestration_ids is not None:
             stmt = stmt.where(OrchestrationRunDB.orchestration_id.in_(orchestration_ids))
@@ -245,8 +252,6 @@ class StoreStateBackend:
 
         summaries: list[dict] = []
         for row in rows:
-            if len(summaries) >= limit:
-                break
             if _is_structural(row.run_id or ""):
                 continue
             history = row.step_history or []
@@ -314,3 +319,42 @@ async def unfinished_descendants(run_id: str) -> list[str]:
             .where(OrchestrationRunDB.status.in_(("running", "paused", "queued")))
         )).scalars().all()
     return sorted(rows)
+
+
+async def list_children(run_id: str) -> list[dict]:
+    """The runs nested directly under `run_id`, oldest first (F251).
+
+    Direct only — a grandchild is listed under its own parent. Each with what a
+    list needs: its orchestration, status, position, times, cost and, for one
+    that did not complete, why.
+    """
+    from core.orchestration.run_error import failure_reason
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+
+    prefix = f"{run_id}__"
+    async with session() as s:
+        rows = (await s.execute(
+            select(OrchestrationRunDB)
+            .where(OrchestrationRunDB.tenant_id == get_tenant())
+            .where(OrchestrationRunDB.run_id.startswith(prefix, autoescape=True))
+            .order_by(OrchestrationRunDB.created_at)
+        )).scalars().all()
+    children = []
+    for row in rows:
+        if "__" in row.run_id[len(prefix):]:
+            continue
+        history = row.step_history or []
+        children.append({
+            "run_id": row.run_id,
+            "orchestration_id": row.orchestration_id,
+            "status": row.status,
+            "started_at": _iso_utc(row.started_at),
+            "ended_at": _iso_utc(row.ended_at),
+            "current_step_id": row.current_step_id,
+            "steps_completed": len(history),
+            "waiting_for_human": bool(row.waiting_for_human),
+            "total_cost_usd": row.total_cost_usd,
+            "error": failure_reason(row.status, history, row.step_progress),
+        })
+    return children

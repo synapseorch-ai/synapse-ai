@@ -437,8 +437,10 @@ async def get_usage_summary() -> dict:
             bsch["agents_used"].add(agent_id)
             bsch["last_ts"] = r.get("timestamp")
 
-        # Orchestration entries are grouped by run_id
+        # Orchestration entries are grouped by run_id — a nested run's under the
+        # run that started it (F251), which is the run a person looks for.
         elif run_id and (source == "orchestration" or source.startswith("orchestration:")):
+            run_id = run_id.split("__", 1)[0]
             if run_id not in by_run:
                 by_run[run_id] = {
                     "session_id": session,   # the chat session that spawned this run
@@ -589,6 +591,7 @@ async def get_cache_summary() -> dict:
             m["response_cache_hits"] += 1
 
         if run_id:
+            run_id = run_id.split("__", 1)[0]     # a nested run is its root's (F251)
             br = by_run.setdefault(run_id, {
                 "run_id": run_id,
                 "requests": 0,

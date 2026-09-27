@@ -342,9 +342,13 @@ class AgentStepExecutor:
             )
 
         sub_orch = Orchestration.model_validate(sub_orch_data)
+        from core.run_ids import new_child_run_id
+
         sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)
         sub_engine.caller = engine.caller_for(run, step)
-        sub_run_id = f"{run.run_id}__{step.id}_d{parent_depth + 1}"
+        # One id per run of this step (F251): each Loop iteration and each retry
+        # used to overwrite one record, one log and one set of usage rows.
+        sub_run_id = new_child_run_id(run.run_id, step.id, parent_depth + 1)
         sub_session = run.session_id or f"orch_{run.run_id}"
 
         agent_name = target_agent.get("name") or target_agent.get("id") or "sub_orchestration"
@@ -358,7 +362,7 @@ class AgentStepExecutor:
         # Lifecycle meta-events that belong to the sub-orch's own run; forwarding
         # them would confuse the parent's frontend state (premature "complete" banners,
         # wrong step-start banners, etc.).
-        _NESTED_FILTER_TYPES = {"orchestration_start", "orchestration_complete", "orchestration_end"}
+        _NESTED_FILTER_TYPES = NESTED_OWN_EVENTS
 
         outcome = NestedOutcome()
         sub_events: list[dict] = []
@@ -379,12 +383,7 @@ class AgentStepExecutor:
                 # human-input calls to the parent run (not the sub-run directly).
                 # The sub-run id is preserved in nested_run_id for backend resume logic.
                 yield {
-                    **sub_event,
-                    "run_id": run.run_id,
-                    "orch_step_id": step.id,
-                    "step_name": step.name,
-                    "nested_run_id": sub_run_id,
-                    "nested_orch_id": sub_orch.id,
+                    **tag_nested_event(sub_event, run.run_id, step.id, step.name, sub_run_id, sub_orch.id),
                     "nested_depth": parent_depth + 1,
                 }
         except Exception:
@@ -424,6 +423,37 @@ class AgentStepExecutor:
         ]
         trace = build_execution_trace(synth_events)
         store_execution_memory(run, step, trace, agent_name, transition, inputs_snapshot)
+
+
+#: A nested run's own lifecycle events, kept off its parent's stream. Its
+#: `orchestration_error` is one of them (F251): forwarded, the parent's run log
+#: failed the whole run and aborted its stream, and the bell announced the
+#: parent failed, while the parent was still working. `NestedOutcome` reads it
+#: first, and the parent's own `step_error` names it.
+NESTED_OWN_EVENTS = frozenset({"orchestration_start", "orchestration_complete", "orchestration_end",
+                               "orchestration_error"})
+
+
+def tag_nested_event(sub_event: dict, run_id: str, step_id: str, step_name: str,
+                     nested_run_id: str, nested_orch_id: str | None) -> dict:
+    """A nested run's event as its parent's stream carries it (F251).
+
+    Routed as the parent step's — `run_id`, `orch_step_id` and `step_name` are
+    the parent's, which is how an answer finds its way back — and still naming
+    the step it came from: `nested_step_id` is that step's id, and
+    `nested_step_name` the chain of step names below the parent's ("Pricing ›
+    Research" for a grandchild's step). The parent's run log used to read a
+    child step's start and end as its own step's.
+    """
+    tagged = {**sub_event, "run_id": run_id, "orch_step_id": step_id, "step_name": step_name,
+              "nested_run_id": nested_run_id, "nested_orch_id": nested_orch_id}
+    own_id = sub_event.get("nested_step_id") or sub_event.get("orch_step_id")
+    names = [n for n in (sub_event.get("step_name"), sub_event.get("nested_step_name")) if n]
+    if own_id:
+        tagged["nested_step_id"] = own_id
+    if names:
+        tagged["nested_step_name"] = " › ".join(names)
+    return tagged
 
 
 class NestedOutcome:

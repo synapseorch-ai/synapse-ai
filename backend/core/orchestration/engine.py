@@ -615,6 +615,16 @@ class OrchestrationEngine:
             run.status = "completed"
 
         run.ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        # What the run cost, the runs nested under it included (F251). Only the
+        # fleet ever wrote this, from its own run id's calls alone, so every
+        # in-process run read $0 and a parent never counted its children.
+        try:
+            from core.usage_tracker import get_usage_logs
+            spent = await get_usage_logs(run_id=run.run_id, limit=100_000)
+            run.total_tokens_used = sum(int(r.get("total_tokens") or 0) for r in spent)
+            run.total_cost_usd = round(sum(float(r.get("estimated_cost") or 0.0) for r in spent), 8)
+        except Exception as exc:  # noqa: BLE001 — a figure on the record, never the run's outcome
+            _log.warning(f"run cost for {run.run_id} not recorded: {exc}")
         if run.status == "completed":
             # Nothing resumes a completed run, so it has no budget left to
             # count; a finished run leaves no progress behind. A failed or
@@ -1046,9 +1056,7 @@ class OrchestrationEngine:
         parent_step = self.step_map.get(step_id)
         nested_run_id = run.nested_run_id
         nested_orch_id = run.nested_orch_id
-        _NESTED_FILTER_TYPES = {"orchestration_start", "orchestration_complete", "orchestration_end"}
-
-        from .steps import NestedOutcome
+        from .steps import NESTED_OWN_EVENTS as _NESTED_FILTER_TYPES, NestedOutcome, tag_nested_event
 
         sub_outcome = NestedOutcome()
         sub_events: list[dict] = []
@@ -1112,28 +1120,18 @@ class OrchestrationEngine:
                     state = SharedState(run)
                     await state.checkpoint()
                     outcome["status"] = "paused"
-                    yield {
-                        **sub_event,
-                        "run_id": run.run_id,
-                        "orch_step_id": step_id,
-                        "step_name": parent_step.name if parent_step else "",
-                        "nested_run_id": nested_run_id,
-                        "nested_orch_id": nested_orch_id,
-                    }
+                    yield tag_nested_event(sub_event, run.run_id, step_id,
+                                           parent_step.name if parent_step else "",
+                                           nested_run_id, nested_orch_id)
                     return
 
                 # Skip sub-orch lifecycle meta-events (same filter as initial execution)
                 if sub_event.get("type") in _NESTED_FILTER_TYPES:
                     continue
 
-                yield {
-                    **sub_event,
-                    "run_id": run.run_id,
-                    "orch_step_id": step_id,
-                    "step_name": parent_step.name if parent_step else "",
-                    "nested_run_id": nested_run_id,
-                    "nested_orch_id": nested_orch_id,
-                }
+                yield tag_nested_event(sub_event, run.run_id, step_id,
+                                       parent_step.name if parent_step else "",
+                                       nested_run_id, nested_orch_id)
         except Exception as exc:  # noqa: BLE001 — told to the run, not raised past it
             # The sub-run cannot be picked up at all — its record is gone, say.
             # The parent is working by now, so letting this escape would leave

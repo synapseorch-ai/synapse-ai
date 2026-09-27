@@ -60,7 +60,9 @@ class TestACancelSettlesTheChildren:
         engine = OrchestrationEngine(Orchestration.model_validate(l1), _server())
         task, _queue = spawn_engine_run(engine.run("go", run_id="run_f257r"), "run_f257r")
         await asyncio.wait_for(gate.started.wait(), timeout=10)
-        children = ["run_f257r__call1_d1", "run_f257r__call1_d1__call2_d2"]
+        from tests.unit.test_nested_runs_can_be_told_apart import _prefixed
+        children = await _prefixed("run_f257r__")
+        assert len(children) == 2
         assert [(await _run(c)).status for c in children] == ["running", "running"]
 
         await cancel_run("run_f257r")
@@ -83,7 +85,9 @@ class TestAParentStepTimeoutSettlesTheChild:
 
         assert await driver.start(l1, run_id) == "failed"
 
-        child = await _run(f"{run_id}__call_d1")
+        from tests.unit.test_nested_runs_can_be_told_apart import _prefixed
+        (child_id,) = await _prefixed(f"{run_id}__call_d1_")
+        child = await _run(child_id)
         assert (child.status, child.waiting_for_human) == ("failed", False)
         assert "timed out" in _error(child) or "Timed out" in _error(child)
         gate.release.set()

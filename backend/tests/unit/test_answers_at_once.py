@@ -311,7 +311,7 @@ class TestANestedRunsSecondQuestion:
         await worker.resume_orchestration_job(
             second, run_id="run_f140", human_response="a again", pause_ordinal=asking)
 
-        child = await _run("run_f140__delegate_d1")
+        child = await _run((await _run("run_f140")).nested_run_id)   # its own id since F251
         assert "second" not in child.shared_state, "the child's second question is still open"
 
     async def test_the_ordinal_moves_with_the_question(self, worker, fake_redis):

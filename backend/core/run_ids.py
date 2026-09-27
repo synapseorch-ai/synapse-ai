@@ -21,14 +21,28 @@ def new_run_id(name: str, prefix: str = "run") -> str:
     return f"{prefix}_{name}_{int(time.time() * 1000)}_{secrets.token_hex(3)}"
 
 
+def new_child_run_id(parent_run_id: str, step_id: str, depth: int) -> str:
+    """`{parent}__{step}_d{depth}_{6 hex}` — one per run of a nested step (F251).
+
+    `{parent}__{step}_d{depth}` alone was one id per step, so every Loop
+    iteration and every retry of the step overwrote one record and one log.
+    The `__` stays: it is what hides a child from every run list, the startup
+    sweep and cloud's public views.
+    """
+    return f"{parent_run_id}__{step_id}_d{depth}_{secrets.token_hex(3)}"
+
+
 _RUN_ID = re.compile(r"^run_(.+)_\d{13}_[0-9a-f]{6}$")
 
 
 def orchestration_of(run_id: str) -> str | None:
     """The orchestration a `run_…` id was minted for, or None for another shape.
 
-    An id minted before the suffix, `run_{orchestration}_{ms}`, still reads.
+    An id minted before the suffix, `run_{orchestration}_{ms}`, still reads. A
+    nested run's id names its parent, not its own orchestration: None.
     """
+    if "__" in run_id:
+        return None
     match = _RUN_ID.match(run_id)
     if match:
         return match.group(1)
