@@ -315,12 +315,11 @@ type StepState = {
   thoughts: string[];
   reasoning: string[];
   orchStepId: string | null;
-  orchCompleted: boolean;
   receivedAgentStep: boolean;
 };
 
 const newStepState = (): StepState => (
-  { thoughts: [], reasoning: [], orchStepId: null, orchCompleted: false, receivedAgentStep: false }
+  { thoughts: [], reasoning: [], orchStepId: null, receivedAgentStep: false }
 );
 
 function formatRelativeTime(iso: string | null): string {
@@ -719,8 +718,6 @@ export default function Home() {
   // server whether or not anyone is reading (F49); when the stream carrying it
   // breaks, the page reads it again from here instead of sending it again.
   const lastCursorRef = useRef<string | null>(null);
-  // Persists across SSE calls: true once orchestration_complete is received
-  const orchestrationCompletedRef = useRef(false);
 
   // How the last turn ended, when it did not end with an answer. Drives the
   // retry bar: a turn that broke is the one case where the person is left with
@@ -1184,7 +1181,6 @@ export default function Home() {
         // The cursor moves only once its event has been handled, so reading
         // the turn again never skips the event a break interrupted.
         if (pendingId) { lastCursorRef.current = pendingId; pendingId = null; }
-        if (stepState.orchCompleted) orchestrationCompletedRef.current = true;
         if (result.error) throw result.error;
         if (result.done) return true;
       }
@@ -1384,11 +1380,10 @@ export default function Home() {
       setThinkingPreview(null);
       pendingThoughtsRef.current = [];
       pendingReasoningRef.current = [];
-      // Reset session after orchestration so next query starts fresh (no sub-agent history)
-      if (orchestrationCompletedRef.current) {
-        orchestrationCompletedRef.current = false;
-        setSessionId(generateSessionId());
-      }
+      // The conversation carries on after a workflow answers, as it does after
+      // any agent (F260): a new session here threw it away, so the workflow's
+      // next run could not read what was said. It began as a guard against
+      // step agents' own turns leaking into the next message.
     }
   };
 
@@ -1655,7 +1650,6 @@ export default function Home() {
             }
           });
         }
-        stepState.orchCompleted = true;
         break;
 
       case 'orchestration_error':
@@ -1864,7 +1858,7 @@ export default function Home() {
       if (!reader) throw new Error('No reader available');
 
       const decoder = new TextDecoder();
-      const stepState = { thoughts: [] as string[], reasoning: [] as string[], orchStepId: null as string | null, orchCompleted: false, receivedAgentStep: false };
+      const stepState = { thoughts: [] as string[], reasoning: [] as string[], orchStepId: null as string | null, receivedAgentStep: false };
       let buffer = '';
 
       while (true) {
