@@ -1337,9 +1337,21 @@ class OrchestrationEngine:
         if step.type == StepType.SWITCH and step.switch_cases:
             matched = run.shared_state.get(f"_switch_decision_{step.id}")
             if matched is not None and matched in step.switch_cases:
-                target = step.switch_cases[matched]
-            else:
+                target = step.switch_cases[matched]  # None: the author's own end
+            elif step.switch_default_step_id:
                 target = step.switch_default_step_id
+            else:
+                # Nothing matched and there is nowhere else to go: the run used
+                # to end `completed` after the switch alone (F256). The value is
+                # evaluated again for the sentence — the expression is pure and
+                # reads the state it just read — rather than kept in state.
+                from .steps import _eval_state_expr
+                value, err = _eval_state_expr(step.switch_expression or "", run.shared_state, default=None)
+                shown = f"could not be evaluated ({err})" if err else repr(str(value) if value is not None else None)
+                raise RouteFailed(
+                    f"No case of '{step.name}' matched {shown} and it has no default path — "
+                    f"add a case or a default, then Replay."
+                )
             event = {
                 "type": "routing_decision",
                 "step_type": step.type.value,

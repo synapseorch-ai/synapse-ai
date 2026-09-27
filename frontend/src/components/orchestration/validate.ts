@@ -9,7 +9,7 @@
  * Run; nothing blocks Save — a half-built draft must always be saveable.
  */
 
-import type { Orchestration, StepIssue } from '@/types/orchestration';
+import type { Orchestration, StepConfig, StepIssue } from '@/types/orchestration';
 import { BUILTIN_STATE_KEYS } from './graph';
 import { normalizeStateType } from './stateTypes';
 
@@ -87,6 +87,7 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
     }
 
     // --- Per step ---
+    const byId = new Map(orch.steps.map((x) => [x.id, x]));
     for (const s of orch.steps) {
         // Any step may name where a route to it goes at its Max iterations (F248).
         checkTarget(s.id, s.on_exhausted_step_id, '“When it reaches the limit”');
@@ -167,6 +168,9 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
                 // with none set, every branch runs the whole rest of the flow, one
                 // branch after another, and the first to reach an End step takes
                 // the run with it. An error, not a warning: the run misbehaves.
+                // Two branches writing one key keep one value; the engine fails
+                // the node before any branch runs (F256, backend branch_keys.py).
+                for (const sentence of sharedBranchKeys(s, byId)) add(s.id, error(sentence));
                 if (!s.next_step_id) {
                     add(s.id, error('No next step — set it to the Merge step where the branches meet, or each branch runs the rest of the flow'));
                 } else {
@@ -294,4 +298,57 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
         }
     }
     return { byStep, global, errorCount, warningCount };
+}
+
+/** The steps each branch runs, as the engine resolves them: a branch listing one
+ *  step follows its next-step chain up to the Parallel's own next step. */
+function branchChains(parallel: StepConfig, byId: Map<string, StepConfig>): string[][] {
+    return (parallel.parallel_branches || []).map((branch) => {
+        if (branch.length !== 1) return [...branch];
+        const chain = [branch[0]];
+        let current = branch[0];
+        for (;;) {
+            const nxt = byId.get(current)?.next_step_id;
+            if (!nxt || nxt === parallel.next_step_id || chain.includes(nxt)) break;
+            chain.push(nxt);
+            current = nxt;
+        }
+        return chain;
+    });
+}
+
+/** The keys a step writes: its output key, and a Loop's or a nested Parallel's body. */
+function keysWritten(id: string, byId: Map<string, StepConfig>, seen: Set<string>): Set<string> {
+    const step = byId.get(id);
+    const keys = new Set<string>();
+    if (!step || seen.has(id)) return keys;
+    seen.add(id);
+    if (step.output_key) keys.add(step.output_key);
+    const inner = step.type === 'loop' ? (step.loop_step_ids || [])
+        : step.type === 'parallel' ? branchChains(step, byId).flat() : [];
+    for (const sub of inner) for (const k of keysWritten(sub, byId, seen)) keys.add(k);
+    return keys;
+}
+
+/** One sentence per key two or more branches of `parallel` write (mirrors branch_keys.py). */
+function sharedBranchKeys(parallel: StepConfig, byId: Map<string, StepConfig>): string[] {
+    const owners = new Map<string, Map<number, string[]>>();
+    branchChains(parallel, byId).forEach((chain, index) => {
+        for (const sid of chain) {
+            for (const key of keysWritten(sid, byId, new Set())) {
+                const byBranch = owners.get(key) ?? new Map<number, string[]>();
+                byBranch.set(index, [...(byBranch.get(index) ?? []), byId.get(sid)?.name || sid]);
+                owners.set(key, byBranch);
+            }
+        }
+    });
+    const sentences: string[] = [];
+    for (const [key, byBranch] of owners) {
+        if (byBranch.size < 2) continue;
+        const numbers = [...byBranch.keys()].sort((a, b) => a - b).map((i) => String(i + 1));
+        const which = numbers.slice(0, -1).join(', ') + ' and ' + numbers[numbers.length - 1];
+        const steps = [...byBranch.keys()].sort((a, b) => a - b).flatMap((i) => byBranch.get(i)!).map((n) => `“${n}”`).join(', ');
+        sentences.push(`Branches ${which} ${numbers.length === 2 ? 'both write' : 'all write'} “${key}” (${steps}) — only one value would survive. Give each branch its own output key.`);
+    }
+    return sentences;
 }

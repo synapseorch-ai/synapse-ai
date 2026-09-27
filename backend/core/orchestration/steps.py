@@ -1172,6 +1172,19 @@ class ParallelStepExecutor:
 
         resolved_branches = [resolve_branch_chain(b) for b in branches]
 
+        # Two branches writing one key keep one value, the later writer's, and
+        # the Merge labels it with the other: fails here, before any branch runs
+        # (F256). Judged on a fresh start only — a run already inside the node
+        # when this check arrived carries on as it began.
+        if not run.shared_state.get(_progress_key(step)):
+            from .branch_keys import shared_branch_keys
+            shared = shared_branch_keys(
+                step.model_dump(mode="json"),
+                {s.id: s.model_dump(mode="json") for s in engine.orch.steps})
+            if shared:
+                yield {"type": "step_error", "orch_step_id": step.id, "error": shared[0]}
+                raise RuntimeError(" ".join(shared))
+
         yield {"type": "parallel_start", "orch_step_id": step.id, "branch_count": len(resolved_branches)}
 
         # ── Mid-node crash recovery: skip branches/sub-steps that completed ──

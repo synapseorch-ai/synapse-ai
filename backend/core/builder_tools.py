@@ -2721,6 +2721,11 @@ def _validate_orchestration(orch: dict) -> dict:
                 f"{type(entry['default']).__name__} — change the default or the type."
             )
 
+    # Parallel branches that write the same key: the engine fails the Parallel
+    # before any branch runs (F256).
+    from core.orchestration.branch_keys import same_key_branches
+    issues.extend(same_key_branches(orch))
+
     return {"ok": not issues, "issues": issues}
 
 
