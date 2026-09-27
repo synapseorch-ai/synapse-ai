@@ -269,11 +269,28 @@ BUILDER_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "deploy_orchestration",
+            "description": (
+                "Deploy an orchestration that already exists as an agent (type 'orchestrator'), so "
+                "another orchestration's agent step can run it as a sub-workflow. Returns the agent id — "
+                "the one already deployed if it has been. This is the only way to make an orchestrator "
+                "agent: create_agent cannot, because an orchestrator agent with no orchestration runs "
+                "nothing. One orchestration is built per build, so a nested design is built child first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"orch_id": {"type": "string", "description": "The orchestration to deploy"}},
+                "required": ["orch_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_agent",
             "description": (
                 "Create a new agent and save it. Returns the created agent with its new ID. "
                 "Use type='conversational' for general-purpose agents, 'code' for agents that work with repos/files, "
-                "'orchestrator' for agents that run orchestrations, "
                 "'delegate' for agents that dynamically route queries to sub-agents (set delegate_agent_ids to restrict which agents it can delegate to; empty = all agents). "
                 "Set tools=['all'] to give access to all tools, or list specific tool names."
             ),
@@ -284,7 +301,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "description": {"type": "string", "description": "What this agent does"},
                     "type": {
                         "type": "string",
-                        "enum": ["conversational", "code", "orchestrator", "delegate"],
+                        "enum": ["conversational", "code", "delegate"],
                         "description": "Agent type",
                     },
                     "tools": {
@@ -348,7 +365,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "description": {"type": "string"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["conversational", "code", "orchestrator", "delegate"],
+                                    "enum": ["conversational", "code", "delegate"],
                                 },
                                 "tools": {
                                     "type": "array",
@@ -1313,6 +1330,13 @@ def _long_agent_name(name) -> str | None:
     return None
 
 
+_HOLLOW_WORKFLOW_AGENT = (
+    "An orchestrator agent runs an orchestration that already exists, so it is not created here: "
+    "build that orchestration first, then call deploy_orchestration(orch_id) and use the agent id it "
+    "returns. One orchestration is built per build — a nested design is built child first."
+)
+
+
 async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -> str:
     """Dispatch a builder tool call and return a JSON string result."""
     output, _events = await execute_builder_tool_with_events(tool_name, args, server_module)
@@ -1392,6 +1416,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         return agent
 
     elif tool_name == "create_agent":
+        if args.get("type") == "orchestrator":
+            return {"error": _HOLLOW_WORKFLOW_AGENT}
         if (too_long := _long_agent_name(args.get("name"))) is not None:
             return {"error": too_long}
         if (refusal := await _refused("agent", 1)) is not None:
@@ -1443,6 +1469,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     errors.append({"index": i, "role": spec.get("role"), "error": f"missing required field '{field}'"})
                     break
             else:
+                if spec.get("type") == "orchestrator":
+                    errors.append({"index": i, "role": spec.get("role"), "error": _HOLLOW_WORKFLOW_AGENT})
+                    continue
                 if (too_long := _long_agent_name(spec["name"])) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": too_long})
                     continue
@@ -1976,11 +2005,24 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "step_removed", "step_id": step_id, "remaining_steps": len(steps)}
 
+    elif tool_name == "deploy_orchestration":
+        orch = await _visible_orchestration(args["orch_id"])
+        if orch is None:
+            return {"error": f"Orchestration '{args['orch_id']}' not found"}
+        from core.orchestration.deploy import deploy_as_agent
+        result = await deploy_as_agent(orch["id"])
+        if result.get("agent"):
+            _emit(events, "agent", "created", result["agent_id"], result["agent"]["name"], result["agent"])
+        return result
+
     elif tool_name == "validate_orchestration":
         orch = await _visible_orchestration(args["orch_id"])
         if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
-        verdict = _validate_orchestration(orch)
+        # The agents its steps name, so a step whose agent is missing or runs no
+        # orchestration is caught here rather than on the first run (F264).
+        agents = {a.get("id"): a for a in await load_user_agents() if a.get("id")}
+        verdict = _validate_orchestration(orch, agents=agents)
         if verdict.get("ok") and orch.pop("building_run", None) is not None:
             await save_orchestration(orch)  # finished: `finish_build` keeps it
         return verdict
@@ -2380,7 +2422,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
 _RESULT_STEP_TYPES = frozenset({"agent", "llm", "tool", "merge", "transform", "extract_json", "human"})
 
 
-def _validate_orchestration(orch: dict) -> dict:
+def _validate_orchestration(orch: dict, agents: dict | None = None) -> dict:
     """Return {"ok": bool, "issues": [str, ...]} describing wiring problems.
 
     Checks (matches the engine's expectations in core.orchestration.engine):
@@ -2489,6 +2531,21 @@ def _validate_orchestration(orch: dict) -> dict:
             )
         if stype == "agent" and not s.get("agent_id"):
             issues.append(f"Agent step '{sid}' has no agent_id.")
+        elif stype == "agent" and agents is not None:
+            # With the agents in hand (the tool passes them; the function stays
+            # pure), the one behind the step is checked too (F264).
+            target = agents.get(s.get("agent_id"))
+            if target is None:
+                issues.append(
+                    f"Agent step '{sid}' uses agent '{s.get('agent_id')}', which does not exist — "
+                    f"create it first, or use one list_agents returns."
+                )
+            elif target.get("type") == "orchestrator" and not target.get("orchestration_id"):
+                issues.append(
+                    f"Agent step '{sid}' uses orchestrator agent '{s.get('agent_id')}', which runs no "
+                    f"orchestration — build that orchestration first, then deploy_orchestration it "
+                    f"and use the agent id it returns."
+                )
         if stype == "evaluator" and not (s.get("route_map") or {}):
             issues.append(f"Evaluator step '{sid}' has an empty route_map.")
         if stype == "tool" and not s.get("forced_tool"):

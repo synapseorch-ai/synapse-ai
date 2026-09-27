@@ -85,6 +85,15 @@ async def create_agent(agent: Agent):
     from core.tool_policy import clean_policy
 
     document = agent.dict()
+    # A workflow agent runs its orchestration, so one with none runs nothing:
+    # it was saved and failed on its first message (F264). The Deploy button
+    # (`POST /api/orchestrations/{id}/deploy`) is how one is made.
+    if document.get("type") == "orchestrator" and not document.get("orchestration_id"):
+        raise HTTPException(
+            status_code=422,
+            detail="An orchestrator agent runs an orchestration: give it an orchestration_id, "
+                   "or deploy the orchestration from the Orchestrations screen.",
+        )
     # Stored clean rather than as sent, so an unknown category or a misspelt
     # decision never reaches the document — every reader would have to ignore it
     # again, and one of those readers decides whether a widget may publish this

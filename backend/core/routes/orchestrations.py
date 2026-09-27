@@ -643,35 +643,12 @@ async def delete_orchestration_log(run_id: str):
 
 @router.post("/api/orchestrations/{orch_id}/deploy")
 async def deploy_as_agent(orch_id: str):
-    """Create an orchestrator-type agent from this orchestration."""
-    from core.store.resources import get_orchestration as _get
-    orch_data = await _get(orch_id)
-    if not orch_data:
+    """Create an orchestrator-type agent from this orchestration.
+
+    The AI builder's `deploy_orchestration` makes it the same way (F264).
+    """
+    from core.orchestration.deploy import deploy_as_agent as _deploy
+    result = await _deploy(orch_id)
+    if result["status"] == "not_found":
         raise HTTPException(status_code=404, detail="Orchestration not found")
-
-    from core.routes.agents import load_user_agents
-
-    agents = await load_user_agents()
-
-    # Check if already deployed
-    existing = next((a for a in agents if a.get("orchestration_id") == orch_id), None)
-    if existing:
-        return {"status": "already_deployed", "agent_id": existing["id"]}
-
-    agent_id = f"orch_agent_{orch_id}"
-    agent = {
-        "id": agent_id,
-        "name": orch_data["name"],
-        "description": orch_data.get("description", ""),
-        "avatar": orch_data.get("avatar", "default"),
-        "type": "orchestrator",
-        "tools": [],
-        "repos": [],
-        "system_prompt": f"This is an orchestrator agent for '{orch_data['name']}'. It runs automatically.",
-        "orchestration_id": orch_id,
-    }
-
-    from core.store.resources import save_agent
-    await save_agent(agent)
-
-    return {"status": "deployed", "agent_id": agent_id, "agent": agent}
+    return result
