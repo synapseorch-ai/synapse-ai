@@ -133,3 +133,27 @@ class TestTheSpawnItselfIsGated:
         await _run(fake_llm, server, SPAWN_DANGER, {},
                    allowed_tools_override=["spawn_subtask", "peek"])
         assert server.session.calls == []
+
+
+class TestTheSubAgentKeepsTheParentsScoping:
+    async def test_databases_repos_and_the_default_tools_setting_carry_over(self, monkeypatch):
+        """A parent limited to the `sales` database holds `run_sql_query`; an empty
+        `db_configs` is no restriction, so a sub-agent without it could query `hr`."""
+        import core.react_engine as re_mod
+
+        seen = []
+
+        async def fake_step(**kwargs):
+            seen.append(kwargs["agent_override"])
+            yield {"type": "final", "response": "ok"}
+
+        monkeypatch.setattr(re_mod, "run_agent_step", fake_step)
+        parent = {"id": "p", "db_configs": ["sales"], "repos": ["api"], "skip_default_tools": True}
+        await re_mod._run_spawn_subtask_batch(
+            subtask_calls=[{"task": "count orders", "tools": ["run_sql_query"]}], parent_agent_id="p",
+            available_tools=["run_sql_query"], session_id="s", server_module=None, source="chat",
+            run_id=None, policy={"destructive": "allow", "open_world": "allow", "undeclared": "allow"},
+            declarations={}, parent_agent=parent)
+        sub = seen[0]
+        assert sub["tools"] == ["run_sql_query"]
+        assert sub["db_configs"] == ["sales"] and sub["repos"] == ["api"] and sub["skip_default_tools"] is True

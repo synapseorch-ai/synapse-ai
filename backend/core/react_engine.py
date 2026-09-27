@@ -735,6 +735,7 @@ async def _run_spawn_subtask_batch(
     run_id: str | None,
     policy: dict | None = None,
     declarations: dict | None = None,
+    parent_agent: dict | None = None,
 ) -> list[tuple[str, str]]:
     """Run a batch of spawn_subtask calls in parallel.
 
@@ -796,6 +797,13 @@ async def _run_spawn_subtask_batch(
             # The parent's resolved policy, with nobody to ask: a backstop for a
             # name the sub-agent is offered that was never judged above.
             "tool_policy": {c: ("deny" if d == "confirm" else d) for c, d in policy.items()},
+            # And the parent's scoping: a `run_sql_query` the parent may run
+            # against `sales` only must not reach `hr` through a sub-agent (an
+            # empty `db_configs` is no restriction), nor may a parent that
+            # declined the default file tools hand them out.
+            "db_configs": list((parent_agent or {}).get("db_configs") or []),
+            "repos": list((parent_agent or {}).get("repos") or []),
+            "skip_default_tools": bool((parent_agent or {}).get("skip_default_tools")),
         }
 
         sub_final = ""
@@ -1772,6 +1780,7 @@ async def run_agent_step(
                         run_id=run_id,
                         policy=_policy,
                         declarations=_tool_by_name,
+                        parent_agent=active_agent,
                     )
 
             for tool_call in tool_calls:
@@ -2084,6 +2093,7 @@ async def run_agent_step(
                             run_id=run_id,
                             policy=_policy,
                             declarations=_tool_by_name,
+                            parent_agent=active_agent,
                         )
                         sub_name, result_text = results[0] if results else (sub_name, "No result")
 
