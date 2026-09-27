@@ -286,7 +286,7 @@ class MessagingManager:
         paused: Optional[dict] = None
         try:
             async for event in run_orchestrator_agent(
-                agent, message, self.server_module, session_id=session_id,
+                agent, message, self.server_module, session_id=session_id, with_history=True,
             ):
                 etype = event.get("type")
                 if etype == "final":
@@ -320,6 +320,14 @@ class MessagingManager:
                 f"⏸ {paused.get('prompt') or 'The workflow is waiting for input.'}\n\n"
                 f"Answer it in SynapseOrch (run {paused.get('run_id')})."
             )
+        # Kept as a chat turn is (F260): the next message's run reads it back.
+        # A channel never saved this turn, so a follow-up had nothing to read.
+        try:
+            from core.session import _save_conversation_turn
+            await _save_conversation_turn(session_id=session_id, agent_id=agent.get("id"),
+                                          user=message, assistant=final_response)
+        except Exception as e:  # noqa: BLE001 — the reply is sent either way
+            logger.warning("[Manager] orchestrator agent %s: turn not saved: %s", agent.get("id"), e)
         return final_response
 
     # ------------------------------------------------------------------ #

@@ -770,6 +770,17 @@ def build_origin_aware_context(
         )
 
     # ------------------------------------------------------------------
+    # Section: CONVERSATION SO FAR (a workflow chatted with as an agent)
+    # The turns before this message, from `state.history` (F260). Every
+    # message used to start a run that knew nothing of the ones before it, so
+    # "what amount did I say?" had no answer. Beside MAIN GOAL, in every model
+    # step: the step that answers a follow-up is seldom the first.
+    # ------------------------------------------------------------------
+    conversation = _conversation_block(run.shared_state.get("history"))
+    if conversation:
+        sections.append(conversation)
+
+    # ------------------------------------------------------------------
     # Section: WHY YOU ARE RUNNING AGAIN (any re-run, any origin)
     # ------------------------------------------------------------------
     if is_rerun:
@@ -1032,6 +1043,34 @@ def build_origin_aware_context(
         )
 
     return prompt, system_prompt_extra, system_prompt_prefix
+
+
+#: What "Conversation so far" may cost a prompt: per message, and in all.
+_TURN_CHARS = 1000
+_CONVERSATION_CHARS = 6000
+
+
+def _conversation_block(history) -> str:
+    """The conversation before this message, newest kept when it must be cut (F260)."""
+    if not isinstance(history, list) or not history:
+        return ""
+    lines: list[str] = []
+    used = 0
+    for message in reversed(history):
+        if not isinstance(message, dict) or not message.get("content"):
+            continue
+        who = "User" if message.get("role") == "user" else "You (the workflow)"
+        text = _truncate(str(message["content"]).strip(), _TURN_CHARS)
+        line = f"**{who}:** {text}"
+        if used + len(line) > _CONVERSATION_CHARS:
+            break
+        lines.append(line)
+        used += len(line)
+    if not lines:
+        return ""
+    return ("## CONVERSATION SO FAR\n"
+            "Earlier messages in this conversation, oldest first. The MAIN GOAL above is the "
+            "latest message.\n\n" + "\n\n".join(reversed(lines)))
 
 
 def _task_text(step, run, engine, prompt_template: str | None = None) -> str:

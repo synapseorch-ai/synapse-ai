@@ -2544,6 +2544,7 @@ async def run_orchestrator_agent(
     *,
     session_id: str | None = None,
     run_id: str | None = None,
+    with_history: bool = False,
 ):
     """Run an Orchestrator agent's orchestration, yielding the engine's events.
 
@@ -2551,6 +2552,14 @@ async def run_orchestrator_agent(
     schedule. Only chat used to have it; a channel and a schedule called
     `run_agent_step`, so the agent chatted instead of running its workflow
     (F71). `run_id` lets a schedule run the orchestration under its own run id.
+
+    `with_history` hands the run the conversation so far (F260): the recent
+    turns of this session with this agent, as `state.history`, which every
+    model step then sees. Every message used to start a run that knew nothing
+    of the ones before it. The callers where a person is talking — chat (and so
+    v1 and the widget) and a messaging channel — pass it; a schedule and a
+    delegation start fresh, as they always have. The session is the caller's,
+    so a widget visitor reads only their own conversation.
     """
     orch_id = agent.get("orchestration_id")
     if not orch_id:
@@ -2570,12 +2579,22 @@ async def run_orchestrator_agent(
         orch = Orchestration.model_validate(orch_data)
         engine = OrchestrationEngine(orch, server_module)
         run_id = run_id or new_run_id(orch_id)
+        initial_state = None
+        # A key the orchestration declares for itself stays its own. Present
+        # from the first message, empty, so a step that reads it never meets a
+        # missing key.
+        if with_history and "history" not in (orch.state_schema or {}):
+            history: list = []
+            if session_id:
+                from core.session import get_recent_history_messages
+                history = await get_recent_history_messages(session_id, agent_id=agent.get("id"))
+            initial_state = {"history": history}
         # Route through the shared runner, exactly as the editor's run endpoint
         # does: the engine holds anyio cancel scopes across yields, so it must be
         # advanced from a single task no matter how the caller consumes us
         # (issue #356). It also registers the run for cancel/reconnect.
         async for event in stream_engine_events(
-            engine.run(message, run_id, session_id=session_id), run_id
+            engine.run(message, run_id, session_id=session_id, initial_state=initial_state), run_id
         ):
             yield event
     except Exception as e:
@@ -2662,7 +2681,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         failure = None
         failed_run = None
         async for event in run_orchestrator_agent(
-            active_agent, user_message, server_module, session_id=session_id,
+            active_agent, user_message, server_module, session_id=session_id, with_history=True,
         ):
             if event.get("type") == "orchestration_complete" and event.get("status") == "failed":
                 failed = True
