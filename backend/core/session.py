@@ -63,14 +63,18 @@ def _turns(messages: list[dict]) -> list[dict]:
         user, assistant = messages[i], messages[i + 1]
         if user.get("role") != "user" or assistant.get("role") != "assistant":
             break
-        turns.append({
+        turn = {
             "user": user.get("content", ""),
             "images": user.get("images", []),
             "assistant": assistant.get("content", ""),
             "tools": assistant.get("tools", []),
             "calls": assistant.get("calls", []),
             "timestamp": assistant.get("timestamp"),
-        })
+        }
+        if assistant.get("approval"):
+            # A question nobody answered: the card, marked why (F247).
+            turn["approval"] = assistant["approval"]
+        turns.append(turn)
         i += 2
     return turns
 

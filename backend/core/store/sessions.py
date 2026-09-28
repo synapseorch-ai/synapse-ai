@@ -193,6 +193,23 @@ async def get_pending_approval(session_id: str, agent_id: str) -> dict | None:
         return (row.pending_approval or None) if row is not None else None
 
 
+async def take_pending_approval(session_id: str, agent_id: str) -> dict | None:
+    """The parked call, cleared in the same write — or None when nothing waits.
+
+    One transaction, so two turns starting at once cannot both settle the same
+    question (F247): the second finds it gone.
+    """
+    from core.store import session
+
+    async with session() as s:
+        row = await _row(s, session_id, agent_id)
+        if row is None or not row.pending_approval:
+            return None
+        pending = dict(row.pending_approval)
+        row.pending_approval = None
+        return pending
+
+
 async def pending_approvals(session_id: str) -> list[tuple[str, dict]]:
     """Every agent in this conversation with a tool call parked, as `(agent_id, pending)`.
 

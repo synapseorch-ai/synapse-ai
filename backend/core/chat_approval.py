@@ -15,8 +15,11 @@ agree byte for byte or a turn resumes into a state the loop does not recognise:
   commercial control plane, which reaches this module the same way it reaches
   `core.skills`.
 
-Neither function touches the store or the network — they are shape, so that a
-test can assert the shape without a database.
+Those functions touch neither the store nor the network — they are shape, so
+that a test can assert the shape without a database. The one that writes is
+`settle_moved_past`: a new message in a conversation that is waiting settles
+the question first (F247), at every door that starts a turn — the app's chat,
+v1, the fleet's chat job and a schedule's next run.
 """
 
 from __future__ import annotations
@@ -163,3 +166,64 @@ def _delegated_resume_state(progress: dict, delegated: dict, *, approve: bool, r
                          "approved": True, "reason": ""},
         "delegate": {"arguments": arguments, "resume_state": inner},
     }
+
+
+# ── a question nobody answered (F247) ───────────────────────────────────────
+
+#: Why a parked call was not run, as the turn that asked keeps it.
+MOVED_ON = "you sent a new message instead"
+NEWER_RUN = "a newer run of this schedule started"
+#: What a workflow run that asked is stopped with, when its question is moved past.
+RUN_STOPPED = "Stopped: the conversation moved on before its question was answered."
+
+
+def moved_past_turn(pending: dict, *, why: str) -> list[dict[str, Any]]:
+    """The turn a question nobody answered leaves behind, in its own place.
+
+    The question it started from, and an answer saying the call was not run and
+    why, with the calls the turn had made before it asked and the gated call
+    itself recorded as not run — so the next turn's history tells the model
+    (F242's digest), and a reopened page draws the card where it was asked,
+    marked expired, instead of last and live.
+    """
+    from core.session import _now, call_record, tools_from_calls, turn_calls
+
+    tool = pending.get("tool_name") or "a tool"
+    calls = turn_calls(pending.get("progress") or {})
+    calls.append(call_record(tool, pending.get("tool_args") or {}, f"Not run — {why}."))
+    card = public_view(pending) or {}
+    card.pop("message", None)
+    return [
+        {"role": "user", "content": pending.get("message") or ""},
+        {"role": "assistant",
+         "content": f"This turn stopped to ask permission to run `{tool}`. It was not run: {why}.",
+         "tools": tools_from_calls(calls), "calls": calls, "timestamp": _now(),
+         "approval": {**card, "outcome": "expired", "why": why}},
+    ]
+
+
+async def settle_moved_past(session_id: str, agent_key: str, *, save_as: str | None,
+                            why: str = MOVED_ON, redis: Any = None) -> list[dict[str, Any]] | None:
+    """Settle the question this conversation waits on, before a new turn starts.
+
+    The call is not run and can no longer be allowed: the parked approval is
+    taken in one write. The turn that asked is saved where it was asked
+    (`save_as` is the agent id the conversation's turns are kept under; None
+    leaves the saving to a caller that holds the history itself, the fleet's
+    chat job). A workflow's call (F290) stops the run that asked — its question
+    would otherwise stay answerable from the run's page, and allowing it there
+    runs the abandoned call. Returns the two messages saved, or None when
+    nothing was waiting.
+    """
+    from core.store import sessions as _sessions
+
+    pending = await _sessions.take_pending_approval(session_id or "", agent_key)
+    if not pending:
+        return None
+    messages = moved_past_turn(pending, why=why)
+    if pending.get("run_id"):
+        from core.orchestration.cancel import cancel_run
+        await cancel_run(pending["run_id"], redis=redis, reason=RUN_STOPPED)
+    if save_as is not None:
+        await _sessions.append_turn(session_id or "default", save_as, messages)
+    return messages

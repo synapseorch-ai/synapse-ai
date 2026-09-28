@@ -681,6 +681,15 @@ async def run_agent_chat_job(
             _log.info(f"[worker] chat {session_id}: turn handed out again (try {ctx['job_try']}) — not rerun")
             return {"status": "interrupted", "session_id": session_id}
 
+        if resume_state is None:
+            # A new message refuses the call this conversation waits on (F247).
+            # The turn that asked goes into `history` in its own place, which
+            # the row below writes before the loop reads the conversation.
+            from core.chat_approval import settle_moved_past
+            moved = await settle_moved_past(session_id, agent_id or "default", save_as=None, redis=redis)
+            if moved:
+                history.extend(moved)
+
         await _upsert_chat_session(session_factory, session_id, agent_id, "running", history)
 
         from core.scale.pubsub import ChatEventPublisher

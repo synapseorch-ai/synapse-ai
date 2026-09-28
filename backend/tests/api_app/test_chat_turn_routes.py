@@ -80,8 +80,10 @@ class TestOneTurnPerConversation:
     ):
         pending = {"tool_name": "run_sql_query", "tool_args": {}, "approval_id": "a1",
                    "category": "destructive", "message": "m", "progress": {}}
-        await store.set_pending_approval("one", chat_agent["id"], pending)
         async with _turn_in_a_model_call(live_server, gated_llm, "one", chat_agent["id"]):
+            # Parked once the turn is under way: a question parked before it
+            # would be settled by that new message itself (F247).
+            await store.set_pending_approval("one", chat_agent["id"], pending)
             answer = await client.post("/chat/one/approve", json={
                 "approve": True, "agent_id": chat_agent["id"],
             })

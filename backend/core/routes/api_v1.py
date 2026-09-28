@@ -236,6 +236,12 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
         "agent_name": agent["name"],
     }
     latest_progress: dict | None = None
+    if resume_state is None:
+        # A new message refuses the call this conversation waits on, as the
+        # app's chat does (F247): an approve sent after it is a 409.
+        from core.chat_approval import settle_moved_past
+        await settle_moved_past(chat_request.session_id, chat_request.agent_id or "default",
+                                save_as=agent["id"], redis=getattr(_server, "redis_client", None))
     try:
         async for event in run_react_loop(chat_request, _server, should_stop=_stopped,
                                           progress_events=True, resume_state=resume_state,

@@ -162,6 +162,18 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
     """One chat turn's events as SSE frames — the producer a turn's task drives."""
     agent = await _resolve_agent(request)
     turn = chat_turns.current_turn.get()
+    if resume_state is None:
+        # A new message in a conversation waiting on a tool call refuses that
+        # call (F247): it is not run, the turn that asked is saved in its own
+        # place marked expired, and nothing can allow it afterwards. Before the
+        # loop starts, so the new turn's history already says so. An answer's
+        # own resume (`resume_state`) is not a new message.
+        from core.chat_approval import settle_moved_past
+        await settle_moved_past(
+            request.session_id or "", getattr(request, "agent_id", None) or "default",
+            save_as=(agent or {}).get("id") or getattr(request, "agent_id", None) or "default",
+            redis=getattr(_server, "redis_client", None),
+        )
     # What the turn did before a Stop (F242): the calls its last snapshot holds,
     # and the ones made since, read from their events.
     latest_progress: dict | None = None
@@ -384,6 +396,9 @@ class ApprovalDecision(BaseModel):
     approve: bool
     reason: str = ""
     agent_id: str | None = None
+    #: The question this answers. A card left open in another tab must not
+    #: answer a newer question asked after it (F247) — as v1's approve does.
+    approval_id: str | None = None
 
 
 @router.post("/chat/{session_id}/approve")
@@ -416,6 +431,9 @@ async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
             pending = await _sessions.get_pending_approval(session_id, agent_key)
             if not pending:
                 raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
+            if decision.approval_id is not None and decision.approval_id != pending.get("approval_id"):
+                raise HTTPException(status_code=409,
+                                    detail="That approval is not the one this conversation is waiting on.")
 
             # Cleared before the turn runs, not after. A resume that crashed with
             # the row still set would re-open a question the person has already

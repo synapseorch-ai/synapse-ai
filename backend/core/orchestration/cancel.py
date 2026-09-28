@@ -78,7 +78,9 @@ async def _announce(run_id: str, redis: Any = None) -> None:
             pass
 
 
-async def cancel_run(run_id: str, *, redis: Any = None) -> Cancelled:
+async def cancel_run(run_id: str, *, redis: Any = None, reason: str | None = None) -> Cancelled:
+    """Stop a run, running or paused. `reason`, when given, is kept on the run as why
+    it stopped (`run_error`), so its page says more than "cancelled" (F247)."""
     from core.orchestration.runner import _active_tasks
     from core.orchestration.state import SharedState, _cancelled_run_ids
 
@@ -136,6 +138,9 @@ async def cancel_run(run_id: str, *, redis: Any = None) -> Cancelled:
             # in-process path catching up.
             restored.run.waiting_for_human = False
             _close_open_question(restored.run.step_history)
+            if reason:
+                from core.orchestration.run_error import set_run_error
+                set_run_error(restored.run, reason)
             await restored.checkpoint()
             status, stopped = "cancelled", True
             if was_paused and not live:

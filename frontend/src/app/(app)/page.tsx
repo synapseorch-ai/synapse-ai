@@ -295,7 +295,12 @@ type SessionTurn = {
   assistant: string;
   tools: string[];
   timestamp: string;
+  /** A question this turn asked and nobody answered: the card, and why it was not run (F247). */
+  approval?: ParkedApproval & { outcome: 'expired'; why: string };
 };
+
+/** Why a card was not run when a new message moved past it — the server's words (`chat_approval.MOVED_ON`). */
+const MOVED_ON = 'you sent a new message instead';
 
 /** A tool call the conversation stopped to ask about — the card, without the loop's state. */
 type ParkedApproval = {
@@ -395,15 +400,21 @@ const TIPS = [
  * "allow this tool?" without the arguments is not a question anyone can answer.
  */
 function ToolApprovalCard({
-  msg, onDecide, disabled,
+  msg, onDecide, disabled, movedPast,
 }: {
   msg: Message;
   onDecide: (approve: boolean, reason: string) => void;
   disabled: boolean;
+  /** A message was sent after it: the call was refused, not asked any more (F247). */
+  movedPast: boolean;
 }) {
   const [reason, setReason] = useState('');
   const [answered, setAnswered] = useState(false);
   const args = msg.data?.tool_args as Record<string, unknown> | undefined;
+  // Why it was not run, as the server kept it; a card moved past on this page
+  // has not been read back yet, and a new message is the only way to move on.
+  const why = (msg.data?.why as string | undefined) ?? MOVED_ON;
+  const expired = !answered && (movedPast || msg.data?.expired === true);
 
   return (
     <div className="flex gap-4 max-w-4xl">
@@ -424,6 +435,10 @@ function ToolApprovalCard({
 
         {answered ? (
           <p className="mt-3 text-[12px] text-text-faint">Answered.</p>
+        ) : expired ? (
+          <p className="mt-3 text-[12px] text-text-faint">
+            {why === MOVED_ON ? 'You moved on — this was not run.' : `Not run — ${why}.`}
+          </p>
         ) : (
           <>
             <input
@@ -836,13 +851,29 @@ export default function Home() {
       const restored: Message[] = [];
       for (const t of turns) {
         restored.push({ role: 'user', content: t.user });
+        if (t.approval) {
+          // A question nobody answered, drawn where it was asked and not
+          // answerable (F247) — it used to come back last, live.
+          restored.push({
+            role: 'assistant', content: t.approval.prompt, msgType: 'human_input_required',
+            data: {
+              kind: 'tool_approval', tool_name: t.approval.tool_name, tool_args: t.approval.tool_args,
+              category: t.approval.category, approval_id: t.approval.approval_id,
+              expired: true, why: t.approval.why,
+            },
+          });
+          continue;
+        }
         restored.push({ role: 'assistant', content: t.assistant });
       }
       if (parked) {
         restored.push({ role: 'user', content: parked.message });
         restored.push({
           role: 'assistant', content: parked.prompt, msgType: 'human_input_required',
-          data: { kind: 'tool_approval', tool_name: parked.tool_name, tool_args: parked.tool_args, category: parked.category },
+          data: {
+            kind: 'tool_approval', tool_name: parked.tool_name, tool_args: parked.tool_args,
+            category: parked.category, approval_id: parked.approval_id,
+          },
         });
       }
       if (running) restored.push({ role: 'user', content: running.message });
@@ -1041,8 +1072,14 @@ export default function Home() {
     const userMessage = input.trim();
     const imagesToSend = attachedImages.map(img => img.base64);
 
-    // Route to human-step resume if there's an unanswered human_input_required in history
-    const lastHumanIdx = messages.findLastIndex(m => m.msgType === 'human_input_required');
+    // Route to human-step resume if there's an unanswered human_input_required in history.
+    // A workflow's human step only: a tool approval's card is answered by its
+    // buttons, and a message typed under one refuses it as a new message (F247).
+    // Sent to the run instead, the text was read as the approval's answer —
+    // "ok" ran the call, and anything else was taken as the refusal's reason and
+    // never answered (F298).
+    const lastHumanIdx = messages.findLastIndex(
+      m => m.msgType === 'human_input_required' && m.data?.kind !== 'tool_approval');
     if (lastHumanIdx !== -1) {
       const hasReplyAfter = messages.slice(lastHumanIdx + 1).some(m => m.role === 'user');
       if (!hasReplyAfter) {
@@ -1270,7 +1307,7 @@ export default function Home() {
    * turn-boundary snapshot — so this streams into the transcript exactly as
    * the first half did, rather than starting a new exchange.
    */
-  const handleToolApproval = async (approve: boolean, reason: string) => {
+  const handleToolApproval = async (approve: boolean, reason: string, approvalId?: string) => {
     if (isLoading) return;
     // The question the card belongs to — what the turn will be saved under.
     const question = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
@@ -1288,7 +1325,9 @@ export default function Home() {
       const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approve, reason, agent_id: currentAgentId }),
+        // Naming the question: a card left open in another tab must not answer
+        // one asked after it (F247).
+        body: JSON.stringify({ approve, reason, agent_id: currentAgentId, approval_id: approvalId }),
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
@@ -1691,6 +1730,7 @@ export default function Home() {
             tool_name: data.tool_name,
             tool_args: data.tool_args,
             category: data.category,
+            approval_id: data.approval_id,
           },
         }]);
         break;
@@ -1953,7 +1993,15 @@ export default function Home() {
     // Not a form: the answer is yes or no, and the interesting part is *what*
     // is being asked, so the call and its arguments are the content.
     if (msg.msgType === 'human_input_required' && msg.data?.kind === 'tool_approval') {
-      return <ToolApprovalCard key={idx} msg={msg} onDecide={handleToolApproval} disabled={isLoading} />;
+      return (
+        <ToolApprovalCard
+          key={idx}
+          msg={msg}
+          onDecide={(approve, reason) => handleToolApproval(approve, reason, msg.data?.approval_id)}
+          disabled={isLoading}
+          movedPast={messages.slice(idx + 1).some(m => m.role === 'user')}
+        />
+      );
     }
 
     // ── Human input required ──
