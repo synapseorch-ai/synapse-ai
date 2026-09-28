@@ -254,7 +254,12 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 yield f"data: {json.dumps(whose({'type': 'tool_execution', 'tool_name': event['tool_name'], 'args': event['args'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}))}\n\n"
 
             elif etype == "tool_result":
-                yield f"data: {json.dumps(whose({'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': event['preview'], 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}))}\n\n"
+                frame = {'type': 'tool_result', 'tool_name': event['tool_name'], 'preview': event['preview'],
+                         'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}
+                if event.get('refused'):
+                    # Not run (U68): the page marks it rather than ticking it.
+                    frame.update(refused=True, reason=event.get('reason'))
+                yield f"data: {json.dumps(whose(frame))}\n\n"
 
             elif etype == "llm_reasoning":
                 # Private chain-of-thought extracted from [REASONING] blocks.

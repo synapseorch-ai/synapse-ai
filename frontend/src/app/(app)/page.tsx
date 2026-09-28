@@ -299,6 +299,16 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
       {msg.thoughts && msg.thoughts.length > 0 && (
         <ThoughtCollapsible thoughts={msg.thoughts} />
       )}
+      {msg.refused && msg.refused.length > 0 && (
+        // What this turn did not run (U68): the answer above may say it was done.
+        <ul className="space-y-0.5 text-xs text-amber-500" aria-label="Calls not run">
+          {msg.refused.map((r, i) => (
+            <li key={i}>
+              Not run: <span className="font-code" translate="no">{r.tool}</span>{r.reason ? ` — ${r.reason}` : ''}
+            </li>
+          ))}
+        </ul>
+      )}
       {Array.isArray(msg.data?.calls) && msg.data.calls.length > 0 && (
         <ToolsUsed calls={msg.data.calls as SavedCall[]} />
       )}
@@ -338,7 +348,7 @@ function ToolsUsed({ calls }: { calls: SavedCall[] }) {
               <li key={i} className="min-w-0">
                 <div className="flex items-baseline gap-2">
                   <span className="font-code text-zinc-300" translate="no">{call.tool}</span>
-                  {call.refused && <span className="text-amber-500">not run</span>}
+                  {call.refused && <span className="text-amber-500">not run{call.reason ? ` — ${call.reason}` : ''}</span>}
                 </div>
                 {args && <div className="truncate font-code text-[11px] text-text-faint" title={args}>{args}</div>}
                 {call.result && (
@@ -377,7 +387,7 @@ type SessionSummary = {
 };
 
 /** One tool call as a saved turn keeps it (F242); `refused` marks a call that was not run (U68). */
-type SavedCall = { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean };
+type SavedCall = { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; reason?: string };
 
 type SessionTurn = {
   user: string;
@@ -915,6 +925,8 @@ export default function Home() {
   const lastToolRef = useRef<string | null>(null);
   /** The turn's newest thought, for the live line (U57): what the agent is doing, not "Analyzing…". */
   const lastThoughtRef = useRef<string | null>(null);
+  /** The turn's calls that were not run (U68), shown under its answer. */
+  const refusedRef = useRef<{ tool: string; reason: string }[]>([]);
   // SSE abort controller — cancelled on new chat, unmount, or confirmed Settings navigation
   const sseAbortRef = useRef<AbortController | null>(null);
   // True while a chat/SSE request is in flight — gates the wake/network
@@ -1064,9 +1076,12 @@ export default function Home() {
           });
           continue;
         }
+        const notRun = (t.calls ?? []).filter(c => c.refused).map(c => ({ tool: c.tool, reason: c.reason ?? '' }));
         restored.push({
           role: 'assistant', content: t.assistant,
           ...(t.calls && t.calls.length > 0 ? { data: { calls: t.calls } } : {}),
+          // What the turn did not run, as live (U68).
+          ...(notRun.length > 0 ? { refused: notRun } : {}),
         });
       }
       if (parked) {
@@ -1523,6 +1538,7 @@ export default function Home() {
     turnAnsweredRef.current = false;
     lastCursorRef.current = null;
     lastThoughtRef.current = null;
+    refusedRef.current = [];
     const controller = new AbortController();
     sseAbortRef.current = controller;
     try {
@@ -1601,6 +1617,7 @@ export default function Home() {
     pendingReasoningRef.current = [];
     lastToolRef.current = null;
     lastThoughtRef.current = null;
+    refusedRef.current = [];
     try {
       await work();
     } catch (error) {
@@ -1731,6 +1748,15 @@ export default function Home() {
           .replace(/_/g, ' ')
           .replace(/\b\w/g, (l: string) => l.toUpperCase());
         const subtaskSuffix = data.subtask_name ? ` › ${data.subtask_name}` : '';
+        if (data.refused) {
+          // Not run (U68): a refused call used to get the same tick as one that ran.
+          if (!data.orch_step_id && !data.delegate_from) {
+            refusedRef.current = [...refusedRef.current, { tool: rawToolName, reason: String(data.reason ?? '') }];
+          }
+          setStreamingActivity(`⛔ ${delegatePrefix(data)}${resultToolName} — not run`);
+          setIsThinking(Boolean(lastThoughtRef.current));
+          break;
+        }
         setStreamingActivity(`✓ ${delegatePrefix(data)}${resultToolName}${subtaskSuffix}`);
         setIsThinking(Boolean(lastThoughtRef.current));
         break;
@@ -1786,6 +1812,8 @@ export default function Home() {
         turnAnsweredRef.current = true;
         const capturedThoughts = withoutEcho([...pendingThoughtsRef.current], data.content);
         const capturedReasoning = [...pendingReasoningRef.current];
+        const refused = refusedRef.current;
+        refusedRef.current = [];
         setMessages(prev => [...answerOnce(prev, data.content as string), {
           role: 'assistant',
           content: data.content as string,
@@ -1794,6 +1822,7 @@ export default function Home() {
           tool: data.tool_name,
           thoughts: capturedThoughts,
           reasoning: capturedReasoning,
+          ...(refused.length > 0 ? { refused } : {}),
         }]);
         pendingThoughtsRef.current = [];
         pendingReasoningRef.current = [];
@@ -1826,6 +1855,8 @@ export default function Home() {
           // Top-level final (single-agent response outside orchestration)
           const capturedThoughts = withoutEcho([...pendingThoughtsRef.current], data.response);
           const capturedReasoning = [...pendingReasoningRef.current];
+          const refused = refusedRef.current;
+          refusedRef.current = [];
           setMessages(prev => [...answerOnce(prev, data.response as string), {
             role: 'assistant',
             content: data.response as string,
@@ -1834,6 +1865,7 @@ export default function Home() {
             tool: data.tool_name,
             thoughts: capturedThoughts,
             reasoning: capturedReasoning,
+            ...(refused.length > 0 ? { refused } : {}),
           }]);
           pendingThoughtsRef.current = [];
           pendingReasoningRef.current = [];

@@ -262,7 +262,11 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
                 yield {"type": "tool_execution", "tool_name": event["tool_name"], "args": event["args"]}
 
             elif etype == "tool_result":
-                yield {"type": "tool_result", "tool_name": event["tool_name"], "preview": event["preview"]}
+                frame = {"type": "tool_result", "tool_name": event["tool_name"], "preview": event["preview"]}
+                if event.get("refused"):
+                    # Not run (U68): the answer may still say it was done.
+                    frame.update(refused=True, reason=event.get("reason"), category=event.get("category"))
+                yield frame
 
             elif etype == "llm_thought":
                 yield {"type": "llm_thought", "thought": event["thought"], "turn": event.get("turn", 1)}
@@ -383,6 +387,13 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
         "agent_id": agent["id"],
         "agent_name": agent["name"],
         "session_id": chat_request.session_id,
+        # The calls this turn did not run, and why (U68). The answer is the
+        # model's words, and one said "done" with its only call refused.
+        "refused_calls": [
+            {"tool_name": e.event.get("tool_name"), "category": e.event.get("category"),
+             "reason": e.event.get("reason")}
+            for e in turn.entries if e.event.get("type") == "tool_result" and e.event.get("refused")
+        ],
     }
     for entry in turn.entries:
         event = entry.event

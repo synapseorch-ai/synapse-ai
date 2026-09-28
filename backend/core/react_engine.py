@@ -1324,14 +1324,21 @@ async def run_agent_step(
     _repeat_count = 0
     _repeat_stop: dict | None = None
     REPEAT_NOTE_AT, REPEAT_STOP_AT = 2, 3
+    # Why the open call was not run, when it was refused (U68): kept on its
+    # record, so the saved turn and anything reading it can tell a refused call
+    # from one that ran — the answer may still say "done".
+    _open_refusal: str | None = None
 
     def _close_call() -> dict | None:
-        nonlocal _open_call, _repeat_key, _repeat_count, _repeat_stop, current_context_text
+        nonlocal _open_call, _open_refusal, _repeat_key, _repeat_count, _repeat_stop, current_context_text
         if _open_call is None:
             return None
         _name, _args, _mark = _open_call
         _open_call = None
         _record = call_record(_name, _args, current_context_text[_mark:])
+        if _open_refusal:
+            _record.update(refused=True, reason=_open_refusal)
+            _open_refusal = None
         _turn_calls.append(_record)
         _key = json.dumps([_record["tool"], _record["args"], _record["result"]], sort_keys=True, default=str)
         _repeat_count = _repeat_count + 1 if _key == _repeat_key else 1
@@ -2008,10 +2015,12 @@ async def run_agent_step(
                         _held_key = _approval_id(tool_name, tool_args)
                         if _held_key in _denied_calls:
                             _denied_calls.discard(_held_key)
-                            refusal = ("Memory not saved: the user refused it"
-                                       + (f": {_denied_reasons.pop(_held_key)}" if _held_key in _denied_reasons else "."))
+                            _said = _denied_reasons.pop(_held_key, None)
+                            refusal = "Memory not saved: the user refused it" + (f": {_said}" if _said else ".")
                             current_context_text += f"\nSystem: {refusal} Do not save it again for this task.\n"
-                            yield {"type": "tool_result", "tool_name": tool_name, "preview": "Refused by the user"}
+                            _open_refusal = "the person refused it" + (f": {_said}" if _said else "")
+                            yield {"type": "tool_result", "tool_name": tool_name, "preview": "Refused by the user",
+                                   "refused": True, "reason": _open_refusal}
                             continue
                         if _held_key in _approved_calls:
                             _approved_calls.discard(_held_key)  # a person allowed it: save it below
@@ -2143,7 +2152,9 @@ async def run_agent_step(
                 if "all" not in allowed_tools and tool_name not in allowed_tools and tool_name not in always_allowed:
                     block_msg = f"Tool '{tool_name}' is not available for this agent. Available tools: {', '.join(allowed_tools)}."
                     current_context_text += f"\nSystem: {block_msg}\n"
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": "Blocked: Tool not available for this agent"}
+                    _open_refusal = "not one of this agent's tools"
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": "Blocked: Tool not available for this agent",
+                           "refused": True, "reason": _open_refusal}
                     continue
 
                 # ── Tool policy: what this call does, not just its name ─────
@@ -2158,10 +2169,12 @@ async def run_agent_step(
                 _approval_key = _approval_id(tool_name, tool_args)
                 if _decision != "allow" and _approval_key in _denied_calls:
                     _denied_calls.discard(_approval_key)
-                    refusal = (f"Tool '{tool_name}' was refused by the user"
-                               + (f": {_denied_reasons.pop(_approval_key)}" if _approval_key in _denied_reasons else "."))
+                    _said = _denied_reasons.pop(_approval_key, None)
+                    refusal = f"Tool '{tool_name}' was refused by the user" + (f": {_said}" if _said else ".")
                     current_context_text += f"\nSystem: {refusal} Do not call it again for this task.\n"
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": "Refused by the user"}
+                    _open_refusal = "the person refused it" + (f": {_said}" if _said else "")
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": "Refused by the user",
+                           "refused": True, "reason": _open_refusal, "category": _category}
                     continue
                 if _decision != "allow" and _approval_key in _approved_calls:
                     # Approved before the pause; spend the approval and run it.
@@ -2170,8 +2183,10 @@ async def run_agent_step(
                     block_msg = (f"Tool '{tool_name}' is blocked by this agent's tool policy because "
                                  f"{_tool_policy.explain(_category)}.")
                     current_context_text += f"\nSystem: {block_msg}\n"
+                    _open_refusal = f"blocked by this agent's tool policy ({_category})"
                     yield {"type": "tool_result", "tool_name": tool_name,
-                           "preview": f"Blocked by policy ({_category})"}
+                           "preview": f"Blocked by policy ({_category})",
+                           "refused": True, "reason": _open_refusal, "category": _category}
                     continue
                 elif _decision == "confirm":
                     # Hand the decision to a person and end this step. The run

@@ -158,6 +158,9 @@ def calls_from_events(events: list[dict]) -> list[dict]:
             calls.append(call_record(event.get("tool_name"), event.get("args") or {}, ""))
         elif event.get("type") == "tool_result" and calls and not calls[-1]["result"]:
             calls[-1]["result"] = _clip(event.get("preview") or "", CALL_RESULT_CHARS)
+            if event.get("refused"):
+                # Not run, and why (U68) — as the engine's own record says.
+                calls[-1].update(refused=True, reason=event.get("reason") or "")
     return calls
 
 

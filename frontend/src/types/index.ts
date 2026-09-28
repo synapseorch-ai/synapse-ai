@@ -63,6 +63,9 @@ export interface Message {
     reasoning?: string[];
     // Attached images (base64 data URIs) — user messages only
     images?: string[];
+    // Calls this answer's turn did not run, and why (U68) — the answer is the
+    // model's words and can still say "done".
+    refused?: { tool: string; reason: string }[];
 }
 
 export interface SystemStatus {
