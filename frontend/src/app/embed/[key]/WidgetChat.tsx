@@ -23,6 +23,19 @@ type Message = { role: 'user' | 'assistant'; text: string; failed?: boolean };
 
 const THINKING = 'Thinking…';
 
+/** Said once the owner has pointed this widget at another agent (F278). */
+const UPDATED_NOTICE = 'This chat was updated, so a new conversation has started.';
+
+/**
+ * The 409 that means "this conversation's agent is not the widget's any more"
+ * (F278) — told from the other 409, a reply still being written, by its code.
+ */
+async function isUpdated(response: Response): Promise<boolean> {
+  if (response.status !== 409) return false;
+  const body = (await response.clone().json().catch(() => ({}))) as { code?: string };
+  return body.code === 'widget_updated';
+}
+
 /** Everything the customer chose about how this looks. */
 export type Theme = {
   accent: string;
@@ -60,6 +73,7 @@ export default function WidgetChat({
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
+  const [notice, setNotice] = useState('');
   const token = useRef(initialToken);
   const abort = useRef<AbortController | null>(null);
   const log = useRef<HTMLDivElement>(null);
@@ -156,11 +170,16 @@ export default function WidgetChat({
       }).catch(() => null);
 
       if (!refreshed?.ok) {
+        // The token this page was just given is for the widget as it is now.
+        // A stored one for an agent the widget no longer answers with used to be
+        // refreshed and win, so reloading never got a visitor out (F278).
+        const updated = refreshed ? await isUpdated(refreshed) : false;
         try {
           window.sessionStorage.setItem(slot, initialToken);
         } catch {
           /* as above */
         }
+        if (updated && !cancelled) setNotice(UPDATED_NOTICE);
         return;
       }
 
@@ -171,6 +190,11 @@ export default function WidgetChat({
       const history = await fetch('/api/widget/history', {
         headers: { Authorization: `Bearer ${fresh}` },
       }).catch(() => null);
+      if (history && !cancelled && (await isUpdated(history))) {
+        remember(initialToken);
+        setNotice(UPDATED_NOTICE);
+        return;
+      }
       if (!history?.ok || cancelled) return;
 
       const body = (await history.json()) as {
@@ -297,12 +321,15 @@ export default function WidgetChat({
    * Read this conversation's turn again, from the last event handled.
    * 'gone' when there is none to read — it ended, and its answer is in the history.
    */
-  const follow = async (controller: AbortController, seen: { answered: boolean }): Promise<'done' | 'ended' | 'gone'> => {
+  const follow = async (
+    controller: AbortController, seen: { answered: boolean },
+  ): Promise<'done' | 'ended' | 'gone' | 'updated'> => {
     const opened = await fetch(`/api/widget/stream?cursor=${encodeURIComponent(cursor.current)}`, {
       headers: { Authorization: `Bearer ${token.current}` },
       signal: controller.signal,
     });
     if (opened.status === 404 || opened.status === 410) return 'gone';
+    if (await isUpdated(opened)) return 'updated';
     if (!opened.ok || !opened.body) return 'ended';
     return consume(opened, seen);
   };
@@ -323,6 +350,35 @@ export default function WidgetChat({
   };
 
   /**
+   * A new conversation, with the agent the widget answers with now (F278).
+   *
+   * The owner pointed the widget at another agent while this conversation was
+   * open. Every call on it is refused from then on, and the frame used to show
+   * nothing — the typed message vanished, and reloading brought the same stale
+   * token back. `keep` is what the visitor had just typed; it goes back in the
+   * box to send to the new conversation, never sent by itself.
+   */
+  const startOver = async (keep: string) => {
+    const restarted = await fetch('/api/widget/restart', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token.current}` },
+    }).catch(() => null);
+    if (!restarted?.ok) {
+      const detail = restarted ? (await restarted.json().catch(() => ({}))).detail : '';
+      setMessages((m) => [
+        ...m,
+        { role: 'assistant', text: detail || 'This chat has been updated. Reload the page.', failed: true },
+      ]);
+      return;
+    }
+    remember((await restarted.json()).token);
+    cursor.current = '0';
+    setMessages([]);
+    setNotice(UPDATED_NOTICE);
+    if (keep) setDraft(keep);
+  };
+
+  /**
    * Keep reading a turn whose stream broke. It was never the stream's to lose:
    * the turn runs on, so a few tries while the network comes back, and never
    * sending the question again.
@@ -335,6 +391,10 @@ export default function WidgetChat({
         const how = await follow(controller, seen);
         if (how === 'done') return;
         if (how === 'gone') return fromHistory(seen);
+        if (how === 'updated') {
+          seen.answered = true;
+          return startOver('');
+        }
       } catch (error) {
         if (controller.signal.aborted) return;
         console.error('[widget] reading the reply again failed', error);
@@ -354,6 +414,7 @@ export default function WidgetChat({
       const how = await follow(controller, seen);
       if (how === 'gone') await fromHistory(seen);
       else if (how === 'ended') await recover(controller, seen);
+      else if (how === 'updated') await startOver('');
     } catch {
       if (!controller.signal.aborted) await recover(controller, seen);
     } finally {
@@ -401,6 +462,15 @@ export default function WidgetChat({
         }
       }
 
+      if (await isUpdated(response)) {
+        // The owner changed the agent (F278): a new conversation, with what
+        // was just typed back in the box to send to it.
+        setMessages((m) => (m[m.length - 1]?.role === 'user' ? m.slice(0, -1) : m));
+        seen.answered = true;
+        await startOver(text);
+        return;
+      }
+
       if (response.status === 409) {
         // A reply is already being written in this conversation — this frame
         // lost track of it (another tab, a reload mid-turn). Follow that one;
@@ -431,7 +501,7 @@ export default function WidgetChat({
        * honest way to serve both from one file — the alternative is a build flag
        * that lies on whichever product it is wrong about.
        */
-      let how: 'done' | 'ended' | 'gone';
+      let how: 'done' | 'ended' | 'gone' | 'updated';
       if ((response.headers.get('content-type') ?? '').includes('text/event-stream')) {
         how = await consume(response, seen);
       } else {
@@ -441,6 +511,10 @@ export default function WidgetChat({
       }
       if (how === 'ended') await recover(controller, seen);
       else if (how === 'gone') await fromHistory(seen);
+      else if (how === 'updated') {
+        seen.answered = true;
+        await startOver(text);
+      }
     } catch (error) {
       // An abort is the Stop button working, not a failure to report. Anything
       // else broke the stream, not the turn.
@@ -525,6 +599,11 @@ export default function WidgetChat({
 
       <div className={styles.log} ref={log} role="log" aria-live="polite">
         <p className={styles.greeting}>{theme.greeting}</p>
+        {notice && (
+          <p className={styles.notice} role="status">
+            {notice}
+          </p>
+        )}
         {messages.map((message, index) => (
           <p
             key={index}

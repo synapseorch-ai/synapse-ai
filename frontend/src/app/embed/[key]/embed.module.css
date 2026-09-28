@@ -131,6 +131,16 @@
 
 .status { margin: 0; color: var(--muted); font-size: 13px; }
 
+/* The one line a visitor gets when the owner changed the agent (F278). */
+.notice {
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .retry {
   align-self: flex-start;
   border: 1px solid var(--line);

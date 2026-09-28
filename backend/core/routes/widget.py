@@ -73,7 +73,7 @@ from core import chat_turns
 from core import visitor as _visitor
 from core.routes import chat as _chat
 from core.routes.chat import TURN_RUNNING, _read, _sse
-from core.widget_token import VisitorClaims, mint, refresh, verify
+from core.widget_token import REFRESH_GRACE_SECONDS, VisitorClaims, mint, refresh, verify
 
 router = APIRouter()
 
@@ -121,6 +121,26 @@ async def _claims(authorization: str | None) -> VisitorClaims:
     return claims
 
 
+#: The refusal a returning visitor gets once the owner points the widget at
+#: another agent. The frame acts on it by itself (F278): it starts a new chat
+#: through `/api/widget/restart`, which is why it carries a `code` — the same
+#: status is also "a reply is still being written" (`TURN_RUNNING`).
+UPDATED = "This chat has been updated. Reload the page."
+UPDATED_CODE = "widget_updated"
+
+
+class WidgetUpdated(HTTPException):
+    """This conversation's agent is no longer the widget's (F278)."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=409, detail=UPDATED)
+
+
+async def widget_updated_response(_request: Request, _exc: WidgetUpdated) -> JSONResponse:
+    """`WidgetUpdated` as the frame reads it: the sentence, and which 409 it is."""
+    return JSONResponse(status_code=409, content={"detail": UPDATED, "code": UPDATED_CODE})
+
+
 async def _live_widget(claims: VisitorClaims) -> dict:
     """The widget the token names, still enabled.
 
@@ -134,8 +154,8 @@ async def _live_widget(claims: VisitorClaims) -> dict:
     if widget.get("agent_id") != claims.agent_id:
         # The owner re-pointed the widget at a different agent mid-conversation.
         # Refuse rather than silently switch: the transcript above belongs to the
-        # agent that wrote it.
-        raise HTTPException(status_code=409, detail="This chat has been updated. Reload the page.")
+        # agent that wrote it. The frame starts a new chat on this (F278).
+        raise WidgetUpdated()
     return widget
 
 
@@ -212,16 +232,56 @@ async def widget_csp(public_key: str):
     return {"frame_ancestors": _origins.frame_ancestors(allowed)}
 
 
+def _bearer(authorization: str | None) -> str:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
 @router.post("/api/widget/refresh")
 async def refresh_session(authorization: str | None = Header(default=None)):
-    """A fresh token for a conversation that outlived the first one."""
-    token = ""
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
+    """A fresh token for a conversation that outlived the first one.
+
+    Not for a conversation whose agent the widget no longer answers with
+    (F278): a reload used to refresh that token and throw away the fresh one
+    the page had just minted, so reloading never got the visitor out.
+    """
+    token = _bearer(authorization)
+    claims = verify(token, secret=_secret(), grace=REFRESH_GRACE_SECONDS)
+    if claims is not None:
+        widget = await _store.get_widget(claims.widget_id)
+        if widget is not None and widget.get("agent_id") and widget.get("agent_id") != claims.agent_id:
+            raise WidgetUpdated()
     fresh = refresh(token, secret=_secret())
     if fresh is None:
         raise HTTPException(status_code=401, detail="This chat session has expired. Reload the page.")
     return {"token": fresh}
+
+
+@router.post("/api/widget/restart")
+async def restart_session(request: Request, authorization: str | None = Header(default=None)):
+    """A new conversation on this widget, with the agent it answers with now (F278).
+
+    What the frame calls when its conversation's agent is no longer the
+    widget's. The old token is the credential, as it is for `/refresh`: its
+    signature proves the widget and the origin `/session` checked. The origin is
+    checked again here, against the widget's list as it stands, and the call
+    counts against the same per-address limit as a new session.
+    """
+    if not await _limits.check_ip(_redis(request), _client_ip(request), _limits.SESSION_PER_IP):
+        raise HTTPException(status_code=429, detail="Too many requests. Try again shortly.")
+    claims = verify(_bearer(authorization), secret=_secret(), grace=REFRESH_GRACE_SECONDS)
+    if claims is None:
+        raise HTTPException(status_code=401, detail="This chat session has expired. Reload the page.")
+    widget = await _store.get_widget(claims.widget_id)
+    if (widget is None or not widget.get("enabled", True)
+            or not _origins.matches(claims.origin, widget.get("allowed_origins"))):
+        raise HTTPException(status_code=403, detail="This chat is not available.")
+    agent_id = widget.get("agent_id") or ""
+    if not agent_id:
+        raise HTTPException(status_code=409, detail="This widget has no agent yet.")
+    token, session_id = mint(widget["id"], agent_id, origin=claims.origin, secret=_secret())
+    return {"token": token, "session_id": session_id, "widget": _store.public_view(widget)}
 
 
 class WidgetMessage(BaseModel):

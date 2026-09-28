@@ -59,7 +59,7 @@ from core.routes.builder import router as builder_router
 from core.routes.api_keys import router as api_keys_router
 from core.routes.evals import router as evals_router
 from core.routes.skills import router as skills_router
-from core.routes.widget import router as widget_router
+from core.routes.widget import router as widget_router, WidgetUpdated, widget_updated_response
 from core.routes.agent_memory import router as agent_memory_router
 from core.routes.api_v1 import router as api_v1_router
 from core.routes.api_v2 import router as api_v2_router
@@ -996,6 +996,7 @@ app.include_router(api_keys_router)
 app.include_router(skills_router)
 app.include_router(evals_router)
 app.include_router(widget_router)
+app.add_exception_handler(WidgetUpdated, widget_updated_response)
 app.include_router(agent_memory_router)
 app.include_router(api_v1_router, prefix="/api/v1")
 app.include_router(api_v2_router, prefix="/api/v2")
