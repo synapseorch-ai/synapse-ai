@@ -50,6 +50,22 @@ function withoutEcho(thoughts: string[], answer: unknown): string[] {
   return thoughts[thoughts.length - 1].trim() === said ? thoughts.slice(0, -1) : thoughts;
 }
 
+/**
+ * A workflow's answer, said once (U67). Its last step's output *is* the answer,
+ * so the step's card and the answer bubble below it carried the same text. The
+ * step card keeps its place — it says which step answered — and points down.
+ */
+function answerOnce(prev: Message[], answer: string): Message[] {
+  const text = (answer || '').trim();
+  if (!text) return prev;
+  const at = prev.findLastIndex(m => m.msgType === 'agent_step_result');
+  if (at === -1 || (prev[at].content || '').trim() !== text) return prev;
+  if (prev.slice(at + 1).some(m => m.role === 'user')) return prev;
+  const next = [...prev];
+  next[at] = { ...next[at], data: { ...(next[at].data ?? {}), answerBelow: true } };
+  return next;
+}
+
 function ThoughtCollapsible({ thoughts, stepName }: { thoughts: string[]; stepName?: string }) {
   const [open, setOpen] = useState(false);
 
@@ -195,6 +211,10 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
         {msg.reasoning && msg.reasoning.length > 0 && (
           <ReasoningCollapsible reasoning={msg.reasoning} stepName={msg.stepName} />
         )}
+        {(msg.data as { answerBelow?: boolean } | undefined)?.answerBelow ? (
+          // Its output is the workflow's answer, drawn once, below (U67).
+          <p className="text-[12px] text-text-faint">Its output is the answer below.</p>
+        ) : (
         <div className="p-3 text-[14px] leading-7 border border-accent/40 bg-accent-subtle relative font-sans rounded-sm group">
           <Markdown>{displayContent}</Markdown>
           <button
@@ -205,6 +225,7 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
             {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
           </button>
         </div>
+        )}
         {/* Thoughts */}
         {msg.thoughts && msg.thoughts.length > 0 && (
           <ThoughtCollapsible thoughts={msg.thoughts} stepName={msg.stepName} />
@@ -1765,7 +1786,7 @@ export default function Home() {
         turnAnsweredRef.current = true;
         const capturedThoughts = withoutEcho([...pendingThoughtsRef.current], data.content);
         const capturedReasoning = [...pendingReasoningRef.current];
-        setMessages(prev => [...prev, {
+        setMessages(prev => [...answerOnce(prev, data.content as string), {
           role: 'assistant',
           content: data.content as string,
           intent: data.intent,
@@ -1805,7 +1826,7 @@ export default function Home() {
           // Top-level final (single-agent response outside orchestration)
           const capturedThoughts = withoutEcho([...pendingThoughtsRef.current], data.response);
           const capturedReasoning = [...pendingReasoningRef.current];
-          setMessages(prev => [...prev, {
+          setMessages(prev => [...answerOnce(prev, data.response as string), {
             role: 'assistant',
             content: data.response as string,
             intent: data.intent,
@@ -1886,20 +1907,9 @@ export default function Home() {
           content: `✅ Orchestration ${(data.status as string) || 'complete'}`,
           msgType: 'orchestration_complete',
         }]);
-        // Fallback: if no agent_step_result events arrived, display final_state values
-        if (!stepState.receivedAgentStep && data.final_state) {
-          Object.entries(data.final_state as Record<string, unknown>).forEach(([key, value]) => {
-            if (typeof value === 'string' && value.trim()) {
-              setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: value,
-                msgType: 'agent_step_result',
-                stepName: key,
-                thoughts: [],
-              }]);
-            }
-          });
-        }
+        // No state here, ever (U67). The run's answer arrives as its own
+        // `final`; drawing `final_state` put every key — USER_INPUT,
+        // CATEGORY, HUMAN_RESPONSE — on a chat user's screen as a card.
         break;
 
       case 'orchestration_error':
