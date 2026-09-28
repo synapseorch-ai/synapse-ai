@@ -45,6 +45,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [builderModel, setBuilderModel] = useState('');
     // The workspace response cap (F263), as typed: '' is automatic.
     const [maxOutputTokens, setMaxOutputTokens] = useState('');
+    // The workspace reasoning effort (F269): the setting existed, nothing set it.
+    const [reasoningEffort, setReasoningEffort] = useState('medium');
     const [mode, setMode] = useState('local'); // local | cloud
     const [localModels, setLocalModels] = useState<string[]>([]);
     const [cloudModels, setCloudModels] = useState<string[]>([]);
@@ -187,6 +189,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             builder_model: builderModel,
             // Blank is automatic — null clears a stored cap (F263).
             max_output_tokens: maxOutputTokens.trim() ? Number(maxOutputTokens) : null,
+            reasoning_effort: reasoningEffort,
             mode: mode,
             openai_key: openaiKey,
             anthropic_key: anthropicKey,
@@ -407,6 +410,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setEmbeddingModel(data.embedding_model || '');
                 setBuilderModel(data.builder_model || '');
                 setMaxOutputTokens(data.max_output_tokens ? String(data.max_output_tokens) : '');
+                setReasoningEffort(data.reasoning_effort || 'medium');
                 setMode(data.mode || 'local');
                 setSecretState(pickSecrets(data, SECRET_NAMES));
                 setOpenaiKey(data.openai_key || '');
@@ -602,6 +606,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         embeddingModel={embeddingModel} setEmbeddingModel={setEmbeddingModel}
                         builderModel={builderModel} setBuilderModel={setBuilderModel}
                         maxOutputTokens={maxOutputTokens} setMaxOutputTokens={setMaxOutputTokens}
+                        reasoningEffort={reasoningEffort} setReasoningEffort={setReasoningEffort}
+                        reasoningWithoutOff={rModels.reasoning_without_off || []}
+                        reasoningOffMinimum={rModels.reasoning_off_minimum || []}
                         localModels={localModels} cloudModels={cloudModels}
                         filteredModels={filteredModels}
                         loadingModels={loadingModels}

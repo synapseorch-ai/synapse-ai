@@ -67,6 +67,10 @@ interface ModelsTabProps {
     builderModel: string; setBuilderModel: (v: string) => void;
     /** The workspace response cap as typed; '' is automatic (F263). */
     maxOutputTokens: string; setMaxOutputTokens: (v: string) => void;
+    /** The workspace reasoning effort, for agents that set none (F269). */
+    reasoningEffort: string; setReasoningEffort: (v: string) => void;
+    /** Served by the models endpoint: models with no Off, and where Off is the lowest level. */
+    reasoningWithoutOff: string[]; reasoningOffMinimum: string[];
     openaiKey: string; setOpenaiKey: (v: string) => void;
     anthropicKey: string; setAnthropicKey: (v: string) => void;
     geminiKey: string; setGeminiKey: (v: string) => void;
@@ -210,6 +214,7 @@ export const ModelsTab = ({
     embeddingModel, setEmbeddingModel,
     builderModel, setBuilderModel,
     maxOutputTokens, setMaxOutputTokens,
+    reasoningEffort, setReasoningEffort, reasoningWithoutOff, reasoningOffMinimum,
     openaiKey, setOpenaiKey, anthropicKey, setAnthropicKey,
     geminiKey, setGeminiKey, grokKey, setGrokKey,
     deepseekKey, setDeepseekKey,
@@ -632,6 +637,42 @@ export const ModelsTab = ({
                     searchPlaceholder="Search models…"
                     aria-label="Default model"
                 />
+            </div>
+            {/* Reasoning effort — the workspace default (F269). Every agent with
+                none of its own runs at it; nothing on any screen set it. All four
+                levels stay: it reaches every model, not only the default one. */}
+            <div className="space-y-2">
+                <Label size="sm" className="block">Reasoning Effort</Label>
+                <p id="models-effort-help" className="text-2xs text-text-faint -mt-1">
+                    How much a model that can think does before it answers, for every agent that sets none of
+                    its own. Higher costs more and takes longer; thinking tokens are billed as output.
+                </p>
+                <div className="flex gap-1" role="group" aria-label="Reasoning effort" aria-describedby="models-effort-help">
+                    {['off', 'low', 'medium', 'high'].map(level => {
+                        const active = (reasoningEffort || 'medium') === level;
+                        return (
+                            <button
+                                key={level}
+                                type="button"
+                                onClick={() => setReasoningEffort(level)}
+                                aria-pressed={active}
+                                className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors ${
+                                    active
+                                        ? 'border-accent bg-accent/10 text-accent'
+                                        : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
+                                }`}
+                            >
+                                {level}
+                            </button>
+                        );
+                    })}
+                </div>
+                {reasoningOffMinimum.includes(selectedModel) && (
+                    <p className="text-2xs text-text-muted">{selectedModel} can&apos;t stop thinking entirely: Off runs at its lowest thinking level.</p>
+                )}
+                {reasoningWithoutOff.includes(selectedModel) && (
+                    <p className="text-2xs text-text-muted">{selectedModel} has no Off: the least it thinks is Low.</p>
+                )}
             </div>
             {/* Max response length (F263). The "raise the response cap" error
                 pointed here while there was nothing here to raise. */}

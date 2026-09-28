@@ -245,7 +245,12 @@ class TestModelsThatCannotStopThinking:
         assert plan is not None and plan.budget == 128
 
     def test_flash_can_actually_be_turned_off(self):
-        assert R.plan_for("gemini-2.5-flash", "off", 8192) is None
+        """By saying so. Rewritten by decision (F269, 2026-09-28): this pinned
+        `plan is None`, but a Gemini model sent nothing thinks dynamically —
+        291–395 output tokens on a one-line answer, against 9 with a budget of 0
+        (measured on gemini-2.5-flash)."""
+        plan = R.plan_for("gemini-2.5-flash", "off", 8192)
+        assert plan is not None and plan.budget == 0 and plan.effort == "off"
 
 
 class TestWhatReachesTheWire:

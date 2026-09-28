@@ -40,6 +40,8 @@ interface AgentsTabProps {
     /** Of those, the ones with no "off" — the Claude CLI, which runs off as low.
      *  Served for the same reason as the list above. */
     reasoningWithoutOff?: string[];
+    /** Where Off is the model's lowest thinking level rather than none (F269). */
+    reasoningOffMinimum?: string[];
     defaultModel?: string;
     /** The workspace's `reasoning_effort`, which an agent with none of its own
      *  runs at. Absent when the workspace never set one. */
@@ -57,7 +59,7 @@ const CAP_BOX =
 export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
     draftAgent, setDraftAgent, loadDraftAgent, guard, availableCapabilities, loadingCapabilities = false, customTools,
-    onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, defaultModel, workspaceEffort, loadingAgents = false
+    onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, reasoningOffMinimum, defaultModel, workspaceEffort, loadingAgents = false
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const [repos, setRepos] = useState<any[]>([]);
@@ -656,10 +658,14 @@ export const AgentsTab = ({
                                                         // workspace's setting, else the engine's default — Low for the
                                                         // Claude CLI (F65), Medium for the rest. It was drawn as Medium
                                                         // whatever ran. Off shows as Low where the model has none.
+                                                        // The CLI by its prefix, not by "has no Off": a Gemini 3 Pro
+                                                        // and a Claude 5 have no Off either (F269), and with nothing
+                                                        // set they run at Medium.
+                                                        const cli = (draftAgent.model || defaultModel || '').startsWith('cli.');
                                                         const set = (workspaceEffort || '').trim().toLowerCase();
                                                         const inherited = ['off', 'low', 'medium', 'high'].includes(set)
                                                             ? (set === 'off' && withoutOff ? 'low' : set)
-                                                            : (withoutOff ? 'low' : 'medium');
+                                                            : (cli ? 'low' : 'medium');
                                                         const stored = draftAgent.reasoning_effort || null;
                                                         const shown = stored === 'off' && withoutOff ? 'low' : stored;
                                                         // `null`, not undefined: a stored agent reads back `null`, and
@@ -690,6 +696,14 @@ export const AgentsTab = ({
                                                     })()}
                                                 </div>
                                                 <p className="text-2xs text-text-faint mt-1">How much this model thinks before it answers. Higher costs more and takes longer; thinking tokens are billed as output.</p>
+                                                {/* What Off does on this model, served by the models
+                                                    endpoint rather than restated here (F269). */}
+                                                {(reasoningOffMinimum ?? []).includes(draftAgent.model || defaultModel || '') && (
+                                                    <p className="text-2xs text-text-muted mt-1">This model can&apos;t stop thinking entirely: Off runs at its lowest thinking level.</p>
+                                                )}
+                                                {(reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '') && (
+                                                    <p className="text-2xs text-text-muted mt-1">This model has no Off: the least it thinks is Low.</p>
+                                                )}
                                             </div>
                                         )}
 

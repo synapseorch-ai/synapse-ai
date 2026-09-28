@@ -737,7 +737,7 @@ async def get_models():
     # rather than restated in TypeScript: a second copy would be wrong the
     # first time a model family ships and only one of them was updated.
     from core.images import model_can_see_images
-    from core.reasoning import supports_native
+    from core.reasoning import off_runs_as, supports_native
 
     return {
         "providers": providers,
@@ -748,8 +748,14 @@ async def get_models():
         # `--effort` (F65), though it has no reasoning channel of its own.
         "reasoning_capable": sorted({m for m in all_available if supports_native(m) or cli_takes_effort(m)}),
         # The CLI has no "off" — the engine runs off as low — so the screen
-        # offers no Off for these rather than one that quietly means Low.
-        "reasoning_without_off": sorted({m for m in all_available if cli_takes_effort(m)}),
+        # offers no Off for these rather than one that quietly means Low. Nor
+        # does a model whose least is Low: a Gemini 3 Pro refuses MINIMAL, and a
+        # Claude 5 thinks when asked for nothing (F269).
+        "reasoning_without_off": sorted({m for m in all_available
+                                         if cli_takes_effort(m) or off_runs_as(m) == "low"}),
+        # Where Off is the model's lowest thinking level rather than none — the
+        # screens say so beside the control (F269).
+        "reasoning_off_minimum": sorted({m for m in all_available if off_runs_as(m) == "minimum"}),
         # Which of them can actually see an attachment. Served for the same
         # reason as the line above: the alternative is a second copy of the
         # list in TypeScript, wrong the first time only one of them is updated.

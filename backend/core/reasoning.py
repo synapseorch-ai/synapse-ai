@@ -111,6 +111,17 @@ _ADAPTIVE_CLAUDE = (
 #: on Opus 5 (tool calls written as text, leaked tags). "Off" runs at low.
 _THINKS_BY_DEFAULT = ("claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5")
 
+
+def _gemini_3_pro(name: str) -> bool:
+    """A Gemini 3 Pro, which cannot stop thinking (F269).
+
+    `thinking_level: MINIMAL` is a 400 on it ("Thinking level MINIMAL is not
+    supported for this model", gemini-3.1-pro-preview, measured 2026-09-28), and
+    LOW thought as much as sending nothing (329 against 298 output tokens on the
+    same question). Its Off is its Low.
+    """
+    return name.startswith("gemini-3") and "-pro" in name
+
 #: How a Claude model on the Anthropic API takes a thinking plan.
 ADAPTIVE = "adaptive"
 BUDGET = "budget"
@@ -278,6 +289,33 @@ def minimum_budget(model: str) -> int:
     return 0
 
 
+def off_runs_as(model: str, listed: Any = None) -> str | None:
+    """What reasoning effort "off" does on this model, for the screens (F269).
+
+    - "off": the model stops thinking.
+    - "minimum": it runs at its lowest thinking level, which may think a little
+      (Gemini 3 Flash at MINIMAL, Gemini 2.5 Pro at its 128-token floor).
+    - "low": its least is Low, so an Off would be Low — the screens then offer
+      no Off at all, rather than one that quietly means Low (F65).
+    - None: no reasoning channel, so nothing to say.
+
+    Served from here, like `reasoning_capable`, so the screens never restate it.
+    """
+    if not supports_native(model, listed):
+        return None
+    name = (model or "").strip().lower()
+    kind = listed_kind(name, listed)
+    if kind == GRADED:
+        return "low"
+    if kind == SWITCH:
+        return "off"
+    if name.startswith(_THINKS_BY_DEFAULT) or _gemini_3_pro(name):
+        return "low"
+    if minimum_budget(name) or name.startswith("gemini-3"):
+        return "minimum"
+    return "off"
+
+
 def plan_for(
     model: str,
     effort: str | None,
@@ -301,14 +339,21 @@ def plan_for(
         return None
     if kind == GRADED and resolved == "off":
         resolved = "low"
-    if resolved == "off" and (model or "").strip().lower().startswith(_THINKS_BY_DEFAULT):
+    name = (model or "").strip().lower()
+    if resolved == "off" and (name.startswith(_THINKS_BY_DEFAULT) or _gemini_3_pro(name)):
         resolved = "low"
     floor = minimum_budget(model)
 
-    if resolved == "off" and not floor:
+    # Off is said, not left unsaid, where saying nothing is not off (F269). A
+    # Gemini model sent no thinking config thinks dynamically — 263–299 output
+    # tokens on a one-line answer, against 9 with MINIMAL on gemini-3-flash and
+    # with a budget of 0 on gemini-2.5-flash (measured 2026-09-28). A plan also
+    # drops the `[REASONING]` prompt convention, which an Off turn used to be
+    # taught on top of its own thinking. Everywhere else — Claude's budget
+    # models above all — omitting it is off, so nothing is sent.
+    if resolved == "off" and not floor and not name.startswith("gemini"):
         return None
 
-    name = (model or "").strip().lower()
     table = _GEMINI_BUDGET if name.startswith("gemini") else _BUDGET
     budget = max(table[resolved], floor)
     # What the cap must make room for: the budget where one is sent, and for

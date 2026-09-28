@@ -117,6 +117,7 @@ export function AgentsScreen() {
                 providers={models.providers || {}}
                 reasoningCapable={models.reasoning_capable || []}
                 reasoningWithoutOff={models.reasoning_without_off || []}
+                reasoningOffMinimum={models.reasoning_off_minimum || []}
                 defaultModel={defaultModel}
                 workspaceEffort={settings.reasoning_effort}
                 loadingAgents={loading}
