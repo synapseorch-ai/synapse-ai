@@ -1302,15 +1302,36 @@ async def run_agent_step(
     # remember to record itself. Saved with the turn; the next turn's digest.
     _turn_calls: list[dict] = list((resume_state or {}).get("calls") or [])
     _open_call: tuple | None = None
+    # The repeat guard (F243): the same tool, arguments and result as the call
+    # just before it. One turn made eleven identical `list_directory` calls for
+    # seven minutes, until Stop. The second in a row is named to the model; the
+    # third ends the turn with the reason. A different call in between, other
+    # arguments or a new result start the count again — a tool run again with
+    # new arguments is work, not a loop (Naveen, 2026-09-28).
+    _repeat_key: str | None = None
+    _repeat_count = 0
+    _repeat_stop: dict | None = None
+    REPEAT_NOTE_AT, REPEAT_STOP_AT = 2, 3
 
     def _close_call() -> dict | None:
-        nonlocal _open_call
+        nonlocal _open_call, _repeat_key, _repeat_count, _repeat_stop, current_context_text
         if _open_call is None:
             return None
         _name, _args, _mark = _open_call
         _open_call = None
         _record = call_record(_name, _args, current_context_text[_mark:])
         _turn_calls.append(_record)
+        _key = json.dumps([_record["tool"], _record["args"], _record["result"]], sort_keys=True, default=str)
+        _repeat_count = _repeat_count + 1 if _key == _repeat_key else 1
+        _repeat_key = _key
+        if _repeat_count >= REPEAT_STOP_AT:
+            _repeat_stop = {"tool_name": _record["tool"], "count": _repeat_count}
+        elif _repeat_count == REPEAT_NOTE_AT:
+            current_context_text += (
+                f"\nSystem: you called {_record['tool']} with these same arguments twice in a row and "
+                "got the same result both times — you already have that answer. Use it, try something "
+                "different, or give your final response; a third identical call ends this turn.\n"
+            )
         return _record
     # ── Task list: the run's working plan (see core/task_list.py) ──
     # Seeded from the run so a later step (or a resumed one) sees the plan
@@ -1851,6 +1872,8 @@ async def run_agent_step(
 
             for tool_call in tool_calls:
                 _close_call()
+                if _repeat_stop:
+                    break
                 tool_name = tool_call.get("tool", "")
                 if not isinstance(tool_name, str) or not tool_name.strip():
                     continue
@@ -2604,6 +2627,15 @@ async def run_agent_step(
                         pass
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {error_msg}"}
             _close_call()
+            if _repeat_stop:
+                _log.warning(f"🔁 '{_repeat_stop['tool_name']}' repeated {_repeat_stop['count']}× — ending the turn")
+                yield {"type": "repeat_stopped", **_repeat_stop, "turn": turn + 1}
+                final_response = (
+                    f"I stopped here because I was repeating myself: I called {_repeat_stop['tool_name']} "
+                    f"with the same arguments {_repeat_stop['count']} times in a row and got the same result "
+                    "each time, so calling it again would not help. The work so far is above."
+                )
+                break
 
             if progress_events:
                 # Turn-boundary snapshot for mid-node crash recovery: everything

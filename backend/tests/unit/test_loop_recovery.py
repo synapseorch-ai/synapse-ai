@@ -103,8 +103,9 @@ class TestTheContextBackstopKeepsTheNewestEnd:
         async def fat_executor(name, args):
             return big
 
-        # Five fat observations blow past the 400k backstop.
-        script = [tool_call("my_tool") for _ in range(5)] + ["done"]
+        # Five fat observations blow past the 400k backstop. Each call differs,
+        # or the repeat guard (F243) would end the turn at the third.
+        script = [tool_call("my_tool", n=i) for i in range(5)] + ["done"]
         events = await _drive(fake_llm, script, tool_executor=fat_executor, max_turns=8)
 
         trims = [e for e in events if e["type"] == "context_trimmed"]
@@ -136,7 +137,7 @@ class TestCompactionCanFireMoreThanOnce:
             return "User Request: go\n[compacted]\n", [], None, {"stage": "t"}
 
         monkeypatch.setattr(re_mod, "maybe_compact", compact)
-        script = [tool_call("my_tool") for _ in range(7)] + ["done"]
+        script = [tool_call("my_tool", n=i) for i in range(7)] + ["done"]   # distinct: F243
         events = await _drive(fake_llm, script, max_turns=9)
 
         assert len(fired) >= 2, "compaction fired once and then never again"
@@ -151,7 +152,7 @@ class TestCompactionCanFireMoreThanOnce:
             return ctx + "\n[compacted]\n", [], None, {"stage": "t"}
 
         monkeypatch.setattr(re_mod, "maybe_compact", compact)
-        script = [tool_call("my_tool") for _ in range(4)] + ["done"]
+        script = [tool_call("my_tool", n=i) for i in range(4)] + ["done"]   # distinct: F243
         events = await _drive(fake_llm, script, max_turns=6)
         compactions = [e for e in events if e["type"] == "context_compact"]
         assert len(compactions) <= 2   # not every turn
