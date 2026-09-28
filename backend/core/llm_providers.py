@@ -296,13 +296,86 @@ class LLMResult(NamedTuple):
     reasoning: str = ""
 
 
+#: What a model failure was, as a caller can act on it (F275). Stable: the API
+#: returns these, and an integration branches on them.
+QUOTA_EXHAUSTED = "quota_exhausted"          # out of credit or quota — top up; a retry never helps
+PROVIDER_REFUSED = "provider_refused"        # the key, the model or the request refused — fix the setting
+RATE_LIMITED = "rate_limited"                # too many requests for now — retry later
+PROVIDER_UNAVAILABLE = "provider_unavailable"  # down, overloaded, timed out, unreachable — retry
+MODEL_NO_ANSWER = "model_no_answer"          # answered with nothing usable (empty, blocked, all reasoning)
+MODEL_ERROR = "model_error"                  # anything else
+
+RETRYABLE = frozenset({RATE_LIMITED, PROVIDER_UNAVAILABLE})
+
+#: Words a refusal uses when the account, not the request, is the problem:
+#: Gemini's "prepayment credits are depleted", OpenAI's `insufficient_quota`,
+#: Anthropic's "credit balance is too low". A 429 saying one of these is not a
+#: rate limit — it never clears. Not "quota" or "billing" alone: Gemini's
+#: free-tier per-minute 429 says "You exceeded your current quota, please check
+#: your plan and billing details" and clears in a minute, which the retry covers.
+_QUOTA_WORDS = re.compile(r"insufficient_quota|credit|prepay", re.IGNORECASE)
+_TRANSIENT_WORDS = re.compile(r"timed out|timeout|not reachable|unreachable|connect|overloaded", re.IGNORECASE)
+#: Where each adapter's message states the provider's status: "HTTP 429:" (the
+#: OpenAI-shaped ones), "API error 400:" (Anthropic), "402 RESOURCE_EXHAUSTED"
+#: (Gemini's code and status name), "Client error '402 …'" (httpx). Only these
+#: shapes: a bare number in the provider's prose ("max 500 tokens") is not one.
+_STATUS_IN_MESSAGE = re.compile(
+    r"HTTP ([45]\d\d)\b|API error ([45]\d\d)\b|Client error '([45]\d\d)\b|\b([45]\d\d) [A-Z][A-Z_]{2,}\b"
+)
+
+
+def _status_in(message: str) -> int | None:
+    match = _STATUS_IN_MESSAGE.search(message or "")
+    if not match:
+        return None
+    return int(next(g for g in match.groups() if g))
+
+
+def is_quota_refusal(status: int | None, text: str) -> bool:
+    """A refusal about the account's credit or quota, which no retry clears."""
+    if status == 402:
+        return True
+    return status in (400, 403, 429) and bool(_QUOTA_WORDS.search(text or ""))
+
+
+def classify_failure(status: int | None, text: str) -> str:
+    """The `code` for a failed model call, from its status and its words (F275)."""
+    if is_quota_refusal(status, text):
+        return QUOTA_EXHAUSTED
+    if status == 429:
+        return RATE_LIMITED
+    if status is not None and (status >= 500 or status in (408, 499)):
+        return PROVIDER_UNAVAILABLE
+    if status is not None and 400 <= status < 500:
+        return PROVIDER_REFUSED
+    if _TRANSIENT_WORDS.search(text or ""):
+        return PROVIDER_UNAVAILABLE
+    return MODEL_ERROR
+
+
 class LLMError(Exception):
     """Raised when an LLM call fails after all retries.
 
     This propagates through the orchestration engine so it can stop execution
     instead of silently passing error strings to the next node.
+
+    It says what kind of failure it was (F275): `code` (one of the constants
+    above), whether a retry can help, and — where the adapter knows them — the
+    provider and its HTTP status. A caller that only reads `str(e)` sees no
+    change. The status is read from the message when not given: every retrying
+    adapter already writes it there.
     """
-    pass
+
+    def __init__(self, message: str = "", *, provider: str | None = None,
+                 status: int | None = None, code: str | None = None):
+        super().__init__(message)
+        self.provider = provider
+        self.status = status if status is not None else _status_in(str(message))
+        self.code = code or classify_failure(self.status, str(message))
+
+    @property
+    def retryable(self) -> bool:
+        return self.code in RETRYABLE
 
 
 class EmptyAnswer(LLMError):
@@ -318,7 +391,7 @@ class EmptyAnswer(LLMError):
     """
 
     def __init__(self, message: str, *, reasoning: str = ""):
-        super().__init__(message)
+        super().__init__(message, code=MODEL_NO_ANSWER)
         self.reasoning = reasoning
         self.stop_reason: str | None = None
         self.usage: tuple[int, int, int, int] = (0, 0, 0, 0)
@@ -1060,6 +1133,8 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                if is_quota_refusal(resp.status_code, resp.text):
+                    break   # out of credit or quota: no retry clears it (F275)
                 _retry_notice("OpenAI", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
@@ -1986,7 +2061,10 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
             # Anything that is not an API answer at all (a dropped connection)
             # still does.
             code = getattr(e, "code", None) if isinstance(e, _genai_errors.APIError) else None
-            if isinstance(code, int) and code not in (408, 429, 499) and code < 500:
+            # Out of credit (a 402, or a 429 naming its prepayment) never clears
+            # on a retry either (F275).
+            if isinstance(code, int) and (is_quota_refusal(code, str(e))
+                                          or (code not in (408, 429, 499) and code < 500)):
                 refused = True
                 break
             if attempt < MAX_RETRIES:
@@ -2087,6 +2165,8 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                if is_quota_refusal(resp.status_code, resp.text):
+                    break   # out of credit or quota: no retry clears it (F275)
                 _retry_notice("Grok", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
@@ -2193,6 +2273,8 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                if is_quota_refusal(resp.status_code, resp.text):
+                    break   # out of credit or quota: no retry clears it (F275)
                 _retry_notice("DeepSeek", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
@@ -2329,6 +2411,8 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 resp = await client.post(endpoint, headers=headers, json=payload)
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                if is_quota_refusal(resp.status_code, resp.text):
+                    break   # out of credit or quota: no retry clears it (F275)
                 _retry_notice("V1-compatible", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
@@ -2427,7 +2511,8 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
         detail = re.search(r'"message"\s*:\s*"([^"]+)"', str(e))
         if detail is None:
             raise
-        raise LLMError(f"Model gateway refused the call: {detail.group(1)}") from e
+        raise LLMError(f"Model gateway refused the call: {detail.group(1)}",
+                       provider="gateway", status=402) from e
 
 
 async def _bedrock_converse_direct(

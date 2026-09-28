@@ -30,7 +30,7 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.api_key_middleware import require_api_key
@@ -307,12 +307,35 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
     except LLMError as exc:
         # The model failed (F133): the turn raises rather than answering with the
         # provider's words, and an API caller hears what it hears of any agent
-        # error — not those words, which are the workspace's to read.
+        # error — not those words, which are the workspace's to read (D118). What
+        # it does hear is what kind of failure it was (F275), so an integration
+        # can tell "top up" from "try again".
         log.error("[v1/chat] Model error session=%s: %s", chat_request.session_id, exc)
-        yield {"type": "error", "message": "The agent encountered an error processing your request."}
+        yield {"type": "error", "message": _model_failure(exc.code),
+               "code": exc.code, "retryable": exc.retryable}
     except Exception:
         log.exception("[v1/chat] Unhandled error session=%s", chat_request.session_id)
         yield {"type": "error", "message": "An internal error occurred. Check server logs for details."}
+
+
+#: What v1 says for each kind of model failure (F275) — our words, never the
+#: provider's (D118). The first sentence is the one every v1 error has said.
+_MODEL_FAILURE = {
+    "quota_exhausted": "The model provider refused it: its credit or quota is exhausted. Top up or raise "
+                       "the limit with the provider; retrying will not help until then.",
+    "provider_refused": "The model provider refused it — for example a key it does not accept or a model "
+                        "it does not serve. Check the agent's model and the workspace's model settings.",
+    "rate_limited": "The model provider is limiting requests right now. Try again shortly.",
+    "provider_unavailable": "The model provider could not be reached or failed. Try again shortly.",
+    "model_no_answer": "The model answered with nothing usable (empty, blocked, or only reasoning).",
+}
+
+
+def _model_failure(code: str | None) -> str:
+    said = "The agent encountered an error processing your request."
+    if code in _MODEL_FAILURE:
+        said += " " + _MODEL_FAILURE[code]
+    return said
 
 
 def _failed_workflow(run_id: str | None) -> str:
@@ -359,7 +382,13 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
         event = entry.event
         kind = event.get("type")
         if kind == "error":
-            raise HTTPException(status_code=500, detail=event.get("message") or "The agent encountered an error.")
+            detail = event.get("message") or "The agent encountered an error."
+            if event.get("code"):
+                # A model failure says which kind (F275); the status stays 500.
+                return JSONResponse(status_code=500, content={
+                    "detail": detail, "code": event["code"], "retryable": bool(event.get("retryable")),
+                })
+            raise HTTPException(status_code=500, detail=detail)
         if kind == "cancelled":
             return {"response": event.get("message") or "Stopped.", "status": "cancelled", **identity}
         if kind in ("awaiting_approval", "paused"):
