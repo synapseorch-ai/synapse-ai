@@ -434,11 +434,30 @@ def build_memory_tools() -> list:
     ]
 
 
+MAX_INDEX_BLOCK_CHARS = 4_096
+
+
 def render_index_block(index_text: str) -> str:
-    """The eager system-prompt block for a memory-enabled agent."""
-    body = index_text.strip() or "(no memories yet)"
-    if len(body) > 4096:
-        body = body[:4096] + "\n[...index truncated]"
+    """The eager system-prompt block for a memory-enabled agent.
+
+    The newest lines that fit (F273). A new or updated memory's line goes to
+    the end of MEMORY.md, and the block kept its first 4,096 characters — so of
+    100 lines the 54 newest were the ones hidden, and the newest fact took six
+    times as long to find as one the prompt showed.
+    """
+    lines = [ln for ln in index_text.splitlines() if ln.strip()]
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        if used + len(line) + 1 > MAX_INDEX_BLOCK_CHARS:
+            break
+        kept.insert(0, line)
+        used += len(line) + 1
+    hidden = len(lines) - len(kept)
+    body = "\n".join(kept) or "(no memories yet)"
+    if hidden:
+        body = (f"[{hidden} older memor{'ies are' if hidden != 1 else 'y is'} not shown here — "
+                "search_memory finds them]\n" + body)
     return (
         "### MEMORY\n"
         "Your persistent memory index — one line per saved memory. Read one in full "
