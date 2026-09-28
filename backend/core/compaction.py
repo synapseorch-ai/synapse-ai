@@ -8,7 +8,16 @@ Two-stage strategy (mirrors Claude Code's approach):
              within the threshold. No LLM call; no archive.
   Stage 2 — LLM summarise: if Stage 1 alone is not enough (e.g. history is large),
              call the LLM to write a dense summary and archive the full original.
+
+Both stages keep the request being worked on verbatim at the head (F244). A
+mid-turn Stage 2 once summarised 92,899 characters to 2,478 (−97%) and replaced
+the transcript wholesale; the question went with it, and ten seconds later the
+agent was implementing a feature nobody had asked for. Stage 1 lost it too: it
+keeps the newest end, and the request is the transcript's first line. And a
+summary that cut below `MIN_KEEP_RATIO` of what it replaced keeps the newest
+transcript verbatim beside it, up to that floor.
 """
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -40,8 +49,41 @@ _COMPACTION_SYS_PROMPT = (
     "- Current state: what has been completed and what still needs to be done\n"
     "- Any errors encountered and how they were resolved\n\n"
     "Write as a structured summary with clear sections. Be dense — prefer bullet points "
-    "and key-value pairs over prose. Never include filler phrases like 'The assistant then…'"
+    "and key-value pairs over prose. Never include filler phrases like 'The assistant then…'\n\n"
+    # F244: a summary that lost the question was followed by invented work.
+    "The request being worked on is kept verbatim outside your summary. Summarise what has "
+    "been done toward it and what is still open — never add a task, goal or plan that the "
+    "context does not already contain."
 )
+
+#: The request kept at the head of a compacted transcript, at most (F244).
+PINNED_REQUEST_MAX_CHARS = 20_000
+#: A Stage-2 result never keeps less than this share of what it replaced — the
+#: newest transcript, verbatim, fills the difference, then the newest whole
+#: messages of the conversation (so it can fall short by one message) — up to
+#: half the threshold, so a compacted context is never over it again at once.
+MIN_KEEP_RATIO = 0.20
+
+
+def _pin(request: str | None) -> str:
+    """The request line a transcript starts with, clipped head and tail."""
+    if request is None:
+        return ""
+    request = str(request)
+    if len(request) > PINNED_REQUEST_MAX_CHARS:
+        half = PINNED_REQUEST_MAX_CHARS // 2
+        request = (request[:half] + f"\n[… {len(request) - 2 * half:,} characters of the request "
+                   "not shown here …]\n" + request[-half:])
+    return f"User Request: {request}\n"
+
+
+def _without_pin(context: str, request: str | None) -> str:
+    """The transcript after its request line, when it starts with one."""
+    if request is not None:
+        head = f"User Request: {request}\n"
+        if context.startswith(head):
+            return context[len(head):]
+    return context
 
 
 def _make_archive_path(session_id: str) -> Path:
@@ -85,9 +127,13 @@ async def maybe_compact(
     session_id: str,
     agent_id: str,
     run_id: str | None = None,
+    pinned_request: str | None = None,
 ) -> tuple[str, list, str | None, dict | None]:
     """
     Returns (context_text, history_messages, archive_path | None, compact_stats | None).
+
+    `pinned_request` is the request the transcript is working on; when given,
+    the result starts with it verbatim, whichever stage ran (F244).
 
     archive_path is only set when Stage-2 LLM summarisation fires (and saves an archive).
     compact_stats is {"stage", "chars_before", "chars_after", "reduction_pct"} when
@@ -119,9 +165,11 @@ async def maybe_compact(
     # Keep the most recent portion of current_context_text that fits in the budget.
     # Only accept the Stage-1 result when it saves at least MIN_STAGE1_SAVINGS_PCT;
     # otherwise fall through to Stage-2 LLM summarisation for proper ~30% reduction.
-    budget = max(0, threshold - history_chars - 60)  # 60 chars for the trim prefix
-    if budget > 0 and len(current_context_text) > budget:
-        stage1_ctx = "[...older tool outputs trimmed...]\n" + current_context_text[-budget:]
+    pin = _pin(pinned_request)
+    body = _without_pin(current_context_text, pinned_request)
+    budget = max(0, threshold - history_chars - len(pin) - 60)  # 60 chars for the trim prefix
+    if budget > 0 and len(body) > budget:
+        stage1_ctx = pin + "[...older tool outputs trimmed...]\n" + body[-budget:]
         stage1_total = len(stage1_ctx) + history_chars
         stage1_savings_pct = round((total_chars - stage1_total) / total_chars * 100) if total_chars > 0 else 0
         if stage1_total <= threshold and stage1_savings_pct >= MIN_STAGE1_SAVINGS_PCT:
@@ -153,6 +201,9 @@ async def maybe_compact(
     )
 
     context_block = _build_context_block(current_context_text, recent_history_messages)
+    if pin:
+        context_block = ("=== THE REQUEST BEING WORKED ON (kept verbatim; do not restate it as a task) ===\n"
+                         + pin + "\n" + context_block)
 
     archive_path = _make_archive_path(session_id)
     try:
@@ -180,13 +231,33 @@ async def maybe_compact(
 
         archive_hint = f" (original archived at: {archive_path})" if archive_path else ""
         compacted = (
+            f"{pin}"
             f"[CONTEXT COMPACTED{archive_hint}]\n"
             f"Original size: {total_chars:,} chars → compacted to ~{len(summary):,} chars\n\n"
             f"=== SUMMARY OF PRIOR CONTEXT ===\n"
             f"{summary}\n"
             f"=== END SUMMARY — CONTINUING FROM HERE ===\n"
         )
-        after_chars = len(compacted)
+        # The floor: a summary that kept almost nothing keeps the newest
+        # transcript verbatim with it — the observations the next step acts on
+        # — and then the newest whole messages of the conversation, in the
+        # space still left.
+        floor = min(math.ceil(total_chars * MIN_KEEP_RATIO), threshold // 2)
+        recent_header = "\n=== THE MOST RECENT CONTEXT, VERBATIM ===\n"
+        room = floor - len(compacted) - len(recent_header) - 1
+        if room > 0 and body:
+            compacted += recent_header + body[-room:] + "\n"
+        kept_history: list = []
+        room = floor - len(compacted)
+        for message in reversed(recent_history_messages or []):
+            size = len(str(message.get("content", "")))
+            if size > room:
+                break
+            kept_history.insert(0, message)
+            room -= size
+        while kept_history and kept_history[0].get("role") != "user":
+            kept_history.pop(0)          # a conversation starts with its user
+        after_chars = len(compacted) + sum(len(str(m.get("content", ""))) for m in kept_history)
         reduction_pct = round((total_chars - after_chars) / total_chars * 100) if total_chars > 0 else 0
         compact_stats = {
             "stage": "llm_summary",
@@ -205,7 +276,7 @@ async def maybe_compact(
             archive_path=str(archive_path) if archive_path else None,
             model=current_model,
         )
-        return compacted, [], str(archive_path) if archive_path else None, compact_stats
+        return compacted, kept_history, str(archive_path) if archive_path else None, compact_stats
 
     except Exception as exc:
         _log.warning(f"⚠️  Compaction LLM call failed ({exc}), continuing without compaction")

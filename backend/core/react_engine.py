@@ -1534,6 +1534,8 @@ async def run_agent_step(
                     session_id,
                     agent_id_for_session,
                     run_id=run_id,
+                    # Kept verbatim at the head, whichever stage runs (F244).
+                    pinned_request=user_message,
                 ), label="Compacting context")
                 async for _wait_event in _compact_wait.events():
                     yield _wait_event
