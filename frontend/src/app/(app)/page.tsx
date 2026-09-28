@@ -2329,8 +2329,14 @@ export default function Home() {
                     className="block w-full px-4 py-3 pr-9 text-left"
                   >
                     <span className="flex items-start justify-between gap-2 mb-1">
-                      <span className="text-[10px] uppercase tracking-wider text-text-faint font-mono truncate">
-                        {s.agent_id || 'default'}
+                      {/* The agent's name, not its id in capitals (U59). The id
+                          stays for an agent that has since been deleted, and
+                          as the tooltip. */}
+                      <span
+                        className="text-[10px] uppercase tracking-wider text-text-faint truncate"
+                        title={s.agent_id || 'default'}
+                      >
+                        {systemStatus?.agents?.[s.agent_id]?.name || s.agent_id || 'default'}
                       </span>
                       <span className="text-[10px] text-text-faint font-mono shrink-0">
                         {formatRelativeTime(s.last_updated)}
