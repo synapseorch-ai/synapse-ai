@@ -15,8 +15,9 @@ export type RunNotification = {
     data: Record<string, any>;
     // Set server-side once the requested input was submitted (or the run ended).
     resolved?: boolean;
-    /** How a human_input item was resolved: answered, or its run cancelled (F193). */
-    resolved_as?: 'answered' | 'cancelled';
+    /** How a human_input item was resolved: answered, or its run cancelled (F193);
+     *  a tool_approval item: allowed, refused, or expired unrun (F268). */
+    resolved_as?: 'answered' | 'cancelled' | 'allowed' | 'refused' | 'expired';
 };
 
 type Toast = { key: number; message: string; type: 'success' | 'warning' | 'error' };
@@ -29,6 +30,8 @@ type NotificationContextValue = {
     browserNotificationsEnabled: boolean;
     setBrowserNotificationsEnabled: (enabled: boolean) => Promise<void>;
     openRun: (runId: string | null) => void;
+    /** Where an item leads: its run, or for a schedule's item the Schedules screen. */
+    openItem: (item: RunNotification) => void;
 };
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);
@@ -79,6 +82,11 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         else router.push('/orchestrations');
     }, [router]);
 
+    const openItem = useCallback((item: RunNotification) => {
+        if (!item.run_id && item.data?.schedule_id) router.push('/schedules');
+        else openRun(item.run_id);
+    }, [router, openRun]);
+
     const handleNotification = useCallback((item: RunNotification, live: boolean) => {
         setNotifications(prev => {
             // Upsert: a re-delivered id is an update (e.g. human input resolved).
@@ -90,7 +98,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         if (!live || item.resolved) return;  // history/updates: no toast/browser popup
         window.dispatchEvent(new CustomEvent(NOTIFICATION_EVENT, { detail: item }));
         toast(item.title, item.kind === 'run_failed' ? 'error'
-            : item.kind === 'human_input' ? 'warning' : 'success');
+            : item.kind === 'human_input' || item.kind === 'tool_approval' ? 'warning' : 'success');
         if (browserEnabledRef.current && document.hidden
             && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
             try {
@@ -100,12 +108,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                 });
                 notification.onclick = () => {
                     window.focus();
-                    openRun(item.run_id);
+                    openItem(item);
                     notification.close();
                 };
             } catch { /* ignore */ }
         }
-    }, [toast, openRun]);
+    }, [toast, openItem]);
 
     // Notifications: history first, then the live tail, on every connection.
     //
@@ -213,7 +221,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         <NotificationContext.Provider value={{
             notifications, unseenCount, markAllSeen, toast,
             browserNotificationsEnabled: browserEnabled,
-            setBrowserNotificationsEnabled, openRun,
+            setBrowserNotificationsEnabled, openRun, openItem,
         }}>
             {children}
             {/* Toast host — app-wide, stacked bottom-right, clearing the AI

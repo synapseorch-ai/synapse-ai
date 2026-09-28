@@ -4,6 +4,7 @@ Started during server lifespan. Checks all enabled schedules every 30 seconds.
 Restart-proof: next_run_at is persisted so overdue schedules are handled on startup.
 """
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -13,6 +14,42 @@ from core.store import schedules as schedule_store
 logger = logging.getLogger(__name__)
 
 _TICK_INTERVAL = 30  # seconds between scheduler ticks
+
+#: How long a scheduled run's tool call waits for a person before it expires
+#: unrun (F268) — as long as a parked AI-builder run waits (`PARKED_BUILDER_TTL`).
+APPROVAL_TTL = timedelta(hours=24)
+#: Why an expired one was not run, as its conversation and its log keep it.
+APPROVAL_EXPIRED = "nobody answered within 24 hours"
+
+
+def _session_of(schedule_id: str) -> str:
+    """The conversation a schedule's agent turns are kept in."""
+    return f"schedule_{schedule_id}"
+
+
+async def schedule_question_settled(pending: dict, *, how: str, why: str) -> None:
+    """A schedule's parked call ended without an answer (F268): its bell item and its run's log say so.
+
+    Called by `chat_approval.settle_moved_past` for any door that settles one —
+    the schedule firing again, a message typed into its conversation, or the
+    expiry sweep.
+    """
+    from core.notifications import hub
+    from core import schedule_logger
+
+    hub.resolve_approval(pending.get("approval_id"), how)
+    sched = pending.get("schedule") or {}
+    if not sched.get("run_id"):
+        return
+    try:
+        log = schedule_logger.ScheduleLogger(
+            schedule_id=sched.get("id") or "", schedule_name=sched.get("name") or "", target_type="agent",
+            target_id="", prompt="", continues=sched["run_id"],
+            note=f"`{pending.get('tool_name')}` was not run — {why}.")
+        log.run_end("expired")
+        log.close()
+    except Exception as exc:  # noqa: BLE001 — a log line is not worth failing the settle
+        logger.warning("[Scheduler] could not note a settled approval on %s: %s", sched.get("run_id"), exc)
 
 
 def compute_next_run(schedule: dict, from_dt: datetime) -> datetime:
@@ -126,6 +163,32 @@ class ScheduleManager:
         """Fire any schedules whose next_run_at has arrived."""
         for s in await schedule_store.due(_utc_now()):
             asyncio.create_task(self._execute_schedule(s["id"]))
+        try:
+            await self._expire_parked_approvals()
+        except Exception as e:  # noqa: BLE001 — a failed sweep is retried next tick
+            logger.warning("[Scheduler] approval expiry sweep failed: %s", e)
+
+    async def _expire_parked_approvals(self) -> None:
+        """A scheduled run's tool call nobody answered in `APPROVAL_TTL` expires unrun (F268).
+
+        No model call: the call is not run, the turn that asked is kept in the
+        schedule's conversation with the reason, its log ends `expired`, and its
+        bell item stops asking.
+        """
+        from core.chat_approval import settle_moved_past
+        from core.store import sessions as _sessions
+
+        now = _utc_now()
+        for session_id, agent_id, pending in await _sessions.parked_approvals("schedule_"):
+            expires_at = (pending.get("schedule") or {}).get("expires_at")
+            if not expires_at:
+                continue
+            try:
+                if _parse_iso(expires_at) > now:
+                    continue
+            except ValueError:
+                continue
+            await settle_moved_past(session_id, agent_id, save_as=agent_id, why=APPROVAL_EXPIRED)
 
     async def _on_startup(self) -> None:
         """
@@ -213,7 +276,7 @@ class ScheduleManager:
         await schedule_store.set_last_run(schedule_id, now)
 
     @staticmethod
-    def _schedule_logger(s: dict):
+    def _schedule_logger(s: dict, *, continues: str | None = None, note: str = ""):
         from core import schedule_logger
         return schedule_logger.ScheduleLogger(
             schedule_id=s["id"],
@@ -221,6 +284,8 @@ class ScheduleManager:
             target_type=s.get("target_type", "agent"),
             target_id=s.get("target_id", ""),
             prompt=s.get("prompt", ""),
+            continues=continues,
+            note=note,
         )
 
     async def _run(self, s: dict, sched_log) -> None:
@@ -294,20 +359,18 @@ class ScheduleManager:
             user_message=prompt,
         )
 
+        # The question the last run left, if nobody answered it: this run asks
+        # afresh if it needs to (Naveen, 2026-09-28; F247's rule).
+        from core.chat_approval import NEWER_RUN, settle_moved_past
+        agent_key = s.get("target_id") or "default"
+        await settle_moved_past(session_id, agent_key, save_as=agent_key, why=NEWER_RUN)
 
         final_response = ""
         # A turn that raises — its model failed (F133) — is logged as failed;
         # `_run` records the schedule run's error and sends no notification.
         outcome = "failed"
         try:
-            async for event in run_agent_step(
-                message=prompt,
-                agent_id=s.get("target_id"),
-                session_id=session_id,
-                server_module=self._server_module,
-                source="schedule",
-                run_id=sched_log.run_id,
-            ):
+            async for event in self._agent_turn_events(s, sched_log.run_id, message=prompt):
                 agent_log.log_event(event)
                 sched_log.log_event(event)
                 if event.get("type") == "final":
@@ -318,6 +381,140 @@ class ScheduleManager:
             agent_log.close()
 
         return final_response
+
+    async def _agent_turn_events(self, s: dict, run_id: str, *, message: str,
+                                 resume_state: dict | None = None):
+        """One scheduled agent turn's events. A tool call that needs approval is
+        parked in the schedule's conversation and asked through the bell (F268):
+        a schedule has nobody in a chat to see a card, and the pause used to be a
+        dead end — "Status: paused" and nowhere to answer."""
+        from core.react_engine import run_agent_step
+
+        latest_progress: dict | None = None
+        async for event in run_agent_step(
+            message=message,
+            agent_id=s.get("target_id"),
+            session_id=_session_of(s["id"]),
+            server_module=self._server_module,
+            source="schedule",
+            run_id=run_id,
+            resume_state=resume_state,
+            progress_events=True,
+        ):
+            if event.get("type") == "_step_progress":
+                # Engine state for a resume, never an event.
+                latest_progress = {k: v for k, v in event.items() if k != "type"}
+                continue
+            if event.get("type") == "human_input_required" and event.get("kind") == "tool_approval":
+                await self._park(s, run_id, event, message=message, progress=latest_progress)
+            yield event
+
+    async def _park(self, s: dict, run_id: str, event: dict, *, message: str, progress: dict | None) -> None:
+        """Keep the call and the turn's snapshot, and ask in the bell."""
+        from core import tool_policy
+        from core.chat_approval import parked_payload
+        from core.notifications import hub
+        from core.session import _clip_args
+        from core.store import sessions as _sessions
+
+        name = s.get("name") or s["id"]
+        expires_at = (_utc_now() + APPROVAL_TTL).isoformat()
+        pending = parked_payload(event, message=message, progress=progress)
+        pending["schedule"] = {"id": s["id"], "name": name, "run_id": run_id, "expires_at": expires_at}
+        await _sessions.set_pending_approval(_session_of(s["id"]), s.get("target_id") or "default", pending)
+        hub.publish(
+            "tool_approval", f"{name} needs approval",
+            body=f"The agent wants to run {event.get('tool_name')} — {tool_policy.explain(event.get('category'))}.",
+            data={"schedule_id": s["id"], "schedule_run_id": run_id, "approval_id": event.get("approval_id"),
+                  "tool_name": event.get("tool_name"), "tool_args": _clip_args(event.get("tool_args") or {}),
+                  "category": event.get("category"), "expires_at": expires_at},
+        )
+
+    async def answer_approval(self, schedule_id: str, *, approve: bool, reason: str = "",
+                              approval_id: str | None = None):
+        """Answer a scheduled run's parked tool call and carry the run on (F268).
+
+        Returns the chat turn driving the resumed turn. Raises `LookupError`
+        when the schedule is not waiting on that question, and
+        `chat_turns.TurnAlreadyRunning` while another turn holds its conversation.
+        """
+        from core import chat_turns
+        from core.store import sessions as _sessions
+
+        session_id = _session_of(schedule_id)
+        waiting = [(agent_id, pending) for agent_id, pending in await _sessions.pending_approvals(session_id)
+                   if pending.get("schedule")]
+        if approval_id is not None:
+            waiting = [(a, p) for a, p in waiting if p.get("approval_id") == approval_id]
+        if len(waiting) != 1:
+            raise LookupError("This schedule is not waiting on that approval.")
+        agent_id = waiting[0][0]
+        # The conversation is claimed before the question is spent, as chat's
+        # own approve does: two answers cannot both resume it.
+        with chat_turns.claim(session_id, agent_key=agent_id) as turn:
+            pending = await _sessions.take_pending_approval(session_id, agent_id)
+            if not pending or (approval_id is not None and pending.get("approval_id") != approval_id):
+                if pending:
+                    await _sessions.set_pending_approval(session_id, agent_id, pending)
+                raise LookupError("This schedule is not waiting on that approval.")
+            turn.message = pending.get("message") or ""
+            turn.start(self.resumed_turn(pending, agent_id, approve=approve, reason=reason))
+        return turn
+
+    async def resumed_turn(self, pending: dict, agent_id: str, *, approve: bool, reason: str = ""):
+        """The scheduled turn picked up from its snapshot with the person's answer.
+
+        Under the schedule's own source and run id — the remember gate, the
+        memory trace and Usage's per-schedule rows read them — and in the same
+        run's log. SSE frames, for whoever reads its chat turn (the schedule's
+        conversation on the chat page).
+        """
+        from core.agent_logger import AgentLogger
+        from core.chat_approval import resume_state_for
+        from core.notifications import hub
+
+        sched = pending.get("schedule") or {}
+        s = await schedule_store.get(sched.get("id") or "") or {}
+        s = {**s, "id": sched.get("id") or s.get("id") or "", "name": sched.get("name") or s.get("name") or "",
+             "target_type": "agent", "target_id": agent_id}
+        run_id = sched.get("run_id") or ""
+        how = "allowed" if approve else "refused"
+        hub.resolve_approval(pending.get("approval_id"), how)
+        message = pending.get("message") or ""
+        said = (f"A person allowed `{pending.get('tool_name')}`." if approve else
+                f"A person refused `{pending.get('tool_name')}`" + (f": {reason}." if reason else "."))
+        sched_log = self._schedule_logger(s, continues=run_id, note=said)
+        agent_log = AgentLogger(agent_id=agent_id, agent_name=s["name"], session_id=_session_of(s["id"]),
+                                source="schedule", user_message=message)
+        status, final_response = "completed", ""
+        try:
+            async for event in self._agent_turn_events(
+                s, run_id, message=message, resume_state=resume_state_for(pending, approve=approve, reason=reason),
+            ):
+                agent_log.log_event(event)
+                sched_log.log_event(event)
+                if event.get("type") == "final":
+                    final_response = event.get("response", "")
+                    event = {"type": "response", "content": final_response, "intent": event.get("intent", "chat")}
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+            if sched_log.paused:
+                status = "paused"
+        except Exception as e:  # noqa: BLE001 — recorded as the run's error, as `_run` does
+            logger.error("[Scheduler] resumed turn of '%s' failed: %s", s.get("name"), e)
+            sched_log.log_event({"type": "error", "message": str(e)})
+            status = "error"
+            yield f"data: {json.dumps({'type': 'error', 'message': 'The scheduled turn failed.'})}\n\n"
+        finally:
+            sched_log.run_end(status)
+            sched_log.close()
+            agent_log.run_end("completed" if status != "error" else "failed")
+            agent_log.close()
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        if status == "completed":
+            hub.publish("run_completed", f"{s['name']} completed", body=final_response[:500],
+                        data={"schedule_id": s["id"], "schedule_run_id": run_id})
+            if final_response:
+                await self._maybe_notify_messaging(s, final_response)
 
     async def _run_orchestration_schedule(self, s: dict, sched_log) -> str:
         """Run orchestration schedule and return the final output text."""

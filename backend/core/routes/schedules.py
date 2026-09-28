@@ -5,6 +5,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from core.models_schedule import ScheduleCreate, ScheduleInvalid, ScheduleUpdate, validate_timing
 from core.scheduler import compute_next_run, _utc_now, _iso
@@ -182,3 +183,35 @@ async def run_schedule_now(schedule_id: str, request: Request):
     if run_id is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
     return {"status": "triggered", "schedule_id": schedule_id, "run_id": run_id}
+
+
+# -- A scheduled run's tool call (F268) ------------------------------------
+
+class ApprovalAnswer(BaseModel):
+    """A person's answer to a scheduled run's "may this tool call run?"."""
+    approve: bool
+    reason: str = ""
+    #: The question this answers: a bell item left open must not answer a newer one.
+    approval_id: str | None = None
+
+
+@router.post("/api/schedules/{schedule_id}/approve")
+async def answer_schedule_approval(schedule_id: str, body: ApprovalAnswer, request: Request):
+    """Answer the tool call a scheduled run stopped on, and carry that run on.
+
+    The bell's Approve / Refuse. The turn resumes from its snapshot under the
+    schedule's own run id — its log continues — and runs in the background: the
+    answer returns at once, and the bell item is resolved when it does.
+    """
+    from core import chat_turns
+    from core.routes.chat import TURN_RUNNING
+
+    mgr = _get_manager(request)
+    try:
+        await mgr.answer_approval(schedule_id, approve=body.approve, reason=body.reason,
+                                  approval_id=body.approval_id)
+    except LookupError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except chat_turns.TurnAlreadyRunning:
+        raise HTTPException(status_code=409, detail=TURN_RUNNING)
+    return {"status": "allowed" if body.approve else "refused", "schedule_id": schedule_id}

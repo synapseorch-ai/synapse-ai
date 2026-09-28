@@ -440,6 +440,20 @@ async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
             # answered.
             await _sessions.set_pending_approval(session_id, agent_key, None)
 
+            if pending.get("schedule"):
+                # A scheduled run's call, answered from its conversation: the
+                # same resume the bell's Approve runs — the schedule's run, log
+                # and source — not a chat turn that forgets it was one (F268).
+                manager = getattr(_server, "schedule_manager", None)
+                if manager is None:
+                    from core.scheduler import ScheduleManager
+                    manager = ScheduleManager()
+                    manager._server_module = _server
+                turn.message = pending.get("message") or ""
+                turn.start(manager.resumed_turn(pending, agent_key, approve=decision.approve,
+                                                reason=decision.reason))
+                return _sse(_read(turn))
+
             from core.chat_approval import resume_state_for
             resume_state = resume_state_for(pending, approve=decision.approve, reason=decision.reason)
 

@@ -210,6 +210,24 @@ async def take_pending_approval(session_id: str, agent_id: str) -> dict | None:
         return pending
 
 
+async def parked_approvals(session_prefix: str) -> list[tuple[str, str, dict]]:
+    """Every parked call in conversations whose id starts with `session_prefix`,
+    as `(session_id, agent_id, pending)` — the scheduler's expiry sweep (F268)."""
+    from core.store import session
+    from core.store.models import ChatSessionDB
+
+    async with session() as s:
+        rows = (
+            await s.execute(
+                select(ChatSessionDB.session_id, ChatSessionDB.agent_id, ChatSessionDB.pending_approval).where(
+                    ChatSessionDB.tenant_id == get_tenant(),
+                    ChatSessionDB.session_id.startswith(session_prefix, autoescape=True),
+                )
+            )
+        ).all()
+    return [(session_id, agent_id, pending) for session_id, agent_id, pending in rows if pending]
+
+
 async def pending_approvals(session_id: str) -> list[tuple[str, dict]]:
     """Every agent in this conversation with a tool call parked, as `(agent_id, pending)`.
 

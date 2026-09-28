@@ -75,16 +75,38 @@ class ScheduleLogger:
         target_type: str,
         target_id: str,
         prompt: str,
+        continues: str | None = None,
+        note: str = "",
     ):
+        """`continues` is the run id of a run this log carries on — a scheduled
+        turn resumed after a person answered its tool call (F268). The same file
+        gets a RESUMED banner with `note` instead of a new header."""
+
+        self._start_time = time.time()
+        #: Set when the run stops on a human step, so it is logged paused, not completed.
+        self.paused = False
+        if continues and re.match(r"^[a-zA-Z0-9_\-\.]+$", continues):
+            self.run_id = continues
+            self.path = _logs_dir() / f"{self.run_id}.log"
+            if not self.path.exists():
+                # Finished on another process, or its local copy is gone: the
+                # blob holds it whole, so the continuation starts from that.
+                earlier = ScheduleLogger.get_log(continues) or ""
+                if earlier:
+                    self._write(earlier)
+            self._write(f"""
+{'='*80}
+  RESUMED at {_ts()}
+  {note}
+{'='*80}
+""")
+            return
 
         # Sanitize schedule_id to prevent taint in self.path
         clean_sched_id = re.sub(r"[^a-zA-Z0-9_\-]", "", schedule_id)
         short_id = clean_sched_id.replace("sched_", "") if clean_sched_id.startswith("sched_") else clean_sched_id
         self.run_id = new_run_id(short_id, prefix="schedulerun")
         self.path = _logs_dir() / f"{self.run_id}.log"
-        self._start_time = time.time()
-        #: Set when the run stops on a human step, so it is logged paused, not completed.
-        self.paused = False
 
         prompt_preview = prompt[:300] + "..." if len(prompt) > 300 else prompt
         self._write(f"""
@@ -163,6 +185,13 @@ class ScheduleLogger:
         etype = event.get("type", "")
         if etype == "human_input_required":
             self.paused = True
+            if event.get("kind") == "tool_approval":
+                self._write_bg(f"""
+  WAITING FOR APPROVAL: {event.get("tool_name", "")}
+     Arguments:
+{self._indent(_fmt_args(event.get("tool_args") or {}), 6)}
+     Asked in the bell; it expires unrun if nobody answers.
+""")
 
         if etype == "_log_prompt":
             prompt = event.get("prompt", "")

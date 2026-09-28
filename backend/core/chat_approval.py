@@ -226,4 +226,9 @@ async def settle_moved_past(session_id: str, agent_key: str, *, save_as: str | N
         await cancel_run(pending["run_id"], redis=redis, reason=RUN_STOPPED)
     if save_as is not None:
         await _sessions.append_turn(session_id or "default", save_as, messages)
+    if pending.get("schedule"):
+        # A scheduled run's question (F268): its bell item stops asking and its
+        # run's log says why the call was not run.
+        from core.scheduler import schedule_question_settled
+        await schedule_question_settled(pending, how="expired", why=why)
     return messages

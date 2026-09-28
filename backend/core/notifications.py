@@ -82,7 +82,7 @@ class NotificationHub:
         item = {
             "id": self._next_id,
             "ts": time.time(),
-            "kind": kind,          # human_input | run_completed | run_failed
+            "kind": kind,          # human_input | tool_approval | run_completed | run_failed
             "title": title[:200],
             "body": (body or "")[:500],
             "run_id": run_id,
@@ -179,11 +179,25 @@ class NotificationHub:
         (F193) — the bell said "answered" for both. The updated items (same id,
         resolved=true) are re-pushed to live subscribers; clients upsert by id
         so the bell stops showing them as actionable."""
-        updated = [
+        self._resolve([
             item for item in self._items
             if item["run_id"] == run_id and item["kind"] == "human_input"
             and not item.get("resolved")
-        ]
+        ], how)
+
+    def resolve_approval(self, approval_id: str | None, how: str) -> None:
+        """Mark a scheduled run's tool-approval item resolved (F268): `allowed`,
+        `refused`, or `expired` when nobody answered or a newer run replaced it.
+        Its Approve / Refuse go away on every open bell."""
+        if not approval_id:
+            return
+        self._resolve([
+            item for item in self._items
+            if item["kind"] == "tool_approval" and not item.get("resolved")
+            and (item.get("data") or {}).get("approval_id") == approval_id
+        ], how)
+
+    def _resolve(self, updated: list[dict], how: str) -> None:
         if not updated:
             return
         for item in updated:
@@ -280,7 +294,7 @@ class NotificationHub:
             if not chat_id:
                 return
             icon = {
-                "human_input": "⏸", "run_completed": "✅", "run_failed": "❌",
+                "human_input": "⏸", "tool_approval": "⏸", "run_completed": "✅", "run_failed": "❌",
                 "eval_regression": "📉",
             }.get(item["kind"], "🔔")
             text = f"{icon} {item['title']}"
