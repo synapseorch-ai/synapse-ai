@@ -126,6 +126,11 @@ class OrchestrationEngine:
         #: shared state, for the reason `images` does; the parent hands it over
         #: on the first run and again on every resume (`_resume_nested`).
         self.caller: dict | None = None
+        #: The chat turn this run owes its conversation — `{session_id,
+        #: agent_id, message}` — when a workflow agent runs it for a person
+        #: (F261). Stamped on the run, so whatever finishes it after a pause
+        #: saves the turn, in-process or on the fleet.
+        self.conversation_turn: dict | None = None
         #: Agents (and their tool sets) resolved for this run, keyed by agent id
         #: — see core/orchestration/resolved.py. Nothing in it changes while a
         #: run is in flight, so it is never invalidated, only discarded with
@@ -203,6 +208,10 @@ class OrchestrationEngine:
             current_step_id=self.orch.entry_step_id,
             started_at=now,
         )
+        if self.conversation_turn and self.depth == 0:
+            # Beside the run's time and failure reason — never a state key,
+            # which every run view and prompt would carry (F261).
+            run.step_progress[ACTIVE_TIME_KEY] = {"turn": dict(self.conversation_turn)}
         state = SharedState(run)
 
         # Initial checkpoint: make the run visible to /runs listings and
@@ -614,6 +623,16 @@ class OrchestrationEngine:
         if run.status == "running":
             run.status = "completed"
 
+        # A workflow agent's turn that paused is saved by the run that finishes
+        # it (F261): the chat request that started it ended at the pause, and
+        # an answer given in the chat, on the run's page, in a channel or on
+        # the fleet resumes it here. Taken off the run before its checkpoint,
+        # so it is paid once. A run that never paused was saved by its caller.
+        owed_turn = None
+        if (run.status in ("completed", "failed", "cancelled") and self.depth == 0
+                and getattr(self, "_resumed_at", None) is not None):
+            owed_turn = (run.step_progress.get(ACTIVE_TIME_KEY) or {}).pop("turn", None)
+
         run.ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         # What the run cost, the runs nested under it included (F251). Only the
         # fleet ever wrote this, from its own run id's calls alone, so every
@@ -646,6 +665,12 @@ class OrchestrationEngine:
             await settle_descendants(
                 run.run_id, run.status,
                 f"Stopped: the run that called it {verb}" + (f" — {why}" if why else ""))
+
+        if owed_turn:
+            try:
+                await self._save_owed_turn(run, owed_turn)
+            except Exception as exc:
+                _log.warning(f"the conversation's turn for {run.run_id} was not saved: {exc}")
 
         # Memory-enabled agents keep a summary of what this run did — the
         # crisp end signal chat never has. Never allowed to fail the run.
@@ -1879,6 +1904,20 @@ class OrchestrationEngine:
                 )
             except Exception as exc:
                 _log.warning(f"memory summary for '{agent_id}' failed: {exc}")
+
+    async def _save_owed_turn(self, run: OrchestrationRun, turn: dict) -> None:
+        """Save the conversation's turn a paused workflow agent's run owed (F261)."""
+        from core.chat_turns import FAILED_RUN_ANSWER, STOPPED_ANSWER
+        from core.session import _save_conversation_turn
+
+        if run.status == "completed":
+            answer = self._build_final_response(run, getattr(self.orch, "result_key", "") or "")
+        else:
+            answer = FAILED_RUN_ANSWER if run.status == "failed" else STOPPED_ANSWER
+        await _save_conversation_turn(
+            session_id=turn.get("session_id") or "default", agent_id=turn.get("agent_id"),
+            user=str(turn.get("message") or ""), assistant=answer,
+        )
 
     def _tool_trace(self, run: OrchestrationRun, budget: int = 6_000) -> str:
         """The run's tool calls, one line each, newest kept within `budget`."""

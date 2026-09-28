@@ -719,11 +719,14 @@ async def run_agent_chat_job(
         paused_on: dict | None = None
         # The calls made since that snapshot, from their events (F242).
         events_since_progress: list[dict] = []
+        # A workflow agent's run waiting on a person (a Human step): its turn is
+        # saved where the run ends (F261), so this job writes none (F294).
+        workflow_waiting = False
 
         async def _consume():
             """Drive the loop. Separated so the cancel watcher has a task to
             cancel that is not the whole job."""
-            nonlocal response_text, total_cost, latest_progress, paused_on
+            nonlocal response_text, total_cost, latest_progress, paused_on, workflow_waiting
             async for event in _visitor_turn(visitor, run_react_loop(
                 chat_request, server_module,
                 progress_events=True, resume_state=resume_state,
@@ -755,6 +758,9 @@ async def run_agent_chat_job(
                     })
                 elif etype == "done":
                     total_cost = event.get("total_cost_usd", 0.0)
+                elif (etype == "human_input_required" and event.get("kind") != "tool_approval"
+                      and event.get("run_id")):
+                    workflow_waiting = True
                 elif etype == "human_input_required" and event.get("kind") == "tool_approval":
                     # The loop has already returned by the time we see this —
                     # it yields the question and stops. Remember it; the parking
@@ -800,6 +806,13 @@ async def run_agent_chat_job(
                 session_id, agent_id or "default",
                 parked_payload(paused_on, message=message, progress=latest_progress),
             )
+            await _upsert_chat_session(session_factory, session_id, agent_id, "paused", history)
+            return {"status": "paused", "session_id": session_id}
+
+        # A workflow waiting on a person has not answered, and its run saves
+        # the turn when it ends (F261). Appended here it was the question and
+        # an empty answer, which went back to the model as history (F294).
+        if workflow_waiting and not response_text and not cancelled:
             await _upsert_chat_session(session_factory, session_id, agent_id, "paused", history)
             return {"status": "paused", "session_id": session_id}
 

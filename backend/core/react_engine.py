@@ -819,6 +819,10 @@ async def _run_spawn_subtask_batch(
                 source=source,
                 run_id=run_id,
                 agent_override=ephemeral_agent,
+                # A hand-off, like a delegate's: it reads none of the parent's
+                # conversation and leaves no `subtask_*` chat in History (F261).
+                history_override=[],
+                persist_turn=False,
             ):
                 if sub_event.get("type") == "final":
                     sub_final = sub_event.get("response", "")
@@ -1255,9 +1259,17 @@ async def run_agent_step(
     # happen to be other agents, and grouping it here made it forget every earlier
     # message in a conversation and never save its own turn.
     is_orchestrator = agent_type in ("orchestrator", "builder")
+    # An orchestration's step works for its run, not in a conversation (F261):
+    # it neither reads nor writes chat history. The conversation reaches its
+    # model steps as `state.history` (F260), and what it did earlier in the run
+    # comes from the run itself. It used to save every step's rendered prompt
+    # as a chat under the run's session — History listed them as conversations,
+    # and a loop's iterations read each other through it. Not `persist_turn`:
+    # F279 reads that as "not a delegate", and a workflow step still asks.
+    _workflow_step = str(source or "").startswith("orchestration")
     if history_override is not None:
         recent_history_messages = history_override
-    elif is_orchestrator:
+    elif is_orchestrator or _workflow_step:
         recent_history_messages = []
     else:
         # With what each turn's tools did (F242): a follow-up that saw only
@@ -1268,7 +1280,7 @@ async def run_agent_step(
     # conversation: never a delegate's hand-off (F286), a visitor's turn (F280)
     # or a conversation with nothing before it.
     _session_history_enabled = bool(
-        history_override is None and not is_orchestrator and persist_turn
+        history_override is None and not is_orchestrator and persist_turn and not _workflow_step
         and _visitor is None and recent_history_messages
     )
     if _session_history_enabled:
@@ -1681,7 +1693,7 @@ async def run_agent_step(
                         # The turn raises instead, and whoever drove it reports
                         # it once. The conversation keeps the question, as a
                         # stopped turn does.
-                        if not is_orchestrator and persist_turn:
+                        if not is_orchestrator and persist_turn and not _workflow_step:
                             from core.chat_turns import FAILED_ANSWER
                             try:
                                 await _save_conversation_turn(
@@ -2712,9 +2724,10 @@ async def run_agent_step(
         except Exception as _mem_exc:
             _log.warning(f"session memory note failed: {_mem_exc}")
 
-    # Persist the conversation turn (skip for orchestrator agents, and for a
-    # delegated hand-off, which is work done for another agent, not a chat)
-    if not is_orchestrator and persist_turn:
+    # Persist the conversation turn (skip for orchestrator agents, for a
+    # delegated hand-off, which is work done for another agent, not a chat, and
+    # for a workflow's step, F261)
+    if not is_orchestrator and persist_turn and not _workflow_step:
         try:
             await _save_conversation_turn(
                 session_id=session_id,
@@ -2836,6 +2849,13 @@ async def run_orchestrator_agent(
             return
         orch = Orchestration.model_validate(orch_data)
         engine = OrchestrationEngine(orch, server_module)
+        if with_history and session_id:
+            # The turn this run owes its conversation (F261). Saved here when
+            # the run ends in this request; if a person has to answer first,
+            # whatever finishes the run saves it — the conversation used to
+            # keep nothing of a turn that paused.
+            engine.conversation_turn = {"session_id": session_id, "agent_id": agent.get("id"),
+                                        "message": message}
         run_id = run_id or new_run_id(orch_id)
         initial_state = None
         # A key the orchestration declares for itself stays its own. Present
@@ -3006,7 +3026,10 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         # its event log went (F115). Only a turn that answered: a stopped one is
         # saved by its caller, and one waiting on a person has not answered. A
         # failed one keeps the question, answered by a marker.
-        if answer is not None or failure is not None:
+        # A run resumed here (F290) paused before, so its turn is owed and the
+        # engine saves it where the run ends (F261) — not twice.
+        resumed = bool(resume_state and resume_state.get("run_id"))
+        if (answer is not None or failure is not None) and not resumed:
             from core.chat_turns import FAILED_RUN_ANSWER
             try:
                 await _save_conversation_turn(

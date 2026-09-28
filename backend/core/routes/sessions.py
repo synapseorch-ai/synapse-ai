@@ -37,10 +37,23 @@ def _the_builders_own(session: dict) -> bool:
             or str(session.get("agent_id") or "").startswith("agent_native_builder"))
 
 
+def _a_runs_own(session: dict) -> bool:
+    """A conversation an orchestration or a sub-agent left, not a person (F261).
+
+    A workflow's step agents saved each rendered step prompt under the run's
+    session — `orch_<run id>` for a run started from the editor, the API or a
+    delegation — and every `spawn_subtask` its own `subtask_*` agent's. They
+    save nothing now; the rows they left are hidden here, not deleted.
+    """
+    return (str(session.get("session_id") or "").startswith("orch_")
+            or str(session.get("agent_id") or "").startswith("subtask_"))
+
+
 @router.get("/api/sessions")
 async def get_sessions(agent_id: str | None = Query(default=None)):
     """List the person's chat sessions, newest first."""
-    return [s for s in await list_chat_sessions(agent_id=agent_id) if not _the_builders_own(s)]
+    return [s for s in await list_chat_sessions(agent_id=agent_id)
+            if not _the_builders_own(s) and not _a_runs_own(s)]
 
 
 @router.get("/api/sessions/{session_id}/history")

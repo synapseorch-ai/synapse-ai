@@ -984,10 +984,16 @@ export default function Home() {
     }
   };
 
+  // A conversation is a session *and* an agent: one session id can hold several
+  // (F296). Delete removed one row on the server and every row with that session
+  // id from the list, and the highlight marked all of them.
+  const isOpenConversation = (s: SessionSummary) =>
+    s.session_id === sessionId && (s.agent_id || 'default') === (currentAgentId || 'default');
+
   const handleDeleteSession = async (e: React.MouseEvent, s: SessionSummary) => {
     e.stopPropagation();
     await fetch(`/api/sessions/${s.session_id}?agent_id=${s.agent_id}`, { method: 'DELETE' });
-    setSessions(prev => prev.filter(x => x.session_id !== s.session_id));
+    setSessions(prev => prev.filter(x => !(x.session_id === s.session_id && x.agent_id === s.agent_id)));
   };
 
   const handleSwitchAgent = async (agentId: string) => {
@@ -2133,17 +2139,17 @@ export default function Home() {
                   key={`${s.agent_id}_${s.session_id}`}
                   className={cn(
                     "group relative border-b border-zinc-900 hover:bg-zinc-900/60 transition-colors",
-                    s.session_id === sessionId && "bg-zinc-900"
+                    isOpenConversation(s) && "bg-zinc-900"
                   )}
                 >
                   {/* Active indicator */}
-                  {s.session_id === sessionId && (
+                  {isOpenConversation(s) && (
                     <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-white" />
                   )}
                   <button
                     type="button"
                     onClick={() => handleSelectSession(s)}
-                    aria-current={s.session_id === sessionId ? 'true' : undefined}
+                    aria-current={isOpenConversation(s) ? 'true' : undefined}
                     className="block w-full px-4 py-3 pr-9 text-left"
                   >
                     <span className="flex items-start justify-between gap-2 mb-1">
