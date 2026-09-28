@@ -113,6 +113,63 @@ async def _load_db_configs() -> list[dict]:
         return []
 
 
+# Every call below that reaches the database runs in a thread (F299). This is
+# one stdio server for the whole workspace, and the MCP server runs each call in
+# a task of its own: a query run inline held the whole process, so every other
+# SQL call waited behind it — and so did the ping each caller sends first, which
+# after 5 s skips the call as "session unresponsive". F246 was the same thing for
+# bash. SQLAlchemy's engine and its pool are safe to share across threads.
+
+
+def _connect(conn_str: str):
+    """A new engine and its inspector. `inspect()` connects to the database."""
+    engine = create_engine(conn_str, echo=False)
+    return engine, inspect(engine)
+
+
+def _table_schemas(inspector, table_names: list[str]) -> str:
+    schemas = []
+    for table in table_names:
+        try:
+            columns = inspector.get_columns(table)
+            fks = inspector.get_foreign_keys(table)
+            pk = inspector.get_pk_constraint(table)
+            col_strings = []
+            for col in columns:
+                nullable = "NULL" if col['nullable'] else "NOT NULL"
+                is_pk = " (PK)" if col['name'] in pk.get('constrained_columns', []) else ""
+                col_strings.append(f"- {col['name']} ({col['type']}) {nullable}{is_pk}")
+            fk_strings = [
+                f"-> FK to {fk['referred_table']}.{fk['referred_columns'][0]} on {fk['constrained_columns'][0]}"
+                for fk in fks
+            ]
+            schema_text = (
+                f"**Table: {table}**\nColumns:\n" + "\n".join(col_strings) +
+                ("\nForeign Keys:\n" + "\n".join(fk_strings) if fk_strings else "")
+            )
+            schemas.append(schema_text)
+        except Exception as e:
+            schemas.append(f"Error inspecting table {table}: {str(e)}")
+    return "\n\n".join(schemas)
+
+
+def _run_query(engine, query: str, is_write: bool) -> str:
+    with engine.connect() as connection:
+        result = connection.execute(text(query))
+        # Commit for write operations so changes persist
+        if is_write:
+            connection.commit()
+            return f"Query executed successfully. Rows affected: {result.rowcount}"
+        keys = list(result.keys())
+        rows = [dict(zip(keys, row)) for row in result.fetchall()]
+        if len(rows) > 50:
+            rows = rows[:50]
+            suffix = "\n...(Truncated to 50 rows)"
+        else:
+            suffix = ""
+        return json.dumps(rows, default=str, indent=2) + suffix
+
+
 async def get_db_engine(db_id: str | None = None):
     """Return (engine, inspector) for the given db_id, or fall back to global setting."""
     global _engines
@@ -127,8 +184,7 @@ async def get_db_engine(db_id: str | None = None):
         conn_str = config.get("connection_string", "")
         if not conn_str:
             raise ValueError(f"Database config '{db_id}' has no connection string.")
-        engine = create_engine(conn_str, echo=False)
-        inspector = inspect(engine)
+        engine, inspector = await asyncio.to_thread(_connect, conn_str)
         _engines[db_id] = (engine, inspector)
         return engine, inspector
 
@@ -140,8 +196,7 @@ async def get_db_engine(db_id: str | None = None):
     cache_key = "__global__"
     if cache_key in _engines:
         return _engines[cache_key]
-    engine = create_engine(db_url, echo=False)
-    inspector = inspect(engine)
+    engine, inspector = await asyncio.to_thread(_connect, db_url)
     _engines[cache_key] = (engine, inspector)
     return engine, inspector
 
@@ -218,7 +273,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent | type
         engine, inspector = await get_db_engine(db_id)
 
         if name == "list_tables":
-            tables = inspector.get_table_names()
+            tables = await asyncio.to_thread(inspector.get_table_names)
             return [types.TextContent(
                 type="text",
                 text=f"Found {len(tables)} tables:\n" + "\n".join([f"- {t}" for t in tables])
@@ -226,29 +281,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent | type
 
         elif name == "get_table_schema":
             table_names = arguments.get("table_names", [])
-            schemas = []
-            for table in table_names:
-                try:
-                    columns = inspector.get_columns(table)
-                    fks = inspector.get_foreign_keys(table)
-                    pk = inspector.get_pk_constraint(table)
-                    col_strings = []
-                    for col in columns:
-                        nullable = "NULL" if col['nullable'] else "NOT NULL"
-                        is_pk = " (PK)" if col['name'] in pk.get('constrained_columns', []) else ""
-                        col_strings.append(f"- {col['name']} ({col['type']}) {nullable}{is_pk}")
-                    fk_strings = [
-                        f"-> FK to {fk['referred_table']}.{fk['referred_columns'][0]} on {fk['constrained_columns'][0]}"
-                        for fk in fks
-                    ]
-                    schema_text = (
-                        f"**Table: {table}**\nColumns:\n" + "\n".join(col_strings) +
-                        ("\nForeign Keys:\n" + "\n".join(fk_strings) if fk_strings else "")
-                    )
-                    schemas.append(schema_text)
-                except Exception as e:
-                    schemas.append(f"Error inspecting table {table}: {str(e)}")
-            return [types.TextContent(type="text", text="\n\n".join(schemas))]
+            schemas = await asyncio.to_thread(_table_schemas, inspector, table_names)
+            return [types.TextContent(type="text", text=schemas)]
 
         elif name == "run_sql_query":
             query = arguments.get("query", "").strip()
@@ -278,26 +312,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent | type
                         )
                     )]
 
-            with engine.connect() as connection:
-                result = connection.execute(text(query))
-                # Commit for write operations so changes persist
-                if _is_write_query(query):
-                    connection.commit()
-                    return [types.TextContent(
-                        type="text",
-                        text=f"Query executed successfully. Rows affected: {result.rowcount}"
-                    )]
-                keys = list(result.keys())
-                rows = [dict(zip(keys, row)) for row in result.fetchall()]
-                if len(rows) > 50:
-                    rows = rows[:50]
-                    suffix = "\n...(Truncated to 50 rows)"
-                else:
-                    suffix = ""
-                return [types.TextContent(
-                    type="text",
-                    text=json.dumps(rows, default=str, indent=2) + suffix
-                )]
+            out = await asyncio.to_thread(_run_query, engine, query, _is_write_query(query))
+            return [types.TextContent(type="text", text=out)]
 
         else:
             raise ValueError(f"Unknown tool: {name}")
