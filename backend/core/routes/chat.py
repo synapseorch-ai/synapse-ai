@@ -162,18 +162,25 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
     """One chat turn's events as SSE frames — the producer a turn's task drives."""
     agent = await _resolve_agent(request)
     turn = chat_turns.current_turn.get()
+    # What the turn did before a Stop (F242): the calls its last snapshot holds,
+    # and the ones made since, read from their events.
+    latest_progress: dict | None = None
+    events_since_progress: list[dict] = []
     if turn is not None and agent:
         # Stopped before it answered, a turn still keeps its question — as the
         # fleet's chat job does. Otherwise Stop destroyed the exchange rather
         # than ending it, and a reopened conversation lost what was asked.
         # Saved under the id the engine saves a finished turn under. Every
         # agent type: an orchestrator's or a builder's finished turn is saved
-        # like any other since F115, so its stopped one is too.
+        # like any other since F115, so its stopped one is too. With the calls
+        # it made: saved with none, the next turn redid them (F242).
         async def _save_stopped(agent_id=agent.get("id"), session_id=request.session_id,
                                 message=request.message or ""):
-            from core.session import _save_conversation_turn
+            from core.session import _save_conversation_turn, turn_calls, tools_from_calls
+            calls = turn_calls(latest_progress, events_since_progress)
             await _save_conversation_turn(session_id=session_id or "default", agent_id=agent_id,
-                                          user=message, assistant=chat_turns.STOPPED_ANSWER)
+                                          user=message, assistant=chat_turns.STOPPED_ANSWER,
+                                          tools=tools_from_calls(calls), calls=calls)
         turn.on_stop = _save_stopped
 
     # Route builder agents to the dedicated builder stream
@@ -193,7 +200,7 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
         # it rather than from the top: without it, allowing a gated call means
         # re-running every tool that already succeeded this turn, side effects
         # and all. Never forwarded — it is engine state, not an event.
-        latest_progress: dict | None = None
+        # (Declared above, where a Stop's save reads it too.)
 
         async for event in iter_with_heartbeat(
             run_react_loop(request, _server, should_stop=_stopped,
@@ -219,7 +226,10 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
 
             if etype == "_step_progress":
                 latest_progress = {k: v for k, v in event.items() if k != "type"}
+                events_since_progress.clear()
                 continue
+            if etype in ("tool_execution", "tool_result"):
+                events_since_progress.append(event)
 
             if etype == "status":
                 yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"

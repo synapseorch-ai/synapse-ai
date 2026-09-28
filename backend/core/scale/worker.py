@@ -717,6 +717,8 @@ async def run_agent_chat_job(
         # why they are declared out here.
         latest_progress: dict | None = None
         paused_on: dict | None = None
+        # The calls made since that snapshot, from their events (F242).
+        events_since_progress: list[dict] = []
 
         async def _consume():
             """Drive the loop. Separated so the cancel watcher has a task to
@@ -734,7 +736,10 @@ async def run_agent_chat_job(
                 # a Redis stream the browser reads.
                 if etype == "_step_progress":
                     latest_progress = {k: v for k, v in event.items() if k != "type"}
+                    events_since_progress.clear()
                     continue
+                if etype in ("tool_execution", "tool_result"):
+                    events_since_progress.append(event)
 
                 await publisher.publish(event)
 
@@ -811,7 +816,14 @@ async def run_agent_chat_job(
             from core.chat_turns import STOPPED_ANSWER
             response_text = STOPPED_ANSWER
         history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": response_text})
+        # With what the turn's tools did, as the in-process path saves it: a
+        # bare pair left the next turn blind to them (F242).
+        from core.session import turn_calls, tools_from_calls
+        calls = turn_calls(latest_progress, events_since_progress)
+        answer_entry = {"role": "assistant", "content": response_text}
+        if calls:
+            answer_entry.update(tools=tools_from_calls(calls), calls=calls)
+        history.append(answer_entry)
         recorded = True
         await _upsert_chat_session(session_factory, session_id, agent_id,
                                    "cancelled" if cancelled else "completed", history)

@@ -19,8 +19,18 @@ and what `GET /v2/chat/{id}/status` returns. The per-turn extras this module
 has always kept — the tools used, the timestamp — ride along as additional keys
 on the assistant entry, so a reader that only knows about role and content is
 unaffected. `turns` is the paired view of the same list, rebuilt on read.
+
+What a turn did (F242)
+----------------------
+`calls` on the assistant entry is the turn's record of each tool call: the
+tool, its arguments and what the model was shown back, clipped. The next turn
+is sent a budgeted digest of it (`tool_digest=True`): a follow-up used to see
+the user's words and the answer only, so "continue where you left off" started
+over and read paths that did not exist. Anything older or longer is one
+`session_history` call away. Providers are only ever sent role and content.
 """
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -57,10 +67,131 @@ def _turns(messages: list[dict]) -> list[dict]:
             "user": user.get("content", ""),
             "assistant": assistant.get("content", ""),
             "tools": assistant.get("tools", []),
+            "calls": assistant.get("calls", []),
             "timestamp": assistant.get("timestamp"),
         })
         i += 2
     return turns
+
+
+# ---------------------------------------------------------------------------
+# What a turn did — its tool calls (F242)
+# ---------------------------------------------------------------------------
+
+CALL_ARGS_CHARS = 1_000      # a call's arguments, as JSON, when stored
+CALL_RESULT_CHARS = 4_000    # what the call returned, when stored
+DIGEST_DETAILED_TURNS = 3    # the newest turns sent with arguments and results
+DIGEST_ARGS_CHARS = 200
+DIGEST_RESULT_CHARS = 300
+DIGEST_MAX_CHARS = 6_000     # the whole digest, across every turn sent
+
+_OBSERVATION_TAG = re.compile(r"^\s*\[Turn \d+ — Observation\]\s*(Tool '[^']*' returned:\s*)?")
+
+
+def _clip(text: str, limit: int) -> str:
+    text = str(text or "")
+    return text if len(text) <= limit else text[:limit] + f"… [{len(text) - limit:,} more characters]"
+
+
+def _clip_args(args: Any) -> Any:
+    """Arguments as they were, unless their JSON is too long to keep whole."""
+    try:
+        encoded = json.dumps(args, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        encoded = str(args)
+    if len(encoded) <= CALL_ARGS_CHARS:
+        return args if isinstance(args, dict) else {"value": args}
+    return {"_clipped": encoded[:CALL_ARGS_CHARS]}
+
+
+def call_record(tool: str, args: Any, observation: str) -> dict:
+    """One call as a turn keeps it. `observation` is what the model was shown
+    back — a result, a refusal, an error — with the transcript's turn tag
+    taken off, so two turns' records of the same result compare equal."""
+    result = _OBSERVATION_TAG.sub("", str(observation or "")).strip()
+    return {"tool": str(tool or ""), "args": _clip_args(args or {}), "result": _clip(result, CALL_RESULT_CHARS)}
+
+
+def calls_from_events(events: list[dict]) -> list[dict]:
+    """A turn's calls from its events, for the paths that only see events: a
+    stopped turn and the fleet's chat job. A delegate's and a workflow step's
+    events are theirs, not this turn's, and are left out."""
+    calls: list[dict] = []
+    for event in events:
+        if event.get("delegate_from") or event.get("orch_step_id"):
+            continue
+        if event.get("type") == "tool_execution":
+            calls.append(call_record(event.get("tool_name"), event.get("args") or {}, ""))
+        elif event.get("type") == "tool_result" and calls and not calls[-1]["result"]:
+            calls[-1]["result"] = _clip(event.get("preview") or "", CALL_RESULT_CHARS)
+    return calls
+
+
+def turn_calls(progress: dict | None, events_since: list[dict] | None = None) -> list[dict]:
+    """The calls of a turn saved from outside it: those its last turn-boundary
+    snapshot holds (the engine's own record), then any made after it."""
+    return [dict(c) for c in ((progress or {}).get("calls") or [])] + calls_from_events(events_since or [])
+
+
+def tools_from_calls(calls: list[dict]) -> list[str]:
+    """The older `tools` field — "name: result" — for a turn recorded as calls."""
+    return [f"{c.get('tool')}: {c.get('result', '')}" for c in calls]
+
+
+def _legacy_calls(tools: list) -> list[dict]:
+    """A turn saved before `calls` existed: "name: output" strings, no arguments."""
+    calls = []
+    for entry in tools or []:
+        name, _, output = str(entry).partition(":")
+        name = name.strip()
+        if name:
+            calls.append({"tool": name, "args": None, "result": output.strip()})
+    return calls
+
+
+def _digest_line(call: dict) -> str:
+    args = call.get("args")
+    shown_args = ""
+    if args:
+        try:
+            shown_args = " " + _clip(json.dumps(args, default=str, ensure_ascii=False), DIGEST_ARGS_CHARS)
+        except (TypeError, ValueError):
+            shown_args = " " + _clip(str(args), DIGEST_ARGS_CHARS)
+    result = " ".join(str(call.get("result") or "").split())
+    return f"- {call.get('tool')}{shown_args} → {_clip(result, DIGEST_RESULT_CHARS) or '(no output)'}"
+
+
+def _digest_names(calls: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for call in calls:
+        counts[call.get("tool") or "?"] = counts.get(call.get("tool") or "?", 0) + 1
+    return ", ".join(name if n == 1 else f"{name} ×{n}" for name, n in counts.items())
+
+
+def _digests(turns: list[dict]) -> dict[int, str]:
+    """Each turn's note, by its index in `turns`: the newest few in detail, the
+    rest by name, newest first until the budget is spent."""
+    notes: dict[int, str] = {}
+    used = 0
+    detailed = 0
+    for index in range(len(turns) - 1, -1, -1):
+        calls = turns[index].get("calls") or _legacy_calls(turns[index].get("tools"))
+        if not calls:
+            continue
+        if detailed < DIGEST_DETAILED_TURNS:
+            detailed += 1
+            note = ("[Tool calls you made for this answer, kept by the system for you — not part of "
+                    "your reply. Read any earlier turn in full with session_history.]\n"
+                    + "\n".join(_digest_line(c) for c in calls))
+        else:
+            note = f"[Tools you used for this answer: {_digest_names(calls)}]"
+        if used + len(note) > DIGEST_MAX_CHARS:
+            if used:
+                break
+            note = note[:DIGEST_MAX_CHARS] + "…]"
+        notes[index] = note
+        used += len(note)
+    return notes
 
 
 # ---------------------------------------------------------------------------
@@ -85,19 +216,19 @@ async def _save_conversation_turn(
     user: str,
     assistant: str,
     tools: list[str] | None = None,
+    calls: list[dict] | None = None,
 ):
     """Append a turn to the session and update last_message_at."""
     from core.store import sessions as store
 
     now = _now()
+    answer = {"role": "assistant", "content": assistant, "tools": tools or [], "timestamp": now}
+    if calls:
+        answer["calls"] = calls
     await store.append_turn(
         session_id,
         _agent(agent_id),
-        [
-            {"role": "user", "content": user},
-            {"role": "assistant", "content": assistant,
-             "tools": tools or [], "timestamp": now},
-        ],
+        [{"role": "user", "content": user}, answer],
     )
 
 
@@ -145,16 +276,98 @@ async def get_last_response_snapshot(session_id: str, agent_id: str | None = Non
     }
 
 
-async def get_recent_history_messages(session_id: str, agent_id: str | None = None) -> list[dict]:
-    """Return last N turns as [role/content] message dicts for the LLM API."""
+async def get_recent_history_messages(session_id: str, agent_id: str | None = None, *,
+                                      tool_digest: bool = False) -> list[dict]:
+    """Return last N turns as [role/content] message dicts for the LLM API.
+
+    `tool_digest` appends each turn's note of what its tools did (F242) to its
+    answer — chat asks for it. A workflow's `state.history` (F260) does not:
+    its CONVERSATION SO FAR is the words, not the calls.
+    """
     RECENT_TURNS = 10
     turns = await _get_conversation_history(session_id, agent_id)
     recent = turns[-RECENT_TURNS:] if len(turns) > RECENT_TURNS else turns
+    notes = _digests(recent) if tool_digest else {}
     messages = []
-    for turn in recent:
+    for index, turn in enumerate(recent):
         messages.append({"role": "user", "content": turn["user"]})
-        messages.append({"role": "assistant", "content": turn["assistant"]})
+        answer = turn["assistant"]
+        if index in notes:
+            answer = f"{answer}\n\n{notes[index]}"
+        messages.append({"role": "assistant", "content": answer})
     return messages
+
+
+# ---------------------------------------------------------------------------
+# session_history — any earlier turn, on demand (F242)
+# ---------------------------------------------------------------------------
+
+SESSION_HISTORY_TOOL_NAME = "session_history"
+SESSION_HISTORY_MAX_CHARS = 16_000
+_LIST_MAX_TURNS = 100
+
+
+def build_session_history_tool():
+    from core.tools import VirtualTool
+
+    return VirtualTool(
+        name=SESSION_HISTORY_TOOL_NAME,
+        description=(
+            "Read this conversation's earlier turns. With no arguments it lists every turn "
+            "(number, time, the question, the tools used); with a turn number it returns that "
+            "turn's question, answer and each tool call with its arguments and result. Use it "
+            "before redoing work an earlier turn may already have done."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"turn": {"type": "integer",
+                                    "description": "The turn to open, as numbered in the list (1 = the first)"}},
+        },
+    )
+
+
+def _when(turn: dict) -> str:
+    return str(turn.get("timestamp") or "")[:16].replace("T", " ")
+
+
+async def render_session_history(session_id: str, agent_id: str | None, turn: Any = None) -> str:
+    """What `session_history` returns: the list of turns, or one turn in full."""
+    turns = await _get_conversation_history(session_id, agent_id)
+    if not turns:
+        return "This conversation has no earlier turns."
+    if turn in (None, "", 0, "0"):
+        shown = turns[-_LIST_MAX_TURNS:]
+        first = len(turns) - len(shown) + 1
+        lines = [f"This conversation has {len(turns)} earlier turn{'s' if len(turns) != 1 else ''} "
+                 "(oldest first):"]
+        for number, entry in enumerate(shown, start=first):
+            question = " ".join(str(entry.get("user") or "").split())
+            calls = entry.get("calls") or _legacy_calls(entry.get("tools"))
+            used = f" → tools: {_digest_names(calls)}" if calls else ""
+            lines.append(f"Turn {number} · {_when(entry)} · \"{_clip(question, 120)}\"{used}")
+        lines.append('Call session_history with {"turn": n} to open one.')
+        return _clip("\n".join(lines), SESSION_HISTORY_MAX_CHARS)
+    try:
+        number = int(turn)
+    except (TypeError, ValueError):
+        return f"'{turn}' is not a turn number; call session_history with no arguments to list them."
+    if not 1 <= number <= len(turns):
+        return f"There is no turn {number}; this conversation has {len(turns)}."
+    entry = turns[number - 1]
+    parts = [f"Turn {number} · {_when(entry)}",
+             f"Question: {_clip(entry.get('user'), 2_000)}",
+             f"Answer: {_clip(entry.get('assistant'), 3_000)}"]
+    calls = entry.get("calls") or _legacy_calls(entry.get("tools"))
+    if calls:
+        parts.append("Tool calls:")
+        for index, call in enumerate(calls, start=1):
+            args = call.get("args")
+            shown = json.dumps(args, default=str, ensure_ascii=False) if args else ""
+            parts.append(f"{index}. {call.get('tool')} {shown}".rstrip())
+            parts.append(f"   → {call.get('result') or '(no output)'}")
+    else:
+        parts.append("Tool calls: none")
+    return _clip("\n".join(parts), SESSION_HISTORY_MAX_CHARS)
 
 
 async def list_chat_sessions(agent_id: str | None = None) -> list[dict]:

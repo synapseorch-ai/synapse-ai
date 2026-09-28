@@ -19,7 +19,8 @@ from core.session import (
     _get_session_id, _get_session_state,
     _apply_sticky_args, _clear_session_embeddings,
     get_recent_history_messages, _get_conversation_history,
-    _save_conversation_turn,
+    _save_conversation_turn, call_record, build_session_history_tool,
+    render_session_history, SESSION_HISTORY_TOOL_NAME,
 )
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
@@ -1257,7 +1258,34 @@ async def run_agent_step(
     elif is_orchestrator:
         recent_history_messages = []
     else:
-        recent_history_messages = await get_recent_history_messages(session_id, agent_id=agent_id_for_session)
+        # With what each turn's tools did (F242): a follow-up that saw only
+        # the words re-explored from scratch.
+        recent_history_messages = await get_recent_history_messages(
+            session_id, agent_id=agent_id_for_session, tool_digest=True)
+    # Any earlier turn in full, on demand — only where this turn reads its own
+    # conversation: never a delegate's hand-off (F286), a visitor's turn (F280)
+    # or a conversation with nothing before it.
+    _session_history_enabled = bool(
+        history_override is None and not is_orchestrator and persist_turn
+        and _visitor is None and recent_history_messages
+    )
+    if _session_history_enabled:
+        _sh_tool = build_session_history_tool()
+        all_tools = [*all_tools, _sh_tool]
+        tool_schema_map = {**tool_schema_map, _sh_tool.name: _sh_tool.inputSchema}
+        # A new list: with `tools_override` this was the caller's own.
+        ollama_tools = [*ollama_tools, {"type": "function", "function": {
+            "name": _sh_tool.name, "description": _sh_tool.description, "parameters": _sh_tool.inputSchema,
+        }}]
+        if tools_override is not None:
+            tools_json = json.dumps(ollama_tools)
+        else:
+            tools_json = str([
+                {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+                 "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+                 "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+                for t in all_tools
+            ])
     current_context_text = f"User Request: {user_message}\n"
     final_response = ""
     last_intent = "chat"
@@ -1265,6 +1293,23 @@ async def run_agent_step(
     tool_name = None
     last_tool_logged = None  # track tool from previous turn for usage log
     tools_used_summary = []
+    # What each call this turn made was shown back (F242): the tool, its
+    # arguments and the observation it added to the transcript — a result, a
+    # refusal or an error alike. Opened at `tool_execution`, closed when the
+    # next call opens or the turn's calls end, so no dispatch branch has to
+    # remember to record itself. Saved with the turn; the next turn's digest.
+    _turn_calls: list[dict] = list((resume_state or {}).get("calls") or [])
+    _open_call: tuple | None = None
+
+    def _close_call() -> dict | None:
+        nonlocal _open_call
+        if _open_call is None:
+            return None
+        _name, _args, _mark = _open_call
+        _open_call = None
+        _record = call_record(_name, _args, current_context_text[_mark:])
+        _turn_calls.append(_record)
+        return _record
     # ── Task list: the run's working plan (see core/task_list.py) ──
     # Seeded from the run so a later step (or a resumed one) sees the plan
     # earlier steps wrote; every accepted update is yielded as a structural
@@ -1617,6 +1662,7 @@ async def run_agent_step(
                                     user=user_message,
                                     assistant=FAILED_ANSWER,
                                     tools=tools_used_summary,
+                                    calls=_turn_calls,
                                 )
                             except Exception as mem_err:
                                 _log.warning(f"Session save failed (non-fatal): {mem_err}")
@@ -1796,6 +1842,7 @@ async def run_agent_step(
                     )
 
             for tool_call in tool_calls:
+                _close_call()
                 tool_name = tool_call.get("tool", "")
                 if not isinstance(tool_name, str) or not tool_name.strip():
                     continue
@@ -1836,6 +1883,7 @@ async def run_agent_step(
                         )
 
                 yield {"type": "tool_execution", "tool_name": tool_name, "args": tool_args}
+                _open_call = (tool_name, tool_args, len(current_context_text))
                 _log.debug(f"🔧 Tool Call: {tool_name}")
                 _log.debug(f"📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}")
 
@@ -2004,6 +2052,21 @@ async def run_agent_step(
                     tools_used_summary.append(f"{tool_name}: {_mem_preview}")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": _mem_preview}
                     _log.debug(f"🧠 {tool_name}: {_mem_preview}")
+                    continue
+
+                # ── SESSION_HISTORY: this conversation's earlier turns (F242) ──
+                if tool_name == SESSION_HISTORY_TOOL_NAME and _session_history_enabled:
+                    try:
+                        _sh_text = await render_session_history(
+                            session_id, agent_id_for_session, tool_args.get("turn"))
+                    except Exception as _sh_exc:
+                        _sh_text = f"Could not read this conversation's history: {_sh_exc}"
+                    current_context_text += (
+                        f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{_sh_text}\n")
+                    # Earlier tool output read back is content nobody typed (F279).
+                    _memory_tainted = True
+                    tools_used_summary.append(f"{tool_name}: {_sh_text[:200]}")
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _sh_text[:500]}
                     continue
 
                 # Execution guard
@@ -2532,6 +2595,7 @@ async def run_agent_step(
                     except Exception:
                         pass
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {error_msg}"}
+            _close_call()
 
             if progress_events:
                 # Turn-boundary snapshot for mid-node crash recovery: everything
@@ -2548,6 +2612,10 @@ async def run_agent_step(
                     "browser_actions": browser_action_history[-50:],
                     "tools_used": [s[:500] for s in tools_used_summary[-20:]],
                     "memory_tainted": _memory_tainted,
+                    # The turn's calls so far, for a resume and for whoever saves
+                    # the turn from outside it (a stop, the fleet's chat job).
+                    "calls": [{**c, "result": str(c.get("result") or "")[:2_000]}
+                              for c in _turn_calls[-20:]],
                 }
                 yield {"type": "_step_progress", **_last_progress}
 
@@ -2589,6 +2657,7 @@ async def run_agent_step(
                 user=user_message,
                 assistant=final_response,
                 tools=tools_used_summary,
+                calls=_turn_calls,
             )
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
