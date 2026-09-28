@@ -66,6 +66,12 @@ class Agent(BaseModel):
     tools: list[str] # ["all"] or ["search_codebase", "get_weather"]
     skills: list[str] = [] # skill names (core/skills.py); roster in prompt, body via load_skill
     memory: bool = False # persistent per-agent memory (core/agent_memory.py); index eager, rest on demand
+    # The native task list (`update_tasks`), on unless turned off; and the whole
+    # default tool set, kept unless skipped. The engine read both all along and
+    # this model dropped both, so the editor's Planning switch re-ticked after
+    # every save and a builder's `planning: false` was erased by the next (F265).
+    planning: bool = True
+    skip_default_tools: bool = False
     repos: list[str] = [] # list of repo IDs for code agents
     db_configs: list[str] = [] # list of db config IDs for code agents
     system_prompt: str

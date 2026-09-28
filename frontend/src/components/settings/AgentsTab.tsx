@@ -1115,13 +1115,18 @@ export const AgentsTab = ({
                                     <div className="space-y-1">
                                         <Label className="block">Planning</Label>
                                         <label className="flex items-start gap-2 bg-bg border border-border p-3 rounded-md cursor-pointer">
+                                            {/* Named by its heading, described by its sentence (F265): the
+                                                wrapping label made the whole paragraph its name, and the
+                                                "Planning" heading above named nothing. */}
                                             <input
                                                 type="checkbox"
+                                                aria-label="Planning"
+                                                aria-describedby="age-planning-help"
                                                 checked={draftAgent.planning !== false}
                                                 onChange={(e) => setDraftAgent({ ...draftAgent, planning: e.target.checked })}
                                                 className="mt-0.5 accent-[var(--accent)]"
                                             />
-                                            <span className="text-xs text-text-muted">
+                                            <span id="age-planning-help" className="text-xs text-text-muted">
                                                 Let this agent write a plan with <span className="font-mono">update_tasks</span> and
                                                 keep it up to date as it works. The list shows live in the run log. Turn it off for
                                                 one-shot agents, where announcing three tasks costs a turn and tells nobody anything.
@@ -1135,11 +1140,13 @@ export const AgentsTab = ({
                                         <label className="flex items-start gap-2 bg-bg border border-border p-3 rounded-md cursor-pointer">
                                             <input
                                                 type="checkbox"
+                                                aria-label="Memory"
+                                                aria-describedby="age-memory-help"
                                                 checked={!!draftAgent.memory}
                                                 onChange={(e) => setDraftAgent({ ...draftAgent, memory: e.target.checked })}
                                                 className="mt-0.5 accent-[var(--accent)]"
                                             />
-                                            <span className="text-xs text-text-muted">
+                                            <span id="age-memory-help" className="text-xs text-text-muted">
                                                 Give this agent persistent memory: it can save facts with <span className="font-mono">remember</span>,
                                                 search past sessions with <span className="font-mono">search_memory</span>, and its memory index
                                                 rides the prompt. Sessions leave summaries automatically.
