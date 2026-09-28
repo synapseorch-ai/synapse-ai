@@ -65,6 +65,7 @@ def _turns(messages: list[dict]) -> list[dict]:
             break
         turns.append({
             "user": user.get("content", ""),
+            "images": user.get("images", []),
             "assistant": assistant.get("content", ""),
             "tools": assistant.get("tools", []),
             "calls": assistant.get("calls", []),
@@ -72,6 +73,35 @@ def _turns(messages: list[dict]) -> list[dict]:
         })
         i += 2
     return turns
+
+
+# ---------------------------------------------------------------------------
+# Images a turn carried (F245)
+# ---------------------------------------------------------------------------
+
+def image_notes(images: list[str] | None) -> list[dict]:
+    """What a turn keeps of its attached images: their type, never the image.
+
+    The image itself goes to the model on every call of the turn it was
+    attached to and nowhere after; this is how a later turn is told it existed.
+    """
+    notes = []
+    for image in images or []:
+        mime = "image"
+        if isinstance(image, str) and image.startswith("data:"):
+            mime = image[len("data:"):].split(",", 1)[0].split(";", 1)[0].strip().lower() or "image"
+        notes.append({"type": mime})
+    return notes
+
+
+def _image_placeholder(notes: list[dict]) -> str:
+    kinds = sorted({str(n.get("type") or "image").split("/")[-1].upper() for n in notes})
+    count = len(notes)
+    return (f"[{count} image{'s' if count != 1 else ''} ({', '.join(kinds)}) "
+            f"{'were' if count != 1 else 'was'} attached to this message. "
+            f"{'They are' if count != 1 else 'It is'} no longer attached — you cannot see "
+            f"{'them' if count != 1 else 'it'} now; ask for {'them' if count != 1 else 'it'} "
+            "again if you need to.]")
 
 
 # ---------------------------------------------------------------------------
@@ -217,18 +247,25 @@ async def _save_conversation_turn(
     assistant: str,
     tools: list[str] | None = None,
     calls: list[dict] | None = None,
+    images: list[dict] | None = None,
 ):
-    """Append a turn to the session and update last_message_at."""
+    """Append a turn to the session and update last_message_at.
+
+    `images` is `image_notes(...)` of what the question carried (F245).
+    """
     from core.store import sessions as store
 
     now = _now()
+    question = {"role": "user", "content": user}
+    if images:
+        question["images"] = images
     answer = {"role": "assistant", "content": assistant, "tools": tools or [], "timestamp": now}
     if calls:
         answer["calls"] = calls
     await store.append_turn(
         session_id,
         _agent(agent_id),
-        [{"role": "user", "content": user}, answer],
+        [question, answer],
     )
 
 
@@ -290,7 +327,14 @@ async def get_recent_history_messages(session_id: str, agent_id: str | None = No
     notes = _digests(recent) if tool_digest else {}
     messages = []
     for index, turn in enumerate(recent):
-        messages.append({"role": "user", "content": turn["user"]})
+        question = turn["user"]
+        if turn.get("images"):
+            # Told it was there and is gone, so it can say so (F245): with
+            # nothing, a follow-up about the screenshot was answered with a
+            # test name and a footer that are not in it.
+            question = f"{question}\n\n{_image_placeholder(turn['images'])}" if question else \
+                _image_placeholder(turn["images"])
+        messages.append({"role": "user", "content": question})
         answer = turn["assistant"]
         if index in notes:
             answer = f"{answer}\n\n{notes[index]}"
@@ -354,8 +398,9 @@ async def render_session_history(session_id: str, agent_id: str | None, turn: An
     if not 1 <= number <= len(turns):
         return f"There is no turn {number}; this conversation has {len(turns)}."
     entry = turns[number - 1]
+    images = f" {_image_placeholder(entry['images'])}" if entry.get("images") else ""
     parts = [f"Turn {number} · {_when(entry)}",
-             f"Question: {_clip(entry.get('user'), 2_000)}",
+             f"Question: {_clip(entry.get('user'), 2_000)}{images}",
              f"Answer: {_clip(entry.get('assistant'), 3_000)}"]
     calls = entry.get("calls") or _legacy_calls(entry.get("tools"))
     if calls:

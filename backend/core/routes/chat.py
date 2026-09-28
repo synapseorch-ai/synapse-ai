@@ -176,11 +176,12 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
         # it made: saved with none, the next turn redid them (F242).
         async def _save_stopped(agent_id=agent.get("id"), session_id=request.session_id,
                                 message=request.message or ""):
-            from core.session import _save_conversation_turn, turn_calls, tools_from_calls
+            from core.session import _save_conversation_turn, image_notes, turn_calls, tools_from_calls
             calls = turn_calls(latest_progress, events_since_progress)
             await _save_conversation_turn(session_id=session_id or "default", agent_id=agent_id,
                                           user=message, assistant=chat_turns.STOPPED_ANSWER,
-                                          tools=tools_from_calls(calls), calls=calls)
+                                          tools=tools_from_calls(calls), calls=calls,
+                                          images=image_notes(getattr(request, "images", None)))
         turn.on_stop = _save_stopped
 
     # Route builder agents to the dedicated builder stream

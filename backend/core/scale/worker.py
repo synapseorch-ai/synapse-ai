@@ -815,10 +815,14 @@ async def run_agent_chat_job(
         if cancelled and not response_text:
             from core.chat_turns import STOPPED_ANSWER
             response_text = STOPPED_ANSWER
-        history.append({"role": "user", "content": message})
-        # With what the turn's tools did, as the in-process path saves it: a
-        # bare pair left the next turn blind to them (F242).
-        from core.session import turn_calls, tools_from_calls
+        # With what the question carried (F245) and what the turn's tools did
+        # (F242), as the in-process path saves them: a bare pair left the next
+        # turn blind to both.
+        from core.session import image_notes, turn_calls, tools_from_calls
+        question = {"role": "user", "content": message}
+        if images:
+            question["images"] = image_notes(images)
+        history.append(question)
         calls = turn_calls(latest_progress, events_since_progress)
         answer_entry = {"role": "assistant", "content": response_text}
         if calls:

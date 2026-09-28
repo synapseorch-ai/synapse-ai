@@ -20,7 +20,7 @@ from core.session import (
     _apply_sticky_args, _clear_session_embeddings,
     get_recent_history_messages, _get_conversation_history,
     _save_conversation_turn, call_record, build_session_history_tool,
-    render_session_history, SESSION_HISTORY_TOOL_NAME,
+    render_session_history, SESSION_HISTORY_TOOL_NAME, image_notes,
 )
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
@@ -1633,7 +1633,10 @@ async def run_agent_step(
                         full_prompt, active_sys_prompt,
                         tools=ollama_tools, history_messages=active_history,
                         memory_context_text=memory_context,
-                        images_for_turn=images if turn == 0 else None,  # images only on first turn
+                        # Every call of the turn they were attached to (F245): on
+                        # the first only, one tool call later the model was blind
+                        # to the screenshot it had been asked about.
+                        images_for_turn=images,
                         tool_name_for_log=last_tool_logged,
                         prompt_blocks=prompt_blocks, volatile_tail=volatile_tail,
                     ))
@@ -1665,6 +1668,7 @@ async def run_agent_step(
                                     assistant=FAILED_ANSWER,
                                     tools=tools_used_summary,
                                     calls=_turn_calls,
+                                    images=image_notes(images),
                                 )
                             except Exception as mem_err:
                                 _log.warning(f"Session save failed (non-fatal): {mem_err}")
@@ -2660,6 +2664,7 @@ async def run_agent_step(
                 assistant=final_response,
                 tools=tools_used_summary,
                 calls=_turn_calls,
+                images=image_notes(images),
             )
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
