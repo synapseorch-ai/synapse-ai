@@ -16,7 +16,6 @@ from pathlib import Path
 import mcp.types as types
 from mcp.server import Server
 
-from core.config import load_settings
 
 # ---------------------------------------------------------------------------
 # OS detection
@@ -43,46 +42,22 @@ else:
 async def _get_allowed_dirs() -> list[str]:
     """Return all directories the bash tool is allowed to run commands in.
 
-    Always includes:
-    - Paths of linked repos
-    - The vault directory
-    - Any extra paths the user added via bash_allowed_dirs in settings
+    `core/file_roots.py`'s list, which every file tool and the Filesystem server
+    use too: the linked repos, the vault (always), then Settings → Allowed
+    Directories — read from the store on every call (F241).
 
-    This process is a stdio MCP server, not the backend, so it reaches the
-    store through SYNAPSE_DB_URL exactly as the engine does. It used to read
-    `DATA_DIR/repos.json` — a file the CRUD path stopped writing — and to
-    mkdir its own `DATA_DIR/vault`, which has not been the vault since the
-    blob store took it over.
+    This process is a stdio MCP server, not the backend. It used to read Allowed
+    Directories through `load_settings()`, which here is the snapshot the
+    bootstrap took and never refreshes: a folder saved while the backend ran was
+    refused — "Add it via Settings…", the setting just saved — until a restart.
+    F213 (`8f06063`) fixed the same thing for the file tools.
     """
-    from core.store import collections
+    from core.file_roots import allowed_roots
     from core.vault import _vault_root
 
-    settings = load_settings()
-    dirs: list[str] = []
-
-    # 1. Linked repo paths
-    try:
-        dirs += [
-            r["path"]
-            for r in await collections.load("repos")
-            if r.get("path") and os.path.isdir(r["path"])
-        ]
-    except Exception:
-        pass
-
-    # 2. Vault directory (always present)
-    vault = _vault_root()
-    vault.mkdir(parents=True, exist_ok=True)
-    dirs.append(str(vault))
-
-    # 3. User-configured extra directories
-    dirs += [
-        d
-        for d in settings.get("bash_allowed_dirs", [])
-        if d and os.path.isdir(d)
-    ]
-
-    return dirs
+    # The vault is always a place bash may run; make sure it exists to run in.
+    _vault_root().mkdir(parents=True, exist_ok=True)
+    return await allowed_roots()
 
 
 def _is_allowed(path: str, allowed: list[str]) -> bool:
@@ -181,7 +156,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
                     text=json.dumps({
                         "error": (
                             f"Directory '{cwd}' is not in the allowed list. "
-                            "Add it via Settings → General → Bash Command Directories, "
+                            "Add it via Settings → General → Allowed Directories, "
                             "or use a linked repo/vault path."
                         ),
                         "allowed_dirs": allowed_dirs,
