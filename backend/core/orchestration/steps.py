@@ -11,7 +11,7 @@ from typing import AsyncGenerator, TYPE_CHECKING
 
 import anyio
 
-from core.config import HTTP_TOOL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT, ORCH_STEP_TIMEOUT
+from core.config import HTTP_TOOL_TIMEOUT, ORCH_STEP_TIMEOUT, mcp_call_timeout
 from core import expressions as _expressions
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
@@ -873,7 +873,8 @@ class ToolStepExecutor:
             session = server_module.agent_sessions.get(agent_name)
             if session:
                 result = await session.call_tool(
-                    actual_tool_name, tool_args, read_timeout_seconds=timedelta(seconds=MCP_TOOL_CALL_TIMEOUT)
+                    actual_tool_name, tool_args,
+                    read_timeout_seconds=timedelta(seconds=mcp_call_timeout(actual_tool_name, tool_args)),
                 )
                 text = result.content[0].text if result.content else ""
                 if getattr(result, "isError", False):

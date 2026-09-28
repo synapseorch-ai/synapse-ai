@@ -19,6 +19,8 @@ import anyio
 import mcp.types as types
 from mcp.server import Server
 
+from core.config import BASH_TIMEOUT_DEFAULT, BASH_TIMEOUT_MAX
+
 
 # ---------------------------------------------------------------------------
 # OS detection
@@ -207,7 +209,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "timeout": {
                         "type": "number",
-                        "description": "Timeout in seconds (default 30, max 120).",
+                        "description": f"Timeout in seconds (default {BASH_TIMEOUT_DEFAULT}, max {BASH_TIMEOUT_MAX}).",
                     },
                 },
                 "required": ["command"],
@@ -230,8 +232,9 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
     command: str = arguments.get("command", "").strip()
     cwd_arg: str | None = arguments.get("cwd")
-    timeout: float = float(arguments.get("timeout") or 30)
-    timeout = min(max(timeout, 1), 120)
+    timeout: float = float(arguments.get("timeout") or BASH_TIMEOUT_DEFAULT)
+    # Callers wait this long plus a margin (`core.config.mcp_call_timeout`, F300).
+    timeout = min(max(timeout, 1), BASH_TIMEOUT_MAX)
 
     if not command:
         return [types.TextContent(type="text", text=json.dumps({"error": "No command provided."}))]

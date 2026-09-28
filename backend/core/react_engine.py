@@ -12,7 +12,7 @@ import time
 
 import httpx
 
-from core.config import load_settings, HTTP_TOOL_TIMEOUT, MCP_TOOL_CALL_TIMEOUT
+from core.config import load_settings, HTTP_TOOL_TIMEOUT, mcp_call_timeout
 from core.vault import maybe_vault, MentionReader
 from core.compaction import maybe_compact
 from core.session import (
@@ -2575,7 +2575,7 @@ async def run_agent_step(
 
                     _log.debug(f"MCP: ✓ ping OK [{round(time.time()-_mcp_t0,2)}s] — call_tool starting")
 
-                    _timeout = timedelta(seconds=MCP_TOOL_CALL_TIMEOUT)
+                    _timeout = timedelta(seconds=mcp_call_timeout(actual_tool_name, tool_args))
 
                     # Checkpoint again right before the actual call_tool —
                     # gives background transport tasks one more scheduling

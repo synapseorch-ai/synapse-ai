@@ -44,6 +44,30 @@ HTTP_TOOL_TIMEOUT        = _env_float("SYNAPSE_HTTP_TOOL_TIMEOUT", 30.0)
 ORCH_STEP_TIMEOUT        = _env_float("SYNAPSE_ORCH_STEP_TIMEOUT", 300.0)
 ORCH_GLOBAL_TIMEOUT_MIN  = _env_int("SYNAPSE_ORCH_GLOBAL_TIMEOUT_MINUTES", 30)
 ORCH_HUMAN_TIMEOUT       = _env_float("SYNAPSE_ORCH_HUMAN_TIMEOUT", 3600.0)
+
+# `run_bash`'s own timeout: its default and the most it accepts (tools/bash.py
+# clamps a call's `timeout` to these), and so how long a caller waits for it.
+BASH_TIMEOUT_DEFAULT = 30
+BASH_TIMEOUT_MAX = 120
+
+
+def mcp_call_timeout(tool_name: str, arguments: dict | None) -> float:
+    """How long a caller waits for one MCP tool call, in seconds.
+
+    `MCP_TOOL_CALL_TIMEOUT`, except for `run_bash`, which takes a timeout of its
+    own: it is waited for that long plus 5 s for the reply (F300). It offers up
+    to 120 s, and a caller that stopped at 60 s told the model the call timed out
+    while the command ran on with nobody reading it. The command is killed at its
+    own timeout, so a caller that waits this long hears how it ended.
+    """
+    if tool_name == "run_bash" and isinstance(arguments, dict):
+        try:
+            own = float(arguments.get("timeout") or BASH_TIMEOUT_DEFAULT)
+        except (TypeError, ValueError):
+            own = float(BASH_TIMEOUT_DEFAULT)
+        own = min(max(own, 1.0), float(BASH_TIMEOUT_MAX))
+        return max(MCP_TOOL_CALL_TIMEOUT, own + 5.0)
+    return MCP_TOOL_CALL_TIMEOUT
 # Parallel-step branches made only of tool-free steps (llm, transform, print,
 # extract_json, if_else, switch, merge) run concurrently. Branches with agent
 # or tool steps stay sequential: MCP sessions and the single browser are not
