@@ -2700,7 +2700,9 @@ async def run_agent_step(
 
     # A memory-enabled chat agent leaves a cheap per-exchange trace — one line
     # per turn, no LLM. Orchestration runs get their proper summary at run end.
-    if _memory_enabled and source == "chat" and not is_orchestrator and persist_turn:
+    # A scheduled turn leaves the same trace, one entry per firing in the
+    # schedule's own session (F277): "what did you do overnight?" found nothing.
+    if _memory_enabled and source in ("chat", "schedule") and not is_orchestrator and persist_turn:
         try:
             # With each call's arguments and result and the answer's tail (F272):
             # 200 characters and the tools' names was all a later session could
