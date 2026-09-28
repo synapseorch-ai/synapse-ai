@@ -65,6 +65,8 @@ interface ModelsTabProps {
     selectedModel: string; setSelectedModel: (v: string) => void;
     embeddingModel: string; setEmbeddingModel: (v: string) => void;
     builderModel: string; setBuilderModel: (v: string) => void;
+    /** The workspace response cap as typed; '' is automatic (F263). */
+    maxOutputTokens: string; setMaxOutputTokens: (v: string) => void;
     openaiKey: string; setOpenaiKey: (v: string) => void;
     anthropicKey: string; setAnthropicKey: (v: string) => void;
     geminiKey: string; setGeminiKey: (v: string) => void;
@@ -207,6 +209,7 @@ export const ModelsTab = ({
     providers, selectedModel, setSelectedModel,
     embeddingModel, setEmbeddingModel,
     builderModel, setBuilderModel,
+    maxOutputTokens, setMaxOutputTokens,
     openaiKey, setOpenaiKey, anthropicKey, setAnthropicKey,
     geminiKey, setGeminiKey, grokKey, setGrokKey,
     deepseekKey, setDeepseekKey,
@@ -628,6 +631,27 @@ export const ModelsTab = ({
                     placeholder={loadingModels ? 'Loading models…' : 'Select default model…'}
                     searchPlaceholder="Search models…"
                     aria-label="Default model"
+                />
+            </div>
+            {/* Max response length (F263). The "raise the response cap" error
+                pointed here while there was nothing here to raise. */}
+            <div className="space-y-2">
+                <Label htmlFor="models-max-output" size="sm" className="block">Max Response Length</Label>
+                <p id="models-max-output-help" className="text-2xs text-text-faint -mt-1">
+                    The most a model may write in one response, thinking included, in tokens. Blank is automatic:
+                    8,192 for most providers and no limit for OpenAI, OpenAI-compatible and local servers. A model
+                    that thinks always gets room past its thinking. An agent can set its own.
+                </p>
+                <Input id="models-max-output"
+                    type="number"
+                    inputMode="numeric"
+                    min={256}
+                    max={262144}
+                    step={1024}
+                    placeholder="Automatic"
+                    value={maxOutputTokens}
+                    onChange={e => setMaxOutputTokens(e.target.value)}
+                    aria-describedby="models-max-output-help"
                 />
             </div>
             {/* Builder Model Selector.

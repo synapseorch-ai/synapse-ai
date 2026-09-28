@@ -50,6 +50,12 @@ class DBConfig(BaseModel):
 #: it out 1,742 px wide, off both edges of the page.
 AGENT_NAME_MAX = 100
 
+#: The range a response cap may be set in (F263). Below the floor a model cannot
+#: finish a sentence and a tool call; above the ceiling no model we route to
+#: writes that much in one response.
+MIN_OUTPUT_TOKENS = 256
+MAX_OUTPUT_TOKENS = 262_144
+
 
 class Agent(BaseModel):
     id: str
@@ -71,6 +77,10 @@ class Agent(BaseModel):
     # Only reaches models with a native reasoning channel (see core/reasoning.py);
     # everything else keeps the [REASONING] prompt convention and ignores it.
     reasoning_effort: str | None = None
+    # The most this agent's model may write in one response, thinking included
+    # (F263); None = the workspace's `max_output_tokens`. A model that thinks is
+    # still given room past its thinking (core/reasoning.py).
+    max_output_tokens: int | None = Field(default=None, ge=MIN_OUTPUT_TOKENS, le=MAX_OUTPUT_TOKENS)
     delegate_agent_ids: list[str] = []  # for delegate-type agents; empty = allow all
     # What this agent may do with the tools it holds, by behaviour rather than
     # by name: {"destructive"|"open_world"|"undeclared": "allow"|"confirm"|"deny"}.
@@ -114,6 +124,11 @@ class Settings(BaseModel):
     builder_model: str = ""  # Model for the AI builder; empty = use `model`
     judge_model: str = ""    # Model for eval scoring; empty = use `model`
     reasoning_effort: str = "medium"  # workspace default; agents may override
+    # The most a model may write in one response (F263). None = automatic: each
+    # provider as it always was (8,192 where one was sent, none where none was).
+    # Read by `llm_providers.generate_response_ex`, which had been reading it all
+    # along while this model refused it with a 422. Agents may override.
+    max_output_tokens: int | None = Field(default=None, ge=MIN_OUTPUT_TOKENS, le=MAX_OUTPUT_TOKENS)
     mode: str = "local" # "local" | "cloud" | "bedrock"
     openai_key: str = ""
     anthropic_key: str = ""

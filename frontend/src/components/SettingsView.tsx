@@ -43,6 +43,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [selectedModel, setSelectedModel] = useState('');
     const [embeddingModel, setEmbeddingModel] = useState('');
     const [builderModel, setBuilderModel] = useState('');
+    // The workspace response cap (F263), as typed: '' is automatic.
+    const [maxOutputTokens, setMaxOutputTokens] = useState('');
     const [mode, setMode] = useState('local'); // local | cloud
     const [localModels, setLocalModels] = useState<string[]>([]);
     const [cloudModels, setCloudModels] = useState<string[]>([]);
@@ -183,6 +185,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             model: selectedModel,
             embedding_model: embeddingModel,
             builder_model: builderModel,
+            // Blank is automatic — null clears a stored cap (F263).
+            max_output_tokens: maxOutputTokens.trim() ? Number(maxOutputTokens) : null,
             mode: mode,
             openai_key: openaiKey,
             anthropic_key: anthropicKey,
@@ -402,6 +406,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setSelectedModel(data.model || 'ollama.mistral');
                 setEmbeddingModel(data.embedding_model || '');
                 setBuilderModel(data.builder_model || '');
+                setMaxOutputTokens(data.max_output_tokens ? String(data.max_output_tokens) : '');
                 setMode(data.mode || 'local');
                 setSecretState(pickSecrets(data, SECRET_NAMES));
                 setOpenaiKey(data.openai_key || '');
@@ -596,6 +601,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         selectedModel={selectedModel} setSelectedModel={setSelectedModel}
                         embeddingModel={embeddingModel} setEmbeddingModel={setEmbeddingModel}
                         builderModel={builderModel} setBuilderModel={setBuilderModel}
+                        maxOutputTokens={maxOutputTokens} setMaxOutputTokens={setMaxOutputTokens}
                         localModels={localModels} cloudModels={cloudModels}
                         filteredModels={filteredModels}
                         loadingModels={loadingModels}

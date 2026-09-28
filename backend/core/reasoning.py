@@ -59,6 +59,30 @@ _OPENAI_EFFORT = {"off": "minimal", "low": "low", "medium": "medium", "high": "h
 #: model still has to write something after it finishes thinking.
 _ANSWER_HEADROOM = 4096
 
+#: What Gemini 3 is expected to think at each level, for sizing the cap (F263).
+#: It takes a level, not a budget, so nothing we send bounds its thinking — only
+#: the cap does, and the cap counts the thinking too. Sized from `_GEMINI_BUDGET`
+#: it gave medium 12,288 in all, and a long 3.1 Pro turn thought through every
+#: token of it and answered nothing (stress pass S2). Never sent: a larger cap
+#: costs only what the model actually writes.
+_GEMINI3_THINKING = {"off": 4096, "low": 8192, "medium": 24576, "high": 49152}
+
+#: The most a model family will write in one response. A cap above it is lowered
+#: to it rather than sent: Gemini refuses a `max_output_tokens` past its ceiling.
+_OUTPUT_CEILING = {
+    "gemini-2.5": 65536,
+    "gemini-3": 65536,
+}
+
+
+def output_ceiling(model: str) -> int | None:
+    """This model's own largest response, where we know it."""
+    name = (model or "").strip().lower()
+    for prefix, ceiling in _OUTPUT_CEILING.items():
+        if name.startswith(prefix):
+            return ceiling
+    return None
+
 #: Models whose thinking cannot be switched off, and the floor they insist on.
 #: Matched by prefix, longest first, like every other table here.
 _MINIMUM_BUDGET = {
@@ -287,12 +311,18 @@ def plan_for(
     name = (model or "").strip().lower()
     table = _GEMINI_BUDGET if name.startswith("gemini") else _BUDGET
     budget = max(table[resolved], floor)
+    # What the cap must make room for: the budget where one is sent, and for
+    # Gemini 3, which is sent a level, what that level is expected to think.
+    thinking = _GEMINI3_THINKING[resolved] if name.startswith("gemini-3") else budget
 
-    # The cap has to clear the budget with room for an answer after it. Raising
+    # The cap has to clear the thinking with room for an answer after it. Raising
     # it is safe in a way that lowering the budget is not: a smaller budget
     # silently gives the person less thinking than they asked for, while a
     # larger cap only ever costs what the model actually writes.
-    cap = max(max_output_tokens, budget + _ANSWER_HEADROOM)
+    cap = max(max_output_tokens, thinking + _ANSWER_HEADROOM)
+    ceiling = output_ceiling(name)
+    if ceiling is not None:
+        cap = min(cap, ceiling)
 
     return ReasoningPlan(
         effort=resolved,

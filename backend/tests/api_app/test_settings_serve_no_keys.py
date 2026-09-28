@@ -66,7 +66,8 @@ class TestNothingSecretIsServed:
         """A secret added to the model later is masked by default, not by memory."""
         from core.models import Settings
 
-        not_secrets = {"aws_access_key_id", "login_password_hash", "huggingface_max_new_tokens", "clear_secrets"}
+        not_secrets = {"aws_access_key_id", "login_password_hash", "huggingface_max_new_tokens", "clear_secrets",
+                       "max_output_tokens"}  # a response cap (F263), not a credential
         named_like_one = {
             f for f in Settings.model_fields
             if re.search(r"(_key|_token|secret|password)", f) and f not in not_secrets

@@ -1009,7 +1009,7 @@ async def call_cli_provider(
 # ────────────────────────────────────────────────────────────────────────────────
 
 async def call_openai(model, messages, api_key, tools=None, images=None, prompt_cache: bool = True,
-                      reasoning=None):
+                      reasoning=None, max_tokens: int | None = None):
     """Call OpenAI with 5-attempt exponential backoff retry loop.
 
     OpenAI prompt caching is automatic for stable prefixes ≥1024 tokens; we
@@ -1035,6 +1035,12 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
 
     payload: dict = {"model": model, "messages": messages}
     _apply_openai_reasoning(payload, reasoning)
+    # Only a cap someone set (F263): OpenAI was never sent one, and an answer
+    # longer than the engine's default works today. `max_completion_tokens` is
+    # the one field every OpenAI chat model takes; the reasoning models refuse
+    # `max_tokens`.
+    if max_tokens:
+        payload["max_completion_tokens"] = int(max_tokens)
     if tools:
         # OpenAI uses the same format as our internal Ollama tool spec
         payload["tools"] = tools
@@ -1234,7 +1240,8 @@ def _extract_anthropic_response(response) -> tuple[str, str]:
 
     if reasoning:
         raise EmptyAnswer(
-            "Error: Anthropic returned only reasoning — raise the response cap or lower the reasoning effort.",
+            "Error: Anthropic returned only reasoning — it spent its whole response thinking. Raise "
+            "Max response length (Settings → Models, or the agent's own) or lower the reasoning effort.",
             reasoning=reasoning,
         )
 
@@ -1857,7 +1864,8 @@ def _extract_gemini_response(response) -> tuple[str, str]:
     # And say so as a failure, not as the answer (F133).
     if reasoning:
         raise EmptyAnswer(
-            "Error: Gemini returned only reasoning — raise the response cap or lower the reasoning effort.",
+            "Error: Gemini returned only reasoning — it spent its whole response thinking. Raise "
+            "Max response length (Settings → Models, or the agent's own) or lower the reasoning effort.",
             reasoning=reasoning,
         )
 
@@ -1926,7 +1934,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
             # field: pydantic validates constructor arguments and does not
             # validate assignments, so `thinking_level = "HIHG"` would sail
             # through as a plain string and reach the wire unchecked.
-            knob = ({"thinking_level": reasoning.level} if model.startswith("gemini-3")
+            knob = ({"thinking_level": reasoning.level} if model.lower().startswith("gemini-3")
                     else {"thinking_budget": reasoning.budget})
             cfg.thinking_config = types.ThinkingConfig(include_thoughts=True, **knob)
         return cfg
@@ -2254,7 +2262,7 @@ def _normalize_v1_base_url(base_url: str) -> str:
 
 
 async def call_v1_compatible(model, messages, system, base_url, api_key, tools=None, images=None, prompt_cache: bool = True,
-                             reasoning=None):
+                             reasoning=None, max_tokens: int | None = None):
     """Call any OpenAI v1-compatible endpoint with 5-attempt exponential backoff.
 
     Used for both cloud OpenAI-compatible providers (OpenRouter, Together, etc.)
@@ -2298,6 +2306,11 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
 
     payload: dict = {"model": model, "messages": full_messages}
     _apply_openai_reasoning(payload, reasoning)
+    # Only a cap someone set (F263). A local server checks prompt + max_tokens
+    # against its context, so a default this endpoint was never sent would turn
+    # a 4k-context model's every call into a 400.
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -2379,7 +2392,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
 
 
 async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True,
-                             reasoning=None):
+                             reasoning=None, max_tokens: int | None = None):
     """Call the configured model gateway (synapse.* models).
 
     A first-class provider like `call_openai`, except the endpoint belongs to
@@ -2406,6 +2419,7 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
             images=images,
             prompt_cache=prompt_cache,
             reasoning=reasoning,
+            max_tokens=max_tokens,
         )
     except LLMError as e:
         if "HTTP 402" not in str(e):
@@ -3039,6 +3053,9 @@ async def generate_response_ex(
     # whether this model has a native channel at all; a model that has none
     # keeps the `[REASONING]` prompt convention and ignores this entirely.
     reasoning_effort: str | None = None,
+    # This call's own response cap — an agent's `max_output_tokens` (F263). None
+    # takes the workspace's, and with neither each provider keeps its default.
+    max_output_tokens: int | None = None,
 ):
     """
     Unified LLM dispatch. Routes to the provider for `mode`/`current_model`,
@@ -3075,7 +3092,12 @@ async def generate_response_ex(
     stop_reason = None
     _tool_calls: tuple = ()
     _reasoning = ""
-    _max_out = int(current_settings.get("max_output_tokens") or DEFAULT_MAX_OUTPUT_TOKENS)
+    # The cap someone set — this call's (an agent's own), else the workspace's
+    # (F263). Only a set one reaches the providers that were never sent a
+    # default (OpenAI, the v1-compatible ones, the gateway, Ollama): left unset,
+    # every provider behaves as it always has (Naveen, 2026-09-28).
+    _set_cap = max_output_tokens or current_settings.get("max_output_tokens") or None
+    _max_out = int(_set_cap or DEFAULT_MAX_OUTPUT_TOKENS)
 
     # One plan for this call, built before dispatch so every branch below asks
     # the same question of the same table. None means "send nothing" — either
@@ -3089,6 +3111,12 @@ async def generate_response_ex(
         # A budget that does not fit under the response cap is refused by
         # Anthropic and Bedrock outright, so the plan may have raised it.
         _max_out = _reasoning_plan.max_output_tokens
+    _ceiling = _reasoning_policy.output_ceiling(current_model)
+    if _ceiling is not None:
+        _max_out = min(_max_out, _ceiling)
+    # What the providers with no default of their own are sent: nothing, unless
+    # someone set a cap (then the planned one, which clears the thinking).
+    _sent_cap = _max_out if _set_cap else None
 
     # ── Response cache (opt-in per call) ─────────────────────────────────────
     # Built BEFORE dispatch so a hit short-circuits the entire LLM round-trip.
@@ -3149,6 +3177,8 @@ async def generate_response_ex(
                     images=images,
                     prompt_cache=_prompt_cache,
                     reasoning=_reasoning_plan,
+                    # Passed only when set: an unset call keeps today's shape.
+                    **({"max_tokens": _sent_cap} if _sent_cap else {}),
                 )
             elif current_model.startswith("claude"):
                 result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_anthropic(
@@ -3182,7 +3212,11 @@ async def generate_response_ex(
                     messages,
                     augmented_system,
                     current_settings.get("aws_region"),
-                    current_settings,
+                    # `bedrock_max_tokens` is the tenant's own Bedrock override
+                    # and beats the workspace cap; an agent's cap is more
+                    # specific than either (F263).
+                    ({**current_settings, "bedrock_max_tokens": None} if max_output_tokens
+                     else current_settings),
                     images=images,
                     prompt_cache=_prompt_cache,
                     reasoning=_reasoning_plan,
@@ -3228,6 +3262,8 @@ async def generate_response_ex(
                     images=images,
                     prompt_cache=_prompt_cache,
                     reasoning=_reasoning_plan,
+                    # Passed only when set: an unset call keeps today's shape.
+                    **({"max_tokens": _sent_cap} if _sent_cap else {}),
                 )
             elif current_model.startswith("oaic."):
                 result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_v1_compatible(
@@ -3240,6 +3276,8 @@ async def generate_response_ex(
                     images=images,
                     prompt_cache=_prompt_cache,
                     reasoning=_reasoning_plan,
+                    # Passed only when set: an unset call keeps today's shape.
+                    **({"max_tokens": _sent_cap} if _sent_cap else {}),
                 )
             elif current_model.startswith("locv1."):
                 result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_v1_compatible(
@@ -3252,6 +3290,8 @@ async def generate_response_ex(
                     images=images,
                     prompt_cache=_prompt_cache,
                     reasoning=_reasoning_plan,
+                    # Passed only when set: an unset call keeps today's shape.
+                    **({"max_tokens": _sent_cap} if _sent_cap else {}),
                 )
             else:
                 raise LLMError(f"Error: Unknown cloud model selected ({current_model}).")
@@ -3369,6 +3409,9 @@ async def generate_response_ex(
                         "tools": tools,
                         "stream": False,
                     }
+                    if _sent_cap:
+                        # Only a cap someone set (F263); Ollama was never sent one.
+                        _chat_body["options"] = {"num_predict": _sent_cap}
                     if _reasoning_plan is not None:
                         # Ollama 0.9+ takes a bare boolean here and answers in a
                         # `thinking` field. An older server ignores the key
@@ -3434,7 +3477,8 @@ async def generate_response_ex(
                             "model": _ollama_model,
                             "prompt": prompt_for_generate,
                             "system": augmented_system,
-                            "stream": False
+                            "stream": False,
+                            **({"options": {"num_predict": _sent_cap}} if _sent_cap else {}),
                         },
                         timeout=180.0
                     )

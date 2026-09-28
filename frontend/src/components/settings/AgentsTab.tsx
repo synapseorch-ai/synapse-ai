@@ -706,6 +706,29 @@ export const AgentsTab = ({
                                             />
                                             <p className="text-2xs text-text-faint mt-1">Max reasoning turns per request. Orchestration steps override this value.</p>
                                         </div>
+
+                                        {/* Max response length (F263) — this agent's own cap; blank
+                                            leaves it to Settings → Models. `null`, not undefined, when
+                                            cleared: a stored agent reads back `null` (F73). */}
+                                        <div className="space-y-1">
+                                            <Label htmlFor="age-max-output" className="block">Max Response Length</Label>
+                                            <input id="age-max-output"
+                                                type="number"
+                                                inputMode="numeric"
+                                                min={256}
+                                                max={262144}
+                                                step={1024}
+                                                placeholder="Workspace default"
+                                                value={draftAgent.max_output_tokens ?? ''}
+                                                onChange={e => setDraftAgent({
+                                                    ...draftAgent,
+                                                    max_output_tokens: e.target.value.trim() ? parseInt(e.target.value, 10) : null,
+                                                })}
+                                                aria-describedby="age-max-output-help"
+                                                className="w-full bg-bg border border-border p-3 text-xs text-text focus:border-border-strong focus:outline-none rounded-md"
+                                            />
+                                            <p id="age-max-output-help" className="text-2xs text-text-faint mt-1">The most this agent&apos;s model may write in one response, thinking included, in tokens. Blank uses the workspace&apos;s (Settings → Models).</p>
+                                        </div>
                                     </div>
 
                                     {draftAgent.type === 'code' && (

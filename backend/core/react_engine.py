@@ -1230,6 +1230,8 @@ async def run_agent_step(
             mode=mode,
             current_model=current_model,
             reasoning_effort=reasoning_effort,
+            # The agent's own response cap (F263); None leaves it to the workspace.
+            max_output_tokens=active_agent.get("max_output_tokens"),
             current_settings=current_settings,
             tools=tools,
             history_messages=history_messages,
