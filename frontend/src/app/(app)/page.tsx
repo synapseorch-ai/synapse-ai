@@ -1,7 +1,9 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Square, Pencil, RotateCcw} from 'lucide-react';
+import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Square, Pencil, RotateCcw, Search} from 'lucide-react';
+import * as RPopover from '@radix-ui/react-popover';
+import { Command } from 'cmdk';
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -9,7 +11,7 @@ import { CollectDataForm } from '@/components/CollectDataForm';
 import { HumanStepAnswer } from '@/components/HumanStepAnswer';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
-import { Markdown, Menu, MenuItem, Spinner } from '@/components/ui';
+import { Markdown, Spinner } from '@/components/ui';
 
 import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
@@ -474,6 +476,87 @@ function ToolApprovalCard({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The agent switcher: a search box and a list that scrolls (F271).
+ *
+ * It was the kit's `Menu` — no max height and `overflow: hidden`, so with 55
+ * agents it was 1,770 px tall in a 1,000 px window and everything past the
+ * fold could not be picked. A dropdown menu owns every keystroke for its own
+ * type-ahead, so a filter box cannot live in it; this is the model picker's
+ * shape (`Combobox`: a Popover and `cmdk`) with the chat header's own trigger.
+ * Picking closes it.
+ */
+function AgentPicker({
+  agents, activeId, onPick,
+}: {
+  agents: [string, { name: string; status: string } | string][];
+  activeId: string | null | undefined;
+  onPick: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <RPopover.Root open={open} onOpenChange={setOpen}>
+      <RPopover.Trigger
+        className="flex items-center gap-1.5 self-stretch border-r border-border px-2 sm:px-4 text-zinc-400 hover:bg-surface-2 hover:text-zinc-200 data-[state=open]:bg-surface-2 data-[state=open]:text-zinc-200 transition-colors"
+      >
+        <Bot className="h-4 w-4 sm:hidden" aria-hidden />
+        <span className="sr-only sm:not-sr-only text-xs font-bold tracking-widest uppercase">Agents</span>
+        <ChevronDown className="hidden sm:block h-3 w-3" aria-hidden />
+      </RPopover.Trigger>
+      <RPopover.Portal>
+        <RPopover.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          aria-label="Agents"
+          className="z-50 flex w-72 max-w-[calc(100vw-16px)] max-h-[min(28rem,var(--radix-popover-content-available-height))] flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl"
+        >
+          <Command loop className="flex min-h-0 flex-col">
+            <div className="flex items-center gap-2 border-b border-border px-3">
+              <Search className="size-4 shrink-0 text-text-faint" aria-hidden />
+              <Command.Input
+                autoFocus
+                placeholder="Search agents…"
+                aria-label="Search agents"
+                data-no-focus-ring
+                className="h-9 w-full bg-transparent text-sm text-text outline-none placeholder:text-text-faint"
+              />
+            </div>
+            <Command.List className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
+              <Command.Empty className="px-2 py-6 text-center text-sm text-text-faint">
+                {agents.length === 0 ? 'No agents detected.' : 'No agent matches.'}
+              </Command.Empty>
+              {agents.map(([id, info]) => {
+                // A legacy string entry is the status alone.
+                const name = typeof info === 'string' ? id : info.name;
+                const status = typeof info === 'string' ? info : info.status;
+                const isActive = activeId === id;
+                return (
+                  <Command.Item
+                    key={id}
+                    value={`${name} ${id}`}
+                    onSelect={() => { setOpen(false); onPick(id); }}
+                    className="relative flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-text outline-none data-[selected=true]:bg-surface-2"
+                  >
+                    <div className={cn('h-1.5 w-1.5 shrink-0 rounded-full', status === 'online' ? 'bg-green-500' : 'bg-red-500')} aria-hidden />
+                    <span className="min-w-0 flex-1 truncate" title={name}>{name}</span>
+                    {isActive && (
+                      <>
+                        <Check className="size-4 shrink-0 text-accent" aria-hidden />
+                        <span className="sr-only">(current)</span>
+                      </>
+                    )}
+                  </Command.Item>
+                );
+              })}
+            </Command.List>
+          </Command>
+        </RPopover.Content>
+      </RPopover.Portal>
+    </RPopover.Root>
   );
 }
 
@@ -2298,54 +2381,18 @@ export default function Home() {
 
               {/* The agent switcher. It was a <div> whose list opened on hover:
                   no keyboard or touch path, hidden below `sm`, and its rows
-                  stayed in the tab order while invisible (F185). The kit's
-                  menu opens on click, Enter or Space, walks with the arrow
-                  keys, closes on Escape and hands focus back. */}
-              <Menu
-                align="end"
-                trigger={
-                  <button
-                    type="button"
-                    className="flex items-center gap-1.5 self-stretch border-r border-border px-2 sm:px-4 text-zinc-400 hover:bg-surface-2 hover:text-zinc-200 data-[state=open]:bg-surface-2 data-[state=open]:text-zinc-200 transition-colors"
-                  >
-                    <Bot className="h-4 w-4 sm:hidden" aria-hidden />
-                    <span className="sr-only sm:not-sr-only text-xs font-bold tracking-widest uppercase">Agents</span>
-                    <ChevronDown className="hidden sm:block h-3 w-3" aria-hidden />
-                  </button>
-                }
-              >
-                {(() => {
-                  // Hide native-builder machinery agents (ids prefixed `agent_native_builder`);
-                  // show only user-facing agents.
-                  const visibleAgents = systemStatus?.agents
-                    ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
-                    : [];
-
-                  if (visibleAgents.length === 0) {
-                    return <div className="text-xs text-text-faint italic px-3 py-2">No agents detected.</div>;
-                  }
-
-                  return visibleAgents.map(([id, info]) => {
-                    const isActive = systemStatus?.active_agent_id === id;
-                    // Handle legacy string vs new object structure if backend update lags (safety)
-                    const name = typeof info === 'string' ? id : info.name;
-                    const status = typeof info === 'string' ? info : info.status;
-
-                    return (
-                      <MenuItem key={id} onSelect={() => handleSwitchAgent(id)}>
-                        <div className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status === 'online' ? "bg-green-500" : "bg-red-500")} aria-hidden />
-                        <span className="min-w-0 flex-1 truncate" title={name}>{name}</span>
-                        {isActive && (
-                          <>
-                            <Check className="size-4 shrink-0 text-accent" aria-hidden />
-                            <span className="sr-only">(current)</span>
-                          </>
-                        )}
-                      </MenuItem>
-                    );
-                  });
-                })()}
-              </Menu>
+                  stayed in the tab order while invisible (F185); then the kit's
+                  menu, which could not scroll (F271). It opens on click, Enter
+                  or Space, filters as you type, walks with the arrow keys,
+                  closes on Escape or a pick and hands focus back. Native-builder
+                  machinery agents (ids `agent_native_builder…`) are not listed. */}
+              <AgentPicker
+                agents={systemStatus?.agents
+                  ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
+                  : []}
+                activeId={systemStatus?.active_agent_id}
+                onPick={handleSwitchAgent}
+              />
 
               <button
                 onClick={handleNewChat}
