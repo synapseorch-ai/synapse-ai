@@ -13,6 +13,7 @@ Differences from V1:
 
 V1 API is completely unchanged.
 """
+import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -577,6 +578,42 @@ async def v2_chat(
     }
 
 
+def _for_an_api_caller(event: dict) -> dict:
+    """A failed turn's own words stay with a member in the app (D118, F231, F295).
+
+    The fleet's chat job publishes a failure's text onto the chat stream, beside
+    what kind it was: F275's `code` for a model failure, `run_id` for a failed
+    workflow. An API caller is told that, in v1's sentence, and not the words —
+    a provider's refusal ("…prepayment credits are depleted…"), a key's, or a
+    failed run's last line.
+    """
+    if event.get("type") != "error":
+        return event
+    from core.routes.api_v1 import _failed_workflow, _model_failure
+
+    if event.get("code"):
+        return {**event, "message": _model_failure(event["code"])}
+    if event.get("run_id"):
+        return {**event, "message": _failed_workflow(event["run_id"])}
+    return event
+
+
+async def _frames_for_an_api_caller(frames):
+    """`stream_chat_events`' SSE frames, each failure told as `_for_an_api_caller` tells it."""
+    async for frame in frames:
+        lines = frame.split("\n")
+        for i, line in enumerate(lines):
+            if line.startswith("data: "):
+                try:
+                    event = json.loads(line[6:])
+                except ValueError:
+                    break
+                if isinstance(event, dict) and event.get("type") == "error":
+                    lines[i] = "data: " + json.dumps(_for_an_api_caller(event))
+                break
+        yield "\n".join(lines)
+
+
 @router.get("/chat/{session_id}/stream")
 async def v2_chat_stream(
     session_id: str,
@@ -590,7 +627,7 @@ async def v2_chat_stream(
     from core.scale.event_bridge import stream_chat_events
 
     return StreamingResponse(
-        stream_chat_events(redis, session_id, last_event_id or "0"),
+        _frames_for_an_api_caller(stream_chat_events(redis, session_id, last_event_id or "0")),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -660,7 +697,8 @@ async def v2_get_chat_events(
 
     from core.scale.event_bridge import get_chat_events
 
-    events = await get_chat_events(redis, session_id, start=start, end=end)
+    events = [{**e, "event": _for_an_api_caller(e.get("event") or {})}
+              for e in await get_chat_events(redis, session_id, start=start, end=end)]
     return {"session_id": session_id, "count": len(events), "events": events}
 
 

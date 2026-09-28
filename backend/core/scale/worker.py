@@ -873,7 +873,13 @@ async def run_agent_chat_job(
         # durable record either way.
         if publisher is not None:
             try:
-                await publisher.publish({"type": "error", "message": str(exc)})
+                # What kind of failure, beside the words: the v2 routes hand an
+                # API caller that and not these, which are a member's (F295).
+                await publisher.publish({
+                    "type": "error", "message": str(exc),
+                    **({"code": exc.code, "retryable": exc.retryable} if getattr(exc, "code", None) else {}),
+                    **({"run_id": exc.run_id} if getattr(exc, "run_id", None) else {}),
+                })
                 await publisher.publish_done()
             except Exception:
                 pass
