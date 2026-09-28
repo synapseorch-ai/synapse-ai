@@ -8,11 +8,14 @@ directories (linked repos + vault + user-configured bash_allowed_dirs).
 
 import asyncio
 import json
+import locale
 import os
 import platform
+import signal
 import subprocess
 from pathlib import Path
 
+import anyio
 import mcp.types as types
 from mcp.server import Server
 
@@ -28,8 +31,10 @@ _IS_WSL = (
 )
 _OS_LABEL = "WSL2 (Linux)" if _IS_WSL else _SYSTEM
 
+_NATIVE_WINDOWS = _SYSTEM == "Windows" and not _IS_WSL
+
 # Shell command prefix — chosen once at startup
-if _SYSTEM == "Windows" and not _IS_WSL:
+if _NATIVE_WINDOWS:
     _SHELL_PREFIX = ["cmd", "/c"]
 else:
     _SHELL_PREFIX = ["/bin/bash", "-c"]
@@ -74,6 +79,93 @@ def _is_allowed(path: str, allowed: list[str]) -> bool:
         if resolved == base or resolved.startswith(base + os.sep):
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Running a command
+# ---------------------------------------------------------------------------
+#
+# One bash server serves every chat, workflow step and sub-agent in the
+# workspace, and the MCP server runs each call in a task of its own. So a
+# command must never block this process: it used to run under a blocking
+# `subprocess.run`, and every other `run_bash` — and the ping each caller sends
+# first — waited behind it (F246). A caller whose ping went unanswered for 5 s
+# skipped its call as "session unresponsive".
+#
+# The command leads a process group of its own, so a timeout or a cancelled
+# call kills everything it started. `subprocess.run` killed only the shell: a
+# `sleep` the shell had started ran on after the error was returned, and a
+# child still holding the output pipes kept the call waiting for it.
+
+
+def _own_process_group() -> dict:
+    if _NATIVE_WINDOWS:
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+async def _kill_command(proc: asyncio.subprocess.Process) -> None:
+    """Kill the command and whatever it started, and reap it.
+
+    The group is killed even when the shell has already exited: a child it
+    left behind can still be running, holding the output pipes open.
+    """
+    try:
+        if _NATIVE_WINDOWS:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/T", "/F", "/PID", str(proc.pid),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+        else:
+            # With `start_new_session` the shell's pid is its group's id.
+            os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    await proc.wait()
+
+
+def _text(data: bytes | None) -> str:
+    """What `text=True` gave, without its strictness: a byte that does not
+    decode is replaced, rather than turning the whole result into an error."""
+    if not data:
+        return ""
+    return data.decode(locale.getpreferredencoding(False), errors="replace").replace("\r\n", "\n")
+
+
+async def _run_command(shell_cmd: list[str], cwd: str, timeout: float):
+    """`(exit_code, stdout, stderr)`, or None when the command timed out.
+
+    Killed with everything it started on a timeout and on a cancelled call
+    alike; the cancel is re-raised once the command is dead.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *shell_cmd,
+        cwd=cwd,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **_own_process_group(),
+    )
+    try:
+        with anyio.move_on_after(timeout) as deadline:
+            stdout, stderr = await proc.communicate()
+    except BaseException:
+        # Shielded: a cancelled scope cancels every await in it again, and the
+        # command must be dead before the cancel goes on.
+        with anyio.CancelScope(shield=True):
+            await _kill_command(proc)
+        raise
+    if deadline.cancelled_caught:
+        with anyio.CancelScope(shield=True):
+            await _kill_command(proc)
+        return None
+    return proc.returncode, _text(stdout), _text(stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -184,28 +276,24 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     shell_cmd = _SHELL_PREFIX + [command]
 
     try:
-        result = subprocess.run(
-            shell_cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        output = {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "exit_code": result.returncode,
-            "cwd": cwd,
-            "os": _OS_LABEL,
-            "allowed_dirs": allowed_dirs,
-        }
-    except subprocess.TimeoutExpired:
-        output = {
-            "error": f"Command timed out after {timeout}s.",
-            "exit_code": -1,
-            "cwd": cwd,
-            "os": _OS_LABEL,
-        }
+        result = await _run_command(shell_cmd, cwd, timeout)
+        if result is None:
+            output = {
+                "error": f"Command timed out after {timeout}s.",
+                "exit_code": -1,
+                "cwd": cwd,
+                "os": _OS_LABEL,
+            }
+        else:
+            exit_code, stdout, stderr = result
+            output = {
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code,
+                "cwd": cwd,
+                "os": _OS_LABEL,
+                "allowed_dirs": allowed_dirs,
+            }
     except PermissionError as e:
         output = {
             "error": f"Permission denied: {e}",
