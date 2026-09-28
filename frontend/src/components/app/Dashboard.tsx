@@ -32,7 +32,8 @@ type Run = {
     waiting_for_human?: boolean;
 };
 
-type ModelStat = { model: string; estimated_cost: number };
+/** `priced`: whether the rate card has the model (U62). */
+type ModelStat = { model: string; estimated_cost: number; provider?: string; priced?: boolean };
 
 type Summary = {
     total_cost: number;
@@ -120,6 +121,9 @@ export function Dashboard() {
         .sort((a, b) => b.estimated_cost - a.estimated_cost)
         .slice(0, 6);
     const maxCost = Math.max(...models.map(m => m.estimated_cost), 0);
+    // Models the rate card does not have read "$0" as if free, and fell off the
+    // top six by cost (U62). A local Ollama model is free, so it is not counted.
+    const unpricedCount = (summary?.by_model ?? []).filter(m => m.priced === false && m.provider !== 'ollama').length;
 
     const runRow = (run: Run, tone: string) => (
         <button
@@ -178,9 +182,13 @@ export function Dashboard() {
                                     <li key={m.model} title={`${m.model} — ${usdCompact(m.estimated_cost)}`}>
                                         <div className="mb-1.5 flex items-baseline justify-between gap-3">
                                             <span className="min-w-0 truncate text-sm text-text-muted">{m.model}</span>
-                                            <span className="shrink-0 text-sm tabular-nums text-text">
-                                                {usdCompact(m.estimated_cost)}
-                                            </span>
+                                            {m.priced === false && m.provider !== 'ollama' ? (
+                                                <span className="shrink-0 text-sm text-amber-500">No price</span>
+                                            ) : (
+                                                <span className="shrink-0 text-sm tabular-nums text-text">
+                                                    {usdCompact(m.estimated_cost)}
+                                                </span>
+                                            )}
                                         </div>
                                         <div className="h-2 w-full rounded-[4px] bg-surface-2">
                                             <div
@@ -191,6 +199,13 @@ export function Dashboard() {
                                     </li>
                                 ))}
                             </ul>
+                            {unpricedCount > 0 && (
+                                <p className="mt-4 text-xs text-text-muted">
+                                    {unpricedCount} {unpricedCount === 1 ? 'model has' : 'models have'} no price, so
+                                    {unpricedCount === 1 ? ' its' : ' their'} spend reads $0.{' '}
+                                    <TextLink href="/usage#pricing">Add one</TextLink>
+                                </p>
+                            )}
                         </CardBody>
                     )}
                 </Card>

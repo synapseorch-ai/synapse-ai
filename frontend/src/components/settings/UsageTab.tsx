@@ -66,6 +66,16 @@ interface ScheduleStat {
 interface ModelStat {
     model: string; provider: string; requests: number;
     input_tokens: number; output_tokens: number; total_tokens: number; estimated_cost: number;
+    /** Whether the rate card has this model (U62). */
+    priced?: boolean;
+}
+
+/**
+ * A model the rate card does not have (U62): priced $0 on purpose (F63), which
+ * read as free. A local Ollama model is free, so it is not marked.
+ */
+export function unpriced(stat: { priced?: boolean; provider?: string }): boolean {
+    return stat.priced === false && stat.provider !== 'ollama';
 }
 interface SessionStat {
     session_id: string; run_id?: string | null; agent_id: string;
@@ -306,7 +316,13 @@ function ModelBar({ stat, maxCost }: { stat: ModelStat; maxCost: number }) {
                     {/* The figure in text colour, as its neighbours: a provider's dot
                         colour is not a text colour — Ollama's slate read 2.41:1 on the
                         light ground (F101). The bar and the dot keep the colour. */}
-                    <p className="text-sm font-semibold text-white">{usd(stat.estimated_cost)}</p></div>
+                    {unpriced(stat) ? (
+                        <p className="text-sm font-semibold text-amber-500" title="Not on the rate card, so its spend reads $0">
+                            No price · <a href="#pricing" className="underline underline-offset-2 hover:text-amber-400">add one</a>
+                        </p>
+                    ) : (
+                        <p className="text-sm font-semibold text-white">{usd(stat.estimated_cost)}</p>
+                    )}</div>
             </div>
         </div>
     );
@@ -1105,9 +1121,20 @@ export function UsageTab() {
                     </>
                 )}
 
-                {/* Editable Pricing Table -- always visible */}
+                {/* Editable Pricing Table -- always visible. `#pricing` is where an
+                    unpriced model's "add one" leads (U62). */}
                 {Object.keys(pricing).length > 0 && (
-                    <PricingEditor initialPricing={pricing} onSaved={setPricing} />
+                    <div id="pricing" className="scroll-mt-4">
+                        <PricingEditor
+                            initialPricing={pricing}
+                            onSaved={(next) => {
+                                setPricing(next);
+                                // A price just added clears that model's "No price" (U62).
+                                fetch('/api/usage/summary').then(r => (r.ok ? r.json() : null))
+                                    .then(s => { if (s) setSummary(s); }).catch(() => {});
+                            }}
+                        />
+                    </div>
                 )}
 
                 {/* Disclaimer */}

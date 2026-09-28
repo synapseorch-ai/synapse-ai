@@ -506,6 +506,13 @@ async def get_usage_summary() -> dict:
             bs["agents_used"].add(agent_id)
             bs["last_ts"] = r.get("timestamp")
 
+    # Whether the rate card has each model (U62). Unknown is unpriced since F63,
+    # which read as "$0.00" beside priced models — the same as a free one. Read
+    # against the card as it stands, so adding a price clears it.
+    pricing = await _ensure_pricing()
+    for row in by_model.values():
+        row["priced"] = _resolve_pricing_entry(row["model"], pricing) is not None
+
     # Sort by cost descending
     by_model_list = sorted(by_model.values(), key=lambda x: x["estimated_cost"], reverse=True)
 
