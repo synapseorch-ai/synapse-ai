@@ -1849,9 +1849,12 @@ class OrchestrationEngine:
             if entry.get("error"):
                 line += f" — {str(entry['error'])[:200]}"
             lines.append(line)
-        for key, value in list(run.shared_state.items())[:20]:
-            if str(key).startswith("__"):
-                continue
+        # The run's bookkeeping is not what it made: the tool trace is kept
+        # below, verbatim, and the progress keys are engine state.
+        _internal = ("_exec_memory_", "_step_progress_", "_loop_progress_", "_parallel_progress_")
+        state = [(k, v) for k, v in run.shared_state.items()
+                 if not str(k).startswith("__") and not str(k).startswith(_internal)]
+        for key, value in state[:20]:
             lines.append(f"[{key}] {str(value)[:300]}")
 
         from core.config import load_settings
@@ -1860,6 +1863,13 @@ class OrchestrationEngine:
             "\n".join(lines), max_chars=2000, purpose="session memory",
             settings=load_settings(), session_id=run.session_id, run_id=run.run_id,
         )
+        # Every tool call, with its arguments and the start of its result,
+        # outside the compression (F272): cut at 300 characters per key, the
+        # trace ended inside its first call, and asked later what the run had
+        # done the agent invented a command.
+        calls = self._tool_trace(run)
+        if calls:
+            summary = f"{summary}\n\nTool calls (verbatim):\n{calls}"
 
         from core import agent_memory
         for agent_id in enabled:
@@ -1869,6 +1879,32 @@ class OrchestrationEngine:
                 )
             except Exception as exc:
                 _log.warning(f"memory summary for '{agent_id}' failed: {exc}")
+
+    def _tool_trace(self, run: OrchestrationRun, budget: int = 6_000) -> str:
+        """The run's tool calls, one line each, newest kept within `budget`."""
+        names = {s.id: s.name for s in self.orch.steps}
+        lines: list[str] = []
+        for key, executions in run.shared_state.items():
+            if not str(key).startswith("_exec_memory_") or not isinstance(executions, list):
+                continue
+            step = names.get(str(key)[len("_exec_memory_"):], str(key)[len("_exec_memory_"):])
+            for execution in executions:
+                trace = (execution or {}).get("trace") or {}
+                for call in trace.get("tool_calls") or []:
+                    try:
+                        args = json.dumps(call.get("args") or {}, default=str, ensure_ascii=False)
+                    except (TypeError, ValueError):
+                        args = str(call.get("args"))
+                    result = " ".join(str(call.get("result_preview") or "").split())
+                    lines.append(f"- {step}: {call.get('name')} {args[:200]} → {result[:200]}")
+        kept: list[str] = []
+        used = 0
+        for line in reversed(lines):
+            if used + len(line) > budget:
+                break
+            kept.insert(0, line)
+            used += len(line) + 1
+        return "\n".join(kept)
 
     @staticmethod
     def _build_final_response(run: OrchestrationRun, result_key: str = "") -> str:
