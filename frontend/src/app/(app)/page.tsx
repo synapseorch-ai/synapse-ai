@@ -278,6 +278,69 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
       {msg.thoughts && msg.thoughts.length > 0 && (
         <ThoughtCollapsible thoughts={msg.thoughts} />
       )}
+      {Array.isArray(msg.data?.calls) && msg.data.calls.length > 0 && (
+        <ToolsUsed calls={msg.data.calls as SavedCall[]} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The tools a reopened answer used (U60), from the calls its turn saved (F242):
+ * each with its arguments and the start of what it returned. The live panels
+ * are built from the stream, which a reopened page does not have; the calls
+ * are what the conversation keeps. Thinking and reasoning are not saved yet.
+ */
+function ToolsUsed({ calls }: { calls: SavedCall[] }) {
+  const [open, setOpen] = useState(false);
+  const refused = calls.filter(c => c.refused).length;
+  return (
+    <div className="text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-text-faint hover:text-zinc-300 transition-colors"
+      >
+        {open ? <ChevronDown className="h-3 w-3" aria-hidden /> : <ChevronRight className="h-3 w-3" aria-hidden />}
+        <Wrench className="h-3 w-3" aria-hidden />
+        <span>
+          Tools used · {calls.length}
+          {refused > 0 && <span className="text-amber-500"> · {refused} not run</span>}
+        </span>
+      </button>
+      {open && (
+        <ul className="mt-2 space-y-2 border-l border-zinc-800 pl-3">
+          {calls.map((call, i) => {
+            const args = call.args && Object.keys(call.args).length > 0 ? JSON.stringify(call.args) : '';
+            return (
+              <li key={i} className="min-w-0">
+                <div className="flex items-baseline gap-2">
+                  <span className="font-code text-zinc-300" translate="no">{call.tool}</span>
+                  {call.refused && <span className="text-amber-500">not run</span>}
+                </div>
+                {args && <div className="truncate font-code text-[11px] text-text-faint" title={args}>{args}</div>}
+                {call.result && (
+                  <div className="line-clamp-2 whitespace-pre-wrap break-words text-[11px] text-text-faint">
+                    {call.result.slice(0, 300)}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Images a reopened question carried: named, since the image itself is not kept (F245, U60). */
+function ImageNoteChip({ notes }: { notes: { type: string }[] }) {
+  const kinds = [...new Set(notes.map(n => (n.type || 'image').replace(/^image\//, '').toUpperCase()))].join(', ');
+  return (
+    <div className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-zinc-700/60 px-2 py-1 text-[11px] text-text-faint">
+      <Paperclip className="h-3 w-3" aria-hidden />
+      {notes.length} image{notes.length === 1 ? '' : 's'} ({kinds}) — not kept after the turn
     </div>
   );
 }
@@ -292,11 +355,18 @@ type SessionSummary = {
   first_user_message: string | null;
 };
 
+/** One tool call as a saved turn keeps it (F242); `refused` marks a call that was not run (U68). */
+type SavedCall = { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean };
+
 type SessionTurn = {
   user: string;
   assistant: string;
   tools: string[];
   timestamp: string;
+  /** What the turn's tools did, as the conversation keeps it (F242) — drawn under a reopened answer (U60). */
+  calls?: SavedCall[];
+  /** The images the question carried — their types; the image itself is not kept (F245). */
+  images?: { type: string }[];
   /** A question this turn asked and nobody answered: the card, and why it was not run (F247). */
   approval?: ParkedApproval & { outcome: 'expired'; why: string };
 };
@@ -953,7 +1023,13 @@ export default function Home() {
 
       const restored: Message[] = [];
       for (const t of turns) {
-        restored.push({ role: 'user', content: t.user });
+        // A reopened turn keeps what it can show (U60): the tools the answer
+        // used, and that images were attached — they are not kept, so a chip
+        // says so rather than the turn reading as text alone.
+        restored.push({
+          role: 'user', content: t.user,
+          ...(t.images && t.images.length > 0 ? { data: { imageNotes: t.images } } : {}),
+        });
         if (t.approval) {
           // A question nobody answered, drawn where it was asked and not
           // answerable (F247) — it used to come back last, live.
@@ -967,7 +1043,10 @@ export default function Home() {
           });
           continue;
         }
-        restored.push({ role: 'assistant', content: t.assistant });
+        restored.push({
+          role: 'assistant', content: t.assistant,
+          ...(t.calls && t.calls.length > 0 ? { data: { calls: t.calls } } : {}),
+        });
       }
       if (parked) {
         restored.push({ role: 'user', content: parked.message });
@@ -2211,6 +2290,9 @@ export default function Home() {
                 </button>
               )}
               <Markdown>{msg.content}</Markdown>
+              {!msg.images?.length && Array.isArray(msg.data?.imageNotes) && msg.data.imageNotes.length > 0 && (
+                <ImageNoteChip notes={msg.data.imageNotes as { type: string }[]} />
+              )}
               {msg.images && msg.images.length > 0 && (
                 <div className="flex flex-wrap gap-3 mt-4">
                   {msg.images.map((img, imgIdx) => (
