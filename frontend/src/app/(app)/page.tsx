@@ -301,6 +301,24 @@ type SessionTurn = {
   approval?: ParkedApproval & { outcome: 'expired'; why: string };
 };
 
+/** The loop's own line before every model call (`react_engine.py`): no news once the agent has had a thought. */
+const GENERIC_THINKING = 'Analyzing your request...';
+
+/**
+ * One line of a thought for the live activity line (U57): its first line with
+ * the markdown taken off — Gemini's summaries lead with a bold title. With
+ * `proseOnly`, text that is a tool call (JSON, a code fence) is not a thought.
+ */
+function thoughtLine(text: string, proseOnly = false): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (proseOnly && /^[[{`<]/.test(trimmed)) return null;
+  const first = trimmed.split('\n').map(l => l.trim()).find(Boolean) ?? '';
+  const plain = first.replace(/^#+\s*/, '').replace(/^[-*]\s+/, '').replace(/\*\*|__|`/g, '').trim();
+  if (!plain) return null;
+  return plain.length > 140 ? `${plain.slice(0, 139)}…` : plain;
+}
+
 /** Why a card was not run when a new message moved past it — the server's words (`chat_approval.MOVED_ON`). */
 const MOVED_ON = 'you sent a new message instead';
 
@@ -804,6 +822,8 @@ export default function Home() {
   // delegate agent's wrapper `delegate_to_agent` tool_result would clobber the
   // sub-agent's last real tool the instant the sub-agent returns.
   const lastToolRef = useRef<string | null>(null);
+  /** The turn's newest thought, for the live line (U57): what the agent is doing, not "Analyzing…". */
+  const lastThoughtRef = useRef<string | null>(null);
   // SSE abort controller — cancelled on new chat, unmount, or confirmed Settings navigation
   const sseAbortRef = useRef<AbortController | null>(null);
   // True while a chat/SSE request is in flight — gates the wake/network
@@ -1402,6 +1422,7 @@ export default function Home() {
     setTurnOutcome(null);
     turnAnsweredRef.current = false;
     lastCursorRef.current = null;
+    lastThoughtRef.current = null;
     const controller = new AbortController();
     sseAbortRef.current = controller;
     try {
@@ -1479,6 +1500,7 @@ export default function Home() {
     pendingThoughtsRef.current = [];
     pendingReasoningRef.current = [];
     lastToolRef.current = null;
+    lastThoughtRef.current = null;
     try {
       await work();
     } catch (error) {
@@ -1508,6 +1530,7 @@ export default function Home() {
       setThinkingPreview(null);
       pendingThoughtsRef.current = [];
       pendingReasoningRef.current = [];
+      lastThoughtRef.current = null;
       // The conversation carries on after a workflow answers, as it does after
       // any agent (F260): a new session here threw it away, so the workflow's
       // next run could not read what was said. It began as a guard against
@@ -1573,8 +1596,13 @@ export default function Home() {
       case 'thinking':
         setIsThinking(true);
         // Progress messages ("Analyzing your request…", "Delegating to X…")
-        // used to be discarded — surface them in the thinking line.
-        if (data.message) setThinkingPreview(`${delegatePrefix(data)}${String(data.message)}`);
+        // used to be discarded — surface them in the thinking line. The loop's
+        // own per-turn "Analyzing your request…" no longer covers a thought the
+        // agent has already had: it arrives before every model call, so the
+        // line said nothing else all turn (U57).
+        if (data.message && !(data.message === GENERIC_THINKING && lastThoughtRef.current)) {
+          setThinkingPreview(`${delegatePrefix(data)}${String(data.message)}`);
+        }
         break;
 
       case 'tool_execution': {
@@ -1584,7 +1612,8 @@ export default function Home() {
           .replace(/\b\w/g, (l: string) => l.toUpperCase());
         const stepLabel = data.step_name ? ` · ${data.step_name}` : '';
         setStreamingActivity(`🔧 ${delegatePrefix(data)}${toolDisplayName}${stepLabel}`);
-        setIsThinking(false);
+        // The thought that chose this tool stays under it while it runs (U57).
+        setIsThinking(Boolean(lastThoughtRef.current));
         break;
       }
 
@@ -1603,7 +1632,7 @@ export default function Home() {
           .replace(/\b\w/g, (l: string) => l.toUpperCase());
         const subtaskSuffix = data.subtask_name ? ` › ${data.subtask_name}` : '';
         setStreamingActivity(`✓ ${delegatePrefix(data)}${resultToolName}${subtaskSuffix}`);
-        setIsThinking(false);
+        setIsThinking(Boolean(lastThoughtRef.current));
         break;
       }
 
@@ -1621,8 +1650,11 @@ export default function Home() {
           pendingReasoningRef.current = [...pendingReasoningRef.current, data.reasoning as string];
         }
         if (data.reasoning) {
-          setThinkingPreview(
-            `${delegatePrefix(data)}${String(data.reasoning).split('\n')[0].slice(0, 140)}`);
+          const line = thoughtLine(String(data.reasoning));
+          if (line) {
+            lastThoughtRef.current = line;
+            setThinkingPreview(`${delegatePrefix(data)}${line}`);
+          }
         }
         setIsThinking(true);
         break;
@@ -1637,6 +1669,15 @@ export default function Home() {
           stepState.thoughts = [...stepState.thoughts, data.thought as string];
         } else {
           pendingThoughtsRef.current = [...pendingThoughtsRef.current, data.thought as string];
+        }
+        {
+          // A model that thinks in prose rather than in a reasoning block says
+          // what it is doing here; a tool call's JSON is not a thought (U57).
+          const line = thoughtLine(String(data.thought ?? ''), true);
+          if (line) {
+            lastThoughtRef.current = line;
+            setThinkingPreview(`${delegatePrefix(data)}${line}`);
+          }
         }
         setIsThinking(true);
         break;
@@ -1656,6 +1697,7 @@ export default function Home() {
         }]);
         pendingThoughtsRef.current = [];
         pendingReasoningRef.current = [];
+        lastThoughtRef.current = null;
         break;
       }
 
@@ -1695,6 +1737,7 @@ export default function Home() {
           }]);
           pendingThoughtsRef.current = [];
           pendingReasoningRef.current = [];
+          lastThoughtRef.current = null;
         }
         break;
       }
@@ -1965,6 +2008,7 @@ export default function Home() {
     setIsThinking(false);
     pendingThoughtsRef.current = [];
     pendingReasoningRef.current = [];
+    lastThoughtRef.current = null;
 
     const controller = new AbortController();
     try {
@@ -2019,6 +2063,7 @@ export default function Home() {
       setIsThinking(false);
       pendingThoughtsRef.current = [];
       pendingReasoningRef.current = [];
+      lastThoughtRef.current = null;
     }
   };
 
