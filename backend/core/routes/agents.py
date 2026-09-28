@@ -108,6 +108,10 @@ async def delete_agent(agent_id: str):
     global active_agent_id
     from core.store.resources import delete_agent as _delete
     await _delete(agent_id)
+    # Its memory goes with it (F297): left behind, an agent created later with
+    # the same id started out knowing what this one had remembered.
+    from core import agent_memory
+    await agent_memory.wipe(agent_id)
     if active_agent_id == agent_id:
         active_agent_id = None
     return {"status": "success"}

@@ -1,10 +1,10 @@
 'use client';
 import { useState } from 'react';
-import { Trash2, AlertCircle, CheckCircle2, MessageSquare, BarChart2, GitBranch, Server, Activity, Bot } from 'lucide-react';
+import { Trash2, AlertCircle, CheckCircle2, MessageSquare, BarChart2, GitBranch, Server, Activity, Bot, Brain } from 'lucide-react';
 import { ConfirmationModal } from './ConfirmationModal';
 import { Checkbox } from '@/components/ui';
 
-type ClearItem = 'chat_history' | 'orchestration_history' | 'agent_logs' | 'usage' | 'repos' | 'db_configs';
+type ClearItem = 'chat_history' | 'orchestration_history' | 'agent_logs' | 'agent_memory' | 'usage' | 'repos' | 'db_configs';
 
 const ITEMS: { id: ClearItem; icon: React.ElementType; label: string; description: string; detail: string }[] = [
     {
@@ -27,6 +27,15 @@ const ITEMS: { id: ClearItem; icon: React.ElementType; label: string; descriptio
         label: 'Agent Logs',
         description: 'Per-run debug logs for individual agent executions',
         detail: 'All agent run log files from chat and orchestration sources',
+    },
+    {
+        // What agents with memory saved (F270): it could not be removed at all
+        // before, short of asking each agent to forget.
+        id: 'agent_memory',
+        icon: Brain,
+        label: 'Agent Memory',
+        description: 'Everything agents with memory have remembered',
+        detail: "Every agent's memory index, saved memories and session traces",
     },
     {
         id: 'usage',
@@ -55,6 +64,7 @@ const DEFAULT_SELECTED: Record<ClearItem, boolean> = {
     chat_history: false,
     orchestration_history: false,
     agent_logs: false,
+    agent_memory: false,
     usage: false,
     repos: false,
     db_configs: false,

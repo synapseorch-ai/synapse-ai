@@ -178,6 +178,12 @@ async def delete_memory(agent_id: str, name: str) -> bool:
     existed = store.get(_item_key(agent_id, name)) is not None
     store.delete(_item_key(agent_id, name))
     _write_index(agent_id, [ln for ln in _index_lines(agent_id) if _line_name(ln) != name])
+    # And its archived line, if it had moved there: left behind, `list_memories`
+    # still offered a memory that no longer exists (F270).
+    archived = store.get(_archive_key(agent_id))
+    if archived and f"- [{name}]" in archived:
+        kept = [ln for ln in archived.splitlines() if ln.strip() and _line_name(ln) != name]
+        store.put(_archive_key(agent_id), "\n".join(kept) + ("\n" if kept else ""))
     try:
         await get_memory_index().delete(agent_id, "item", name)
     except Exception as exc:
@@ -553,3 +559,110 @@ def render_hits(hits: list[dict]) -> str:
         label = hit["name"] if hit["kind"] == "item" else f"{hit['kind']}:{hit['name']}"
         lines.append(f"- [{label}] …{hit['snippet']}…")
     return "\n".join(lines)
+
+
+# ── a person's view and hand (F270) ──────────────────────────────────────────
+#
+# What the agent editor shows and what "clear data" removes. The engine had the
+# memory and nothing in the product could see it: a person could not read,
+# correct or delete what an agent remembered except by asking it to forget.
+
+def _item_name(key: str) -> str:
+    return key.rsplit("/", 1)[-1][:-3]
+
+
+def memory_view(agent_id: str) -> dict:
+    """The index, every saved memory and every past session, newest first.
+
+    The order `list_memories` gives the agent: the index newest first, then the
+    archive's lines, then any memory whose line was lost; sessions by when they
+    started or were written. Sizes and summaries only — one file is `read_file`.
+    """
+    store = _store()
+    prefix = f"{_agent_prefix(agent_id)}/"
+    keys = store.list(prefix)
+    index_lines = _index_lines(agent_id)
+    archived = [ln for ln in (store.get(_archive_key(agent_id)) or "").splitlines() if ln.strip()]
+
+    files = {_item_name(k): store.get(k) or "" for k in keys if "/items/" in k and k.endswith(".md")}
+    items, seen = [], set()
+    live = {_line_name(ln) for ln in index_lines}
+    for line in [*reversed(index_lines), *reversed(archived)]:
+        name = _line_name(line)
+        if not name or name in seen or name not in files:
+            continue
+        seen.add(name)
+        summary = line.split("]", 1)[-1].strip()
+        items.append({"name": name, "size": len(files[name].encode()), "summary": summary,
+                      "archived": name not in live})
+    for name in sorted(set(files) - seen):
+        items.append({"name": name, "size": len(files[name].encode()), "summary": _hook_for(files[name]),
+                      "archived": False})
+
+    sessions = []
+    for key in _list_session_keys(agent_id):
+        content = store.get(key) or ""
+        stamp = re.search(r"^(?:started|written): (.+)$", content, re.MULTILINE)
+        body = content.split("\n---\n", 1)[-1]
+        first = next((ln.strip()[2:] for ln in body.splitlines() if ln.strip().startswith("- ")), "")
+        sessions.append({"name": _item_name(key), "size": len(content.encode()),
+                         "when": stamp.group(1).strip() if stamp else None, "first": first[:160]})
+    sessions.sort(key=lambda s: s["when"] or "", reverse=True)
+
+    return {"index": read_index(agent_id), "index_lines": len(index_lines), "archive_lines": len(archived),
+            "items": items, "sessions": sessions}
+
+
+def read_file(agent_id: str, kind: str, name: str) -> str | None:
+    """One saved memory (`items`) or session trace (`sessions`), whole."""
+    if kind == "items":
+        key = _item_key(agent_id, normalize_name(name))
+    elif kind == "sessions":
+        key = _session_key(agent_id, _session_stem(name))
+    else:
+        return None
+    return _store().get(key)
+
+
+async def delete_session(agent_id: str, name: str) -> bool:
+    stem = _session_stem(name)
+    store = _store()
+    key = _session_key(agent_id, stem)
+    existed = store.get(key) is not None
+    store.delete(key)
+    try:
+        await get_memory_index().delete(agent_id, "session", stem)
+    except Exception as exc:
+        logger.warning("session index delete failed for %s/%s: %s", agent_id, stem, exc)
+    return existed
+
+
+async def _delete_keys(keys: list[str]) -> int:
+    """Delete these memory blobs one by one — an object store's delete takes one
+    key, not a folder — and their search rows."""
+    store = _store()
+    index = get_memory_index()
+    count = 0
+    for key in keys:
+        parts = key.split("/")
+        store.delete(key)
+        count += 1
+        if len(parts) >= 4 and parts[0] == _PREFIX and key.endswith(".md"):
+            kind = {"items": "item", "sessions": "session"}.get(parts[-2])
+            if kind:
+                try:
+                    await index.delete(parts[1], kind, parts[-1][:-3])
+                except Exception as exc:
+                    logger.warning("memory index delete failed for %s: %s", key, exc)
+    return count
+
+
+async def wipe(agent_id: str) -> int:
+    """Everything one agent remembered: index, archive, memories, sessions.
+    Also what deleting the agent does (F297)."""
+    return await _delete_keys(_store().list(f"{_agent_prefix(agent_id)}/"))
+
+
+async def wipe_all() -> int:
+    """Every agent's memory — Settings → Memory's clear data."""
+    return await _delete_keys(_store().list(f"{_PREFIX}/"))

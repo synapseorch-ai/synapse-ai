@@ -11,6 +11,7 @@ import { AppDispatch } from '@/store';
 import { addAgent, updateAgent } from '@/store/settingsSlice';
 import { ToastNotification } from './ToastNotification';
 import { AgentActivity, ActivityTab } from './AgentActivity';
+import { AgentMemory } from './AgentMemory';
 import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, type ToolPolicy } from './ToolPolicy';
 
 /** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
@@ -1152,6 +1153,12 @@ export const AgentsTab = ({
                                                 rides the prompt. Sessions leave summaries automatically.
                                             </span>
                                         </label>
+                                        {/* A saved agent's memory, whether or not it is on now: what
+                                            it remembered before being switched off can still be read
+                                            and deleted (F270). */}
+                                        {agents.some((a: any) => a.id === draftAgent.id) && (
+                                            <AgentMemory key={draftAgent.id} agentId={draftAgent.id} />
+                                        )}
                                     </div>
 
                                     {/* Prompt Generator */}

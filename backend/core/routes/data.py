@@ -839,7 +839,8 @@ async def clear_all_history():
 # --- Bulk Memory Clear ---
 
 class MemoryClearRequest(BaseModel):
-    items: List[Literal["chat_history", "orchestration_history", "agent_logs", "usage", "repos", "db_configs"]]
+    items: List[Literal["chat_history", "orchestration_history", "agent_logs", "agent_memory", "usage",
+                        "repos", "db_configs"]]
 
 
 @router.post("/api/memory/clear")
@@ -892,6 +893,13 @@ async def clear_memory_items(req: MemoryClearRequest):
                     except Exception:
                         pass
         results["agent_logs"] = f"Cleared {count} file(s)"
+
+    # What agents with memory remembered (F270): every agent's folder — index,
+    # archive, memories and session traces — and their search rows.
+    if "agent_memory" in items:
+        from core import agent_memory
+        count = await agent_memory.wipe_all()
+        results["agent_memory"] = f"Cleared {count} memory file(s)"
 
     # Usage logs
     if "usage" in items:
