@@ -2079,6 +2079,15 @@ async def run_agent_step(
                             # typed; a `remember` of it asks a person (F279, F272).
                             if any(h.get("kind") == "session" for h in _hits):
                                 _memory_tainted = True
+                        elif tool_name == "list_memories":
+                            _listing = _agent_memory.list_memories(
+                                agent_id_for_session, str(tool_args.get("kind") or "items"),
+                                tool_args.get("page") or 1,
+                            )
+                            current_context_text += (
+                                f"\n[Turn {turn + 1} — Observation] Memories:\n{_listing}\n"
+                            )
+                            _mem_preview = _listing.split("\n", 1)[0][:200]
                         elif tool_name == "read_session":
                             _sess_body = _agent_memory.read_session(
                                 agent_id_for_session, str(tool_args.get("name") or "")

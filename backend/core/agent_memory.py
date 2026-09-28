@@ -361,7 +361,64 @@ _LEXICAL = LexicalMemoryIndex()
 
 # ── the tools ────────────────────────────────────────────────────────────────
 
-MEMORY_TOOL_NAMES = ("remember", "read_memory", "search_memory", "forget_memory", "read_session")
+MEMORY_TOOL_NAMES = ("remember", "read_memory", "search_memory", "forget_memory", "read_session",
+                     "list_memories")
+
+LIST_PAGE_SIZE = 50
+
+
+def _session_entries(agent_id: str) -> list[tuple[str, str]]:
+    """(stamp, line) per past session: its name, when, and its first entry."""
+    store = _store()
+    entries = []
+    for key in _list_session_keys(agent_id):
+        content = store.get(key) or ""
+        stamp = re.search(r"^(?:started|written): (.+)$", content, re.MULTILINE)
+        when = stamp.group(1) if stamp else ""
+        body = content.split("\n---\n", 1)[-1]
+        first = next((ln.strip() for ln in body.splitlines() if ln.strip().startswith("- ")), "")
+        name = key.rsplit("/", 1)[-1][:-3]
+        entries.append((when, f"- [session:{name}] {when} — {first[2:][:160]}".rstrip(" —")))
+    entries.sort(key=lambda e: e[0], reverse=True)
+    return entries
+
+
+def list_memories(agent_id: str, kind: str = "items", page=1) -> str:
+    """Every memory, or every past session, a page at a time, newest first (F274).
+
+    Search returns the top five word-overlap hits, so a question across all of
+    them — the largest capacity of 120 warehouses — took 52 searches and 341 s,
+    or never converged. The index, then the archive, each by its name and its
+    one-line summary; read from the store itself, so it works wherever memory
+    is kept and whatever the search index is.
+    """
+    try:
+        page = max(1, int(page or 1))
+    except (TypeError, ValueError):
+        page = 1
+    if str(kind or "items").lower().startswith("session"):
+        lines = [line for _, line in _session_entries(agent_id)]
+        noun, empty = ("session", "sessions"), "No past sessions are saved yet."
+    else:
+        archived = [ln for ln in (_store().get(_archive_key(agent_id)) or "").splitlines() if ln.strip()]
+        lines, seen = [], set()
+        for line in [*reversed(_index_lines(agent_id)), *reversed(archived)]:
+            name = _line_name(line)
+            if name in seen:
+                continue          # an updated memory's older, archived line
+            seen.add(name)
+            lines.append(line)
+        noun, empty = ("memory", "memories"), "No memories are saved yet."
+    if not lines:
+        return empty
+    pages = -(-len(lines) // LIST_PAGE_SIZE)
+    if page > pages:
+        return f"There is no page {page}; there {'is' if pages == 1 else 'are'} {pages}."
+    chunk = lines[(page - 1) * LIST_PAGE_SIZE: page * LIST_PAGE_SIZE]
+    head = (f"{len(lines)} {noun[0] if len(lines) == 1 else noun[1]}, newest first — "
+            f"page {page} of {pages}:")
+    more = f'\nMore: list_memories {{"page": {page + 1}}}' if page < pages else ""
+    return head + "\n" + "\n".join(chunk) + more
 
 
 def build_memory_tools() -> list:
@@ -400,8 +457,9 @@ def build_memory_tools() -> list:
             description=(
                 "Search your memories, archive and past session summaries. Use it when the "
                 "index alone doesn't answer 'have I seen this before?'. A hit labelled "
-                "session:<name> opens whole with read_session. If nothing matches, say you "
-                "don't remember — never guess."
+                "session:<name> opens whole with read_session. For a question across all of "
+                "them — the largest, every one in a city — page through list_memories instead. "
+                "If nothing matches, say you don't remember — never guess."
             ),
             inputSchema={
                 "type": "object",
@@ -416,6 +474,22 @@ def build_memory_tools() -> list:
                 "type": "object",
                 "properties": {"name": {"type": "string", "description": "The memory's name"}},
                 "required": ["name"],
+            },
+        ),
+        VirtualTool(
+            name="list_memories",
+            description=(
+                "List every memory (or every past session), newest first, 50 a page — each by its "
+                "name and one-line summary. Use it for questions across all of them; open one with "
+                "read_memory (or read_session)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["items", "sessions"],
+                             "description": "items (default) or sessions"},
+                    "page": {"type": "integer", "description": "1 for the newest"},
+                },
             },
         ),
         VirtualTool(
@@ -457,7 +531,7 @@ def render_index_block(index_text: str) -> str:
     body = "\n".join(kept) or "(no memories yet)"
     if hidden:
         body = (f"[{hidden} older memor{'ies are' if hidden != 1 else 'y is'} not shown here — "
-                "search_memory finds them]\n" + body)
+                "list_memories pages through them all, search_memory finds one]\n" + body)
     return (
         "### MEMORY\n"
         "Your persistent memory index — one line per saved memory. Read one in full "
