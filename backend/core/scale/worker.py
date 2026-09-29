@@ -982,6 +982,15 @@ async def worker_startup(ctx: dict) -> None:
     # rather than opening a second, SQLite one.
     set_store(session_factory)
 
+    # Telemetry: off unless a Synapse switch turns it on (core/telemetry). After
+    # set_store, so the Scale tab's saved collector is readable; the engine just
+    # built is instrumented when it is on.
+    try:
+        from core import telemetry
+        telemetry.setup("synapse-worker", saved_endpoint=get_scale_config().otlp_endpoint)
+    except Exception as exc:
+        _log.warning("[worker] telemetry setup failed: %s", type(exc).__name__)
+
     # The vault, run logs and notifications on the bucket when one is configured
     # — the store every API server and worker must share (F57).
     from core.storage import install_configured_blob_store

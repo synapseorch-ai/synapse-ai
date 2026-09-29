@@ -715,13 +715,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Warning: Notification hub setup failed: {e}")
 
-        # --- Initialize Telemetry (OpenTelemetry + Prometheus) ---
+        # --- Telemetry: off unless a Synapse switch turns it on (core/telemetry) ---
+        # Here rather than at import because the Scale tab's saved collector is
+        # only readable once the store is up; TelemetryMiddleware (installed
+        # below, when the app is built) switches on with it.
         try:
+            from core import telemetry as _telemetry
             from core.scale.config import get_scale_config as _get_scale_cfg
-            _tcfg = _get_scale_cfg()
-            if _tcfg.otlp_endpoint:
-                from core.scale.telemetry import setup_telemetry
-                setup_telemetry("synapse-api", otlp_endpoint=_tcfg.otlp_endpoint)
+            _telemetry.setup("synapse-api", saved_endpoint=_get_scale_cfg().otlp_endpoint)
         except Exception as e:
             print(f"Warning: Telemetry setup failed: {e}")
 
@@ -970,6 +971,13 @@ async def bind_settings(request, call_next):
 from core.mcp_server.endpoint import McpDispatch as _McpDispatch
 
 app.add_middleware(_McpDispatch)
+
+# Telemetry, outermost of all: a pass-through until the lifespan's setup()
+# turns tracing on, then one span per request named by its route. Outside
+# McpDispatch so MCP calls, a refused token and a CORS preflight are traced too.
+from core.telemetry.asgi import TelemetryMiddleware as _TelemetryMiddleware
+
+app.add_middleware(_TelemetryMiddleware)
 
 
 # --- Include Route Routers ---

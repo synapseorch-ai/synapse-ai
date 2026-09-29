@@ -130,6 +130,10 @@ def build_engine(url: str, pgbouncer_mode: bool = False) -> AsyncEngine:
     if is_sqlite(url):
         _enable_wal(engine)
 
+    # Its statements are traced when telemetry is on (the operation, never the
+    # text); a no-op otherwise.
+    from core import telemetry
+    telemetry.instrument_engine(engine)
     return engine
 
 

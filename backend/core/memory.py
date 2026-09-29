@@ -22,7 +22,12 @@ class MemoryStore:
 
         self.storage_path = str(state_dir("chroma_db"))
 
-        self.client = chromadb.PersistentClient(path=self.storage_path)
+        # Chroma's own usage telemetry off, explicitly: the locked release's is a
+        # no-op, but `chromadb>=0.5` is allowed and older ones sent PostHog
+        # events. Nothing leaves the machine unless an operator sends it.
+        from chromadb.config import Settings as _ChromaSettings
+        self.client = chromadb.PersistentClient(
+            path=self.storage_path, settings=_ChromaSettings(anonymized_telemetry=False))
         self.collection = self.client.get_or_create_collection(name="chat_history")
         self.model = model
         self._embed_fn = embed_fn
