@@ -99,6 +99,14 @@ compile requirements-messaging.lock requirements-messaging.txt \
 compile requirements-worker.lock requirements.txt requirements-worker.txt \
     -- --constraint requirements.lock
 
+# What the published package installs: pyproject.toml's dependencies, pinned.
+# The installer passes it to `uv tool install -c` (scripts/build_installer.py
+# puts it in synapse-install.pyz), so an install resolves the way CI tested
+# rather than to whatever PyPI has that day. Constrained by the locks above so a
+# package both name is the same version in every install.
+compile requirements-wheel.lock ../pyproject.toml \
+    -- --constraint requirements.lock --constraint requirements-messaging.lock
+
 if [ "$CHECK_MODE" -eq 1 ]; then
     echo "Locks are up to date."
 else

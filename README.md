@@ -33,19 +33,25 @@
 
 **macOS / Linux:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/main/setup.sh | bash
+curl -LsSf https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/main/setup.ps1 | iex
+irm https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.ps1 | iex
 ```
+
+It shows a few named steps, asks which AI to use (and whether to start on login) while it installs, and ends with the link. Nothing needs to be installed first: it brings its own Python and, if yours is missing or older than 20.9, Node.js — no sudo. Your data and settings live in `~/.synapse`; what the installer ran is in `~/.synapse/logs/install.log`. Add `--yes` (`curl … | bash -s -- --yes`) to take every default without questions.
+
+Already on Synapse 1.x? Run the same command, or `synapse upgrade`: your agents, workflows, chats, schedules, settings and API keys come across, after a backup in `~/.synapse/backups`.
 
 ### npm
 ```bash
 npm install -g synapse-orch-ai
 synapse
 ```
+
+The first `synapse` runs the same installer.
 
 ### pip
 ```bash
@@ -62,7 +68,7 @@ docker run -d \
   synapseorchai/synapse-ai:latest
 ```
 
-Then open `http://localhost:3000`. See the [Docker guide](https://docs.synapseorch.com/getting-started/installation#docker) in the docs for custom ports and environment variable configuration.
+The same command upgrades a 1.x container: its data on `synapse-data` is imported on the first start (the old files move to `/data/migrated/`). Then open `http://localhost:3000`. See the [Docker guide](https://docs.synapseorch.com/getting-started/installation#docker) in the docs for custom ports and environment variable configuration.
 
 > **Security:** publish only the frontend port `3000` — the backend (`8765`) serves an internal API and should not be exposed on `0.0.0.0` (docker-compose binds it to `127.0.0.1`). The container auto-generates a shared internal token so that surface is authenticated by default. For any network-reachable deployment, enable **login** (Settings → Security) and/or set `allow_stdio_mcp=false`, since registering a stdio MCP server launches local commands.
 
@@ -70,10 +76,12 @@ Then open `http://localhost:3000`. See the [Docker guide](https://docs.synapseor
 
 | Install method | Upgrade command |
 |---|---|
-| Bash / PowerShell installer (recommended) | `synapse upgrade` |
-| pip | `pip install --upgrade synapse-orch-ai` |
-| npm | `npm update -g synapse-orch-ai` |
-| Docker | `docker pull synapseorchai/synapse-ai:latest` |
+| Setup script (recommended) | `synapse upgrade` |
+| pip | `synapse upgrade` (or `pip install --upgrade synapse-orch-ai`) |
+| npm | `npm install -g synapse-orch-ai@latest` |
+| Docker | `docker pull synapseorchai/synapse-ai:latest`, then the same `docker run` |
+
+`synapse upgrade` backs up the database, installs the new version, updates the database and starts Synapse again if it was running.
 
 > **Upgrade note (security hardening):** the backend now auto-generates a shared internal token and, under docker-compose, binds its port to `127.0.0.1` by default. The UI and its API are unaffected (the frontend proxies the backend internally). If you previously called the **backend directly** on `:8765` (e.g. external API clients), either point them at the frontend instead — `http://host:3000/api/v1|v2/...` — or set `SYNAPSE_BACKEND_BIND=0.0.0.0` in `.env` to keep publishing `:8765`.
 
@@ -161,10 +169,13 @@ https://github.com/user-attachments/assets/282cc99d-cdea-4ad0-b648-f22112c6e295
 ## CLI
 
 ```bash
-synapse start     # start backend + frontend, open browser
-synapse stop      # stop background processes
-synapse upgrade   # upgrade to the latest version
-synapse uninstall # remove Synapse, wipe ~/.synapse, and uninstall the package
+synapse start      # start Synapse and open it (-d: in the background)
+synapse stop       # stop it
+synapse status     # is it running? (--json for scripts)
+synapse logs       # the backend's log (frontend, install; -f to follow)
+synapse upgrade    # install the newest version; data and settings stay
+synapse autostart on|off   # start when you log in
+synapse uninstall  # remove Synapse (--keep-data keeps ~/.synapse)
 ```
 
 ---

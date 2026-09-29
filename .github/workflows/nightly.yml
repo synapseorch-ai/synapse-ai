@@ -7,6 +7,9 @@ name: Nightly (stress + integration)
 #   * compose-smoke — real docker-compose bring-up (backend + frontend) with a
 #                     live health check — the true "does it install & run" test.
 #   * npm-e2e       — full npm global install + `synapse` bootstrap (venv + deps).
+#   * install-e2e   — setup.sh / setup.ps1 on clean machines, to a running link.
+#   * legacy-upgrade-e2e — a v1.9.1 install with data upgraded by its own
+#                     `synapse upgrade`; everything must come across.
 on:
   schedule:
     - cron: '0 3 * * *'   # 03:00 UTC daily
@@ -147,6 +150,90 @@ jobs:
           pip install build && python -m build --wheel --outdir dist
           SYNAPSE_PACKAGE="$(ls $PWD/dist/*.whl)" SYNAPSE_YES=1 timeout 1200 synapse status --json
           test -f "$HOME/.synapse/install.json"
+
+  # ── the installer, end to end ───────────────────────────────────────────────
+  # A wheel and synapse-install.pyz built from this commit stand in for the
+  # release; everything else is fetched the way a user's install fetches it.
+  install-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build the wheel (with the UI) and the installer
+        shell: bash
+        run: |
+          bash scripts/build_frontend.sh
+          pip install build && python -m build --wheel --outdir dist
+          python scripts/build_installer.py --out dist
+          cp setup.sh scripts/e2e/fresh-install.sh dist/
+      - name: A clean Ubuntu, in a container (no Python, no Node)
+        if: runner.os == 'Linux'
+        run: docker run --rm -i -v "$PWD/dist:/w:ro" ubuntu:24.04 bash /w/fresh-install.sh
+      - name: macOS
+        if: runner.os == 'macOS'
+        run: |
+          SYNAPSE_INSTALLER="$PWD/dist/synapse-install.pyz" SYNAPSE_PACKAGE="$(ls $PWD/dist/*.whl)" \
+            bash setup.sh --yes --no-browser
+      - name: Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:SYNAPSE_INSTALLER = "$PWD\dist\synapse-install.pyz"
+          $env:SYNAPSE_PACKAGE = (Get-ChildItem dist\*.whl).FullName
+          $env:SYNAPSE_YES = '1'
+          .\setup.ps1
+      - name: It is running, and its link answers
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, pathlib, subprocess, urllib.request
+          record = json.loads((pathlib.Path.home() / ".synapse" / "install.json").read_text())
+          out = subprocess.run([record["tool_python"], "-m", "synapse", "status", "--json"],
+                               capture_output=True, text=True).stdout.strip().splitlines()[-1]
+          status = json.loads(out)
+          assert status["ready"], status
+          urllib.request.urlopen(status["link"], timeout=30)
+          print("ok", status["url"])
+          PY
+      - name: Logs
+        if: always() && runner.os != 'Linux'
+        shell: bash
+        run: tail -n 80 ~/.synapse/logs/*.log || true
+
+  legacy-upgrade-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # the v1.9.1 tag
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build the wheel, and the two source trees
+        run: |
+          bash scripts/build_frontend.sh
+          pip install build && python -m build --wheel --outdir dist
+          mkdir -p legacy
+          git archive --prefix=SynapseAI/ v1.9.1 -o legacy/v191.tar.gz
+          git archive --prefix=synapse-ai-next/ HEAD -o legacy/v2.tar.gz
+          cp scripts/e2e/legacy-upgrade.sh legacy/
+      - name: v1.9.1 upgrades itself onto this commit
+        run: |
+          docker run --rm -i -v "$PWD/legacy:/l:ro" -v "$PWD/dist:/w:ro" ubuntu:24.04 \
+            bash /l/legacy-upgrade.sh
 
   # ── dependency drift (early warning) ────────────────────────────────────────
   # The gate installs backend/requirements.lock, which is exactly the point: users

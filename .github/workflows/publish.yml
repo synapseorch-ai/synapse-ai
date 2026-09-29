@@ -170,6 +170,51 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  # The GitHub release carries the installer (synapse-install.pyz and its
+  # sha256) and both scripts; the README's install command and setup.sh fetch
+  # them from `releases/latest`. So does 1.x's `synapse upgrade` (its source
+  # tarball), and the installer it then runs installs this version from PyPI —
+  # which is why the release is made only once PyPI serves the version: marked
+  # latest a minute early, every 1.x upgrade in that minute fails.
+  github-release:
+    needs: [publish-python, publish-npm]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Wait until PyPI serves this version
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          for i in $(seq 1 60); do
+            if curl -fsS "https://pypi.org/pypi/synapse-orch-ai/$V/json" >/dev/null; then
+              echo "PyPI serves $V"; exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::PyPI does not serve $V after 20 minutes"; exit 1
+
+      - name: Build the installer for this version
+        run: python scripts/build_installer.py --out dist --version "${GITHUB_REF_NAME#v}"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files="dist/synapse-install.pyz dist/synapse-install.pyz.sha256 setup.sh setup.ps1"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" $files --clobber
+            gh release edit "$GITHUB_REF_NAME" --latest
+          else
+            gh release create "$GITHUB_REF_NAME" $files --latest --generate-notes
+          fi
+
   # Selects which images publish-docker builds. A job-level `if` cannot see the
   # `matrix` context, so the `images` dispatch input is applied by building the
   # matrix here instead — a deselected image produces no job at all.
