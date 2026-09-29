@@ -748,7 +748,10 @@ async def lifespan(app: FastAPI):
                 _arq_settings = ArqRedisSettings.from_dsn(
                     _scale_cfg.redis_url.replace("redis+cluster://", "redis://").split(",")[0]
                 )
-                _arq_redis = await arq_create_pool(_arq_settings)
+                from core.telemetry import queue as _tqueue
+                _arq_redis = await arq_create_pool(
+                    _arq_settings, job_serializer=_tqueue.serialize,
+                    job_deserializer=_tqueue.deserialize)
                 app.state.arq_redis = _arq_redis
 
                 # Postgres engine + session factory

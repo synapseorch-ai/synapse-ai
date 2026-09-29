@@ -221,8 +221,11 @@ async def acquire(tenant: str | None = None):
         if entry is None:
             entry = _Entry(tenant)
             _entries[tenant] = entry
+            # Detached from the spawning job's trace and log ids: the
+            # connection outlives it and serves the tenant's later jobs.
+            from core.telemetry import detached_context
             entry.task = asyncio.create_task(
-                _own(entry), name=f"mcp-pool[{tenant}]"
+                _own(entry), name=f"mcp-pool[{tenant}]", context=detached_context()
             )
         entry.refs += 1
         entry.idle_since = None

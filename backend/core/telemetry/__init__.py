@@ -25,6 +25,29 @@ def setup(service_name: str, **kwargs) -> bool:
     return _setup(service_name, **kwargs)
 
 
+def detached_context():
+    """A copy of the current context with no current span and no log ids.
+
+    For a task that outlives the request or job that spawns it — a pooled MCP
+    connection's supervisor lives for minutes and serves many jobs — so its
+    calls do not join the first job's trace or carry its run id.
+    """
+    import contextvars
+
+    from core.telemetry import logcontext
+
+    context = contextvars.copy_context()
+
+    def clear():
+        logcontext.clear()
+        if state.tracing:
+            from opentelemetry import context as otel_context
+            otel_context.attach(otel_context.Context())
+
+    context.run(clear)
+    return context
+
+
 def instrument_engine(engine) -> None:
     """Trace a SQLAlchemy engine's statements once telemetry is on (a no-op off)."""
     if state.configured and not state.tracing:

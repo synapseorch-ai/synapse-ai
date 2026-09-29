@@ -23,6 +23,7 @@ from core.scale import mcp_pool
 from core.scale.pubsub import clear_chat_cancellation, is_chat_cancelled
 from core.scale.config import QUEUE_NAME, get_scale_config
 from core.tenancy import get_tenant, tenant_scope
+from core.telemetry import queue as _tqueue
 
 from core.log import get_logger
 
@@ -79,11 +80,14 @@ def _for_the_jobs_tenant(fn):
     async def wrapper(ctx: dict, *args, **kwargs):
         from core.scale.context import resolve_job_tenant
 
-        tenant = await resolve_job_tenant(ctx, fn.__name__, args, kwargs)
-        if tenant is None:
-            return await fn(ctx, *args, **kwargs)
-        with tenant_scope(tenant):
-            return await fn(ctx, *args, **kwargs)
+        # The job's span, from the trace its envelope carried (a no-op when
+        # telemetry is off, or when an embedder's own wrapper started one).
+        with _tqueue.job_span(ctx, fn.__name__, kwargs):
+            tenant = await resolve_job_tenant(ctx, fn.__name__, args, kwargs)
+            if tenant is None:
+                return await fn(ctx, *args, **kwargs)
+            with tenant_scope(tenant):
+                return await fn(ctx, *args, **kwargs)
 
     return wrapper
 
@@ -1140,6 +1144,10 @@ class WorkerSettings:
     on_startup = worker_startup
     on_shutdown = worker_shutdown
     redis_settings = _build_redis_settings()
+    # Pickle plus the trace context, in a key an older worker never reads
+    # (core/telemetry/queue.py). Plain pickle when telemetry is off.
+    job_serializer = _tqueue.serialize
+    job_deserializer = _tqueue.deserialize
 
 
 # ---------------------------------------------------------------------------
