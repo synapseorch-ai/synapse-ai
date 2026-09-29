@@ -5263,7 +5263,14 @@ async def _paste_credentials(page):
 
 async def _vault_error(page):
     await page.get_by_text("note.txt", exact=True).first.click()
-    await page.get_by_placeholder("Start typing...").fill("hello, edited")
+    editor = page.get_by_placeholder("Start typing...")
+    # The file's text lands after the editor does; typing first is overwritten
+    # by it, and SAVE stays disabled (a clean file has nothing to save).
+    for _ in range(40):
+        if await editor.count() and await editor.input_value() == "hello":
+            break
+        await asyncio.sleep(0.25)
+    await editor.fill("hello, edited")
     await page.get_by_role("button", name=re.compile("^save$", re.I)).first.click()
 
 
