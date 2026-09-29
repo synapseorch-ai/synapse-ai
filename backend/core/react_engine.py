@@ -13,6 +13,7 @@ import time
 import httpx
 
 from core.config import load_settings, HTTP_TOOL_TIMEOUT, mcp_call_timeout
+from core.telemetry import spans as _spans
 from core.vault import maybe_vault, MentionReader
 from core.compaction import maybe_compact
 from core.session import (
@@ -867,6 +868,8 @@ def narrow_allowed_tools(override, agent_tools):
     return [t for t in override if t in agent_tools]
 
 
+@_spans.traced_generator("synapse.agent_step", _spans.agent_step_attributes,
+                         on_event=_spans.agent_step_events)
 async def run_agent_step(
     message,
     agent_id,
@@ -2937,6 +2940,8 @@ async def resolve_agent_for_run(agent_id: str | None) -> dict | None:
     return resolved if resolved is not None else await _resolve_agent_by_id(agent_id)
 
 
+@_spans.traced_generator("synapse.chat_turn", _spans.chat_turn_attributes,
+                         on_event=_spans.chat_turn_events, on_end=_spans.chat_turn_end)
 async def run_react_loop(request, server_module, should_stop=None, *,
                          progress_events: bool = False, resume_state: dict | None = None,
                          expand_mentions: bool = False):

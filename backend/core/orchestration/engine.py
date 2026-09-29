@@ -22,6 +22,7 @@ from .time_limits import step_time_limit, timed_out
 from .logger import OrchestrationLogger
 
 from core.log import get_logger
+from core.telemetry import spans as _spans
 
 _log = get_logger(__name__)
 
@@ -103,7 +104,8 @@ class OrchestrationEngine:
         # V1 never sets this — cancel_hook=None uses the existing in-memory check.
         self.cancel_hook = cancel_hook
         self.step_map: dict[str, StepConfig] = {s.id: s for s in orchestration.steps}
-        self.executors = STEP_EXECUTORS
+        # Each step in a span when telemetry is on; the table itself when off.
+        self.executors = _spans.traced_executors(STEP_EXECUTORS)
         # Populated by the run/resume entry points, not here: __init__ cannot
         # await, and reading the store from a constructor would make every
         # construction site — including thirteen in tests — need a live store
@@ -241,6 +243,7 @@ class OrchestrationEngine:
         async for event in self._execute_loop(run, state):
             yield event
 
+    @_spans.traced_generator("synapse.run", _spans.run_attributes, on_end=_spans.run_end)
     async def _execute_loop(
         self, run: OrchestrationRun, state: SharedState, started: float | None = None,
     ) -> AsyncGenerator[dict, None]:

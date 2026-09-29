@@ -25,6 +25,7 @@ from botocore import UNSIGNED as _BEDROCK_UNSIGNED
 from botocore.config import Config
 
 from core.config import LLM_REQUEST_TIMEOUT
+from core.telemetry import spans as _spans
 
 from core.log import get_logger
 
@@ -50,6 +51,7 @@ def _retry_notice(provider: str, reason: str, attempt: int, max_retries: int, ba
     """
     if attempt >= max_retries:
         return
+    _spans.model_retry(attempt, reason)
     _log.warning(f"⏳ {provider} {reason} on attempt {attempt}/{max_retries}; retrying in {backoff}s")
     from core.model_wait import report
 
@@ -3104,6 +3106,7 @@ def _messages_to_transcript(messages: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+@_spans.traced_coroutine("gen_ai.chat", _spans.model_call_attributes, model_call=True)
 async def generate_response_ex(
     prompt_msg,
     sys_prompt,

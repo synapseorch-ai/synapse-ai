@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from core.store import usage as usage_store
+from core.telemetry import spans as _spans
 
 # -------------------------------------------------------------
 # Pricing lookup
@@ -206,6 +207,11 @@ async def log_usage(
         cache_write_tokens=cache_write_tokens,
     )
     estimated_savings = calculate_savings(model, cache_read_tokens)
+    # The model call's span and metrics, when telemetry is on: counts and cost.
+    _spans.model_usage(model=model, provider=provider, input_tokens=input_tokens,
+                       output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
+                       cache_write_tokens=cache_write_tokens, cost=estimated_cost,
+                       response_cache_hit=response_cache_hit)
     await usage_store.append({
         "timestamp": datetime.now(timezone.utc),
         "model": model,

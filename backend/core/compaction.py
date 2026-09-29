@@ -26,6 +26,7 @@ from pathlib import Path
 from core.usage_tracker import log_compaction_event
 
 from core.log import get_logger
+from core.telemetry import spans as _spans
 
 _log = get_logger(__name__)
 
@@ -121,6 +122,7 @@ def _build_context_block(current_context_text: str, recent_history_messages: lis
 MIN_STAGE1_SAVINGS_PCT = 20  # Stage-1 trim must save at least this % or we fall through to Stage-2
 
 
+@_spans.traced_coroutine("synapse.compaction", _spans.compaction_attributes)
 async def maybe_compact(
     current_context_text: str,
     recent_history_messages: list,

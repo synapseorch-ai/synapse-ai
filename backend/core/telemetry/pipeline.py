@@ -239,6 +239,9 @@ def reset_for_tests() -> None:
     from opentelemetry import metrics, trace
     from opentelemetry.util._once import Once
 
+    from core.telemetry import metrics as synapse_metrics
+
+    synapse_metrics.reset_for_tests()
     with _lock:
         state.configured = False
         state.tracing = False
