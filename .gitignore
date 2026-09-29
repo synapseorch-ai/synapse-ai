@@ -46,6 +46,8 @@ dist/
 *.tgz
 synapse/_frontend/
 frontend-build/
+# The npm package's installer (scripts/build_installer.py --out installer)
+/installer/
 node_modules/
 
 # Environment files

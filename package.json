@@ -2,7 +2,15 @@
   "name": "synapse-orch-ai",
   "version": "1.9.1",
   "description": "Synapse - A Multi Agent Orchestrator",
-  "keywords": ["ai", "agent", "mcp", "llm", "orchestrator", "local", "ollama"],
+  "keywords": [
+    "ai",
+    "agent",
+    "mcp",
+    "llm",
+    "orchestrator",
+    "local",
+    "ollama"
+  ],
   "homepage": "https://github.com/synapseorch-ai/synapse-ai",
   "repository": {
     "type": "git",
@@ -16,27 +24,14 @@
     "synapse": "./bin/synapse.js"
   },
   "files": [
-    "bin/",
-    "scripts/postinstall.js",
-    "scripts/preuninstall.js",
-    "frontend-build/",
-    "backend/core/",
-    "backend/services/",
-    "backend/tools/",
-    "backend/main.py",
-    "backend/requirements.txt",
-    "backend/requirements-coding.txt",
-    "backend/requirements-messaging.txt",
-    "backend/requirements.lock",
-    "backend/requirements-messaging.lock"
+    "bin/synapse.js",
+    "installer/"
   ],
   "engines": {
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "node scripts/bundle-frontend.js",
-    "prepack": "node scripts/clean-pycache.js",
-    "prepublishOnly": "npm run build",
-    "preuninstall": "node scripts/preuninstall.js"
+    "build": "python3 scripts/build_installer.py --out installer",
+    "prepublishOnly": "npm run build"
   }
 }

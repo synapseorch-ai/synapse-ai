@@ -100,7 +100,6 @@ jobs:
           include-hidden-files: true
           path: |
             synapse/_frontend
-            frontend-build
 
   publish-python:
     runs-on: ubuntu-latest
@@ -153,19 +152,18 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Download frontend artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: frontend-builds
+          python-version: '3.11'
 
-      - name: Verify tarball hygiene before publish
+      - name: Verify the package before publish
         run: |
+          npm run build
           npm pack
           tgz=$(ls synapse-orch-ai-*.tgz)
-          if tar tzf "$tgz" | grep -E '__pycache__|\.pyc$'; then
-            echo "::error::npm tarball ships Python bytecode"; exit 1
-          fi
-          tar tzf "$tgz" | grep -qx package/bin/synapse.js || { echo "::error::missing launcher"; exit 1; }
+          for f in package/bin/synapse.js package/installer/synapse-install.pyz; do
+            tar tzf "$tgz" | grep -qx "$f" || { echo "::error::missing $f"; exit 1; }
+          done
 
       - name: Publish to npm
         run: npm publish --access public

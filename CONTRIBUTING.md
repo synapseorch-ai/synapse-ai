@@ -181,8 +181,7 @@ bash scripts/build_frontend.sh
 pip install hatch && hatch build
 twine upload dist/*
 
-# 3. Build and publish npm package
-node scripts/bundle-frontend.js
+# 3. Build and publish npm package (the launcher and the installer; npm run build makes the installer)
 npm publish --access public
 
 # Or: push a version tag and let GitHub Actions handle it

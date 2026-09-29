@@ -110,28 +110,33 @@ jobs:
       - name: Syntax-check the launcher
         run: node --check bin/synapse.js
 
-      - name: Pack the npm package (stub the frontend bundle)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Pack the npm package
         run: |
-          mkdir -p frontend-build && touch frontend-build/.keep
+          npm run build
           npm pack
 
-      - name: Assert tarball hygiene + required files
+      - name: The package is the launcher and the installer, nothing else
         run: |
           tgz=$(ls synapse-orch-ai-*.tgz)
           echo "Packed: $tgz"
-          if tar tzf "$tgz" | grep -E '__pycache__|\.pyc$'; then
-            echo "::error::npm tarball ships Python bytecode"; exit 1
-          fi
-          for f in package/bin/synapse.js package/backend/main.py \
-                   package/backend/core/server.py package/scripts/postinstall.js; do
+          tar tzf "$tgz" | sort
+          for f in package/bin/synapse.js package/installer/synapse-install.pyz package/package.json; do
             tar tzf "$tgz" | grep -qx "$f" || { echo "::error::missing $f in npm tarball"; exit 1; }
           done
+          if tar tzf "$tgz" | grep -E '^package/(backend|frontend-build|scripts)/'; then
+            echo "::error::the npm package ships its own backend or frontend again"; exit 1
+          fi
 
-      - name: Global install links the `synapse` binary
+      - name: Global install links `synapse`, which answers --version without installing
         run: |
           npm install -g ./synapse-orch-ai-*.tgz
           command -v synapse
-          # A full run bootstraps a venv + pip install (heavy) — that E2E lives in nightly.
+          test "$(synapse --version)" = "synapse $(node -p "require('./package.json').version")"
+          test ! -e "$HOME/.synapse/install.json"
 
   # ── docker-compose ──────────────────────────────────────────────────────────
   compose-config:

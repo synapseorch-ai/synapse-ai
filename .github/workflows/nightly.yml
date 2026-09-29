@@ -137,14 +137,16 @@ jobs:
           python-version: '3.11'
       - name: Pack + global install
         run: |
-          mkdir -p frontend-build && touch frontend-build/.keep
+          npm run build
           npm pack
           npm install -g ./synapse-orch-ai-*.tgz
-      - name: Bootstrap the backend env via the launcher
+      - name: The first run installs Synapse through the bundled installer
         run: |
-          # `synapse setup`/first-run creates the venv and pip-installs deps.
-          timeout 900 synapse status || true
-          command -v synapse
+          # The package's version is not on PyPI until release day, so the
+          # wheel comes from this checkout.
+          pip install build && python -m build --wheel --outdir dist
+          SYNAPSE_PACKAGE="$(ls $PWD/dist/*.whl)" SYNAPSE_YES=1 timeout 1200 synapse status --json
+          test -f "$HOME/.synapse/install.json"
 
   # ── dependency drift (early warning) ────────────────────────────────────────
   # The gate installs backend/requirements.lock, which is exactly the point: users
