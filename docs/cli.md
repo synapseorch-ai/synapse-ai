@@ -123,6 +123,11 @@ are written to `<home>/run/` and the command returns.
 | `--frontend-port PORT` | `3000` | Port for the frontend web UI (overrides `SYNAPSE_FRONTEND_PORT`) |
 | `--profile` | off | Enable performance profiling (`SYNAPSE_PROFILING=true`) |
 
+An installed Synapse's interface is built to reach its backend on one port (8765),
+so with the bundled interface the backend starts there whatever `--backend-port`
+or the `backend_port` setting says, and a note says so (F309). The frontend port
+can be anything.
+
 ### `stop`
 
 Reads PID files and terminates both processes. Sends `SIGTERM` first, then `SIGKILL` if the process does not exit within 5 seconds. On Windows uses `taskkill /F /T` to kill the full process tree.

@@ -125,6 +125,8 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(flow.Installer, "_browser", lambda self: "Chromium")
     monkeypatch.setattr(flow, "_open", lambda url: None)
     monkeypatch.setattr(flow.autostart, "supported", lambda: False)
+    # This machine may be running a backend on 8765; the flow only needs a free one.
+    monkeypatch.setattr(flow, "BACKEND_PORT", flow.ports.free_port(28765))
     monkeypatch.setattr(legacy.shutil, "which", lambda *a, **k: None)
     uv = _script(fakes / "uv", FAKE_UV)
 
@@ -186,6 +188,23 @@ def test_the_installed_cli_runs_with_the_working_directory_off_sys_path(world, m
     assert code == 0, out
     argv = [json.loads(line) for line in Path(str(world["calls"]) + ".argv").read_text().splitlines()]
     assert argv and all(a[:3] == ["-P", "-m", "synapse"] for a in argv), argv
+
+
+def test_a_taken_backend_port_stops_before_anything_is_installed(world, monkeypatch):
+    """The UI is built to reach the backend on one port (F309): moving the
+    backend would leave every page failing, so the install says so instead."""
+    import socket
+
+    with socket.socket() as taken:
+        taken.bind(("0.0.0.0", 0))
+        taken.listen()
+        monkeypatch.setattr(flow, "BACKEND_PORT", taken.getsockname()[1])
+
+        code, out, calls = world["install"]()
+
+    assert code == 1
+    assert "is in use by another program, and Synapse's backend needs it" in out
+    assert not [c for c in calls if c[:3] == ["uv", "tool", "install"]]
 
 
 def test_no_start_installs_and_says_how_to_start(world):

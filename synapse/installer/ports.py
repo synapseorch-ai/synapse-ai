@@ -2,7 +2,9 @@
 Free ports, found rather than asked for.
 
 The old installer asked "Change the default ports?" of everyone to serve the few
-whose 3000 was taken. Now a taken port is simply skipped for the next free one.
+whose 3000 was taken. Now a taken frontend port is simply skipped for the next
+free one. (The backend's port cannot move: the UI is built to reach it — F309,
+flow.BACKEND_PORT.)
 A port counts as taken if anything listens on it on any interface — the
 frontend binds 0.0.0.0, so a loopback-only probe would miss a clash.
 """
@@ -30,9 +32,3 @@ def free_port(preferred: int, avoid: set[int] | None = None, tries: int = 50) ->
         if port not in avoid and is_free(port):
             return port
     return preferred
-
-
-def pick(backend: int = 8765, frontend: int = 3000) -> tuple[int, int]:
-    b = free_port(backend)
-    f = free_port(frontend, avoid={b})
-    return b, f

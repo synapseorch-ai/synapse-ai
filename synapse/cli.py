@@ -1164,6 +1164,27 @@ def _effective_ports(backend_port: int | None = None,
     )
 
 
+def _bundled_backend_port() -> "int | None":
+    """The backend port the bundled UI was built to call, or None (F309).
+
+    Next inlines the backend's URL into the standalone build and bakes the
+    `/api/*` rewrite into its manifest, so the bundled UI calls that port no
+    matter where the backend is started. Until the UI reads it at runtime, the
+    backend has to be where the UI looks.
+    """
+    import json as _json
+    from urllib.parse import urlparse
+
+    if not _BUNDLED_FRONTEND.exists():
+        return None
+    try:
+        config = _json.loads((_BUNDLED_FRONTEND / ".next" / "required-server-files.json")
+                             .read_text(encoding="utf-8"))["config"]["env"]
+        return int(urlparse(config["BACKEND_URL"]).port or config["BACKEND_PORT"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def _quiet_stdout():
     """Send a store helper's notes (`[store] added missing columns`) to stderr."""
     import contextlib
@@ -1223,6 +1244,12 @@ def _start_command(
             print(f"Note: setup wizard error ({e}). Run 'synapse setup' to configure.")
 
     effective_backend_port, effective_frontend_port = _effective_ports(backend_port, frontend_port)
+    built_for = _bundled_backend_port()
+    if built_for and built_for != effective_backend_port:
+        print(f"Note: this Synapse's interface reaches its backend on port {built_for}, so the "
+              f"backend starts there (port {effective_backend_port} would leave the interface "
+              f"unable to reach it).", file=sys.stderr)
+        effective_backend_port = built_for
 
     ensure_run_dir()
     _ensure_playwright_browsers()

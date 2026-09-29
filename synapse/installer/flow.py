@@ -37,6 +37,8 @@ from .widgets import Asker, Cancelled
 
 PACKAGE = "synapse-orch-ai"
 PYTHON = "3.12"
+#: The port the released UI is built to reach its backend on (F309).
+BACKEND_PORT = 8765
 IS_WIN = sys.platform == "win32"
 RETRY = {
     "posix": "curl -LsSf https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh | bash",
@@ -350,11 +352,22 @@ class Installer:
         return _tilde(self.s.backup)
 
     def _pick_ports(self) -> None:
-        wanted_b = _int(self.legacy.settings.get("backend_port")) or 8765
-        wanted_f = _int(self.legacy.settings.get("frontend_port")) or 3000
+        """The frontend moves to a free port; the backend cannot move (F309).
+
+        The released UI is built to reach its backend on BACKEND_PORT, so a
+        backend anywhere else leaves every page failing. When something else
+        holds that port, stop here, before anything is installed, and say so.
+        """
         if self.existing.get("version") and not self.legacy.found:
             return   # a 2.x install keeps the ports it has in its settings
-        self.s.backend_port, self.s.frontend_port = ports.pick(wanted_b, wanted_f)
+        if not ports.is_free(BACKEND_PORT):
+            self.screen.fail("setup")
+            raise Failed("setup", f"port {BACKEND_PORT} is in use by another program, and Synapse's "
+                                  "backend needs it. Close that program — if it is an older Synapse "
+                                  "running in another window, stop it there — then run the installer again.")
+        wanted_f = _int(self.legacy.settings.get("frontend_port")) or 3000
+        self.s.backend_port = BACKEND_PORT
+        self.s.frontend_port = ports.free_port(wanted_f, avoid={BACKEND_PORT})
 
     def _python(self) -> str:
         self.uv = self._find_uv()

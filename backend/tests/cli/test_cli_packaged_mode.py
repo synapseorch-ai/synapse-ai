@@ -229,6 +229,37 @@ def test_a_backend_that_crashes_is_reported_with_its_log(start_env, monkeypatch,
     assert wizard_runs == []
 
 
+def test_the_backend_starts_where_the_bundled_ui_looks_for_it(start_env, monkeypatch, capsys, tmp_path):
+    """The bundled UI calls the backend port it was built with (F309)."""
+    import json as _json
+
+    bundle = tmp_path / "_frontend"
+    (bundle / ".next").mkdir(parents=True)
+    (bundle / ".next" / "required-server-files.json").write_text(_json.dumps(
+        {"config": {"env": {"BACKEND_URL": "http://127.0.0.1:8765", "BACKEND_PORT": "8765"}}}))
+    monkeypatch.setattr(cli, "_BUNDLED_FRONTEND", bundle)
+    assert cli._bundled_backend_port() == 8765
+
+    started = []
+
+    def backend(detach=False, port=None, profile=False, verbose=False):
+        started.append(port)
+        raise cli._StartFailed("stop here", "backend")
+
+    monkeypatch.setattr(cli, "start_backend", backend)
+    monkeypatch.setattr("synapse._store.is_configured", lambda: True)
+    with pytest.raises(SystemExit):
+        cli._start_command(no_browser=True)   # start_env asks for 18765
+
+    assert started == [8765]
+    assert "reaches its backend on port 8765" in capsys.readouterr().err
+
+
+def test_no_bundle_no_pinning(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_BUNDLED_FRONTEND", tmp_path / "absent")
+    assert cli._bundled_backend_port() is None
+
+
 # ── setup --apply, status --json, logs ───────────────────────────────────────
 
 def _run(monkeypatch, capsys, argv, stdin=""):

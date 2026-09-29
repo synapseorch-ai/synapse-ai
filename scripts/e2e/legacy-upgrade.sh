@@ -70,7 +70,7 @@ check "agents" "$(sqlite3 $DB "select id from agents where id like 'agent_a%' or
 check "orchestrations" "$(sqlite3 $DB "select id from orchestrations where id = 'orch_o1'")" orch_o1
 check "schedules" "$(sqlite3 $DB 'select id from schedules')" sched_1
 check "chats" "$(sqlite3 $DB 'select count(*) from chat_sessions')" 2
-check "model" "$(sqlite3 $DB "select value from settings where key='model'")" '"claude-sonnet-4-6"'
+check "model" "$(sqlite3 $DB "select value from scale_settings where key='model'")" '"claude-sonnet-4-6"'
 check "vault file" "$(cat ~/.synapse/var/blobs/default/vault/tool_outputs/page.md)" "# saved by an agent"
 check "dataset" "$(cat ~/.synapse/var/blobs/default/datasets/qa.jsonl)" '{"q":1}'
 PY=$(sed -n 's/.*"tool_python": "\([^"]*\)".*/\1/p' ~/.synapse/install.json)
