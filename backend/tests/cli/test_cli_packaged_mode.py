@@ -46,8 +46,10 @@ def test_importing_the_packaged_cli_sets_synapse_home(tmp_path):
         shutil.copy(REPO / "synapse" / name, site / "synapse" / name)
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path / "me"),
            "USERPROFILE": str(tmp_path / "me"), "PYTHONPATH": str(site)}
+    # -P: `-c` puts the working directory first on sys.path, and run from the
+    # repo root that is the checkout's own synapse/ — not the copy under test.
     out = subprocess.run(
-        [sys.executable, "-c",
+        [sys.executable, "-P", "-c",
          "import os, synapse.cli as c; print(os.environ['SYNAPSE_HOME']); "
          "print(c._env_file()); print(c._run_dir()); print(c._log_dir())"],
         env=env, capture_output=True, text=True, timeout=60,
@@ -66,7 +68,7 @@ def test_an_explicit_synapse_home_is_kept(tmp_path):
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path),
            "PYTHONPATH": str(site), "SYNAPSE_HOME": str(tmp_path / "chosen")}
     out = subprocess.run(
-        [sys.executable, "-c", "import synapse.cli as c; print(c._env_file())"],
+        [sys.executable, "-P", "-c", "import synapse.cli as c; print(c._env_file())"],
         env=env, capture_output=True, text=True, timeout=60,
     )
     assert out.stdout.strip() == str(tmp_path / "chosen" / ".env")
