@@ -2184,11 +2184,14 @@ class HumanStepExecutor:
         run.human_prompt = prompt
         run.human_fields = step.human_fields
 
-        # Gather recent agent output from shared state for display context
+        # Gather recent agent output from shared state for display context,
+        # and the key it came from, so the page can say what it is (U65).
         agent_context = None
+        context_key = None
         for key in (step.input_keys or []):
             if key in run.shared_state and run.shared_state[key]:
                 agent_context = str(run.shared_state[key])
+                context_key = key
                 break
         # Fallback: find the last output from step history
         if not agent_context:
@@ -2196,6 +2199,7 @@ class HumanStepExecutor:
                 okey = h.get("output_key")
                 if okey and okey in run.shared_state:
                     agent_context = str(run.shared_state[okey])
+                    context_key = okey
                     break
 
         channel_id = step.human_channel_id
@@ -2207,6 +2211,7 @@ class HumanStepExecutor:
             "fields": step.human_fields,
             "run_id": run.run_id,
             "agent_context": agent_context,
+            "context_key": context_key,
             "channel_id": channel_id,  # frontend can show which channel was notified
         }
 
