@@ -881,7 +881,11 @@ async def lifespan(app: FastAPI):
 from core.log import configure as _configure_logging
 _configure_logging()
 
-app = FastAPI(lifespan=lifespan)
+# FastAPI's own telemetry off (0.142+ would export on OTEL_* alone): Synapse's
+# switch and TelemetryMiddleware below are the only way in (core/telemetry).
+from core.telemetry import fastapi_options as _fastapi_telemetry_off
+
+app = FastAPI(lifespan=lifespan, **_fastapi_telemetry_off())
 
 _frontend_port = os.getenv("SYNAPSE_FRONTEND_PORT", "3000")
 _backend_port_cors = os.getenv("SYNAPSE_BACKEND_PORT", "8765")

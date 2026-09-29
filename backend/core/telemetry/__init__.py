@@ -25,6 +25,27 @@ def setup(service_name: str, **kwargs) -> bool:
     return _setup(service_name, **kwargs)
 
 
+def fastapi_options() -> dict:
+    """`FastAPI(**telemetry.fastapi_options())`: FastAPI's own telemetry, off.
+
+    FastAPI 0.142 added native telemetry that, at startup, adds OTLP exporters
+    for traces, metrics and logs whenever an `OTEL_EXPORTER_OTLP_*ENDPOINT` is
+    set — on a machine that exports another application's telemetry, it would
+    start sending Synapse's, past the content guard (or fail the app's startup
+    when its extra is missing) — and that emits its own server spans once a
+    provider exists. Synapse's switch and middleware do this job, so FastAPI's
+    are turned off. FastAPI before 0.142 has no such argument and gets none.
+    """
+    import inspect
+
+    from fastapi import FastAPI
+
+    if "telemetry" not in inspect.signature(FastAPI.__init__).parameters:
+        return {}
+    return {"telemetry": {"auto_configure": False, "tracing": False, "metrics": False,
+                          "logs": False}}
+
+
 def detached_context():
     """A copy of the current context with no current span and no log ids.
 

@@ -64,3 +64,8 @@ def test_a_failed_jobs_line_keeps_its_type_and_frames_not_its_message():
     rendered = logging.Formatter().format(record)
     assert SECRET not in rendered
     assert "ValueError" in rendered and "test_a_failed_jobs_line_keeps" in rendered
+
+
+def test_a_line_outside_any_tenant_claims_none():
+    line = json.loads(JsonFormatter().format(_record("booted", (), name="core.server")))
+    assert "org_id" not in line

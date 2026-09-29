@@ -55,12 +55,15 @@ def _trace_ids() -> dict:
 
 
 def _tenant() -> str | None:
+    """The tenant bound to this line, if one is — never the single-tenant
+    placeholder a line outside any tenant would otherwise claim."""
     try:
+        from core.store.models import DEFAULT_TENANT
         from core.tenancy import get_tenant
         tenant = get_tenant()
     except Exception:
         return None
-    return str(tenant) if tenant else None
+    return str(tenant) if tenant and tenant != DEFAULT_TENANT else None
 
 
 class JsonFormatter(logging.Formatter):

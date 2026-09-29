@@ -32,7 +32,9 @@ def _start_health_server():
     import uvicorn
     from fastapi import FastAPI
 
-    health_app = FastAPI()
+    from core.telemetry import fastapi_options
+
+    health_app = FastAPI(**fastapi_options())  # FastAPI's own telemetry off
     _start_time = time.time()
 
     @health_app.get("/health")

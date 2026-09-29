@@ -95,3 +95,24 @@ def test_an_outbound_call_nobody_started_is_not_recorded(telemetry_on):
         assert child.is_recording()
         child.end()
     assert telemetry_on.names() == ["ZRANGEBYSCORE", "job"]
+
+
+def test_fastapis_own_telemetry_is_switched_off_where_it_exists(monkeypatch):
+    """FastAPI 0.142+ exports from OTEL_* on its own — a machine exporting another
+    application's telemetry would start sending Synapse's. The apps pass this."""
+    import fastapi
+
+    class Newer:
+        def __init__(self, *, telemetry=None, **kwargs):
+            pass
+
+    monkeypatch.setattr(fastapi, "FastAPI", Newer)
+    assert telemetry.fastapi_options() == {"telemetry": {
+        "auto_configure": False, "tracing": False, "metrics": False, "logs": False}}
+
+    class Older:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(fastapi, "FastAPI", Older)
+    assert telemetry.fastapi_options() == {}
