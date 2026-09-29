@@ -6,6 +6,7 @@ import asyncio
 import calendar
 import json
 import time
+from contextvars import ContextVar
 from typing import AsyncGenerator, Awaitable, Callable
 
 import anyio
@@ -86,8 +87,54 @@ def apply_model_override(orchestration: "Orchestration", model: str | None) -> N
             step.model = model
 
 
+#: A Parallel branch running beside others keeps its own view of where it is
+#: (F301): the transition every step's prompt reads, and the loop depth. Two
+#: loops in two branches set both for each body step, and one engine-wide pair
+#: gave a body step the other loop's iteration. Keyed by engine, so a workflow
+#: step's child engine keeps its own; set only inside a branch's task, whose
+#: context asyncio copied, so a sibling or the node never sees it.
+_BRANCH_VIEW: ContextVar[dict | None] = ContextVar("orchestration_branch_view", default=None)
+
+
 class OrchestrationEngine:
     """Runs an orchestration by walking through its step graph."""
+
+    def _branch_view(self) -> dict | None:
+        view = _BRANCH_VIEW.get()
+        return view.get(id(self)) if view else None
+
+    @property
+    def current_transition(self):
+        own = self._branch_view()
+        return own["current_transition"] if own is not None else self.__dict__.get("_transition")
+
+    @current_transition.setter
+    def current_transition(self, value) -> None:
+        own = self._branch_view()
+        if own is not None:
+            own["current_transition"] = value
+        else:
+            self.__dict__["_transition"] = value
+
+    @property
+    def _loop_depth(self) -> int:
+        own = self._branch_view()
+        return own["loop_depth"] if own is not None else self.__dict__.get("_depth_in_loops", 0)
+
+    @_loop_depth.setter
+    def _loop_depth(self, value: int) -> None:
+        own = self._branch_view()
+        if own is not None:
+            own["loop_depth"] = value
+        else:
+            self.__dict__["_depth_in_loops"] = value
+
+    def enter_branch(self) -> None:
+        """From here on, in the calling task only, this engine's transition and
+        loop depth are the branch's own — starting from what they are now."""
+        view = dict(_BRANCH_VIEW.get() or {})
+        view[id(self)] = {"current_transition": self.current_transition, "loop_depth": self._loop_depth}
+        _BRANCH_VIEW.set(view)
 
     def __init__(
         self,

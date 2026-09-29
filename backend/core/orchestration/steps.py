@@ -1164,14 +1164,12 @@ CONTAINER_END = "_container_end"
 
 #: Steps that keep their branch in order, after the branches that run at the
 #: same time, and why. A person's question pauses the whole run, and a run
-#: waits on one question at a time. A Loop writes run-wide markers — its item
-#: and index keys (`loop_item` unless renamed), the engine's loop depth and
-#: transition — that a second loop beside it would overwrite; a nested
-#: Parallel may hold one.
+#: waits on one question at a time. A Loop and a nested Parallel are not here
+#: any more (F301): the engine's view of where a step is is each branch's own,
+#: their bodies are read for the reasons below, and a loop key two branches
+#: would share keeps one of them in order (`branch_keys.loop_key_conflicts`).
 _IN_ORDER_TYPES = {
     StepType.HUMAN: "a person answers a step in it",
-    StepType.LOOP: "it holds a Loop",
-    StepType.PARALLEL: "it holds a Parallel",
 }
 
 #: Set inside a branch that runs beside others; an agent step there merges its
@@ -1184,7 +1182,8 @@ _BRANCH_ASKED = "_branch_asked"
 
 
 async def _why_in_order(engine: "OrchestrationEngine", step_ids: list[str],
-                        steps: dict[str, StepConfig], depth: int = 0) -> str | None:
+                        steps: dict[str, StepConfig], depth: int = 0,
+                        _seen: set[str] | None = None) -> str | None:
     """Why a branch made of `step_ids` cannot run beside the others, or None.
 
     A branch runs at the same time as its siblings unless one of its steps could
@@ -1201,14 +1200,26 @@ async def _why_in_order(engine: "OrchestrationEngine", step_ids: list[str],
     from .resolved import resolve_for_run
 
     settings = None
+    seen = _seen if _seen is not None else set()
     for sid in step_ids:
         sub = steps.get(sid)
         if sub is None:
             continue  # the branch fails on it, as it always has
+        if sid in seen:
+            continue  # a loop whose body reaches itself fails at its depth limit
+        seen.add(sid)
         if sub.type in _IN_ORDER_TYPES:
-            if depth and sub.type != StepType.HUMAN:
-                continue  # inside a child workflow: its own engine, its own state
             return _IN_ORDER_TYPES[sub.type]
+        if sub.type in (StepType.LOOP, StepType.PARALLEL):
+            if depth:
+                continue  # inside a child workflow every step is in `step_ids` already
+            # What runs inside it, read as a branch's own steps are (F301).
+            inner = [sub.loop_step_ids or []] if sub.type == StepType.LOOP else _chains_of(sub, steps)
+            for body in inner:
+                why = await _why_in_order(engine, body, steps, depth, seen)
+                if why:
+                    return why
+            continue
         if sub.type not in (StepType.AGENT, StepType.TOOL):
             continue
         resolved = await resolve_for_run(engine, sub.agent_id, tools=False) if sub.agent_id else None
@@ -1240,6 +1251,14 @@ async def _why_in_order(engine: "OrchestrationEngine", step_ids: list[str],
         elif sub.type == StepType.TOOL and (sub.forced_tool or "").split("__")[-1].startswith("browser_"):
             return "it drives the browser, which has one tab"
     return None
+
+
+def _chains_of(parallel: StepConfig, steps: dict[str, StepConfig]) -> list[list[str]]:
+    """A nested Parallel's branches, as its executor resolves them."""
+    from .branch_keys import branch_chains
+    return branch_chains(
+        {"next_step_id": parallel.next_step_id, "parallel_branches": parallel.parallel_branches or []},
+        {sid: {"next_step_id": s.next_step_id} for sid, s in steps.items()})
 
 
 async def _why_child_in_order(engine: "OrchestrationEngine", agent: dict, depth: int) -> str | None:
@@ -1275,9 +1294,12 @@ class ParallelStepExecutor:
     equals the parallel node's own convergence point (``step.next_step_id``).
 
     Branches run at the same time, each in its own task, at most
-    `PARALLEL_MAX_BRANCHES` (4) at once. A branch that could stop to ask a person,
-    holds a Loop or a nested Parallel, drives the browser, or reads a key another
-    branch writes runs afterwards, in order (`_why_in_order`). Agent and tool
+    `PARALLEL_MAX_BRANCHES` (4) at once. A branch that could stop to ask a person
+    (in a Loop's body or a nested Parallel's branches too), drives the browser,
+    reads a key another branch writes, or shares a loop key with another branch
+    runs afterwards, in order (`_why_in_order`, `branch_keys`). Each branch's
+    task has its own view of where it is — the transition its steps' prompts
+    read and the loop depth (F301). Agent and tool
     branches used to take turns whatever they did — four five-second agents took
     twenty seconds (F255) — because MCP sessions were thought unsafe to share.
     They are safe; bash was the one server that could not serve two calls at
@@ -1390,12 +1412,17 @@ class ParallelStepExecutor:
             _log.debug(f"PARALLEL: ├─ branch {i} already complete — skipping")
         in_order: dict[int, str] = {}
         if _config.PARALLEL_BRANCHES_CONCURRENT and len(pending) > 1:
-            from .branch_keys import sibling_reads
-            reads = sibling_reads(step.model_dump(mode="json"),
-                                  {s.id: s.model_dump(mode="json") for s in engine.orch.steps})
+            from .branch_keys import loop_key_conflicts, sibling_reads
+            _node = step.model_dump(mode="json")
+            _by_id = {s.id: s.model_dump(mode="json") for s in engine.orch.steps}
+            reads = sibling_reads(_node, _by_id)
+            loop_keys = loop_key_conflicts(_node, _by_id)
             for i, chain in pending:
                 if i in reads:
                     in_order[i] = f"it reads {', '.join(repr(k) for k in reads[i])}, which another branch writes"
+                elif i in loop_keys:
+                    in_order[i] = (f"it and another branch's loop both use "
+                                   f"{', '.join(repr(k) for k in loop_keys[i])}")
                 else:
                     why = await _why_in_order(engine, chain, engine.step_map)
                     if why:
@@ -1455,6 +1482,7 @@ class ParallelStepExecutor:
                         if waits and (failures or held):
                             return
                         IN_CONCURRENT_BRANCH.set(True)
+                        engine.enter_branch()
                         async for ev in self._iter_branch(branch_index, chain, **concurrent_kwargs):
                             if ev.get("type") == "human_input_required":
                                 ev = {"type": _BRANCH_ASKED, "branch": branch_index, "event": ev}
@@ -1466,6 +1494,11 @@ class ParallelStepExecutor:
                 finally:
                     await queue.put(_BRANCH_DONE)
 
+            # Every loop writes the iteration markers and puts back what it
+            # found; two at once put back each other's (F301). The node puts
+            # back what it found once they have finished.
+            from .branch_keys import LOOP_MARKERS
+            markers = {k: run.shared_state[k] for k in LOOP_MARKERS if k in run.shared_state}
             tasks = [asyncio.create_task(_pump(i, c, n >= _config.PARALLEL_MAX_BRANCHES))
                      for n, (i, c) in enumerate(concurrent)]
             remaining = len(tasks)
@@ -1493,6 +1526,11 @@ class ParallelStepExecutor:
                 for t in tasks:
                     if not t.done():
                         t.cancel()
+            for key in LOOP_MARKERS:
+                if key in markers:
+                    run.shared_state[key] = markers[key]
+                else:
+                    run.shared_state.pop(key, None)
 
         if failures:
             # Before any sequential branch starts: an agent or a tool has no

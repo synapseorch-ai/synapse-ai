@@ -136,3 +136,58 @@ def sibling_reads(parallel: dict, by_id: dict[str, dict]) -> dict[int, list[str]
         if shared:
             found[index] = shared
     return found
+
+
+#: What every Loop writes as it goes, whatever its keys are called — a body's
+#: template can read them (`{state._loop_current_iteration}`).
+LOOP_MARKERS = ("_loop_current_iteration", "_loop_total")
+
+
+def _loop_keys(step_id: str, by_id: dict[str, dict], seen: set[str]) -> set[str]:
+    """The keys every Loop in a step's reach writes each iteration: its index
+    key, and a for-each's item key. Not in `_writes`: two loops in two branches
+    that keep the default `loop_index` have always worked, one after the other,
+    and must not be refused (F256) — they keep their order instead (F301)."""
+    step = by_id.get(step_id)
+    if not step or step_id in seen:
+        return set()
+    seen.add(step_id)
+    keys: set[str] = set()
+    if step.get("type") == "loop":
+        keys.add(step.get("loop_index_key") or "loop_index")
+        if step.get("loop_over"):
+            keys.add(step.get("loop_item_key") or "loop_item")
+        for body_id in step.get("loop_step_ids") or []:
+            keys |= _loop_keys(body_id, by_id, seen)
+    elif step.get("type") == "parallel":
+        for chain in branch_chains(step, by_id):
+            for sid in chain:
+                keys |= _loop_keys(sid, by_id, seen)
+    return keys
+
+
+def loop_key_conflicts(parallel: dict, by_id: dict[str, dict]) -> dict[int, list[str]]:
+    """Per branch, the loop keys it would share with another branch if the two
+    ran at the same time (F301): a key its loop writes that another branch's
+    loop or output writes too, a key another branch's loop writes that it reads,
+    and — beside any other loop — the iteration markers, if it reads them. Such
+    a branch keeps its place in order, as a reader of a sibling's output does."""
+    chains = branch_chains(parallel, by_id)
+
+    def _union(fn, chain):
+        return set().union(*(fn(sid, by_id, set()) for sid in chain)) if chain else set()
+
+    loops = [_union(_loop_keys, c) for c in chains]
+    writes = [_union(_writes, c) for c in chains]
+    reads = [_union(_reads, c) for c in chains]
+    found: dict[int, list[str]] = {}
+    for index in range(len(chains)):
+        others = [j for j in range(len(chains)) if j != index]
+        their_loops = set().union(*(loops[j] for j in others)) if others else set()
+        their_writes = set().union(*(writes[j] for j in others)) if others else set()
+        shared = (loops[index] & (their_loops | their_writes)) | (reads[index] & their_loops)
+        if their_loops:
+            shared |= reads[index] & set(LOOP_MARKERS)
+        if shared:
+            found[index] = sorted(shared)
+    return found
