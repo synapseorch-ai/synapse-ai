@@ -4935,6 +4935,66 @@ async def check_bellplain(browser) -> str:
     return "both bell rows and the OS popup read the question's words, with no markdown marks"
 
 
+@check
+async def check_evaluatoronce(browser) -> str:
+    """The run log prints an evaluator's decision once (U66).
+
+    The engine sends two events for every evaluator — the step's own
+    `evaluator_decision`, then the router's `routing_decision` — and the log
+    printed both ("Evaluator chose pass (…)" and "Evaluator routed → pass (…)").
+    The step's line stays: it is there even when the label is not in the route
+    map and the router says nothing. An if/else's and a switch's routing lines,
+    and an archived run's (no `step_type`), are unchanged.
+    """
+    oid = f"orch_uismoke_eval_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, f"ui-smoke eval {oid[-6:]}"))
+    events = [
+        {"type": "evaluator_decision", "orch_step_id": "judge", "tool_name": "route_pass",
+         "arguments": {"label": "pass", "reasoning": "the draft answers the question"}},
+        {"type": "routing_decision", "step_type": "evaluator", "orch_step_id": "judge", "decision": "pass",
+         "target_step_id": "send", "reasoning": "the draft answers the question"},
+        {"type": "evaluator_decision", "orch_step_id": "judge2", "tool_name": "route_other",
+         "arguments": {"label": "other", "reasoning": "not in the map"}},
+        {"type": "routing_decision", "step_type": "if_else", "orch_step_id": "gate", "decision": True,
+         "target_step_id": "yes"},
+        {"type": "routing_decision", "orch_step_id": "old", "decision": "archived", "reasoning": "from before"},
+    ]
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(RUNLOG_STUB)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Run", exact=True).click()
+        for _ in range(30):
+            if await page.evaluate("() => !!window.__run.raw"):
+                break
+            await asyncio.sleep(0.1)
+        for e in events:
+            await page.evaluate(f"() => window.__run.raw({json.dumps(e)})")
+        await asyncio.sleep(1.0)
+        text = await page.evaluate("() => document.body.innerText")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    bad = []
+    chose = text.count("Evaluator chose pass (the draft answers the question)")
+    routed = text.count("Evaluator routed → pass")
+    if chose != 1 or routed:
+        bad.append(f"the evaluator's decision is printed {chose + routed} times "
+                   f"({chose} 'chose', {routed} 'routed'), not once")
+    if "Evaluator chose other (not in the map)" not in text:
+        bad.append("a label the route map does not hold is not printed")
+    if "Branch: true → yes" not in text:
+        bad.append("an if/else's routing line is gone")
+    if "Evaluator routed → archived (from before)" not in text:
+        bad.append("an archived run's routing line (no step_type) is gone")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "one line per evaluator decision; if/else and archived routing lines unchanged"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

@@ -1320,6 +1320,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 // which. Absent means an archived run from before the rename,
                 // when only the evaluator used this name.
                 const st = data.step_type as string | undefined;
+                // An evaluator has already said where it went, in its own
+                // `evaluator_decision` line: printing the router's too wrote
+                // every decision twice (U66). The step's line is the one that
+                // is always there — when its label is not in the route map the
+                // router says nothing at all.
+                if (st === 'evaluator') break;
                 const routed = st === 'if_else'
                     ? `Branch: ${data.decision ?? 'false'} → ${data.target_step_id || 'end'}`
                     : st === 'switch'
