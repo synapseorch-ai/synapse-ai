@@ -20,6 +20,32 @@ import { cn } from "@/lib/cn";
 
 import { buttonStyles } from "./button";
 
+/* ── An item's action runs after the menu has closed ────────────────────────
+ *
+ * A pick closes the menu (U58: `MenuItem` used to `preventDefault` Radix's
+ * select, which left every kit menu open until Escape). Radix hands focus back
+ * to the trigger as the menu goes, in a timeout of its own; an action run
+ * before that (a dialog opening) would take focus first and then lose it, and
+ * the dialog would have nothing to return focus to when it closes. So the item
+ * only records its action, and the menu runs it once the trigger has focus.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+const RunAfterClose = React.createContext<((action: () => void) => void) | null>(null);
+
+function useRunAfterClose() {
+  const pendingRef = React.useRef<(() => void) | null>(null);
+  const runAfterClose = React.useCallback((action: () => void) => {
+    pendingRef.current = action;
+  }, []);
+  const onCloseAutoFocus = React.useCallback(() => {
+    const run = pendingRef.current;
+    pendingRef.current = null;
+    // Radix focuses the trigger after this handler returns.
+    if (run) setTimeout(run, 0);
+  }, []);
+  return { runAfterClose, onCloseAutoFocus };
+}
+
 export function RowMenu({
   children,
   label = "More actions",
@@ -27,6 +53,7 @@ export function RowMenu({
   children: React.ReactNode;
   label?: string;
 }) {
+  const { runAfterClose, onCloseAutoFocus } = useRunAfterClose();
   return (
     <RMenu.Root>
       <RMenu.Trigger
@@ -42,9 +69,10 @@ export function RowMenu({
         <RMenu.Content
           align="end"
           sideOffset={4}
+          onCloseAutoFocus={onCloseAutoFocus}
           className="z-50 min-w-44 overflow-hidden rounded-lg border border-border-strong bg-surface p-1 shadow-xl"
         >
-          {children}
+          <RunAfterClose.Provider value={runAfterClose}>{children}</RunAfterClose.Provider>
         </RMenu.Content>
       </RMenu.Portal>
     </RMenu.Root>
@@ -64,15 +92,14 @@ export function MenuItem({
   tone?: "default" | "danger";
   disabled?: boolean;
 }) {
+  const runAfterClose = React.useContext(RunAfterClose);
   return (
     <RMenu.Item
       disabled={disabled}
-      // Radix restores focus to the trigger on close, which fights a dialog
-      // opened from the same click — the dialog steals focus, then the menu
-      // takes it back. Deferring a tick lets the menu finish closing first.
-      onSelect={(e) => {
-        e.preventDefault();
-        setTimeout(onSelect, 0);
+      // The menu closes, then runs the action (see `useRunAfterClose`).
+      onSelect={() => {
+        if (runAfterClose) runAfterClose(onSelect);
+        else setTimeout(onSelect, 0);
       }}
       className={cn(
         "flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2 py-1.5 text-sm outline-none",
@@ -129,6 +156,7 @@ export function Menu({
   sideOffset?: number;
   className?: string;
 }) {
+  const { runAfterClose, onCloseAutoFocus } = useRunAfterClose();
   return (
     <RMenu.Root>
       <RMenu.Trigger asChild>{trigger}</RMenu.Trigger>
@@ -138,12 +166,13 @@ export function Menu({
           side={side}
           sideOffset={sideOffset}
           collisionPadding={8}
+          onCloseAutoFocus={onCloseAutoFocus}
           className={cn(
             "z-50 min-w-56 overflow-hidden rounded-lg border border-border-strong bg-surface p-1 shadow-xl",
             className,
           )}
         >
-          {children}
+          <RunAfterClose.Provider value={runAfterClose}>{children}</RunAfterClose.Provider>
         </RMenu.Content>
       </RMenu.Portal>
     </RMenu.Root>

@@ -4557,6 +4557,111 @@ async def check_morerows(browser) -> str:
         await ctx.close()
 
 
+# ── the pre-C2 UI round (U1) ─────────────────────────────────────────────────
+
+@check
+async def check_menuclose(browser) -> str:
+    """A kit menu closes when an item is picked, and a dialog it opens keeps focus (U58).
+
+    `MenuItem` called `preventDefault` on Radix's select, so every kit menu
+    stayed open after a pick until Escape. The editor's narrow-screen menu is
+    the case with both kinds of item: Deploy acts in place, Delete opens a
+    confirm dialog. What letting the menu close could break is that dialog:
+    Radix hands focus back to the menu's trigger on close, and a dropdown that
+    closes under a dialog can leave `pointer-events: none` on the body.
+    """
+    oid = f"orch_uismoke_menu_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, f"ui-smoke menu {oid[-6:]}"))
+    ctx = await browser.new_context(viewport={"width": PHONE[0], "height": PHONE[1]})
+    page = await ctx.new_page()
+    deploys: list[str] = []
+
+    async def fake_deploy(route):
+        # Answered here: a real deploy would leave an agent in the store.
+        deploys.append(route.request.method)
+        await route.fulfill(json={"agent_id": f"orch_agent_{oid}"})
+
+    await page.route(f"**/api/orchestrations/{oid}/deploy", fake_deploy)
+    open_menus = "() => document.querySelectorAll('[role=menu]').length"
+    try:
+        bad: list[str] = []
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        more = page.get_by_role("button", name="More actions", exact=True)
+
+        await more.click()
+        await page.get_by_role("menuitem", name="Deploy as Agent").click()
+        await asyncio.sleep(0.8)
+        if deploys != ["POST"]:
+            bad.append(f"Deploy sent {deploys}, not one POST")
+        if await page.evaluate(open_menus):
+            bad.append("the menu is still open after Deploy")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+
+        await page.evaluate("""() => { window.__focusins = [];
+          document.addEventListener('focusin', (e) => window.__focusins.push(
+            e.target.closest('[role=dialog],[role=alertdialog]') ? 'dialog'
+              : (e.target.getAttribute('aria-label') || e.target.getAttribute('role') || e.target.tagName)), true); }""")
+        await more.click()
+        await page.get_by_role("menuitem", name="Delete").click()
+        dialog = page.get_by_role("alertdialog").or_(page.get_by_role("dialog"))
+        await dialog.first.wait_for(timeout=5_000)
+        await asyncio.sleep(0.5)
+        if await page.evaluate(open_menus):
+            bad.append("the menu is still open under the Delete dialog")
+        inside = await page.evaluate(
+            "() => !!document.activeElement?.closest('[role=alertdialog],[role=dialog]')")
+        if not inside:
+            bad.append("focus is not inside the Delete dialog")
+        # The item's action runs once the menu has handed focus back to its
+        # button, so the dialog opens from there (and a dialog that restores
+        # focus on close, F310, would land on it).
+        order = await page.evaluate("() => window.__focusins")
+        before_dialog = order[:order.index("dialog")] if "dialog" in order else order
+        if not before_dialog or before_dialog[-1] != "More actions":
+            bad.append(f"the dialog did not open from the menu's button (focus went {order})")
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
+        if await dialog.count():
+            bad.append("Escape leaves the Delete dialog open")
+        if await page.evaluate(open_menus):
+            bad.append("the menu is still open once the Delete dialog closes")
+        stuck = await page.evaluate("() => getComputedStyle(document.body).pointerEvents")
+        if stuck == "none":
+            bad.append("the page stays unclickable (body pointer-events: none) after the dialog")
+        if not await more.count():
+            # An open modal menu hides the rest of the page from the
+            # accessibility tree; a second Escape is what a person had to find.
+            bad.append("the menu's trigger is hidden from the accessibility tree after the dialog")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+        await more.click(timeout=5_000)
+        if not await page.get_by_role("menuitem", name="Delete").count():
+            bad.append("the menu does not open again after the dialog")
+        await page.keyboard.press("Escape")
+
+        await page.set_viewport_size({"width": WIDE[0], "height": WIDE[1]})
+        await page.goto(f"{APP}/kitchen-sink", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        row_menu = page.get_by_role("button", name="More actions", exact=True)
+        if await row_menu.count():
+            await row_menu.first.click()
+            await page.get_by_role("menuitem", name="Open").click()
+            await asyncio.sleep(0.5)
+            if await page.evaluate(open_menus):
+                bad.append("the kitchen sink's row menu is still open after a pick")
+        else:
+            bad.append("no row menu on /kitchen-sink (is ENABLE_KITCHEN_SINK set?)")
+        if bad:
+            raise AssertionError("; ".join(bad))
+        return "Deploy and a row pick close the menu; Delete's dialog opens with focus, and the page stays usable"
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
