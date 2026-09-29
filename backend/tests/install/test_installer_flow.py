@@ -256,9 +256,12 @@ def test_a_v19_install_is_stopped_backed_up_moved_then_removed(world):
     assert names.index("migrate --json") < names.index("start --detach")
     migrate = next(c for c in calls if c[:1] == ["migrate"])
     assert migrate[migrate.index("--from") + 1] == str(data)
-    # The old model came across, so nothing was asked and nothing overwrote it.
+    # The old model came across, so nothing was asked and nothing overwrote it —
+    # and the screen names it rather than saying to choose one later.
     applied = json.loads(Path(str(world["calls"]) + ".apply").read_text())
     assert "model" not in applied["settings"]
+    setting_up = next(line for line in lines if "Setting up" in line)
+    assert setting_up.endswith("claude-sonnet-4-6, from 1.9.0"), setting_up
     # The secrets came across; the old path did not.
     env = (world["home"] / ".env").read_text()
     assert "SYNAPSE_JWT_SECRET=keep-me" in env and "SYNAPSE_DATA_DIR" not in env

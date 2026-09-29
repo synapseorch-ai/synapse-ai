@@ -477,6 +477,10 @@ class Installer:
         payload = json.dumps({"settings": settings, "default_agent": True})
         self._cli(["setup", "--apply", "-"], stdin_text=payload)
         self._register_autostart()
+        if not self.s.answers and self.legacy.has_model():
+            # Nothing was asked because the 1.x model came across with its data.
+            kept = providers.describe({"model": self.legacy.settings.get("model", "")})
+            return f"{kept}, from {self.legacy.version}"
         return providers.describe(self.s.answers) or "choose an AI later in Settings"
 
     def _register_autostart(self) -> None:
