@@ -4861,6 +4861,80 @@ async def check_humancontext(browser) -> str:
     return "the context box reads 'From category' over 'pass', and the Notes field is named"
 
 
+#: A tab in the background that has granted browser notifications, with the OS
+#: popup recorded instead of shown.
+OS_NOTIFICATIONS = """
+localStorage.setItem('synapseBrowserNotifs', '1');
+Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
+window.__os = [];
+window.Notification = class {
+  static permission = 'granted';
+  static requestPermission() { return Promise.resolve('granted'); }
+  constructor(title, opts) { window.__os.push({title, body: (opts || {}).body}); }
+  close() {}
+};
+"""
+
+
+@check
+async def check_bellplain(browser) -> str:
+    """The bell and the OS notification show a question's words, not its markdown.
+
+    A Human step's prompt is markdown and becomes the notification's body; the
+    bell printed it as typed ("Approve **vault_write** …"), and so did the OS
+    popup. Both bell rows (a question, and an approval with its buttons) and
+    the popup read it as plain text now.
+    """
+    body = "Approve **vault_write** for `notes.md`?\n\n- [the draft](https://example.com/d)"
+    words = "Approve vault_write for notes.md? the draft"
+    items = [
+        {"id": 900001, "ts": time.time(), "kind": "human_input", "title": "Flow needs your input",
+         "body": body, "run_id": "run_uismoke_bell", "data": {}, "resolved": False},
+        {"id": 900002, "ts": time.time(), "kind": "tool_approval", "title": "An agent asks to run a tool",
+         "body": body, "run_id": None, "data": {"tool_name": "vault_write", "tool_args": {"path": "notes.md"}},
+         "resolved": False},
+    ]
+    live = {"id": 900003, "ts": time.time(), "kind": "human_input", "title": "Flow needs you again",
+            "body": body, "run_id": "run_uismoke_bell2", "data": {}, "resolved": False}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(OS_NOTIFICATIONS)
+
+    async def listing(route):
+        await route.fulfill(json={"notifications": items, "last_id": 900002})
+
+    async def stream(route):
+        await route.fulfill(status=200, headers={"Content-Type": "text/event-stream"},
+                            body=f"data: {json.dumps(live)}\n\n")
+
+    await ctx.route("**/api/notifications?after=0*", listing)
+    await ctx.route("**/api/notifications/stream*", stream)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        await page.locator('button[title="Notifications"]').click()
+        panel = page.get_by_text("Browser notifications when tab is in background") \
+            .locator("xpath=ancestor::div[contains(@class, 'w-80')][1]")
+        await panel.wait_for(timeout=5_000)
+        shown = await panel.inner_text()
+        popups = await page.evaluate("() => window.__os")
+    finally:
+        await ctx.close()
+    bad = []
+    for mark in ("**", "`", "](", "- ["):
+        if mark in shown:
+            bad.append(f"the bell shows the markdown mark {mark!r}")
+    if shown.count(words) < 2:
+        bad.append(f"the bell does not read {words!r} on both rows")
+    if not popups:
+        bad.append("no OS notification for the live question")
+    elif popups[0]["body"] != words:
+        bad.append(f"the OS notification reads {popups[0]['body']!r}")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "both bell rows and the OS popup read the question's words, with no markdown marks"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

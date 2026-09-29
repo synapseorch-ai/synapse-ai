@@ -3,6 +3,7 @@ import { useState } from 'react';
 import * as RPopover from '@radix-ui/react-popover';
 import { Bell, CheckCircle2, AlertCircle, PauseCircle, ShieldAlert } from 'lucide-react';
 import { useNotifications, type RunNotification } from './NotificationProvider';
+import { plainText } from '@/lib/plainText';
 
 /** How a resolved item ended, as its row says it. */
 const RESOLVED_AS: Record<string, string> = {
@@ -48,7 +49,7 @@ function ApprovalItem({ n }: { n: RunNotification }) {
                 <ShieldAlert size={14} className="text-amber-400 shrink-0 mt-0.5" aria-hidden />
                 <span className="flex-1 min-w-0">
                     <span className="block text-xs text-zinc-200">{n.title}</span>
-                    {n.body && <span className="block text-[11px] text-text-faint">{n.body}</span>}
+                    {n.body && <span className="block text-[11px] text-text-faint">{plainText(n.body)}</span>}
                     {argText && (
                         <code className="mt-1 block truncate font-code text-[11px] text-zinc-300" title={argText}>{argText}</code>
                     )}
@@ -152,7 +153,7 @@ export function NotificationBell() {
                                  <CheckCircle2 size={14} className="text-green-400 shrink-0 mt-0.5" />}
                                 <span className="flex-1 min-w-0">
                                     <span className="block text-xs text-zinc-200 truncate">{n.title}</span>
-                                    {n.body && <span className="block text-[11px] text-text-faint truncate">{n.body}</span>}
+                                    {n.body && <span className="block text-[11px] text-text-faint truncate">{plainText(n.body)}</span>}
                                     <span className="block text-[10px] text-text-faint mt-0.5">
                                         {new Date(n.ts * 1000).toLocaleTimeString()}
                                         {answered ? ` · ${RESOLVED_AS[n.resolved_as ?? 'answered'] ?? n.resolved_as}` : ''}

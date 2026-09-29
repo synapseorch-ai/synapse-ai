@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { useRouter } from 'next/navigation';
 import { CheckCircle2, AlertCircle, LogIn, PauseCircle, X } from 'lucide-react';
 import { readWithStallTimeout } from '@/lib/sse';
+import { plainText } from '@/lib/plainText';
 
 export type RunNotification = {
     id: number;
@@ -103,7 +104,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
             try {
                 const notification = new Notification(item.title, {
-                    body: item.body || undefined,
+                    // The OS draws text, not markdown.
+                    body: item.body ? plainText(item.body) : undefined,
                     tag: `synapse-${item.id}`,
                 });
                 notification.onclick = () => {
