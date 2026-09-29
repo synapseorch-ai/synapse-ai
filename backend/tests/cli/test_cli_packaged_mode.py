@@ -276,6 +276,34 @@ def test_status_json_reports_the_port_the_run_used(monkeypatch, capsys, tmp_path
     assert report["url"] == "http://localhost:3005"
 
 
+def test_autostart_on_registers_this_interpreter_and_records_it(monkeypatch, capsys, tmp_path):
+    from synapse.installer import autostart
+
+    monkeypatch.setenv("SYNAPSE_HOME", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(autostart, "supported", lambda: True)
+    monkeypatch.setattr(autostart, "enable", lambda python, home, dirs: calls.append(("on", python, home)))
+    monkeypatch.setattr(autostart, "disable", lambda: calls.append(("off",)))
+    monkeypatch.setattr(autostart, "is_on", lambda: bool(calls) and calls[-1][0] == "on")
+
+    assert "will start when you log in" in _run(monkeypatch, capsys, ["autostart", "on"])
+    assert calls == [("on", sys.executable, tmp_path)]
+    assert _run(monkeypatch, capsys, ["autostart", "status"]).strip() == "on"
+    from synapse import _store
+    assert _store.load_settings()["start_on_boot"] is True
+    _run(monkeypatch, capsys, ["autostart", "off"])
+    assert _run(monkeypatch, capsys, ["autostart", "status"]).strip() == "off"
+
+
+def test_autostart_says_so_where_it_cannot_work(monkeypatch, capsys):
+    from synapse.installer import autostart
+
+    monkeypatch.setattr(autostart, "supported", lambda: False)
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, capsys, ["autostart", "on"])
+    assert "no systemd user session" in capsys.readouterr().out
+
+
 def test_logs_prints_the_tail(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("SYNAPSE_HOME", str(tmp_path))
     (tmp_path / "logs").mkdir()

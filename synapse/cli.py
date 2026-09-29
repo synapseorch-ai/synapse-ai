@@ -1490,6 +1490,33 @@ def _logs_command(name: str = "backend", lines: int = 50, follow: bool = False):
         pass
 
 
+def _autostart_command(action: str) -> None:
+    """`synapse autostart on|off|status` — the installer's question, asked again."""
+    from synapse.installer import autostart
+
+    if action == "status":
+        print("on" if autostart.is_on() else "off")
+        return
+    if action == "on":
+        if not autostart.supported():
+            print("Start on login is not available here: there is no systemd user session.")
+            sys.exit(1)
+        runtime = _runtime_dir()
+        node_bin = runtime / "node" / ("" if IS_WIN else "bin") if runtime else None
+        autostart.enable(sys.executable, synapse_home() or Path.home() / ".synapse",
+                         [node_bin] if node_bin and node_bin.is_dir() else [])
+        print("Synapse will start when you log in.")
+    else:
+        autostart.disable()
+        print("Synapse will no longer start when you log in.")
+    try:
+        from synapse import _store
+        with _quiet_stdout():
+            _store.save_settings({"start_on_boot": action == "on"})
+    except Exception:
+        pass
+
+
 #: Keys the installer may write through `synapse setup --apply`, beyond the
 #: shipped defaults: what `synapse start` and the app read about the install.
 _INSTALL_KEYS = {"installed_at", "backend_port", "frontend_port",
@@ -2474,6 +2501,9 @@ def main():
     sub.add_parser("reset-password", help="Reset the Synapse UI login password")
 
     # access-link: the link that opens a login-off Synapse (D124)
+    p_autostart = sub.add_parser("autostart", help="Start Synapse when you log in: on, off, or status")
+    p_autostart.add_argument("action", choices=["on", "off", "status"])
+
     p_access = sub.add_parser("access-link", help="Print the link that opens Synapse while login is off")
     p_access.add_argument("--rotate", action="store_true",
                           help="Make a new link; everyone using the old one is signed out at the next restart")
@@ -2549,6 +2579,8 @@ def main():
         )
     elif args.cmd == "reset-password":
         _reset_password_command()
+    elif args.cmd == "autostart":
+        _autostart_command(args.action)
     elif args.cmd == "access-link":
         _access_link_command(rotate=args.rotate)
     elif args.cmd == "api-keys":
