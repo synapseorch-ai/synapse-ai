@@ -173,6 +173,23 @@ def strip_reasoning(text: str) -> str:
     return _REASONING_BLOCK_RE.sub("", text).strip()
 
 
+#: What a model is told when its whole reply was reasoning — no answer and no
+#: tool call (F305). Asked once; a second such reply fails the turn.
+_REASONING_ONLY_NUDGE = (
+    "\nSystem: your last reply held only your reasoning — no answer and no tool call. "
+    "Give your final answer now, or make your next tool call.\n"
+)
+
+
+def _no_answer(reasoning: str, stop_reason: str | None):
+    """The failure for a turn whose model thought and never answered (F305)."""
+    from core.llm_providers import EmptyAnswer
+    empty = EmptyAnswer("Error: The model returned only reasoning, no answer." if reasoning
+                        else "Error: The model returned an empty response.", reasoning=reasoning)
+    empty.stop_reason = stop_reason
+    return empty
+
+
 def extract_reasoning(text: str) -> list[str]:
     """Return the contents of every [REASONING] block, in order."""
     if not text:
@@ -1305,6 +1322,7 @@ async def run_agent_step(
             ])
     current_context_text = f"User Request: {user_message}\n"
     final_response = ""
+    _ran_out = False  # the loop spent every turn, rather than breaking out
     last_intent = "chat"
     last_data = None
     tool_name = None
@@ -1375,6 +1393,7 @@ async def run_agent_step(
     COMPACT_COOLDOWN_TURNS = 3
     _truncation_retries = 0  # consecutive responses cut off at the output limit
     _parse_retries = 0        # consecutive responses that looked like a tool call and were not
+    _reasoning_retries = 0    # replies that were all reasoning, asked for again (F305)
     # Approvals carried across a pause: a call the user allowed runs once, a
     # call they refused becomes a refusal the model reads.
     _approved_calls: set[str] = set(resume_state.get("approved_calls") or []) if resume_state else set()
@@ -1468,6 +1487,26 @@ async def run_agent_step(
     MAX_PROMPT_CHARS = 400000
     MAX_TRUNCATION_RETRIES = 2
     MAX_PARSE_RETRIES = 1
+    MAX_REASONING_RETRIES = 1
+
+    async def _save_failed_turn() -> None:
+        """A turn the model failed keeps its question (F133), as a stopped
+        turn does — never for an orchestrator, a hand-off or a workflow step."""
+        if is_orchestrator or not persist_turn or _workflow_step:
+            return
+        from core.chat_turns import FAILED_ANSWER
+        try:
+            await _save_conversation_turn(
+                session_id=session_id,
+                agent_id=agent_id_for_session,
+                user=user_message,
+                assistant=FAILED_ANSWER,
+                tools=tools_used_summary,
+                calls=_turn_calls,
+                images=image_notes(images),
+            )
+        except Exception as mem_err:
+            _log.warning(f"Session save failed (non-fatal): {mem_err}")
 
     _policy = _tool_policy.resolve_policy(active_agent, current_settings)
     if _visitor is not None:
@@ -1690,8 +1729,18 @@ async def run_agent_step(
                     _llm_result = _wait.result
                 except Exception as llm_err:
                     from core.llm_providers import EmptyAnswer, LLMError
-                    if not (isinstance(llm_err, EmptyAnswer) and llm_err.stop_reason == "max_tokens"
-                            and llm_err.reasoning):
+                    _thought_only = isinstance(llm_err, EmptyAnswer) and bool(llm_err.reasoning)
+                    if (_thought_only and llm_err.stop_reason != "max_tokens"
+                            and _reasoning_retries < MAX_REASONING_RETRIES and turn + 1 < max_turns):
+                        # Thought and did not answer (F305): asked once more, as
+                        # a reply of `[REASONING]` alone is below.
+                        _reasoning_retries += 1
+                        _log.warning(f"⚠️ Reply was all reasoning (retry {_reasoning_retries}/{MAX_REASONING_RETRIES})")
+                        yield {"type": "llm_reasoning", "reasoning": llm_err.reasoning, "turn": turn + 1}
+                        current_context_text += _REASONING_ONLY_NUDGE
+                        yield {"type": "reasoning_only", "turn": turn + 1, "retry": _reasoning_retries}
+                        continue
+                    if not (_thought_only and llm_err.stop_reason == "max_tokens"):
                         _llm_duration = round(time.time() - _llm_start, 1)
                         error_msg = f"LLM Error ({_llm_duration}s): {llm_err}"
                         _log.warning(f"❌ {error_msg}")
@@ -1703,20 +1752,7 @@ async def run_agent_step(
                         # The turn raises instead, and whoever drove it reports
                         # it once. The conversation keeps the question, as a
                         # stopped turn does.
-                        if not is_orchestrator and persist_turn and not _workflow_step:
-                            from core.chat_turns import FAILED_ANSWER
-                            try:
-                                await _save_conversation_turn(
-                                    session_id=session_id,
-                                    agent_id=agent_id_for_session,
-                                    user=user_message,
-                                    assistant=FAILED_ANSWER,
-                                    tools=tools_used_summary,
-                                    calls=_turn_calls,
-                                    images=image_notes(images),
-                                )
-                            except Exception as mem_err:
-                                _log.warning(f"Session save failed (non-fatal): {mem_err}")
+                        await _save_failed_turn()
                         if isinstance(llm_err, LLMError):
                             raise
                         raise LLMError(str(llm_err)) from llm_err
@@ -1841,6 +1877,23 @@ async def run_agent_step(
                     continue
                 if _open:
                     yield {"type": "tasks_incomplete", "tasks": [dict(t) for t in _open]}
+
+                # ── A reply that was all reasoning is not an answer (F305) ───
+                # `[REASONING]` blocks and nothing else, or a reply cut off
+                # while thinking: stripped, it is empty, and it used to break
+                # the loop as the final answer — which the fallback below then
+                # called "I ran out of turns (15)" after two model calls. Asked
+                # once more; a second one fails the turn as the model not
+                # answering, as a provider's all-reasoning reply does.
+                if not action_text.strip():
+                    if _reasoning_retries < MAX_REASONING_RETRIES and turn + 1 < max_turns:
+                        _reasoning_retries += 1
+                        _log.warning(f"⚠️ Reply was all reasoning (retry {_reasoning_retries}/{MAX_REASONING_RETRIES})")
+                        current_context_text += _REASONING_ONLY_NUDGE
+                        yield {"type": "reasoning_only", "turn": turn + 1, "retry": _reasoning_retries}
+                        continue
+                    await _save_failed_turn()
+                    raise _no_answer("\n\n".join(reasoning_blocks), _llm_result.stop_reason)
 
                 # Final response: strip any leftover reasoning so it never
                 # reaches the user or the session history.
@@ -2715,14 +2768,19 @@ async def run_agent_step(
                               for c in _turn_calls[-20:]],
                 }
                 yield {"type": "_step_progress", **_last_progress}
+        else:
+            _ran_out = True
 
+    if not final_response and not _ran_out:
+        # Out of the loop with no answer, and not by spending its turns: the
+        # model gave none (F305). Only a real exhaustion says it ran out.
+        await _save_failed_turn()
+        raise _no_answer("", None)
     if not final_response:
-        # Every turn was spent and none of them ended with an answer — the loop
-        # only leaves without one by running out of turns. It used to say "I
-        # completed the requested actions.", which is a claim the run cannot
-        # support and the one F68 struck off the v1 approval path for the same
-        # reason. An empty reply no longer reaches here at all: it raises in
-        # the provider now (F137).
+        # Every turn was spent and none of them ended with an answer. It used
+        # to say "I completed the requested actions.", which is a claim the run
+        # cannot support and the one F68 struck off the v1 approval path for
+        # the same reason.
         final_response = (
             f"I ran out of turns ({max_turns}) before finishing this task. "
             "The work so far is above."

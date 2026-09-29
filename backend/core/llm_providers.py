@@ -2570,7 +2570,26 @@ async def _bedrock_converse_direct(
     return await asyncio.to_thread(_run)
 
 
-_THINK_TAG_RE = re.compile(r"<(think(?:ing)?)>(.*?)</\1>\s*", re.DOTALL | re.IGNORECASE)
+#: A pair, whichever of the two names each end uses.
+_THINK_TAG_RE = re.compile(r"<think(?:ing)?>(.*?)</think(?:ing)?>\s*", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<think(?:ing)?>", re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(r"</think(?:ing)?>\s*", re.IGNORECASE)
+#: Any tag token, with the spaces beside it on its own line.
+_THINK_TOKEN_RE = re.compile(r"[ \t]*</?think(?:ing)?>[ \t]*", re.IGNORECASE)
+_A_TOOL_CALL_RE = re.compile(r'<tool_call>|"tool"\s*:', re.IGNORECASE)
+
+
+def _unwrap_think_tags(text: str) -> str:
+    """`text` without a single `<think>`/`<thinking>` tag, its words kept.
+
+    For what is already known to be thinking: a provider keeps the narration
+    beside a tool call as reasoning, and Nova writes that narration inside
+    `<thinking>` — so chat showed `<thinking> I need to scrape the URL …
+    </thinking>` in its thinking panel and live line (F303).
+    """
+    if not text or "think" not in text.lower():
+        return text
+    return _THINK_TOKEN_RE.sub("", text).strip()
 
 
 def _split_think_tags(text: str) -> tuple[str, str]:
@@ -2587,11 +2606,36 @@ def _split_think_tags(text: str) -> tuple[str, str]:
     `generate_response_ex` applies it once, after every provider, not per branch
     (F32): Nova reaches the engine through the model gateway and through an
     own-key Bedrock, and the per-branch version covered neither.
+
+    A tag without its partner is thinking too (F303), not text to show: a
+    closing tag whose opening was cut off (a reply continued past the output
+    cap starts mid-thought) ends the thinking before it; an opening tag never
+    closed starts thinking that runs to the end — unless a tool call follows,
+    which is kept and only the tag goes. A mismatched pair is a pair.
     """
-    if not text or "<think" not in text.lower():
+    if not text or ("<think" not in text.lower() and "</think" not in text.lower()):
         return text, ""
-    thoughts = [m[1].strip() for m in _THINK_TAG_RE.findall(text) if m[1].strip()]
-    return _THINK_TAG_RE.sub("", text).strip(), "\n".join(thoughts).strip()
+    thoughts: list[str] = []
+
+    def _pair(match) -> str:
+        thoughts.append(match.group(1))
+        return ""
+
+    text = _THINK_TAG_RE.sub(_pair, text)
+    closes = list(_THINK_CLOSE_RE.finditer(text))
+    if closes:
+        thoughts.insert(0, text[:closes[-1].start()])
+        text = text[closes[-1].end():]
+    opened = _THINK_OPEN_RE.search(text)
+    if opened:
+        rest = text[opened.end():]
+        if _A_TOOL_CALL_RE.search(rest):
+            text = text[:opened.start()] + rest
+        else:
+            thoughts.append(rest)
+            text = text[:opened.start()]
+    thoughts = [_unwrap_think_tags(t) for t in thoughts]
+    return _unwrap_think_tags(text).strip(), "\n".join(t for t in thoughts if t).strip()
 
 
 def _extract_bedrock_content(message: dict, stop_reason=None) -> tuple[str, str]:
@@ -3597,6 +3641,9 @@ async def generate_response_ex(
     result_text, _inline_reasoning = _split_think_tags(result_text)
     if _inline_reasoning:
         _reasoning = f"{_reasoning}\n{_inline_reasoning}".strip() if _reasoning else _inline_reasoning
+    # ...and none in the reasoning either: the narration a provider keeps
+    # beside a tool call arrives there with its tags (F303).
+    _reasoning = _unwrap_think_tags(_reasoning)
 
     # ── Log usage (fire-and-forget, never raises) ────────────────────────────
     try:
@@ -3618,6 +3665,17 @@ async def generate_response_ex(
         )
     except Exception as _track_err:
         _log.warning(f"usage_tracker: log_usage failed (non-fatal): {_track_err}")
+
+    # ── All of it was thinking (F305) ────────────────────────────────────────
+    # Each provider checks its reply for emptiness before the split above, so
+    # a reply of nothing but `<thinking>` passed that check and came back here
+    # as an empty answer — which the agent loop took for its final one. Raised
+    # after the usage log: the call was made and billed.
+    if not str(result_text or "").strip() and not _tool_calls:
+        empty = _empty_answer("The model", reasoning=_reasoning, stop_reason=stop_reason)
+        empty.stop_reason = stop_reason
+        empty.usage = (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+        raise empty
 
     # ── Populate response cache on successful call ───────────────────────────
     if cache_response and result_text and not str(result_text).startswith("Error"):
