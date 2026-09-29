@@ -55,6 +55,24 @@ _LEVEL = {"off": "MINIMAL", "low": "LOW", "medium": "MEDIUM", "high": "HIGH"}
 
 _OPENAI_EFFORT = {"off": "minimal", "low": "low", "medium": "medium", "high": "high"}
 
+
+def _openai_off(name: str) -> str | None:
+    """What Off sends an OpenAI reasoning model — the least each accepts (F293).
+
+    Measured 2026-09-30 on the bat-and-ball question: sent nothing, gpt-5-nano
+    thought 256–384 tokens and gpt-5-mini 64–128, against none at `minimal`;
+    gpt-5.x takes `none` (not `minimal`, a 400) and thinks none by default; the
+    o-series refuses both and its least is `low`. None: not an OpenAI reasoning
+    model, and nothing here to say.
+    """
+    if name.startswith(("o1", "o3", "o4")):
+        return "low"
+    if name.startswith("gpt-5."):
+        return "none"
+    if name.startswith("gpt-5"):
+        return "minimal"
+    return None
+
 #: Headroom left for the visible answer when a budget forces the cap up. The
 #: model still has to write something after it finishes thinking.
 _ANSWER_HEADROOM = 4096
@@ -309,9 +327,9 @@ def off_runs_as(model: str, listed: Any = None) -> str | None:
         return "low"
     if kind == SWITCH:
         return "off"
-    if name.startswith(_THINKS_BY_DEFAULT) or _gemini_3_pro(name):
+    if name.startswith(_THINKS_BY_DEFAULT) or _gemini_3_pro(name) or _openai_off(name) == "low":
         return "low"
-    if minimum_budget(name) or name.startswith("gemini-3"):
+    if minimum_budget(name) or name.startswith("gemini-3") or _openai_off(name) == "minimal":
         return "minimum"
     return "off"
 
@@ -340,9 +358,14 @@ def plan_for(
     if kind == GRADED and resolved == "off":
         resolved = "low"
     name = (model or "").strip().lower()
-    if resolved == "off" and (name.startswith(_THINKS_BY_DEFAULT) or _gemini_3_pro(name)):
+    if resolved == "off" and (name.startswith(_THINKS_BY_DEFAULT) or _gemini_3_pro(name)
+                              or _openai_off(name) == "low"):
         resolved = "low"
     floor = minimum_budget(model)
+    # Off on OpenAI is said too (F293): nothing sent is each model's default
+    # effort — medium on gpt-5 and the o-series — and it left the `[REASONING]`
+    # convention taught on top.
+    openai_off = _openai_off(name) if resolved == "off" else None
 
     # Off is said, not left unsaid, where saying nothing is not off (F269). A
     # Gemini model sent no thinking config thinks dynamically — 263–299 output
@@ -351,7 +374,7 @@ def plan_for(
     # drops the `[REASONING]` prompt convention, which an Off turn used to be
     # taught on top of its own thinking. Everywhere else — Claude's budget
     # models above all — omitting it is off, so nothing is sent.
-    if resolved == "off" and not floor and not name.startswith("gemini"):
+    if resolved == "off" and not floor and not name.startswith("gemini") and not openai_off:
         return None
 
     table = _GEMINI_BUDGET if name.startswith("gemini") else _BUDGET
@@ -373,6 +396,6 @@ def plan_for(
         effort=resolved,
         budget=budget,
         level=_LEVEL[resolved],
-        openai_effort=_OPENAI_EFFORT[resolved],
+        openai_effort=openai_off or _OPENAI_EFFORT[resolved],
         max_output_tokens=cap,
     )
