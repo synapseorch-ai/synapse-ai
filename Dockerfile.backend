@@ -43,17 +43,19 @@ RUN chmod +x /entrypoint.sh
 ENV PYTHONPATH=/app
 
 # See the note in ./Dockerfile. Documents go to a database given as deployment
-# configuration; tenant content goes to /blobs (or to S3, via the S3_* vars);
-# rebuildable state stays off the volume because each replica owns its own.
-ENV SYNAPSE_BLOB_DIR=/blobs
-ENV SYNAPSE_DB_URL=sqlite+aiosqlite:////blobs/synapse.db
+# configuration; tenant content goes to /data/blobs (or to S3, via the S3_*
+# vars); rebuildable state stays off the volume because each replica owns its
+# own. /data is the path 1.x mounted, and its JSON is imported from there once.
+ENV SYNAPSE_BLOB_DIR=/data/blobs
+ENV SYNAPSE_DB_URL=sqlite+aiosqlite:////data/synapse.db
 ENV SYNAPSE_STATE_DIR=/var/lib/synapse/state
-ENV SYNAPSE_SECRETS_DIR=/blobs
-VOLUME /blobs
+ENV SYNAPSE_SECRETS_DIR=/data
+ENV SYNAPSE_DATA_DIR=/data
+VOLUME /data
 
 # Auto-generate + persist the internal token so InternalTokenMiddleware enforces
 # by default. In compose, SYNAPSE_SECRETS_DIR is pointed at the shared volume so
-# the frontend can read the same value; standalone `docker run` persists to /blobs.
+# the frontend can read the same value; standalone `docker run` persists to /data.
 ENV SYNAPSE_AUTOGEN_TOKEN=1
 ENV SYNAPSE_TOKEN_MODE=generate
 

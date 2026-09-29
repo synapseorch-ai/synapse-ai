@@ -20,7 +20,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 
-: "${SYNAPSE_SECRETS_DIR:=/blobs}"
+: "${SYNAPSE_SECRETS_DIR:=/data}"
 : "${SYNAPSE_TOKEN_MODE:=generate}"   # generate | read
 TOKEN_FILE="$SYNAPSE_SECRETS_DIR/internal_token"
 

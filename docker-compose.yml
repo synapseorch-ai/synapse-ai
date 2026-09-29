@@ -23,14 +23,15 @@ services:
       # Auto-generate + persist a shared internal token to the secrets volume so
       # the frontend can read the same value (see docker/entrypoint.sh).
       - SYNAPSE_SECRETS_DIR=/secrets
+      # Where 1.x's compose kept its JSON (the ./backend/data bind below). Read
+      # once, on the first boot: the importer brings it into the database and
+      # moves the files into ./backend/data/migrated/. Nothing else reads it.
+      - SYNAPSE_DATA_DIR=/legacy-data
     volumes:
       - synapse-blobs:/blobs
       - synapse-secrets:/secrets
-      # Upgrading from a version that kept JSON files? Uncomment this for one
-      # boot. The importer finds it, moves everything into the database, and
-      # renames the host folder to backend/data.migrated — after which the line
-      # can go. Fresh installs never need it.
-      # - ./backend/data:/app/backend/data
+      # The same host folder 1.x mounted, so upgrading needs no edit here.
+      - ./backend/data:/legacy-data
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:

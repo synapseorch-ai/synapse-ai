@@ -49,24 +49,29 @@ ENV NODE_ENV=production
 ENV SYNAPSE_BACKEND_PORT=8765
 ENV SYNAPSE_FRONTEND_PORT=3000
 
-# One volume, /blobs, and it holds one kind of thing: this install's content.
-# It replaces a /data that meant four — documents, tenant content, rebuildable
-# caches and process scratch — which is why nobody could say what to back up.
+# One volume, /data — the path every 1.x install mounted (`-v synapse-data:/data`),
+# so the same `docker run` keeps its data across the upgrade. What is on it is
+# this install's own: the database, the content under blobs/, and the secrets.
+# Rebuildable caches and scratch stay off it.
 #
-# The database is deployment configuration. SQLite on the blob volume is the
-# default so `docker run` works with nothing else running; point SYNAPSE_DB_URL
-# at Postgres for anything with more than one process.
-ENV SYNAPSE_BLOB_DIR=/blobs
-ENV SYNAPSE_DB_URL=sqlite+aiosqlite:////blobs/synapse.db
+# The database is deployment configuration. SQLite on the volume is the default
+# so `docker run` works with nothing else running; point SYNAPSE_DB_URL at
+# Postgres for anything with more than one process.
+ENV SYNAPSE_BLOB_DIR=/data/blobs
+ENV SYNAPSE_DB_URL=sqlite+aiosqlite:////data/synapse.db
 # Rebuildable and per-replica, so it deliberately does NOT go on the volume.
 ENV SYNAPSE_STATE_DIR=/var/lib/synapse/state
-VOLUME /blobs
+# Where a 1.x volume keeps its JSON: read once, on the first boot, to import it
+# (backend/core/store/importer.py), then moved into /data/migrated/.
+ENV SYNAPSE_DATA_DIR=/data
+VOLUME /data
 
 # Auto-generate a shared internal token on first boot so the backend's
 # InternalTokenMiddleware enforces by default. Both supervisord programs inherit
-# it from the entrypoint's exported environment. Persisted on the volume.
+# it from the entrypoint's exported environment. Persisted on the volume — where
+# a 1.x install already has one, which keeps its existing sessions working.
 ENV SYNAPSE_AUTOGEN_TOKEN=1
-ENV SYNAPSE_SECRETS_DIR=/blobs
+ENV SYNAPSE_SECRETS_DIR=/data
 ENV SYNAPSE_TOKEN_MODE=generate
 
 EXPOSE 3000 8765

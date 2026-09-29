@@ -427,38 +427,49 @@ def _holds_live_state(root: Path) -> bool:
     return any((root / name).exists() for name in ("synapse.db", "blobs", "state"))
 
 
+def _retire_inside(root: Path) -> str:
+    """Move the consumed files into `<root>/migrated/`, leaving `root` itself."""
+    destination = root / "migrated"
+    destination.mkdir(exist_ok=True)
+    consumed = (
+        *_SOURCES, "credentials", "token",
+        "repos", "db_configs", "messaging_channels", "personal_details",
+        "api_keys",
+    )
+    for name in consumed:
+        source = root / f"{name}.json"
+        if source.is_file():
+            source.rename(destination / source.name)
+    for name in ("chat_sessions", "mcp_tokens", "vault", "datasets", "whatsapp_sessions"):
+        source = root / name
+        if source.is_dir():
+            source.rename(destination / name)
+    return str(destination)
+
+
 def _retire(root: Path) -> str:
     """Put the imported files beyond the reach of a second import.
 
     Normally the whole folder is renamed, which is legible from a file manager
-    and obviously reversible. When the folder also holds live state, only the
-    files that were consumed move into `<root>/migrated/`, which achieves the
-    same thing without touching anything else in there.
+    and obviously reversible. When the folder also holds live state, or is a
+    mount point that cannot be renamed, only the files that were consumed move
+    into `<root>/migrated/`, which achieves the same thing without touching
+    anything else in there.
     """
     if _holds_live_state(root):
-        destination = root / "migrated"
-        destination.mkdir(exist_ok=True)
-        consumed = (
-            *_SOURCES, "credentials", "token",
-            "repos", "db_configs", "messaging_channels", "personal_details",
-            "api_keys",
-        )
-        for name in consumed:
-            source = root / f"{name}.json"
-            if source.is_file():
-                source.rename(destination / source.name)
-        for name in ("chat_sessions", "mcp_tokens", "vault", "datasets", "whatsapp_sessions"):
-            source = root / name
-            if source.is_dir():
-                source.rename(destination / name)
-        return str(destination)
+        return _retire_inside(root)
 
     migrated = root.parent / f"{root.name}.migrated"
     if migrated.exists():
         # A previous import already claimed the name. Keep both rather than
         # overwriting whatever is in there.
         migrated = root.parent / f"{root.name}.migrated.{int(root.stat().st_mtime)}"
-    root.rename(migrated)
+    try:
+        root.rename(migrated)
+    except OSError:
+        # A mount point cannot be renamed (compose binds 1.x's ./backend/data
+        # at /legacy-data): move what was consumed inside it instead.
+        return _retire_inside(root)
     return migrated.name
 
 
