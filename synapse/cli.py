@@ -1214,7 +1214,8 @@ def _start_command(
     # (start on login) the wizard's first read hits end-of-input and exits 0,
     # which used to end the start silently. The app shows what is missing.
     from synapse import _store
-    if sys.stdin.isatty() and not _store.is_configured():
+    # (pythonw — start on login on Windows — has no stdin at all.)
+    if sys.stdin is not None and sys.stdin.isatty() and not _store.is_configured():
         try:
             from synapse import setup_wizard
             setup_wizard.run()
