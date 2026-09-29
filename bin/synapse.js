@@ -93,7 +93,9 @@ if (cliArg === '--version' || cliArg === '-V') {
 }
 
 const record = ensureInstalled();
-const child = spawn(record.tool_python, ['-m', 'synapse', ...process.argv.slice(2)], {
+// -P: the directory the user typed `synapse` in stays off sys.path, so a
+// folder there named `synapse` cannot stand in for the installed one.
+const child = spawn(record.tool_python, ['-P', '-m', 'synapse', ...process.argv.slice(2)], {
   stdio: 'inherit',
   env: { ...process.env, SYNAPSE_LAUNCHER: 'npm', SYNAPSE_HOME: HOME },
 });

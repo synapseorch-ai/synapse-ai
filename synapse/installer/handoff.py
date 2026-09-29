@@ -46,4 +46,6 @@ def run(root: Path, argv: list[str]) -> int:
     python = read_install(home_dir()).get("tool_python")
     if not python:
         return code
-    return subprocess.run([python, "-m", "synapse", *argv]).returncode
+    # -P: this may run from inside the old folder, whose `synapse/` must not
+    # stand in for the installed one. The user's directory is kept otherwise.
+    return subprocess.run([python, "-P", "-m", "synapse", *argv]).returncode

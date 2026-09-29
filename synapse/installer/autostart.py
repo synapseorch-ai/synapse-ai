@@ -70,7 +70,9 @@ def command(python: str | Path) -> list[str]:
     if IS_WIN:
         windowless = python.with_name("pythonw.exe")
         python = windowless if windowless.exists() else python
-    return [str(python), "-m", "synapse", "start", "--detach", "--no-browser"]
+    # -P: the service manager's working directory stays off sys.path, so a
+    # folder named `synapse` there can never stand in for this install's.
+    return [str(python), "-P", "-m", "synapse", "start", "--detach", "--no-browser"]
 
 
 def enable(python: str | Path, home: Path, path_dirs: list[Path]) -> None:
@@ -120,7 +122,7 @@ def enable(python: str | Path, home: Path, path_dirs: list[Path]) -> None:
     unit = _unit_path()
     unit.parent.mkdir(parents=True, exist_ok=True)
     quoted = " ".join(_systemd_quote(a) for a in cmd)
-    stop = " ".join(_systemd_quote(a) for a in cmd[:3] + ["stop"])
+    stop = " ".join(_systemd_quote(a) for a in cmd[:4] + ["stop"])
     unit.write_text(f"""[Unit]
 Description=Synapse AI
 After=network-online.target

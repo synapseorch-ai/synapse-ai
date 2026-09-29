@@ -593,6 +593,7 @@ class Installer:
                     "SYNAPSE_UPGRADE_SKIP_DOWNLOAD"):
             env.pop(var, None)
         env["SYNAPSE_HOME"] = str(self.home)
+        env["PYTHONSAFEPATH"] = "1"     # -P for every Python this starts
         extra = [str(d) for d in (self._runtime_bin(), self.home / "runtime" / "uv") if d and Path(d).is_dir()]
         env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
         return env
@@ -602,14 +603,19 @@ class Installer:
             python = self.existing.get("tool_python")
             if not python or not Path(python).is_file():
                 return []
-            return [python, "-m", "synapse"]
-        return [self.s.tool_python, "-m", "synapse"]
+            return [python, "-P", "-m", "synapse"]
+        # -P keeps the working directory off sys.path. The hand-off runs from
+        # inside the 1.x folder, whose `synapse/` is 2.0's source unpacked over
+        # it; without -P, `-m synapse` imported that instead of the install uv
+        # just made, and it started a second installer.
+        return [self.s.tool_python, "-P", "-m", "synapse"]
 
     def _cli(self, args: list, stdin_text: str | None = None, old: bool = False) -> str:
         cmd = self._cli_cmd(old)
         if not cmd:
             return ""
-        return run(cmd + args, self.log, env=self._runtime_env(), stdin_text=stdin_text)[1]
+        return run(cmd + args, self.log, env=self._runtime_env(), stdin_text=stdin_text,
+                   cwd=self.home)[1]
 
     def _cli_json(self, args: list, old: bool = False):
         cmd = self._cli_cmd(old)
@@ -617,7 +623,7 @@ class Installer:
             return None
         env = self._runtime_env()
         out = subprocess.run([str(c) for c in cmd + args], capture_output=True, text=True,
-                             env=env, timeout=900)
+                             env=env, timeout=900, cwd=str(self.home))
         self.log.write("$ " + " ".join(str(c) for c in cmd + args))
         if out.stderr.strip():
             for line in out.stderr.strip().splitlines():

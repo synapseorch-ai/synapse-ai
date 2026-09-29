@@ -435,8 +435,8 @@ def test_the_systemd_unit_runs_this_installs_python_detached(tmp_path, monkeypat
     autostart.enable("/tools/synapse/bin/python", tmp_path / "home", [Path("/rt/node/bin")])
 
     unit = (tmp_path / "systemd" / "user" / "synapse-ai.service").read_text()
-    assert "ExecStart=/tools/synapse/bin/python -m synapse start --detach --no-browser" in unit
-    assert "ExecStop=/tools/synapse/bin/python -m synapse stop" in unit
+    assert "ExecStart=/tools/synapse/bin/python -P -m synapse start --detach --no-browser" in unit
+    assert "ExecStop=/tools/synapse/bin/python -P -m synapse stop" in unit
     assert "Type=oneshot" in unit and "TimeoutStartSec=600" in unit
     assert f"SYNAPSE_HOME={tmp_path / 'home'}" in unit
     assert ["systemctl", "--user", "enable", "synapse-ai.service"] in ran

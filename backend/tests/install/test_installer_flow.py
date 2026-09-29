@@ -30,8 +30,10 @@ from synapse.installer import flow, legacy, runtime, tui  # noqa: E402
 FAKE_CLI = r'''
 import json, os, sys
 args = sys.argv[1:]
-if args[:2] == ["-m", "synapse"]:
-    args = args[2:]
+with open(os.environ["FAKE_CALLS"] + ".argv", "a") as f:
+    f.write(json.dumps(args) + "\n")
+if args[:3] == ["-P", "-m", "synapse"]:
+    args = args[3:]
 with open(os.environ["FAKE_CALLS"], "a") as f:
     f.write(json.dumps(args) + "\n")
 if args == ["--version"]:
@@ -169,6 +171,21 @@ def test_a_fresh_install_ends_with_the_link(world):
     assert record["tool_python"].endswith("synapse-orch-ai/bin/python")
     log = (world["home"] / "logs" / "install.log").read_text()
     assert "Downloaded big" in log
+
+
+def test_the_installed_cli_runs_with_the_working_directory_off_sys_path(world, monkeypatch):
+    """The 1.x hand-off runs from inside the old folder, whose synapse/ is 2.0's
+    source: `python -m synapse` without -P imported that, not the new install,
+    and it started a second installer (found by scripts/e2e/legacy-upgrade.sh)."""
+    decoy = world["tmp"] / "old-install"
+    (decoy / "synapse").mkdir(parents=True)
+    monkeypatch.chdir(decoy)
+
+    code, out, calls = world["install"]()
+
+    assert code == 0, out
+    argv = [json.loads(line) for line in Path(str(world["calls"]) + ".argv").read_text().splitlines()]
+    assert argv and all(a[:3] == ["-P", "-m", "synapse"] for a in argv), argv
 
 
 def test_no_start_installs_and_says_how_to_start(world):

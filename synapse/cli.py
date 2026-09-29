@@ -1665,13 +1665,13 @@ def _upgrade_with_pip(current: str, target: str) -> int:
 
         # The new code from here on, in a new interpreter.
         screen.start("migrate")
-        run([sys.executable, "-m", "synapse", "migrate", "--json"], log)
+        run([sys.executable, "-P", "-m", "synapse", "migrate", "--json"], log)
         screen.done("migrate", "up to date")
 
         if was_running:
             screen.start("start")
-            run([sys.executable, "-m", "synapse", "start", "--detach", "--no-browser"], log)
-            status = subprocess.run([sys.executable, "-m", "synapse", "status", "--json"],
+            run([sys.executable, "-P", "-m", "synapse", "start", "--detach", "--no-browser"], log)
+            status = subprocess.run([sys.executable, "-P", "-m", "synapse", "status", "--json"],
                                     capture_output=True, text=True)
             import json as _json
             link = (_json.loads(status.stdout.strip().splitlines()[-1]) or {}).get("link", "")
