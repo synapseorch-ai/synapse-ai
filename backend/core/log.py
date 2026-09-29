@@ -52,10 +52,17 @@ def configure(level: str | None = None) -> None:
         resolved = logging.INFO
 
     if not _configured:
+        from core.telemetry.logs import install_arq_filter, json_handler, json_wanted
         if not logging.getLogger().handlers:
             # Root stays at WARNING so third-party libraries are not suddenly
-            # verbose; the `core` tree carries its own level below.
-            logging.basicConfig(level=logging.WARNING, format=_FORMAT, stream=sys.stdout)
+            # verbose; the `core` tree carries its own level below. JSON lines
+            # (with the trace and the run's ids) when SYNAPSE_LOG_FORMAT=json.
+            if json_wanted():
+                logging.basicConfig(level=logging.WARNING, handlers=[json_handler()])
+            else:
+                logging.basicConfig(level=logging.WARNING, format=_FORMAT, stream=sys.stdout)
+        # arq logs a job's arguments, result and error message: keep none of them.
+        install_arq_filter()
         _configured = True
 
     logging.getLogger(ROOT_NAME).setLevel(resolved)

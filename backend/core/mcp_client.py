@@ -416,7 +416,10 @@ class MCPClientManager:
                     opened.set_exception(exc)
                 raise
 
-        task = asyncio.create_task(own(), name=f"mcp-session:{name}")
+        # Detached from the request or job that opened it: the session outlives
+        # it, and its traffic would otherwise join that one trace for its life.
+        from core.telemetry import detached_context
+        task = asyncio.create_task(own(), name=f"mcp-session:{name}", context=detached_context())
         try:
             session = await opened
         except BaseException:
