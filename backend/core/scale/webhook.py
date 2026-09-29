@@ -7,6 +7,8 @@ import hmac
 import json
 import time
 
+from core.scale.metrics import record_webhook
+
 
 async def deliver_webhook(
     webhook_url: str,
@@ -40,6 +42,7 @@ async def deliver_webhook(
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(webhook_url, content=body, headers=headers)
                 if resp.status_code < 300:
+                    record_webhook(True)
                     return True
                 print(
                     f"[webhook] {webhook_url} returned {resp.status_code} "
@@ -57,4 +60,5 @@ async def deliver_webhook(
             delay = backoff_base ** attempt
             await asyncio.sleep(delay)
 
+    record_webhook(False)
     return False

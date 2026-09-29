@@ -42,6 +42,15 @@ def uninstrument() -> None:
             instrumentor.uninstrument()
 
 
+def shutdown_providers() -> None:
+    """Shut down whatever a test installed — a meter provider's Prometheus
+    reader is registered in prometheus_client's global registry until then."""
+    from opentelemetry import metrics, trace
+    for provider in (trace.get_tracer_provider(), metrics.get_meter_provider()):
+        if hasattr(provider, "shutdown"):
+            provider.shutdown()
+
+
 class Pipeline:
     def __init__(self, exporter):
         self.exporter = exporter
@@ -61,17 +70,13 @@ def telemetry_off(monkeypatch):
     clean_env(monkeypatch)
     reset_for_tests()
     yield
-    from opentelemetry import trace
-    provider = trace.get_tracer_provider()
-    if hasattr(provider, "shutdown"):  # a test that turned it on itself
-        provider.shutdown()
+    shutdown_providers()
     uninstrument()
     reset_for_tests()
 
 
 @pytest.fixture
 def telemetry_on(monkeypatch):
-    from opentelemetry import trace
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
     from core import telemetry
@@ -82,8 +87,6 @@ def telemetry_on(monkeypatch):
     exporter = InMemorySpanExporter()
     assert telemetry.setup("synapse-test", span_exporter=exporter)
     yield Pipeline(exporter)
-    provider = trace.get_tracer_provider()
-    if hasattr(provider, "shutdown"):
-        provider.shutdown()
+    shutdown_providers()
     uninstrument()
     reset_for_tests()

@@ -1064,6 +1064,8 @@ async def worker_startup(ctx: dict) -> None:
         )
     )
     ctx["heartbeat_task"] = heartbeat_task
+    # The queue's depth for `synapse.queue.depth`, when metrics are on.
+    ctx["queue_depth_task"] = _tqueue.watch_depth(redis, QUEUE_NAME)
     ctx["worker_id"] = _worker_id
 
     _log.debug(f"[worker] startup complete. MCP disabled: {server_module.mcp_disabled}")
@@ -1071,6 +1073,7 @@ async def worker_startup(ctx: dict) -> None:
 
 async def worker_shutdown(ctx: dict) -> None:
     """Mark worker offline, cancel heartbeat, close connections."""
+    _tqueue.stop_watching(ctx.get("queue_depth_task"))
     heartbeat_task = ctx.get("heartbeat_task")
     if heartbeat_task and not heartbeat_task.done():
         heartbeat_task.cancel()
@@ -1462,5 +1465,7 @@ async def _write_dlq(
                 )
             )
             await session.commit()
+        from core.telemetry import metrics as _tmetrics
+        _tmetrics.job_dead_lettered(job_function)
     except Exception as e:
         _log.warning(f"[worker] failed to write DLQ for run {run_id}: {e}")

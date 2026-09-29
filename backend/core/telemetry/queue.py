@@ -169,3 +169,37 @@ def job_span(ctx: dict, function_name: str, kwargs: dict | None = None, **ids):
             logcontext.reset(log)
             _in_job.reset(in_job)
             metrics.job(function_name[:64], status, time.monotonic() - started)
+
+
+# --- queue depth ---------------------------------------------------------------
+
+DEPTH_INTERVAL = 30
+
+
+def watch_depth(redis, queue_name: str, interval: int = DEPTH_INTERVAL):
+    """Read the queue's depth every `interval` seconds for `synapse.queue.depth`.
+
+    Started by a worker's startup; returns the task (None when metrics are off),
+    which `stop_watching` cancels. Its Redis read has no parent span, so it is
+    never traced.
+    """
+    if not state.metering:
+        return None
+    import asyncio
+
+    async def loop():
+        while True:
+            try:
+                metrics.set_queue_depth(queue_name, await redis.zcard(queue_name))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+
+    return asyncio.create_task(loop(), name="synapse-queue-depth")
+
+
+def stop_watching(task) -> None:
+    if task is not None:
+        task.cancel()
