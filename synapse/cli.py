@@ -2015,12 +2015,48 @@ def _legacy_install_root() -> "Path | None":
     return ROOT_DIR
 
 
+def _finish_pending_cleanup() -> None:
+    """Delete what an upgrade could not while it was in use (Windows file locks).
+
+    The installer records a 1.x folder it could not remove as `pending_cleanup`
+    in install.json; any later command finishes the job, quietly.
+    """
+    home = synapse_home()
+    if home is None:
+        return
+    record_path = home / "install.json"
+    try:
+        import json as _json
+        record = _json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    pending = record.get("pending_cleanup") or []
+    if not pending:
+        return
+    left = []
+    for path in pending:
+        target = Path(path)
+        try:
+            if target.is_dir():
+                _rmtree(target)
+            elif target.exists():
+                target.unlink()
+        except OSError:
+            pass
+        if target.exists():
+            left.append(path)
+    if left != pending:
+        from synapse.installer.home import write_install
+        write_install(home, pending_cleanup=left or None)
+
+
 def main():
     # First, before anything the old venv might not have is imported.
     legacy_root = _legacy_install_root()
     if legacy_root is not None:
         from synapse.installer.handoff import run as _handoff
         sys.exit(_handoff(legacy_root, sys.argv[1:]))
+    _finish_pending_cleanup()
     _force_utf8_streams()
     _warn_if_not_on_path()
     parser = argparse.ArgumentParser(prog="synapse", description="Run Synapse, and drive it from the terminal")

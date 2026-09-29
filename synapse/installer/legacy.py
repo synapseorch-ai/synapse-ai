@@ -335,6 +335,28 @@ def count(data_dirs: list[Path], logs_dirs: list[Path]) -> dict:
     return out
 
 
+def mentions(data_dirs: list[Path], roots: list[str]) -> list[str]:
+    """The agents, orchestrations, tools and MCP servers whose definition names a path in `roots`.
+
+    A repo, a working folder or a stdio server's command inside the old
+    install's folder keeps its path through the import, and stops working when
+    that folder is removed. Returned as "kind name" for the log and a count.
+    """
+    if not roots:
+        return []
+    # As written inside JSON too: a Windows path's backslashes are escaped there.
+    needles = set(roots) | {json.dumps(r)[1:-1] for r in roots}
+    found: list[str] = []
+    for d in data_dirs:
+        for kind, name in (("agent", "user_agents"), ("orchestration", "orchestrations"),
+                           ("tool", "custom_tools"), ("MCP server", "mcp_servers"), ("repo", "repos")):
+            items = _json(d / f"{name}.json")
+            for item in items if isinstance(items, list) else []:
+                if isinstance(item, dict) and any(n in json.dumps(item) for n in needles):
+                    found.append(f"{kind} {item.get('name') or item.get('id') or '?'}")
+    return found
+
+
 def summary(counts: dict) -> list[str]:
     """["7 agents", "4 orchestrations", "312 chats"] — only what is there."""
     parts = []

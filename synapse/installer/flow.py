@@ -429,6 +429,12 @@ class Installer:
         merged = legacy.merged_env(self.legacy.env_files)
         if merged:
             _merge_env_file(self.home / ".env", merged)
+        # Definitions that name a path inside the old install stop working
+        # when it is removed; count them now, while the files are still here.
+        old_roots = [str(i.root) for i in self.legacy.installs if i.kind == "script"]
+        pointing = legacy.mentions(self.legacy.data_dirs, old_roots)
+        if pointing:
+            self.log.write("these still name the old install's folder: " + ", ".join(pointing))
         args = ["migrate", "--json"]
         for d in self.legacy.data_dirs:
             args += ["--from", str(d)]
@@ -445,6 +451,8 @@ class Installer:
         totals = report.get("totals", {})
         moved = [f"{totals[k]} {name}" for k, name in (("user_agents", "agents"), ("orchestrations", "orchestrations"),
                                                          ("chat_sessions", "chats")) if totals.get(k)]
+        if pointing:
+            moved.append(f"{len(pointing)} still name the old folder (see the install log)")
         return ", ".join(moved) or "done"
 
     def _apply_settings(self) -> str:

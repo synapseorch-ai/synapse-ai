@@ -126,6 +126,26 @@ def test_no_pypi_is_an_error_not_up_to_date(monkeypatch, capsys):
     assert "Could not reach PyPI" in capsys.readouterr().out
 
 
+def test_a_folder_the_upgrade_could_not_remove_goes_at_the_next_command(monkeypatch, tmp_path):
+    """Windows would not delete the 1.x folder the hand-off was running from."""
+    import json
+
+    home = tmp_path / ".synapse"
+    home.mkdir()
+    old = tmp_path / "SynapseAI"
+    (old / "backend").mkdir(parents=True)
+    gone = tmp_path / "already-gone"
+    (home / "install.json").write_text(json.dumps(
+        {"version": "2.0.0", "pending_cleanup": [str(old), str(gone)]}))
+    monkeypatch.setenv("SYNAPSE_HOME", str(home))
+
+    cli._finish_pending_cleanup()
+
+    assert not old.exists()
+    record = json.loads((home / "install.json").read_text())
+    assert "pending_cleanup" not in record and record["version"] == "2.0.0"
+
+
 def test_uninstall_keeps_the_data_when_asked(monkeypatch, tmp_path, capsys):
     from synapse.installer import autostart
 

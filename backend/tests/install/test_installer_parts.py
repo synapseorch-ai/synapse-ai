@@ -331,6 +331,22 @@ def test_nothing_found_on_a_clean_machine(fake_home):
     assert legacy.find(fake_home / ".synapse").found is False
 
 
+def test_definitions_naming_the_old_folder_are_found(tmp_path):
+    root = str(tmp_path / "SynapseAI")
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "mcp_servers.json").write_text(json.dumps([
+        {"name": "local", "command": f"{root}/backend/venv/bin/python", "args": ["x.py"]},
+        {"name": "remote", "url": "https://mcp.example"},
+    ]))
+    (data / "repos.json").write_text(json.dumps([{"id": "r1", "name": "Mine", "path": "/src/mine"}]))
+    windows_root = "C:\\Users\\me\\AppData\\Local\\Programs\\SynapseAI"
+    (data / "user_agents.json").write_text(json.dumps([{"id": "a", "name": "Win", "cwd": windows_root}]))
+
+    assert legacy.mentions([data], [root, windows_root]) == ["agent Win", "MCP server local"]
+    assert legacy.mentions([data], []) == []
+
+
 def test_the_old_env_keeps_its_secrets_but_not_its_paths(tmp_path):
     env = tmp_path / ".env"
     env.write_text("SYNAPSE_DATA_DIR=backend/data\nSYNAPSE_JWT_SECRET=s\n"

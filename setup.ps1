@@ -76,10 +76,14 @@ function Install-Synapse {
         return 1
     }
 
-    # Hand over. The installer reads answers from the console itself.
-    $ErrorActionPreference = 'Continue'
-    & $uv run --no-project --quiet --python 3.12 python $pyz --uv $uv @Arguments
-    return $LASTEXITCODE
+    # Hand over. Start-Process, not `&`: inside a function whose result is
+    # assigned, `&` would capture the installer's output instead of showing
+    # it, and the installer would see no console to draw on or read keys from.
+    $argv = @('run', '--no-project', '--quiet', '--python', '3.12', 'python', $pyz, '--uv', $uv)
+    if ($Arguments) { $argv += $Arguments }
+    $quoted = $argv | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }
+    $process = Start-Process -FilePath $uv -ArgumentList $quoted -NoNewWindow -Wait -PassThru
+    return $process.ExitCode
 }
 
 $synapseExit = Install-Synapse -Arguments $args
