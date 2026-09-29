@@ -189,7 +189,7 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
         async def _save_stopped(agent_id=agent.get("id"), session_id=request.session_id,
                                 message=request.message or ""):
             from core.session import _save_conversation_turn, image_notes, turn_calls, tools_from_calls
-            calls = turn_calls(latest_progress, events_since_progress)
+            calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
             await _save_conversation_turn(session_id=session_id or "default", agent_id=agent_id,
                                           user=message, assistant=chat_turns.STOPPED_ANSWER,
                                           tools=tools_from_calls(calls), calls=calls,

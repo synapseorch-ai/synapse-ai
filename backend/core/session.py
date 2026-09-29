@@ -164,10 +164,18 @@ def calls_from_events(events: list[dict]) -> list[dict]:
     return calls
 
 
-def turn_calls(progress: dict | None, events_since: list[dict] | None = None) -> list[dict]:
+def turn_calls(progress: dict | None, events_since: list[dict] | None = None,
+               resumed: dict | None = None) -> list[dict]:
     """The calls of a turn saved from outside it: those its last turn-boundary
-    snapshot holds (the engine's own record), then any made after it."""
-    return [dict(c) for c in ((progress or {}).get("calls") or [])] + calls_from_events(events_since or [])
+    snapshot holds (the engine's own record), then any made after it.
+
+    `resumed` is the state a resumed turn started from. Until this request has
+    seen a snapshot of its own, that state's calls are the turn's so far: a
+    resumed turn that answered, or was stopped, before its first turn boundary
+    used to keep only what it did after the answer (F311).
+    """
+    base = progress if progress is not None else (resumed or {})
+    return [dict(c) for c in (base.get("calls") or [])] + calls_from_events(events_since or [])
 
 
 def tools_from_calls(calls: list[dict]) -> list[str]:

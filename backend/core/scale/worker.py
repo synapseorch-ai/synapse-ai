@@ -849,7 +849,7 @@ async def run_agent_chat_job(
         if images:
             question["images"] = image_notes(images)
         history.append(question)
-        calls = turn_calls(latest_progress, events_since_progress)
+        calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
         answer_entry = {"role": "assistant", "content": response_text}
         if calls:
             answer_entry.update(tools=tools_from_calls(calls), calls=calls)
