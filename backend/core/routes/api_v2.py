@@ -119,11 +119,16 @@ async def _check_tenant_quota(session_factory, tenant_id: str, redis) -> None:
             tenant = t_result.scalar_one_or_none()
             max_queued = tenant.max_queued_runs if tenant else 1000
 
-            # Count active + queued runs for this tenant
+            # Count active + queued runs for this tenant — runs, not their
+            # nested children (`{run}__…`), which run inside their parent: one
+            # run with nested steps used to count once per live child (F292),
+            # as cloud's admission did (F283). `autoescape`: `_` is a LIKE
+            # wildcard, and run ids are full of it (state_store.list_runs).
             count_result = await session.execute(
                 select(func.count()).select_from(OrchestrationRunDB).where(
                     OrchestrationRunDB.tenant_id == tenant_id,
                     OrchestrationRunDB.status.in_(["running", "queued", "paused"]),
+                    ~OrchestrationRunDB.run_id.contains("__", autoescape=True),
                 )
             )
             active_count = count_result.scalar() or 0
