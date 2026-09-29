@@ -38,6 +38,12 @@ _JSON_SOURCES = ("orchestrations", "user_agents", "custom_tools", "mcp_servers",
 _CONTENT_DIRS = ("chat_sessions", "vault", "datasets")
 _LOG_DIRS = ("orchestration_logs", "agent_logs", "orchestration_runs")
 
+#: What a v1.x process leaves in its environment that must not reach 2.0: the
+#: flag its upgrade re-exec sets, its data folder, and its venv. The installer
+#: clears these before it runs anything (flow.py, handoff.py).
+LEGACY_ENV = ("SYNAPSE_UPGRADE_SKIP_DOWNLOAD", "SYNAPSE_DATA_DIR",
+              "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME")
+
 #: .env keys v2 no longer reads, or that would point it at the old install.
 _DROP_ENV = {"SYNAPSE_DATA_DIR", "NEXT_PUBLIC_BACKEND_PORT", "DEFAULT_TENANT_ID",
              "ENABLE_TENANT_ISOLATION", "NUM_QUEUE_SHARDS", "WORKER_QUEUE_SHARD",

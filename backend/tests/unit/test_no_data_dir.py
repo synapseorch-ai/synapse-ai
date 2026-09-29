@@ -22,10 +22,13 @@ one it is decides where the code goes:
     core/storage/      tenant content, file-shaped      → a blob key
     core/runtime_dirs  a genuine directory on disk      → a real path
 
-There is exactly one exception, and it is deliberate: `core/store/importer.py`
-still knows where a pre-database install kept its JSON, because migrating that
-folder away is the whole of its job. It is the only module allowed to say the
-name.
+There are exactly two exceptions, and they are the same job from both ends:
+`core/store/importer.py` still knows where a pre-database install kept its
+JSON, because migrating that folder away is the whole of its job; and
+`synapse/installer/legacy.py` finds that install before the engine exists — it
+reads the 1.x `.env`'s data folder to name it to the importer, and keeps the
+variable out of every 2.0 process it starts. They are the only modules allowed
+to say the name.
 """
 import os
 import subprocess
@@ -37,10 +40,11 @@ import pytest
 _BACKEND = Path(__file__).resolve().parent.parent.parent
 _REPO = _BACKEND.parent
 
-#: The one module whose job is the legacy folder. If this list ever has a second
-#: entry, the constant is coming back — that is the conversation to have, not a
-#: line to add.
-_ALLOWED = {"backend/core/store/importer.py"}
+#: The modules whose job is the legacy folder: the importer, and the installer's
+#: side of the same migration (F304 — it runs before any engine module can be
+#: imported, so it cannot ask the importer). A third entry means the constant
+#: is coming back — that is the conversation to have, not a line to add.
+_ALLOWED = {"backend/core/store/importer.py", "synapse/installer/legacy.py"}
 
 #: Directories worth scanning. Tests are excluded because several of them drive
 #: the importer, and `tests/unit/test_importer.py` must be able to set the

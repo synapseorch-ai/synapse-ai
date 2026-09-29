@@ -21,8 +21,9 @@ from pathlib import Path
 
 def _clean_environment(root: Path) -> None:
     """Forget the old install: its venv, its data folder, its upgrade flag."""
-    for var in ("SYNAPSE_UPGRADE_SKIP_DOWNLOAD", "SYNAPSE_DATA_DIR", "VIRTUAL_ENV",
-                "PYTHONPATH", "PYTHONHOME"):
+    from .legacy import LEGACY_ENV
+
+    for var in LEGACY_ENV:
         os.environ.pop(var, None)
     venv = str(root / "backend" / "venv")
     os.environ["PATH"] = os.pathsep.join(

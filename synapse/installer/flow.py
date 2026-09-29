@@ -589,8 +589,7 @@ class Installer:
 
     def _runtime_env(self) -> dict:
         env = dict(os.environ)
-        for var in ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "SYNAPSE_DATA_DIR",
-                    "SYNAPSE_UPGRADE_SKIP_DOWNLOAD"):
+        for var in legacy.LEGACY_ENV:
             env.pop(var, None)
         env["SYNAPSE_HOME"] = str(self.home)
         env["PYTHONSAFEPATH"] = "1"     # -P for every Python this starts
