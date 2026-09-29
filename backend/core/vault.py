@@ -25,6 +25,7 @@ fallback was writing an object-store deployment's vault to the pod's own disk.
 import asyncio
 import json
 import re
+import secrets
 import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -58,7 +59,10 @@ def _make_vault_path(tool_name: str, ext: str) -> Path:
     vault_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:20]
     safe_name = re.sub(r"[^\w]", "_", tool_name)[:40]
-    return vault_dir / f"{safe_name}_{timestamp}.{ext}"
+    # The timestamp is to 100 µs, and agents run side by side — a Parallel's
+    # branches (F255), sub-agents, other chats. Two that vaulted one tool's
+    # output in the same instant wrote one file, and one read the other's.
+    return vault_dir / f"{safe_name}_{timestamp}_{secrets.token_hex(3)}.{ext}"
 
 
 def maybe_vault(tool_name: str, raw_output: str) -> str:

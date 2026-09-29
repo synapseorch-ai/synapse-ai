@@ -10,6 +10,8 @@ Plain dicts, so the validator (which holds the stored document) and the engine
 """
 from __future__ import annotations
 
+import re
+
 
 def branch_chains(parallel: dict, by_id: dict[str, dict]) -> list[list[str]]:
     """The steps each branch runs, as `ParallelStepExecutor` resolves them.
@@ -81,4 +83,56 @@ def same_key_branches(orch: dict) -> list[str]:
     for step in steps:
         if step.get("type") == "parallel":
             found += shared_branch_keys(step, by_id)
+    return found
+
+
+#: The fields a step reads shared state through: `{state.x}` in a template,
+#: `state.x`, `state["x"]` or `state.get("x")` in an expression or a transform.
+_READ_FIELDS = ("prompt_template", "evaluator_prompt", "print_content", "transform_code",
+                "if_condition", "switch_expression", "loop_over", "loop_while_condition",
+                "loop_break_condition")
+_STATE_REF = re.compile(
+    r"\bstate\s*(?:\.get\(\s*['\"]([^'\"]+)['\"]|\[\s*['\"]([^'\"]+)['\"]\s*\]|\.\s*([A-Za-z_]\w*))")
+
+
+def _reads(step_id: str, by_id: dict[str, dict], seen: set[str]) -> set[str]:
+    """The keys a step names as its input: `input_keys`, and every state reference
+    in its templates and expressions — a Loop's or a nested Parallel's body too.
+    Generous by design: a name that is not really a read only keeps an order."""
+    step = by_id.get(step_id)
+    if not step or step_id in seen:
+        return set()
+    seen.add(step_id)
+    keys = {k for k in step.get("input_keys") or [] if k}
+    for field in _READ_FIELDS:
+        for match in _STATE_REF.finditer(step.get(field) or ""):
+            keys.add(next(g for g in match.groups() if g))
+    if step.get("type") == "loop":
+        for body_id in step.get("loop_step_ids") or []:
+            keys |= _reads(body_id, by_id, seen)
+    elif step.get("type") == "parallel":
+        for chain in branch_chains(step, by_id):
+            for sid in chain:
+                keys |= _reads(sid, by_id, seen)
+    return keys
+
+
+def sibling_reads(parallel: dict, by_id: dict[str, dict]) -> dict[int, list[str]]:
+    """Per branch, the keys it reads that another of `parallel`'s branches writes.
+
+    Branches that run one after another have always let a later branch read an
+    earlier one's output. Run at the same time, the reader would see the key
+    either way depending on which finished first — so such a branch keeps its
+    place in order (F255).
+    """
+    chains = branch_chains(parallel, by_id)
+    writes = [set().union(*(_writes(sid, by_id, set()) for sid in chain)) if chain else set()
+              for chain in chains]
+    found: dict[int, list[str]] = {}
+    for index, chain in enumerate(chains):
+        reads = set().union(*(_reads(sid, by_id, set()) for sid in chain)) if chain else set()
+        others = set().union(*(w for i, w in enumerate(writes) if i != index)) if len(writes) > 1 else set()
+        shared = sorted(reads & others)
+        if shared:
+            found[index] = shared
     return found

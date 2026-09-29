@@ -68,11 +68,13 @@ def mcp_call_timeout(tool_name: str, arguments: dict | None) -> float:
         own = min(max(own, 1.0), float(BASH_TIMEOUT_MAX))
         return max(MCP_TOOL_CALL_TIMEOUT, own + 5.0)
     return MCP_TOOL_CALL_TIMEOUT
-# Parallel-step branches made only of tool-free steps (llm, transform, print,
-# extract_json, if_else, switch, merge) run concurrently. Branches with agent
-# or tool steps stay sequential: MCP sessions and the single browser are not
-# concurrency-safe. Set to 0 to run every branch sequentially, as before.
+# A Parallel step's branches run at the same time, at most
+# PARALLEL_MAX_BRANCHES at once (F255). A branch that can stop to ask a person,
+# holds a Loop or a nested Parallel, drives the browser, or reads what another
+# branch writes runs afterwards, in order (`ParallelStepExecutor`). Set
+# SYNAPSE_PARALLEL_BRANCHES to 0 to run every branch one after another.
 PARALLEL_BRANCHES_CONCURRENT = os.getenv("SYNAPSE_PARALLEL_BRANCHES", "1").strip().lower() not in ("0", "false", "no", "off")
+PARALLEL_MAX_BRANCHES = max(1, _env_int("SYNAPSE_PARALLEL_MAX_BRANCHES", 4))
 
 
 # ── Settings provider ────────────────────────────────────────────────────────

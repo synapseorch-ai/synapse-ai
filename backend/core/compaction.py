@@ -19,6 +19,7 @@ transcript verbatim beside it, up to that floor.
 """
 import math
 import re
+import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -91,7 +92,10 @@ def _make_archive_path(session_id: str) -> Path:
     archive_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:20]
     safe_id = re.sub(r"[^\w]", "_", session_id or "session")[:40]
-    return archive_dir / f"{safe_id}_{timestamp}.txt"
+    # A workflow's steps share one session id (`orch_<run>`), and a Parallel's
+    # agents now compact side by side (F255): the suffix keeps two archives made
+    # in the same 100 µs apart.
+    return archive_dir / f"{safe_id}_{timestamp}_{secrets.token_hex(3)}.txt"
 
 
 def _build_context_block(current_context_text: str, recent_history_messages: list) -> str:

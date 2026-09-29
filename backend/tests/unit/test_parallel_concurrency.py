@@ -1,10 +1,11 @@
 """
-A parallel step's tool-free branches run at the same time.
+A parallel step's branches run at the same time.
 
-Branches made only of llm / transform / print / extract_json / if_else /
-switch / merge steps have no shared resource behind them and overlap; a
-branch with an agent or tool step still runs alone, afterwards. The fake LLM
-sleeps for a fixed 0.3s here, so "at the same time" is a wall-clock fact.
+Branches of llm / transform / print / extract_json / if_else / switch / merge
+steps overlap, and since F255 so do agent and tool branches
+(`test_parallel_agents_run_together.py`). A branch that could stop to ask a
+person still runs alone, afterwards. The fake LLM sleeps for a fixed 0.3s here,
+so "at the same time" is a wall-clock fact.
 """
 import asyncio
 import time
@@ -98,8 +99,11 @@ class TestToolFreeBranchesOverlap:
                          ("branch_start", 2, "fan"), ("step_complete", None, "c")]
 
 
-class TestBranchesWithSharedResourcesStaySequential:
+class TestABranchThatCanAskStaysSequential:
     async def test_an_agent_branch_runs_after_the_overlapping_ones(self, slow_llm, monkeypatch):
+        """An agent that keeps memory can stop to ask (a workflow's `remember`
+        asks first), and a run waits on one question at a time. Any agent ran
+        here until F255; a plain one now runs beside the others."""
         import core.react_engine as re_mod
         timeline: list[tuple[str, float]] = []
 
@@ -108,7 +112,7 @@ class TestBranchesWithSharedResourcesStaySequential:
             yield {"type": "final", "response": "agent done"}
 
         monkeypatch.setattr(re_mod, "run_agent_step", agent)
-        await S.seed_agents([S.make_agent(id="a1")])
+        await S.seed_agents([S.make_agent(id="a1", memory=True)])
         agent_step = {"id": "ag", "name": "Agent", "type": "agent", "agent_id": "a1",
                       "prompt_template": "x", "output_key": "o_ag", "next_step_id": None}
         orch = _fanout([_llm("a"), agent_step, _llm("b")])
@@ -177,7 +181,8 @@ class TestAFailedBranchFailsTheRun:
             yield {"type": "final", "response": "agent done"}
 
         monkeypatch.setattr(re_mod, "run_agent_step", agent)
-        await S.seed_agents([S.make_agent(id="a1")])
+        # An agent that can ask runs in the sequential phase (F255).
+        await S.seed_agents([S.make_agent(id="a1", memory=True)])
         agent_step = {"id": "ag", "name": "Agent", "type": "agent", "agent_id": "a1",
                       "prompt_template": "x", "output_key": "o_ag", "next_step_id": None}
         orch = _fanout([_llm("a"), _llm("b"), agent_step])

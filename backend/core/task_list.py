@@ -168,3 +168,31 @@ def summarize_tasks(tasks: list[dict]) -> str:
     if counts["cancelled"]:
         parts.append(f"{counts['cancelled']} cancelled")
     return f"{len(tasks)} task{'s' if len(tasks) != 1 else ''} — " + ", ".join(parts)
+
+
+def merge_branch_tasks(current: list[dict], before: list[dict], after: list[dict]) -> list[dict]:
+    """The run's list after one agent, running beside others, rewrote its own.
+
+    The tool is whole-list-write, so an agent's new list replaced the run's.
+    Agent steps used to take turns, each starting from the list the one before
+    it left, so nothing was lost. Two branches of one Parallel now run at once
+    (F255): each started from the same list, and whichever wrote last wiped the
+    other's plan from the run. So the tasks this agent dropped from `before`
+    (its previous list) are dropped, its own tasks take the place and status it
+    gave them, and everything else in the run's list stays. Tasks are matched by
+    their text, since there are no task ids.
+    """
+    def key(task: dict) -> str:
+        return str(task.get("content") or "").strip()
+
+    dropped = {key(t) for t in before} - {key(t) for t in after}
+    mine = {key(t): t for t in after}
+    merged, seen = [], set()
+    for task in current:
+        k = key(task)
+        if k in dropped or k in seen:
+            continue
+        merged.append(dict(mine.get(k, task)))
+        seen.add(k)
+    merged += [dict(t) for t in after if key(t) not in seen]
+    return merged[:MAX_TASKS]
