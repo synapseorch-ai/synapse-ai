@@ -69,6 +69,9 @@ def _turns(messages: list[dict]) -> list[dict]:
             "assistant": assistant.get("content", ""),
             "tools": assistant.get("tools", []),
             "calls": assistant.get("calls", []),
+            # What the turn thought (U60): the chat page's two panels, reopened.
+            "reasoning": assistant.get("reasoning", []),
+            "thoughts": assistant.get("thoughts", []),
             "timestamp": assistant.get("timestamp"),
         }
         if assistant.get("approval"):
@@ -118,6 +121,8 @@ DIGEST_DETAILED_TURNS = 3    # the newest turns sent with arguments and results
 DIGEST_ARGS_CHARS = 200
 DIGEST_RESULT_CHARS = 300
 DIGEST_MAX_CHARS = 6_000     # the whole digest, across every turn sent
+PANEL_KEEP = 20              # a saved turn's newest reasoning / thoughts (U60)
+PANEL_CHARS = 4_000          # each of them, when stored
 
 _OBSERVATION_TAG = re.compile(r"^\s*\[Turn \d+ — Observation\]\s*(Tool '[^']*' returned:\s*)?")
 
@@ -162,6 +167,30 @@ def calls_from_events(events: list[dict]) -> list[dict]:
                 # Not run, and why (U68) — as the engine's own record says.
                 calls[-1].update(refused=True, reason=event.get("reason") or "")
     return calls
+
+
+def panel_text(items: list | None) -> list[str]:
+    """A turn's reasoning or thoughts as a saved turn keeps them (U60): the
+    newest `PANEL_KEEP`, each clipped, none empty."""
+    kept = [str(t) for t in (items or []) if str(t or "").strip()]
+    return [_clip(t, PANEL_CHARS) for t in kept[-PANEL_KEEP:]]
+
+
+def thinking_from_events(events: list[dict], resumed: dict | None = None) -> tuple[list[str], list[str]]:
+    """A turn's `(reasoning, thoughts)` from its events, for the paths that save
+    a turn from outside the engine: the fleet's chat job and a stopped turn.
+    `resumed` is the state a resumed turn started from, whose lists come first.
+    A delegate's and a workflow step's are theirs, as in `calls_from_events`."""
+    reasoning = list((resumed or {}).get("reasoning") or [])
+    thoughts = list((resumed or {}).get("thoughts") or [])
+    for event in events:
+        if event.get("delegate_from") or event.get("orch_step_id"):
+            continue
+        if event.get("type") == "llm_reasoning":
+            reasoning.append(event.get("reasoning") or "")
+        elif event.get("type") == "llm_thought":
+            thoughts.append(event.get("thought") or "")
+    return panel_text(reasoning), panel_text(thoughts)
 
 
 def turn_calls(progress: dict | None, events_since: list[dict] | None = None,
@@ -263,10 +292,14 @@ async def _save_conversation_turn(
     tools: list[str] | None = None,
     calls: list[dict] | None = None,
     images: list[dict] | None = None,
+    reasoning: list[str] | None = None,
+    thoughts: list[str] | None = None,
 ):
     """Append a turn to the session and update last_message_at.
 
-    `images` is `image_notes(...)` of what the question carried (F245).
+    `images` is `image_notes(...)` of what the question carried (F245);
+    `reasoning` and `thoughts` are what the turn thought (U60), kept for a
+    person reading it back and never sent to the model as history.
     """
     from core.store import sessions as store
 
@@ -277,6 +310,9 @@ async def _save_conversation_turn(
     answer = {"role": "assistant", "content": assistant, "tools": tools or [], "timestamp": now}
     if calls:
         answer["calls"] = calls
+    for key, items in (("reasoning", reasoning), ("thoughts", thoughts)):
+        if kept := panel_text(items):
+            answer[key] = kept
     await store.append_turn(
         session_id,
         _agent(agent_id),

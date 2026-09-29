@@ -21,7 +21,7 @@ from core.session import (
     _apply_sticky_args, _clear_session_embeddings,
     get_recent_history_messages, _get_conversation_history,
     _save_conversation_turn, call_record, build_session_history_tool,
-    render_session_history, SESSION_HISTORY_TOOL_NAME, image_notes,
+    render_session_history, SESSION_HISTORY_TOOL_NAME, image_notes, panel_text,
 )
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
@@ -1334,6 +1334,11 @@ async def run_agent_step(
     # next call opens or the turn's calls end, so no dispatch branch has to
     # remember to record itself. Saved with the turn; the next turn's digest.
     _turn_calls: list[dict] = list((resume_state or {}).get("calls") or [])
+    # What the turn thought (U60), as the chat page's two panels hold it —
+    # `llm_reasoning` and `llm_thought`, in order. Saved with the turn so a
+    # reopened chat shows them; carried across an approval pause like `calls`.
+    _turn_reasoning: list[str] = list((resume_state or {}).get("reasoning") or [])
+    _turn_thoughts: list[str] = list((resume_state or {}).get("thoughts") or [])
     _open_call: tuple | None = None
     # The repeat guard (F243): the same tool, arguments and result as the call
     # just before it. One turn made eleven identical `list_directory` calls for
@@ -1518,6 +1523,8 @@ async def run_agent_step(
                 tools=tools_used_summary,
                 calls=_turn_calls,
                 images=image_notes(images),
+                reasoning=_turn_reasoning,
+                thoughts=_turn_thoughts,
             )
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
@@ -1750,6 +1757,7 @@ async def run_agent_step(
                         # a reply of `[REASONING]` alone is below.
                         _reasoning_retries += 1
                         _log.warning(f"⚠️ Reply was all reasoning (retry {_reasoning_retries}/{MAX_REASONING_RETRIES})")
+                        _turn_reasoning.append(llm_err.reasoning)
                         yield {"type": "llm_reasoning", "reasoning": llm_err.reasoning, "turn": turn + 1}
                         current_context_text += _REASONING_ONLY_NUDGE
                         yield {"type": "reasoning_only", "turn": turn + 1, "retry": _reasoning_retries}
@@ -1830,6 +1838,7 @@ async def run_agent_step(
                 reasoning_blocks = [native_reasoning, *reasoning_blocks]
 
             if reasoning_blocks:
+                _turn_reasoning.append("\n\n".join(reasoning_blocks))
                 yield {
                     "type": "llm_reasoning",
                     "reasoning": "\n\n".join(reasoning_blocks),
@@ -1837,6 +1846,7 @@ async def run_agent_step(
                 }
 
             if action_text.strip():
+                _turn_thoughts.append(action_text)
                 yield {"type": "llm_thought", "thought": action_text, "turn": turn + 1}
 
             # Parse every tool call the LLM emitted in this response and execute
@@ -2781,6 +2791,12 @@ async def run_agent_step(
                     "calls": [{**c, "result": str(c.get("result") or "")[:2_000]}
                               for c in _turn_calls[-20:]],
                 }
+                if not _workflow_step:
+                    # A chat turn's panels, for a pause's resume to save them
+                    # (U60). A workflow step saves no turn, so its checkpoints
+                    # stay as they were.
+                    _last_progress["reasoning"] = panel_text(_turn_reasoning)
+                    _last_progress["thoughts"] = panel_text(_turn_thoughts)
                 yield {"type": "_step_progress", **_last_progress}
         else:
             _ran_out = True
@@ -2827,6 +2843,8 @@ async def run_agent_step(
                 tools=tools_used_summary,
                 calls=_turn_calls,
                 images=image_notes(images),
+                reasoning=_turn_reasoning,
+                thoughts=_turn_thoughts,
             )
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")

@@ -651,6 +651,9 @@ async def run_agent_chat_job(
     # Whether this turn's exchange is already in `history`: an error after the
     # answer was recorded (its webhook, say) must not replace it (F133).
     recorded = False
+    # What the turn thought, from its events (U60): out here so a failed turn
+    # keeps it too.
+    thinking_events: list[dict] = []
 
     try:
         # Everything that makes this turn *visible* happens before the pool is
@@ -756,6 +759,8 @@ async def run_agent_chat_job(
                     continue
                 if etype in ("tool_execution", "tool_result"):
                     events_since_progress.append(event)
+                elif etype in ("llm_reasoning", "llm_thought"):
+                    thinking_events.append(event)
 
                 await publisher.publish(event)
 
@@ -844,7 +849,7 @@ async def run_agent_chat_job(
         # With what the question carried (F245) and what the turn's tools did
         # (F242), as the in-process path saves them: a bare pair left the next
         # turn blind to both.
-        from core.session import image_notes, turn_calls, tools_from_calls
+        from core.session import image_notes, thinking_from_events, turn_calls, tools_from_calls
         question = {"role": "user", "content": message}
         if images:
             question["images"] = image_notes(images)
@@ -853,6 +858,11 @@ async def run_agent_chat_job(
         answer_entry = {"role": "assistant", "content": response_text}
         if calls:
             answer_entry.update(tools=tools_from_calls(calls), calls=calls)
+        reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)
+        if reasoning:
+            answer_entry["reasoning"] = reasoning
+        if thoughts:
+            answer_entry["thoughts"] = thoughts
         history.append(answer_entry)
         recorded = True
         await _upsert_chat_session(session_factory, session_id, agent_id,
@@ -926,8 +936,15 @@ async def run_agent_chat_job(
             # on the stream above, to the person in the app.
             if not recorded:
                 from core.chat_turns import FAILED_ANSWER
+                from core.session import thinking_from_events
                 history.append({"role": "user", "content": message})
-                history.append({"role": "assistant", "content": FAILED_ANSWER})
+                failed = {"role": "assistant", "content": FAILED_ANSWER}
+                reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)
+                if reasoning:
+                    failed["reasoning"] = reasoning
+                if thoughts:
+                    failed["thoughts"] = thoughts
+                history.append(failed)
             await _upsert_chat_session(session_factory, session_id, agent_id, "failed", history)
         except Exception:
             pass

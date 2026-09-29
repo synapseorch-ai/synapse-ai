@@ -178,6 +178,8 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
     # and the ones made since, read from their events.
     latest_progress: dict | None = None
     events_since_progress: list[dict] = []
+    # What it thought, for the same save (U60): every one this request saw.
+    thinking_events: list[dict] = []
     if turn is not None and agent:
         # Stopped before it answered, a turn still keeps its question — as the
         # fleet's chat job does. Otherwise Stop destroyed the exchange rather
@@ -188,12 +190,15 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
         # it made: saved with none, the next turn redid them (F242).
         async def _save_stopped(agent_id=agent.get("id"), session_id=request.session_id,
                                 message=request.message or ""):
-            from core.session import _save_conversation_turn, image_notes, turn_calls, tools_from_calls
+            from core.session import (_save_conversation_turn, image_notes, thinking_from_events,
+                                      turn_calls, tools_from_calls)
             calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
+            reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)
             await _save_conversation_turn(session_id=session_id or "default", agent_id=agent_id,
                                           user=message, assistant=chat_turns.STOPPED_ANSWER,
                                           tools=tools_from_calls(calls), calls=calls,
-                                          images=image_notes(getattr(request, "images", None)))
+                                          images=image_notes(getattr(request, "images", None)),
+                                          reasoning=reasoning, thoughts=thoughts)
         turn.on_stop = _save_stopped
 
     # Route builder agents to the dedicated builder stream
@@ -243,6 +248,8 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 continue
             if etype in ("tool_execution", "tool_result"):
                 events_since_progress.append(event)
+            elif etype in ("llm_reasoning", "llm_thought"):
+                thinking_events.append(event)
 
             if etype == "status":
                 yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"
