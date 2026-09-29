@@ -2025,9 +2025,16 @@ class OrchestrationEngine:
         if run.status == "paused":
             return "Orchestration paused, waiting for human input."
 
+        if run.status == "cancelled":
+            # It fell through to "Orchestration completed…" (SP7's note).
+            return "Orchestration cancelled."
+
         last_output = result_of(run.step_history, run.shared_state, result_key)
 
         if last_output:
             return str(last_output) if not isinstance(last_output, str) else last_output
 
-        return f"Orchestration completed. {len(run.step_history)} steps executed."
+        # Nothing it ran made an answer — a Human → End workflow, say. It said
+        # "Orchestration completed. 1 steps executed.", which a chat showed as
+        # the agent's answer and a nested child handed its parent.
+        return "The workflow finished without producing an answer."
