@@ -5,9 +5,5 @@ arq>=0.26,<1
 redis[hiredis]>=5.0,<9
 asyncpg>=0.29,<1
 sqlalchemy[asyncio]>=2.0,<3
-opentelemetry-sdk>=1.20,<2
-opentelemetry-exporter-otlp-proto-grpc>=1.20,<2
-opentelemetry-instrumentation-fastapi>=0.41b0,<1
-opentelemetry-instrumentation-asyncpg>=0.41b0,<1
-opentelemetry-instrumentation-redis>=0.41b0,<1
-prometheus-client>=0.19,<1
+# OpenTelemetry, installed so an operator can turn it on; off until they do.
+-r requirements-telemetry.txt

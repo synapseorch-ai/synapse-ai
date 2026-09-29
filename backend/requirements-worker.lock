@@ -21,6 +21,7 @@ aiosignal==1.4.0
 aiosqlite==0.22.1
     # via
     #   -c requirements.lock
+    #   -r requirements.txt
     #   crawl4ai
 alphashape==1.3.1
     # via
@@ -250,6 +251,7 @@ googleapis-common-protos==1.75.1
     #   -c requirements.lock
     #   google-api-core
     #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
 greenlet==3.5.5
     # via
     #   -c requirements.lock
@@ -459,62 +461,73 @@ openpyxl==3.1.5
 opentelemetry-api==1.44.0
     # via
     #   -c requirements.lock
+    #   -r requirements-telemetry.txt
     #   chromadb
     #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-exporter-prometheus
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-asgi
-    #   opentelemetry-instrumentation-asyncpg
-    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-httpx
     #   opentelemetry-instrumentation-redis
+    #   opentelemetry-instrumentation-sqlalchemy
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
 opentelemetry-exporter-otlp-proto-common==1.44.0
     # via
     #   -c requirements.lock
     #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
 opentelemetry-exporter-otlp-proto-grpc==1.44.0
     # via
     #   -c requirements.lock
-    #   -r requirements-worker.txt
+    #   -r requirements-telemetry.txt
     #   chromadb
+opentelemetry-exporter-otlp-proto-http==1.44.0
+    # via -r requirements-telemetry.txt
+opentelemetry-exporter-prometheus==0.65b0
+    # via -r requirements-telemetry.txt
 opentelemetry-instrumentation==0.65b0
     # via
     #   opentelemetry-instrumentation-asgi
-    #   opentelemetry-instrumentation-asyncpg
-    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-httpx
     #   opentelemetry-instrumentation-redis
+    #   opentelemetry-instrumentation-sqlalchemy
 opentelemetry-instrumentation-asgi==0.65b0
-    # via opentelemetry-instrumentation-fastapi
-opentelemetry-instrumentation-asyncpg==0.65b0
-    # via -r requirements-worker.txt
-opentelemetry-instrumentation-fastapi==0.65b0
-    # via -r requirements-worker.txt
+    # via -r requirements-telemetry.txt
+opentelemetry-instrumentation-httpx==0.65b0
+    # via -r requirements-telemetry.txt
 opentelemetry-instrumentation-redis==0.65b0
-    # via -r requirements-worker.txt
+    # via -r requirements-telemetry.txt
+opentelemetry-instrumentation-sqlalchemy==0.65b0
+    # via -r requirements-telemetry.txt
 opentelemetry-proto==1.44.0
     # via
     #   -c requirements.lock
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
 opentelemetry-sdk==1.44.0
     # via
     #   -c requirements.lock
-    #   -r requirements-worker.txt
+    #   -r requirements-telemetry.txt
     #   chromadb
     #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-exporter-prometheus
 opentelemetry-semantic-conventions==0.65b0
     # via
     #   -c requirements.lock
     #   opentelemetry-instrumentation
     #   opentelemetry-instrumentation-asgi
-    #   opentelemetry-instrumentation-asyncpg
-    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-httpx
     #   opentelemetry-instrumentation-redis
+    #   opentelemetry-instrumentation-sqlalchemy
     #   opentelemetry-sdk
 opentelemetry-util-http==0.65b0
     # via
     #   opentelemetry-instrumentation-asgi
-    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-instrumentation-httpx
 orjson==3.11.9
     # via
     #   -c requirements.lock
@@ -530,6 +543,7 @@ packaging==26.3
     #   huggingface-hub
     #   onnxruntime
     #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-sqlalchemy
 pandas==3.0.5
     # via
     #   -c requirements.lock
@@ -562,7 +576,9 @@ playwright-stealth==2.0.3
     #   -c requirements.lock
     #   crawl4ai
 prometheus-client==0.26.0
-    # via -r requirements-worker.txt
+    # via
+    #   -r requirements-telemetry.txt
+    #   opentelemetry-exporter-prometheus
 propcache==0.5.2
     # via
     #   -c requirements.lock
@@ -728,6 +744,7 @@ requests==2.34.2
     #   google-auth
     #   google-genai
     #   kubernetes
+    #   opentelemetry-exporter-otlp-proto-http
     #   requests-oauthlib
     #   tiktoken
 requests-oauthlib==2.0.0
@@ -851,6 +868,7 @@ typing-extensions==4.16.0
     #   openai
     #   opentelemetry-api
     #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
     #   pydantic
@@ -912,7 +930,9 @@ websockets==16.1.1
 wrapt==2.3.0
     # via
     #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-httpx
     #   opentelemetry-instrumentation-redis
+    #   opentelemetry-instrumentation-sqlalchemy
 xxhash==3.8.1
     # via
     #   -c requirements.lock

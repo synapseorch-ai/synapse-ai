@@ -32,6 +32,10 @@ WORKDIR /app
 # requirements.txt is copied too, as the fallback and for provenance.
 COPY backend/requirements.txt backend/requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
+# OpenTelemetry, so an operator can export to their own collector; it stays off
+# until SYNAPSE_TELEMETRY=otlp or OTLP_ENDPOINT is set (core/telemetry/config.py).
+COPY backend/requirements-telemetry.txt backend/requirements-telemetry.lock ./
+RUN pip install --no-cache-dir -r requirements-telemetry.lock
 
 COPY backend/core ./core
 COPY backend/services ./services

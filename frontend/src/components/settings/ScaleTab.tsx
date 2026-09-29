@@ -471,8 +471,9 @@ kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.13.0/keda
                                 <Label className="mb-2 block">Observability (optional)</Label>
                                 <div className="space-y-1 text-xs font-mono">
                                     {[
-                                        ['OTLP_ENDPOINT', 'http://jaeger:4317'],
-                                        ['METRICS_TOKEN', 'bearer token for /metrics'],
+                                        ['OTLP_ENDPOINT', 'your collector — telemetry is off until set'],
+                                        ['SYNAPSE_TELEMETRY', 'otlp: send to OTEL_EXPORTER_OTLP_ENDPOINT'],
+                                        ['METRICS_TOKEN', 'bearer token for /api/v2/metrics'],
                                         ['K8S_MODE', '1 when running on Kubernetes'],
                                         ['PGBOUNCER_MODE', '1 when Postgres URL points to PgBouncer'],
                                     ].map(([k, v]) => (
@@ -1403,12 +1404,12 @@ export function ScaleTab() {
             </CollapsibleSection>
 
             <CollapsibleSection sectionKey="observability" title="Observability" icon={Activity}
-                subtitle="OpenTelemetry traces (Jaeger) and Prometheus metrics for distributed debugging."
+                subtitle="Optional OpenTelemetry export to your own collector, off by default. Nothing is sent to us."
                 expanded={expandedConfigs.observability} onToggle={() => toggleSection('observability')}
             >
                 <div className="space-y-4 mt-4">
                     <div>
-                                                <Field label="OTLP Endpoint" hint="Leave empty to disable tracing. When set, every run gets a distributed trace propagated through API server → Redis → Worker → Postgres.">
+                        <Field label="OTLP Endpoint" hint="Empty keeps telemetry off. Set, each request, run, step, model call and tool call becomes a span sent to this collector, across the API and its workers: ids, timings, token counts and cost — never prompts, answers or tool data. Applies on restart, and needs the telemetry packages (pip install 'synapse-orch-ai[telemetry]').">
                             <Input type="text" placeholder="http://jaeger:4317" className="font-mono" {...field('otlp_endpoint')} />
                         </Field>
                     </div>

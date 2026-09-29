@@ -103,6 +103,21 @@ include = [
 ]
 
 [project.optional-dependencies]
+# OpenTelemetry export to an operator's own collector — off until they turn it
+# on (backend/core/telemetry/config.py). Same list as
+# backend/requirements-telemetry.txt.
+telemetry = [
+    "opentelemetry-api>=1.44,<2",
+    "opentelemetry-sdk>=1.44,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.44,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
+    "opentelemetry-instrumentation-asgi>=0.65b0,<1",
+    "opentelemetry-instrumentation-httpx>=0.65b0,<1",
+    "opentelemetry-instrumentation-redis>=0.65b0,<1",
+    "opentelemetry-instrumentation-sqlalchemy>=0.65b0,<1",
+    "opentelemetry-exporter-prometheus>=0.65b0,<1",
+    "prometheus-client>=0.19,<1",
+]
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

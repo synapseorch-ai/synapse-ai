@@ -96,6 +96,9 @@ compile requirements.lock requirements.txt requirements-coding.txt
 compile requirements-messaging.lock requirements-messaging.txt \
     -- --constraint requirements.lock
 
+compile requirements-telemetry.lock requirements-telemetry.txt \
+    -- --constraint requirements.lock
+
 compile requirements-worker.lock requirements.txt requirements-worker.txt \
     -- --constraint requirements.lock
 
