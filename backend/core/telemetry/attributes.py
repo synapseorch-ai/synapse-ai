@@ -87,7 +87,7 @@ EXPORTED: tuple[tuple[str, str], ...] = (
     ("gen_ai.provider.name", "the model provider: openai, anthropic, gemini, bedrock, …"),
     ("gen_ai.system", "the model provider (the older name for gen_ai.provider.name)"),
     ("gen_ai.operation.name", "chat"),
-    ("gen_ai.request.model", "the model asked for (a user-typed name is reduced to its bucket)"),
+    ("gen_ai.request.model", "the model's name as configured (metrics use the model bucket instead)"),
     ("gen_ai.usage.input_tokens", "prompt tokens"),
     ("gen_ai.usage.output_tokens", "completion tokens"),
     ("gen_ai.response.finish_reasons", "why the model stopped: stop, tool_calls, length, …"),
