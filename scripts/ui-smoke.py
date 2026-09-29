@@ -4779,6 +4779,88 @@ async def check_workflowheader(browser) -> str:
     return "a workflow agent's header reads 'Workflow · 3 steps' from its orchestration, and names no model"
 
 
+def judged_question_orchestration(oid: str) -> dict:
+    """A label written by one step, then a person asked with fields: the stress pass's shape (U65)."""
+    return {
+        "id": oid, "name": "ui-smoke judged question", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_judge",
+        "steps": [
+            {"id": f"{oid}_judge", "name": "Judge", "type": "print", "print_content": "pass",
+             "next_step_id": f"{oid}_ask", "output_key": "category"},
+            {"id": f"{oid}_ask", "name": "Review", "type": "human", "human_prompt": "Send the reply?",
+             "human_fields": [{"name": "notes", "type": "textarea", "label": "Notes"},
+                              {"name": "send", "type": "boolean", "label": "Send it"}],
+             "next_step_id": None, "output_key": "review"},
+        ],
+    }
+
+
+@check
+async def check_humancontext(browser) -> str:
+    """The answer dialog says what its context box holds, and names every field (U65).
+
+    Under the title sat a box reading "pass" (the previous step's output, an
+    evaluator's label) with nothing saying what it was. The question now names
+    the state key it came from, and the box is captioned with it. The stress
+    pass also reported the Notes field as unnamed; this check reads the name
+    the browser computes for every field.
+    """
+    oid = f"orch_uismoke_ask_{int(time.time())}"
+    api("/api/orchestrations", "POST", judged_question_orchestration(oid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Run", exact=True).click()
+        strip = page.get_by_role("button", name=re.compile("Waiting for your input"))
+        await strip.wait_for(timeout=30_000)
+        await strip.click()
+        dialog = page.get_by_role("dialog", name="Human input required")
+        await dialog.wait_for(timeout=5_000)
+        await asyncio.sleep(0.5)
+        caption = await dialog.evaluate(
+            "d => d.querySelector('figcaption')?.innerText || null")
+        context = await dialog.evaluate(
+            "d => (d.querySelector('figure') || d.querySelector('.bg-surface-2'))?.innerText || ''")
+        fields = await ax_fields(page)
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    # The same question answered in chat, where the stress pass typed into the
+    # composer because it found no named field.
+    asked = judged_question_orchestration(oid)["steps"][1]
+    ctx, page = await _chat_page(browser, "uismoke-humancontext")
+    try:
+        await page.locator("main textarea").last.fill("start the review")
+        await page.keyboard.press("Enter")
+        await _stream_open(page, "post")
+        await page.evaluate(f"() => window.__streams.post.push({json.dumps(_frame({
+            'type': 'human_input_required', 'orch_step_id': asked['id'], 'run_id': 'run_uismoke_ask',
+            'prompt': asked['human_prompt'], 'fields': asked['human_fields'],
+            'agent_context': 'pass', 'context_key': 'category'}))})")
+        await page.get_by_text("Human Input Required").first.wait_for(timeout=10_000)
+        await asyncio.sleep(0.5)
+        chat_fields = await ax_fields(page)
+    finally:
+        await ctx.close()
+    bad = []
+    chat_names = [f["name"] for f in chat_fields if f["role"] == "textbox"]
+    if "Notes" not in chat_names:
+        bad.append(f"chat's Notes field is not named Notes (text fields: {chat_names})")
+    if caption != "From category":
+        bad.append(f"the context box is captioned {caption!r}, not 'From category'")
+    if "pass" not in context:
+        bad.append(f"the context box reads {context!r}, not the judge's 'pass'")
+    names = [f["name"] for f in fields if f["role"] == "textbox"]
+    if "Notes" not in names:
+        bad.append(f"the Notes field is not named Notes (text fields: {names})")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the context box reads 'From category' over 'pass', and the Notes field is named"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

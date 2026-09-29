@@ -270,7 +270,10 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     const [runInput, setRunInput] = useState('');
     const [runLog, setRunLog] = useState<LogEntry[]>([]);
     const [humanPrompt, setHumanPrompt] = useState<string | null>(null);
-    const [humanContext, setHumanContext] = useState<string | null>(null);
+    // What the question is about (the step's first input key with a value, or
+    // the newest step output) and the key it came from, so its box can say what
+    // it is (U65); a question from before the key was sent says "this run".
+    const [humanContext, setHumanContext] = useState<{ text: string; key: string | null } | null>(null);
     const [humanResponse, setHumanResponse] = useState('');
     // The step's declared fields, when it has any — answered as a form keyed by
     // name, like every other place a human step is answered (F75). Set with the
@@ -612,7 +615,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 }
                 if (data.waiting_for_human && data.human_prompt) {
                     setHumanPrompt(data.human_prompt);
-                    setHumanContext(data.human_context || null);
+                    setHumanContext(data.human_context ? { text: String(data.human_context), key: null } : null);
                     setHumanFields(fieldList(data.human_fields));
                     setHumanValues(initialHumanValues(fieldList(data.human_fields)));
                 }
@@ -1000,7 +1003,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                     setRunStatus('paused');
                     if (data.waiting_for_human && data.human_prompt) {
                         setHumanPrompt(data.human_prompt);
-                        setHumanContext(data.human_context || null);
+                        setHumanContext(data.human_context ? { text: String(data.human_context), key: null } : null);
                         setHumanFields(fieldList(data.human_fields));
                         setHumanValues(initialHumanValues(fieldList(data.human_fields)));
                     }
@@ -1374,7 +1377,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                     setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'paused' }));
                 }
                 setHumanPrompt(data.prompt || 'Please provide input:');
-                setHumanContext(data.agent_context || null);
+                setHumanContext(data.agent_context
+                    ? { text: String(data.agent_context), key: data.context_key || null }
+                    : null);
                 setHumanFields(fieldList(data.fields));
                 setHumanValues(initialHumanValues(fieldList(data.fields)));
                 setRunLog(prev => [...prev, line('pause', 'Waiting for human input…')]);
@@ -2159,7 +2164,7 @@ function BottomPanel({
     setRunInput: (v: string) => void;
     onStartRun: () => void;
     humanPrompt: string | null;
-    humanContext: string | null;
+    humanContext: { text: string; key: string | null } | null;
     humanResponse: string;
     setHumanResponse: (v: string) => void;
     humanFields: HumanField[];
@@ -2680,9 +2685,18 @@ function BottomPanel({
                         >
                             <div className="space-y-3">
                                 {humanContext && (
-                                    <div className="max-h-[45vh] overflow-y-auto rounded-md border border-border bg-surface-2 p-4">
-                                        <Markdown>{humanContext}</Markdown>
-                                    </div>
+                                    // Labelled with the state key it came from: a bare
+                                    // "pass" under the title said nothing (U65).
+                                    <figure>
+                                        <figcaption className="mb-1.5 text-xs text-text-muted">
+                                            {humanContext.key
+                                                ? <>From <span className="font-code text-text">{humanContext.key}</span></>
+                                                : 'From this run'}
+                                        </figcaption>
+                                        <div className="max-h-[45vh] overflow-y-auto rounded-md border border-border bg-surface-2 p-4">
+                                            <Markdown>{humanContext.text}</Markdown>
+                                        </div>
+                                    </figure>
                                 )}
                                 <div className="text-sm leading-relaxed text-amber-300">
                                     <ReactMarkdown
