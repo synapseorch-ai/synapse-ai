@@ -12,12 +12,13 @@ from typing import AsyncGenerator, TYPE_CHECKING
 
 import anyio
 
-from core.config import HTTP_TOOL_TIMEOUT, ORCH_STEP_TIMEOUT, mcp_call_timeout
+from core.config import HTTP_TOOL_TIMEOUT, mcp_call_timeout
 from core import expressions as _expressions
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
 from .pauses import end_step, progress_key as _progress_key
+from .time_limits import step_time_limit, timed_out
 
 _log = get_logger(__name__)
 
@@ -1563,7 +1564,10 @@ class ParallelStepExecutor:
                 raise RuntimeError(message)
 
             step_start = time.time()
-            sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
+            # A step that runs a workflow waits on that workflow's own budget
+            # (F291); this node's own limit holds the rest.
+            sub_timeout, sub_why = await step_time_limit(sub_step, engine)
+            sub_after = timed_out(sub_timeout, sub_why) if sub_why else f"after {sub_timeout}s"
             _log.debug(f"PARALLEL: ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s")
             yield {"type": "step_start", "orch_step_id": sub_step.id,
                    "step_name": sub_step.name, "step_type": sub_step.type.value}
@@ -1603,21 +1607,21 @@ class ParallelStepExecutor:
                     except Exception as close_err:  # noqa: BLE001
                         _log.warning(f"closing timed-out step '{sub_step.name}' failed: {close_err}")
                 duration = round(time.time() - step_start, 2)
-                _log.debug(f"PARALLEL: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s in branch {branch_index}")
+                _log.debug(f"PARALLEL: ⏱ Step '{sub_step.name}' timed out {sub_after} in branch {branch_index}")
                 end_step(run.step_history, {
                     "step_id": sub_step.id, "step_name": sub_step.name,
                     "step_type": sub_step.type.value, "status": "failed",
-                    "error": f"Timed out after {sub_timeout}s",
+                    "error": f"Timed out {sub_after}",
                     "started_at": _iso(step_start), "ended_at": _iso(time.time()),
                     "duration_seconds": duration,
                 })
                 yield {"type": "step_error", "orch_step_id": sub_step.id,
-                       "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
+                       "error": f"Step '{sub_step.name}' timed out {sub_after}"}
                 # Fails the branch and so the node, as a raise does (F88) and as
                 # a timeout does at the top level (F253); it used to be skipped
                 # and the branch went on without it. A RuntimeError, so the
                 # engine does not read it as the node's own timeout.
-                raise RuntimeError(f"Step '{sub_step.name}' timed out after {sub_timeout}s")
+                raise RuntimeError(f"Step '{sub_step.name}' timed out {sub_after}")
 
             if pending_human_event is not None:
                 pause_progress(branch_index, sid)
@@ -1947,7 +1951,10 @@ class LoopStepExecutor:
                     )
 
                     step_start = time.time()
-                    sub_timeout = sub_step.timeout_seconds or ORCH_STEP_TIMEOUT
+                    # A step that runs a workflow waits on that workflow's own budget
+                    # (F291); the loop's own limit holds the rest.
+                    sub_timeout, sub_why = await step_time_limit(sub_step, engine)
+                    sub_after = timed_out(sub_timeout, sub_why) if sub_why else f"after {sub_timeout}s"
                     yield {"type": "step_start", "orch_step_id": sub_step.id,
                            "step_name": sub_step.name, "step_type": sub_step.type.value}
 
@@ -1992,16 +1999,16 @@ class LoopStepExecutor:
                             except Exception as close_err:
                                 _log.warning(f"closing timed-out step "
                                       f"'{sub_step.name}' failed: {close_err}")
-                        _log.debug(f"LOOP: ⏱ Step '{sub_step.name}' timed out after {sub_timeout}s (iteration {iteration})")
+                        _log.debug(f"LOOP: ⏱ Step '{sub_step.name}' timed out {sub_after} (iteration {iteration})")
                         end_step(run.step_history, {
                             "step_id": sub_step.id, "step_name": sub_step.name,
                             "step_type": sub_step.type.value, "status": "failed",
-                            "error": f"Timed out after {sub_timeout}s",
+                            "error": f"Timed out {sub_after}",
                             "started_at": _iso(step_start), "ended_at": _iso(time.time()),
                             "duration_seconds": round(time.time() - step_start, 2),
                         })
                         yield {"type": "step_error", "orch_step_id": sub_step.id,
-                               "error": f"Step '{sub_step.name}' timed out after {sub_timeout}s"}
+                               "error": f"Step '{sub_step.name}' timed out {sub_after}"}
                         # Fails the loop and the run, as a timeout does at the
                         # top level (F253). It used to be skipped: the next body
                         # step ran on whatever state it found, and the loop went
@@ -2009,7 +2016,7 @@ class LoopStepExecutor:
                         # a TimeoutError, which the engine would read as the loop
                         # node itself running out of time. The iterations before
                         # this one are checkpointed, so a Replay re-enters here.
-                        raise RuntimeError(f"Step '{sub_step.name}' timed out after {sub_timeout}s "
+                        raise RuntimeError(f"Step '{sub_step.name}' timed out {sub_after} "
                                            f"(iteration {iteration})")
 
                     if pending_human_event is not None:

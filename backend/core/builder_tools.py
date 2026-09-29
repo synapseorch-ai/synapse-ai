@@ -852,7 +852,9 @@ BUILDER_TOOL_SCHEMAS = [
                     "on_exhausted_step_id": {"type": "string", "description": "Step the run goes to when a route reaches this step after it has run max_iterations times, e.g. an escalation or a best-effort finish. Unset, the run fails with \"'<step>' gave up after N attempts\"."},
                     # ──────────────────────────────────────────────────────────
                     "max_turns": {"type": "integer", "description": "Max agent turns (default 15)"},
-                    "timeout_seconds": {"type": "integer", "description": "Step timeout (default 300)"},
+                    "timeout_seconds": {"type": "integer", "description": (
+                        "Step timeout (default 300). An agent step whose agent runs a workflow waits "
+                        "on that workflow's own timeout_minutes at the default; set another value to cap it")},
                     "model": {"type": "string", "description": "LLM model override for this step"},
                     "include_full_history": {
                         "type": "boolean",

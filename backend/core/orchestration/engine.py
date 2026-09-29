@@ -10,7 +10,7 @@ from typing import AsyncGenerator, Awaitable, Callable
 
 import anyio
 
-from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_STEP_TIMEOUT
+from core.config import ORCH_GLOBAL_TIMEOUT_MIN
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
@@ -18,6 +18,7 @@ from .run_error import failure_reason, run_error, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
+from .time_limits import step_time_limit, timed_out
 from .logger import OrchestrationLogger
 
 from core.log import get_logger
@@ -332,7 +333,11 @@ class OrchestrationEngine:
                 break
 
             step_start_time = time.time()
-            step_timeout = step.timeout_seconds or ORCH_STEP_TIMEOUT  # default 5 min
+            # The step's own timeout (5 min unless set), or — for a step that
+            # runs a workflow — that workflow's own budget, capped by what is
+            # left of this run's (F291).
+            step_timeout, timeout_why = await step_time_limit(
+                step, self, remaining=timeout_seconds - active_seconds())
 
             # A container node's budget has to cover every step it runs inside
             # itself, and each of those already gets its own fail_after. Charging
@@ -340,7 +345,8 @@ class OrchestrationEngine:
             # is given 300s to do 900s of work, and the run dies mid-iteration.
             # The global timeout checked above is the real ceiling for these.
             if step.type in (StepType.LOOP, StepType.PARALLEL):
-                step_timeout = max(1.0, timeout_seconds - active_seconds())
+                step_timeout, timeout_why = max(1.0, timeout_seconds - active_seconds()), None
+            timeout_text = timed_out(step_timeout, timeout_why) if timeout_why else f"after {step_timeout}s"
 
             # Build and store TransitionContext so executors can access it
             from .context import build_transition_context
@@ -470,17 +476,17 @@ class OrchestrationEngine:
                 except TimeoutError:
                     yield {
                         "type": "step_error", "orch_step_id": step.id,
-                        "error": f"Step '{step.name}' timed out after {step_timeout}s",
-                        "reason": f"Timed out after {step_timeout}s",
+                        "error": f"Step '{step.name}' timed out {timeout_text}",
+                        "reason": f"Timed out {timeout_text}",
                     }
                     end_step(run.step_history, {
                         "step_id": step.id, "step_name": step.name,
                         "step_type": step.type.value, "status": "failed",
-                        "error": f"Timed out after {step_timeout}s",
+                        "error": f"Timed out {timeout_text}",
                     })
                     run.status = "failed"
                     if logger:
-                        logger.step_end(step.id, "failed", f"Timed out after {step_timeout}s")
+                        logger.step_end(step.id, "failed", f"Timed out {timeout_text}")
 
                 # Yield human_input_required OUTSIDE the anyio cancel scope.
                 # The generator suspends here with no active cancel scope, so
