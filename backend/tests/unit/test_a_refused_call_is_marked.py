@@ -118,3 +118,120 @@ class TestTheCallersAreTold:
         resp = await client.post("/api/v1/chat", json={"message": "hi", "agent": "agent_u68_e"},
                                  headers=api_key["headers"])
         assert resp.json()["refused_calls"] == []
+
+
+# ── a person's refusal (F306) ────────────────────────────────────────────────
+#
+# After Refuse on an approval card, the resumed turn only told the model: no
+# `tool_result`, no call on the saved turn — so only the card said "Refused",
+# U68's "not run" list under the answer left it out, and v1 said nothing.
+
+ASKS = "agent_f306"
+
+
+@pytest.fixture
+async def asks():
+    agent = S.make_agent(id=ASKS, name="Careful Cleaner", tools=["all"], skip_default_tools=True,
+                         tool_policy={"undeclared": "confirm"})
+    await S.seed_agents([agent])
+    return agent
+
+
+@pytest.fixture
+def ran_asks():
+    import core.react_engine as re_mod
+    real = re_mod.run_agent_step
+    calls: list[str] = []
+
+    async def wrapped(**kwargs):
+        if kwargs.get("agent_id") == ASKS:
+            async def executor(name, args):
+                calls.append(name)
+                return "deleted"
+            kwargs.setdefault("tools_override", [DANGER])
+            kwargs.setdefault("tool_executor", executor)
+        async for ev in real(**kwargs):
+            yield ev
+
+    with _m.patch.object(re_mod, "run_agent_step", wrapped):
+        yield calls
+
+
+def _refused_resume(reason=""):
+    from core.chat_approval import resume_state_for
+    from core.react_engine import _approval_id
+    return resume_state_for({
+        "tool_name": "danger", "tool_args": {"table": "users"}, "category": "destructive",
+        "approval_id": _approval_id("danger", {"table": "users"}),
+        "progress": {"turn": 1, "context_text": "User Request: clean up\n", "calls": []},
+    }, approve=False, reason=reason)
+
+
+class TestAPersonsRefusal:
+    async def test_the_engine_records_it(self, fake_llm):
+        from core.react_engine import run_agent_step
+        from core.session import _get_conversation_history
+        agent = S.make_agent(id="agent_f306_a", tools=["all"], skip_default_tools=True)
+        fake_llm.script(["I left the table alone."])
+        events = [e async for e in run_agent_step(
+            message="clean up", agent_id=agent["id"], session_id="s_f306a", server_module=_server(),
+            agent_override=agent, tools_override=[DANGER], tool_executor=lambda n, a: None,
+            resume_state=_refused_resume("not on production"))]
+
+        execs = [e for e in events if e.get("type") == "tool_execution"]
+        [result] = [e for e in events if e.get("type") == "tool_result"]
+        assert [(e["tool_name"], e["args"]) for e in execs] == [("danger", {"table": "users"})]
+        assert result["refused"] is True
+        assert result["reason"] == "the person refused it: not on production"
+        assert result["category"] == "destructive"
+        assert fake_llm.call_count == 1, "the model is still asked, once, to carry on without it"
+
+        [turn] = await _get_conversation_history("s_f306a", agent["id"])
+        [call] = turn["calls"]
+        assert call["tool"] == "danger" and call["refused"] is True
+        assert call["reason"] == "the person refused it: not on production"
+
+    async def test_a_refusal_with_no_reason_says_who(self, fake_llm):
+        from core.react_engine import run_agent_step
+        agent = S.make_agent(id="agent_f306_b", tools=["all"], skip_default_tools=True)
+        fake_llm.script(["Fine."])
+        events = [e async for e in run_agent_step(
+            message="clean up", agent_id=agent["id"], session_id="s_f306b", server_module=_server(),
+            agent_override=agent, tools_override=[DANGER], tool_executor=lambda n, a: None,
+            resume_state=_refused_resume())]
+        [result] = [e for e in events if e.get("type") == "tool_result"]
+        assert result["reason"] == "the person refused it"
+
+    async def test_chat_streams_it_and_the_saved_turn_keeps_it(self, client, asks, ran_asks, fake_llm):
+        from core.session import _get_conversation_history
+        fake_llm.script([tool_call("danger"), "I left the table alone."])
+        parked = await client.post("/chat/stream", json={"message": "clean up", "agent_id": ASKS,
+                                                          "session_id": "s_f306c"})
+        assert '"human_input_required"' in parked.text or '"tool_approval"' in parked.text
+        answered = await client.post("/chat/s_f306c/approve", json={"approve": False, "reason": "not today",
+                                                                     "agent_id": ASKS})
+        assert answered.status_code == 200
+        assert '"refused": true' in answered.text
+        assert ran_asks == [], "a refused call never runs"
+        turns = await _get_conversation_history("s_f306c", ASKS)
+        refused = [c for t in turns for c in t.get("calls", []) if c.get("refused")]
+        assert [(c["tool"], c["reason"]) for c in refused] == [("danger", "the person refused it: not today")]
+
+    async def test_v1_streams_it(self, client, api_key, asks, ran_asks, fake_llm):
+        fake_llm.script([tool_call("danger"), "Left it."])
+        parked = await client.post("/api/v1/chat", json={"message": "clean up", "agent": ASKS,
+                                                          "session_id": "v1_f306"}, headers=api_key["headers"])
+        assert parked.json()["status"] == "awaiting_approval"
+        answered = await client.post("/api/v1/chat/v1_f306/approve", json={"approve": False},
+                                     headers=api_key["headers"])
+        assert '"refused": true' in answered.text
+        assert ran_asks == []
+
+    async def test_a_call_moved_past_is_marked_not_run(self):
+        """F247's record of a card nobody answered: not run, and why (U68's flags)."""
+        from core.chat_approval import MOVED_ON, moved_past_turn
+        [_question, answer] = moved_past_turn(
+            {"tool_name": "danger", "tool_args": {}, "approval_id": "x", "message": "clean up",
+             "progress": {}}, why=MOVED_ON)
+        call = answer["calls"][-1]
+        assert call["tool"] == "danger" and call["refused"] is True and call["reason"] == MOVED_ON

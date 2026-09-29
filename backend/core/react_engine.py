@@ -1460,7 +1460,21 @@ async def run_agent_step(
         tools_used_summary = list(resume_state.get("tools_used") or [])
         start_turn = min(int(resume_state.get("turn") or 0), max(0, max_turns - 1))
     if _pending_refusal:
+        # The call a person refused is a call this turn made and did not run
+        # (F306), recorded as a policy refusal is: its `tool_result` marked, its
+        # record kept. The model used to be told and nothing else, so only the
+        # card said "Refused" — U68's "not run" list, the saved turn and v1's
+        # stream all left it out.
+        _refused_tool = _pending_call.get("tool") or ""
+        _refused_args = _pending_call.get("arguments") or {}
+        _open_call = (_refused_tool, _refused_args, len(current_context_text))
+        yield {"type": "tool_execution", "tool_name": _refused_tool, "args": _refused_args}
         current_context_text += _pending_refusal
+        _said = _pending_call.get("reason") or ""
+        _open_refusal = "the person refused it" + (f": {_said}" if _said else "")
+        yield {"type": "tool_result", "tool_name": _refused_tool, "preview": "Refused by the user",
+               "refused": True, "reason": _open_refusal, "category": _pending_call.get("category")}
+        _close_call()
         _log.debug(f"RUN_AGENT: ⏯ resuming mid-step from turn {start_turn + 1}/{max_turns}")
 
 

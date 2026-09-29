@@ -113,6 +113,7 @@ class TestAnswering:
             "arguments": {"query": "DROP TABLE users"},
             "approved": True,
             "reason": "",
+            "category": "destructive",
         }
 
     async def test_a_refusal_reaches_the_model_as_a_reason(self, captured):

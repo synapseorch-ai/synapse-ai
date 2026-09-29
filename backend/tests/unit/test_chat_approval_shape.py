@@ -51,6 +51,7 @@ class TestResumeState:
             "arguments": {"sql": "delete from invoices"},
             "approved": True,
             "reason": "",
+            "category": "destructive",
         }
 
     def test_an_approval_joins_the_ones_already_given(self):

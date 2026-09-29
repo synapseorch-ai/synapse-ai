@@ -129,6 +129,9 @@ def resume_state_for(pending: dict, *, approve: bool, reason: str = "") -> dict[
             "arguments": pending.get("tool_args") or {},
             "approved": approve,
             "reason": reason,
+            # What the policy called it, so a refusal is recorded as a policy
+            # refusal is (F306).
+            "category": pending.get("category"),
         },
     }
     if not approve and reason:
@@ -155,6 +158,7 @@ def _delegated_resume_state(progress: dict, delegated: dict, *, approve: bool, r
         "approval_id": approval.get("approval_id"),
         "tool_name": approval.get("tool_name"),
         "tool_args": approval.get("tool_args") or {},
+        "category": approval.get("category"),
         "progress": delegated.get("progress") or {},
     }, approve=approve, reason=reason)
     arguments = {"agent_id": delegated.get("agent_id"), "task": delegated.get("task")}
@@ -190,7 +194,10 @@ def moved_past_turn(pending: dict, *, why: str) -> list[dict[str, Any]]:
 
     tool = pending.get("tool_name") or "a tool"
     calls = turn_calls(pending.get("progress") or {})
-    calls.append(call_record(tool, pending.get("tool_args") or {}, f"Not run — {why}."))
+    gated = call_record(tool, pending.get("tool_args") or {}, f"Not run — {why}.")
+    # Marked as every call not run is (U68, F306), so its record says so too.
+    gated.update(refused=True, reason=why)
+    calls.append(gated)
     card = public_view(pending) or {}
     card.pop("message", None)
     return [
