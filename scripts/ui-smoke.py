@@ -4662,6 +4662,80 @@ async def check_menuclose(browser) -> str:
         drop_fixture(oid)
 
 
+def _png(width: int = 4, height: int = 3) -> bytes:
+    """A small solid-red PNG, built here so the check needs no file on disk."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    rows = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+@check
+async def check_lightbox(browser) -> str:
+    """An image attached in chat opens full size when its thumbnail is pressed (F238).
+
+    The thumbnail called `window.open` on the image's `data:` URL, and Chrome
+    will not open a data URL in a new tab: a click (and Enter, since F236) did
+    nothing at all. It opens in a dialog on the page now, drawing the same
+    `data:` URL, so opening it costs no request and no new tab.
+    """
+    status = {**_status(True), "agents": {
+        "agent_alpha": {"name": "Alpha", "status": "online", "can_see_images": True},
+    }, "active_agent_id": "agent_alpha"}
+    ctx, page = await _chat_page(browser, "uismoke-lightbox", extra_init=SERVE_STATUS % json.dumps(status))
+    try:
+        bad: list[str] = []
+        await page.locator("input[type=file]").first.set_input_files(
+            {"name": "red.png", "mimeType": "image/png", "buffer": _png()})
+        await asyncio.sleep(0.5)
+        await page.locator("main textarea").last.fill("what colour is this?")
+        await page.keyboard.press("Enter")
+        await _stream_open(page, "post")
+        thumb = page.get_by_role("button", name="Open attached image 1")
+        await thumb.wait_for(timeout=10_000)
+        sent = [c for c in await page.evaluate("() => window.__calls") if "/api/chat/stream" in c["url"]]
+        if len(sent) != 1:
+            raise AssertionError(f"the turn was not sent once: {sent}")
+
+        requests: list[str] = []
+        page.on("request", lambda r: requests.append(r.url))
+        pages_before = len(ctx.pages)
+        await thumb.focus()
+        await page.keyboard.press("Enter")
+        dialog = page.get_by_role("dialog", name="Attached image 1")
+        try:
+            await dialog.wait_for(timeout=5_000)
+        except Exception:
+            bad.append("pressing the thumbnail opens no dialog")
+        else:
+            src = await dialog.get_by_role("img", name="Attached image 1").get_attribute("src") or ""
+            if not src.startswith("data:image/png;base64,"):
+                bad.append(f"the dialog draws {src[:40]!r}, not the attached image")
+            if not await page.evaluate("() => !!document.activeElement?.closest('[role=dialog]')"):
+                bad.append("focus is not inside the image's dialog")
+            # Where focus goes on close is every kit dialog's (F310), not this one's.
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.5)
+            if await dialog.count():
+                bad.append("Escape leaves the image open")
+        if len(ctx.pages) != pages_before:
+            bad.append(f"opening the image opened {len(ctx.pages) - pages_before} new page(s)")
+        fetched = [u for u in requests if not u.startswith("data:")]
+        if fetched:
+            bad.append(f"opening the image made requests: {fetched[:3]}")
+        if bad:
+            raise AssertionError("; ".join(bad))
+        return "Enter on a thumbnail opens the image in a named dialog, with no request and no new tab"
+    finally:
+        await ctx.close()
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

@@ -11,6 +11,7 @@ import { CollectDataForm } from '@/components/CollectDataForm';
 import { HumanStepAnswer } from '@/components/HumanStepAnswer';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
+import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { Markdown, Spinner } from '@/components/ui';
 
 import { cn } from '@/lib/utils';
@@ -267,27 +268,7 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
           </div>
         )}
         <Markdown>{msg.content}</Markdown>
-        {msg.images && msg.images.length > 0 && (
-          <div className="flex flex-wrap gap-3 mt-4">
-            {msg.images.map((img, imgIdx) => (
-              <div key={imgIdx} className="relative group">
-                {/* A button, so a keyboard opens the image as a click does (F236). */}
-                <button
-                  type="button"
-                  onClick={() => window.open(img, '_blank')}
-                  aria-label={`Open attached image ${imgIdx + 1}`}
-                  className="block rounded-xl"
-                >
-                  <img
-                    src={img}
-                    alt=""
-                    className="h-[4.5rem] w-[4.5rem] object-cover border border-zinc-700/60 rounded-xl hover:border-zinc-400 hover:scale-[1.03] hover:shadow-lg transition-all"
-                  />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        {msg.images && msg.images.length > 0 && <ImageThumbnails images={msg.images} />}
         <button
           onClick={() => { navigator.clipboard.writeText(msg.content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
           className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-zinc-800/60 hover:bg-zinc-700/80 text-text-faint hover:text-zinc-200"
@@ -2335,27 +2316,7 @@ export default function Home() {
               {!msg.images?.length && Array.isArray(msg.data?.imageNotes) && msg.data.imageNotes.length > 0 && (
                 <ImageNoteChip notes={msg.data.imageNotes as { type: string }[]} />
               )}
-              {msg.images && msg.images.length > 0 && (
-                <div className="flex flex-wrap gap-3 mt-4">
-                  {msg.images.map((img, imgIdx) => (
-                    <div key={imgIdx} className="relative group">
-                      {/* A button, so a keyboard opens the image as a click does (F236). */}
-                      <button
-                        type="button"
-                        onClick={() => window.open(img, '_blank')}
-                        aria-label={`Open attached image ${imgIdx + 1}`}
-                        className="block rounded-xl"
-                      >
-                        <img
-                          src={img}
-                          alt=""
-                          className="h-[4.5rem] w-[4.5rem] object-cover border border-zinc-700/60 rounded-xl hover:border-zinc-400 hover:scale-[1.03] hover:shadow-lg transition-all"
-                        />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {msg.images && msg.images.length > 0 && <ImageThumbnails images={msg.images} />}
             </div>
           ) : (
             <AssistantBubble msg={msg} agentName={agentName} />
