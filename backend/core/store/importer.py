@@ -36,25 +36,28 @@ _SOURCES = (
 )
 
 
-def _legacy_data_dir() -> Path | None:
-    """Where a pre-database install kept its JSON, or None.
+def _legacy_data_dirs() -> list[Path]:
+    """Every folder where a pre-database install kept JSON, highest priority first.
 
-    This module is the only one that knows about that folder, deliberately: a
+    This module is the only one that knows about these folders, deliberately: a
     shared `DATA_DIR` constant is what every other module used to derive paths
     from, and re-introducing one would invite the same thing again. Here it is
     not configuration — it is the location of the thing being migrated away
     from, and it stops mattering the moment the import has run.
 
-    Three candidates, first with legacy content wins, because the three
-    installers put it in three different places:
+    Three candidates, because the three installers put it in three places:
 
-    1. ``SYNAPSE_DATA_DIR`` — a deployment that still sets it. Read for
-       detection only; nothing else in the engine looks at it any more.
-    2. ``backend/data`` — the git-clone and pip layout.
-    3. ``~/.synapse/data`` — the npm layout. Without this candidate the npm
-       launcher's installs would import nothing, because what used to make them
-       work was that launcher passing SYNAPSE_DATA_DIR into the backend's
-       environment.
+    1. ``SYNAPSE_DATA_DIR`` — a deployment that still sets it (the container
+       images do, for exactly this). Read for detection only; nothing else in
+       the engine looks at it any more.
+    2. ``backend/data`` — the git-clone layout, and where every v1.x install
+       wrote chat sessions, ``schedules.json`` and part of the vault whatever
+       ``SYNAPSE_DATA_DIR`` said.
+    3. ``~/.synapse/data`` — the npm and pip layouts.
+
+    All of them, not the first: a v1.9 pip install kept its settings and
+    agents in (3) and its schedules and chats in (2), so taking the first
+    folder with any JSON imported the schedules and stranded everything else.
     """
     configured = (os.getenv("SYNAPSE_DATA_DIR") or "").strip()
     candidates = []
@@ -64,18 +67,37 @@ def _legacy_data_dir() -> Path | None:
             path if path.is_absolute()
             else Path(__file__).resolve().parent.parent.parent.parent / path
         )
-    candidates.append(Path(__file__).resolve().parent.parent.parent / "data")
+    candidates.append(_code_data_dir())
     candidates.append(Path.home() / ".synapse" / "data")
 
+    found: list[Path] = []
     for candidate in candidates:
-        if _has_legacy_content(candidate):
-            return candidate
-    return None
+        if not _has_legacy_content(candidate):
+            continue
+        if any(candidate.resolve() == f.resolve() for f in found):
+            continue
+        found.append(candidate)
+    return found
+
+
+def _code_data_dir() -> Path:
+    """`backend/data` beside this code: where every v1.x wrote its chats."""
+    return Path(__file__).resolve().parent.parent.parent / "data"
+
+
+#: Folders of per-item files that are content on their own, without any of the
+#: root JSON files beside them — a pip install's `backend/data` can hold only
+#: chats and vault files.
+_CONTENT_DIRS = ("chat_sessions", "vault", "datasets")
 
 
 def _has_legacy_content(root: Path) -> bool:
-    return root.is_dir() and any(
-        (root / f"{name}.json").is_file() for name in _SOURCES
+    if not root.is_dir():
+        return False
+    if any((root / f"{name}.json").is_file() for name in _SOURCES):
+        return True
+    return any(
+        (root / name).is_dir() and any((root / name).iterdir()) for name in _CONTENT_DIRS
     )
 
 
@@ -102,20 +124,49 @@ def _parse_stamp(value) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _seeded_ids() -> dict[str, set[str]]:
+    """Rows the product writes itself, by table: they are not the user's work.
+
+    The builder is seeded on every boot and the installer creates the default
+    agent, so counting either made the store "not empty" for good after the
+    first start — and an import that missed that start (a forgotten Docker
+    mount, a failed first boot) could then never run.
+    """
+    from core.default_agent import DEFAULT_AGENT_ID
+    from core.native_builder.seed import LEGACY_BUILDER_AGENT_IDS, bundled_definitions
+
+    bundled = bundled_definitions()
+    return {
+        "agents": {a["id"] for a in bundled["agents"]}
+        | set(LEGACY_BUILDER_AGENT_IDS) | {DEFAULT_AGENT_ID},
+        "orchestrations": {bundled["orchestration"]["id"]},
+    }
+
+
 async def store_is_empty() -> bool:
-    """True when no orchestration, agent, tool or MCP server exists.
+    """True when no orchestration, agent, tool or MCP server of the user's exists.
 
     Settings are deliberately excluded from the check: a fresh install can
     legitimately have settings (written by the setup screen) and no content,
     and skipping the import in that case would strand the user's workflows.
+    Rows the product seeds itself are excluded for the same reason.
     """
     from core.store import session
     from core.store.models import AgentDB, MCPServerDB, OrchestrationDB, ToolDB
 
+    seeded = _seeded_ids()
+    checks = (
+        (OrchestrationDB, OrchestrationDB.id.notin_(seeded["orchestrations"])),
+        (AgentDB, AgentDB.id.notin_(seeded["agents"])),
+        (ToolDB, None),
+        (MCPServerDB, None),
+    )
     async with session() as s:
-        for model in (OrchestrationDB, AgentDB, ToolDB, MCPServerDB):
-            count = (await s.execute(select(func.count()).select_from(model))).scalar() or 0
-            if count:
+        for model, user_rows in checks:
+            query = select(func.count()).select_from(model)
+            if user_rows is not None:
+                query = query.where(user_rows)
+            if (await s.execute(query)).scalar():
                 return False
     return True
 
@@ -267,14 +318,21 @@ async def import_data_dir(data_dir: str | Path, tenant_id: str = DEFAULT_TENANT)
                     "tools": turn.get("tools") or [],
                     "timestamp": turn.get("timestamp"),
                 })
-            s.add(ChatSessionDB(
-                tenant_id=tenant_id,
-                session_id=data["session_id"],
-                agent_id=data.get("agent_id") or "default",
-                messages=messages,
-                cli_session_ids=data.get("cli_session_ids") or {},
-                last_message_at=_parse_stamp(data.get("last_updated")),
-            ))
+            # Upserted on the table's key: two legacy folders can both hold a
+            # conversation (a pip install's two), and a plain insert of the
+            # second raised and lost the whole import.
+            await upsert(
+                s, ChatSessionDB,
+                values={
+                    "tenant_id": tenant_id,
+                    "session_id": data["session_id"],
+                    "agent_id": data.get("agent_id") or "default",
+                    "messages": messages,
+                    "cli_session_ids": data.get("cli_session_ids") or {},
+                    "last_message_at": _parse_stamp(data.get("last_updated")),
+                },
+                index_elements=["tenant_id", "session_id", "agent_id"],
+            )
             counts["chat_sessions"] += 1
 
         # ── mcp oauth tokens ────────────────────────────────────────────────
@@ -389,7 +447,7 @@ def _retire(root: Path) -> str:
             source = root / f"{name}.json"
             if source.is_file():
                 source.rename(destination / source.name)
-        for name in ("chat_sessions", "mcp_tokens"):
+        for name in ("chat_sessions", "mcp_tokens", "vault", "datasets", "whatsapp_sessions"):
             source = root / name
             if source.is_dir():
                 source.rename(destination / name)
@@ -404,6 +462,53 @@ def _retire(root: Path) -> str:
     return migrated.name
 
 
+async def import_sources(roots, tenant_id: str = DEFAULT_TENANT) -> list[dict]:
+    """Import each legacy folder in `roots` and retire it. One report per folder.
+
+    `roots` is highest priority first — the order `_legacy_data_dirs()` finds
+    them in, and the order `synapse migrate --from` is given them — and they
+    are imported in reverse, so where two folders hold the same item the
+    higher-priority folder's copy is written last and wins.
+
+    Each report is ``{"path", "counts", "files", "retired_to"}``, or
+    ``{"path", "error"}`` for a folder whose import failed. A failed folder's
+    transaction is rolled back and the folder left where it was; the others
+    still come across, because one corrupt folder must not cost the user the
+    rest of their work.
+    """
+    from core.store.legacy_files import import_legacy_files
+
+    reports: list[dict] = []
+    for root in reversed([Path(r) for r in roots]):
+        try:
+            counts = await import_data_dir(root, tenant_id)
+            files = import_legacy_files(root)
+        except Exception as exc:
+            reports.append({"path": str(root), "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        try:
+            where = _retire(root)
+        except OSError as exc:
+            # The data is in the store either way; retiring the files is only
+            # what stops a second import, and `store_is_empty()` does that too.
+            print(f"[import] imported, but could not retire {root}: {exc}", flush=True)
+            where = str(root)
+        reports.append({"path": str(root), "counts": counts, "files": files,
+                        "retired_to": where})
+    reports.reverse()
+    return reports
+
+
+def merged_counts(reports: list[dict]) -> dict:
+    """The per-source counts of several folders' reports, summed."""
+    total: dict = {}
+    for report in reports:
+        for source in ("counts", "files"):
+            for key, value in (report.get(source) or {}).items():
+                total[key] = total.get(key, 0) + value
+    return total
+
+
 async def import_legacy_data_if_present() -> dict | None:
     """Import a pre-database install's JSON once, on first boot after upgrade.
 
@@ -411,31 +516,30 @@ async def import_legacy_data_if_present() -> dict | None:
     nothing to do. Never raises: a failed import must not stop the process from
     starting, and leaving the folder in place means the next boot retries.
     """
-    root = _legacy_data_dir()
-    if root is None:
+    roots = _legacy_data_dirs()
+    if not roots:
         return None
 
     try:
         if not await store_is_empty():
             return None
-        counts = await import_data_dir(root)
+        reports = await import_sources(roots)
     except Exception as exc:
-        print(f"[import] import from {root} failed, leaving it in place: {exc}", flush=True)
+        print(f"[import] import from {', '.join(map(str, roots))} failed, "
+              f"leaving it in place: {exc}", flush=True)
         return None
 
-    try:
-        where = _retire(root)
-    except OSError as exc:
-        # The data is in the store either way; retiring the files is only what
-        # stops a second import, and `store_is_empty()` already does that.
-        print(f"[import] imported, but could not retire {root}: {exc}", flush=True)
-        where = str(root)
-
-    total = sum(counts.values())
-    print(
-        f"[import] moved {total} items from {root} into the store "
-        f"({', '.join(f'{k}={v}' for k, v in counts.items() if v)}). "
-        f"The old files are now under {where}.",
-        flush=True,
-    )
-    return counts
+    for report in reports:
+        if "error" in report:
+            print(f"[import] import from {report['path']} failed, leaving it in place: "
+                  f"{report['error']}", flush=True)
+            continue
+        counts = merged_counts([report])
+        print(
+            f"[import] moved {sum(counts.values())} items from {report['path']} into the "
+            f"store ({', '.join(f'{k}={v}' for k, v in counts.items() if v)}). "
+            f"The old files are now under {report['retired_to']}.",
+            flush=True,
+        )
+    imported = [r for r in reports if "error" not in r]
+    return merged_counts(imported) if imported else None

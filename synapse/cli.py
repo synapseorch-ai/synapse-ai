@@ -835,7 +835,7 @@ def _reset_password_command():
         sys.exit(1)
 
 
-def _migrate_command():
+def _migrate_command(sources=None, logs=None, as_json: bool = False):
     """Bring the database up to date, and import a pre-database install.
 
     The backend does both of these itself on every start, so this exists for
@@ -843,7 +843,17 @@ def _migrate_command():
     wants the schema in place before the first request, a container entrypoint,
     or anyone who would rather see what a migration did than infer it from the
     logs.
+
+    `sources` and `logs` name legacy folders explicitly — the installer does,
+    for a v1.x install whose files are not where this process would look. A
+    named folder is imported even into a store that already has content: the
+    caller has said which folder is the user's, and the import retires it, so
+    naming it twice finds nothing the second time.
     """
+    if sources or logs or as_json:
+        _migrate_named(sources or [], logs or [], as_json)
+        return
+
     from synapse import _store
 
     print("\n  Synapse - Migrate\n")
@@ -877,6 +887,70 @@ async def _noop():
 async def _import_legacy():
     from core.store.importer import import_legacy_data_if_present
     return await import_legacy_data_if_present()
+
+
+def _migrate_named(sources: list, logs: list, as_json: bool) -> None:
+    """`synapse migrate --from DIR --logs DIR [--json]`.
+
+    With `--json`, stdout carries one JSON document and nothing else — the store
+    prints what it migrated when it first opens, and that goes to stderr — and
+    the exit code is 1 when the database could not be opened or any folder
+    failed to import.
+    """
+    import contextlib
+    import json as _json
+
+    from synapse import _store
+
+    async def _run():
+        from core.store.importer import import_sources, merged_counts
+        from core.store.log_importer import import_log_sources
+
+        data = await import_sources([Path(s).expanduser() for s in sources])
+        log_reports = await import_log_sources([Path(s).expanduser() for s in logs])
+        return {
+            "database": "ok",
+            "sources": data,
+            "logs": log_reports,
+            "totals": merged_counts(
+                [r for r in data if "error" not in r]
+                + [{"counts": r["counts"]} for r in log_reports if "error" not in r]
+            ),
+        }
+
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            report = _store.run(_run)
+    except Exception as e:
+        report = {"database": "error", "error": f"{type(e).__name__}: {e}",
+                  "sources": [], "logs": [], "totals": {}}
+
+    failed = report["database"] != "ok" or any(
+        "error" in r for r in report["sources"] + report["logs"]
+    )
+    if as_json:
+        print(_json.dumps(report))
+    else:
+        print("\n  Synapse - Migrate\n")
+        if report["database"] != "ok":
+            print(f"  Error: could not open the database: {report['error']}")
+        for r in report["sources"] + report["logs"]:
+            if "error" in r:
+                print(f"  {r['path']}: failed, left in place: {r['error']}")
+            else:
+                moved = _counts_line(r)
+                print(f"  {r['path']}: {moved}; old files now under {r['retired_to']}")
+        print()
+    if failed:
+        sys.exit(1)
+
+
+def _counts_line(report: dict) -> str:
+    """`orchestrations=2, chat_sessions=31` for one folder's report."""
+    parts = []
+    for source in ("counts", "files"):
+        parts += [f"{k}={v}" for k, v in (report.get(source) or {}).items() if v]
+    return ", ".join(parts) or "nothing to import"
 
 
 def _api_keys_command(action: str, name: str = "", key_id: str = ""):
@@ -1995,10 +2069,23 @@ def main():
         help=f"Port for the frontend web UI (overrides SYNAPSE_FRONTEND_PORT env var, default: {DEFAULT_FRONTEND_PORT})",
     )
     sub.add_parser("setup", help="Run interactive setup wizard to configure Synapse")
-    sub.add_parser(
+    p_migrate = sub.add_parser(
         "migrate",
         help="Create or update the database, and import an old backend/data folder if present",
     )
+    p_migrate.add_argument(
+        "--from", dest="sources", action="append", metavar="DIR",
+        help="A v1.x data folder to import (repeatable; the first named wins on a clash)",
+    )
+    p_migrate.add_argument(
+        "--logs", dest="logs", action="append", metavar="DIR",
+        help="A v1.x logs folder to import (repeatable)",
+    )
+    p_migrate.add_argument(
+        "--json", dest="as_json", action="store_true",
+        help="Print one JSON report on stdout",
+    )
+
 
     # upgrade: pull code and rebuild everything
     sub.add_parser(
@@ -2064,7 +2151,7 @@ def main():
     elif args.cmd == "stop":
         _stop_command()
     elif args.cmd == "migrate":
-        _migrate_command()
+        _migrate_command(args.sources, args.logs, args.as_json)
     elif args.cmd == "setup":
         try:
             from synapse import setup_wizard

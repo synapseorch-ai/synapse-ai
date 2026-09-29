@@ -69,13 +69,14 @@ _RUN_FIELDS = (
 def legacy_logs_dir() -> Path | None:
     """Where a pre-store install kept its logs, or None if there is nothing.
 
-    Two candidates, mirroring `_legacy_data_dir()`'s reasoning: the git-clone
-    and pip layout, then the npm layout.
+    One candidate: every v1.x logger wrote beside the code (`backend/logs`),
+    whichever installer put it there. `~/.synapse/logs` was never a v1.x
+    location — it is where a v2 packaged install writes its own process logs,
+    which is why it is not looked at. A legacy install whose code lives
+    elsewhere (a script install being replaced) is named explicitly, through
+    `synapse migrate --logs`.
     """
-    candidates = (
-        Path(__file__).resolve().parent.parent.parent / "logs",
-        Path.home() / ".synapse" / "logs",
-    )
+    candidates = (Path(__file__).resolve().parent.parent.parent / "logs",)
     for candidate in candidates:
         if not candidate.is_dir():
             continue
@@ -196,6 +197,30 @@ def _retire(root: Path) -> str:
         migrated = root.parent / f"{root.name}.migrated.{int(root.stat().st_mtime)}"
     root.rename(migrated)
     return migrated.name
+
+
+async def import_log_sources(roots, tenant_id: str = DEFAULT_TENANT) -> list[dict]:
+    """Import each named `logs/` folder and retire it. One report per folder.
+
+    For a legacy install whose code is not this process's own — the installer
+    replacing a v1.x script install names that install's `backend/logs`. Each
+    report is ``{"path", "counts", "retired_to"}`` or ``{"path", "error"}``.
+    """
+    reports: list[dict] = []
+    for root in (Path(r) for r in roots):
+        if not root.is_dir():
+            continue
+        try:
+            counts = await import_logs_dir(root, tenant_id)
+        except Exception as exc:  # noqa: BLE001 — one folder must not stop the rest
+            reports.append({"path": str(root), "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        try:
+            where = _retire(root)
+        except OSError:
+            where = str(root)
+        reports.append({"path": str(root), "counts": counts, "retired_to": where})
+    return reports
 
 
 async def import_legacy_logs_if_present() -> dict | None:
