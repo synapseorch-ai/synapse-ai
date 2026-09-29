@@ -183,7 +183,7 @@ def watch_depth(redis, queue_name: str, interval: int = DEPTH_INTERVAL):
     which `stop_watching` cancels. Its Redis read has no parent span, so it is
     never traced.
     """
-    if not state.metering:
+    if not state.metering or redis is None:
         return None
     import asyncio
 
