@@ -11,10 +11,7 @@ can be served by.
 """
 import os
 import secrets as _secrets
-from pathlib import Path
 from urllib.parse import urlparse, urlunparse
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 # ── Configurable timeouts ────────────────────────────────────────────────────
@@ -261,7 +258,9 @@ def get_or_create_jwt_secret() -> str:
     If the secret is missing here (e.g. server run directly without the CLI),
     an ephemeral in-memory value is used for this session only.
     """
-    env_file = _PROJECT_ROOT / ".env"
+    from core.paths import env_file as _env_file
+
+    env_file = _env_file()
     var = "SYNAPSE_JWT_SECRET"
 
     existing = os.environ.get(var, "")

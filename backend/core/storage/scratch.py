@@ -41,7 +41,9 @@ def scratch_root() -> Path:
     if path is not None:
         return Path(path)
 
-    return Path(__file__).resolve().parent.parent.parent / "var" / "scratch" / get_tenant()
+    from core.paths import var_root
+
+    return var_root() / "scratch" / get_tenant()
 
 
 def scratch_dir(*parts: str) -> Path:

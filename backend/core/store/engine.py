@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import AsyncGenerator, Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import (
@@ -36,10 +35,11 @@ from core.store.models import Base
 #: ``SET LOCAL`` the natural thing to say here.
 SessionBinder = Callable[[AsyncSession], Awaitable[None]]
 
-#: Where a default SQLite install puts its database. Overridden wholesale by
-#: SYNAPSE_DB_URL; there is no separate "which directory" setting, because two
-#: knobs that both decide the same thing is how you get a support thread.
-_DEFAULT_DIR = Path(__file__).resolve().parent.parent.parent / "var"
+#: A default SQLite install puts its database in `core.paths.var_root()`:
+#: `backend/var` in a source checkout, `$SYNAPSE_HOME/var` in a packaged one.
+#: Overridden wholesale by SYNAPSE_DB_URL; there is no separate "which directory"
+#: setting, because two knobs that both decide the same thing is how you get a
+#: support thread.
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -77,8 +77,11 @@ def default_url() -> str:
     configured = normalise_db_url((os.getenv("SYNAPSE_DB_URL") or "").strip())
     if configured:
         return configured
-    _DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
-    return f"sqlite+aiosqlite:///{_DEFAULT_DIR / 'synapse.db'}"
+    from core.paths import var_root
+
+    directory = var_root()
+    directory.mkdir(parents=True, exist_ok=True)
+    return f"sqlite+aiosqlite:///{directory / 'synapse.db'}"
 
 
 def is_sqlite(url: str) -> bool:

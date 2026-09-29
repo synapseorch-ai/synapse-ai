@@ -128,6 +128,11 @@ def _isolate_run_checkpoints(tmp_path, monkeypatch):
     # slowly fill backend/data.
     monkeypatch.setenv("SYNAPSE_STATE_DIR", str(tmp_path / "state"))
 
+    # And the install's home, which a packaged install's launcher sets and every
+    # default above falls back to (core/paths.py). A shell that exported it for
+    # a real install would otherwise lend that install's .env to the suite.
+    monkeypatch.setenv("SYNAPSE_HOME", str(tmp_path / "home"))
+
     # The store's read-through cache is a module global, so it outlives the
     # database that tmp_path just replaced.
     import core.store.cache as cache_mod

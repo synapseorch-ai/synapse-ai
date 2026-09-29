@@ -50,7 +50,9 @@ def state_root() -> Path:
     configured = os.getenv("SYNAPSE_STATE_DIR")
     if configured:
         return Path(configured)
-    return Path(__file__).resolve().parent.parent / "var" / "state"
+    from core.paths import var_root
+
+    return var_root() / "state"
 
 
 def state_dir(*parts: str) -> Path:

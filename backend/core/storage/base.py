@@ -54,9 +54,9 @@ class LocalBlobStore:
 
     def __init__(self, root: str | os.PathLike | None = None):
         if root is None:
-            root = os.getenv("SYNAPSE_BLOB_DIR") or (
-                Path(__file__).resolve().parent.parent.parent / "var" / "blobs"
-            )
+            from core.paths import var_root
+
+            root = os.getenv("SYNAPSE_BLOB_DIR") or (var_root() / "blobs")
         self.root = Path(root)
 
     def _tenant_root(self) -> Path:
