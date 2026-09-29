@@ -893,6 +893,29 @@ export default function Home() {
       : true;
   })();
 
+  // A workflow agent has no model of its own: each step runs on the one set on
+  // it, and `/api/status` resolves the workspace default for it. The header
+  // says "Workflow · N steps" instead (U64).
+  const workflowId = (() => {
+    const info = currentAgentId ? systemStatus?.agents?.[currentAgentId] : undefined;
+    return typeof info === 'object' && info !== null && info.type === 'orchestrator'
+      ? info.orchestration_id || null
+      : null;
+  })();
+  const [workflowSteps, setWorkflowSteps] = useState<{ id: string; count: number } | null>(null);
+  useEffect(() => {
+    if (!workflowId) return;
+    let live = true;
+    fetch(`/api/orchestrations/${encodeURIComponent(workflowId)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(o => {
+        if (live && o && Array.isArray(o.steps)) setWorkflowSteps({ id: workflowId, count: o.steps.length });
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [workflowId]);
+  const workflowStepCount = workflowSteps && workflowSteps.id === workflowId ? workflowSteps.count : null;
+
   // Welcome banner — shown for 12 days from installation date, dismissible per session
   const [showExamplesBanner, setShowExamplesBanner] = useState(false);
 
@@ -2487,33 +2510,45 @@ export default function Home() {
               </h1>
             </div>
             <div className="flex items-center">
-              {/* Mode & Model Info */}
-              <div className="hidden lg:flex items-center gap-4 text-xs text-text-muted uppercase tracking-wider border-r border-border pr-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-zinc-400">Provider:</span>
-                  <span className={cn("font-bold",
-                    systemStatus?.provider === 'ollama' ? "text-green-400" :
-                      systemStatus?.provider === 'gemini' ? "text-blue-400" :
-                        systemStatus?.provider === 'anthropic' ? "text-amber-400" :
-                          systemStatus?.provider === 'openai' ? "text-emerald-400" :
-                            systemStatus?.provider === 'anthropic_cli' ? "text-amber-300" :
-                              systemStatus?.provider === 'gemini_cli' ? "text-blue-300" :
-                                systemStatus?.provider === 'codex_cli' ? "text-zinc-300" :
-                                  "text-accent"
-                  )}>
-                    {systemStatus?.provider ? systemStatus.provider.charAt(0).toUpperCase() + systemStatus.provider.slice(1) : 'Loading...'}
-                  </span>
+              {/* Mode & Model Info — or, for a workflow agent, its size (U64) */}
+              {workflowId ? (
+                <div
+                  className="hidden lg:flex items-center gap-2 text-xs text-text-muted uppercase tracking-wider border-r border-border pr-4"
+                  title="A workflow: each step runs on the model set on it"
+                >
+                  <span className="text-zinc-200">Workflow</span>
+                  {workflowStepCount !== null && (
+                    <span>· {workflowStepCount} {workflowStepCount === 1 ? 'step' : 'steps'}</span>
+                  )}
                 </div>
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-zinc-400 shrink-0">Model:</span>
-                  <span
-                    className="text-zinc-200 truncate max-w-[120px] lg:max-w-[180px]"
-                    title={systemStatus?.model || undefined}
-                  >
-                    {systemStatus?.model || 'Loading...'}
-                  </span>
+              ) : (
+                <div className="hidden lg:flex items-center gap-4 text-xs text-text-muted uppercase tracking-wider border-r border-border pr-4">
+                  <div className="flex items-center gap-2">
+                    <span className="text-zinc-400">Provider:</span>
+                    <span className={cn("font-bold",
+                      systemStatus?.provider === 'ollama' ? "text-green-400" :
+                        systemStatus?.provider === 'gemini' ? "text-blue-400" :
+                          systemStatus?.provider === 'anthropic' ? "text-amber-400" :
+                            systemStatus?.provider === 'openai' ? "text-emerald-400" :
+                              systemStatus?.provider === 'anthropic_cli' ? "text-amber-300" :
+                                systemStatus?.provider === 'gemini_cli' ? "text-blue-300" :
+                                  systemStatus?.provider === 'codex_cli' ? "text-zinc-300" :
+                                    "text-accent"
+                    )}>
+                      {systemStatus?.provider ? systemStatus.provider.charAt(0).toUpperCase() + systemStatus.provider.slice(1) : 'Loading...'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-zinc-400 shrink-0">Model:</span>
+                    <span
+                      className="text-zinc-200 truncate max-w-[120px] lg:max-w-[180px]"
+                      title={systemStatus?.model || undefined}
+                    >
+                      {systemStatus?.model || 'Loading...'}
+                    </span>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* The agent switcher. It was a <div> whose list opened on hover:
                   no keyboard or touch path, hidden below `sm`, and its rows

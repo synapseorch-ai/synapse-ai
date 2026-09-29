@@ -87,6 +87,11 @@ async def get_status():
             "name": a["name"],
             "status": "online",
             "can_see_images": model_can_see_images(a.get("model") or default_model),
+            # A workflow agent has no model of its own (each step has one), so
+            # the model resolved below is not what it runs on; chat's header
+            # says "Workflow · N steps" from these instead (U64).
+            "type": a.get("type") or "conversational",
+            "orchestration_id": a.get("orchestration_id"),
         }
 
     # Resolve active agent's model

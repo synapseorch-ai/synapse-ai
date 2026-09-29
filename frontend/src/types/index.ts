@@ -69,7 +69,14 @@ export interface Message {
 }
 
 export interface SystemStatus {
-    agents: Record<string, { status: string; name: string }>;
+    agents: Record<string, {
+        status: string;
+        name: string;
+        can_see_images?: boolean;
+        /** `orchestrator` for a workflow agent, whose steps each have their own model (U64). */
+        type?: string;
+        orchestration_id?: string | null;
+    }>;
     overall: 'operational' | 'degraded' | 'down';
     model: string;
     mode: 'local' | 'cloud' | 'bedrock';

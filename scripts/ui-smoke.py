@@ -4736,6 +4736,49 @@ async def check_lightbox(browser) -> str:
         await ctx.close()
 
 
+@check
+async def check_workflowheader(browser) -> str:
+    """A workflow agent's chat header says it is a workflow, not a model it never uses (U64).
+
+    A workflow (orchestrator) agent has no model of its own — each step runs on
+    the one set on it — so `/api/status` resolved the workspace default for it
+    and the header read "Model: <default>". The status now names each agent's
+    type and workflow, and the header reads "Workflow · N steps" from the
+    orchestration itself.
+    """
+    oid = f"orch_uismoke_wf_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, f"ui-smoke flow {oid[-6:]}"))
+    flow = f"orch_agent_{oid}"
+    status = {**_status(True), "model": "ollama.default-model", "agents": {
+        flow: {"name": "Flow", "status": "online", "can_see_images": True,
+               "type": "orchestrator", "orchestration_id": oid},
+    }, "active_agent_id": flow}
+    ctx, page = await _chat_page(browser, "uismoke-wfheader", extra_init=SERVE_STATUS % json.dumps(status))
+    try:
+        header = ""
+        for _ in range(30):
+            header = await page.evaluate("() => document.querySelector('main header, header')?.innerText || ''")
+            if re.search(r"workflow\s*·\s*3 steps", header, re.I):
+                break
+            await asyncio.sleep(0.2)
+        read = await page.evaluate(
+            f"() => performance.getEntriesByType('resource').map(e => e.name)"
+            f".filter(n => n.endsWith('/api/orchestrations/{oid}')).length")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    bad = []
+    if not re.search(r"workflow\s*·\s*3 steps", header, re.I):
+        bad.append(f"the header reads {header!r}, not 'Workflow · 3 steps'")
+    if "default-model" in header.lower():
+        bad.append("the header still names the workspace default model")
+    if read != 1:
+        bad.append(f"the page read the workflow {read} times, not once")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a workflow agent's header reads 'Workflow · 3 steps' from its orchestration, and names no model"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
