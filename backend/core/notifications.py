@@ -21,6 +21,11 @@ Delivery surfaces:
   each notification is also sent there (`notify_chat_id` or the channel's
   last active chat).
 """
+# Annotations stay unevaluated: NotificationHub has a method named `list`, and on
+# Python 3.11–3.13 `list[dict]` in a later annotation of the class would call it
+# at import (F308). 3.14 evaluates them lazily and never showed it.
+from __future__ import annotations
+
 import asyncio
 import json
 import time

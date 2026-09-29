@@ -87,15 +87,19 @@ jobs:
       - name: Install the locked dependency set
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.lock
+          pip install -r backend/requirements.lock -r backend/requirements-messaging.lock
           pip install -r backend/requirements-test.txt
 
-      - name: Boot every MCP tool server
+      - name: Boot every MCP tool server, and import every backend module
+        # test_backend_imports is here for the Python it runs on: 3.14 evaluates
+        # annotations lazily, so a module that cannot import on 3.11–3.13 passes
+        # every test a 3.14 venv runs (F308).
         run: |
           python -m pytest \
             backend/tests/install/test_mcp_tool_servers.py \
             backend/tests/install/test_mcp_sdk_contract.py \
             backend/tests/install/test_requirements_pinned.py \
+            backend/tests/install/test_backend_imports.py \
             -v -ra
 
   # ── npm ─────────────────────────────────────────────────────────────────────
