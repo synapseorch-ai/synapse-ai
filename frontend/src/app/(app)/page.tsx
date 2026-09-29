@@ -301,7 +301,8 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
  * The tools a reopened answer used (U60), from the calls its turn saved (F242):
  * each with its arguments and the start of what it returned. The live panels
  * are built from the stream, which a reopened page does not have; the calls
- * are what the conversation keeps. Thinking and reasoning are not saved yet.
+ * are what the conversation keeps (its thinking and reasoning too, since U60's
+ * second step, drawn in their own panels).
  */
 function ToolsUsed({ calls }: { calls: SavedCall[] }) {
   const [open, setOpen] = useState(false);
@@ -381,6 +382,10 @@ type SessionTurn = {
   images?: { type: string }[];
   /** A question this turn asked and nobody answered: the card, and why it was not run (F247). */
   approval?: ParkedApproval & { outcome: 'expired'; why: string };
+  /** What the turn's model reasoned (`llm_reasoning`) and thought (`llm_thought`), in order —
+   *  the Thinking and Reasoning panels a reopened answer draws again (U60). Absent on older turns. */
+  reasoning?: string[];
+  thoughts?: string[];
 };
 
 /** The loop's own line before every model call (`react_engine.py`): no news once the agent has had a thought. */
@@ -1060,9 +1065,10 @@ export default function Home() {
 
       const restored: Message[] = [];
       for (const t of turns) {
-        // A reopened turn keeps what it can show (U60): the tools the answer
-        // used, and that images were attached — they are not kept, so a chip
-        // says so rather than the turn reading as text alone.
+        // A reopened turn keeps what it can show (U60): its thinking and
+        // reasoning, the tools the answer used, and that images were attached —
+        // they are not kept, so a chip says so rather than the turn reading as
+        // text alone.
         restored.push({
           role: 'user', content: t.user,
           ...(t.images && t.images.length > 0 ? { data: { imageNotes: t.images } } : {}),
@@ -1084,6 +1090,10 @@ export default function Home() {
         restored.push({
           role: 'assistant', content: t.assistant,
           ...(t.calls && t.calls.length > 0 ? { data: { calls: t.calls } } : {}),
+          // Its panels, as live (U60): the last thought goes when it only
+          // repeats the answer, which it usually does.
+          ...(t.reasoning && t.reasoning.length > 0 ? { reasoning: t.reasoning } : {}),
+          ...(t.thoughts && t.thoughts.length > 0 ? { thoughts: withoutEcho(t.thoughts, t.assistant) } : {}),
           // What the turn did not run, as live (U68).
           ...(notRun.length > 0 ? { refused: notRun } : {}),
         });

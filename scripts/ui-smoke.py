@@ -4995,6 +4995,60 @@ async def check_evaluatoronce(browser) -> str:
     return "one line per evaluator decision; if/else and archived routing lines unchanged"
 
 
+@check
+async def check_reopenpanels(browser) -> str:
+    """A reopened answer shows its Thinking and Reasoning panels again (U60).
+
+    A reopened chat restored the text and, since U60's first step, the tools
+    used — but not what the model reasoned or thought (0 of 14 turns in the
+    stress pass). The saved turn now keeps both (`reasoning`, `thoughts`), and
+    the page draws them as it does live: the last thought goes when it only
+    repeats the answer, and a thought that is a tool call reads "→ Called".
+    """
+    history = {
+        "turns": [{
+            "user": "what day is it?", "assistant": "It is today.", "tools": ["get_datetime"], "timestamp": "",
+            "calls": [{"tool": "get_datetime", "args": {}, "result": "2026-09-30"}],
+            "reasoning": ["I need the date.", "The tool gave the date."],
+            "thoughts": ['{"tool": "get_datetime", "arguments": {}}', "It is today."],
+        }],
+        "pending_approval": None, "running": None,
+    }
+    ctx, page = await _chat_page(browser, "uismoke-reopenpanels", history)
+    try:
+        if not await _on_screen(page, "It is today."):
+            raise AssertionError("the reopened answer never appeared")
+        thinking = page.get_by_role("button", name=re.compile(r"^Thinking"))
+        reasoning = page.get_by_role("button", name=re.compile(r"Reasoning"))
+        found = (await thinking.count(), await reasoning.count())
+        labels = [await thinking.first.inner_text() if found[0] else None,
+                  await reasoning.first.inner_text() if found[1] else None]
+        if found[0]:
+            await thinking.first.click()
+        if found[1]:
+            await reasoning.first.click()
+        await asyncio.sleep(0.5)
+        text = await page.evaluate("() => document.querySelector('main').innerText")
+    finally:
+        await ctx.close()
+    bad = []
+    if not found[0]:
+        bad.append("no Thinking panel on the reopened answer")
+    elif "(2 turns)" not in labels[0].lower():
+        bad.append(f"the Thinking panel reads {labels[0]!r}, not two turns")
+    elif "I need the date." not in text or "The tool gave the date." not in text:
+        bad.append("the Thinking panel does not show what was reasoned")
+    if not found[1]:
+        bad.append("no Reasoning panel on the reopened answer")
+    elif "(1 turn)" not in labels[1].lower():
+        bad.append(f"the Reasoning panel reads {labels[1]!r} — the thought that repeats the answer is not dropped")
+    elif "→ Called: get_datetime" not in text:
+        bad.append("a tool-call thought does not read '→ Called'")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a reopened answer draws its Thinking (2) and Reasoning (1, the echo dropped) panels"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
