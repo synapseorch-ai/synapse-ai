@@ -523,11 +523,20 @@ async def add_mcp_server(req: AddMCPServerRequest):
                 "auth_url": result.get("auth_url"),
                 "message": "OAuth required — opening browser. Return here once authorised.",
             }
+        if connected:
+            message = "Server connected and saved."
+        elif status == "connecting":
+            # Still going after the add's wait; it connects in the background (U61).
+            message = "Saved — still connecting. It will show as connected when it does."
+        elif result.get("error"):
+            message = f"Saved, but it did not connect: {result['error']}. Retry once it is reachable."
+        else:
+            message = "Config saved. Use Retry to reconnect."
         return {
             "status": "success" if connected else "saved",
             "config": _public_server(result["config"]),
             "connected": connected,
-            "message": "Server connected and saved." if connected else "Config saved. Use Retry to reconnect.",
+            "message": message,
         }
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))

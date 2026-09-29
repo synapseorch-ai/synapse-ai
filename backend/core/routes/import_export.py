@@ -286,21 +286,23 @@ async def import_bundle(req: ImportRequest):
             elif config.get("token"):
                 session = await _server.mcp_manager.connect_remote_server(config)
             else:
-                # remote without token → trigger OAuth, surface auth_url to frontend
-                import asyncio
-                loop = asyncio.get_event_loop()
-                auth_url_future: asyncio.Future = loop.create_future()
-                from core.background import spawn_background
-                spawn_background(_server.mcp_manager.start_oauth_connect(config, auth_url_future),
-                                 name="mcp-oauth-connect")
-                try:
-                    auth_url = await asyncio.wait_for(asyncio.shield(auth_url_future), timeout=15.0)
+                # remote without token → connected, or a URL to authorise at (U61):
+                # a public server used to wait out the 15 s and read "Retry"
+                outcome = await _server.mcp_manager.connect_or_authorise(config)
+                if outcome["connected"]:
+                    mcp_result["status"] = "connected"
+                    mcp_result["message"] = "Connected successfully"
+                elif outcome["status"] == "oauth_pending":
                     mcp_result["status"] = "oauth_pending"
-                    mcp_result["auth_url"] = auth_url
+                    mcp_result["auth_url"] = outcome["auth_url"]
                     mcp_result["message"] = "Authorization required — click Authorize to connect"
-                except asyncio.TimeoutError:
+                elif outcome["status"] == "connecting":
                     mcp_result["status"] = "disconnected"
-                    mcp_result["message"] = "Saved — use 'Retry' in MCP Servers to connect"
+                    mcp_result["message"] = "Saved — still connecting; it will show as connected in MCP Servers"
+                else:
+                    mcp_result["status"] = "disconnected"
+                    mcp_result["message"] = (f"Saved, but it did not connect: {outcome['error']}. "
+                                             "Use Retry in MCP Servers")
                 continue  # session check below doesn't apply for OAuth path
 
             if session:

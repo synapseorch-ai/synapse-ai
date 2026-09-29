@@ -363,6 +363,15 @@ def _http_opener(url: str, http_client: httpx.AsyncClient):
 
 # ── Manager ────────────────────────────────────────────────────────────────────
 
+def _reason(exc: BaseException) -> str:
+    """Why a connection failed, in words: the first real error inside an
+    exception group, which is what the transport's task group raises
+    ("unhandled errors in a TaskGroup (1 sub-exception)" said nothing)."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return (str(exc).strip() or type(exc).__name__)[:300]
+
+
 class MCPClientManager:
 
     def __init__(self, exit_stack: AsyncExitStack):
@@ -567,11 +576,13 @@ class MCPClientManager:
 
     # ── Remote connection: OAuth (background task) ─────────────────────────────
 
-    async def start_oauth_connect(self, config: Dict, auth_url_future: "asyncio.Future[str]"):
+    async def start_oauth_connect(self, config: Dict, auth_url_future: "asyncio.Future[str | None]"):
         """
         Background coroutine for the OAuth flow.
         Resolves auth_url_future as soon as the auth URL is known so the API
-        route can return it to the frontend immediately.
+        route can return it to the frontend immediately — with None if the
+        server connected without asking (it never answered 401), and with the
+        error if it failed first (U61). See `connect_or_authorise`.
         """
         name = config["name"]
         url  = config["url"]
@@ -625,11 +636,41 @@ class MCPClientManager:
             await self._set_status(name, "connected")
             await self._auto_register(name)    # ← register tools into agent_sessions
             _log.info(f"OAuth complete — connected to '{name}'.")
+            if not auth_url_future.done():
+                # Connected without being asked to authorise: a public server.
+                auth_url_future.set_result(None)
         except Exception as e:
             _log.info(f"OAuth connection failed for '{name}': {e}")
             await self._set_status(name, "disconnected")
             if not auth_url_future.done():
                 auth_url_future.set_exception(e)
+
+    async def connect_or_authorise(self, config: Dict, wait: float = 15.0) -> Dict[str, Any]:
+        """Connect a remote server that has no token, or learn where to authorise it.
+
+        One flow for both: the SDK asks for OAuth only when the server answers
+        401. A public server (DeepWiki, Context7) never does, so the flow just
+        connected — and never told the caller, which waited out `wait` for an
+        authorisation URL that was not coming and answered "Use Retry" while the
+        server was already connected (U61). The flow now reports how it ended.
+
+        Returns `connected`, `status` (`connected`, `oauth_pending`, `connecting`
+        when it is still going after `wait`, or `disconnected`), `auth_url`, and
+        `error` — why it did not connect, in words.
+        """
+        from core.background import spawn_background
+        outcome: asyncio.Future = asyncio.get_running_loop().create_future()
+        spawn_background(self.start_oauth_connect(config, outcome), name="mcp-oauth-connect")
+        try:
+            # Shielded: the flow carries on in the background past `wait`.
+            auth_url = await asyncio.wait_for(asyncio.shield(outcome), timeout=wait)
+        except asyncio.TimeoutError:
+            return {"connected": False, "status": "connecting", "auth_url": None, "error": None}
+        except Exception as e:
+            return {"connected": False, "status": "disconnected", "auth_url": None, "error": _reason(e)}
+        if auth_url is None:
+            return {"connected": True, "status": "connected", "auth_url": None, "error": None}
+        return {"connected": False, "status": "oauth_pending", "auth_url": auth_url, "error": None}
 
     # ── Silent renewal, before a reconnect ────────────────────────────────────
 
@@ -863,18 +904,12 @@ class MCPClientManager:
                 await self._auto_register(name)
             return {"config": new_config, "connected": bool(session), "status": new_config["status"]}
 
-        # Remote + OAuth
-        loop = asyncio.get_event_loop()
-        auth_url_future: asyncio.Future = loop.create_future()
-        asyncio.create_task(self.start_oauth_connect(new_config, auth_url_future))
-
-        try:
-            # Wait up to 15 s for OAuthClientProvider to hand us the auth URL.
-            # Use asyncio.shield so the background task keeps running on timeout.
-            auth_url = await asyncio.wait_for(asyncio.shield(auth_url_future), timeout=15.0)
-            return {"config": new_config, "connected": False, "status": "oauth_pending", "auth_url": auth_url}
-        except asyncio.TimeoutError:
-            return {"config": new_config, "connected": False, "status": "disconnected", "auth_url": None}
+        # Remote, no token: connected, or a URL to authorise at (U61). The
+        # config is answered as it stands now, so `connected` and its
+        # `status` never disagree — the flow may still change it later.
+        outcome = await self.connect_or_authorise(new_config)
+        return {"config": {**new_config, "status": "connected" if outcome["connected"] else "disconnected"},
+                **outcome}
 
     # ── reconnect_server (manual retry) ────────────────────────────────────────
 
