@@ -209,6 +209,37 @@ async def _create_run_row(session_factory, run_id: str, orch_id: str, tenant_id:
 # Orchestration endpoints
 # ---------------------------------------------------------------------------
 
+def _workspace_row(row) -> bool:
+    """Whether an orchestrations row is workspace content — never the AI
+    builder's own machinery, nor one cloud soft-deleted (F96, as v1 and MCP
+    read it: `builder_tools._is_visible`)."""
+    from core.builder_tools import _is_visible
+    return _is_visible({**(row.definition or {}), "is_active": row.is_active})
+
+
+async def _refuse_hidden_orchestration(sf, orch_id: str | None, not_found: str) -> None:
+    """404 when `orch_id` names a stored orchestration that is not workspace
+    content. One the table does not hold is left to the caller, as before."""
+    if not orch_id:
+        return
+    from sqlalchemy import select
+    from core.scale.models_db import OrchestrationDB
+
+    async with sf() as session:
+        row = (await session.execute(
+            select(OrchestrationDB).where(OrchestrationDB.id == orch_id))).scalar_one_or_none()
+    if row is not None and not _workspace_row(row):
+        raise HTTPException(404, detail=not_found)
+
+
+async def _refuse_builder_run(request: Request, run_id: str) -> None:
+    """404 a run of the AI builder's own orchestration (F96), as v1 does: their
+    ids (`run_orch_native_builder_<ms>_…`) are guessable."""
+    from core.run_ids import orchestration_of
+    await _refuse_hidden_orchestration(_get_pg_session_factory(request), orchestration_of(run_id),
+                                       f"Run '{run_id}' not found.")
+
+
 @router.get("/orchestrations")
 async def v2_list_orchestrations(
     request: Request,
@@ -223,9 +254,10 @@ async def v2_list_orchestrations(
 
     async with sf() as session:
         result = await session.execute(
-            select(OrchestrationDB.id, OrchestrationDB.name, OrchestrationDB.description, OrchestrationDB.updated_at)
+            select(OrchestrationDB.id, OrchestrationDB.name, OrchestrationDB.description, OrchestrationDB.updated_at,
+                   OrchestrationDB.definition, OrchestrationDB.is_active)
         )
-        rows = result.all()
+        rows = [r for r in result.all() if _workspace_row(r)]
 
     return [
         {
@@ -257,7 +289,7 @@ async def v2_get_orchestration(
         )
         row = result.scalar_one_or_none()
 
-    if not row:
+    if not row or not _workspace_row(row):
         raise HTTPException(404, detail=f"Orchestration '{orch_id}' not found.")
     return row.definition
 
@@ -282,6 +314,9 @@ async def v2_run_orchestration(
 
     tenant_id = get_tenant()
     queue_name = QUEUE_NAME
+
+    # Never the AI builder's own (F96): the worker would run it.
+    await _refuse_hidden_orchestration(sf, orch_id, f"Orchestration '{orch_id}' not found.")
 
     # Rate limit + quota + backpressure checks
     await _check_rate_limit(redis, tenant_id, cfg.rate_limit_per_tenant_rps)
@@ -326,6 +361,7 @@ async def v2_run_status(
 ):
     """Poll run status from Postgres."""
     _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
     sf = _get_pg_session_factory(request)
 
     from sqlalchemy import select
@@ -366,6 +402,7 @@ async def v2_stream_run(
     Supports reconnect via Last-Event-ID header — missed events are replayed.
     """
     redis = _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
 
     from core.scale.event_bridge import stream_run_events
 
@@ -394,6 +431,7 @@ async def v2_get_run_events(
     Pass `start="-"` and `end="+"` (defaults) to retrieve the full history.
     """
     redis = _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
 
     from core.scale.event_bridge import get_run_events
 
@@ -409,6 +447,7 @@ async def v2_cancel_run(
 ):
     """Publish a distributed cancellation signal for the run."""
     redis = _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
 
     from core.scale.pubsub import publish_cancellation
     await publish_cancellation(redis, run_id)
@@ -425,6 +464,7 @@ async def v2_resume_run(
 ):
     """Enqueue a resume job for a paused run (after human input)."""
     _require_scale_mode(request)
+    await _refuse_builder_run(request, run_id)  # F96
     from core.orchestration.answers import EmptyAnswer, refuse_empty
     try:
         refuse_empty(body.response)
