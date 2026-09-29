@@ -5049,6 +5049,83 @@ async def check_reopenpanels(browser) -> str:
     return "a reopened answer draws its Thinking (2) and Reasoning (1, the echo dropped) panels"
 
 
+@check
+async def check_mcpadd(browser) -> str:
+    """Adding an MCP server says what happened, in the server's words (U61).
+
+    Adding a public no-auth remote took 15 s and answered "Config saved. Use
+    Retry to reconnect." although it connected moments later. The add now says
+    which of three things happened (E1, 3514382): connected; still connecting,
+    which the screen now watches until the row is Active; or not connected,
+    with the reason. Both answers are stubbed here, so it needs no server.
+    """
+    base = {"server_type": "remote", "token_set": False, "command": "", "args": [], "env": {}}
+    connecting = {**base, "name": "smoke_conn", "label": "Smoke conn", "url": "http://127.0.0.2:9/a",
+                  "status": "connecting"}
+    dead = {**base, "name": "smoke_dead", "label": "Smoke dead", "url": "http://127.0.0.2:9/b",
+            "status": "disconnected"}
+    answers = {
+        "smoke_conn": {"status": "saved", "connected": False, "config": connecting,
+                       "message": "Saved — still connecting. It will show as connected when it does."},
+        "smoke_dead": {"status": "saved", "connected": False, "config": dead,
+                       "message": "Saved, but it did not connect: All connection attempts failed. "
+                                  "Retry once it is reachable."},
+    }
+    listed = {"servers": []}
+
+    async def servers(route):
+        req = route.request
+        if req.method == "POST":
+            name = json.loads(req.post_data or "{}").get("name")
+            answer = answers[name]
+            listed["servers"] = [s for s in listed["servers"] if s["name"] != name] + [
+                {**answer["config"], "status": "connected"} if name == "smoke_conn" else answer["config"]]
+            return await route.fulfill(json=answer)
+        await route.fulfill(json=listed["servers"])
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/mcp/servers", servers)
+    page = await ctx.new_page()
+    notes: list[str] = []
+    try:
+        await page.goto(f"{APP}/mcp-servers", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+
+        async def add(name: str, url: str) -> str:
+            # A saved add resets the form to its default type (stdio).
+            await page.get_by_role("button", name=re.compile(r"Remote \(URL\)")).click()
+            await page.get_by_label("Unique ID").fill(name)
+            await page.get_by_label("Server URL").fill(url)
+            await page.get_by_role("button", name="Connect Server").click()
+            await asyncio.sleep(1.0)
+            return await page.evaluate("() => document.querySelector('main').innerText")
+
+        first = await add("smoke_conn", "http://127.0.0.2:9/a")
+        notes.append(first)
+        became = False
+        for _ in range(16):          # the screen polls every 5 s
+            await asyncio.sleep(0.5)
+            text = await page.evaluate("() => document.querySelector('main').innerText")
+            if "smoke_conn connected" in text:
+                became = True
+                break
+        second = await add("smoke_dead", "http://127.0.0.2:9/b")
+    finally:
+        await ctx.close()
+    bad = []
+    if "still connecting" not in first:
+        bad.append("a server still connecting is not said to be connecting")
+    if "Use Retry" in first:
+        bad.append("a server still connecting is told to Retry")
+    if not became:
+        bad.append("the screen never saw the still-connecting server connect")
+    if "did not connect: All connection attempts failed" not in second:
+        bad.append("a server that did not connect does not say why")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "still connecting is said and watched until connected; a failure says why; no stray 'Use Retry'"
+
+
 # ── F101: the states `contrast` cannot open ─────────────────────────────────
 
 def _answer(body, status: int = 200, methods: tuple[str, ...] = ("GET",),

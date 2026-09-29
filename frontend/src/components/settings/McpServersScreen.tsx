@@ -146,11 +146,19 @@ export function McpServersScreen() {
             } else if (data.connected) {
                 setLastConnected(true);
                 show("Server connected and saved");
+            } else if (data.config?.status === "connecting") {
+                // Still connecting after the add's wait, and carrying on in the
+                // background (U61): watch the list until it is connected, as
+                // an OAuth add does, rather than tell the person to Retry a
+                // server that is about to work.
+                setLastConnected(null);
+                setPendingServerName(submittedName);
+                show(data.message || "Saved — still connecting.", "warning");
             } else {
-                // Saved but unreachable is neither success nor failure: the
-                // config is persisted and Retry is the next step.
+                // Saved but not connected is neither success nor failure: the
+                // config is persisted, and the server says why and what next.
                 setLastConnected(false);
-                show("Config saved. Use Retry to reconnect.", "warning");
+                show(data.message || "Config saved. Use Retry to reconnect.", "warning");
             }
         } catch {
             show("Failed to reach backend. Is it running?", "danger");
