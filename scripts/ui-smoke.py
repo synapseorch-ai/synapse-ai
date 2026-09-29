@@ -3185,6 +3185,10 @@ async def check_agentmenu(browser) -> str:
     It was a `<div>` whose list appeared on hover: not focusable, no keyboard or
     touch path, and hidden below `sm`, so a phone could not change agent at all.
     Its rows stayed in the tab order while invisible.
+
+    Since F271 it is a searchable list (a Popover and `cmdk`, as the model
+    picker is), so its rows are `option`s and the keyboard walks them from the
+    search box with the arrow keys.
     """
     status = {**_status(True), "agents": {
         "agent_alpha": {"name": "Alpha", "status": "online", "can_see_images": True},
@@ -3201,10 +3205,13 @@ async def check_agentmenu(browser) -> str:
             await trigger.first.focus()
             await page.keyboard.press("Enter")
             await asyncio.sleep(0.5)
-            items = await page.get_by_role("menuitem").all_inner_texts()
+            items = await page.get_by_role("option").all_inner_texts()
             if not any("Beta" in t for t in items) or not any("Alpha" in t for t in items):
                 raise AssertionError(f"at {width[0]}px the switcher lists {items}")
-            await page.get_by_role("menuitem", name=re.compile("Beta")).focus()
+            for _ in range(len(items)):
+                if await page.get_by_role("option", name=re.compile("Beta")).get_attribute("aria-selected") == "true":
+                    break
+                await page.keyboard.press("ArrowDown")
             await page.keyboard.press("Enter")
             await asyncio.sleep(0.8)
             switched = await page.evaluate("() => window.__switches")
@@ -3601,8 +3608,9 @@ async def check_keyrows(browser) -> str:
         await page.goto(f"{APP}/settings/memory", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
         boxes = page.get_by_role("checkbox")
-        if await boxes.count() != 6:
-            raise AssertionError(f"Settings → Memory has {await boxes.count()} checkboxes, not its six cards")
+        # Seven since F270 added "Agent Memory".
+        if await boxes.count() != 7:
+            raise AssertionError(f"Settings → Memory has {await boxes.count()} checkboxes, not its seven cards")
         first = boxes.first
         await first.focus()
         await page.keyboard.press(" ")
