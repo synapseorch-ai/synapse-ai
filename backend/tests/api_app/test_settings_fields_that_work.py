@@ -37,7 +37,8 @@ class TestDeadFieldsAreGone:
         assert "embedding_model_provider" not in Repo.model_fields
         assert "max_total_cost_usd" not in Orchestration.model_fields
 
-    @pytest.mark.parametrize("installer", ["setup.py", "synapse/setup_wizard.py", "bin/synapse.js"])
+    @pytest.mark.parametrize("installer", ["setup.py", "synapse/setup_wizard.py", "bin/synapse.js",
+                                           "synapse/installer/providers.py"])
     def test_no_installer_writes_them(self, installer):
         source = (ROOT / installer).read_text()
         for key in DEAD:

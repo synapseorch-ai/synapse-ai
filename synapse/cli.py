@@ -34,18 +34,6 @@ def _rmtree(path):
     shutil.rmtree(path, onerror=_onerror)
 
 
-def _fix_bin_permissions():
-    """Ensure bin/synapse has execute permissions (chmod 755) on Unix."""
-    if IS_WIN:
-        return
-    synapse_bin = ROOT_DIR / "bin" / "synapse"
-    if synapse_bin.exists():
-        try:
-            synapse_bin.chmod(0o755)
-        except PermissionError as e:
-            print(f"  Warning: could not set permissions on {synapse_bin}: {e}")
-            print(f"  Fix manually: chmod 755 {synapse_bin}")
-
 PACKAGE_DIR = Path(__file__).resolve().parent
 # When installed as a package, backend is one level up from synapse/
 BACKEND_DIR = PACKAGE_DIR.parent / "backend"
@@ -55,44 +43,6 @@ ROOT_DIR = PACKAGE_DIR.parent
 # When installed via pip, the Next.js standalone build is bundled here.
 _BUNDLED_FRONTEND = PACKAGE_DIR / "_frontend"
 
-
-def _system_python() -> str:
-    """Return the real system Python executable, not one inside a venv."""
-    # If we're already inside a venv (VIRTUAL_ENV is set or sys.prefix !=
-    # sys.base_prefix), try sys.base_prefix first — that's the system install
-    # that owns this interpreter.
-    base = getattr(sys, "base_prefix", sys.prefix)
-    if base != sys.prefix:
-        # Running inside a venv — find python in the base prefix
-        candidates = [
-            os.path.join(base, "python.exe" if IS_WIN else "bin/python"),
-            os.path.join(base, "Scripts", "python.exe") if IS_WIN else None,
-        ]
-        for c in candidates:
-            if c and os.path.isfile(c):
-                return c
-
-    # sys.executable itself might be the venv python; walk up to find the real one
-    exe = sys.executable
-    if IS_WIN:
-        # On Windows a venv python lives at <venv>\Scripts\python.exe
-        # The base install is typically 3 levels up: <base>\python.exe
-        parts = Path(exe).parts
-        if "Scripts" in parts:
-            idx = list(parts).index("Scripts")
-            # <venv>\Scripts\python.exe  → try <base>\python.exe
-            base_dir = Path(*parts[:idx - 1])
-            for name in ("python.exe", "python3.exe"):
-                candidate = base_dir / name
-                if candidate.is_file():
-                    return str(candidate)
-
-    # Fall back to whatever shutil can find on PATH
-    found = shutil.which("python3") or shutil.which("python")
-    if found:
-        return found
-
-    return sys.executable
 
 def _is_packaged() -> bool:
     """Running from a directory a package manager owns (pip, uv, npm's venv).
@@ -760,28 +710,6 @@ def _terminate_pid(pid: int, name: str, timeout: int = 5) -> bool:
         except Exception:
             pass
         return not _is_running(pid)
-
-
-def _requirements_source(base_name: str) -> "tuple[Path | None, bool]":
-    """Resolve which requirements file to install, preferring the lockfile.
-
-    Returns (path, is_locked). `path` is None when neither file exists.
-
-    backend/<base>.lock pins the entire transitive tree, so every install
-    reproduces the environment CI tested. backend/<base>.txt is the fallback:
-    it carries upper bounds, but transitive dependencies still float, which is
-    how an unpinned `mcp` once resolved to the 2.0.0 rewrite and took out every
-    native tool server. Regenerate locks with scripts/lock-deps.sh.
-    """
-    lockfile = BACKEND_DIR / f"{base_name}.lock"
-    if lockfile.exists():
-        return lockfile, True
-
-    spec = BACKEND_DIR / f"{base_name}.txt"
-    if spec.exists():
-        return spec, False
-
-    return None, False
 
 
 def _ensure_coding_deps() -> None:
@@ -1592,573 +1520,235 @@ def _parse_version(v: str) -> tuple:
         return (0,)
 
 
-def _register_synapse_pth(venv_dir: str, root_dir: str) -> None:
-    """Add root_dir to the venv's site-packages via a .pth file.
+def _install_method() -> str:
+    """How this copy was installed: "uv", "pip", "npm", or "checkout".
 
-    Equivalent to pip install -e but skips the build hook entirely —
-    no bash, no npm, no hatchling required.
+    Read from the running process rather than trusted from install.json, which
+    a hand-installed copy does not have: uv writes a receipt into the tool's
+    environment, and the npm wrapper says so in the environment it starts us in.
     """
-    import glob as _glob
-    if IS_WIN:
-        site_pkgs = os.path.join(venv_dir, "Lib", "site-packages")
-    else:
-        candidates = sorted(
-            _glob.glob(os.path.join(venv_dir, "lib", "python*", "site-packages"))
-        )
-        if not candidates:
-            print(f"  Warning: could not locate site-packages inside {venv_dir}")
-            return
-        site_pkgs = candidates[-1]
-    os.makedirs(site_pkgs, exist_ok=True)
-    pth = os.path.join(site_pkgs, "synapse-source.pth")
-    with open(pth, "w", encoding="utf-8") as f:
-        f.write(str(root_dir) + "\n")
+    if not _is_packaged():
+        return "checkout"
+    if os.environ.get("SYNAPSE_LAUNCHER") == "npm":
+        return "npm"
+    if (Path(sys.prefix) / "uv-receipt.toml").exists():
+        return "uv"
+    return "pip"
 
 
-def _get_latest_github_release() -> "tuple[str, str] | tuple[None, None]":
-    """Return (tag_name, tarball_url) for the latest GitHub release, or (None, None) on failure."""
-    import urllib.request as _req
-    import json as _json
-    url = "https://api.github.com/repos/synapseorch-ai/synapse-ai/releases/latest"
+RELEASES = "https://github.com/synapseorch-ai/synapse-ai/releases"
+
+
+def _latest_version() -> "str | None":
+    """The newest Synapse on PyPI, or None when PyPI cannot be reached."""
+    from synapse.installer import net
+
     try:
-        req = _req.Request(url, headers={"User-Agent": "synapse-upgrade/1.0"})
-        with _req.urlopen(req, timeout=15) as resp:
-            data = _json.loads(resp.read())
-        return data.get("tag_name", ""), data.get("tarball_url", "")
-    except Exception as e:
-        print(f"  Warning: could not fetch release info: {e}")
-        return None, None
-
-
-def _download_and_apply_release(tarball_url: str) -> bool:
-    """Download the release tarball and overwrite source files, preserving user data."""
-    import tempfile, tarfile
-    import urllib.request as _req
-
-    SKIP = {
-        # User data — must never be overwritten
-        "backend/data",
-        # Runtime / generated — large and not part of releases
-        "backend/venv",
-        "backend/logs",
-        "backend/chroma_db",
-        "backend/.playwright-mcp",
-        "backend/node_modules",
-        "frontend/node_modules",
-        # Note: frontend/.next and synapse/_frontend are intentionally NOT skipped —
-        # they get rebuilt by npm build + _sync_bundled_frontend() during upgrade.
-    }
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tar_path = os.path.join(tmp, "release.tar.gz")
-        print("  Downloading...", end="", flush=True)
-        req = _req.Request(tarball_url, headers={"User-Agent": "synapse-upgrade/1.0"})
-        try:
-            with _req.urlopen(req, timeout=120) as resp, open(tar_path, "wb") as f:
-                shutil.copyfileobj(resp, f)
-        except Exception as e:
-            print(f"\n  Error downloading release: {e}")
-            return False
-        print(" done.")
-
-        print("  Extracting...", end="", flush=True)
-        extract_dir = os.path.join(tmp, "src")
-        os.makedirs(extract_dir)
-        try:
-            with tarfile.open(tar_path, "r:gz") as tf:
-                tf.extractall(extract_dir)
-        except Exception as e:
-            print(f"\n  Error extracting archive: {e}")
-            return False
-        print(" done.")
-
-        entries = os.listdir(extract_dir)
-        if not entries:
-            print("  Warning: tarball was empty - skipping file copy.")
-            return False
-        src_root = os.path.join(extract_dir, entries[0])
-
-        print("  Applying update...")
-        for item in os.listdir(src_root):
-            if item.startswith(".env"):
-                continue
-            src = os.path.join(src_root, item)
-            dst = os.path.join(str(ROOT_DIR), item)
-
-            if os.path.isdir(src):
-                os.makedirs(dst, exist_ok=True)
-                for sub in os.listdir(src):
-                    sub_rel = os.path.join(item, sub)
-                    if any(sub_rel == s or sub_rel.startswith(s + os.sep) for s in SKIP):
-                        continue
-                    # Never overwrite log files
-                    if sub.endswith(".log"):
-                        continue
-                    sub_src = os.path.join(src, sub)
-                    sub_dst = os.path.join(dst, sub)
-                    if os.path.isdir(sub_src):
-                        if os.path.exists(sub_dst):
-                            _rmtree(sub_dst)
-                        shutil.copytree(sub_src, sub_dst)
-                    else:
-                        shutil.copy2(sub_src, sub_dst)
-            else:
-                shutil.copy2(src, dst)
-
-    return True
-
-
-def _upgrade_command():
-    """Upgrade Synapse AI to the latest version.
-
-    - pip-installed  → pip install --upgrade synapse-orch-ai
-    - source / editable install → download latest GitHub release + rebuild venv + rebuild frontend
-    """
-    print("\n=== Synapse AI -- Upgrade ===")
-
-    # Detect whether we're running from a pip-installed wheel or a source tree.
-    # When installed from PyPI, ROOT_DIR is inside site-packages/.
-    _is_pip_install = any(p in ("site-packages", "dist-packages") for p in ROOT_DIR.parts)
-
-    if _is_pip_install:
-        # ── pip-installed path ────────────────────────────────────────────────
-        print("\nUpgrading via pip...")
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "synapse-orch-ai"],
-            # Show live output so the user can see progress
-            stdout=None, stderr=None,
-        )
-        if result.returncode != 0:
-            print("\n  Upgrade failed.")
-            print("  Try manually: pip install --upgrade synapse-orch-ai")
-            sys.exit(result.returncode)
-
-        print("\n=== Upgrade complete! ===")
-        print("Run 'synapse start' to launch the updated Synapse.")
-        return
-
-    # ── source / editable install path ───────────────────────────────────────
-
-    # Ensure the internal token exists before ANYTHING else so that any npm
-    # build in this upgrade (or the next) picks it up from the environment.
-    # This must run before the release download so the token is set even when
-    # the downloaded cli.py replaces us on disk mid-upgrade.
-    _ensure_internal_token()
-    _ensure_jwt_secret()
-    _ensure_access_token()
-
-    # When we successfully apply a new release we re-exec this script using the
-    # freshly-downloaded cli.py so that any changes to the upgrade logic itself
-    # take effect immediately — no "run synapse upgrade twice" required.
-    # The re-exec'd process receives this flag and skips straight to the rebuild.
-    _skip_download = os.environ.get("SYNAPSE_UPGRADE_SKIP_DOWNLOAD") == "1"
-
-    if not _skip_download:
-        # 1. Stop running services first
-        print("\nStopping running services...")
-        _stop_command()
-
-        # 2. Download latest release from GitHub
-        print("\n==> Checking for latest release...")
-        current_ver = _get_current_version()
-        latest_tag, tarball_url = _get_latest_github_release()
-
-        if latest_tag and tarball_url:
-            if _parse_version(latest_tag) > _parse_version(current_ver):
-                print(f"  New version available: {latest_tag} (current: {current_ver})")
-                if _download_and_apply_release(tarball_url):
-                    print(f"  Source updated to {latest_tag}.")
-                    # Re-exec with the newly-downloaded cli.py so the rest of
-                    # the upgrade (venv rebuild, npm build, etc.) runs with the
-                    # new code.  The environment — including SYNAPSE_INTERNAL_TOKEN
-                    # set above — is inherited by the child process.
-                    new_cli = ROOT_DIR / "synapse" / "cli.py"
-                    if new_cli.exists():
-                        print("  Restarting upgrade with updated CLI...")
-                        env = os.environ.copy()
-                        env["SYNAPSE_UPGRADE_SKIP_DOWNLOAD"] = "1"
-                        result = subprocess.run(
-                            [sys.executable, str(new_cli), "upgrade"],
-                            env=env,
-                        )
-                        sys.exit(result.returncode)
-                else:
-                    print("  Warning: file apply failed - continuing with existing code.")
-            else:
-                print(f"  Already at latest version ({current_ver}).")
-        else:
-            print("  Warning: could not reach GitHub releases - continuing with existing code.")
-    else:
-        print("\n(Continuing upgrade with updated CLI...)")
-
-    # 3. Rebuild Python venv
-    print("\n==> Rebuilding backend virtual environment...")
-    venv_dir = BACKEND_DIR / "venv"
-    python_exe = venv_dir / ("Scripts/python.exe" if IS_WIN else "bin/python")
-
-    def _venv_is_healthy() -> bool:
-        """Return True if the venv exists and its Python is actually usable."""
-        if not python_exe.exists():
-            return False
-        result = subprocess.run([str(python_exe), "--version"],
-                                capture_output=True, timeout=10)
-        return result.returncode == 0
-
-    if _venv_is_healthy():
-        # Upgrade in place — avoids deleting locked/protected files on Windows
-        # and is faster on all platforms. Safe because we install from a
-        # fully-pinned lockfile, so --upgrade converges on exactly the versions
-        # a clean install would produce.
-        #
-        # This used to rely on requirements.txt carrying bare package names, on
-        # the theory that "latest always" made --upgrade equivalent to a fresh
-        # install. It did — including the time it upgraded users onto the mcp
-        # 2.0.0 rewrite and every native tool server stopped loading.
-        print("  Existing virtual environment found, upgrading packages in place...")
-        pip_extra = ["--upgrade"]
-    else:
-        # Venv is missing or broken — delete (best-effort) and recreate.
-        if venv_dir.exists():
-            print("  Removing old virtual environment...")
-            _rmtree(venv_dir)
-        print("  Creating virtual environment...")
-        subprocess.check_call([_system_python(), "-m", "venv", str(venv_dir)])
-        pip_extra = []
-
-    # Upgrade pip
-    print("  Upgrading pip...")
-    subprocess.run([str(python_exe), "-m", "pip", "install", "--upgrade", "pip"],
-                   capture_output=True)
-
-    # Install requirements from the lockfile when it's available.
-    #
-    # requirements.lock pins the full transitive tree, so every user resolves
-    # the same environment CI tested. requirements.txt is the fallback for
-    # source checkouts predating the lock; it carries upper bounds but leaves
-    # transitive versions floating.
-    base_req, base_is_locked = _requirements_source("requirements")
-    if base_req is not None:
-        label = "lockfile" if base_is_locked else "requirements.txt (unlocked)"
-        print(f"  Installing backend requirements from {label}...")
-        subprocess.check_call([str(python_exe), "-m", "pip", "install",
-                               *pip_extra, "-r", str(base_req)])
-    else:
-        print(f"  Warning: no requirements found in {BACKEND_DIR} -- skipping.")
-
-    # Always install coding-agent deps (cocoindex, psycopg, numpy).
-    # These are small and needed as soon as the user enables "Code Indexing"
-    # in the UI — we don't want them to have to run upgrade again just because
-    # they toggled a setting after the initial install.
-    #
-    # requirements.lock is compiled from requirements.txt + requirements-coding.txt
-    # together, so when we installed the lock these are already present.
-    if not base_is_locked:
-        coding_req = BACKEND_DIR / "requirements-coding.txt"
-        if coding_req.exists():
-            print("  Installing coding-agent requirements (cocoindex, psycopg)...")
-            subprocess.check_call([str(python_exe), "-m", "pip", "install",
-                                   *pip_extra, "-r", str(coding_req)])
-        else:
-            print(f"  Warning: {coding_req} not found -- skipping.")
-
-    # Messaging deps are heavier — only install when the user has opted in.
-    from synapse import _store
-    _settings = _store.load_settings()
-
-    if _settings.get("messaging_enabled", False):
-        messaging_req, _ = _requirements_source("requirements-messaging")
-        if messaging_req is not None:
-            print("  Installing messaging requirements...")
-            subprocess.check_call([str(python_exe), "-m", "pip", "install",
-                                   *pip_extra, "-r", str(messaging_req)])
-        else:
-            print(f"  Warning: requirements-messaging not found in {BACKEND_DIR} -- skipping.")
-
-    # Register synapse package via .pth file — no build hook, no bash required
-    print("  Registering Synapse package...")
-    _register_synapse_pth(str(venv_dir), str(ROOT_DIR))
-    print("  Backend rebuild complete.")
-
-    # 4. Rebuild frontend
-    # Ensure the internal token is in os.environ so the build subprocess
-    # inherits it — Next.js bundles process.env.SYNAPSE_INTERNAL_TOKEN into
-    # the Edge Middleware at build time.
-    _ensure_internal_token()
-
-    print("\n==> Rebuilding frontend (npm install + npm run build)...")
-    npm = _npm_command()
-
-    # Remove node_modules so we get a clean install
-    node_modules = FRONTEND_DIR / "node_modules"
-    if node_modules.exists():
-        print("  Removing old node_modules...")
-        _rmtree(node_modules)
-
-    print("  Running npm install...")
-    subprocess.check_call([npm, "install"], cwd=str(FRONTEND_DIR))
-
-    print("  Building frontend...")
-    subprocess.check_call([npm, "run", "build"], cwd=str(FRONTEND_DIR))
-
-    # Sync new standalone build into _BUNDLED_FRONTEND if this is a traditionally-installed instance.
-    if _BUNDLED_FRONTEND.exists():
-        print("  Updating bundled frontend (synapse/_frontend/)...")
-        if _sync_bundled_frontend(verbose=True):
-            print("  Bundled frontend updated.")
-
-    print("  Frontend rebuild complete.")
-
-    # 5. Re-apply execute permissions on the synapse bin script
-    # (git pull can reset the execute bit, especially on WSL/Linux)
-    _fix_bin_permissions()
-
-    print("\n=== Upgrade complete! ===")
-    print("Run 'synapse start' to launch the updated Synapse.")
-    if not IS_WIN:
-        bin_dir = str(ROOT_DIR / "bin")
-        print(f"\nIf 'synapse' is not found in your terminal, run:")
-        print(f"  export PATH=\"{bin_dir}:$PATH\"")
-        print("(Already saved to ~/.bashrc / ~/.zshrc for new terminals.)")
-
-
-def _get_synapse_install_dir() -> Path | None:
-    """Return the platform-specific SynapseAI install directory written by setup.sh / setup.ps1."""
-    if IS_WIN:
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        if local_app_data:
-            return Path(local_app_data) / "Programs" / "SynapseAI"
+        return net.get_json("https://pypi.org/pypi/synapse-orch-ai/json", timeout=15)["info"]["version"]
+    except (net.HttpError, KeyError, TypeError):
         return None
-    elif sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "SynapseAI"
-    else:  # Linux
-        return Path.home() / ".local" / "share" / "SynapseAI"
+
+
+def _upgrade_command(version: str = ""):
+    """Install the newest Synapse over this one; data and settings stay.
+
+    uv installs (the installer's) are upgraded by that release's own installer,
+    with the same screen: stop, back up the database, install, update the
+    database, and start again if it was running. pip installs do the same
+    with pip. A checkout is updated with git.
+    """
+    method = _install_method()
+    if method == "checkout":
+        print("This is a source checkout: update it with `git pull`.")
+        sys.exit(1)
+    current = _get_current_version()
+    target = version or _latest_version()
+    if target is None:
+        print("Could not reach PyPI to look for a newer Synapse. Try again in a while.")
+        sys.exit(1)
+    if not version and _parse_version(target) <= _parse_version(current):
+        print(f"Synapse {current} is up to date.")
+        return
+    if method == "npm":
+        # The npm package decides which Synapse its `synapse` runs; upgrading
+        # only the Python side would be undone at its next start.
+        print(f"Synapse {target} is out. Upgrade it the way it was installed:")
+        print(f"  npm install -g synapse-orch-ai@{target}")
+        return
+    if method == "pip":
+        sys.exit(_upgrade_with_pip(current, target))
+    _upgrade_with_installer(target)
+
+
+def _upgrade_with_installer(target: str) -> None:
+    """Hand over to release `target`'s own installer (`synapse-install.pyz upgrade`)."""
+    from synapse.installer import net, runtime
+    from synapse.installer.home import home_dir, read_install
+
+    home = synapse_home() or home_dir()
+    record = read_install(home)
+    uv = record.get("uv") or ""
+    if not uv or not Path(uv).is_file():
+        found = runtime.find_uv(home)
+        uv = str(found) if found else ""
+    if not uv:
+        print("uv, which this install was made with, is missing. Reinstall with:")
+        print(f"  curl -LsSf {RELEASES}/latest/download/setup.sh | bash")
+        sys.exit(1)
+    base = f"{RELEASES}/download/v{target}"
+    pyz = home / "runtime" / f"synapse-install-{target}.pyz"
+    with _Spinner(f"Getting Synapse {target}…"):
+        try:
+            net.download(f"{base}/synapse-install.pyz", pyz)
+            expected = net.get_text(f"{base}/synapse-install.pyz.sha256").split()[0]
+        except net.HttpError as e:
+            print(f"Could not download the {target} installer: {e}")
+            sys.exit(1)
+    import hashlib
+    if hashlib.sha256(pyz.read_bytes()).hexdigest() != expected:
+        pyz.unlink()
+        print("The downloaded installer did not match its published checksum. Nothing was changed.")
+        sys.exit(1)
+    cmd = [uv, "run", "--no-project", "--quiet", "--python", "3.12", "python", str(pyz),
+           "upgrade", "--uv", uv, "--version", target]
+    if IS_WIN:
+        # This process runs from the files the upgrade replaces, and Windows
+        # will not replace a running .exe. The new installer waits for this
+        # one to exit, in its own window.
+        subprocess.Popen(cmd + ["--wait-pid", str(os.getpid())],
+                         creationflags=subprocess.CREATE_NEW_CONSOLE)
+        print("The upgrade continues in a new window.")
+        return
+    os.execv(uv, cmd)
+
+
+def _upgrade_with_pip(current: str, target: str) -> int:
+    """pip's upgrade, on the installer's screen: stop, back up, install, migrate, start."""
+    from synapse.installer import backup
+    from synapse.installer.runner import CommandFailed, Log, run
+    from synapse.installer.screen import make_screen
+    from synapse.installer.tui import Term
+
+    home = synapse_home() or Path.home() / ".synapse"
+    term = Term()
+    screen = make_screen(term, f"Synapse {current} {term.g('arrow')} {target}")
+    for key, title in (("stop", "Stopping Synapse"), ("backup", "Backing up the database"),
+                       ("install", f"Installing {target}"), ("migrate", "Updating the database"),
+                       ("start", "Starting")):
+        screen.add(key, title)
+    log = Log(home / "logs" / "install.log")
+    screen.open()
+    link = ""
+    try:
+        was_running = any(_is_running(p) for p in
+                          (_read_pidfile(_pid_file(n)) for n in ("backend", "frontend")) if p)
+        screen.start("stop")
+        if was_running:
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                _stop_command()
+        screen.done("stop", "stopped" if was_running else "not running")
+
+        screen.start("backup")
+        db = _var_dir() / "synapse.db"
+        if db.is_file() and not os.environ.get("SYNAPSE_DB_URL"):
+            copy = backup.backup_sqlite(db, home / "backups", current)
+            screen.done("backup", str(copy).replace(str(Path.home()), "~", 1))
+        else:
+            screen.skip("backup")
+
+        screen.start("install")
+        run([sys.executable, "-m", "pip", "install", "--upgrade", f"synapse-orch-ai=={target}"], log)
+        screen.done("install", target)
+
+        # The new code from here on, in a new interpreter.
+        screen.start("migrate")
+        run([sys.executable, "-m", "synapse", "migrate", "--json"], log)
+        screen.done("migrate", "up to date")
+
+        if was_running:
+            screen.start("start")
+            run([sys.executable, "-m", "synapse", "start", "--detach", "--no-browser"], log)
+            status = subprocess.run([sys.executable, "-m", "synapse", "status", "--json"],
+                                    capture_output=True, text=True)
+            import json as _json
+            link = (_json.loads(status.stdout.strip().splitlines()[-1]) or {}).get("link", "")
+            screen.done("start")
+        else:
+            screen.skip("start")
+    except (CommandFailed, backup.BackupError, OSError, ValueError) as e:
+        failed = next((s for s in screen.steps if s.state == "running"), None)
+        if failed:
+            screen.fail(failed.key)
+        tail = getattr(e, "tail", [])
+        screen.close(["", f"  Upgrade failed: {e}", *[f"    {line}" for line in tail[-6:]],
+                      f"  Full log: {log.path}", ""])
+        log.close()
+        return 1
+    log.close()
+    if link:
+        screen.close(["", f"  Synapse {target} is running {term.g('arrow')} {link}", ""])
+    else:
+        screen.close(["", f"  Synapse {target} is installed. Start it with: synapse start", ""])
+    term.close()
+    return 0
 
 
 def _uninstall_command(keep_data: bool = False):
-    """Stop services and remove all Synapse AI files."""
-    print("\n=== Synapse AI -- Uninstall ===")
-    print()
+    """Stop Synapse and remove it; with --keep-data, the data stays for a reinstall."""
+    from synapse.installer import autostart
 
-    # Resolve the platform install directory up-front so later steps can reference it.
-    platform_install = _get_synapse_install_dir()
-
-    # Confirm
+    method = _install_method()
+    if method == "checkout":
+        print("This is a source checkout; delete the folder to remove it.")
+        sys.exit(1)
+    home = synapse_home() or Path.home() / ".synapse"
+    if keep_data:
+        print(f"This removes Synapse. Your data stays in {home}.")
+    else:
+        print(f"This removes Synapse and everything in {home}:")
+        print("your agents, workflows, chats, settings and backups.")
     try:
-        answer = input(
-            "This will PERMANENTLY remove Synapse AI and all its files.\n"
-            "Type 'yes' to confirm: "
-        ).strip().lower()
+        answer = input("Type 'yes' to confirm: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        print("\nAborted.")
-        return
-
+        answer = ""
     if answer != "yes":
-        print("Aborted.")
+        print("Nothing was removed.")
         return
 
-    # 1. Stop running services
-    print("\nStopping running services...")
-    try:
-        _stop_command()
-    except Exception as e:
-        print(f"  Warning: could not stop services cleanly: {e}")
-
-    # 2. Remove startup entries (systemd / LaunchAgent / Registry)
-    print("Removing startup registration...")
-    _platform = sys.platform
-    if IS_WIN:
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
         try:
-            import winreg  # type: ignore
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
-                0, winreg.KEY_SET_VALUE,
-            )
-            try:
-                winreg.DeleteValue(key, "SynapseAI")
-                print("  Removed Windows startup entry.")
-            except FileNotFoundError:
-                pass
-            winreg.CloseKey(key)
+            _stop_command()
         except Exception:
             pass
-    elif _platform == "darwin":
-        plist = Path.home() / "Library" / "LaunchAgents" / "com.synapse-ai.server.plist"
-        if plist.exists():
-            try:
-                subprocess.run(["launchctl", "unload", str(plist)], check=False, capture_output=True)
-                plist.unlink()
-                print("  Removed macOS LaunchAgent.")
-            except Exception:
-                pass
-    else:  # Linux
-        service = Path.home() / ".config" / "systemd" / "user" / "synapse-ai.service"
-        if service.exists():
-            try:
-                subprocess.run(["systemctl", "--user", "disable", "synapse-ai.service"],
-                               check=False, capture_output=True)
-                service.unlink()
-                subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, capture_output=True)
-                print("  Removed systemd user service.")
-            except Exception:
-                pass
+    autostart.disable()
 
-    # 3. Remove the user's data (optional). This is backend/var — the database,
-    # the vault, the blob store and the logs. Pointing it at the old data
-    # directory would report that the user's work had been deleted while
-    # leaving every orchestration, agent and vault file on disk.
-    if not keep_data and _var_dir().exists():
-        try:
-            _rmtree(_var_dir())
-            print(f"  Removed data: {_var_dir()}")
-        except Exception as e:
-            print(f"  Warning: could not remove {_var_dir()}: {e}")
-    # Also remove ~/.synapse parent directory (config files, etc.)
-    if not keep_data:
-        synapse_home = Path.home() / ".synapse"
-        if synapse_home.exists():
-            try:
-                _rmtree(synapse_home)
-                print(f"  Removed Synapse home: {synapse_home}")
-            except Exception as e:
-                print(f"  Warning: could not fully remove {synapse_home}: {e}")
+    if method == "uv":
+        from synapse.installer import runtime
+        from synapse.installer.home import read_install
+        uv = read_install(home).get("uv") or str(runtime.find_uv(home) or "")
+        if uv:
+            subprocess.run([uv, "tool", "uninstall", "synapse-orch-ai"], capture_output=True)
+    elif method == "pip":
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "synapse-orch-ai"],
+                       capture_output=True)
 
-    # 4. Remove the installation directory/directories
-    # Collect unique dirs: the running ROOT_DIR plus the platform standard install location
-    # (e.g. ~/.local/share/SynapseAI on Linux, %LOCALAPPDATA%\Programs\SynapseAI on Windows).
-    # Skip ROOT_DIR when pip-installed: it resolves to site-packages/, which must not be deleted.
-    _is_pip_install = any(p in ("site-packages", "dist-packages") for p in ROOT_DIR.parts)
-    if _is_pip_install:
-        _dirs_to_remove: list[Path] = []
-    else:
-        _dirs_to_remove = [ROOT_DIR]
-    if platform_install and platform_install.resolve() != ROOT_DIR.resolve():
-        _dirs_to_remove.append(platform_install)
+    if keep_data:
+        for leftover in ("runtime", "run", "logs", "install.json", "install.lock"):
+            target = home / leftover
+            if target.is_dir():
+                _rmtree(target)
+            elif target.exists():
+                target.unlink()
+    elif home.exists():
+        _rmtree(home)
 
-    for _install_dir in _dirs_to_remove:
-        if not _install_dir.exists():
-            continue
-        print(f"\nRemoving installation directory: {_install_dir}")
-        try:
-            # Remove large subdirectories first to avoid partial-removal hangs
-            for _big in (
-                _install_dir / "backend" / "venv",
-                _install_dir / "frontend" / "node_modules",
-            ):
-                if _big.exists():
-                    _rmtree(_big)
-            _rmtree(_install_dir)
-            print("  Removed.")
-        except Exception as e:
-            print(f"  Warning: could not fully remove {_install_dir}: {e}")
-            print("  You may need to delete it manually.")
-
-    # 5. Remove the pip-installed `synapse` console script
-    print("\nUninstalling Python package...")
-    _pip_names = ["synapse-orch-ai", "synapse-ai", "synapse"]
-    try:
-        _removed = False
-        for _pkg in _pip_names:
-            _r = subprocess.run(
-                [sys.executable, "-m", "pip", "uninstall", "-y", _pkg],
-                capture_output=True, text=True,
-            )
-            if _r.returncode == 0:
-                print(f"  Removed pip package {_pkg}.")
-                _removed = True
-                break
-        if not _removed:
-            print("  Package not found in pip (may already be removed).")
-    except Exception as e:
-        print(f"  Warning: pip uninstall failed: {e}")
-
-    # Fallback: remove the synapse executable directly if it still exists on PATH
-    synapse_exe = shutil.which("synapse")
-    if synapse_exe:
-        try:
-            Path(synapse_exe).unlink(missing_ok=True)
-            print(f"  Removed executable: {synapse_exe}")
-        except PermissionError:
-            print(f"  Warning: no permission to remove {synapse_exe} -- delete it manually.")
-        except Exception as e:
-            print(f"  Warning: could not remove {synapse_exe}: {e}")
-
-    # Windows: also scrub leftover files from the Python Scripts directory
-    if IS_WIN:
-        scripts_dir = Path(sys.executable).parent / "Scripts"
-        for name in ("synapse.exe", "synapse-script.py"):
-            candidate = scripts_dir / name
-            if candidate.exists():
-                try:
-                    candidate.unlink()
-                    print(f"  Removed: {candidate}")
-                except Exception as e:
-                    print(f"  Warning: could not remove {candidate}: {e}")
-
-    # 6. Clean PATH entries from shell rc files (Unix) / registry + PS profiles (Windows)
-    # Build the set of bin-dir strings to purge (covers both ROOT_DIR and the platform
-    # install dir written by setup.sh / setup.ps1).
-    _bin_dirs_lower = {str(ROOT_DIR / "bin").lower(), str(ROOT_DIR).lower()}
-    if platform_install:
-        _bin_dirs_lower.add(str(platform_install / "bin").lower())
-        _bin_dirs_lower.add(str(platform_install).lower())
-
-    if IS_WIN:
-        # --- Windows registry (user PATH) ---
-        try:
-            import winreg  # type: ignore
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Environment",
-                0, winreg.KEY_READ | winreg.KEY_SET_VALUE,
-            )
-            try:
-                path_val, reg_type = winreg.QueryValueEx(key, "PATH")
-                parts = [p for p in path_val.split(";") if p]
-                new_parts = [p for p in parts if p.lower() not in _bin_dirs_lower]
-                if len(new_parts) != len(parts):
-                    winreg.SetValueEx(key, "PATH", 0, reg_type, ";".join(new_parts))
-                    print("  Cleaned PATH from Windows user environment registry.")
-            except FileNotFoundError:
-                pass
-            winreg.CloseKey(key)
-        except Exception:
-            pass
-
-        # --- Windows PowerShell profiles (written by setup.ps1) ---
-        docs = Path.home() / "Documents"
-        for ps_dir in ("PowerShell", "WindowsPowerShell"):
-            ps_profile = docs / ps_dir / "profile.ps1"
-            if not ps_profile.exists():
-                continue
-            try:
-                lines = ps_profile.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
-                new_lines = [l for l in lines if "SynapseAI" not in l and "Synapse AI" not in l]
-                if len(new_lines) != len(lines):
-                    ps_profile.write_text("".join(new_lines), encoding="utf-8")
-                    print(f"  Cleaned PATH entry from PowerShell profile: {ps_profile}")
-            except Exception:
-                pass
-    else:
-        for rc_file in (
-            Path.home() / ".bashrc",
-            Path.home() / ".zshrc",
-            Path.home() / ".bash_profile",
-            Path.home() / ".profile",
-        ):
-            if rc_file.exists():
-                try:
-                    lines = rc_file.read_text(encoding="utf-8").splitlines(keepends=True)
-                    new_lines = [l for l in lines
-                                 if "SynapseAI" not in l and "Synapse AI" not in l
-                                 and not any(d in l for d in _bin_dirs_lower)]
-                    if len(new_lines) != len(lines):
-                        rc_file.write_text("".join(new_lines), encoding="utf-8")
-                        print(f"  Cleaned PATH entry from {rc_file}")
-                except Exception:
-                    pass
-
-    print("\n=== Synapse AI has been uninstalled. Goodbye! ===")
+    print("Synapse has been removed." + (f" Your data is still in {home}." if keep_data else ""))
+    if method == "npm":
+        print("Finish with: npm uninstall -g synapse-orch-ai")
 
 
 def _profile_session(origin: str) -> tuple[str | None, bool]:
@@ -2409,7 +1999,28 @@ def _force_utf8_streams():
             pass
 
 
+def _legacy_install_root() -> "Path | None":
+    """A v1.x script install that 2.0's code has just been unpacked into.
+
+    v1.x's `synapse upgrade` downloads the newest source over its own folder
+    and re-runs this file with its old venv's Python. 2.0 does not install
+    that way, so it hands over (synapse/installer/handoff.py). Recognised by
+    the marker v1.x's setup.py wrote and the venv beside the code; never a
+    checkout (a .git), never a packaged install.
+    """
+    if _is_packaged() or (ROOT_DIR / ".git").exists():
+        return None
+    if not (ROOT_DIR / ".installed").exists() or not (BACKEND_DIR / "venv").is_dir():
+        return None
+    return ROOT_DIR
+
+
 def main():
+    # First, before anything the old venv might not have is imported.
+    legacy_root = _legacy_install_root()
+    if legacy_root is not None:
+        from synapse.installer.handoff import run as _handoff
+        sys.exit(_handoff(legacy_root, sys.argv[1:]))
     _force_utf8_streams()
     _warn_if_not_on_path()
     parser = argparse.ArgumentParser(prog="synapse", description="Run Synapse, and drive it from the terminal")
@@ -2474,17 +2085,16 @@ def main():
         help="Print one JSON report on stdout",
     )
 
-    # upgrade: pull code and rebuild everything
-    sub.add_parser(
-        "upgrade",
-        help="Pull latest code, rebuild backend venv + requirements, rebuild frontend (npm install + npm run build)",
+    p_upgrade = sub.add_parser(
+        "upgrade", help="Install the newest Synapse over this one; your data and settings stay",
     )
+    p_upgrade.add_argument("--version", dest="to_version", default="", metavar="X",
+                           help="Install this version instead of the newest")
 
-    # uninstall: stop + wipe everything
-    p_uninstall = sub.add_parser("uninstall", help="Stop services and remove all Synapse AI files")
+    p_uninstall = sub.add_parser("uninstall", help="Stop Synapse and remove it")
     p_uninstall.add_argument(
         "--keep-data", action="store_true",
-        help="Keep the data directory (~/.synapse) when uninstalling",
+        help="Keep your data, settings and backups (~/.synapse) for a later reinstall",
     )
 
     p_profile = sub.add_parser("profile", help="Query and control backend performance profiling")
@@ -2567,7 +2177,7 @@ def main():
             verbose=getattr(args, "verbose", False),
         )
     elif args.cmd == "upgrade":
-        _upgrade_command()
+        _upgrade_command(args.to_version)
     elif args.cmd == "uninstall":
         _uninstall_command(keep_data=getattr(args, "keep_data", False))
     elif args.cmd == "profile":

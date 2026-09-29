@@ -67,8 +67,12 @@ args = sys.argv[1:]
 with open(os.environ["FAKE_CALLS"], "a") as f:
     f.write(json.dumps(["uv"] + args) + "\n")
 tools, bins = os.environ["FAKE_TOOLDIR"], os.environ["FAKE_BINDIR"]
-if args[:2] == ["python", "install"]:
+if args[:1] == ["-c"]:
+    print("3.12.8")                  # run as the Python `uv python find` named
+elif args[:2] == ["python", "install"]:
     print("Installed Python 3.12.8 in 1.02s")
+elif args[:2] == ["python", "find"]:
+    print(sys.argv[0])
 elif args[:2] == ["tool", "install"]:
     if os.environ.get("FAKE_UV_FAIL"):
         print("Resolved 181 packages in 1.2s")
@@ -142,10 +146,10 @@ def test_a_fresh_install_ends_with_the_link(world):
 
     assert code == 0, out
     assert _names(calls) == [
-        "uv python", "uv tool", "uv tool", "uv tool", "--version",
+        "uv python", "uv python", "uv -c", "uv tool", "uv tool", "uv tool", "--version",
         "setup --apply", "start --detach", "status --json", "uv tool",
     ]
-    install_call = calls[1]
+    install_call = calls[3]
     assert install_call[:4] == ["uv", "tool", "install", "--force"]
     assert install_call[-1] == "synapse-orch-ai==2.0.0"
     applied = json.loads(Path(str(world["calls"]) + ".apply").read_text())

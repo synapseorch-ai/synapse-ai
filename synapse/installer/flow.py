@@ -279,7 +279,7 @@ class Installer:
         if mode == "legacy":
             # v1.x asked this already; its answer is whether it left an entry.
             self.s.autostart = legacy.had_autostart()
-        elif self.o.method != "npm" and autostart.supported():
+        elif autostart.supported():
             self.s.autostart = self.asker.confirm("Start Synapse when you log in?", default=False)
         background = ("python", "install", "node", "browser")
         if self.asker.interactive and not nothing_asked and any(
@@ -358,9 +358,15 @@ class Installer:
 
     def _python(self) -> str:
         self.uv = self._find_uv()
-        _, out = run([self.uv, "python", "install", PYTHON], self.log, env=self._uv_env())
-        found = re.search(r"Installed Python (\S+)", out)
-        return found.group(1) if found else PYTHON
+        run([self.uv, "python", "install", PYTHON], self.log, env=self._uv_env())
+        _, where = run([self.uv, "python", "find", PYTHON], self.log, env=self._uv_env(), check=False)
+        python = where.strip().splitlines()[-1] if where.strip() else ""
+        if python and Path(python).is_file():
+            _, version = run([python, "-c", "import platform; print(platform.python_version())"],
+                             self.log, check=False)
+            if re.fullmatch(r"\d+\.\d+\.\d+", version.strip()):
+                return version.strip()
+        return PYTHON
 
     def _install(self) -> str:
         parser = UvInstall()
@@ -449,7 +455,14 @@ class Installer:
             settings["installed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         payload = json.dumps({"settings": settings, "default_agent": True})
         self._cli(["setup", "--apply", "-"], stdin_text=payload)
+        self._register_autostart()
         return providers.describe(self.s.answers) or "choose an AI later in Settings"
+
+    def _register_autostart(self) -> None:
+        """Here, not in Starting: an install that does not start now still starts at login."""
+        if self.s.autostart and autostart.supported():
+            path_dirs = [d for d in (self._runtime_bin(),) if d]
+            autostart.enable(self.s.tool_python, self.home, path_dirs)
 
     def _update_database(self) -> str:
         report = self._cli_json(["migrate", "--json"])
@@ -459,9 +472,6 @@ class Installer:
         return "up to date"
 
     def _start(self) -> str:
-        if self.s.autostart:
-            path_dirs = [d for d in (self._runtime_bin(),) if d]
-            autostart.enable(self.s.tool_python, self.home, path_dirs)
         self._cli(["start", "--detach", "--no-browser"])
         status = self._cli_json(["status", "--json"]) or {}
         if not status.get("ready"):
@@ -504,6 +514,8 @@ class Installer:
             return
         if not (carrier / "synapse" / "installer").is_dir():
             return   # not a Synapse source tree: not ours to remove
+        if legacy.has_data(carrier / "backend" / "data"):
+            return   # somebody's data is in it: it was migrated as an install, or it stays
         shutil.rmtree(carrier, ignore_errors=True)
         self.log.write(f"removed the source tree the installer came in: {carrier}")
 
@@ -637,6 +649,9 @@ class Installer:
 
     def _final_lines(self, started: bool) -> list[str]:
         t = self.term
+        if self.o.method == "npm" and not started:
+            # The npm launcher starts Synapse next, and that prints the link.
+            return []
         if started:
             name = f"Synapse {self.version}" if self.o.upgrade else "Synapse"
             lines = ["", f"  {name} is running {t.g('arrow')} " + t.style(self.s.link, "cyan", "bold")]

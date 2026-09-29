@@ -1,534 +1,85 @@
-# Synapse AI Setup Script for Windows
-# Run with: irm https://raw.githubusercontent.com/synapseorch-ai/synapse-ai/main/setup.ps1 | iex
+# Install or upgrade Synapse (Windows).
+#
+#   irm https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.ps1 | iex
+#
+# This only fetches two things quietly - uv, and the installer that ships with
+# the same release - and hands over to it. The installer draws the steps, asks
+# its questions and ends with the link; everything else goes to
+# %USERPROFILE%\.synapse\logs\install.log.
+#
+# For testing: $env:SYNAPSE_INSTALLER = a local synapse-install.pyz,
+# $env:SYNAPSE_PACKAGE = a local wheel, $env:SYNAPSE_HOME = another home.
+#
+# No `exit` anywhere: under `irm | iex` it would close the user's window.
 
-$ErrorActionPreference = "Stop"
+function Install-Synapse {
+    param([string[]]$Arguments)
 
-function Update-Environment {
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $release = 'https://github.com/synapseorch-ai/synapse-ai/releases/latest/download'
+    $url = if ($env:SYNAPSE_INSTALLER_URL) { $env:SYNAPSE_INSTALLER_URL } else { "$release/synapse-install.pyz" }
+    $uvVersion = '0.11.8'
+    $synapseHome = if ($env:SYNAPSE_HOME) { $env:SYNAPSE_HOME } else { Join-Path $env:USERPROFILE '.synapse' }
+    $runtime = Join-Path $synapseHome 'runtime'
+    $logs = Join-Path $synapseHome 'logs'
+    $log = Join-Path $logs 'install.log'
+    New-Item -ItemType Directory -Force -Path $runtime, $logs | Out-Null
+    Add-Content -Path $log -Value "`n===== $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') setup.ps1 ====="
+
+    # One line while there is nothing to draw yet; the installer's first frame clears it.
+    Write-Host -NoNewline "`n  Getting the Synapse installer..."
+
     try {
-        Write-Host "Refreshing PATH environment variable..." -ForegroundColor Cyan
-        $machinePath = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::Machine)
-        $userPath = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::User)
-        $env:Path = "$machinePath;$userPath"
-    } catch {
-        Write-Host "[WARN] Failed to refresh environment variables automatically." -ForegroundColor Yellow
-    }
-}
-
-# ---------------------------------------------------------------------------
-# Install Git if missing
-# ---------------------------------------------------------------------------
-function Install-Git {
-    Write-Host ""
-    Write-Host "Installing Git..." -ForegroundColor Cyan
-    
-    # Check if winget is available
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host "Installing Git via winget..."
-        winget install --id Git.Git -e --accept-source-agreements
-        Write-Host "[OK] Git installed successfully" -ForegroundColor Green
-        Update-Environment
-    } else {
-        Write-Host "[WARN] winget not found. Please install Git manually:" -ForegroundColor Yellow
-        Write-Host "  https://git-scm.com/download/win"
-        exit 1
-    }
-}
-
-# ---------------------------------------------------------------------------
-# Install Node.js if missing or too old
-# ---------------------------------------------------------------------------
-function Install-NodeJS {
-    Write-Host ""
-    Write-Host "Installing Node.js 20+ (LTS)..." -ForegroundColor Cyan
-    
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host "Installing Node.js via winget..."
-        winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements
-        Write-Host "[OK] Node.js installed (via winget). Refreshing PATH..." -ForegroundColor Green
-        # Give the installer a moment to finish writing files
-        Start-Sleep -Seconds 3
-        Update-Environment
-        # Force-add all known Node.js install locations to current session PATH
-        $knownNodeDirs = @(
-            "$env:ProgramFiles\nodejs",
-            "$env:ProgramFiles(x86)\nodejs",
-            "$env:LocalAppData\Programs\nodejs",
-            "$env:AppData\npm"
-        )
-        foreach ($dir in $knownNodeDirs) {
-            if ((Test-Path $dir) -and ($env:Path -notlike "*$dir*")) {
-                Write-Host "[INFO] Prepending $dir to session PATH" -ForegroundColor Cyan
-                $env:Path = "$dir;$env:Path"
-            }
-        }
-    } else {
-        Write-Host "[WARN] winget not found. Please install Node.js manually (v20.9.0 or higher):" -ForegroundColor Yellow
-        Write-Host "  https://nodejs.org/"
-        throw "winget not available for Node.js installation."
-    }
-}
-
-function Find-NodeExe {
-    # Returns the full path to node.exe if found in known locations, or $null
-    $candidates = @(
-        "$env:ProgramFiles\nodejs\node.exe",
-        "$env:ProgramFiles(x86)\nodejs\node.exe",
-        "$env:LocalAppData\Programs\nodejs\node.exe"
-    )
-    foreach ($p in $candidates) {
-        if (Test-Path $p) { return $p }
-    }
-    # Also try resolving via PATH (may be cached, so use Get-Command -All)
-    try {
-        $cmds = Get-Command node -All -ErrorAction SilentlyContinue
-        foreach ($c in $cmds) {
-            if ($c.Source -and (Test-Path $c.Source)) { return $c.Source }
-        }
-    } catch {}
-    return $null
-}
-
-function Test-NodeVersion {
-    try {
-        # Always probe known paths directly to bypass Get-Command caching
-        $nodeExe = Find-NodeExe
-        if ($nodeExe) {
-            $nodeDir = [System.IO.Path]::GetDirectoryName($nodeExe)
-            if ($env:Path -notlike "*$nodeDir*") {
-                Write-Host "[INFO] Adding $nodeDir to current session PATH" -ForegroundColor Cyan
-                $env:Path = "$nodeDir;$env:Path"
-            }
-        } else {
-            return $false
-        }
-
-        $verStr = & $nodeExe -v 2>$null
-        if (-not $verStr) { return $false }
-        # Remove 'v' prefix if present
-        if ($verStr.TrimStart().StartsWith("v")) {
-            $verStr = $verStr.TrimStart().SubString(1)
-        }
-        $version = [version]$verStr.Trim()
-        # Check for 20.9.0 or higher
-        return ($version -ge [version]"20.9.0")
-    } catch {
-        return $false
-    }
-}
-
-# ---------------------------------------------------------------------------
-# Install Python if missing
-# ---------------------------------------------------------------------------
-function Install-Python {
-    Write-Host ""
-    Write-Host "Installing Python 3.11-3.14..." -ForegroundColor Cyan
-
-    # Check if winget is available
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Host "Installing Python 3.13 via winget..."
-        winget install --id Python.Python.3.13 -e --accept-source-agreements
-        Write-Host "[OK] Python installed successfully" -ForegroundColor Green
-        Update-Environment
-    } else {
-        Write-Host "[WARN] winget not found. Please install Python manually:" -ForegroundColor Yellow
-        Write-Host "  https://www.python.org/downloads/"
-        Write-Host "  CRITICAL: Check 'Add Python to PATH' during installation"
-        exit 1
-    }
-}
-
-function Test-PythonVersion {
-    param([string]$cmd)
-    try {
-        # We use double quotes for the -c argument as it's more reliable on Windows.
-        # Python will exit with 0 if 3.11 <= version < 3.15, and 1 otherwise.
-        # The upper bound keeps us off brand-new releases that lack prebuilt
-        # wheels for native deps, which would force a source build and fail
-        # without MSVC build tools. 3.14 was verified to resolve wheel-only on
-        # Windows for the full dependency tree, so it is inside the range.
-        # Must stay in sync with requires-python in pyproject.toml.
-        $check = "import sys; sys.exit(0 if (3,11) <= sys.version_info[:2] < (3,15) else 1)"
-        
-        # Use Start-Process or direct execution with 2>$null
-        # We check $LASTEXITCODE to determine compatibility
-        $null = & {
+        # uv: one already on this computer, or a private copy that edits nothing on PATH.
+        $uv = (Get-Command uv -ErrorAction SilentlyContinue).Source
+        $private = Join-Path $runtime 'uv\uv.exe'
+        if (-not $uv -and (Test-Path $private)) { $uv = $private }
+        if (-not $uv) {
+            $installer = Join-Path $runtime 'uv-install.ps1'
+            Invoke-WebRequest -UseBasicParsing -Uri "https://astral.sh/uv/$uvVersion/install.ps1" -OutFile $installer
+            $env:UV_UNMANAGED_INSTALL = Join-Path $runtime 'uv'
+            # Native programs write progress to stderr; under 'Stop', Windows
+            # PowerShell 5.1 turns that into an error. Their exit code decides.
             $ErrorActionPreference = 'Continue'
-            if ($cmd -match " ") {
-                # Handle cases like "py -3.11"
-                $parts = $cmd -split " "
-                & $parts[0] $parts[1..($parts.Length-1)] -c "$check" 2>$null
-            } else {
-                & $cmd -c "$check" 2>$null
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $installer *>> $log
+            $ErrorActionPreference = 'Stop'
+            Remove-Item Env:\UV_UNMANAGED_INSTALL
+            Remove-Item $installer -ErrorAction SilentlyContinue
+            if (-not (Test-Path $private)) { throw "Could not install uv (details in $log)." }
+            $uv = $private
+        }
+
+        # The installer: this release's, checked against its published checksum.
+        $pyz = $env:SYNAPSE_INSTALLER
+        if (-not $pyz) {
+            $pyz = Join-Path $runtime 'synapse-install.pyz'
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$pyz.part"
+            $expected = ((Invoke-WebRequest -UseBasicParsing -Uri "$url.sha256").Content -split '\s+')[0]
+            $actual = (Get-FileHash -Algorithm SHA256 -Path "$pyz.part").Hash
+            if ($actual -ne $expected.ToUpper()) {
+                Remove-Item "$pyz.part"
+                throw 'The installer did not match its published checksum. Nothing was installed.'
             }
+            Move-Item -Force "$pyz.part" $pyz
         }
-        return ($LASTEXITCODE -eq 0)
-    } catch {
-        return $false
+
+        $ErrorActionPreference = 'Continue'
+        & $uv python install 3.12 --quiet *>> $log
+        $ErrorActionPreference = 'Stop'
+        if ($LASTEXITCODE -ne 0) { throw "uv could not get Python (details in $log)." }
     }
+    catch {
+        Write-Host "`r                                        "
+        Write-Host "  $($_.Exception.Message)"
+        Write-Host ''
+        return 1
+    }
+
+    # Hand over. The installer reads answers from the console itself.
+    $ErrorActionPreference = 'Continue'
+    & $uv run --no-project --quiet --python 3.12 python $pyz --uv $uv @Arguments
+    return $LASTEXITCODE
 }
 
-function Get-PythonPath {
-    # 1. Check py launcher (most reliable on Windows)
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        if (Test-PythonVersion "py -3.11") { return "py -3.11" }
-        if (Test-PythonVersion "py -3") { return "py -3" }
-    }
-
-    # 2. Check candidates in PATH
-    $candidates = @("python3.14", "python3.13", "python3.12", "python3.11", "python", "python3")
-    foreach ($cmd in $candidates) {
-        if (Get-Command $cmd -ErrorAction SilentlyContinue) {
-            # Skip Windows Store placeholders
-            if ((Get-Command $cmd).Source -match "WindowsApps") { continue }
-            if (Test-PythonVersion $cmd) { return $cmd }
-        }
-    }
-
-    # 3. Check Registry
-    $regPaths = @(
-        "HKCU:\Software\Python\PythonCore",
-        "HKLM:\SOFTWARE\Python\PythonCore"
-    )
-    foreach ($reg in $regPaths) {
-        if (Test-Path $reg) {
-            $versions = Get-ChildItem $reg | Select-Object -ExpandProperty PSChildName
-            foreach ($v in $versions) {
-                try {
-                    $installPath = Get-ItemPropertyValue "$reg\$v\InstallPath" -Name "(Default)" -ErrorAction SilentlyContinue
-                    $exe = "$installPath\python.exe"
-                    if ($installPath -and (Test-Path $exe)) {
-                        if (Test-PythonVersion "$exe") { return "$exe" }
-                    }
-                } catch {}
-            }
-        }
-    }
-
-    # 4. Check common directories
-    $dirCandidates = @(
-        "$env:SystemDrive\Python311\python.exe",
-        "$env:ProgramFiles\Python311\python.exe",
-        "$env:LocalAppData\Programs\Python\Python311\python.exe"
-    )
-    foreach ($path in $dirCandidates) {
-        if (Test-Path $path) {
-            if (Test-PythonVersion "$path") { return "$path" }
-        }
-    }
-
-    return $null
-}
-
-# ---------------------------------------------------------------------------
-# Install uv (and uvx) if missing
-# ---------------------------------------------------------------------------
-function Install-Uv {
-    Write-Host ""
-    Write-Host "Installing uv (Python package manager)..." -ForegroundColor Cyan
-
-    # Try winget first
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        try {
-            winget install --id astral-sh.uv -e --accept-source-agreements 2>$null
-            Write-Host "[OK] uv installed via winget." -ForegroundColor Green
-            Update-Environment
-            return
-        } catch {
-            Write-Host "[WARN] winget install of uv failed, trying pip..." -ForegroundColor Yellow
-        }
-    }
-
-    # Fallback: install via pip into user site
-    if ($global:PYTHON_CMD) {
-        try {
-            if ($global:PYTHON_CMD -match " ") {
-                $parts = $global:PYTHON_CMD -split " "
-                & $parts[0] $parts[1..($parts.Length-1)] -m pip install --user uv 2>$null
-            } else {
-                & $global:PYTHON_CMD -m pip install --user uv 2>$null
-            }
-            Write-Host "[OK] uv installed via pip." -ForegroundColor Green
-            # Add user Scripts dir to PATH for this session
-            $userScripts = & $global:PYTHON_CMD -c "import site, os; print(os.path.join(site.getusersitepackages(), '..', 'Scripts'))" 2>$null
-            if ($userScripts -and (Test-Path $userScripts)) {
-                $env:Path = "$userScripts;$env:Path"
-            }
-            return
-        } catch {
-            Write-Host "[WARN] pip install uv failed." -ForegroundColor Yellow
-        }
-    }
-
-    Write-Host "[WARN] Could not install uv automatically." -ForegroundColor Yellow
-    Write-Host "  Install manually: https://github.com/astral-sh/uv or 'pip install uv'" -ForegroundColor Gray
-}
-
-function Test-Uv {
-    # Check common locations where uv may be installed
-    $uvLocations = @(
-        "$env:USERPROFILE\.local\bin\uv.exe",
-        "$env:USERPROFILE\.cargo\bin\uv.exe",
-        "$env:APPDATA\Python\Scripts\uv.exe"
-    )
-    
-    $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
-    if ($uvCmd) {
-        $uvLocations += $uvCmd.Source
-    }
-    foreach ($loc in $uvLocations) {
-        if ($loc -and (Test-Path $loc)) {
-            if ($env:Path -notlike "*$(Split-Path $loc)*") {
-                $env:Path = "$(Split-Path $loc);$env:Path"
-            }
-            return $true
-        }
-    }
-    return $false
-}
-
-function Invoke-UvCheck {
-    # Refresh PATH to pick up newly installed uv
-    Update-Environment
-    if (-not (Test-Uv)) {
-        Write-Host "[WARN] uv/uvx not found. Attempting to install..." -ForegroundColor Yellow
-        Install-Uv
-    }
-    if (Test-Uv) {
-        $uvVer = try { (uv --version 2>$null).Trim() } catch { "unknown" }
-        Write-Host "[OK] $uvVer found (uvx available)" -ForegroundColor Green
-    } else {
-        Write-Host "[WARN] uv/uvx not available. Install from https://astral.sh/uv" -ForegroundColor Yellow
-    }
-}
-
-# ---------------------------------------------------------------------------
-# Check and Install Requirements
-# ---------------------------------------------------------------------------
-function Invoke-PrerequisitesCheck {
-    # Check python
-    $global:PYTHON_CMD = Get-PythonPath
-
-    if (-not $global:PYTHON_CMD) {
-        Write-Host "[WARN] A supported Python (3.11-3.14) could not be found." -ForegroundColor Yellow
-        Write-Host "Attempting to install Python 3.13..."
-        Install-Python
-
-        $global:PYTHON_CMD = Get-PythonPath
-        if (-not $global:PYTHON_CMD) {
-        throw "Failed to install a supported Python automatically. Please manually install Python 3.11-3.14 from https://www.python.org/downloads/"
-    }
-}
-
-Write-Host "[OK] Python found ($global:PYTHON_CMD)" -ForegroundColor Green
-
-    # Check git
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Write-Host "[WARN] git not found." -ForegroundColor Yellow
-        Write-Host "Attempting to install Git..."
-        Install-Git
-        
-        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-            throw "Failed to install Git automatically. Please manually install Git and add it to your PATH."
-        }
-    }
-
-    Write-Host "[OK] git found" -ForegroundColor Green
-
-    # Check node
-    if (-not (Test-NodeVersion)) {
-        Write-Host "[WARN] Node.js 20.9.0+ not found." -ForegroundColor Yellow
-        Install-NodeJS
-        
-        if (-not (Test-NodeVersion)) {
-            throw "Failed to install Node.js 20.9.0+ automatically. Please manually install Node.js (v20.9.0 or higher)."
-        }
-    }
-
-    $nodeVer = try { (node -v).Trim() } catch { "Unknown" }
-    Write-Host "[OK] Node.js found ($nodeVer)" -ForegroundColor Green
-
-    # Check uv / uvx
-    Invoke-UvCheck
-}
-
-# ---------------------------------------------------------------------------
-# Instructions for manual installs
-# ---------------------------------------------------------------------------
-function Show-PostgresInstructions {
-    Write-Host ""
-    Write-Host "--------------------------------------------------------" -ForegroundColor Yellow
-    Write-Host "   PostgreSQL Installation Instructions for Windows" -ForegroundColor Yellow
-    Write-Host "--------------------------------------------------------" -ForegroundColor Yellow
-    Write-Host "1. Download the installer from:"
-    Write-Host "   https://www.postgresql.org/download/windows/"
-    Write-Host "2. Run the installer and follow the on-screen prompts."
-    Write-Host "3. IMPORTANT: Add the PostgreSQL bin directory to your System PATH:"
-    Write-Host "   - Search for 'Edit the system environment variables' in the Start menu"
-    Write-Host "   - Click 'Environment Variables'"
-    Write-Host "   - Under 'System variables', find 'Path' and click 'Edit'"
-    Write-Host "   - Click 'New' and add the bin path (e.g. C:\Program Files\PostgreSQL\17\bin)"
-    Write-Host "4. Restart your terminal so the updated PATH takes effect."
-    Write-Host "5. Verify the installation by running: psql --version"
-    Write-Host "   Make sure it prints a version number before continuing."
-    Write-Host "--------------------------------------------------------" -ForegroundColor Yellow
-    Write-Host ""
-}
-
-# ---------------------------------------------------------------------------
-# Main Setup Flow
-# ---------------------------------------------------------------------------
-function Start-SynapseSetup {
-    Write-Host ""
-    Write-Host "========================================================" -ForegroundColor Cyan
-    Write-Host "   Synapse AI - Setup" -ForegroundColor Cyan
-    Write-Host "========================================================" -ForegroundColor Cyan
-    Write-Host ""
-
-    # Fixed install location — always the same regardless of where the user runs this script
-    $InstallDir  = "$env:LOCALAPPDATA\Programs\SynapseAI"
-    $MarkerFile  = "$InstallDir\.installed"
-
-    # -----------------------------------------------------------------------
-    # Already-installed check
-    # -----------------------------------------------------------------------
-    if (Test-Path $MarkerFile) {
-        Write-Host ""
-        Write-Host "======================================================" -ForegroundColor Green
-        Write-Host "   Synapse AI is already installed!" -ForegroundColor Green
-        Write-Host "======================================================" -ForegroundColor Green
-        Write-Host ""
-        Write-Host "   Location: $InstallDir" -ForegroundColor Cyan
-        Write-Host ""
-
-        # Delegate to 'synapse upgrade' — it handles stop, download, rebuild
-        Write-Host "==> Running synapse upgrade..." -ForegroundColor Cyan
-        $SynapseBat = Join-Path $InstallDir "bin\synapse.bat"
-        if (Test-Path $SynapseBat) {
-            & $SynapseBat upgrade
-        } else {
-            throw "synapse.bat not found at $SynapseBat — installation may be corrupted."
-        }
-
-        Write-Host ""
-        Write-Host "======================================================" -ForegroundColor Green
-        Write-Host "   Synapse AI has been updated!" -ForegroundColor Green
-        Write-Host "======================================================" -ForegroundColor Green
-        Write-Host ""
-        Write-Host "To start Synapse:  synapse start" -ForegroundColor Cyan
-        Write-Host ""
-        return
-    }
-
-    Invoke-PrerequisitesCheck
-
-    # Download latest release tarball from GitHub (no git required)
-    Write-Host ""
-    Write-Host "Fetching latest Synapse AI release..." -ForegroundColor Cyan
-    try {
-        $release = Invoke-RestMethod `
-            "https://api.github.com/repos/synapseorch-ai/synapse-ai/releases/latest" `
-            -Headers @{"User-Agent" = "synapse-install/1.0"} `
-            -ErrorAction Stop
-        $tarballUrl = $release.tarball_url
-    } catch {
-        Write-Host "[WARN] Could not reach GitHub API: $($_.Exception.Message)" -ForegroundColor Yellow
-        $tarballUrl = $null
-    }
-
-    # Create install dir
-    $ParentDir = Split-Path $InstallDir -Parent
-    if (-not (Test-Path $ParentDir)) {
-        New-Item -ItemType Directory -Path $ParentDir -Force | Out-Null
-    }
-    if (-not (Test-Path $InstallDir)) {
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    }
-
-    if ($tarballUrl) {
-        Write-Host "Downloading release..." -ForegroundColor Cyan
-        $tmpTar = [System.IO.Path]::GetTempFileName() + ".tar.gz"
-        try {
-            Invoke-WebRequest $tarballUrl -OutFile $tmpTar -UseBasicParsing -ErrorAction Stop
-            # tar.exe ships with Windows 10 1803+
-            $tarOutput = tar -xzf $tmpTar --strip-components=1 -C $InstallDir 2>&1
-            Remove-Item $tmpTar -Force -ErrorAction SilentlyContinue
-            Write-Host "[OK] Release downloaded and extracted." -ForegroundColor Green
-        } catch {
-            Remove-Item $tmpTar -Force -ErrorAction SilentlyContinue
-            Write-Host "[WARN] Download failed: $($_.Exception.Message)" -ForegroundColor Yellow
-            $tarballUrl = $null
-        }
-    }
-
-    if (-not $tarballUrl) {
-        # Fallback: git clone
-        Write-Host "[INFO] Falling back to git clone..." -ForegroundColor Cyan
-        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-            Write-Host "[WARN] git not found. Installing Git first..." -ForegroundColor Yellow
-            Install-Git
-        }
-        $oldErrPref = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        git clone https://github.com/synapseorch-ai/synapse-ai.git $InstallDir
-        $ErrorActionPreference = $oldErrPref
-    }
-
-    if (Test-Path $InstallDir) {
-        Write-Host ""
-        $SetupScript = Join-Path $InstallDir "setup.py"
-
-        # Handle cases where Python command has arguments (e.g. "py -3.11")
-        if ($global:PYTHON_CMD -match " ") {
-            $parts = $global:PYTHON_CMD -split " "
-            & $parts[0] $parts[1..($parts.Length-1)] $SetupScript
-        } else {
-            & $global:PYTHON_CMD $SetupScript
-        }
-
-        # Add the synapse bin dir to the PowerShell profile for future sessions
-        $BinDir      = Join-Path $InstallDir "bin"
-        $ProfileFile = $PROFILE.CurrentUserAllHosts
-        if (-not (Test-Path $ProfileFile)) {
-            New-Item -ItemType File -Path $ProfileFile -Force | Out-Null
-        }
-        $ProfileContent = Get-Content $ProfileFile -Raw -ErrorAction SilentlyContinue
-        if ($ProfileContent -notlike "*SynapseAI*") {
-            Add-Content -Path $ProfileFile -Value "`n# Synapse AI`n`$env:Path = `"$BinDir;`$env:Path`""
-            Write-Host "[OK] Added Synapse to PowerShell profile ($ProfileFile)" -ForegroundColor Green
-        }
-
-        Write-Host ""
-        Write-Host "========================================================" -ForegroundColor Green
-        Write-Host "   Synapse AI setup complete!" -ForegroundColor Green
-        Write-Host "   To start Synapse:  synapse start" -ForegroundColor Cyan
-        Write-Host "   Installed at:      $InstallDir" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "   To upgrade in the future:  synapse upgrade" -ForegroundColor Cyan
-        Write-Host "   (pip users: pip install --upgrade synapse-orch-ai)" -ForegroundColor Gray
-        Write-Host "   (npm users: npm update -g synapse-orch-ai)" -ForegroundColor Gray
-        Write-Host "========================================================" -ForegroundColor Green
-    } else {
-        throw "Could not find installation directory: $InstallDir"
-    }
-}
-
-# Run the setup
-try {
-    Start-SynapseSetup
-} catch {
-    Write-Host ""
-    Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
-    Write-Host "   CRITICAL ERROR OCCURRED" -ForegroundColor Red
-    Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "$($_.Exception.Message)"
-    Write-Host ""
-    if ($_.ScriptStackTrace) {
-        Write-Host "Stack Trace:" -ForegroundColor Gray
-        Write-Host $_.ScriptStackTrace -ForegroundColor Gray
-    }
-    Write-Host ""
-    Write-Host "The setup script has failed. Please capture the error above."
-    $null = Read-Host "Press Enter to continue..."
-    return
-}
+$synapseExit = Install-Synapse -Arguments $args

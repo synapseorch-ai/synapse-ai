@@ -139,11 +139,16 @@ def _script_install(root: Path) -> OldInstall | None:
     if not (root / "backend").is_dir():
         return None
     version = _version_of(root)
-    # The marker a finished v1.x install wrote, or a v1.x tree without one (an
-    # install that stopped half way). A 2.x source tree with neither is only
-    # the carrier an old setup.sh unpacked to run setup.py, not an install.
-    if not ((root / ".installed").exists() or version.startswith("1.")):
+    # The marker a finished v1.x install wrote, a v1.x tree without one (an
+    # install that stopped half way), or data in its folder whatever its code
+    # says — an old setup.sh unpacks the newest source over an unmarked
+    # install before running setup.py. A 2.x tree with none of those is only
+    # that carrier, not an install.
+    has_old_data = has_data(root / "backend" / "data")
+    if not ((root / ".installed").exists() or version.startswith("1.") or has_old_data):
         return None
+    if not version.startswith("1."):
+        version = "1.x"
     return OldInstall("script", root, version, root / "bin")
 
 

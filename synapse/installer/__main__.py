@@ -20,7 +20,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--legacy-root", default="", help=argparse.SUPPRESS)
     parser.add_argument("--carrier", default="", help=argparse.SUPPRESS)
     parser.add_argument("--home", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--wait-pid", type=int, default=0, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+
+    if args.wait_pid:
+        # `synapse upgrade` on Windows: the process that started us runs from
+        # the files this upgrade replaces, and Windows will not replace them
+        # while it lives.
+        import time
+
+        from .home import _alive
+
+        deadline = time.monotonic() + 120
+        while _alive(args.wait_pid) and time.monotonic() < deadline:
+            time.sleep(0.5)
 
     from .flow import Installer, Options
 
