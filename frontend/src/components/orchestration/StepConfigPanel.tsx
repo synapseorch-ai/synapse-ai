@@ -93,6 +93,10 @@ export function StepConfigPanel({
     };
     const otherSteps = allStepIds.filter((s) => s.id !== step.id);
     const meta = STEP_TYPE_META[step.type];
+    // An Agent step on a workflow agent runs that whole workflow, and waits on
+    // the workflow's own timeout unless it is given one of its own (F291).
+    const runsWorkflow = step.type === 'agent'
+        && agents.find((a) => a.id === step.agent_id)?.type === 'orchestrator';
 
     // ── Resizable width, persisted ─────────────────────────────────────────
     const [persistedWidth, setPersistedWidth] = usePersisted<string>(
@@ -294,7 +298,10 @@ export function StepConfigPanel({
                                         <Input size="sm" type="number" value={step.max_turns ?? ''} placeholder="15"
                                             onChange={(e) => update({ max_turns: intOrUndefined(e.target.value) })} />
                                     </Field>
-                                    <Field label="Timeout (s)">
+                                    <Field
+                                        label="Timeout (s)"
+                                        hint={runsWorkflow ? '300 or blank: waits on the workflow\u2019s own timeout.' : undefined}
+                                    >
                                         <Input size="sm" type="number" value={step.timeout_seconds ?? ''} placeholder="300"
                                             onChange={(e) => update({ timeout_seconds: intOrUndefined(e.target.value) })} />
                                     </Field>
