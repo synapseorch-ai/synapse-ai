@@ -126,17 +126,24 @@ class ScheduleLogger:
     # -- Core write -----------------------------------------------------
 
     def _write(self, text: str):
-        """Sync write -- only call from a thread (via _write_bg) or startup."""
+        """Sync write -- only call from the writer thread (via _write_bg) or startup."""
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(text)
 
     def _write_bg(self, text: str):
-        """Fire-and-forget write that offloads to a thread so the event loop isn't blocked."""
+        """Fire-and-forget write, off the event loop, in the order it was asked for.
+
+        Through the journal's one writer thread, as the orchestration logger
+        writes: the default executor has several workers, and a slow line
+        landed after a later one — "AGENT RESPONSE" after the FINISHED banner.
+        """
+        from core.orchestration.journal import _executor
         try:
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, self._write, text)
+            asyncio.get_running_loop()
         except RuntimeError:
             self._write(text)
+            return
+        _executor().submit(self._write, text)
 
     # -- Run lifecycle ---------------------------------------------------
 
@@ -157,11 +164,13 @@ class ScheduleLogger:
         Writes a final sync marker to ensure the run_end text (queued via executor)
         has been flushed before uploading.
         """
-        # Sync write acts as a barrier — the executor pool is FIFO so this waits
-        # for any pending _write_bg tasks to drain (they run in the same default
-        # thread pool as this blocking call).
+        # Wait for every line already handed to the writer thread: it runs them
+        # in order, so a no-op queued behind them finishes after the last. The
+        # empty write this used to be ran on the caller's thread and waited for
+        # nothing, so the upload below could miss the last lines.
+        from core.orchestration.journal import _executor
         try:
-            self._write("")  # zero-length write, flushes preceding executor tasks
+            _executor().submit(lambda: None).result(timeout=30)
         except Exception:
             pass
         try:
