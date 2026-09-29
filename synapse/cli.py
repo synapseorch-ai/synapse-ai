@@ -94,12 +94,98 @@ def _system_python() -> str:
 
     return sys.executable
 
+def _is_packaged() -> bool:
+    """Running from a directory a package manager owns (pip, uv, npm's venv).
+
+    Such a directory is replaced on every upgrade, so nothing this install
+    writes may live under it — see `synapse_home()`. A checkout is never
+    packaged, even one installed editable into a venv.
+    """
+    if (ROOT_DIR / ".git").exists():
+        return False
+    return any(part in ("site-packages", "dist-packages") for part in ROOT_DIR.parts)
+
+
+# A packaged install keeps everything it writes under SYNAPSE_HOME (~/.synapse):
+# the database, the .env holding its generated secrets, logs and PID files. Set
+# here, before anything reads a path, so the backend and every process it starts
+# inherit the same answer (backend/core/paths.py reads it too). A checkout sets
+# nothing and keeps backend/var and the root .env.
+if _is_packaged() and not os.environ.get("SYNAPSE_HOME", "").strip():
+    os.environ["SYNAPSE_HOME"] = str(Path.home() / ".synapse")
+
+
+def synapse_home() -> "Path | None":
+    """This install's home, or None for a checkout. Read at call time."""
+    home = os.environ.get("SYNAPSE_HOME", "").strip()
+    return Path(home).expanduser() if home else None
+
+
+def _env_file() -> Path:
+    """The .env this install's generated secrets are kept in."""
+    home = synapse_home()
+    return home / ".env" if home else ROOT_DIR / ".env"
+
+
+def _var_dir() -> Path:
+    """Where the database, blobs, run and log files live when nothing overrides it."""
+    home = synapse_home()
+    return home / "var" if home else BACKEND_DIR / "var"
+
+
+def _run_dir() -> Path:
+    """The two PID files `synapse stop` and `synapse status` read.
+
+    Per install: a checkout's are under its own backend/var, so `synapse stop`
+    in a checkout can never stop a packaged install on the same machine.
+    """
+    home = synapse_home()
+    return home / "run" if home else BACKEND_DIR / "var" / "run"
+
+
+def _log_dir() -> Path:
+    """Where the backend and frontend write their output (`synapse logs`)."""
+    home = synapse_home()
+    return home / "logs" if home else BACKEND_DIR / "var" / "logs"
+
+
+def _runtime_dir() -> "Path | None":
+    """A private Node.js / uv the installer fetched, when the system had none."""
+    home = synapse_home()
+    return home / "runtime" if home else None
+
+
+def _ensure_runtime_on_path() -> None:
+    """Put the installer's private Node.js and uv first on PATH.
+
+    Done once, here, so the CLI, the backend, the frontend server and every
+    MCP server they start (`npx`, `uvx`) all find the same ones.
+    """
+    runtime = _runtime_dir()
+    if runtime is None:
+        return
+    dirs = []
+    node = runtime / "node"
+    if node.is_dir():
+        dirs.append(node if IS_WIN else node / "bin")
+    uv = runtime / "uv"
+    if uv.is_dir():
+        dirs.append(uv)
+    current = os.environ.get("PATH", "")
+    for d in reversed(dirs):
+        if str(d) not in current.split(os.pathsep):
+            current = str(d) + os.pathsep + current
+    os.environ["PATH"] = current
+
+
+_ensure_runtime_on_path()
+
 # ---------------------------------------------------------------------------
-# Load .env from the project root BEFORE reading port defaults so that values
-# set by `synapse setup` (or hand-edited .env) are honoured without the user
-# having to export them manually in every shell session.
+# Load this install's .env BEFORE reading port defaults so that values set by
+# `synapse setup` (or a hand-edited .env) are honoured without the user having
+# to export them manually in every shell session.
 # ---------------------------------------------------------------------------
-_ENV_FILE = ROOT_DIR / ".env"
+_ENV_FILE = _env_file()
 
 def _load_dotenv(path: Path):
     """Minimal .env loader -- only sets vars that are NOT already in the environment."""
@@ -122,17 +208,6 @@ def _load_dotenv(path: Path):
 
 _load_dotenv(_ENV_FILE)
 
-# Where the CLI keeps its own process bookkeeping. Not user data — the
-# database and the vault live under `backend/var/` — just the two PID files
-# `synapse stop` and `synapse status` need to find the processes `synapse
-# start` launched. Per user rather than per checkout, which is what it always
-# effectively was.
-RUN_DIR = Path.home() / ".synapse" / "run"
-
-# Where a running install keeps its database, vault, logs and caches. Named
-# here only so `synapse uninstall` can offer to remove it.
-STATE_DIR = BACKEND_DIR / "var"
-
 DEFAULT_BACKEND_PORT = int(os.getenv("SYNAPSE_BACKEND_PORT", "8765"))
 DEFAULT_FRONTEND_PORT = int(os.getenv("SYNAPSE_FRONTEND_PORT", "3000"))
 
@@ -141,9 +216,9 @@ DEFAULT_FRONTEND_PORT = int(os.getenv("SYNAPSE_FRONTEND_PORT", "3000"))
 BACKEND_PORT = DEFAULT_BACKEND_PORT
 FRONTEND_PORT = DEFAULT_FRONTEND_PORT
 
-# PID files
-BACKEND_PID_FILE = RUN_DIR / "backend.pid"
-FRONTEND_PID_FILE = RUN_DIR / "frontend.pid"
+
+def _pid_file(name: str) -> Path:
+    return _run_dir() / f"{name}.pid"
 
 
 def _find_node_exe_win():
@@ -244,10 +319,10 @@ def check_prerequisites():
                     )
             except Exception:
                 pass  # version check failed, proceed and let Node report its own errors
-        if shutil.which("npm") is None:
+        # Only a checkout runs `npm start`; a packaged install runs the bundled
+        # server with node alone.
+        if not _BUNDLED_FRONTEND.exists() and shutil.which("npm") is None:
             errors.append(f"npm not found -- install Node.js {'.'.join(str(x) for x in MIN_NODE)}+ from https://nodejs.org/")
-    if shutil.which("ollama") is None:
-        print("Warning: ollama not found. Local models won't work; cloud API models (Anthropic, OpenAI, Gemini) still work.")
     if errors:
         for e in errors:
             print(f"Error: {e}")
@@ -262,7 +337,7 @@ def ensure_run_dir():
     engine expected to find. The engine creates its own schema on first use
     now, so what is left is a directory for two PID files.
     """
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    _run_dir().mkdir(parents=True, exist_ok=True)
 
 
 def _ensure_playwright_browsers():
@@ -326,24 +401,83 @@ def _ensure_playwright_browsers():
         print(f"\n  Warning: Failed to save playwright_browsers_path to settings: {e}")
 
 
-def start_backend(detach: bool = False, port: int | None = None, profile: bool = False):
+#: A service log is rotated at start once it passes this size; three old ones kept.
+_LOG_MAX_BYTES = 10 * 1024 * 1024
+_LOG_KEEP = 3
+
+
+def _log_path(name: str) -> Path:
+    return _log_dir() / f"{name}.log"
+
+
+def _rotate_log(path: Path) -> None:
+    """`backend.log` → `backend.log.1` → … once it is over the size limit.
+
+    Best effort: on Windows a log still held open by a running process cannot
+    be renamed, and a start is not the place to fail over that.
+    """
+    try:
+        if not path.exists() or path.stat().st_size <= _LOG_MAX_BYTES:
+            return
+        for i in range(_LOG_KEEP - 1, 0, -1):
+            older = path.with_name(f"{path.name}.{i}")
+            if older.exists():
+                older.replace(path.with_name(f"{path.name}.{i + 1}"))
+        path.replace(path.with_name(f"{path.name}.1"))
+    except OSError:
+        pass
+
+
+def _spawn_kwargs(detach: bool, verbose: bool, log_name: str) -> dict:
+    """How a service is started: its own session when detached, its output in a log.
+
+    With `verbose` the output goes to this terminal, as it always used to.
+    Otherwise it goes to `<logs>/<name>.log` — the terminal is the user's, and a
+    running server's request log is not something they asked to watch.
+    """
+    kwargs: dict = {}
+    if detach:
+        if os.name == "posix":
+            kwargs["start_new_session"] = True
+        else:
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP
+            if not verbose:
+                flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            kwargs["creationflags"] = flags
+    if not verbose:
+        path = _log_path(log_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log(path)
+        log = open(path, "ab", buffering=0)
+        log.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} synapse start =====\n".encode())
+        kwargs.update(stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    return kwargs
+
+
+def _popen(cmd: list, cwd: Path, env: dict, kwargs: dict) -> subprocess.Popen:
+    """Popen, then drop this process's copy of the log handle the child now owns."""
+    try:
+        return subprocess.Popen(cmd, cwd=str(cwd), env=env, **kwargs)
+    finally:
+        log = kwargs.get("stdout")
+        if log is not None and hasattr(log, "close"):
+            log.close()
+
+
+def start_backend(detach: bool = False, port: int | None = None, profile: bool = False,
+                  verbose: bool = False):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(BACKEND_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+    # A log file is block-buffered otherwise, and a crash would lose the lines
+    # that explain it.
+    env["PYTHONUNBUFFERED"] = "1"
     if port is not None:
         env["SYNAPSE_BACKEND_PORT"] = str(port)
     if profile:
         env["SYNAPSE_PROFILING"] = "true"
-    kwargs = {}
-    if detach:
-        if os.name == "posix":
-            kwargs["preexec_fn"] = os.setsid
-        else:
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    return subprocess.Popen(
+    return _popen(
         [sys.executable, str(BACKEND_DIR / "main.py")],
-        cwd=str(BACKEND_DIR),
-        env=env,
-        **kwargs,
+        BACKEND_DIR, env, _spawn_kwargs(detach, verbose, "backend"),
     )
 
 
@@ -372,7 +506,8 @@ def _sync_bundled_frontend(verbose: bool = True) -> bool:
     return True
 
 
-def start_frontend(detach: bool = False, port: int | None = None, backend_port: int | None = None):
+def start_frontend(detach: bool = False, port: int | None = None, backend_port: int | None = None,
+                   verbose: bool = False):
     _backend_port = backend_port if backend_port is not None else DEFAULT_BACKEND_PORT
     _frontend_port = port if port is not None else DEFAULT_FRONTEND_PORT
     env = os.environ.copy()
@@ -380,12 +515,6 @@ def start_frontend(detach: bool = False, port: int | None = None, backend_port: 
     env["NEXT_PUBLIC_BACKEND_PORT"] = str(_backend_port)
     env["SYNAPSE_FRONTEND_PORT"] = str(_frontend_port)
     env["SYNAPSE_BACKEND_PORT"] = str(_backend_port)
-    kwargs = {}
-    if detach:
-        if os.name == "posix":
-            kwargs["preexec_fn"] = os.setsid
-        else:
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 
     # Pip-installed package: frontend is pre-built standalone at synapse/_frontend/
     if _BUNDLED_FRONTEND.exists():
@@ -404,7 +533,7 @@ def start_frontend(detach: bool = False, port: int | None = None, backend_port: 
         server_js = _BUNDLED_FRONTEND / "server.js"
         if not server_js.exists():
             print(f"Error: bundled frontend server not found at {server_js}")
-            print("Try reinstalling: pip install --upgrade synapse-ai")
+            print("Try reinstalling: pip install --upgrade synapse-orch-ai")
             sys.exit(1)
         node = shutil.which("node")
         if not node:
@@ -413,12 +542,8 @@ def start_frontend(detach: bool = False, port: int | None = None, backend_port: 
         env["PORT"] = str(_frontend_port)
         env["HOSTNAME"] = "0.0.0.0"
         env["NODE_ENV"] = "production"
-        return subprocess.Popen(
-            [node, str(server_js)],
-            cwd=str(_BUNDLED_FRONTEND),
-            env=env,
-            **kwargs,
-        )
+        return _popen([node, str(server_js)], _BUNDLED_FRONTEND, env,
+                      _spawn_kwargs(detach, verbose, "frontend"))
 
     # Dev/source mode: use npm start on the frontend source directory
     next_dir = FRONTEND_DIR / ".next"
@@ -427,12 +552,7 @@ def start_frontend(detach: bool = False, port: int | None = None, backend_port: 
         print(f"  cd {FRONTEND_DIR} && npm install && npm run build")
         sys.exit(1)
     npm = _npm_command()
-    return subprocess.Popen(
-        [npm, "start"],
-        cwd=str(FRONTEND_DIR),
-        env=env,
-        **kwargs,
-    )
+    return _popen([npm, "start"], FRONTEND_DIR, env, _spawn_kwargs(detach, verbose, "frontend"))
 
 
 def wait_for_url(url: str, name: str, timeout: int = 300) -> bool:
@@ -453,6 +573,91 @@ def wait_for_url(url: str, name: str, timeout: int = 300) -> bool:
         except Exception:
             print(f"\r  Waiting for {name}... {elapsed}s", end="", flush=True)
             time.sleep(2)
+
+
+class _StartFailed(Exception):
+    """A service did not come up; the message says which and why."""
+
+    def __init__(self, message: str, log_name: str):
+        super().__init__(message)
+        self.log_name = log_name
+
+
+def _wait_ready(url: str, proc: subprocess.Popen, name: str, log_name: str,
+                timeout: int = 300) -> None:
+    """Poll `url` until it answers. Raises `_StartFailed` on exit or timeout.
+
+    Watches the process too: a backend that crashed on import used to be
+    waited on for the full five minutes, printing a counter the whole time.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        code = proc.poll()
+        if code is not None:
+            raise _StartFailed(f"the {name} stopped (exit code {code})", log_name)
+        try:
+            urllib.request.urlopen(url, timeout=3)
+            return
+        except Exception:
+            time.sleep(0.5)
+    port = url.split(":")[-1].split("/")[0]
+    raise _StartFailed(
+        f"the {name} did not answer on port {port} within {timeout}s", log_name
+    )
+
+
+def _tail(path: Path, lines: int = 20) -> list[str]:
+    """The last `lines` lines of a log, decoded forgivingly; [] if unreadable."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 64 * 1024))
+            text = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    return text.splitlines()[-lines:]
+
+
+class _Spinner:
+    """One line that says what is happening, erased when it is done.
+
+    Only on a terminal: piped or captured output gets nothing, so a script
+    reading `synapse start --detach` sees just the result.
+    """
+
+    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, text: str):
+        self.text = text
+        self._stop = threading.Event()
+        self._thread = None
+        try:
+            self._live = sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
+            "⠋".encode(sys.stdout.encoding or "ascii")
+        except Exception:
+            self._live = False
+
+    def __enter__(self):
+        if self._live:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        return self
+
+    def _run(self):
+        i = 0
+        while not self._stop.wait(0.08):
+            sys.stdout.write(f"\r  {self._FRAMES[i % len(self._FRAMES)]} {self.text}")
+            sys.stdout.flush()
+            i += 1
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+            sys.stdout.write("\r\x1b[2K")
+            sys.stdout.flush()
+        return False
 
 
 def open_browser(url: str):
@@ -631,7 +836,7 @@ def _ensure_internal_token():
     This token secures the backend's internal /api/* routes so only the
     frontend can access them. External API access uses separate API keys.
     """
-    env_file = ROOT_DIR / ".env"
+    env_file = _env_file()
     token_var = "SYNAPSE_INTERNAL_TOKEN"
 
     # Check if already in environment (e.g. from .env loaded earlier)
@@ -674,7 +879,7 @@ def _read_env_var(var: str) -> str:
     """A variable's value from the process, else from .env, else ""."""
     if os.environ.get(var):
         return os.environ[var]
-    env_file = ROOT_DIR / ".env"
+    env_file = _env_file()
     if env_file.exists():
         try:
             for line in env_file.read_text(encoding="utf-8").splitlines():
@@ -695,7 +900,7 @@ def _ensure_access_token(rotate: bool = False) -> str:
     """
     import secrets as _secrets
 
-    env_file = ROOT_DIR / ".env"
+    env_file = _env_file()
     current = "" if rotate else _read_env_var(ACCESS_TOKEN_VAR)
     if current:
         os.environ[ACCESS_TOKEN_VAR] = current
@@ -748,7 +953,7 @@ def _access_link_command(rotate: bool = False):
 
 def _ensure_jwt_secret():
     """Ensure SYNAPSE_JWT_SECRET exists in .env. Generate if missing."""
-    env_file = ROOT_DIR / ".env"
+    env_file = _env_file()
     var = "SYNAPSE_JWT_SECRET"
 
     if os.environ.get(var):
@@ -1011,12 +1216,65 @@ def _api_keys_command(action: str, name: str = "", key_id: str = ""):
         sys.exit(1)
 
 
+def _effective_ports(backend_port: int | None = None,
+                     frontend_port: int | None = None) -> tuple[int, int]:
+    """The ports to use: CLI arg > stored setting > env var > default."""
+    saved_backend = saved_frontend = None
+    try:
+        from synapse import _store
+        with _quiet_stdout():
+            s = _store.load_settings()
+        if s.get("backend_port"):
+            saved_backend = int(s["backend_port"])
+        if s.get("frontend_port"):
+            saved_frontend = int(s["frontend_port"])
+    except Exception:
+        pass
+    return (
+        backend_port if backend_port is not None else (saved_backend or DEFAULT_BACKEND_PORT),
+        frontend_port if frontend_port is not None else (saved_frontend or DEFAULT_FRONTEND_PORT),
+    )
+
+
+def _quiet_stdout():
+    """Send a store helper's notes (`[store] added missing columns`) to stderr."""
+    import contextlib
+    return contextlib.redirect_stdout(sys.stderr)
+
+
+def _state_file() -> Path:
+    return _run_dir() / "state.json"
+
+
+def _write_state(backend_port: int, frontend_port: int) -> None:
+    """What `synapse status` reports: the ports this run actually used."""
+    import json as _json
+    try:
+        _state_file().write_text(_json.dumps({
+            "backend_port": backend_port,
+            "frontend_port": frontend_port,
+            "version": _get_current_version(),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_state() -> dict:
+    import json as _json
+    try:
+        return _json.loads(_state_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def _start_command(
     detach: bool = False,
     no_browser: bool = False,
     backend_port: int | None = None,
     frontend_port: int | None = None,
     profile: bool = False,
+    verbose: bool = False,
 ):
     check_prerequisites()
     _ensure_internal_token()
@@ -1024,28 +1282,18 @@ def _start_command(
     _ensure_access_token()
 
     # First run — nothing configured yet, so run the wizard before starting.
+    # Only with someone at a terminal to answer it: under a service manager
+    # (start on login) the wizard's first read hits end-of-input and exits 0,
+    # which used to end the start silently. The app shows what is missing.
     from synapse import _store
-    if not _store.is_configured():
+    if sys.stdin.isatty() and not _store.is_configured():
         try:
             from synapse import setup_wizard
             setup_wizard.run()
         except Exception as e:
             print(f"Note: setup wizard error ({e}). Run 'synapse setup' to configure.")
 
-    # Resolve effective ports: CLI arg > stored setting > env var > default
-    _saved_backend_port: int | None = None
-    _saved_frontend_port: int | None = None
-    try:
-        _s = _store.load_settings()
-        if _s.get("backend_port"):
-            _saved_backend_port = int(_s["backend_port"])
-        if _s.get("frontend_port"):
-            _saved_frontend_port = int(_s["frontend_port"])
-    except Exception:
-        pass
-
-    effective_backend_port = backend_port if backend_port is not None else (_saved_backend_port or DEFAULT_BACKEND_PORT)
-    effective_frontend_port = frontend_port if frontend_port is not None else (_saved_frontend_port or DEFAULT_FRONTEND_PORT)
+    effective_backend_port, effective_frontend_port = _effective_ports(backend_port, frontend_port)
 
     ensure_run_dir()
     _ensure_playwright_browsers()
@@ -1053,58 +1301,61 @@ def _start_command(
 
     # Prevent accidental foreground start if processes already running
     if not detach:
-        bp = _read_pidfile(BACKEND_PID_FILE)
-        fp = _read_pidfile(FRONTEND_PID_FILE)
+        bp = _read_pidfile(_pid_file("backend"))
+        fp = _read_pidfile(_pid_file("frontend"))
         if bp and _is_running(bp):
-            print(f"Backend already running (pid {bp}).")
+            print(f"Synapse is already running (backend pid {bp}).")
             print("Run 'synapse stop' first, or add --detach to run alongside.")
             sys.exit(1)
         if fp and _is_running(fp):
-            print(f"Frontend already running (pid {fp}).")
+            print(f"Synapse is already running (frontend pid {fp}).")
             print("Run 'synapse stop' first, or add --detach to run alongside.")
             sys.exit(1)
 
-    print(f"Starting backend on port {effective_backend_port}...")
+    backend_proc = frontend_proc = None
     try:
-        backend_proc = start_backend(detach=detach, port=effective_backend_port, profile=profile)
-        _write_pidfile(BACKEND_PID_FILE, backend_proc.pid)
-    except Exception as e:
-        print(f"Failed to start backend: {e}")
+        with _Spinner("Starting Synapse…"):
+            try:
+                backend_proc = start_backend(detach=detach, port=effective_backend_port,
+                                             profile=profile, verbose=verbose)
+            except Exception as e:
+                raise _StartFailed(f"the backend could not be launched: {e}", "backend")
+            _write_pidfile(_pid_file("backend"), backend_proc.pid)
+            _wait_ready(f"http://127.0.0.1:{effective_backend_port}/docs",
+                        backend_proc, "backend", "backend")
+
+            try:
+                frontend_proc = start_frontend(detach=detach, port=effective_frontend_port,
+                                               backend_port=effective_backend_port,
+                                               verbose=verbose)
+            except SystemExit:
+                raise
+            except Exception as e:
+                raise _StartFailed(f"the frontend could not be launched: {e}", "frontend")
+            _write_pidfile(_pid_file("frontend"), frontend_proc.pid)
+            _wait_ready(f"http://127.0.0.1:{effective_frontend_port}",
+                        frontend_proc, "frontend", "frontend")
+    except _StartFailed as failure:
+        for proc in (frontend_proc, backend_proc):
+            if proc is not None:
+                _kill_proc_tree(proc)
+        for name in ("backend", "frontend"):
+            try:
+                _pid_file(name).unlink()
+            except OSError:
+                pass
+        print(f"Synapse did not start: {failure}.")
+        if not verbose:
+            log = _log_path(failure.log_name)
+            lines = _tail(log)
+            if lines:
+                print(f"  Last lines of {log}:")
+                for line in lines:
+                    print(f"    {line}")
+            print(f"  Full log: synapse logs {failure.log_name}")
         sys.exit(1)
 
-    if not wait_for_url(f"http://127.0.0.1:{effective_backend_port}/docs", "Backend"):
-        try:
-            backend_proc.terminate()
-        except Exception:
-            pass
-        sys.exit(1)
-
-    print(f"Starting frontend on port {effective_frontend_port}...")
-    try:
-        frontend_proc = start_frontend(
-            detach=detach,
-            port=effective_frontend_port,
-            backend_port=effective_backend_port,
-        )
-        _write_pidfile(FRONTEND_PID_FILE, frontend_proc.pid)
-    except Exception as e:
-        print(f"Failed to start frontend: {e}")
-        try:
-            backend_proc.terminate()
-        except Exception:
-            pass
-        sys.exit(1)
-
-    if not wait_for_url(f"http://127.0.0.1:{effective_frontend_port}", "Frontend"):
-        try:
-            backend_proc.terminate()
-        except Exception:
-            pass
-        try:
-            frontend_proc.terminate()
-        except Exception:
-            pass
-        sys.exit(1)
+    _write_state(effective_backend_port, effective_frontend_port)
 
     url = f"http://localhost:{effective_frontend_port}"
     # With login off, the browser is opened with the access link, so the person
@@ -1113,45 +1364,48 @@ def _start_command(
     if not no_browser and not detach:
         threading.Thread(target=open_browser, args=(link,), daemon=True).start()
 
-    print(f"\nSynapse is running at {url}")
+    print(f"Synapse is running → {link}")
     if link != url:
-        print(f"  Access link: {link}")
-        print("  Login is off: this link is the key. Share it only with people who may use")
-        print("  this Synapse, or turn on login in Settings. `synapse access-link` prints it again.")
+        print("  Anyone with this link can use this Synapse. Share it only with people who may,")
+        print("  or turn on login in Settings. `synapse access-link` prints it again.")
     if detach:
-        print(f"  Backend pid:  {_read_pidfile(BACKEND_PID_FILE)}  (port {effective_backend_port})")
-        print(f"  Frontend pid: {_read_pidfile(FRONTEND_PID_FILE)}  (port {effective_frontend_port})")
-        print()
-        print("Run 'synapse stop' to stop  |  'synapse status' to check")
+        print("  Stop it with: synapse stop")
         return
 
-    print("Press Ctrl+C to stop.\n")
+    print("Press Ctrl+C to stop.")
 
     def _shutdown(sig, frame):
         print("\nStopping Synapse...")
         # Kill full process trees -- on Windows terminate() leaves node children alive
         _kill_proc_tree(frontend_proc)
         _kill_proc_tree(backend_proc)
-        try:
-            if BACKEND_PID_FILE.exists():
-                BACKEND_PID_FILE.unlink()
-        except Exception:
-            pass
-        try:
-            if FRONTEND_PID_FILE.exists():
-                FRONTEND_PID_FILE.unlink()
-        except Exception:
-            pass
+        for name in ("backend", "frontend"):
+            try:
+                _pid_file(name).unlink()
+            except OSError:
+                pass
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    backend_proc.wait()
+    code = backend_proc.wait()
+    # The backend ended without Ctrl+C: say so, and take the frontend with it
+    # rather than leaving a UI that answers every request with an error.
+    _kill_proc_tree(frontend_proc)
+    for name in ("backend", "frontend"):
+        try:
+            _pid_file(name).unlink()
+        except OSError:
+            pass
+    print(f"Synapse stopped (the backend exited with code {code}).")
+    if not verbose:
+        print(f"  See why: synapse logs backend")
+    sys.exit(code or 1)
 
 
 def _stop_command():
-    for name, pidfile in (("frontend", FRONTEND_PID_FILE), ("backend", BACKEND_PID_FILE)):
+    for name, pidfile in (("frontend", _pid_file("frontend")), ("backend", _pid_file("backend"))):
         pid = _read_pidfile(pidfile)
         if not pid:
             print(f"{name.capitalize()}: not running (no pidfile)")
@@ -1175,14 +1429,108 @@ def _stop_command():
             print(f"  Failed to stop {name}.")
 
 
-def _status_command():
-    for name, pidfile in (("backend", BACKEND_PID_FILE), ("frontend", FRONTEND_PID_FILE)):
-        pid = _read_pidfile(pidfile)
-        if not pid:
-            print(f"{name}: not running")
-            continue
-        running = _is_running(pid)
-        print(f"{name}: {'running' if running else 'stale pid ' + str(pid)}")
+def _status_command(as_json: bool = False):
+    if not as_json:
+        for name, pidfile in (("backend", _pid_file("backend")), ("frontend", _pid_file("frontend"))):
+            pid = _read_pidfile(pidfile)
+            if not pid:
+                print(f"{name}: not running")
+                continue
+            running = _is_running(pid)
+            print(f"{name}: {'running' if running else 'stale pid ' + str(pid)}")
+        return
+
+    # What the installer reads to print the one line it ends with. `ready` is
+    # the frontend answering, not a PID existing: a PID survives a hung server.
+    import json as _json
+    report: dict = {"version": _get_current_version(), "home": str(synapse_home() or ROOT_DIR)}
+    for name in ("backend", "frontend"):
+        pid = _read_pidfile(_pid_file(name))
+        report[name] = {"pid": pid, "running": bool(pid and _is_running(pid))}
+    state = _read_state()
+    if state.get("frontend_port"):
+        frontend_port = int(state["frontend_port"])
+    else:
+        frontend_port = _effective_ports()[1]
+    url = f"http://localhost:{frontend_port}"
+    ready = False
+    if report["frontend"]["running"]:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{frontend_port}", timeout=3)
+            ready = True
+        except Exception:
+            pass
+    login = _login_is_on()
+    report.update(url=url, ready=ready, login=login,
+                  link=url if login else _access_link(frontend_port))
+    print(_json.dumps(report))
+
+
+def _logs_command(name: str = "backend", lines: int = 50, follow: bool = False):
+    """`synapse logs [backend|frontend|install] [-n N] [-f]`."""
+    path = _log_path(name)
+    if not path.exists():
+        print(f"No {name} log yet ({path}).")
+        return
+    for line in _tail(path, lines):
+        print(line)
+    if not follow:
+        return
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            while True:
+                chunk = f.readline()
+                if chunk:
+                    sys.stdout.write(chunk.decode("utf-8", errors="replace"))
+                    sys.stdout.flush()
+                else:
+                    time.sleep(0.3)
+    except KeyboardInterrupt:
+        pass
+
+
+#: Keys the installer may write through `synapse setup --apply`, beyond the
+#: shipped defaults: what `synapse start` and the app read about the install.
+_INSTALL_KEYS = {"installed_at", "backend_port", "frontend_port",
+                 "playwright_browsers_path", "start_on_boot"}
+
+
+def _setup_apply_command() -> None:
+    """`synapse setup --apply -`: the installer's answers, as JSON on stdin.
+
+    ``{"settings": {...}, "default_agent": true}``. On stdin rather than in
+    arguments so an API key never appears in the process list. Only known
+    keys are written — a typo in the installer must not become a settings row
+    nothing reads — and only the keys given, never the whole default set, so
+    an upgrade's answers cannot reset what the user changed in the app.
+    Prints ``{"saved": [...], "ignored": [...], "default_agent": "created"|"exists"|null}``.
+    """
+    import json as _json
+
+    from synapse import _store
+
+    payload = _json.loads(sys.stdin.read() or "{}")
+    settings = payload.get("settings") or {}
+    _store.prepare()
+    from core.config import default_settings
+
+    allowed = set(default_settings()) | _INSTALL_KEYS
+    values = {k: v for k, v in settings.items() if k in allowed}
+    ignored = sorted(k for k in settings if k not in allowed)
+
+    async def _apply():
+        from core.store.settings import save_many
+        if values:
+            await save_many(values)
+        if payload.get("default_agent"):
+            from core.default_agent import ensure_default_agent
+            return "created" if await ensure_default_agent() else "exists"
+        return None
+
+    with _quiet_stdout():
+        agent = _store.run(_apply)
+    print(_json.dumps({"saved": sorted(values), "ignored": ignored, "default_agent": agent}))
 
 
 def _get_current_version() -> str:
@@ -1632,12 +1980,12 @@ def _uninstall_command(keep_data: bool = False):
     # the vault, the blob store and the logs. Pointing it at the old data
     # directory would report that the user's work had been deleted while
     # leaving every orchestration, agent and vault file on disk.
-    if not keep_data and STATE_DIR.exists():
+    if not keep_data and _var_dir().exists():
         try:
-            _rmtree(STATE_DIR)
-            print(f"  Removed data: {STATE_DIR}")
+            _rmtree(_var_dir())
+            print(f"  Removed data: {_var_dir()}")
         except Exception as e:
-            print(f"  Warning: could not remove {STATE_DIR}: {e}")
+            print(f"  Warning: could not remove {_var_dir()}: {e}")
     # Also remove ~/.synapse parent directory (config files, etc.)
     if not keep_data:
         synapse_home = Path.home() / ".synapse"
@@ -1924,7 +2272,7 @@ def _profile_command(action: str, output: str | None = None, limit: int = 20, du
             print(f"{alloc['size_kb']:>10.2f}  {alloc['count']:>6}  {alloc['file']}:{alloc['line']}")
 
     elif action == "spy":
-        pid = _read_pidfile(BACKEND_PID_FILE)
+        pid = _read_pidfile(_pid_file("backend"))
         if not pid:
             print("Backend PID not found. Start with: synapse start --detach")
             return
@@ -2054,9 +2402,18 @@ def main():
         help=f"Port for the frontend web UI (overrides SYNAPSE_FRONTEND_PORT env var, default: {DEFAULT_FRONTEND_PORT})",
     )
     p_start.add_argument("--profile", action="store_true", help="Enable performance profiling (sets SYNAPSE_PROFILING=true)")
+    p_start.add_argument("--verbose", "-v", action="store_true",
+                         help="Show the backend and frontend output here instead of in their logs")
 
     sub.add_parser("stop", help="Stop running backend and frontend (reads pidfiles)")
-    sub.add_parser("status", help="Show status of backend and frontend")
+    p_status = sub.add_parser("status", help="Show status of backend and frontend")
+    p_status.add_argument("--json", dest="as_json", action="store_true",
+                          help="One JSON object: pids, whether it answers, and its link")
+
+    p_logs = sub.add_parser("logs", help="Show the backend's (or frontend's, or the installer's) log")
+    p_logs.add_argument("name", nargs="?", default="backend", choices=["backend", "frontend", "install"])
+    p_logs.add_argument("-n", "--lines", type=int, default=50, metavar="N", help="Lines to show (default: 50)")
+    p_logs.add_argument("-f", "--follow", action="store_true", help="Keep printing new lines")
 
     p_restart = sub.add_parser("restart", help="Restart backend and frontend")
     p_restart.add_argument("--detach", "-d", action="store_true", help="After restart, leave processes detached")
@@ -2068,7 +2425,11 @@ def main():
         "--frontend-port", type=int, default=None, metavar="PORT",
         help=f"Port for the frontend web UI (overrides SYNAPSE_FRONTEND_PORT env var, default: {DEFAULT_FRONTEND_PORT})",
     )
-    sub.add_parser("setup", help="Run interactive setup wizard to configure Synapse")
+    p_restart.add_argument("--verbose", "-v", action="store_true",
+                           help="Show the backend and frontend output here instead of in their logs")
+    p_setup = sub.add_parser("setup", help="Run interactive setup wizard to configure Synapse")
+    p_setup.add_argument("--apply", metavar="-", default=None,
+                         help="Read the installer's answers as JSON from stdin (pass '-') instead of asking")
     p_migrate = sub.add_parser(
         "migrate",
         help="Create or update the database, and import an old backend/data folder if present",
@@ -2085,7 +2446,6 @@ def main():
         "--json", dest="as_json", action="store_true",
         help="Print one JSON report on stdout",
     )
-
 
     # upgrade: pull code and rebuild everything
     sub.add_parser(
@@ -2147,25 +2507,34 @@ def main():
             backend_port=getattr(args, "backend_port", None),
             frontend_port=getattr(args, "frontend_port", None),
             profile=getattr(args, "profile", False),
+            verbose=getattr(args, "verbose", False),
         )
     elif args.cmd == "stop":
         _stop_command()
     elif args.cmd == "migrate":
         _migrate_command(args.sources, args.logs, args.as_json)
     elif args.cmd == "setup":
+        if args.apply is not None:
+            if args.apply != "-":
+                parser.error("setup --apply reads JSON from stdin: pass '-'")
+            _setup_apply_command()
+            return
         try:
             from synapse import setup_wizard
             setup_wizard.run()
         except Exception as e:
             print(f"Failed to run setup wizard: {e}")
     elif args.cmd == "status":
-        _status_command()
+        _status_command(as_json=args.as_json)
+    elif args.cmd == "logs":
+        _logs_command(args.name, args.lines, args.follow)
     elif args.cmd == "restart":
         _stop_command()
         _start_command(
             detach=getattr(args, "detach", False),
             backend_port=getattr(args, "backend_port", None),
             frontend_port=getattr(args, "frontend_port", None),
+            verbose=getattr(args, "verbose", False),
         )
     elif args.cmd == "upgrade":
         _upgrade_command()

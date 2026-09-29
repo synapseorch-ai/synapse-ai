@@ -7,6 +7,10 @@ from synapse import cli
 @pytest.fixture
 def root(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "ROOT_DIR", tmp_path)
+    # A checkout: no SYNAPSE_HOME, so the .env is the one at ROOT_DIR. (The
+    # suite sets one per test; a packaged install's .env is covered in
+    # test_cli_packaged_mode.py.)
+    monkeypatch.delenv("SYNAPSE_HOME", raising=False)
     # set, then delete: monkeypatch then restores the variable's absence after
     # the test — `_ensure_access_token` writes os.environ directly, and a token
     # left behind turns the gate on for every test that follows.
