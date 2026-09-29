@@ -2406,7 +2406,7 @@ function BottomPanel({
                                     {(r.status === 'failed' || r.status === 'cancelled') && (
                                         <button
                                             onClick={() => { onRestoreRun(r); setActiveSection('run'); }}
-                                            className="px-2 py-0.5 text-[10px] bg-orange-600 hover:bg-orange-500 text-white rounded-md"
+                                            className="px-2 py-0.5 text-[10px] bg-orange-700 hover:bg-orange-800 text-white rounded-md"
                                         >
                                             Resume
                                         </button>
@@ -2434,7 +2434,7 @@ function BottomPanel({
                                 {(runStatus === 'failed' || runStatus === 'cancelled') && runId && (
                                     <button
                                         onClick={onResumeRun}
-                                        className="px-3 py-1.5 text-xs bg-orange-600 hover:bg-orange-500 text-white rounded-md whitespace-nowrap"
+                                        className="px-3 py-1.5 text-xs bg-orange-700 hover:bg-orange-800 text-white rounded-md whitespace-nowrap"
                                     >
                                         Resume from failure
                                     </button>

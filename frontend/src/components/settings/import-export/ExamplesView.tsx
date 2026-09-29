@@ -94,7 +94,7 @@ export function ExamplesView({ onLoadBundle }: ExamplesViewProps) {
         <AlertCircle className="h-4 w-4 text-red-400 flex-shrink-0 mt-0.5" />
         <div>
           <p className="text-red-400 text-xs font-bold uppercase tracking-wider">Failed to load examples</p>
-          <p className="text-red-600 text-xs mt-1">{error}</p>
+          <p className="text-red-400 text-xs mt-1">{error}</p>
         </div>
       </div>
     );

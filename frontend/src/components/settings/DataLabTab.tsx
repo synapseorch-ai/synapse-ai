@@ -85,7 +85,7 @@ export const DataLabTab = ({
             <h3 className="text-sm font-bold text-zinc-400 mb-4 flex items-center justify-between">
                 <span>DATASETS</span>
                 {dlStatus?.status === 'generating' && (
-                    <span className="text-green-500 text-xs animate-pulse">Running: {dlStatus.completed}/{dlStatus.total}</span>
+                    <span className="text-green-400 text-xs animate-pulse">Running: {dlStatus.completed}/{dlStatus.total}</span>
                 )}
                 {dlStatus?.status === 'failed' && (
                     <span className="text-red-500 text-xs">Failed: {dlStatus.error}</span>

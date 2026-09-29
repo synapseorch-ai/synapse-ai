@@ -178,7 +178,7 @@ export const IntegrationsTab = ({
                                         >
                                             Reconnect
                                         </a>
-                                        <span className="text-[10px] text-green-500 uppercase tracking-wider">Authenticated</span>
+                                        <span className="text-[10px] text-green-400 uppercase tracking-wider">Authenticated</span>
                                     </div>
                                 ) : isConnected ? (
                                     <div className="mt-2 pt-2 border-t border-zinc-800 flex items-center gap-2">
@@ -225,7 +225,7 @@ export const IntegrationsTab = ({
                                             placeholder='{"installed":{"client_id":"...","project_id":"..."}}'
                                             onChange={e => handleCredentialsPaste(e.target.value)}
                                         />
-                                        <p className={`text-[10px] ${pasteStatus === 'saved' ? 'text-green-500' :
+                                        <p className={`text-[10px] ${pasteStatus === 'saved' ? 'text-green-400' :
                                                 pasteStatus === 'error' ? 'text-red-500' :
                                                     pasteStatus === 'saving' ? 'text-zinc-400' : 'text-text-faint'
                                             }`}>
@@ -298,7 +298,7 @@ export const IntegrationsTab = ({
                                             placeholder='{"installed":{"client_id":"...","project_id":"..."}}'
                                             onChange={e => handleCredentialsPaste(e.target.value)}
                                         />
-                                        <p className={`mt-1 text-[10px] ${pasteStatus === 'saved' ? 'text-green-500' :
+                                        <p className={`mt-1 text-[10px] ${pasteStatus === 'saved' ? 'text-green-400' :
                                                 pasteStatus === 'error' ? 'text-red-500' :
                                                     pasteStatus === 'saving' ? 'text-zinc-400' : 'text-text-faint'
                                             }`}>

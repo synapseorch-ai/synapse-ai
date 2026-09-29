@@ -399,7 +399,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
               <Cpu className="h-3.5 w-3.5 text-blue-400 flex-shrink-0" />
               <div className="flex-1 min-w-0">
                 <p className="text-blue-400 text-xs font-bold uppercase tracking-wider">Models Used in This Bundle</p>
-                <p className="text-blue-700 text-xs mt-0.5">
+                <p className="text-blue-400 text-xs mt-0.5">
                   {allModels.length} model{allModels.length !== 1 ? "s" : ""} found across agents &amp; orchestration steps.
                 </p>
               </div>
@@ -419,7 +419,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
                     <span className="font-mono text-xs text-blue-300 font-bold min-w-0 break-all pt-px">{entry.model}</span>
                     <div className="flex-1 min-w-0">
                       {entry.usedIn.map(src => (
-                        <p key={src} className="text-[10px] text-blue-700 truncate">{src}</p>
+                        <p key={src} className="text-[10px] text-blue-400 truncate">{src}</p>
                       ))}
                     </div>
                   </div>
@@ -433,7 +433,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
                 <RotateCcw className="h-3.5 w-3.5 text-blue-500 flex-shrink-0" />
                 <div>
                   <p className="text-xs font-bold text-blue-300">Use default model for everything</p>
-                  <p className="text-[10px] text-blue-700 mt-0.5">
+                  <p className="text-[10px] text-blue-400 mt-0.5">
                     Strips all model &amp; provider overrides from agents and orchestration steps — they will use your global default model instead.
                   </p>
                 </div>
@@ -675,7 +675,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
           <CheckCircle2 className="h-4 w-4 text-green-400 flex-shrink-0" />
           <div>
             <p className="text-green-400 text-xs font-bold uppercase tracking-wider">Import Complete</p>
-            <p className="text-green-700 text-xs mt-0.5">
+            <p className="text-green-400 text-xs mt-0.5">
               {importedCount} item{importedCount !== 1 ? "s" : ""} imported.
               {all.some(r => r.status === "skipped_existing") && " Some MCP servers were skipped (already exist)."}
               {useDefaultModels && " · All model overrides were reset to default."}

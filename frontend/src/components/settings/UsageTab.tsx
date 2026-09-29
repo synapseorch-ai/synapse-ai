@@ -597,7 +597,7 @@ function CompactionRow({ log, idx }: { log: IndexedLog; idx: number }) {
                 <span className="inline-flex items-center gap-1.5 text-cyan-400 font-semibold text-xs">
                     <span>🗜</span>
                     context compact
-                    <span className="text-[10px] text-cyan-600 font-normal border border-cyan-800/50 px-1.5 py-0.5 bg-cyan-950/60 rounded-md">{stage}</span>
+                    <span className="text-[10px] text-cyan-400 font-normal border border-cyan-800/50 px-1.5 py-0.5 bg-cyan-950/60 rounded-md">{stage}</span>
                 </span>
             </td>
             <td className="py-2.5 pr-3 text-right text-text-faint tabular-nums text-xs">{fmtKB(charsAfter)}</td>

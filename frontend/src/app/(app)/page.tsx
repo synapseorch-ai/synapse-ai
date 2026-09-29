@@ -143,7 +143,7 @@ function ReasoningCollapsible({ reasoning, stepName }: { reasoning: string[]; st
           {blocks.map((block, i) => (
             <div key={i} className="px-3 py-2 text-[12px] font-mono italic leading-5">
               {blocks.length > 1 && (
-                <span className="text-indigo-700 text-[10px] not-italic mr-2">Turn {i + 1}</span>
+                <span className="text-text-faint text-[10px] not-italic mr-2">Turn {i + 1}</span>
               )}
               <span className="text-indigo-300/80 whitespace-pre-wrap break-words">{block}</span>
             </div>

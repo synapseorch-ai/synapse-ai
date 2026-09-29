@@ -5049,6 +5049,308 @@ async def check_reopenpanels(browser) -> str:
     return "a reopened answer draws its Thinking (2) and Reasoning (1, the echo dropped) panels"
 
 
+# ── F101: the states `contrast` cannot open ─────────────────────────────────
+
+def _answer(body, status: int = 200, methods: tuple[str, ...] = ("GET",),
+            content_type: str = "application/json", hold: float = 0.0):
+    """A route that answers `methods` itself and lets anything else through."""
+    async def fulfil(route):
+        if route.request.method not in methods:
+            return await route.fallback()       # to an earlier route for this URL, or the network
+        if hold:
+            await asyncio.sleep(hold)
+        text = body if isinstance(body, str) else json.dumps(body)
+        await route.fulfill(status=status, content_type=content_type, body=text)
+    return fulfil
+
+
+def _held_after_first(first, then_hold: float):
+    """GET answered at once the first time, then held: keeps a 'saved' message up."""
+    seen = {"n": 0}
+
+    async def fulfil(route):
+        if route.request.method != "GET":
+            return await route.fallback()
+        seen["n"] += 1
+        if seen["n"] > 1:
+            await asyncio.sleep(then_hold)
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(first))
+    return fulfil
+
+
+_NOW = "2026-09-30T10:00:00Z"
+_SMOKE_ORCH = {"id": "orch_smoke_c", "name": "Smoke contrast flow", "description": "", "trigger": "manual",
+               "state_schema": {}, "entry_step_id": "s1", "max_total_turns": 100, "timeout_minutes": 30,
+               "steps": [{"id": "s1", "name": "Extract", "type": "extract_json", "next_step_id": "s_end",
+                          "output_key": "out"},
+                         {"id": "s_end", "name": "End", "type": "end", "next_step_id": None}]}
+_SMOKE_RUNS = [
+    {"run_id": "run_smoke_fail", "orchestration_id": "orch_smoke_c", "status": "failed", "started_at": _NOW,
+     "ended_at": _NOW, "current_step_id": None, "steps_completed": 1, "last_step_name": "Extract",
+     "waiting_for_human": False, "total_cost_usd": 0.0012, "session_id": None, "score": 8.2,
+     "score_regression": True},
+    {"run_id": "run_smoke_low", "orchestration_id": "orch_smoke_c", "status": "completed", "started_at": _NOW,
+     "ended_at": _NOW, "steps_completed": 2, "total_cost_usd": 0, "session_id": None, "score": 3.1,
+     "score_regression": False}]
+_SMOKE_RUN_STREAM = "".join([
+    _frame({"type": "step_start", "orch_step_id": "s1", "step_name": "Extract", "step_type": "extract_json"}, "1"),
+    _frame({"type": "final", "orch_step_id": "s1",
+            "response": '{"name": "Ada", "age": 36, "active": true, "team": null}'}, "2"),
+    _frame({"type": "step_complete", "orch_step_id": "s1", "step_name": "Extract", "duration_seconds": 0.4}, "3"),
+    _frame({"type": "stream_complete"})])
+_SMOKE_RUN_ROUTES = [
+    ("**/api/orchestrations", _answer([_SMOKE_ORCH])),
+    ("**/api/orchestrations/runs", _answer(_SMOKE_RUNS)),
+    ("**/api/orchestrations/runs/run_smoke_fail", _answer(
+        {"run_id": "run_smoke_fail", "orchestration_id": "orch_smoke_c", "status": "failed",
+         "step_history": [], "waiting_for_human": False})),
+    ("**/api/orchestrations/runs/run_smoke_fail/events/stream*",
+     _answer(_SMOKE_RUN_STREAM, content_type="text/event-stream")),
+    ("**/api/orchestrations/runs/run_smoke_fail/children", _answer(
+        [{"run_id": "run_smoke_fail__c1", "orchestration_id": "orch_smoke_child", "status": "failed",
+          "steps_completed": 1, "total_cost_usd": 0, "error": "Child step failed: API returned 500"}])),
+]
+_SMOKE_USAGE = [
+    ("**/api/usage/summary", _answer({
+        "total_cost": 0.05, "total_input_tokens": 60000, "total_output_tokens": 2000, "total_tokens": 62000,
+        "total_requests": 10,
+        "by_model": [{"model": "anthropic.claude-3-haiku", "provider": "bedrock", "requests": 10,
+                      "input_tokens": 60000, "output_tokens": 2000, "total_tokens": 62000, "estimated_cost": 0.05}],
+        "by_session": [{"session_id": "sess_smoke_usage", "agent_id": "agent_smoke", "requests": 2,
+                        "input_tokens": 1000, "output_tokens": 200, "total_tokens": 1200, "context_chars": 8192,
+                        "estimated_cost": 0.001, "models_used": ["anthropic.claude-3-haiku"], "first_ts": _NOW,
+                        "last_ts": _NOW, "source": "chat"}],
+        "by_schedule": []})),
+    ("**/api/usage/pricing", _answer({"anthropic.claude-3-haiku": {
+        "provider": "bedrock", "input_per_1m": 0.25, "output_per_1m": 1.25, "_new": True}})),
+    ("**/api/usage/cache_summary", _answer({
+        "total_estimated_savings": 0.0123, "total_requests": 10, "total_response_cache_hits": 2,
+        "response_cache_hit_rate": 0.2, "total_cache_read_tokens": 50000, "total_cache_write_tokens": 12000,
+        "by_model": [{"model": "claude-sonnet-4", "requests": 6, "cache_read_tokens": 50000,
+                      "cache_write_tokens": 12000, "estimated_savings": 0.0123, "estimated_cost": 0.05,
+                      "response_cache_hits": 2}],
+        "by_run": [{"run_id": "run_smoke_cache", "requests": 4, "cache_read_tokens": 20000, "cache_write_tokens": 0,
+                    "estimated_savings": 0.005, "estimated_cost": 0.02, "response_cache_hits": 0}]})),
+]
+_SMOKE_BUNDLE = {
+    "synapse_export": True, "version": "1.0", "exported_at": _NOW, "has_python_tools": False,
+    "orchestrations": [{"id": "orch_smoke_imp", "name": "Smoke import flow", "description": "d",
+                        "steps": [{"id": "s1", "name": "Draft", "type": "agent", "agent_id": "agent_smoke_mail",
+                                   "model": "gpt-4o-mini"}]}],
+    "agents": [{"id": "agent_smoke_mail", "name": "Smoke mail agent", "description": "d",
+                "tools": ["search_gmail_messages"], "system_prompt": "p", "model": "claude-sonnet-4"}],
+    "custom_tools": [], "mcp_servers": []}
+_SMOKE_IMPORT_ROUTES = [("**/api/config", _answer({"has_credentials": False, "is_connected": False}))]
+
+
+async def _open_import(page):
+    await page.get_by_role("button", name=re.compile(r"^Import$")).first.click()
+    await page.locator("input[type=file]").first.set_input_files(files=[{
+        "name": "export.json", "mimeType": "application/json", "buffer": json.dumps(_SMOKE_BUNDLE).encode()}])
+    await page.get_by_text("Models Used in This Bundle").first.wait_for(timeout=15_000)
+    show = page.get_by_role("button", name=re.compile(r"^Show$"))
+    if await show.count():
+        await show.first.click()
+
+
+async def _import_now(page):
+    await _open_import(page)
+    await page.get_by_role("button", name=re.compile(r"^Import Now")).first.click()
+
+
+async def _send_and_fail(page):
+    await page.locator("main textarea").last.fill("a question that fails")
+    await page.keyboard.press("Enter")
+    await _stream_open(page, "post")
+    await page.evaluate("(f) => window.__streams.post.push(f)", _frame(
+        {"type": "error", "message": "Provider returned 429: rate limited", "kind": "model"}, "e1"))
+
+
+async def _python_test(page):
+    await page.locator("div.group", has_text="Smoke python tool").first \
+        .get_by_role("button", name=re.compile("^edit$", re.I)).click()
+    await page.get_by_role("button", name="Run", exact=True).click()
+
+
+async def _openapi_preview(page):
+    await page.get_by_role("button", name=re.compile("Import OpenAPI")).first.click()
+    await page.get_by_placeholder(re.compile(r'^\{"openapi"')).fill('{"openapi": "3.0.0", "paths": {}}')
+    await page.get_by_role("button", name=re.compile("Preview tools")).click()
+
+
+async def _paste_credentials(page):
+    await page.get_by_role("button", name=re.compile("Re-upload credentials")).first.click()
+    await page.get_by_placeholder(re.compile(r'^\{"installed"')).fill(
+        '{"installed": {"client_id": "x", "project_id": "y"}}')
+
+
+async def _vault_error(page):
+    await page.get_by_text("note.txt", exact=True).first.click()
+    await page.get_by_placeholder("Start typing...").fill("hello, edited")
+    await page.get_by_role("button", name=re.compile("^save$", re.I)).first.click()
+
+
+#: (name, path, init scripts, routes, action, a text proving the state is on screen)
+LIGHT_STATES = (
+    ("chat tip 5", "/", [CHAT_STUB], [],
+     lambda p: p.get_by_role("button", name="Show tip 5: Automate with schedules").click(),
+     "Automate with schedules"),
+    ("chat failed turn", "/", [CHAT_STUB], [], _send_and_fail, "The model couldn't answer."),
+    ("chat Thinking turns", "/", [CHAT_STUB, "window.__fakeHistory = " + json.dumps({
+        "turns": [{"user": "q", "assistant": "a", "tools": [], "timestamp": "", "reasoning": ["one", "two"]}],
+        "pending_approval": None, "running": None}) + ";"], [],
+     lambda p: p.get_by_role("button", name=re.compile(r"^Thinking")).first.click(), "Turn 2"),
+    ("orchestration runs", "/orchestrations", [], [("**/api/orchestrations/runs", _answer(_SMOKE_RUNS))],
+     lambda p: p.get_by_role("button", name="Recent", exact=True).click(), "3.1"),
+    ("a failed run", "/orchestrations?run=run_smoke_fail", [], _SMOKE_RUN_ROUTES, None, "Nested runs (1)"),
+    ("a step's full response", "/orchestrations?run=run_smoke_fail", [], _SMOKE_RUN_ROUTES,
+     lambda p: p.get_by_title("View full response").first.click(), "— full response"),
+    ("Recent Runs' Resume", "/orchestrations?id=orch_smoke_c", [], _SMOKE_RUN_ROUTES,
+     lambda p: p.get_by_role("button", name=re.compile(r"^Recent Runs")).first.click(), "Resume"),
+    ("usage", "/usage", [], _SMOKE_USAGE, None, "Top orchestration runs by savings"),
+    ("usage compaction row", "/usage", [], _SMOKE_USAGE + [("**/api/usage/logs*", _answer({"logs": [
+        {"timestamp": _NOW, "model": "anthropic.claude-3-haiku", "provider": "bedrock",
+         "session_id": "sess_smoke_usage", "agent_id": "agent_smoke", "source": "chat", "input_tokens": 500,
+         "output_tokens": 100, "total_tokens": 600, "context_chars": 40960, "estimated_cost": 0.0005,
+         "latency_seconds": 1.2},
+        {"timestamp": _NOW, "event_type": "compaction", "stage": "llm_summary", "chars_before": 40960,
+         "chars_after": 8192, "reduction_pct": 80, "context_chars": 8192, "agent_id": "agent_smoke", "model": "",
+         "provider": "", "session_id": "sess_smoke_usage", "source": "chat", "input_tokens": 0,
+         "output_tokens": 0, "total_tokens": 0, "estimated_cost": 0, "latency_seconds": 0}]}))],
+     lambda p: p.get_by_role("button", name=re.compile("sess_smoke_usage")).first.click(), "context compact"),
+    ("usage load error", "/usage", [], [("**/api/usage/summary", _answer({}, status=500))], None,
+     "Summary fetch failed: 500"),
+    ("import preview", "/settings/import_export", [], _SMOKE_IMPORT_ROUTES, _open_import,
+     "Google Workspace Not Connected"),
+    ("import result", "/settings/import_export", [], _SMOKE_IMPORT_ROUTES + [("**/api/import", _answer(
+        {"results": {"agents": [{"id": "agent_smoke_mail", "name": "Smoke mail agent", "status": "imported"}],
+                     "mcp_servers": [{"name": "smoke_oauth", "label": "Smoke OAuth", "status": "oauth_pending",
+                                      "auth_url": "https://example.invalid/authorize"}]}}, methods=("POST",)))],
+     _import_now, "Needs authorization"),
+    ("integrations connected", "/settings/workspace", [], [("**/api/config", _answer(
+        {"has_credentials": True, "client_id": "123-smoke.apps.googleusercontent.com",
+         "project_id": "smoke-project", "is_connected": True, "user_email": "smoke@example.com"}))],
+     None, "Authenticated"),
+    ("integrations saved", "/settings/workspace", [], [
+        ("**/api/config", _held_after_first(
+            {"has_credentials": True, "client_id": "123-smoke.apps.googleusercontent.com",
+             "project_id": "smoke-project", "is_connected": True, "user_email": "smoke@example.com"}, 8.0)),
+        ("**/api/setup/google-credentials", _answer({}, methods=("POST",)))],
+     _paste_credentials, "Credentials saved"),
+    ("repo badges", "/settings/repos", [], [("**/api/repos", _answer([
+        {"id": f"r{i}", "name": f"Smoke {s}", "path": f"/tmp/{s}", "description": "", "included_patterns": [],
+         "excluded_patterns": [], "last_indexed": None, "status": s, "file_count": 3}
+        for i, s in enumerate(("indexed", "indexing", "stopping"))]))], None, "Smoke stopping"),
+    ("python tool test", "/tools", [], [
+        ("**/api/tools/custom", _answer([{"name": "uismoke_py", "generalName": "Smoke python tool",
+                                          "description": "d", "tool_type": "python", "code": "print('hi')\n",
+                                          "inputSchema": {"type": "object", "properties": {}},
+                                          "schemaParams": [], "globals": []}])),
+        ("**/api/tools/python/test", _answer({"stdout": '{"output": "ok"}\n',
+                                              "stderr": "Traceback (most recent call last):\nValueError: boom\n",
+                                              "exit_code": 1}, methods=("POST",)))],
+     _python_test, "Exit code: 1"),
+    ("openapi preview", "/tools", [], [("**/api/tools/import/openapi", _answer(
+        {"tools": [{"name": "delete_pet", "method": "DELETE", "url": "https://api.example.com/pets/{id}"},
+                   {"name": "get_pet", "method": "GET", "url": "https://api.example.com/pets/{id}"},
+                   {"name": "create_pet", "method": "POST", "url": "https://api.example.com/pets"}],
+         "group": {"name": "Smoke Pets"}}, methods=("POST",)))],
+     _openapi_preview, "3 operations found"),
+    ("messaging last error", "/settings/messaging", [], [("**/api/messaging/channels", _answer([
+        {"id": "ch_smoke_err", "name": "Smoke broken channel", "platform": "telegram", "status": "error",
+         "last_error": "Unauthorized: bot token rejected (401)", "agent_ids": [], "multi_agent_mode": False,
+         "enabled": True, "credentials": {}}]))],
+     lambda p: p.get_by_role("button", name=re.compile("Smoke broken channel")).first.click(), "Last Error"),
+    ("a compacted log", "/runs", [], [
+        ("**/api/logs/agents*", _answer([{"run_id": "run_smoke_log", "agent_name": "Smoke log agent",
+                                          "source": "chat", "session_id": "sess_smoke",
+                                          "started_at": "2026-09-30 10:00:00", "file_size_kb": 2}])),
+        ("**/api/logs/agents/run_smoke_log", _answer(
+            "USER: hi\n==========\nCONTEXT COMPACTED — trim: 40960 → 8192 chars\n==========\nASSISTANT: ok\n",
+            content_type="text/plain"))],
+     lambda p: p.get_by_role("button", name=re.compile("^Smoke log agent")).first.click(), "CONTEXT COMPACTED"),
+    ("schedule run toast", "/schedules", [], [
+        ("**/api/schedules", _answer([{"id": "sched_smoke", "name": "Smoke schedule", "enabled": True,
+                                       "created_at": _NOW, "target_type": "agent", "target_id": "agent_x",
+                                       "prompt": "p", "schedule_type": "interval", "interval_value": 30,
+                                       "interval_unit": "minutes", "next_run_at": None, "last_run_at": None}])),
+        ("**/api/schedules/sched_smoke/run", _answer({}, methods=("POST",)))],
+     lambda p: p.get_by_role("button", name="Run Now").first.click(), "Schedule triggered successfully"),
+    ("data lab running", "/settings/datalab", [], [
+        ("**/api/synthetic/status", _answer({"status": "generating", "completed": 3, "total": 10})),
+        ("**/api/synthetic/datasets", _answer([]))], None, "Running: 3/10"),
+    ("examples error", "/settings/import_export?tab=examples", [],
+     [("**/api/examples", _answer({}, status=500))], None, "Failed to load examples"),
+    ("vault save error", "/vault", [], [
+        ("**/api/vault/tree*", _answer({"tree": [{"name": "note.txt", "path": "note.txt", "type": "file",
+                                                   "ext": ".txt"}]})),
+        ("**/api/vault/file*", _answer({"content": "hello"})),
+        ("**/api/vault/file*", _answer({}, status=500, methods=("PUT",)))],
+     _vault_error, "ERROR"),
+    ("settings saved toast", "/settings/personal_details", [],
+     [("**/api/personal-details", _answer({}, methods=("POST",)))],
+     lambda p: p.get_by_role("button", name=re.compile("Save Changes")).first.click(), "Personal details saved"),
+)
+
+
+@check
+async def check_lightstates(browser) -> str:
+    """Text meets AA in the states `contrast` cannot open, in both themes (F101).
+
+    The light theme inverts the dark ramp one (family, shade) at a time, and a
+    shade it lacks keeps its dark value on a light ground. `contrast` walks
+    every screen on a clean store, so the uses that sit in states — a failed
+    run, a connected integration, an import preview, a repo indexing, a test's
+    output, a toast — were never measured (33 pairs, 109 uses, 16 files at
+    `4bcf8b8`). Each is put on screen here from stubbed answers.
+
+    Not measured (named limits): hover colours, SVG icons, gradients, and the
+    Vault's "saved" button (disabled, which WCAG exempts).
+    """
+    bad: list[str] = []
+    missing: list[str] = []
+    for theme in ("light", "dark"):
+        for name, path, inits, routes, act, shows in LIGHT_STATES:
+            ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+            await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+            await ctx.add_init_script(
+                f"try{{localStorage.setItem('synapseSessionId','uismoke-light-{int(time.time() * 1000)}')}}"
+                "catch(e){}")
+            for script in inits:
+                await ctx.add_init_script(script)
+            for pattern, handler in routes:
+                await ctx.route(pattern, handler)
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+                await asyncio.sleep(SETTLE)
+                if act:
+                    await act(page)
+                try:
+                    await page.get_by_text(re.compile(re.escape(shows), re.I)).first.wait_for(timeout=15_000)
+                except Exception:
+                    missing.append(f"{theme} {name}")
+                    continue
+                await asyncio.sleep(0.6)
+                for row in await page.evaluate(CONTRAST):
+                    if any(row["fg"] == fg and row["bg"] == bg for fg, bg, _ in CONTRAST_WAIVED):
+                        continue
+                    bad.append(f"{theme} {name}: {row['ratio']}:1 (needs {row['need']}) "
+                               f"{row['fg']} on {row['bg']} — {row['txt'][:24]!r} [{row['cls'][:48]}]")
+            except Exception as exc:
+                missing.append(f"{theme} {name} ({str(exc).splitlines()[0][:80]})")
+            finally:
+                await ctx.close()
+    out = []
+    if missing:
+        out.append(f"never on screen, so unmeasured: {missing}")
+    if bad:
+        out.append(f"{len(bad)} under AA — " + " | ".join(bad))
+    if out:
+        raise AssertionError("; ".join(out))
+    return f"{len(LIGHT_STATES)} states, both themes, all text at AA"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
