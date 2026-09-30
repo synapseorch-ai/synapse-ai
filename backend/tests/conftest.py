@@ -164,6 +164,23 @@ def _isolate_notifications(tmp_path, monkeypatch):
     notif_mod.hub._terminal_notified.clear()
 
 
+# ── Knowledge seam isolation (autouse) ───────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _isolate_knowledge_seams():
+    """Every Knowledge seam, the Vault observer and the lifecycle observers back
+    to their defaults around each test, so one test's fake never serves the next."""
+    from core import vault_events
+    from core.knowledge import events, seams
+
+    seams.reset_all()
+    vault_events.set_vault_observer(None)
+    events.knowledge_observers.clear()
+    yield
+    seams.reset_all()
+    vault_events.set_vault_observer(None)
+    events.knowledge_observers.clear()
+
+
 # ── chat turn isolation (autouse) ────────────────────────────────────────────
 @pytest_asyncio.fixture(autouse=True)
 async def _isolate_chat_turns(_isolate_run_checkpoints):

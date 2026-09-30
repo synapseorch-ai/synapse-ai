@@ -50,6 +50,29 @@ RETRY_REASON = "synapse.retry.reason"
 MESSAGES_BEFORE = "synapse.compaction.messages_before"
 MESSAGES_AFTER = "synapse.compaction.messages_after"
 CANCELLED = "synapse.cancelled"
+# Knowledge (document retrieval, D153). Ids, counts and codes only: never a
+# query, a chunk, a file name, a URL or a MIME string.
+KNOWLEDGE_KB_ID = "synapse.knowledge.kb_id"
+KNOWLEDGE_DOC_ID = "synapse.knowledge.doc_id"
+KNOWLEDGE_QUERY_ID = "synapse.knowledge.query_id"
+KNOWLEDGE_SNAPSHOT_ID = "synapse.knowledge.snapshot_id"
+KNOWLEDGE_STAGE = "synapse.knowledge.stage"
+KNOWLEDGE_LEG = "synapse.knowledge.leg"
+KNOWLEDGE_KB_COUNT = "synapse.knowledge.kb_count"
+KNOWLEDGE_CANDIDATES = "synapse.knowledge.candidates"
+KNOWLEDGE_HITS = "synapse.knowledge.hits"
+KNOWLEDGE_CHUNKS = "synapse.knowledge.chunks"
+KNOWLEDGE_PAGES = "synapse.knowledge.pages"
+KNOWLEDGE_UNITS = "synapse.knowledge.units"
+KNOWLEDGE_UNIT = "synapse.knowledge.unit"
+KNOWLEDGE_COST_SOURCE = "synapse.knowledge.cost_source"
+KNOWLEDGE_INDEX_KIND = "synapse.knowledge.index_kind"
+KNOWLEDGE_DEGRADED = "synapse.knowledge.degraded"
+KNOWLEDGE_FORMAT = "synapse.knowledge.format"
+KNOWLEDGE_PARSER = "synapse.knowledge.parser"
+KNOWLEDGE_REASON = "synapse.knowledge.reason"
+KNOWLEDGE_FILTERED = "synapse.knowledge.filtered"
+KNOWLEDGE_RERANKED = "synapse.knowledge.reranked"
 
 EXPORTED: tuple[tuple[str, str], ...] = (
     (ORG_ID, "the workspace (tenant) id; Cloud only — a self-hosted install has one"),
@@ -83,10 +106,31 @@ EXPORTED: tuple[tuple[str, str], ...] = (
     (MESSAGES_BEFORE, "messages in the context before a compaction"),
     (MESSAGES_AFTER, "messages in the context after a compaction"),
     (CANCELLED, "true when the work was stopped rather than finished"),
+    (KNOWLEDGE_KB_ID, "a knowledge base's id"),
+    (KNOWLEDGE_DOC_ID, "a knowledge document's id"),
+    (KNOWLEDGE_QUERY_ID, "a knowledge search's id (its trace)"),
+    (KNOWLEDGE_SNAPSHOT_ID, "the index snapshot a search or an indexing ran against"),
+    (KNOWLEDGE_STAGE, "an ingestion stage: fetch, parse, ocr, chunk, enrich, embed, index"),
+    (KNOWLEDGE_LEG, "a search leg: lexical, vector or hybrid"),
+    (KNOWLEDGE_KB_COUNT, "how many knowledge bases a search covered"),
+    (KNOWLEDGE_CANDIDATES, "how many candidates a leg or the fusion returned"),
+    (KNOWLEDGE_HITS, "how many hits a search returned"),
+    (KNOWLEDGE_CHUNKS, "how many chunks a document produced"),
+    (KNOWLEDGE_PAGES, "how many pages a document has"),
+    (KNOWLEDGE_UNITS, "billed units of a knowledge call: tokens, pages or search units"),
+    (KNOWLEDGE_UNIT, "the unit: tokens, pages, search_units or requests"),
+    (KNOWLEDGE_COST_SOURCE, "who paid: platform, byok or local"),
+    (KNOWLEDGE_INDEX_KIND, "the search index: sql-sqlite, sql-postgres, pg, memory, …"),
+    (KNOWLEDGE_DEGRADED, "degradation codes, comma-separated: post_filtered, rerank_failed, …"),
+    (KNOWLEDGE_FORMAT, "a document's format from a fixed list: pdf, docx, xlsx, eml, html, … or other"),
+    (KNOWLEDGE_PARSER, "the parser: basic, docling, libreoffice, eml, web, record"),
+    (KNOWLEDGE_REASON, "a status reason code: budget_cap, egress_blocked, parser_timeout, …"),
+    (KNOWLEDGE_FILTERED, "true when a search carried a metadata filter"),
+    (KNOWLEDGE_RERANKED, "true when a search's candidates were reranked"),
     # OpenTelemetry's GenAI conventions, for model calls.
     ("gen_ai.provider.name", "the model provider: openai, anthropic, gemini, bedrock, …"),
     ("gen_ai.system", "the model provider (the older name for gen_ai.provider.name)"),
-    ("gen_ai.operation.name", "chat"),
+    ("gen_ai.operation.name", "chat, embeddings or rerank"),
     ("gen_ai.request.model", "the model's name as configured (metrics use the model bucket instead)"),
     ("gen_ai.usage.input_tokens", "prompt tokens"),
     ("gen_ai.usage.output_tokens", "completion tokens"),
