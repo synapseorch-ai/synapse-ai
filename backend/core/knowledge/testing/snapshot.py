@@ -62,8 +62,8 @@ def _table(name: str) -> dict[str, Any]:
 def contract_snapshot() -> dict[str, Any]:
     from core import vault_events
     from core.knowledge import (
-        agent_contract, api_models, config, events, filters, ids, kb_settings, parsed, seams, status, telemetry,
-        textsearch, trace, types,
+        agent_contract, api_models, config, events, filters, ids, kb_settings, parsed, pipeline_contract, seams,
+        status, telemetry, textsearch, trace, types,
     )
 
     protocols = {name: _protocol(getattr(seams, name)) for name in (
@@ -108,6 +108,9 @@ def contract_snapshot() -> dict[str, Any]:
                   "label_re": agent_contract.LABEL_RE.pattern},
         "vault_events": {"change": _dataclass(vault_events.VaultChange),
                          "notify": _params(vault_events.notify_vault_change)},
+        "pipeline": {"entrypoint": pipeline_contract.INDEX_ENTRYPOINT,
+                     "context": _dataclass(pipeline_contract.IndexContext),
+                     "outcome": _dataclass(pipeline_contract.IndexOutcome)},
         "step_types": list(api_models.STEP_TYPES),
         "routes": [[r.method, r.path, getattr(r.request, "__name__", None), _type_name(r.response), r.status,
                     sorted(r.surfaces), r.bucket, r.scope] for r in api_models.ROUTES],

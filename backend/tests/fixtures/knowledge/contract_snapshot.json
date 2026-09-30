@@ -626,6 +626,85 @@
   }
  },
  "parsed_schema_version": 1,
+ "pipeline": {
+  "context": [
+   [
+    "kb",
+    "KnowledgeBase"
+   ],
+   [
+    "doc_id",
+    "str"
+   ],
+   [
+    "doc_version",
+    "int"
+   ],
+   [
+    "sha256",
+    "str"
+   ],
+   [
+    "path",
+    "str"
+   ],
+   [
+    "source",
+    "str"
+   ],
+   [
+    "parsed",
+    "ParsedDocument"
+   ],
+   [
+    "snapshot_id",
+    "str"
+   ],
+   [
+    "attribution",
+    "Attribution"
+   ],
+   [
+    "settings",
+    "Mapping[str, Any]"
+   ],
+   [
+    "metadata",
+    "Mapping[str, Any]"
+   ]
+  ],
+  "entrypoint": "core.knowledge.pipeline:index_document",
+  "outcome": [
+   [
+    "status",
+    "Literal['indexed', 'partial']"
+   ],
+   [
+    "chunks",
+    "int"
+   ],
+   [
+    "tokens",
+    "int"
+   ],
+   [
+    "status_reason",
+    "str | None"
+   ],
+   [
+    "stages",
+    "list[StageReport]"
+   ],
+   [
+    "usage",
+    "list[Usage]"
+   ],
+   [
+    "warnings",
+    "list[ParseWarning]"
+   ]
+  ]
+ },
  "protocols": {
   "IngestDispatcher": {
    "attributes": [],

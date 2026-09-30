@@ -26,6 +26,7 @@ module you need. The contract (frozen by KB0, changed only by a request in
 | `trace` | the retrieval trace (v1) and replay |
 | `events` | run/chat events, lifecycle events, webhook names |
 | `ledger` | cost rows, the `usage_logs` mirror, budgets |
+| `pipeline_contract` | the one call from ingestion into indexing |
 | `kb_settings` | the knowledge base record and its folder rules |
 | `config` | the settings, and the `knowledge_enabled()` gate |
 | `api_models` | every API body, and the route table |

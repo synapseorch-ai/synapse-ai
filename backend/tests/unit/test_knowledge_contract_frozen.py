@@ -62,7 +62,7 @@ PURE = [
     "core.knowledge.filters_sql", "core.knowledge.textsearch", "core.knowledge.vectors", "core.knowledge.trace",
     "core.knowledge.events", "core.knowledge.ledger", "core.knowledge.kb_settings", "core.knowledge.config",
     "core.knowledge.api_models", "core.knowledge.agent_contract", "core.knowledge.telemetry",
-    "core.knowledge.jobs", "core.vault_events", "core.knowledge.testing.conformance",
+    "core.knowledge.jobs", "core.knowledge.pipeline_contract", "core.vault_events", "core.knowledge.testing.conformance",
     "core.knowledge.testing.reference_index", "core.knowledge.testing.fakes", "core.knowledge.testing.snapshot",
 ]
 FORBIDDEN = ["numpy", "httpx", "core.llm_providers", "core.react_engine", "core.routes", "core.server",

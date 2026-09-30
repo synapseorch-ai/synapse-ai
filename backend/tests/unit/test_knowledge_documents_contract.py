@@ -138,3 +138,34 @@ class TestStatusMachine:
         assert status.IngestionReport.model_validate_json(report.model_dump_json()) == report
         with pytest.raises(ValidationError):
             status.IngestionReport(doc_id="kdoc_1", path="a.pdf", outcome="done")  # type: ignore[arg-type]
+
+
+class TestTheIndexingHandOff:
+    def test_it_refuses_until_b1_builds_it(self):
+        from core.knowledge.errors import KnowledgeUnavailable
+        from core.knowledge.pipeline_contract import resolve_index_entrypoint
+        with pytest.raises(KnowledgeUnavailable):
+            resolve_index_entrypoint()
+
+    async def test_a_fake_indexer_receives_the_context(self, monkeypatch):
+        from core.knowledge import seams
+        from core.knowledge.kb_settings import KnowledgeBase
+        from core.knowledge.pipeline_contract import (
+            INDEX_ENTRYPOINT, IndexContext, IndexOutcome, resolve_index_entrypoint,
+        )
+        from core.knowledge.types import Attribution
+
+        seen = []
+
+        async def index_document(ctx: IndexContext) -> IndexOutcome:
+            seen.append(ctx)
+            return IndexOutcome(status="indexed", chunks=len(ctx.parsed.blocks), tokens=0)
+
+        monkeypatch.setattr(seams, "_load", lambda dotted: index_document if dotted == INDEX_ENTRYPOINT else None)
+        parsed = ParsedDocument.model_validate_json((FIXTURES / "record.json").read_text("utf-8"))
+        kb = KnowledgeBase(id="kb_00000000000a", name="Tickets", folder="tickets")
+        ctx = IndexContext(kb=kb, doc_id="kdoc_1", doc_version=1, sha256="x", path="tickets/_records/t.json",
+                           source="record", parsed=parsed, snapshot_id="ksnap_1",
+                           attribution=Attribution(kb_id=kb.id, doc_id="kdoc_1"))
+        outcome = await resolve_index_entrypoint()(ctx)
+        assert outcome.status == "indexed" and outcome.chunks == 1 and seen == [ctx]
