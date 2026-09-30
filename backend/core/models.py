@@ -3,7 +3,7 @@ Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.images import checked_images
 
@@ -56,6 +56,10 @@ AGENT_NAME_MAX = 100
 MIN_OUTPUT_TOKENS = 256
 MAX_OUTPUT_TOKENS = 262_144
 
+#: The most knowledge bases one agent may answer from: one search covers them
+#: all (`core.knowledge.api_models.MAX_KBS_PER_SEARCH`, which a test holds equal).
+AGENT_KNOWLEDGE_MAX = 10
+
 
 class Agent(BaseModel):
     id: str
@@ -66,6 +70,10 @@ class Agent(BaseModel):
     tools: list[str] # ["all"] or ["search_codebase", "get_weather"]
     skills: list[str] = [] # skill names (core/skills.py); roster in prompt, body via load_skill
     memory: bool = False # persistent per-agent memory (core/agent_memory.py); index eager, rest on demand
+    # The knowledge bases this agent answers from (Knowledge, D153): while
+    # Knowledge is on, the engine offers it `search_knowledge` / `read_knowledge`
+    # over the active ones (core/knowledge/tools.py). Ids, in the owner's order.
+    knowledge: list[str] = []
     # The native task list (`update_tasks`), on unless turned off; and the whole
     # default tool set, kept unless skipped. The engine read both all along and
     # this model dropped both, so the editor's Planning switch re-ticked after
@@ -95,6 +103,19 @@ class Agent(BaseModel):
     # See core/tool_policy.py. This field is why an agent saved through the API
     # keeps a policy at all: the model drops what it does not declare.
     tool_policy: dict[str, str] = {}
+
+    @field_validator("knowledge")
+    @classmethod
+    def _knowledge_bases(cls, value: list[str]) -> list[str]:
+        """Each id once, in order, blanks dropped; no more than one search covers."""
+        kept: list[str] = []
+        for kb_id in value:
+            kb_id = kb_id.strip()
+            if kb_id and kb_id not in kept:
+                kept.append(kb_id)
+        if len(kept) > AGENT_KNOWLEDGE_MAX:
+            raise ValueError(f"An agent answers from at most {AGENT_KNOWLEDGE_MAX} knowledge bases.")
+        return kept
 
 class Repo(BaseModel):
     id: str
