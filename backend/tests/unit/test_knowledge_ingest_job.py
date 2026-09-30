@@ -187,6 +187,15 @@ class TestRaces:
         assert await run_ingest_job(_job(row)) is None
         assert (await documents.get(row.id)).status == "queued" and indexer.contexts == []
 
+    async def test_a_disabled_base_ingests_nothing(self, indexer):
+        from core.knowledge.api_models import KnowledgeBaseUpdate
+
+        kb = await _kb()
+        row = await _queued(kb, "kb/a.md", "hello")
+        await bases.update_base(kb.id, KnowledgeBaseUpdate(revision=1, status="disabled"))
+        assert await run_ingest_job(_job(row)) is None
+        assert (await documents.get(row.id)).status == "queued" and indexer.contexts == []
+
     async def test_the_tenant_travels_with_the_job(self, indexer, multi_tenant):  # noqa: F811
         with tenant_scope("acme"):
             await enable_knowledge()

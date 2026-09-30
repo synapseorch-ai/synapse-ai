@@ -81,6 +81,8 @@ async def _run(job: IngestJob) -> IngestionReport | None:
     if job.op == "delete" or row.status == "deleting":
         await delete_document(kb, row)
         return None
+    if kb.status != "active":
+        return None  # a disabled base is not followed; switching it back on reconciles what waits
     return await _ingest(kb, row)
 
 
