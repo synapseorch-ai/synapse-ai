@@ -13,7 +13,9 @@ Postgres (scale deployments and embedders). Two rules keep that true:
 * ``JSONType`` renders ``JSONB`` on Postgres and ``JSON`` on everything else.
   Every column here stores and retrieves whole documents; none of them is
   queried with a JSON path operator, so the Postgres-only indexing that JSONB
-  buys is not being given up.
+  buys is not being given up. The one exception is ``knowledge_chunks.meta``,
+  which a Knowledge metadata filter reads key by key — only through
+  ``core/knowledge/filters_sql.py``, whose constructs render per dialect.
 * ``Uuid(as_uuid=True)`` is SQLAlchemy 2.0's dialect-agnostic UUID. It renders
   the native ``UUID`` type on Postgres — byte-identical to the previous
   ``postgresql.UUID`` — and ``CHAR(32)`` elsewhere.
@@ -37,8 +39,8 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    JSON, Boolean, Column, DateTime, Float, Index,
-    Integer, PrimaryKeyConstraint, String, Text, Uuid,
+    JSON, BigInteger, Boolean, CheckConstraint, Column, DateTime, Float, ForeignKey, Index,
+    Integer, LargeBinary, PrimaryKeyConstraint, String, Text, UniqueConstraint, Uuid, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase
@@ -660,3 +662,257 @@ class TenantDB(Base):
     max_queued_runs = Column(Integer, default=1000)
     priority = Column(Integer, default=0)   # higher = dedicated workers
     created_at = Column(DateTime(timezone=True), default=_now)
+
+
+# ---------------------------------------------------------------------------
+# Knowledge — document retrieval (D153; MEMORY/16-knowledge.md in the cloud repo)
+# ---------------------------------------------------------------------------
+#
+# FROZEN CONTRACT (KB0, D153): change these through a contract-change request.
+#
+# The engine owns these five tables in every deployment. Cloud mirrors them
+# column for column (plus `org_id` and FORCE RLS, as it does the eval tables)
+# and adds two Postgres-only columns of its own to `knowledge_chunks` — an
+# untyped `vector` and a generated `tsvector` — which is why neither is here:
+# a Postgres-only type in this module would stop SQLite installs at
+# `create_all`. The search index (`core.knowledge.seams.KnowledgeIndex`) is the
+# only pluggable part; these records never move to an external store.
+#
+# The CHECK values below are spelled out, not imported: this module must not
+# import `core.knowledge`. `test_knowledge_tables.py` holds them equal to the
+# tuples there.
+
+#: `BIGINT` on Postgres; on SQLite exactly `INTEGER`, which makes the column the
+#: table's rowid. A rowid that is not an INTEGER PRIMARY KEY may be renumbered
+#: by VACUUM, and SQLite's FTS5 external-content index maps rows by rowid.
+_BigId = BigInteger().with_variant(Integer, "sqlite")
+
+
+class KnowledgeDocumentDB(Base):
+    """One file (or fetched page, or record) inside a knowledge base's Vault folder."""
+
+    __tablename__ = "knowledge_documents"
+
+    id = Column(String(255), primary_key=True)                # kdoc_<32 hex>
+    tenant_id = _tenant_column()
+    kb_id = Column(String(255), nullable=False)
+    path = Column(String(1024), nullable=False)               # Vault-relative, NFC, POSIX; ≤ 1024 UTF-8 bytes
+    source = Column(String(20), nullable=False)               # upload | web | record | vault
+    source_url = Column(String(2048))
+    status = Column(String(20), nullable=False, default="queued")
+    status_reason = Column(String(64))
+    error = Column(Text)
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime(timezone=True))
+    sha256 = Column(String(64))
+    size_bytes = Column(BigInteger)
+    mime = Column(String(255))
+    etag = Column(String(255))
+    source_modified_at = Column(DateTime(timezone=True))
+    version = Column(Integer, nullable=False, default=0)     # bumps each time new content is indexed
+    title = Column(String(1000))
+    doc_date = Column(String(32))                             # YYYY-MM-DD
+    language = Column(String(16))
+    meta = Column(JSONType)                                   # the document's own metadata (API: `metadata`)
+    report = Column(JSONType)                                 # core.knowledge.status.IngestionReport
+    parser = Column(String(100))
+    parse_cache_key = Column(String(255))
+    snapshot_id = Column(String(255))                         # the snapshot it was last indexed into
+    pages = Column(Integer)
+    chunks = Column(Integer)
+    tokens = Column(Integer)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+    queued_at = Column(DateTime(timezone=True))
+    started_at = Column(DateTime(timezone=True))
+    indexed_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("source IN ('upload', 'web', 'record', 'vault')",
+                        name="ck_knowledge_documents_source"),
+        CheckConstraint("status IN ('queued', 'parsing', 'indexing', 'indexed', 'partial', 'failed', "
+                        "'skipped', 'paused', 'blocked', 'deleting')",
+                        name="ck_knowledge_documents_status"),
+        UniqueConstraint("tenant_id", "kb_id", "path", name="uq_knowledge_documents_tenant_kb_path"),
+        Index("idx_knowledge_documents_tenant_kb_status", "tenant_id", "kb_id", "status"),
+        Index("idx_knowledge_documents_tenant_sha", "tenant_id", "sha256"),
+    )
+
+
+class KnowledgeChunkDB(Base):
+    """One chunk of one document version in one snapshot.
+
+    `id` is the row key (the rowid on SQLite); `chunk_id` is the chunk's
+    deterministic public id (`core.knowledge.ids.chunk_id`), which the search
+    index, traces, citations and the API use. The built-in filter fields
+    (path … indexed_at) are copied from the document so a filter runs on this
+    table alone, inside the retrieval query.
+    """
+
+    __tablename__ = "knowledge_chunks"
+
+    id = Column(_BigId, primary_key=True, autoincrement=True)
+    chunk_id = Column(String(64), nullable=False)             # kch_<32 hex>
+    tenant_id = _tenant_column()
+    kb_id = Column(String(255), nullable=False)
+    doc_id = Column(String(255), ForeignKey("knowledge_documents.id", ondelete="CASCADE"), nullable=False)
+    snapshot_id = Column(String(255), nullable=False)
+    doc_version = Column(Integer, nullable=False)
+    doc_sha256 = Column(String(64))
+    ordinal = Column(Integer, nullable=False)
+    kind = Column(String(20), nullable=False, default="text")  # text | table | sheet_card
+    role = Column(String(10), nullable=False, default="leaf")  # leaf (searched) | parent (expanded into)
+    parent_id = Column(String(64))                            # a parent's chunk_id
+    content = Column(Text, nullable=False)
+    context = Column(Text, nullable=False, default="")        # the enrichment prefix
+    heading_path = Column(JSONType)
+    page_start = Column(Integer)
+    page_end = Column(Integer)
+    char_start = Column(Integer, nullable=False)
+    char_end = Column(Integer, nullable=False)
+    bbox = Column(JSONType)
+    tokens = Column(Integer)
+    lang = Column(String(32), nullable=False, default="simple")  # a core.knowledge.textsearch language
+    block_ids = Column(JSONType)
+    path = Column(String(1024))
+    source = Column(String(20))
+    mime = Column(String(255))
+    title = Column(String(1000))
+    doc_date = Column(String(32))
+    indexed_at = Column(DateTime(timezone=True))
+    meta = Column(JSONType)                                   # document metadata ∪ chunk metadata
+    embedding = Column(LargeBinary)                           # float32 LE (core.knowledge.vectors); SQL index only
+    created_at = Column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('text', 'table', 'sheet_card')", name="ck_knowledge_chunks_kind"),
+        CheckConstraint("role IN ('leaf', 'parent')", name="ck_knowledge_chunks_role"),
+        UniqueConstraint("tenant_id", "chunk_id", name="uq_knowledge_chunks_tenant_chunk"),
+        Index("idx_knowledge_chunks_tenant_scope", "tenant_id", "kb_id", "snapshot_id"),
+        Index("idx_knowledge_chunks_tenant_doc", "tenant_id", "doc_id", "snapshot_id", "ordinal"),
+    )
+
+
+class KnowledgeSnapshotDB(Base):
+    """One version of a knowledge base's index: what model, chunker and enrichment made it.
+
+    A settings change that reshapes the index builds a new snapshot beside the
+    serving one (blue/green); at most one is `active` per knowledge base.
+    """
+
+    __tablename__ = "knowledge_snapshots"
+
+    id = Column(String(255), primary_key=True)                # ksnap_<32 hex>
+    tenant_id = _tenant_column()
+    kb_id = Column(String(255), nullable=False)
+    status = Column(String(20), nullable=False, default="building")
+    signature = Column(String(64))                            # core.knowledge.kb_settings.index_signature
+    embed_model = Column(String(255))
+    embed_dims = Column(Integer)
+    embed_profile_version = Column(String(50))
+    chunker_version = Column(String(50))
+    chunker_settings_hash = Column(String(64))
+    enrichment_mode = Column(String(20))
+    enrichment_version = Column(String(50))
+    index_kind = Column(String(50))
+    docs_total = Column(Integer, nullable=False, default=0)
+    docs_done = Column(Integer, nullable=False, default=0)
+    docs_failed = Column(Integer, nullable=False, default=0)
+    chunks = Column(Integer, nullable=False, default=0)
+    stats = Column(JSONType)
+    created_at = Column(DateTime(timezone=True), default=_now)
+    activated_at = Column(DateTime(timezone=True))
+    retired_at = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('building', 'active', 'retired', 'failed')",
+                        name="ck_knowledge_snapshots_status"),
+        Index("ux_knowledge_snapshots_tenant_kb_active", "tenant_id", "kb_id", unique=True,
+              sqlite_where=text("status = 'active'"), postgresql_where=text("status = 'active'")),
+        Index("idx_knowledge_snapshots_tenant_kb", "tenant_id", "kb_id", "created_at"),
+    )
+
+
+class KnowledgeQueryDB(Base):
+    """One search and its trace (core.knowledge.trace.Trace). Kept 30 days unless retained by an eval set."""
+
+    __tablename__ = "knowledge_queries"
+
+    id = Column(String(255), primary_key=True)                # kq_<32 hex>
+    tenant_id = _tenant_column()
+    surface = Column(String(20), nullable=False)              # tool | step | api | mcp | eval | ui
+    run_id = Column(String(255))
+    session_id = Column(String(255))
+    agent_id = Column(String(255))
+    step_id = Column(String(255))
+    api_key_id = Column(String(255))
+    kb_ids = Column(JSONType)
+    trace_version = Column(Integer, nullable=False)
+    trace = Column(JSONType, nullable=False)
+    query_embedding = Column(LargeBinary)                     # for exact replay; never serialized
+    hit_count = Column(Integer)
+    latency_ms = Column(Integer)
+    est_usd = Column(Float)
+    degraded = Column(Boolean, nullable=False, default=False)
+    verdict = Column(Integer)                                 # a person's rating of the result, when given
+    retained_by = Column(String(255))                         # an eval set holding it: exempt from cleanup
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    __table_args__ = (
+        CheckConstraint("surface IN ('tool', 'step', 'api', 'mcp', 'eval', 'ui')",
+                        name="ck_knowledge_queries_surface"),
+        Index("idx_knowledge_queries_tenant_created", "tenant_id", "created_at"),
+        Index("idx_knowledge_queries_tenant_run", "tenant_id", "run_id"),
+        Index("idx_knowledge_queries_tenant_session", "tenant_id", "session_id"),
+    )
+
+
+class KnowledgeCostDB(Base):
+    """One priced Knowledge call: parse, OCR, embed, rerank, enrich or rewrite.
+
+    The knowledge base's ledger — budgets, cost previews checked against actuals,
+    per-document and per-stage cost. A call no chat path already logged is also
+    mirrored into `usage_logs` (`usage_logged_by = 'ledger'`), which is how
+    retrieval reaches a run's cost and the Usage screens; see
+    `core.knowledge.ledger`.
+    """
+
+    __tablename__ = "knowledge_costs"
+
+    id = Column(_BigId, primary_key=True, autoincrement=True)
+    tenant_id = _tenant_column()
+    at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    kb_id = Column(String(255), nullable=False)
+    doc_id = Column(String(255))
+    query_id = Column(String(255))
+    snapshot_id = Column(String(255))
+    run_id = Column(String(255))
+    session_id = Column(String(255))
+    stage = Column(String(20), nullable=False)
+    cost_source = Column(String(10), nullable=False)
+    model = Column(String(255), nullable=False, default="")
+    provider = Column(String(100))
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    units = Column(Float, nullable=False, default=0.0)
+    unit = Column(String(20), nullable=False, default="tokens")
+    est_usd = Column(Float, nullable=False, default=0.0)
+    charged_microusd = Column(BigInteger)                     # what a wallet settled; NULL for BYOK and OSS
+    priced = Column(Boolean, nullable=False, default=True)
+    usage_logged_by = Column(String(10), nullable=False, default="ledger")  # ledger | chat
+    latency_ms = Column(Integer)
+    request_id = Column(String(255))
+    details = Column(JSONType)
+
+    __table_args__ = (
+        CheckConstraint("stage IN ('parse', 'ocr', 'embed', 'rerank', 'enrich', 'rewrite')",
+                        name="ck_knowledge_costs_stage"),
+        CheckConstraint("cost_source IN ('platform', 'byok', 'local')", name="ck_knowledge_costs_cost_source"),
+        CheckConstraint("unit IN ('tokens', 'pages', 'search_units', 'requests')", name="ck_knowledge_costs_unit"),
+        CheckConstraint("usage_logged_by IN ('ledger', 'chat')", name="ck_knowledge_costs_usage_logged_by"),
+        Index("idx_knowledge_costs_tenant_kb_at", "tenant_id", "kb_id", "at"),
+        Index("idx_knowledge_costs_tenant_run", "tenant_id", "run_id"),
+        Index("idx_knowledge_costs_tenant_doc", "tenant_id", "doc_id"),
+        Index("idx_knowledge_costs_tenant_query", "tenant_id", "query_id"),
+    )

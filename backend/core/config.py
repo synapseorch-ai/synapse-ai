@@ -239,6 +239,21 @@ _DEFAULTS = {
         "max_global_queue_depth": 1_000_000,
         "rate_limit_per_tenant_rps": 1000,
         "pgbouncer_mode": False,
+        # Knowledge — document retrieval (D153): off until its release. The same
+        # keys and values as core/knowledge/config.py DEFAULTS (a test holds them equal).
+        "knowledge_enabled": False,
+        "knowledge_max_file_mb": 100,
+        "knowledge_max_file_pages": 2000,
+        "knowledge_crawl_max_depth": 3,
+        "knowledge_crawl_max_pages": 500,
+        "knowledge_crawl_rps_per_host": 1.0,
+        "knowledge_recrawl_days": 7,
+        "knowledge_trace_retention_days": 30,
+        "knowledge_api_search_per_min": 120,
+        "knowledge_embedding_model": "",
+        "knowledge_rerank_model": "",
+        "knowledge_ingest_concurrency": 2,
+        "knowledge_snapshot_grace_days": 7,
 }
 
 

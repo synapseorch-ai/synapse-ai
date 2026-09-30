@@ -229,6 +229,23 @@ class Settings(BaseModel):
     rate_limit_per_tenant_rps: int = 1000
     pgbouncer_mode: bool = False
 
+    # Knowledge — document retrieval (D153). Off until its release; the caps are
+    # one for every workspace (the plan's storage limit bounds totals). Read by
+    # core/knowledge/config.py.
+    knowledge_enabled: bool = False
+    knowledge_max_file_mb: int = 100
+    knowledge_max_file_pages: int = 2000
+    knowledge_crawl_max_depth: int = 3
+    knowledge_crawl_max_pages: int = 500
+    knowledge_crawl_rps_per_host: float = 1.0
+    knowledge_recrawl_days: int = 7
+    knowledge_trace_retention_days: int = 30
+    knowledge_api_search_per_min: int = 120
+    knowledge_embedding_model: str = ""
+    knowledge_rerank_model: str = ""
+    knowledge_ingest_concurrency: int = 2
+    knowledge_snapshot_grace_days: int = 7
+
 
 class PersonalAddress(BaseModel):
     address1: str = ""

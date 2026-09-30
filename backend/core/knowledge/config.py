@@ -1,0 +1,91 @@
+# FROZEN CONTRACT (KB0, D153): change it through a contract-change request in MEMORY/16-knowledge.md §8.
+"""Knowledge's settings, read in one place, and the one gate: `knowledge_enabled()`.
+
+The keys live in `core.config._DEFAULTS` and the `Settings` model like every
+other setting. **Knowledge is off until its release** (Naveen, 2026-09-30,
+D153): the feature branch is pinned into cloud before release, so a switch —
+not the branch — keeps it dark. Cloud overlays its platform switch onto
+`knowledge_enabled` through its settings provider, so there is one gate for
+routes, tools, steps and the Vault hook alike.
+
+Per-file and per-crawl caps are settings, one for every plan: the plan's
+`vault_mb` already bounds how much a workspace can store (D153 #8, #11, #14).
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+
+#: The keys and their shipped defaults. `core.config._DEFAULTS` carries the same
+#: values; a test holds the two equal.
+DEFAULTS: dict[str, Any] = {
+    "knowledge_enabled": False,
+    "knowledge_max_file_mb": 100,
+    "knowledge_max_file_pages": 2000,
+    "knowledge_crawl_max_depth": 3,
+    "knowledge_crawl_max_pages": 500,
+    "knowledge_crawl_rps_per_host": 1.0,
+    "knowledge_recrawl_days": 7,
+    "knowledge_trace_retention_days": 30,
+    "knowledge_api_search_per_min": 120,
+    "knowledge_embedding_model": "",
+    "knowledge_rerank_model": "",
+    "knowledge_ingest_concurrency": 2,
+    "knowledge_snapshot_grace_days": 7,
+}
+
+
+@dataclass(frozen=True)
+class KnowledgeSettings:
+    enabled: bool
+    max_file_mb: int
+    max_file_pages: int
+    crawl_max_depth: int
+    crawl_max_pages: int
+    crawl_rps_per_host: float
+    recrawl_days: int
+    trace_retention_days: int
+    api_search_per_min: int
+    embedding_model: str
+    rerank_model: str
+    ingest_concurrency: int
+    snapshot_grace_days: int
+
+
+def _get(settings: Mapping[str, Any], key: str) -> Any:
+    value = settings.get(key)
+    return DEFAULTS[key] if value is None else value
+
+
+def knowledge_settings(settings: Mapping[str, Any] | None = None) -> KnowledgeSettings:
+    """The typed view of the current (or given) settings.
+
+    `knowledge_embedding_model` falls back to the workspace's `embedding_model`,
+    so a workspace that already chose one for code search is not asked twice.
+    """
+    if settings is None:
+        from core.config import load_settings
+        settings = load_settings()
+    embedding = str(_get(settings, "knowledge_embedding_model") or settings.get("embedding_model") or "")
+    return KnowledgeSettings(
+        enabled=bool(_get(settings, "knowledge_enabled")),
+        max_file_mb=int(_get(settings, "knowledge_max_file_mb")),
+        max_file_pages=int(_get(settings, "knowledge_max_file_pages")),
+        crawl_max_depth=int(_get(settings, "knowledge_crawl_max_depth")),
+        crawl_max_pages=int(_get(settings, "knowledge_crawl_max_pages")),
+        crawl_rps_per_host=float(_get(settings, "knowledge_crawl_rps_per_host")),
+        recrawl_days=int(_get(settings, "knowledge_recrawl_days")),
+        trace_retention_days=int(_get(settings, "knowledge_trace_retention_days")),
+        api_search_per_min=int(_get(settings, "knowledge_api_search_per_min")),
+        embedding_model=embedding,
+        rerank_model=str(_get(settings, "knowledge_rerank_model") or ""),
+        ingest_concurrency=int(_get(settings, "knowledge_ingest_concurrency")),
+        snapshot_grace_days=int(_get(settings, "knowledge_snapshot_grace_days")),
+    )
+
+
+def knowledge_enabled(settings: Mapping[str, Any] | None = None) -> bool:
+    """The gate. Routes answer 404, tools are absent, steps refuse and the Vault hook
+    does nothing while this is false."""
+    return knowledge_settings(settings).enabled
