@@ -265,21 +265,28 @@ class IndexEntry:
 
 @dataclass(frozen=True)
 class LexicalQuery:
+    """`path_prefix` keeps only chunks whose document path is it or under it, component-wise
+    ("contracts" never matches "contracts2/…"). An index with `filter_pushdown` applies it
+    inside the query, like the filter (CCR-1)."""
+
     scopes: tuple[Scope, ...]
     text: str
     lang: str
     filter: FilterNode | None
     limit: int
+    path_prefix: str | None = None
 
 
 @dataclass(frozen=True)
 class VectorQuery:
-    """All scopes in one query share an embedding model and width."""
+    """All scopes in one query share an embedding model and width. `path_prefix` as in
+    `LexicalQuery`."""
 
     scopes: tuple[Scope, ...]
     vector: Sequence[float]
     filter: FilterNode | None
     limit: int
+    path_prefix: str | None = None
 
 
 @dataclass(frozen=True)

@@ -2945,6 +2945,10 @@
    [
     "limit",
     "int"
+   ],
+   [
+    "path_prefix",
+    "str | None"
    ]
   ],
   "OcrPage": [
@@ -3105,6 +3109,10 @@
    [
     "limit",
     "int"
+   ],
+   [
+    "path_prefix",
+    "str | None"
    ]
   ]
  },

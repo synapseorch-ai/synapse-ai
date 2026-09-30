@@ -251,6 +251,39 @@ async def filters_run_inside_the_index(index: KnowledgeIndex, harness: IndexHarn
         _check(_ids(lex) == [_by_ordinal(corpus.SCOPE_A1, 0)], "the keyword leg filters too")
 
 
+async def path_prefix_runs_inside_the_index(index: KnowledgeIndex, harness: IndexHarness) -> None:
+    """CCR-1: a path prefix narrows a leg inside the query, component-wise, like a filter."""
+    entries = corpus.entries(corpus.SCOPE_A1)
+    await _load(index, harness, entries)
+    under_contracts = {_by_ordinal(corpus.SCOPE_A1, n) for n in range(5)}
+    if index.capabilities.vector:
+        query = corpus.direction(0, 2, 0.5)
+        for prefix in ("contracts", "contracts/", "/contracts"):
+            result = await index.search_vector(VectorQuery((corpus.SCOPE_A1,), query, None, 16, path_prefix=prefix))
+            _well_formed(result)
+            _check(result.filtered, f"{prefix!r}: an index with filter pushdown says it applied the prefix")
+            _check(set(_ids(result)) == under_contracts,
+                   f"{prefix!r}: only contracts/…, never contracts2/…, got {len(result.candidates)} chunks")
+            if index.capabilities.search_mode == "exact":
+                want = [cid for cid, _ in _vector_order([e for e in entries if e.chunk_id in under_contracts], query)]
+                _check(_ids(result) == want, f"{prefix!r}: in cosine order")
+        top = await index.search_vector(VectorQuery((corpus.SCOPE_A1,), corpus.direction(7), None, 3,
+                                                    path_prefix="contracts"))
+        _check(len(top.candidates) == 3, "a prefixed top-k is filled when enough chunks match, never padded")
+        both = await index.search_vector(VectorQuery((corpus.SCOPE_A1,), corpus.direction(1), parse_filter(
+            {"region": "CH"}), 16, path_prefix="contracts"))
+        _check(set(_ids(both)) == {_by_ordinal(corpus.SCOPE_A1, 3), _by_ordinal(corpus.SCOPE_A1, 4)},
+               "a prefix and a filter both apply")
+    if index.capabilities.lexical:
+        lex = await index.search_lexical(LexicalQuery((corpus.SCOPE_A1,), "renewal", "simple", None, 10,
+                                                      path_prefix="contracts"))
+        _check(lex.filtered and _ids(lex) == [_by_ordinal(corpus.SCOPE_A1, 2)],
+               "the keyword leg applies the prefix: 'renewal' under contracts/ is only the Acme chunk")
+        other = await index.search_lexical(LexicalQuery((corpus.SCOPE_A1,), "renewal", "simple", None, 10,
+                                                        path_prefix="contracts2"))
+        _check(_ids(other) == [_by_ordinal(corpus.SCOPE_A1, 5)], "'contracts2' is its own folder")
+
+
 async def no_pushdown_says_so(index: KnowledgeIndex, harness: IndexHarness) -> None:
     await _load(index, harness, corpus.entries(corpus.SCOPE_A1))
     result = await index.search_vector(VectorQuery((corpus.SCOPE_A1,), corpus.direction(0),
@@ -349,6 +382,8 @@ CASES: list[ConformanceCase] = [
     ConformanceCase("tenants_are_isolated", tenants_are_isolated),
     ConformanceCase("filters_run_inside_the_index", filters_run_inside_the_index,
                     needs=frozenset({"vector", "filter_pushdown"})),
+    ConformanceCase("path_prefix_runs_inside_the_index", path_prefix_runs_inside_the_index,
+                    needs=frozenset({"filter_pushdown"})),
     ConformanceCase("no_pushdown_says_so", no_pushdown_says_so, needs=frozenset({"vector"}),
                     lacks=frozenset({"filter_pushdown"})),
     ConformanceCase("delete_document_is_scoped", delete_document_is_scoped),

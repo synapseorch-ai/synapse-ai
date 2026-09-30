@@ -139,12 +139,14 @@ class InMemoryKnowledgeIndex:
 
     # ── searches ───────────────────────────────────────────────────────────────
 
-    def _filtered(self, pool: list[IndexEntry], node) -> tuple[list[IndexEntry], bool]:
-        if node is None:
+    def _filtered(self, pool: list[IndexEntry], node, path_prefix: str | None = None
+                  ) -> tuple[list[IndexEntry], bool]:
+        if node is None and not path_prefix:
             return pool, False
         if not self.capabilities.filter_pushdown:
             return pool, False
-        return [e for e in pool if evaluate(node, e.fields)], True
+        return [e for e in pool if evaluate(node, e.fields)
+                and (not path_prefix or path_under(str(e.fields.get("path") or ""), path_prefix))], True
 
     async def search_lexical(self, query: LexicalQuery) -> LegResult:
         if not self.capabilities.lexical:
@@ -152,14 +154,15 @@ class InMemoryKnowledgeIndex:
         pool = self._in(query.scopes)
         terms = tokens(query.text)
         if not terms or not pool:
-            return LegResult("lexical", (), filtered=query.filter is not None and self.capabilities.filter_pushdown,
+            wanted = query.filter is not None or bool(query.path_prefix)
+            return LegResult("lexical", (), filtered=wanted and self.capabilities.filter_pushdown,
                              exact=True, scanned=len(pool))
         docs = {e.chunk_id: Counter(tokens(e.text)) for e in pool}
         n = len(pool)
         avgdl = sum(sum(c.values()) for c in docs.values()) / n or 1.0
         df = {t: sum(1 for c in docs.values() if t in c) for t in set(terms)}
         idf = {t: math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5)) for t in df}
-        kept, filtered = self._filtered(pool, query.filter)
+        kept, filtered = self._filtered(pool, query.filter, query.path_prefix)
         scored = []
         for e in kept:
             counts = docs[e.chunk_id]
@@ -181,7 +184,7 @@ class InMemoryKnowledgeIndex:
             if len(e.vector) != len(query.vector):  # type: ignore[arg-type]
                 raise IndexDimensionError(f"query has {len(query.vector)} dimensions; snapshot "
                                           f"{e.snapshot_id} holds {len(e.vector)}")  # type: ignore[arg-type]
-        kept, filtered = self._filtered(pool, query.filter)
+        kept, filtered = self._filtered(pool, query.filter, query.path_prefix)
         scored = [(e, _cosine(e.vector, query.vector)) for e in kept]  # type: ignore[arg-type]
         exact = self.capabilities.search_mode == "exact"
         return LegResult("vector", _ranked(scored, query.limit), filtered=filtered, exact=exact,

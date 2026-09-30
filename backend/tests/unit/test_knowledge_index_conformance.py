@@ -43,12 +43,23 @@ def test_every_variant_runs_a_real_share_of_the_cases():
 async def test_a_broken_index_fails_the_suite(harness):
     """The cases catch what they claim to: an index that ignores its filter fails."""
     class IgnoresFilters(InMemoryKnowledgeIndex):
-        def _filtered(self, pool, node):
+        def _filtered(self, pool, node, path_prefix=None):
             return pool, True  # says it filtered, did not
 
     case = next(c for c in conformance.CASES if c.name == "filters_run_inside_the_index")
     with pytest.raises(AssertionError):
         await conformance.run_case(case, IgnoresFilters, harness)
+
+
+async def test_an_index_that_ignores_the_prefix_fails_the_prefix_case(harness):
+    """CCR-1: the prefix case catches an index that says it applied the prefix and did not."""
+    class IgnoresPrefix(InMemoryKnowledgeIndex):
+        def _filtered(self, pool, node, path_prefix=None):
+            return super()._filtered(pool, node, None)[0], True
+
+    case = next(c for c in conformance.CASES if c.name == "path_prefix_runs_inside_the_index")
+    with pytest.raises(AssertionError):
+        await conformance.run_case(case, IgnoresPrefix, harness)
 
 
 async def test_a_leaky_index_fails_the_tenant_case(harness):
