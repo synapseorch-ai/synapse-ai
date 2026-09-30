@@ -829,7 +829,7 @@ export function VaultTab() {
                             <div className="flex-1 flex flex-col items-center justify-center gap-2 p-8 text-center">
                                 <h3 className="text-sm font-semibold text-text">Not a text file</h3>
                                 <p className="max-w-sm text-xs text-text-muted">
-                                    This file can&apos;t be opened here. Agents and knowledge bases still read it.
+                                    This file can&apos;t be opened here. Agents can still reference it with @[path].
                                 </p>
                             </div>
                         ) : selectedNode.ext === '.json' ? (
