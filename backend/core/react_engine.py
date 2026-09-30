@@ -18,7 +18,7 @@ from core.vault import maybe_vault, MentionReader
 from core.compaction import maybe_compact
 from core.session import (
     _get_session_id, _get_session_state,
-    _apply_sticky_args, _clear_session_embeddings,
+    _apply_sticky_args,
     get_recent_history_messages, _get_conversation_history,
     _save_conversation_turn, call_record, build_session_history_tool,
     render_session_history, SESSION_HISTORY_TOOL_NAME, image_notes, panel_text,

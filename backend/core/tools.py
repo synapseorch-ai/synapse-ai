@@ -3,7 +3,6 @@ Tool definitions, aggregation, and system prompt construction.
 Extracted from server.py to eliminate duplication between chat() and chat_stream().
 """
 import json
-import time
 import datetime
 import zoneinfo
 
@@ -582,8 +581,8 @@ def build_system_prompt(agent_system_template, tools_json, session_id, session_s
 
     Identity, reasoning protocol, tools (for providers without native tool
     calling), capabilities, example, workspace context — nothing that changes
-    per turn. What used to follow a ``\n---\n`` separator (date/time, turn
-    budget, RAG context) is built by `build_volatile_tail` and sent at the end
+    per turn. What used to follow a ``\n---\n`` separator (date/time and the
+    turn budget) is built by `build_volatile_tail` and sent at the end
     of the user turn instead. Splitting one string on a separator was the
     previous design; it broke the moment a linked DB or repo — or a user's own
     markdown rule — put ``---`` inside the stable text, which is why the two
@@ -691,39 +690,22 @@ A direct answer in plain markdown, citing the specific value(s) from the tool re
 
 
 def build_volatile_tail(session_id, session_state_getter, turns_remaining=None, max_turns=None) -> str:
-    """Everything the model must see fresh each turn: current date/time, the
-    turn budget, and any active RAG context.
+    """Everything the model must see fresh each turn: current date/time and the
+    turn budget.
 
     Sent at the END of the user turn rather than in the system prompt. Every
     provider's prompt cache is a prefix cache — tools, then system, then the
     conversation — so per-turn text anywhere before the transcript invalidates
     the transcript's cache entry on every call. Placed last, it is the only
     thing that misses.
+
+    `session_id` and `session_state_getter` are accepted and no longer read:
+    they fed the report-RAG block, removed with the rest of report RAG (D158).
     """
     now = datetime.datetime.now(zoneinfo.ZoneInfo("UTC"))
     current_date = now.strftime("%B %d, %Y")
     current_time = now.strftime("%I:%M %p")
     timezone = "UTC"
-
-    # ── Resolve RAG context (volatile) ──
-    rag_context_block = ""
-    try:
-        ss = session_state_getter(session_id)
-        last_report = ss.get("last_report_context")
-        if last_report and (time.time() - last_report.get("timestamp", 0) < 600):
-            rag_context_block = f"""
-### ACTIVE RAG CONTEXT (AUTOMATICALLY INJECTED)
-You have {last_report.get('row_count', 'some')} items of '{last_report.get('type', 'data')}' embedded in memory (generated {int(time.time() - last_report.get('timestamp', 0))}s ago).
-
-**HOW TO ANSWER QUESTIONS ABOUT THIS DATA:**
-1. **AGGREGATION QUESTIONS** (totals, averages, counts, min/max): If a SUMMARY with `numeric_aggregations` is in the tool output above, use those pre-computed values directly. They are accurate.
-2. **SPECIFIC LOOKUPS** (e.g., "email from John", "meeting tomorrow", "flight details"): Call `search_embedded_report` with a descriptive query. The full data is embedded in RAG memory.
-3. **PATTERN/TREND QUESTIONS** (e.g., "frequent topics", "common contacts"): Call `search_embedded_report` with the pattern description.
-4. **DO NOT RE-RUN TOOL FOR EXISTING DATA:** The data is already here. Only call tools if the user explicitly asks for NEW/DIFFERENT data (e.g., "refresh", "different date", "different query").
-"""
-            _log.debug(f"💉 Injected RAG context into system prompt")
-    except Exception as e:
-        _log.debug(f"Error resolving RAG context: {e}")
 
     # ── Resolve turn-budget block (volatile) ──
     turns_block = ""
@@ -753,10 +735,7 @@ You have **{turns_remaining} turn(s) remaining** out of {max_turns} total.
 - On the last turn you MUST answer in plain text (no tool calls), even if the task is not fully complete.
 """
 
-    tail = ""
-    if rag_context_block:
-        tail += rag_context_block
-    tail += f"""
+    tail = f"""
 ### CURRENT DATE & TIME CONTEXT
 **Current Date:** {current_date}
 **Current Time:** {current_time}

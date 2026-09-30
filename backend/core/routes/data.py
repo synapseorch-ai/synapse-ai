@@ -822,13 +822,13 @@ async def clear_recent_history():
 
 @router.delete("/api/history/all")
 async def clear_all_history():
-    """Clears ALL session files AND long-term ChromaDB memory (report RAG)."""
+    """Clears ALL session files AND the long-term ChromaDB `chat_history` collection."""
     import os
     import core.server as _server
 
     session_state.clear()
     cleared = await clear_all_chat_sessions()
-    # Clear ChromaDB report-RAG collections
+    # Clear the ChromaDB chat_history collection
     if _server.memory_store:
         success = _server.memory_store.clear_memory()
         if not success:

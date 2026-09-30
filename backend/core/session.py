@@ -516,11 +516,3 @@ def _apply_sticky_args(session_id: str, tool_name: str, tool_args: Any, tool_sch
     if not isinstance(tool_args, dict):
         tool_args = {}
     return tool_args
-
-
-def _clear_session_embeddings(session_id: str):
-    """Clear session-scoped embeddings (used internally by report auto-embed)."""
-    from core.server import memory_store
-    if memory_store:
-        memory_store.clear_session_embeddings(session_id)
-        print(f"DEBUG: Cleared session embeddings for {session_id}")

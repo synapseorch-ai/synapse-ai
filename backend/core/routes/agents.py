@@ -345,7 +345,7 @@ def _categorize_tools(tools: list[str]) -> str:
                                "write_file", "list_directory", "directory_tree", "search_files",
                                "get_file_info", "list_allowed_directories", "list_directory_with_sizes",
                                "search_codebase", "grep", "glob", "edit_file", "create_file"],
-        "Data Processing": ["execute_python", "parse_xlsx", "parse_csv", "search_embedded_report"],
+        "Data Processing": ["execute_python", "parse_xlsx", "parse_csv"],
         "Communication & Workspace": ["gmail_", "gcal_", "gdrive_", "slack_", "jira_", "send_", "google_"],
         "Database": ["run_sql", "list_tables", "get_table_schema", "db_"],
         "Persistence & Vault": ["vault_", "memory_"],
