@@ -88,6 +88,16 @@ async def _fingerprint(path: str) -> tuple[str, int, datetime | None] | None:
     return await asyncio.to_thread(read)
 
 
+async def _given(change: VaultChange, path: str) -> tuple[str, int, datetime | None] | None:
+    """The writer's own hash and size (it had the bytes), with the file's mtime."""
+    from core.storage import get_blob_store
+
+    stat = await asyncio.to_thread(get_blob_store().stat, _key(path))
+    if stat is None:
+        return None
+    return change.sha256, change.size, stat.modified_at  # type: ignore[return-value]
+
+
 # ── the hook ───────────────────────────────────────────────────────────────────
 
 async def observe(change: VaultChange) -> None:
@@ -132,7 +142,7 @@ async def _written(path: str, kbs: list[KnowledgeBase], change: VaultChange, *, 
     kb = kb_for_path(path, kbs)
     if kb is None or ignored(path) or change.is_dir:
         return []
-    found = await _fingerprint(path)
+    found = await _given(change, path) if change.sha256 and change.size is not None else await _fingerprint(path)
     if found is None:  # gone again before we looked
         return await _deleted(path, kbs, reason="vault_delete")
     sha, size, modified = found
@@ -184,7 +194,7 @@ async def rehome(before: KnowledgeBase, after: KnowledgeBase) -> None:
     for row in await documents.tombstone_under(before.id):
         await dispatch.enqueue(before.id, "delete", "reconcile", path=row.path, doc_id=row.id)
     await ensure_folder(after)
-    await reconcile(after)
+    await dispatch.enqueue(after.id, "reindex", "reconcile")
 
 
 # ── reconcile ──────────────────────────────────────────────────────────────────
@@ -312,7 +322,8 @@ async def reconcile_all(*, startup: bool = False) -> dict[str, Drift]:
 
 
 async def reconcile_forever(interval: float = RECONCILE_INTERVAL_S) -> None:
-    """OSS's loop: at startup, then every `interval` seconds, while Knowledge is on."""
+    """OSS's loop: at startup, then every `interval` seconds, while Knowledge is on. Each pass also
+    sweeps upload sessions past their expiry."""
     from core.knowledge.config import knowledge_enabled
 
     startup = not _scale_mode()
@@ -321,6 +332,9 @@ async def reconcile_forever(interval: float = RECONCILE_INTERVAL_S) -> None:
             if knowledge_enabled():
                 await reconcile_all(startup=startup)
                 startup = False
+                from core.knowledge.ingest import sweep_expired_uploads
+
+                await sweep_expired_uploads()
         except Exception as exc:  # noqa: BLE001 — the loop outlives any one pass
             _log.warning(f"knowledge reconcile pass failed: {exc}")
         await asyncio.sleep(interval)

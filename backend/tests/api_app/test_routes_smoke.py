@@ -47,7 +47,7 @@ CRITICAL_PATHS = [
 
 EXPECTED_PREFIXES = ["/api/v1/", "/api/v2/", "/api/agents", "/api/orchestrations",
                      "/api/settings", "/api/usage", "/api/sessions", "/api/tools",
-                     "/api/vault", "/api/logs", "/api/schedules", "/api/repos"]
+                     "/api/vault", "/api/logs", "/api/schedules", "/api/repos", "/api/knowledge"]
 
 
 def test_critical_routes_registered(test_app):

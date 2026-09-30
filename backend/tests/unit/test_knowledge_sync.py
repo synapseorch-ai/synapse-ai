@@ -251,7 +251,9 @@ class TestReconcile:
         before, after = await bases.update_base(kb.id, KnowledgeBaseUpdate(revision=1, folder="other"))
         jobs.jobs.clear()
         await sync.rehome(before, after)
-        assert sorted(_ops(jobs)) == [("delete", "kb/a.md"), ("upsert", "other/b.md")]
+        assert sorted(_ops(jobs)) == [("delete", "kb/a.md"), ("reindex", None)]
+        await sync.reconcile(after)
+        assert ("upsert", "other/b.md") in _ops(jobs)
 
     async def test_a_new_base_gets_its_folder(self, store_kind):
         kb = await _kb(folder="fresh/kb")

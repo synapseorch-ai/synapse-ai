@@ -53,7 +53,7 @@ def test_the_api_matches_its_snapshot():
 LANE_MODULES = {
     "__init__.py",
     # A1 — ingestion
-    "bases.py", "documents.py", "sync.py", "report.py", "dispatch.py", "jobs.py",
+    "bases.py", "documents.py", "sync.py", "report.py", "dispatch.py", "jobs.py", "ingest.py",
     # B1a — retrieval
     "chunker.py", "pipeline.py", "index_sql.py", "search.py", "trace_store.py", "snapshots.py",
     # B1b — agent tools and citations
