@@ -1,9 +1,10 @@
-"""Knowledge's internal API: knowledge bases, uploads, records and documents (A1, D157).
+"""Knowledge's internal API: knowledge bases, uploads, records and documents (A1, D157),
+search and a search's trace (B1b, D161).
 
 Paths are `/api` + the frozen route table (`core.knowledge.api_models.ROUTES`),
-with its bodies and status codes; a test holds the two equal. Search, traces,
-costs, cost previews and web sources are other lanes' routes and are not
-mounted here.
+with its bodies and status codes; a test holds the two equal. Costs, cost
+previews, replay and web sources are other lanes' routes and are not mounted
+here.
 
 Knowledge is off until its release: while `knowledge_enabled` is false every
 route here answers 404, as if it did not exist.
@@ -18,8 +19,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from core.knowledge.api_models import (
     DeleteAccepted, DocumentDetail, DocumentOut, IngestAccepted, KnowledgeBaseCreate, KnowledgeBaseOut,
-    KnowledgeBaseUpdate, RecordIngestRequest, UploadComplete, UploadInit, UploadSession,
+    KnowledgeBaseUpdate, RecordIngestRequest, SearchRequest, SearchResponse, UploadComplete, UploadInit,
+    UploadSession,
 )
+from core.knowledge.trace import Trace
+
+#: Search's own "not found" codes (`core.knowledge.search`): a base or a pinned snapshot the
+#: search names does not exist.
+_NOT_FOUND_CODES = frozenset({"kb_not_found", "snapshot_not_found"})
 
 
 def _require_enabled() -> None:
@@ -35,7 +42,7 @@ router = APIRouter(dependencies=[Depends(_require_enabled)])
 def _errors(handler: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
     """Knowledge's typed errors as HTTP answers."""
     from core.knowledge.bases import UnknownKnowledgeBase
-    from core.knowledge.errors import FilterError, KnowledgePathError, StaleRevision
+    from core.knowledge.errors import FilterError, KnowledgeError, KnowledgePathError, StaleRevision
     from core.knowledge.ingest import NotFound, UploadError
 
     @functools.wraps(handler)
@@ -53,6 +60,10 @@ def _errors(handler: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[A
                                                           "msg": str(exc)}]) from exc
         except (KnowledgePathError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except KnowledgeError as exc:  # last: the ones above are its subclasses
+            if exc.code in _NOT_FOUND_CODES:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise
 
     return wrapped
 
@@ -234,3 +245,27 @@ async def delete_document(doc_id: str) -> DeleteAccepted:
 
     await ingest.delete_document(await _document(doc_id))
     return DeleteAccepted()
+
+
+# ── search ─────────────────────────────────────────────────────────────────────
+
+@router.post("/api/knowledge/search", response_model=SearchResponse)
+@_errors
+async def search_knowledge(body: SearchRequest) -> SearchResponse:
+    """Search knowledge bases, as the Knowledge screen's test search does: labelled hits with their
+    citations. The search is traced as the UI's (`origin.surface == "ui"`)."""
+    from core.knowledge import search
+    from core.knowledge.trace import Origin
+
+    return await search.search(body, origin=Origin(surface="ui"))
+
+
+@router.get("/api/knowledge/queries/{query_id}", response_model=Trace)
+async def get_query_trace(query_id: str) -> Trace:
+    """A search's trace: the request, every leg's candidates, the cuts and the hits (30 days)."""
+    from core.knowledge import trace_store
+
+    trace = await trace_store.get(query_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="No such query.")
+    return trace
