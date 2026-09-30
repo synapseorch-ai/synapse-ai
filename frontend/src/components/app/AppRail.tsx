@@ -26,7 +26,7 @@ import {
     Label, Mark, Menu, MenuItem, MenuLabel, MenuLink, MenuSegment, MenuSeparator, usePersisted,
 } from '@/components/ui';
 import { AUTH_CHANGED_EVENT, canSignOut, readAuthStatus } from '@/lib/auth';
-import { PRIMARY_NAV, type NavEntry } from '@/lib/nav';
+import { PRIMARY_NAV, visibleItems, type NavEntry, type NavFlag } from '@/lib/nav';
 import { useNotifications } from '@/components/notifications/NotificationProvider';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { useNavGuard } from './NavGuard';
@@ -122,6 +122,26 @@ export function AppRail({
     // Sign out is offered only where there is a password to sign back in with
     // (F221). Read again when Settings turns login on or off.
     const [signOutShown, setSignOutShown] = useState(false);
+    // Entries behind a settings flag (Knowledge, until its release) show only when it is on.
+    const [flags, setFlags] = useState<Partial<Record<NavFlag, boolean>>>({});
+    useEffect(() => {
+        let live = true;
+        const read = () => fetch('/api/settings')
+            .then(r => r.json())
+            .then(data => {
+                if (live) {
+                    setFlags({
+                        messaging_enabled: !!data?.messaging_enabled,
+                        coding_agent_enabled: !!data?.coding_agent_enabled,
+                        knowledge_enabled: !!data?.knowledge_enabled,
+                    });
+                }
+            })
+            .catch(() => { });
+        read();
+        window.addEventListener(AUTH_CHANGED_EVENT, read);
+        return () => { live = false; window.removeEventListener(AUTH_CHANGED_EVENT, read); };
+    }, []);
     useEffect(() => {
         let live = true;
         const read = () => readAuthStatus().then(s => { if (live) setSignOutShown(canSignOut(s)); });
@@ -203,7 +223,7 @@ export function AppRail({
                             )} />
                         )}
                         <div className="space-y-1">
-                            {items.map(item => (
+                            {visibleItems(items, flags).map(item => (
                                 <RailLink
                                     key={item.href}
                                     href={item.href}

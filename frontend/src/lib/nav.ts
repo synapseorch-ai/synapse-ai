@@ -14,13 +14,13 @@
 import {
     Braces,
     ArrowLeftRight, BookOpen, Bot, Clock, Cloud, Cpu, Database, DollarSign, Eraser, FlaskConical, LayoutDashboard,
-    FolderGit2, Gauge, Globe, Key, LayoutGrid, LifeBuoy, MessageSquare, MessagesSquare,
+    FolderGit2, Gauge, Globe, Key, LayoutGrid, LifeBuoy, Library, MessageSquare, MessagesSquare,
     ScrollText, Server, Shield, Target, Vault, Workflow, Wrench,
     type LucideIcon,
 } from 'lucide-react';
 
 /** A settings flag from GET /api/settings that gates a nav entry. */
-export type NavFlag = 'messaging_enabled' | 'coding_agent_enabled';
+export type NavFlag = 'messaging_enabled' | 'coding_agent_enabled' | 'knowledge_enabled';
 
 export type NavEntry = {
     /** Legacy settings tab id, where one exists — also the SettingsView `initialTab`. */
@@ -112,6 +112,11 @@ export const PRIMARY_NAV: NavGroup[] = [
             {
                 id: 'vault', label: 'Vault', href: '/vault', icon: Vault,
                 blurb: 'Knowledge files and skills agents reference with @[path] in their prompts.',
+            },
+            {
+                id: 'knowledge', label: 'Knowledge', href: '/knowledge', icon: Library,
+                blurb: 'Vault folders made searchable, so agents answer from your documents with sources.',
+                flag: 'knowledge_enabled',
             },
         ],
     },
