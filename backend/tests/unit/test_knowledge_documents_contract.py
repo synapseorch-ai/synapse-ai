@@ -141,9 +141,16 @@ class TestStatusMachine:
 
 
 class TestTheIndexingHandOff:
-    def test_it_refuses_until_b1_builds_it(self):
+    def test_it_resolves_to_b1s_index_document(self):
+        from core.knowledge.pipeline import index_document
+        from core.knowledge.pipeline_contract import resolve_index_entrypoint
+        assert resolve_index_entrypoint() is index_document
+
+    def test_without_the_indexing_module_it_is_an_honest_refusal(self, monkeypatch):
+        from core.knowledge import seams
         from core.knowledge.errors import KnowledgeUnavailable
         from core.knowledge.pipeline_contract import resolve_index_entrypoint
+        monkeypatch.setattr(seams, "_load", lambda dotted: None)
         with pytest.raises(KnowledgeUnavailable):
             resolve_index_entrypoint()
 
