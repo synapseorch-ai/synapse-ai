@@ -820,6 +820,15 @@ async def lifespan(app: FastAPI):
             print(f"Warning: Failed to start schedule manager: {e}")
             app.state.schedule_manager = None
 
+        # --- Knowledge (D157): the Vault hook, and reconcile at startup and every
+        # minute. Both do nothing while `knowledge_enabled` is off; the hook reads
+        # the switch on every change.
+        try:
+            from core.knowledge.sync import start as start_knowledge
+            app.state.knowledge_task = start_knowledge()
+        except Exception as e:
+            print(f"Warning: Knowledge's Vault hook not started: {e}")
+
         yield
         
     except Exception as e:
@@ -847,6 +856,13 @@ async def lifespan(app: FastAPI):
             _filesystem_manager_task.cancel()
             try:
                 await _filesystem_manager_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        _knowledge_task = getattr(app.state, "knowledge_task", None)
+        if _knowledge_task and not _knowledge_task.done():
+            _knowledge_task.cancel()
+            try:
+                await _knowledge_task
             except (asyncio.CancelledError, Exception):
                 pass
         # Scale layer cleanup

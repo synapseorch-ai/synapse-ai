@@ -8,6 +8,7 @@ When the blob store has no filesystem — S3 — every operation goes through it
 with the tenant applied inside the store (`core.storage`).  A store with a directory
 is the vault itself, and the routes work on that directory.
 """
+import hashlib
 import json
 import os
 import shutil
@@ -119,6 +120,34 @@ def _segment(name: str) -> str:
                    "no surrounding spaces or control characters, at most 255 bytes",
         )
     return name
+
+
+async def _changed(rel: str, op: str, *, source: str = "auto", content: str | None = None,
+                   is_dir: bool = False) -> None:
+    """Tell whoever follows the Vault (Knowledge, D157) that `rel` changed — after the write, never raising.
+
+    Only a write to the Vault itself: `source="local"` on an object store writes the
+    working copy, which nothing reads back as the Vault.
+    """
+    try:
+        from core.storage import get_blob_store
+        from core.vault_events import notify_vault_change
+
+        if source == "local" and get_blob_store().path_for(_S3_VAULT_REL) is None:
+            return
+        data = content.encode("utf-8") if content is not None else None
+        await notify_vault_change(
+            unicodedata.normalize("NFC", rel.replace("\\", "/")).strip("/"), op,  # type: ignore[arg-type]
+            is_dir=is_dir, sha256=hashlib.sha256(data).hexdigest() if data is not None else None,
+            size=len(data) if data is not None else None, source="route")
+    except Exception as exc:  # noqa: BLE001 — a follower never fails a Vault write
+        from core.log import get_logger
+        get_logger(__name__).warning(f"vault change on {rel!r} not announced: {exc}")
+
+
+def _rel_of(p: Path) -> str:
+    """A local path as a Vault-relative POSIX path."""
+    return p.resolve().relative_to(_vault_root().resolve()).as_posix()
 
 
 def _s3_key_for(rel: str) -> str:
@@ -361,6 +390,7 @@ async def create_vault_file(req: CreateFileRequest):
         if s3.exists(_s3_key_for(file_rel)):
             raise HTTPException(status_code=409, detail="File already exists")
         s3.put(_s3_key_for(file_rel), initial_content)
+        await _changed(file_rel, "write", source=req.source, content=initial_content)
         return {"path": file_rel, "name": name, "ext": suffix, "content": initial_content}
 
     parent = _resolve(req.path) if req.path.strip() else _vault_root()
@@ -373,6 +403,7 @@ async def create_vault_file(req: CreateFileRequest):
         target.write_text(initial_content, encoding="utf-8")
         root = _vault_root()
         rel = str(target.resolve().relative_to(root.resolve()))
+        await _changed(_rel_of(target), "write", source=req.source, content=initial_content)
         return {"path": rel, "name": target.name, "ext": suffix, "content": initial_content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -395,6 +426,7 @@ async def update_vault_file(req: UpdateFileRequest):
         if suffix not in _ALLOWED_EXTENSIONS:
             raise HTTPException(status_code=400, detail="Cannot edit this file type")
         s3.put(_s3_key_for(rel), req.content)
+        await _changed(rel, "write", source=req.source, content=req.content)
         return {"status": "ok", "path": rel}
 
     p = _resolve(req.path)
@@ -404,6 +436,7 @@ async def update_vault_file(req: UpdateFileRequest):
         raise HTTPException(status_code=400, detail="Cannot edit this file type")
     try:
         p.write_text(req.content, encoding="utf-8")
+        await _changed(_rel_of(p), "write", source=req.source, content=req.content)
         return {"status": "ok", "path": req.path}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -435,6 +468,7 @@ async def create_vault_folder(req: CreateFolderRequest):
         # ~30 s on the next PUT (the cloud vault learnt this the hard way).
         placeholder_key = _s3_key_for(f"{folder_rel}/.keep")
         s3.put(placeholder_key, "\n")
+        await _changed(folder_rel, "mkdir", source=req.source, is_dir=True)
         return {"path": folder_rel, "name": name, "type": "folder"}
 
     parent = _resolve(req.path) if req.path.strip() else _vault_root()
@@ -447,6 +481,7 @@ async def create_vault_folder(req: CreateFolderRequest):
         target.mkdir(parents=True)
         root = _vault_root()
         rel = str(target.resolve().relative_to(root.resolve()))
+        await _changed(_rel_of(target), "mkdir", source=req.source, is_dir=True)
         return {"path": rel, "name": name, "type": "folder"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -479,8 +514,10 @@ async def delete_vault_item(req: DeleteItemRequest):
         # Delete as a file (idempotent if key doesn't exist)
         s3.delete(_s3_key_for(rel))
         # Also sweep any keys under a same-named folder prefix (recursive delete)
-        for sub_key in s3.list(f"{_S3_VAULT_REL}/{rel}/"):
+        swept = s3.list(f"{_S3_VAULT_REL}/{rel}/")
+        for sub_key in swept:
             s3.delete(sub_key)
+        await _changed(rel, "delete", source=req.source, is_dir=bool(swept))
         return {"status": "ok", "path": rel}
 
     p = _resolve(req.path)
@@ -498,10 +535,12 @@ async def delete_vault_item(req: DeleteItemRequest):
                    "has saved there — delete the files inside it instead",
         )
     try:
-        if p.is_dir():
+        was_dir, rel = p.is_dir(), _rel_of(p)
+        if was_dir:
             shutil.rmtree(p)
         else:
             p.unlink()
+        await _changed(rel, "delete", source=req.source, is_dir=was_dir)
         return {"status": "ok", "path": req.path}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

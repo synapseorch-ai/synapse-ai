@@ -52,6 +52,38 @@ _PREFIX = "vault"
 VAULT_PREFIX = _PREFIX
 
 
+def _announce(root: Path, path: Path, op: str, content: str | None = None) -> None:
+    """Tell whoever follows the Vault (Knowledge, D157) that `path` changed. Never raises.
+
+    `write` and `forget` are synchronous, so the notification is scheduled on the
+    running loop rather than awaited; with no observer installed (a tool
+    subprocess never has one) or no loop running, nothing is scheduled —
+    Knowledge's reconcile finds the change instead.
+    """
+    try:
+        import asyncio
+        import hashlib
+        import unicodedata
+
+        from core.vault_events import get_vault_observer, notify_vault_change
+
+        if get_vault_observer() is None:
+            return
+        asyncio.get_running_loop()  # raises when no loop runs: nothing to schedule on
+    except RuntimeError:
+        return
+    try:
+        rel = unicodedata.normalize("NFC", Path(path).resolve().relative_to(Path(root).resolve()).as_posix())
+        data = content.encode("utf-8") if content is not None else None
+        from core.background import spawn_background
+
+        spawn_background(notify_vault_change(
+            rel, op, sha256=hashlib.sha256(data).hexdigest() if data is not None else None,  # type: ignore[arg-type]
+            size=len(data) if data is not None else None, source="tool"), name="vault-change")
+    except Exception:  # noqa: BLE001 — a follower never fails a Vault write
+        return
+
+
 class LocalVault:
     """The vault is a directory. What a plain install has always had."""
 
@@ -68,6 +100,7 @@ class LocalVault:
             path.chmod(0o644)
         except OSError:
             pass
+        _announce(self.root, path, "write", content)
 
     def ensure_local(self, path: Path) -> Path:
         return Path(path)
@@ -77,6 +110,7 @@ class LocalVault:
 
     def forget(self, path: Path) -> None:
         Path(path).unlink(missing_ok=True)
+        _announce(self.root, Path(path), "delete")
 
 
 class S3Vault:
@@ -129,6 +163,7 @@ class S3Vault:
         except OSError:
             pass
         self._store.put(self._key(path), content)
+        _announce(self.root, path, "write", content)
 
     def ensure_local(self, path: Path) -> Path:
         """Materialise one file if this pod does not have it yet."""
@@ -174,6 +209,7 @@ class S3Vault:
         except ValueError:
             pass
         path.unlink(missing_ok=True)
+        _announce(self.root, path, "delete")
 
 
 def get_vault():
