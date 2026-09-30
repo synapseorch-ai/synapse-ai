@@ -7,9 +7,10 @@ prefix, credential and endpoint handling (including the MinIO / R2
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from core.storage.base import tenant_key
+from core.storage.base import CHUNK_SIZE, BlobStat, tenant_key
 
 
 class S3BlobStore:
@@ -50,6 +51,35 @@ class S3BlobStore:
         # another tenant's key from one of their own.
         cut = f"{tenant_key('')}"
         return [k[len(cut):] if k.startswith(cut) else k for k in keys]
+
+    def _relative(self, key: str) -> str:
+        cut = tenant_key("")
+        return key[len(cut):] if key.startswith(cut) else key
+
+    def put_bytes(self, key: str, data: bytes, *, content_type: str | None = None) -> None:
+        self.client.upload_bytes(tenant_key(key), data, content_type)
+
+    def get_bytes(self, key: str) -> bytes | None:
+        return self.client.download_bytes(tenant_key(key))
+
+    def iter_bytes(self, key: str, chunk_size: int = CHUNK_SIZE) -> Iterator[bytes] | None:
+        return self.client.stream(tenant_key(key), chunk_size)
+
+    def put_stream(self, key: str, chunks: Iterable[bytes], *,
+                   content_type: str | None = None) -> tuple[int, str]:
+        return self.client.upload_stream(tenant_key(key), chunks, content_type)
+
+    def stat(self, key: str) -> BlobStat | None:
+        head = self.client.head(tenant_key(key))
+        if head is None:
+            return None
+        return BlobStat(key=key.lstrip("/"), size=int(head["size"] or 0), modified_at=head["modified_at"],
+                        etag=head["etag"])
+
+    def list_stats(self, prefix: str = "") -> list[BlobStat]:
+        return [BlobStat(key=self._relative(o["key"]), size=int(o["size"] or 0), modified_at=o["modified_at"],
+                         etag=o["etag"])
+                for o in self.client.list_objects(tenant_key(prefix))]
 
     def path_for(self, key: str) -> Path | None:
         """No filesystem path exists for an object in S3.

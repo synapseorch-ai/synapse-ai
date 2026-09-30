@@ -17,7 +17,7 @@ An embedder registers its own with ``set_blob_store()``. The shipped product
 installs ``S3BlobStore`` when a bucket is configured — see
 ``install_configured_blob_store``.
 """
-from core.storage.base import BlobStore, LocalBlobStore, get_blob_store, set_blob_store
+from core.storage.base import BlobStat, BlobStore, LocalBlobStore, get_blob_store, set_blob_store
 from core.storage.s3 import S3BlobStore
 
 
@@ -44,6 +44,7 @@ def install_configured_blob_store() -> bool:
 
 
 __all__ = [
+    "BlobStat",
     "BlobStore",
     "LocalBlobStore",
     "S3BlobStore",
