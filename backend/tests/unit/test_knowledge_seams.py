@@ -32,7 +32,14 @@ class _Answers:
 
 
 class TestDefaults:
-    def test_an_unbuilt_index_is_an_honest_refusal(self):
+    def test_the_default_index_is_the_sql_one(self):
+        from core.knowledge.index_sql import SqlKnowledgeIndex
+        index = seams.get_knowledge_index()
+        assert isinstance(index, SqlKnowledgeIndex) and isinstance(index, seams.KnowledgeIndex)
+        assert seams.get_knowledge_index() is index, "resolved once, then reused"
+
+    def test_an_unbuilt_index_is_an_honest_refusal(self, monkeypatch):
+        monkeypatch.setattr(seams, "_load", lambda dotted: None)
         with pytest.raises(KnowledgeUnavailable):
             seams.get_knowledge_index()
 
@@ -70,8 +77,8 @@ class TestSetters:
         assert seams.get_ingest_dispatcher() is dispatcher
         assert seams.get_ocr_provider() is ocr
         seams.reset_all()
-        with pytest.raises(KnowledgeUnavailable):
-            seams.get_knowledge_index()
+        from core.knowledge.index_sql import SqlKnowledgeIndex
+        assert isinstance(seams.get_knowledge_index(), SqlKnowledgeIndex), "None restores the SQL default"
         assert seams.get_reranker({}) is None
         assert seams.get_ocr_provider() is None
 
