@@ -118,7 +118,9 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         # `gpt*`, `chatgpt*` and the o-series (`o1`, `o3-mini`, `o4-mini`…).
         # Only `gpt*` used to count, so the o-series fell through to Ollama
         # (F62). `o` + a digit, not a bare `o`, so `orca-mini` stays local.
-        prefixes=("gpt", "chatgpt"), pattern=re.compile(r"o\d"),
+        # And the embedding models Settings offers, which went to Ollama (F322):
+        # `text-embedding-3-*` and `-ada-*` — Google's are `text-embedding-00N`.
+        prefixes=("gpt", "chatgpt", "text-embedding-3-", "text-embedding-ada-"), pattern=re.compile(r"o\d"),
         keys=("openai_key",), readiness="key",
         chat="_chat_openai", embed="_embed_via_openai", error="Cloud API Error", caps=_NATIVE,
     ),
@@ -129,8 +131,10 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         id="gemini", label="Gemini", mode="cloud",
-        # Gemini, Gemma and Lyria: the ids Google serves.
-        prefixes=("gemini", "gemma", "lyria"),
+        # Gemini, Gemma and Lyria: the ids Google serves. And its embedding
+        # models that are not `gemini-embedding-*`: `text-embedding-004`,
+        # `embedding-001` — offered by Settings, and sent to Ollama (F322).
+        prefixes=("gemini", "gemma", "lyria"), pattern=re.compile(r"(?:text-)?embedding-\d{3}(?!\d)"),
         keys=("gemini_key",), readiness="key",
         chat="_chat_gemini", embed="_embed_via_gemini", error="Cloud API Error", caps=_NATIVE,
     ),

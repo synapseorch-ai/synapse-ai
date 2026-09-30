@@ -12,6 +12,10 @@ hands over its own mode is sent. The table must reproduce every recording.
 The one intended difference is `MIXED_CASE`: ids whose case the old chat
 dispatch did not ignore. Each must route as its lower-case form does.
 
+Recorded since, on purpose: F322 moved five embedding ids off Ollama —
+`text-embedding-3-small`, `-3-large`, `text-embedding-ada-002` to OpenAI,
+`text-embedding-004` and `embedding-001` to Gemini.
+
 `PF1_WRITE_GOLDEN=1` rewrites the file from whatever the code does now — only
 ever from the chains' code, or to record a change a commit makes on purpose.
 """

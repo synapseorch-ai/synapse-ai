@@ -7991,19 +7991,28 @@
   "chat_bare": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "embedding-001",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      null
      ],
-     "http": "http://127.0.0.1:11434/api/generate",
-     "model": "embedding-001",
-     "options": null,
-     "think": null
+     "call": "call_gemini",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "gemini"
     }
    ],
    "outcome": "ok"
@@ -8011,22 +8020,28 @@
   "chat_capped": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "options",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "embedding-001",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-gemini"
      ],
-     "http": "http://ollama.test:11434/api/generate",
-     "model": "embedding-001",
-     "options": {
-      "num_predict": 1000
-     },
-     "think": null
+     "call": "call_gemini",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "gemini"
     }
    ],
    "outcome": "ok"
@@ -8034,19 +8049,28 @@
   "chat_tools": {
    "calls": [
     {
-     "body_keys": [
-      "messages",
-      "model",
-      "stream",
-      "tools"
+     "args": [
+      "embedding-001",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-gemini"
      ],
-     "http": "http://ollama.test:11434/api/chat",
-     "model": "embedding-001",
-     "options": null,
-     "think": null
+     "call": "call_gemini",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": "<tools>"
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "gemini"
     }
    ],
    "outcome": "ok"
@@ -8059,9 +8083,9 @@
        "t"
       ],
       "embedding-001",
-      "<settings>"
+      "k-gemini"
      ],
-     "call": "_embed_ollama",
+     "call": "_embed_gemini",
      "kwargs": {}
     }
    ],
@@ -8078,14 +8102,12 @@
        "t"
       ],
       "embedding-001",
-      {
-       "<settings+>": {
-        "__embed_output_dim": 256
-       }
-      }
+      "k-gemini"
      ],
-     "call": "_embed_ollama",
-     "kwargs": {}
+     "call": "_embed_gemini",
+     "kwargs": {
+      "output_dim": 256
+     }
     }
    ],
    "outcome": {
@@ -8094,8 +8116,8 @@
    }
   },
   "images": true,
-  "mode": "local",
-  "provider": "ollama"
+  "mode": "cloud",
+  "provider": "gemini"
  },
  "embedding-gecko-001": {
   "chat_bare": {
@@ -21341,19 +21363,28 @@
   "chat_bare": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "text-embedding-004",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      null
      ],
-     "http": "http://127.0.0.1:11434/api/generate",
-     "model": "text-embedding-004",
-     "options": null,
-     "think": null
+     "call": "call_gemini",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "gemini"
     }
    ],
    "outcome": "ok"
@@ -21361,22 +21392,28 @@
   "chat_capped": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "options",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "text-embedding-004",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-gemini"
      ],
-     "http": "http://ollama.test:11434/api/generate",
-     "model": "text-embedding-004",
-     "options": {
-      "num_predict": 1000
-     },
-     "think": null
+     "call": "call_gemini",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "gemini"
     }
    ],
    "outcome": "ok"
@@ -21384,19 +21421,28 @@
   "chat_tools": {
    "calls": [
     {
-     "body_keys": [
-      "messages",
-      "model",
-      "stream",
-      "tools"
+     "args": [
+      "text-embedding-004",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "k-gemini"
      ],
-     "http": "http://ollama.test:11434/api/chat",
-     "model": "text-embedding-004",
-     "options": null,
-     "think": null
+     "call": "call_gemini",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": "<tools>"
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "gemini"
     }
    ],
    "outcome": "ok"
@@ -21409,9 +21455,9 @@
        "t"
       ],
       "text-embedding-004",
-      "<settings>"
+      "k-gemini"
      ],
-     "call": "_embed_ollama",
+     "call": "_embed_gemini",
      "kwargs": {}
     }
    ],
@@ -21428,14 +21474,12 @@
        "t"
       ],
       "text-embedding-004",
-      {
-       "<settings+>": {
-        "__embed_output_dim": 256
-       }
-      }
+      "k-gemini"
      ],
-     "call": "_embed_ollama",
-     "kwargs": {}
+     "call": "_embed_gemini",
+     "kwargs": {
+      "output_dim": 256
+     }
     }
    ],
    "outcome": {
@@ -21444,8 +21488,8 @@
    }
   },
   "images": true,
-  "mode": "local",
-  "provider": "ollama"
+  "mode": "cloud",
+  "provider": "gemini"
  },
  "text-embedding-3": {
   "chat_bare": {
@@ -21561,19 +21605,30 @@
   "chat_bare": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "text-embedding-3-large",
+      [
+       {
+        "content": "sys",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      null
      ],
-     "http": "http://127.0.0.1:11434/api/generate",
-     "model": "text-embedding-3-large",
-     "options": null,
-     "think": null
+     "call": "call_openai",
+     "kwargs": {
+      "images": null,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "openai"
     }
    ],
    "outcome": "ok"
@@ -21581,22 +21636,31 @@
   "chat_capped": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "options",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "text-embedding-3-large",
+      [
+       {
+        "content": "sys",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "k-openai"
      ],
-     "http": "http://ollama.test:11434/api/generate",
-     "model": "text-embedding-3-large",
-     "options": {
-      "num_predict": 1000
-     },
-     "think": null
+     "call": "call_openai",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "openai"
     }
    ],
    "outcome": "ok"
@@ -21604,19 +21668,30 @@
   "chat_tools": {
    "calls": [
     {
-     "body_keys": [
-      "messages",
-      "model",
-      "stream",
-      "tools"
+     "args": [
+      "text-embedding-3-large",
+      [
+       {
+        "content": "sys",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "k-openai"
      ],
-     "http": "http://ollama.test:11434/api/chat",
-     "model": "text-embedding-3-large",
-     "options": null,
-     "think": null
+     "call": "call_openai",
+     "kwargs": {
+      "images": null,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": "<tools>"
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "openai"
     }
    ],
    "outcome": "ok"
@@ -21629,9 +21704,9 @@
        "t"
       ],
       "text-embedding-3-large",
-      "<settings>"
+      "k-openai"
      ],
-     "call": "_embed_ollama",
+     "call": "_embed_openai",
      "kwargs": {}
     }
    ],
@@ -21648,13 +21723,9 @@
        "t"
       ],
       "text-embedding-3-large",
-      {
-       "<settings+>": {
-        "__embed_output_dim": 256
-       }
-      }
+      "k-openai"
      ],
-     "call": "_embed_ollama",
+     "call": "_embed_openai",
      "kwargs": {}
     }
    ],
@@ -21664,26 +21735,37 @@
    }
   },
   "images": true,
-  "mode": "local",
-  "provider": "ollama"
+  "mode": "cloud",
+  "provider": "openai"
  },
  "text-embedding-3-small": {
   "chat_bare": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "text-embedding-3-small",
+      [
+       {
+        "content": "sys",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      null
      ],
-     "http": "http://127.0.0.1:11434/api/generate",
-     "model": "text-embedding-3-small",
-     "options": null,
-     "think": null
+     "call": "call_openai",
+     "kwargs": {
+      "images": null,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "openai"
     }
    ],
    "outcome": "ok"
@@ -21691,22 +21773,31 @@
   "chat_capped": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "options",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "text-embedding-3-small",
+      [
+       {
+        "content": "sys",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "k-openai"
      ],
-     "http": "http://ollama.test:11434/api/generate",
-     "model": "text-embedding-3-small",
-     "options": {
-      "num_predict": 1000
-     },
-     "think": null
+     "call": "call_openai",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "openai"
     }
    ],
    "outcome": "ok"
@@ -21714,19 +21805,30 @@
   "chat_tools": {
    "calls": [
     {
-     "body_keys": [
-      "messages",
-      "model",
-      "stream",
-      "tools"
+     "args": [
+      "text-embedding-3-small",
+      [
+       {
+        "content": "sys",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "k-openai"
      ],
-     "http": "http://ollama.test:11434/api/chat",
-     "model": "text-embedding-3-small",
-     "options": null,
-     "think": null
+     "call": "call_openai",
+     "kwargs": {
+      "images": null,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": "<tools>"
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "openai"
     }
    ],
    "outcome": "ok"
@@ -21739,9 +21841,9 @@
        "t"
       ],
       "text-embedding-3-small",
-      "<settings>"
+      "k-openai"
      ],
-     "call": "_embed_ollama",
+     "call": "_embed_openai",
      "kwargs": {}
     }
    ],
@@ -21758,13 +21860,9 @@
        "t"
       ],
       "text-embedding-3-small",
-      {
-       "<settings+>": {
-        "__embed_output_dim": 256
-       }
-      }
+      "k-openai"
      ],
-     "call": "_embed_ollama",
+     "call": "_embed_openai",
      "kwargs": {}
     }
    ],
@@ -21774,26 +21872,37 @@
    }
   },
   "images": true,
-  "mode": "local",
-  "provider": "ollama"
+  "mode": "cloud",
+  "provider": "openai"
  },
  "text-embedding-ada-002": {
   "chat_bare": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "text-embedding-ada-002",
+      [
+       {
+        "content": "sys",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      null
      ],
-     "http": "http://127.0.0.1:11434/api/generate",
-     "model": "text-embedding-ada-002",
-     "options": null,
-     "think": null
+     "call": "call_openai",
+     "kwargs": {
+      "images": null,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "openai"
     }
    ],
    "outcome": "ok"
@@ -21801,22 +21910,31 @@
   "chat_capped": {
    "calls": [
     {
-     "body_keys": [
-      "model",
-      "options",
-      "prompt",
-      "stream",
-      "system"
+     "args": [
+      "text-embedding-ada-002",
+      [
+       {
+        "content": "sys",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "k-openai"
      ],
-     "http": "http://ollama.test:11434/api/generate",
-     "model": "text-embedding-ada-002",
-     "options": {
-      "num_predict": 1000
-     },
-     "think": null
+     "call": "call_openai",
+     "kwargs": {
+      "images": null,
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": null
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "openai"
     }
    ],
    "outcome": "ok"
@@ -21824,19 +21942,30 @@
   "chat_tools": {
    "calls": [
     {
-     "body_keys": [
-      "messages",
-      "model",
-      "stream",
-      "tools"
+     "args": [
+      "text-embedding-ada-002",
+      [
+       {
+        "content": "sys",
+        "role": "system"
+       },
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "k-openai"
      ],
-     "http": "http://ollama.test:11434/api/chat",
-     "model": "text-embedding-ada-002",
-     "options": null,
-     "think": null
+     "call": "call_openai",
+     "kwargs": {
+      "images": null,
+      "prompt_cache": true,
+      "reasoning": null,
+      "tools": "<tools>"
+     }
     },
     {
-     "log_usage": "ollama"
+     "log_usage": "openai"
     }
    ],
    "outcome": "ok"
@@ -21849,9 +21978,9 @@
        "t"
       ],
       "text-embedding-ada-002",
-      "<settings>"
+      "k-openai"
      ],
-     "call": "_embed_ollama",
+     "call": "_embed_openai",
      "kwargs": {}
     }
    ],
@@ -21868,13 +21997,9 @@
        "t"
       ],
       "text-embedding-ada-002",
-      {
-       "<settings+>": {
-        "__embed_output_dim": 256
-       }
-      }
+      "k-openai"
      ],
-     "call": "_embed_ollama",
+     "call": "_embed_openai",
      "kwargs": {}
     }
    ],
@@ -21884,8 +22009,8 @@
    }
   },
   "images": true,
-  "mode": "local",
-  "provider": "ollama"
+  "mode": "cloud",
+  "provider": "openai"
  },
  "tts-1": {
   "chat_bare": {
