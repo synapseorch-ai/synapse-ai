@@ -25,6 +25,8 @@ from __future__ import annotations
 import base64
 import binascii
 
+from core.providers.registry import provider_for
+
 #: Every provider that can see an image accepts these four and no others.
 ALLOWED_MIME = ("image/png", "image/jpeg", "image/gif", "image/webp")
 
@@ -124,19 +126,17 @@ def validate(images: list[str] | None) -> list[str]:
     return list(images)
 
 
-#: Providers that cannot see an image, and quietly drop it.
-#:
-#: DeepSeek and HuggingFace log a warning and discard; the CLI providers
-#: discard with no warning at all. In every case the person watched their
-#: attachment go into the composer, get sent, and be answered as if it were not
-#: there — which reads as the agent ignoring them.
-_BLIND_PREFIXES = ("deepseek", "hf.", "cli.")
-
-
 def model_can_see_images(model: str) -> bool:
-    """Whether sending an image to this model does anything."""
+    """Whether sending an image to this model does anything.
+
+    The provider table says (`Capabilities.images`). Some providers cannot see
+    an image and quietly drop it: DeepSeek and HuggingFace log a warning and
+    discard; the CLI providers discard with no warning at all. In every case
+    the person watched their attachment go into the composer, get sent, and be
+    answered as if it were not there — which reads as the agent ignoring them.
+    """
     name = (model or "").strip().lower()
-    return bool(name) and not name.startswith(_BLIND_PREFIXES)
+    return bool(name) and provider_for(name).caps.images
 
 
 def checked_images(field: str = "images"):

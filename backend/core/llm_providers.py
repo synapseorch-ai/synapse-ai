@@ -29,6 +29,7 @@ from botocore.config import Config
 
 from core.config import LLM_REQUEST_TIMEOUT
 from core.telemetry import spans as _spans
+from core.providers import registry as _providers
 
 from core.log import get_logger
 
@@ -441,14 +442,10 @@ def _ollama_refusal(response, base: str) -> "_OllamaRefused | None":
 OLLAMA_MODEL = "llama3"
 
 
-_OPENAI_REASONING_RE = re.compile(r"o\d")
-
-
 def _is_openai_model(m: str) -> bool:
     """`gpt*`, `chatgpt*`, and the o-series reasoning models (`o1`, `o3-mini`,
-    `o4-mini`…). Only `gpt*` used to count, so the o-series fell through to
-    Ollama (F62). `o` + a digit, not a bare `o`, so `orca-mini` stays local."""
-    return m.startswith(("gpt", "chatgpt")) or bool(_OPENAI_REASONING_RE.match(m))
+    `o4-mini`…) — the provider table's OpenAI entry (F62)."""
+    return _providers.provider("openai").matches(m)
 
 
 #: OpenAI ids that are not chat-completions models. Audio, image, realtime,
@@ -474,7 +471,7 @@ def is_openai_chat_model(model_id: str) -> bool:
 
 def _is_gemini_model(m: str) -> bool:
     """Gemini, Gemma and Lyria ids — the ones the router sends to Google."""
-    return m.startswith(("gemini", "gemma", "lyria"))
+    return _providers.provider("gemini").matches(m)
 
 
 #: Gemini ids that list `generateContent` but are not chat models (F187):
@@ -510,75 +507,12 @@ def detect_mode_from_model(model_name: str) -> str:
     'cloud' branch, as `oaic.` is — answering 'local' for it sent every call to
     Ollama with the literal `locv1.<model>` as its name (F114).
     """
-    if not model_name:
-        return "local"
-    m = model_name.lower()
-    if m.startswith("cli."):
-        return "cli"
-    if _is_openai_model(m):
-        return "cloud"
-    if m.startswith("claude"):
-        return "cloud"
-    if _is_gemini_model(m):
-        return "cloud"
-    if m.startswith("bedrock"):
-        return "bedrock"
-    if m.startswith("grok"):
-        return "cloud"
-    if m.startswith("deepseek"):
-        return "cloud"
-    if m.startswith("synapse."):
-        return "cloud"
-    if m.startswith("oaic."):
-        return "cloud"
-    if m.startswith("locv1."):
-        return "cloud"  # a local server, but the v1 branch dispatches it — see above
-    if m.startswith("ollama."):
-        return "local"
-    if m.startswith("hf."):
-        return "hf"
-    return "local"
+    return _providers.provider_for(model_name).mode
 
 
 def detect_provider_from_model(model_name: str) -> str:
-    """Detect the provider name from a model name prefix."""
-    if not model_name:
-        return "ollama"
-    m = model_name.lower()
-    # CLI session providers
-    if m.startswith("cli.claude"):
-        return "anthropic_cli"
-    if m.startswith("cli.gemini"):
-        return "gemini_cli"
-    if m.startswith("cli.codex"):
-        return "codex_cli"
-    if m.startswith("cli.copilot"):
-        return "github_copilot_cli"
-    if m.startswith("cli."):
-        return "cli"
-    if _is_openai_model(m):
-        return "openai"
-    if m.startswith("claude"):
-        return "anthropic"
-    if _is_gemini_model(m):
-        return "gemini"
-    if m.startswith("bedrock"):
-        return "bedrock"
-    if m.startswith("grok"):
-        return "grok"
-    if m.startswith("deepseek"):
-        return "deepseek"
-    if m.startswith("synapse."):
-        return "model_gateway"
-    if m.startswith("oaic."):
-        return "openai_compatible"
-    if m.startswith("locv1."):
-        return "local_compatible"
-    if m.startswith("ollama."):
-        return "ollama"
-    if m.startswith("hf."):
-        return "huggingface"
-    return "ollama"
+    """Detect the provider name from a model name prefix (`core.providers.registry`)."""
+    return _providers.provider_for(model_name).id
 
 
 
@@ -2027,11 +1961,10 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     from google.genai import errors as _genai_errors
     from google.genai import types
 
-    GEMINI_TIMEOUT = LLM_REQUEST_TIMEOUT   # seconds per attempt
     MAX_RETRIES = 5
 
-    # This call's own key's client (F321). Its HTTP timeout sits 5 s above
-    # GEMINI_TIMEOUT, so a wait_for around the call would fire first.
+    # This call's own key's client (F321). Its HTTP timeout, the call's only
+    # one, sits 5 s above LLM_REQUEST_TIMEOUT.
     client = _gemini_client_for(api_key, timeout_ms=_GEMINI_CLIENT_TIMEOUT_MS)
 
     contents = _convert_messages_for_gemini(messages, images=images)
@@ -3197,6 +3130,339 @@ def _messages_to_transcript(messages: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+class ChatCall(NamedTuple):
+    """One chat call, as every provider adapter receives it.
+
+    What `generate_response_ex` has worked out before dispatch — the system
+    prompt with memory folded in, the reasoning plan, the caps — so an adapter
+    only puts it in its provider's shape.
+    """
+    model: str
+    prompt: object
+    history: list | None
+    system: str
+    settings: dict
+    tools: list | None
+    images: list[str] | None
+    prompt_cache: bool
+    reasoning: object  # core.reasoning.ReasoningPlan | None
+    #: The planned response cap, sent to the providers that always take one.
+    max_out: int
+    #: A cap someone set (this call's, else the workspace's), or None: the
+    #: providers that were never sent a default get one only then (F263).
+    sent_cap: int | None
+    #: This call's own cap (an agent's), which beats Bedrock's own override.
+    agent_cap: int | None
+    prompt_blocks: list[str] | None
+    volatile_tail: str | None
+    reasoning_effort: str | None
+
+    def messages(self) -> list[dict]:
+        """The history and this turn's message — a new list for each call."""
+        messages = list(self.history or [])
+        messages.append({"role": "user", "content": self.prompt})
+        return messages
+
+    def cap_kwargs(self) -> dict:
+        """`max_tokens` only when someone set a cap: an unset call keeps today's shape."""
+        return {"max_tokens": self.sent_cap} if self.sent_cap else {}
+
+
+# ─── Chat adapters, named by the provider table ─────────────────────────────
+# Each puts a `ChatCall` in its provider's shape and calls it by its module
+# name, so a test that patches `call_openai` and friends still reaches them.
+
+async def _chat_openai(call: ChatCall, spec) -> LLMResult:
+    return await call_openai(
+        call.model,
+        [{"role": "system", "content": call.system}] + call.messages(),
+        call.settings.get("openai_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        **call.cap_kwargs(),
+    )
+
+
+async def _chat_anthropic(call: ChatCall, spec) -> LLMResult:
+    return await call_anthropic(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings.get("anthropic_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+        prompt_blocks=call.prompt_blocks,
+        volatile_tail=call.volatile_tail,
+    )
+
+
+async def _chat_gemini(call: ChatCall, spec) -> LLMResult:
+    return await call_gemini(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings.get("gemini_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+    )
+
+
+async def _chat_bedrock(call: ChatCall, spec) -> LLMResult:
+    from core import usage_tracker
+
+    messages = call.messages()
+    text, input_tokens, output_tokens, cache_read, cache_write, stop_reason, tool_calls, reasoning = await call_bedrock(
+        call.model,
+        messages,
+        call.system,
+        call.settings.get("aws_region"),
+        # `bedrock_max_tokens` is the tenant's own Bedrock override and beats
+        # the workspace cap; an agent's cap is more specific than either (F263).
+        ({**call.settings, "bedrock_max_tokens": None} if call.agent_cap else call.settings),
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+    )
+    # Bedrock's invoke_model fallback path returns zero tokens; estimate from text.
+    if input_tokens == 0 and output_tokens == 0:
+        input_tokens = usage_tracker.estimate_tokens_from_text(
+            call.system + " ".join(str(m.get("content", "")) for m in messages)
+        )
+        output_tokens = usage_tracker.estimate_tokens_from_text(text)
+    return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write, stop_reason, tool_calls,
+                     reasoning)
+
+
+async def _chat_grok(call: ChatCall, spec) -> LLMResult:
+    return await call_grok(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings.get("grok_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+    )
+
+
+async def _chat_deepseek(call: ChatCall, spec) -> LLMResult:
+    return await call_deepseek(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings.get("deepseek_key"),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=call.max_out,
+    )
+
+
+async def _chat_model_gateway(call: ChatCall, spec) -> LLMResult:
+    return await call_model_gateway(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings,
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        **call.cap_kwargs(),
+    )
+
+
+async def _chat_v1_compatible(call: ChatCall, spec) -> LLMResult:
+    """`oaic.` and `locv1.`: the same client, each with its own server and key."""
+    return await call_v1_compatible(
+        spec.bare(call.model),
+        call.messages(),
+        call.system,
+        call.settings.get(spec.address, ""),
+        call.settings.get(spec.keys[0], ""),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        **call.cap_kwargs(),
+    )
+
+
+async def _chat_cli(call: ChatCall, spec) -> LLMResult:
+    # CLI session providers: build a flat prompt and spawn the local binary.
+    # No API key required — uses the user's existing CLI authentication.
+    messages = call.messages()
+    cli_full_prompt = _build_cli_prompt(sys_prompt=call.system, messages=messages, tools=call.tools)
+    text, input_tokens, output_tokens = await call_cli_provider(
+        cli_model=call.model,
+        full_prompt=cli_full_prompt,
+        sys_prompt=call.system,
+        messages=messages,
+        effort=call.reasoning_effort,
+    )
+    return LLMResult(text, input_tokens, output_tokens)
+
+
+async def _chat_huggingface(call: ChatCall, spec) -> LLMResult:
+    return await call_huggingface(
+        call.model,
+        call.messages(),
+        call.system,
+        call.settings,
+        tools=call.tools,
+        images=call.images,
+    )
+
+
+async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
+    from core import usage_tracker
+
+    current_model, current_settings, tools, images = call.model, call.settings, call.tools, call.images
+    augmented_system, history_messages, prompt_msg = call.system, call.history, call.prompt
+    _sent_cap, _reasoning_plan = call.sent_cap, call.reasoning
+    result_text, _reasoning, stop_reason = "", "", None
+    input_tokens = output_tokens = 0
+
+    # Local Ollama
+    # Strip the ollama. prefix — the Ollama API expects bare model names
+    _ollama_model = current_model[len("ollama."):] if current_model.startswith("ollama.") else current_model
+    _ollama_base = _ollama_base_url(current_settings)
+    async with httpx.AsyncClient() as client:
+        try:
+            # Try specific Ollama Tool Call format if tools are provided
+            if tools:
+                _log.debug(f"Calling Ollama /api/chat with tools...")
+
+                # Construct full message history
+                # 1. System Prompt
+                messages = [{"role": "system", "content": augmented_system}]
+
+                # 2. History (if available)
+                if history_messages:
+                    messages.extend(history_messages)
+
+                # 3. Current User Message
+                user_msg: dict = {"role": "user", "content": prompt_msg}
+                # Ollama supports images as base64 strings (no data URI prefix)
+                if images:
+                    user_msg["images"] = [_parse_data_uri(img)[1] for img in images[:5]]
+                messages.append(user_msg)
+
+                _chat_body: dict = {
+                    "model": _ollama_model,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": False,
+                }
+                if _sent_cap:
+                    # Only a cap someone set (F263); Ollama was never sent one.
+                    _chat_body["options"] = {"num_predict": _sent_cap}
+                if _reasoning_plan is not None:
+                    # Ollama 0.9+ takes a bare boolean here and answers in a
+                    # `thinking` field. An older server ignores the key
+                    # rather than refusing it, and the `<think>` fallback
+                    # below covers that case, so this is safe to send blind.
+                    _chat_body["think"] = _reasoning_plan.enabled
+                response = await client.post(
+                    f"{_ollama_base}/api/chat",
+                    json=_chat_body,
+                    timeout=180.0
+                )
+                if (refused := _ollama_refusal(response, _ollama_base)) is not None:
+                    raise refused
+                data = response.json()
+                msg = data.get("message", {})
+
+                # Check for native tool calls
+                if "tool_calls" in msg and msg["tool_calls"]:
+                    # Convert Ollama native tool call to our internal JSON format.
+                    # Preserve any text content the model emitted alongside the
+                    # call as a [REASONING] preamble (some Ollama models emit
+                    # both — qwen3, deepseek-r1 routinely do).
+                    _log.debug(f"Native tool call(s) received: {[tc['function']['name'] for tc in msg['tool_calls']]}")
+                    call_json = "\n".join(json.dumps({
+                        "tool": tc["function"]["name"],
+                        "arguments": tc["function"]["arguments"]
+                    }) for tc in msg["tool_calls"])
+                    narration, _narration_thoughts = _split_think_tags(
+                        (msg.get("content") or "").strip())
+                    result_text = call_json
+                    _reasoning = "\n\n".join(
+                        t for t in (msg.get("thinking") or "", _narration_thoughts, narration)
+                        if t and t.strip()).strip()
+                else:
+                    result_text, _inline_thoughts = _split_think_tags(msg.get("content", ""))
+                    _reasoning = "\n\n".join(
+                        t for t in (msg.get("thinking") or "", _inline_thoughts)
+                        if t and t.strip()).strip()
+                    if not result_text.strip():
+                        # Returned as the reply until F137.
+                        raise _empty_answer("Ollama", reasoning=_reasoning,
+                                            stop_reason=data.get("done_reason"))
+
+                stop_reason = _normalise_stop_reason(data.get("done_reason"))
+
+                # Ollama eval_count / prompt_eval_count (available when stream=False)
+                input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_msg)
+                output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
+
+            else:
+                # Fallback to generate if no tools or tools failed (Old behavior)
+                _log.debug(f"Calling Ollama /api/generate (Legacy Mode)...")
+
+                prompt_for_generate = prompt_msg
+                if history_messages:
+                    prior = _messages_to_transcript(history_messages)
+                    if prior:
+                        prompt_for_generate = f"Conversation so far:\n{prior}\n\nUser: {prompt_msg}".strip()
+
+                response = await client.post(
+                    f"{_ollama_base}/api/generate",
+                    json={
+                        "model": _ollama_model,
+                        "prompt": prompt_for_generate,
+                        "system": augmented_system,
+                        "stream": False,
+                        **({"options": {"num_predict": _sent_cap}} if _sent_cap else {}),
+                    },
+                    timeout=180.0
+                )
+                if (refused := _ollama_refusal(response, _ollama_base)) is not None:
+                    raise refused
+                data = response.json()
+                result_text, _reasoning = _split_think_tags(data.get("response", ""))
+                if not result_text.strip():
+                    raise _empty_answer("Ollama", reasoning=_reasoning,
+                                        stop_reason=data.get("done_reason"))
+                input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_for_generate)
+                output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
+
+        except EmptyAnswer:
+            # Already the right exception, carrying its reasoning and stop
+            # reason; re-wrapping would lose both (F137).
+            raise
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            # httpx says "All connection attempts failed"; the person needs
+            # to know it was Ollama, and where it was looked for (F182).
+            raise LLMError(f"Local Agent Error: Ollama is not reachable at {_ollama_base}.") from e
+        except Exception as e:
+            raise LLMError(f"Local Agent Error: {e}") from e
+
+    return LLMResult(result_text, input_tokens, output_tokens, 0, 0, stop_reason, (), _reasoning)
+
+
 @_spans.traced_coroutine("gen_ai.chat", _spans.model_call_attributes, model_call=True)
 async def generate_response_ex(
     prompt_msg,
@@ -3339,144 +3605,23 @@ async def generate_response_ex(
                 _log.warning(f"usage_tracker: log_usage (cache hit) failed: {_track_err}")
             return LLMResult(_hit.get("text", ""))
 
-    if mode in ["cloud", "bedrock"]:
-        try:
-            # Construct messages list for cloud providers that support it
-            messages = []
-            if history_messages:
-                messages.extend(history_messages)
-            messages.append({"role": "user", "content": prompt_msg})
-
-            if _is_openai_model(current_model.lower()):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_openai(
-                    current_model,
-                    [{"role": "system", "content": augmented_system}] + messages,
-                    current_settings.get("openai_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                    reasoning=_reasoning_plan,
-                    # Passed only when set: an unset call keeps today's shape.
-                    **({"max_tokens": _sent_cap} if _sent_cap else {}),
-                )
-            elif current_model.startswith("claude"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_anthropic(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("anthropic_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                    reasoning=_reasoning_plan,
-                    max_tokens=_max_out,
-                    prompt_blocks=prompt_blocks,
-                    volatile_tail=volatile_tail,
-                )
-            elif current_model.startswith("gemini") or current_model.startswith("gemma") or current_model.startswith("lyria"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_gemini(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("gemini_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                    reasoning=_reasoning_plan,
-                    max_tokens=_max_out,
-                )
-            elif current_model.startswith("bedrock"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_bedrock(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("aws_region"),
-                    # `bedrock_max_tokens` is the tenant's own Bedrock override
-                    # and beats the workspace cap; an agent's cap is more
-                    # specific than either (F263).
-                    ({**current_settings, "bedrock_max_tokens": None} if max_output_tokens
-                     else current_settings),
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                    reasoning=_reasoning_plan,
-                    max_tokens=_max_out,
-                )
-                # Bedrock's invoke_model fallback path returns zero tokens; estimate from text.
-                if input_tokens == 0 and output_tokens == 0:
-                    input_tokens = usage_tracker.estimate_tokens_from_text(
-                        augmented_system + " ".join(str(m.get("content", "")) for m in messages)
-                    )
-                    output_tokens = usage_tracker.estimate_tokens_from_text(result_text)
-            elif current_model.startswith("grok"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_grok(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("grok_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                    reasoning=_reasoning_plan,
-                    max_tokens=_max_out,
-                )
-            elif current_model.startswith("deepseek"):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_deepseek(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings.get("deepseek_key"),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                    reasoning=_reasoning_plan,
-                    max_tokens=_max_out,
-                )
-            elif current_model.startswith("synapse."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_model_gateway(
-                    current_model,
-                    messages,
-                    augmented_system,
-                    current_settings,
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                    reasoning=_reasoning_plan,
-                    # Passed only when set: an unset call keeps today's shape.
-                    **({"max_tokens": _sent_cap} if _sent_cap else {}),
-                )
-            elif current_model.startswith("oaic."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_v1_compatible(
-                    current_model[len("oaic."):],
-                    messages,
-                    augmented_system,
-                    current_settings.get("openai_compatible_base_url", ""),
-                    current_settings.get("openai_compatible_key", ""),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                    reasoning=_reasoning_plan,
-                    # Passed only when set: an unset call keeps today's shape.
-                    **({"max_tokens": _sent_cap} if _sent_cap else {}),
-                )
-            elif current_model.startswith("locv1."):
-                result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_v1_compatible(
-                    current_model[len("locv1."):],
-                    messages,
-                    augmented_system,
-                    current_settings.get("local_compatible_base_url", ""),
-                    current_settings.get("local_compatible_key", ""),
-                    tools=tools,
-                    images=images,
-                    prompt_cache=_prompt_cache,
-                    reasoning=_reasoning_plan,
-                    # Passed only when set: an unset call keeps today's shape.
-                    **({"max_tokens": _sent_cap} if _sent_cap else {}),
-                )
-            else:
-                raise LLMError(f"Error: Unknown cloud model selected ({current_model}).")
-        except EmptyAnswer as empty:
-            # The call was made and billed; only its answer was empty or blocked
-            # (F133). Logged as any call is, then raised as the failure it is.
+    # ── Dispatch: the provider table picks the adapter ───────────────────────
+    call = ChatCall(
+        model=current_model, prompt=prompt_msg, history=history_messages, system=augmented_system,
+        settings=current_settings, tools=tools, images=images, prompt_cache=_prompt_cache,
+        reasoning=_reasoning_plan, max_out=_max_out, sent_cap=_sent_cap, agent_cap=max_output_tokens,
+        prompt_blocks=prompt_blocks, volatile_tail=volatile_tail, reasoning_effort=reasoning_effort,
+    )
+    spec = _providers.branch_for(mode, current_model)
+    if spec is None:
+        raise LLMError(f"Error: Unknown cloud model selected ({current_model}).")
+    try:
+        (result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+         stop_reason, _tool_calls, _reasoning) = await _providers.resolve(spec.chat)(call, spec)
+    except EmptyAnswer as empty:
+        # The call was made and billed; only its answer was empty or blocked
+        # (F133). Logged as any call is, then raised as the failure it is.
+        if spec.mode in _providers.CLOUD_MODES:
             try:
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = empty.usage
                 await usage_tracker.log_usage(
@@ -3496,191 +3641,18 @@ async def generate_response_ex(
                 )
             except Exception as _track_err:
                 _log.warning(f"usage_tracker: log_usage (empty answer) failed: {_track_err}")
-            raise
-        except LLMError:
-            # LLM errors must propagate — do NOT swallow them.
-            # Orchestration engine will catch this and stop execution.
-            raise
-        except Exception as e:
-            # Any other failure is one too (F132). Returned as the reply, it was
-            # written into an LLM step's output key and the run completed, and
-            # an evaluator took its fallback route on it. The same holds for the
-            # CLI, HuggingFace and Ollama branches below.
-            raise LLMError(f"Cloud API Error: {str(e)}") from e
-
-    elif mode == "cli":
-        # CLI session providers: build a flat prompt and spawn the local binary.
-        # No API key required — uses the user's existing CLI authentication.
-        try:
-            messages_for_cli = []
-            if history_messages:
-                messages_for_cli.extend(history_messages)
-            messages_for_cli.append({"role": "user", "content": prompt_msg})
-
-            cli_full_prompt = _build_cli_prompt(
-                sys_prompt=augmented_system,
-                messages=messages_for_cli,
-                tools=tools,
-            )
-
-            result_text, input_tokens, output_tokens = await call_cli_provider(
-                cli_model=current_model,
-                full_prompt=cli_full_prompt,
-                sys_prompt=augmented_system,
-                messages=messages_for_cli,
-                effort=reasoning_effort,
-            )
-
-        except LLMError:
-            raise
-        except Exception as e:
-            raise LLMError(f"CLI Provider Error: {str(e)}") from e
-
-    elif mode == "hf":
-        try:
-            messages_for_hf = []
-            if history_messages:
-                messages_for_hf.extend(history_messages)
-            messages_for_hf.append({"role": "user", "content": prompt_msg})
-
-            result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls, _reasoning = await call_huggingface(
-                current_model,
-                messages_for_hf,
-                augmented_system,
-                current_settings,
-                tools=tools,
-                images=images,
-            )
-        except LLMError:
-            raise
-        except Exception as e:
-            raise LLMError(f"HuggingFace Provider Error: {str(e)}") from e
-
-    else:
-        # Local Ollama
-        # Strip the ollama. prefix — the Ollama API expects bare model names
-        _ollama_model = current_model[len("ollama."):] if current_model.startswith("ollama.") else current_model
-        _ollama_base = _ollama_base_url(current_settings)
-        async with httpx.AsyncClient() as client:
-            try:
-                # Try specific Ollama Tool Call format if tools are provided
-                if tools:
-                    _log.debug(f"Calling Ollama /api/chat with tools...")
-
-                    # Construct full message history
-                    # 1. System Prompt
-                    messages = [{"role": "system", "content": augmented_system}]
-
-                    # 2. History (if available)
-                    if history_messages:
-                        messages.extend(history_messages)
-
-                    # 3. Current User Message
-                    user_msg: dict = {"role": "user", "content": prompt_msg}
-                    # Ollama supports images as base64 strings (no data URI prefix)
-                    if images:
-                        user_msg["images"] = [_parse_data_uri(img)[1] for img in images[:5]]
-                    messages.append(user_msg)
-
-                    _chat_body: dict = {
-                        "model": _ollama_model,
-                        "messages": messages,
-                        "tools": tools,
-                        "stream": False,
-                    }
-                    if _sent_cap:
-                        # Only a cap someone set (F263); Ollama was never sent one.
-                        _chat_body["options"] = {"num_predict": _sent_cap}
-                    if _reasoning_plan is not None:
-                        # Ollama 0.9+ takes a bare boolean here and answers in a
-                        # `thinking` field. An older server ignores the key
-                        # rather than refusing it, and the `<think>` fallback
-                        # below covers that case, so this is safe to send blind.
-                        _chat_body["think"] = _reasoning_plan.enabled
-                    response = await client.post(
-                        f"{_ollama_base}/api/chat",
-                        json=_chat_body,
-                        timeout=180.0
-                    )
-                    if (refused := _ollama_refusal(response, _ollama_base)) is not None:
-                        raise refused
-                    data = response.json()
-                    msg = data.get("message", {})
-
-                    # Check for native tool calls
-                    if "tool_calls" in msg and msg["tool_calls"]:
-                        # Convert Ollama native tool call to our internal JSON format.
-                        # Preserve any text content the model emitted alongside the
-                        # call as a [REASONING] preamble (some Ollama models emit
-                        # both — qwen3, deepseek-r1 routinely do).
-                        _log.debug(f"Native tool call(s) received: {[tc['function']['name'] for tc in msg['tool_calls']]}")
-                        call_json = "\n".join(json.dumps({
-                            "tool": tc["function"]["name"],
-                            "arguments": tc["function"]["arguments"]
-                        }) for tc in msg["tool_calls"])
-                        narration, _narration_thoughts = _split_think_tags(
-                            (msg.get("content") or "").strip())
-                        result_text = call_json
-                        _reasoning = "\n\n".join(
-                            t for t in (msg.get("thinking") or "", _narration_thoughts, narration)
-                            if t and t.strip()).strip()
-                    else:
-                        result_text, _inline_thoughts = _split_think_tags(msg.get("content", ""))
-                        _reasoning = "\n\n".join(
-                            t for t in (msg.get("thinking") or "", _inline_thoughts)
-                            if t and t.strip()).strip()
-                        if not result_text.strip():
-                            # Returned as the reply until F137.
-                            raise _empty_answer("Ollama", reasoning=_reasoning,
-                                                stop_reason=data.get("done_reason"))
-
-                    stop_reason = _normalise_stop_reason(data.get("done_reason"))
-
-                    # Ollama eval_count / prompt_eval_count (available when stream=False)
-                    input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_msg)
-                    output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
-
-                else:
-                    # Fallback to generate if no tools or tools failed (Old behavior)
-                    _log.debug(f"Calling Ollama /api/generate (Legacy Mode)...")
-
-                    prompt_for_generate = prompt_msg
-                    if history_messages:
-                        prior = _messages_to_transcript(history_messages)
-                        if prior:
-                            prompt_for_generate = f"Conversation so far:\n{prior}\n\nUser: {prompt_msg}".strip()
-
-                    response = await client.post(
-                        f"{_ollama_base}/api/generate",
-                        json={
-                            "model": _ollama_model,
-                            "prompt": prompt_for_generate,
-                            "system": augmented_system,
-                            "stream": False,
-                            **({"options": {"num_predict": _sent_cap}} if _sent_cap else {}),
-                        },
-                        timeout=180.0
-                    )
-                    if (refused := _ollama_refusal(response, _ollama_base)) is not None:
-                        raise refused
-                    data = response.json()
-                    result_text, _reasoning = _split_think_tags(data.get("response", ""))
-                    if not result_text.strip():
-                        raise _empty_answer("Ollama", reasoning=_reasoning,
-                                            stop_reason=data.get("done_reason"))
-                    input_tokens = data.get("prompt_eval_count", 0) or usage_tracker.estimate_tokens_from_text(prompt_for_generate)
-                    output_tokens = data.get("eval_count", 0) or usage_tracker.estimate_tokens_from_text(result_text)
-
-            except EmptyAnswer:
-                # Already the right exception, carrying its reasoning and stop
-                # reason; re-wrapping would lose both (F137).
-                raise
-            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-                # httpx says "All connection attempts failed"; the person needs
-                # to know it was Ollama, and where it was looked for (F182).
-                raise LLMError(f"Local Agent Error: Ollama is not reachable at {_ollama_base}.") from e
-            except Exception as e:
-                raise LLMError(f"Local Agent Error: {e}") from e
+        raise
+    except LLMError:
+        # LLM errors must propagate — do NOT swallow them.
+        # Orchestration engine will catch this and stop execution.
+        raise
+    except Exception as e:
+        if spec.error is None:
+            raise  # the adapter words its own (Ollama's)
+        # Any other failure is one too (F132). Returned as the reply, it was
+        # written into an LLM step's output key and the run completed, and
+        # an evaluator took its fallback route on it.
+        raise LLMError(f"{spec.error}: {str(e)}") from e
 
     # ── Inline thinking tags, whichever provider answered (F32) ──────────────
     # Folded into `reasoning` rather than dropped: the loop shows it as the
@@ -3771,33 +3743,41 @@ async def generate_response(*args, **kwargs) -> str:
 async def embed_batch(texts: list[str], model: str, settings: dict) -> list[list[float]]:
     """Unified embedding function that routes to the appropriate provider.
 
-    Optional settings key ``__embed_output_dim`` (int) is forwarded to
-    providers that support dimensionality control (currently Gemini).
+    The provider is the table's (`core.providers.registry`), whose entry names
+    its embed adapter. Optional settings key ``__embed_output_dim`` (int) is
+    forwarded to providers that support dimensionality control (currently Gemini).
     """
-    provider = detect_provider_from_model(model)
-    output_dim: int | None = settings.get("__embed_output_dim")
-
-    if provider == "openai":
-        return await _embed_openai(texts, model, settings.get("openai_key", ""))
-    elif provider == "model_gateway":
-        clean_model = model[len("synapse."):] if model.startswith("synapse.") else model
-        return await _embed_v1_compatible(texts, clean_model, settings.get("model_gateway_base_url", ""), settings.get("model_gateway_key", ""))
-    elif provider == "openai_compatible":
-        clean_model = model[len("oaic."):] if model.startswith("oaic.") else model
-        return await _embed_v1_compatible(texts, clean_model, settings.get("openai_compatible_base_url", ""), settings.get("openai_compatible_key", ""))
-    elif provider == "local_compatible":
-        clean_model = model[len("locv1."):] if model.startswith("locv1.") else model
-        return await _embed_v1_compatible(texts, clean_model, settings.get("local_compatible_base_url", ""), settings.get("local_compatible_key", ""))
-    elif provider == "gemini":
-        kwargs = {} if output_dim is None else {"output_dim": output_dim}
-        return await _embed_gemini(texts, model, settings.get("gemini_key", ""), **kwargs)
-    elif provider == "bedrock":
-        return await _embed_bedrock(texts, model, settings)
-    elif provider == "ollama":
-        return await _embed_ollama(texts, model, settings)
-    else:
-        _log.debug(f"Unknown provider '{provider}' for embedding model '{model}'")
+    spec = _providers.provider_for(model)
+    if spec.embed is None:
+        _log.debug(f"Unknown provider '{spec.id}' for embedding model '{model}'")
         return [[0.0] * 768 for _ in range(len(texts))]
+    return await _providers.resolve(spec.embed)(texts, model, settings, spec)
+
+
+# ─── Embed adapters, named by the provider table ────────────────────────────
+
+async def _embed_via_openai(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    return await _embed_openai(texts, model, settings.get("openai_key", ""))
+
+
+async def _embed_via_v1(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    """The gateway, `oaic.` and `locv1.`: one v1 client, each with its own server and key."""
+    return await _embed_v1_compatible(
+        texts, spec.bare(model), settings.get(spec.address, ""), settings.get(spec.keys[0], ""))
+
+
+async def _embed_via_gemini(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    output_dim: int | None = settings.get("__embed_output_dim")
+    kwargs = {} if output_dim is None else {"output_dim": output_dim}
+    return await _embed_gemini(texts, model, settings.get("gemini_key", ""), **kwargs)
+
+
+async def _embed_via_bedrock(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    return await _embed_bedrock(texts, model, settings)
+
+
+async def _embed_via_ollama(texts: list[str], model: str, settings: dict, spec) -> list[list[float]]:
+    return await _embed_ollama(texts, model, settings)
 
 
 async def _embed_openai(texts: list[str], model: str, api_key: str) -> list[list[float]]:
