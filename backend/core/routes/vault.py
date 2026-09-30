@@ -353,6 +353,10 @@ async def get_vault_file(path: str = Query(..., description="Relative path to va
     try:
         content = p.read_text(encoding="utf-8")
         return {"path": path, "name": p.name, "ext": p.suffix.lower(), "content": content}
+    except UnicodeDecodeError:
+        # The object-store branch's answer too (F323): a PDF or an image is a file the
+        # editor cannot open, not a server error.
+        raise HTTPException(status_code=415, detail="Not a text file")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
