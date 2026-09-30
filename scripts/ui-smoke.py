@@ -525,7 +525,7 @@ async def check_money(browser) -> str:
 
 #: Screens to check for a page that scrolls when it should not. Five, because
 #: the defect this exists for was in the app shell and so was on every one.
-LAYOUT_PAGES = ("/dashboard", "/orchestrations", "/agents", "/vault", "/usage")
+LAYOUT_PAGES = ("/dashboard", "/orchestrations", "/agents", "/vault", "/usage", "/knowledge")
 
 
 @check
@@ -641,6 +641,7 @@ CONTRAST_PAGES = (
     "/dashboard", "/usage", "/settings/personal_details", "/settings/variables",
     "/settings/workspace", "/settings/repos", "/settings/db_configs",
     "/settings/import_export", "/settings/support", "/settings/datalab",
+    "/knowledge",
 )
 
 #: A run log with a line of every kind, and a chat turn with its panels open —
@@ -1831,6 +1832,7 @@ LABEL_PAGES = (
     "/settings/general", "/settings/models", "/settings/agents", "/settings/widgets",
     "/settings/databases", "/settings/schedules", "/settings/messaging", "/settings/scale",
     "/settings/memory", "/settings/api-keys", "/settings/integrations", "/settings/custom-tools",
+    "/knowledge",
 )
 
 #: What the browser itself says a control is called. Not a static rule: a label
@@ -3815,6 +3817,38 @@ async def check_drawers(browser) -> str:
 
 
 @check
+async def check_knowledge_drawer(browser) -> str:
+    """Knowledge's report drawer (D157) is a dialog with named controls that Escape closes, and a
+    closed one is not in the page at all — so nothing in it is in reach."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    for pattern, handler in _SMOKE_KB_ROUTES:
+        await ctx.route(pattern, handler)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        opener = page.get_by_role("button", name="Report for failed.md")
+        await opener.wait_for(timeout=30_000)
+        if await page.get_by_role("dialog").count():
+            raise AssertionError("a drawer is open before anything opened it")
+        await opener.click()
+        dialog = page.get_by_role("dialog", name="failed.md")
+        await dialog.wait_for(timeout=10_000)
+        unnamed = await dialog.evaluate("""d => [...d.querySelectorAll('button')]
+            .filter(b => !b.getAttribute('aria-label') && !b.textContent.trim()).length""")
+        if unnamed:
+            raise AssertionError(f"the open report drawer has {unnamed} unnamed button(s)")
+        if not await dialog.get_by_role("button", name="Retry").count():
+            raise AssertionError("the report drawer offers no Retry")
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.8)
+        if await page.get_by_role("dialog").count():
+            raise AssertionError("Escape did not close the report drawer")
+        return "the report drawer is a named dialog, Escape closes it, and closed it is gone"
+    finally:
+        await ctx.close()
+
+
+@check
 async def check_promptwriter(browser) -> str:
     """The AI Prompt Writer says why it wrote nothing (F183).
 
@@ -5274,8 +5308,48 @@ async def _vault_error(page):
     await page.get_by_role("button", name=re.compile("^save$", re.I)).first.click()
 
 
+#: Knowledge switched on, one base, and a document in every status (D157).
+_SMOKE_KB = {"id": "kb_00000000smoke", "name": "Smoke contracts", "description": "", "folder": "smoke_kb",
+             "status": "active", "language": "simple", "revision": 1, "created_at": _NOW, "updated_at": _NOW,
+             "state": {"counts_by_status": {"indexed": 1, "failed": 1}, "active_snapshot": None,
+                       "building_snapshot": None, "month_spend_usd": 0.0, "paused_reason": None}}
+_SMOKE_KB_DOCS = [
+    {"id": f"kdoc_smoke{i:02d}", "kb_id": _SMOKE_KB["id"], "path": f"smoke_kb/{s}.md", "source": "upload",
+     "source_url": None, "status": s, "status_reason": r, "error": "The model is down." if s == "failed" else None,
+     "version": 1, "sha256": None, "size_bytes": 1200, "mime": "text/markdown", "title": None, "doc_date": None,
+     "metadata": {}, "pages": None, "chunks": 3, "tokens": 90, "created_at": _NOW, "updated_at": _NOW,
+     "indexed_at": _NOW}
+    for i, (s, r) in enumerate((("indexed", None), ("partial", "truncated_size"), ("failed", "embed_failed"),
+                                ("skipped", "unsupported_format"), ("paused", "budget_cap"), ("queued", None),
+                                ("indexing", None), ("blocked", "egress_blocked")))]
+_SMOKE_KB_REPORT = {
+    **_SMOKE_KB_DOCS[2], "report": {
+        "report_version": 1, "doc_id": "kdoc_smoke02", "path": "smoke_kb/failed.md", "sha256": None, "attempt": 2,
+        "started_at": _NOW, "finished_at": _NOW, "outcome": "failed", "status_reason": "embed_failed",
+        "stages": [{"stage": "parse", "status": "ok", "started_at": _NOW, "duration_ms": 12, "detail": {},
+                    "error": None},
+                   {"stage": "index", "status": "failed", "started_at": _NOW, "duration_ms": 40, "detail": {},
+                    "error": {"code": "embed_failed", "message": "The model is down.", "retryable": True}}],
+        "pages": {"total": 0, "with_text": 0, "no_text_layer": 0, "ocr_applied": 0, "ocr_failed": 0, "skipped": []},
+        "chunks": {"count": 0, "by_kind": {}, "tokens": 0},
+        "warnings": [{"code": "zero_width_removed", "message": "2 invisible character(s) removed.", "page": None,
+                      "block_id": None, "count": 2}],
+        "cost": {"est_usd": 0.0, "charged_microusd": None, "by_stage": {}},
+        "parser": {"name": "text", "version": "1", "options_hash": ""}, "snapshot_id": None,
+        "retry": {"allowed": True, "hint": "The embedding model failed. Retrying usually helps."}}}
+_SMOKE_KB_ROUTES = [
+    ("**/api/settings", _answer({"knowledge_enabled": True})),
+    ("**/api/knowledge/bases", _answer([_SMOKE_KB])),
+    ("**/api/knowledge/bases/*/documents*", _answer(_SMOKE_KB_DOCS)),
+    ("**/api/knowledge/documents/*", _answer(_SMOKE_KB_REPORT)),
+]
+
+
 #: (name, path, init scripts, routes, action, a text proving the state is on screen)
 LIGHT_STATES = (
+    ("knowledge statuses", "/knowledge", [], _SMOKE_KB_ROUTES, None, "Partly indexed"),
+    ("knowledge report", "/knowledge", [], _SMOKE_KB_ROUTES,
+     lambda p: p.get_by_role("button", name="Report for failed.md").click(), "What happened"),
     ("chat tip 5", "/", [CHAT_STUB], [],
      lambda p: p.get_by_role("button", name="Show tip 5: Automate with schedules").click(),
      "Automate with schedules"),
