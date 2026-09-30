@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": "_records/ticket-4411.json",
+    "sha256": "14069429150abcbf244c4c2fb2c4c46a49c93ca9457263ecd9ebb176de3a58bb",
+    "size_bytes": 190,
+    "mime": "application/json",
+    "source": "record"
+  },
+  "parser": {
+    "name": "record",
+    "version": "1"
+  },
+  "text": "Customer cannot reset password; reset link expired and was resent.",
+  "blocks": [
+    {
+      "id": "b0000-0000",
+      "char_start": 0,
+      "char_end": 66,
+      "kind": "paragraph",
+      "text": "Customer cannot reset password; reset link expired and was resent."
+    }
+  ],
+  "pages": [],
+  "title": "Ticket 4411",
+  "doc_date": "2025-01-20",
+  "metadata": {
+    "doc_type": "ticket",
+    "priority": 1,
+    "tags": [
+      "support"
+    ]
+  },
+  "stats": {
+    "pages": 0,
+    "chars": 66
+  }
+}

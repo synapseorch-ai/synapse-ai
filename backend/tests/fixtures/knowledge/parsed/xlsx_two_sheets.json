@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": "finance/q3.xlsx",
+    "sha256": "58e2791934fdd9cfdd6d0e892cb6ca4894abc58559de0ec04d51bc2801bad291",
+    "size_bytes": 9120,
+    "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "source": "vault"
+  },
+  "parser": {
+    "name": "basic",
+    "version": "1",
+    "options_hash": "fixture"
+  },
+  "text": "Sheet Revenue: month, region, amount (36 rows)\n\nSheet Costs: item, amount (4 rows)",
+  "blocks": [
+    {
+      "id": "s1-0000",
+      "char_start": 0,
+      "char_end": 46,
+      "kind": "sheet",
+      "text": "Sheet Revenue: month, region, amount (36 rows)",
+      "sheet": {
+        "name": "Revenue",
+        "range": "A1:C37",
+        "n_rows": 36,
+        "n_cols": 3,
+        "headers": [
+          "month",
+          "region",
+          "amount"
+        ],
+        "sample_rows": [
+          [
+            "2025-07",
+            "EU",
+            "1200"
+          ],
+          [
+            "2025-07",
+            "US",
+            "900"
+          ]
+        ],
+        "dtypes": [
+          "date",
+          "string",
+          "number"
+        ]
+      }
+    },
+    {
+      "id": "s2-0000",
+      "char_start": 48,
+      "char_end": 82,
+      "kind": "sheet",
+      "text": "Sheet Costs: item, amount (4 rows)",
+      "sheet": {
+        "name": "Costs",
+        "n_rows": 4,
+        "n_cols": 2,
+        "headers": [
+          "item",
+          "amount"
+        ],
+        "sample_rows": [
+          [
+            "Hosting",
+            "300"
+          ]
+        ]
+      }
+    }
+  ],
+  "pages": [],
+  "title": "Q3 figures",
+  "stats": {
+    "pages": 0,
+    "chars": 82
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "source": {
+    "path": "mail/renewal.eml",
+    "sha256": "78bf8ee749fe16fd3d83c4e1f427cf3d38fc8714760afbda3b3cae1256fea340",
+    "size_bytes": 2048,
+    "mime": "message/rfc822",
+    "source": "upload"
+  },
+  "parser": {
+    "name": "eml",
+    "version": "1"
+  },
+  "text": "Renewal of the Acme contract\n\nHi, please find the renewal invoice attached. It renews automatically on 1 November.",
+  "blocks": [
+    {
+      "id": "b0000-0000",
+      "char_start": 0,
+      "char_end": 28,
+      "kind": "heading",
+      "level": 1,
+      "text": "Renewal of the Acme contract",
+      "heading_path": [
+        "Renewal of the Acme contract"
+      ]
+    },
+    {
+      "id": "b0000-0001",
+      "char_start": 30,
+      "char_end": 114,
+      "kind": "paragraph",
+      "heading_path": [
+        "Renewal of the Acme contract"
+      ],
+      "text": "Hi, please find the renewal invoice attached. It renews automatically on 1 November."
+    }
+  ],
+  "pages": [],
+  "title": "Renewal of the Acme contract",
+  "doc_date": "2025-10-01",
+  "metadata": {
+    "from": "billing@example.com",
+    "to": [
+      "ops@example.org"
+    ]
+  },
+  "attachments": [
+    {
+      "name": "invoice.txt",
+      "sha256": "52d6e3de4fa0dcc29946695f93940c3e7f26f30e1e39f4b1a49ad98839112786",
+      "mime": "text/plain",
+      "size_bytes": 64,
+      "parsed": {
+        "schema_version": 1,
+        "source": {
+          "path": "mail/renewal.eml#invoice.txt",
+          "sha256": "52d6e3de4fa0dcc29946695f93940c3e7f26f30e1e39f4b1a49ad98839112786",
+          "size_bytes": 64,
+          "mime": "text/plain",
+          "source": "upload"
+        },
+        "parser": {
+          "name": "basic",
+          "version": "1"
+        },
+        "text": "Invoice 2025-117: 1,500 due 31 October.",
+        "blocks": [
+          {
+            "id": "b0000-0000",
+            "char_start": 0,
+            "char_end": 39,
+            "kind": "paragraph",
+            "text": "Invoice 2025-117: 1,500 due 31 October."
+          }
+        ],
+        "pages": [],
+        "stats": {
+          "pages": 0,
+          "chars": 39
+        }
+      }
+    }
+  ],
+  "stats": {
+    "pages": 0,
+    "chars": 114
+  }
+}
