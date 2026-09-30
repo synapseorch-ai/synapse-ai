@@ -168,10 +168,18 @@ class TestInProcessDispatcher:
         assert receipt.mode == "background"
         await asyncio.sleep(0.02)
 
-    async def test_the_shipped_entrypoint_refuses_until_a1_builds_it(self):
+    async def test_the_shipped_entrypoint_is_a1s_job_and_refuses_nothing_quietly(self, monkeypatch):
+        """A1 built it (D157): a job for a knowledge base that does not exist does nothing, and says
+        nothing is wrong — the document it named is gone with its base. The job's behaviour is in
+        test_knowledge_ingest_job.py."""
+        from _fakes.knowledge_env import enable_knowledge, use_saved_settings
         from core.knowledge.jobs import run_ingest_job
-        with pytest.raises(KnowledgeUnavailable):
-            await run_ingest_job(IngestJob(tenant="default", kb_id="kb_1", op="upsert", reason="upload"))
+
+        assert seams._load(seams.INGEST_ENTRYPOINT) is run_ingest_job
+        use_saved_settings(monkeypatch)
+        await enable_knowledge()
+        assert await run_ingest_job(IngestJob(tenant="default", kb_id="kb_000000000000", op="upsert",
+                                              reason="upload", path="kb/a.md")) is None
 
 
 class TestFakes:
