@@ -46,12 +46,30 @@ def test_the_api_matches_its_snapshot():
     assert current == stored, f"Knowledge API models changed: {_diff(stored, current)} — v1 only ever grows"
 
 
+#: Modules a lane builds inside `core/knowledge/` — implementation, not contract
+#: (CCR-2, 16 §8). A lane adds its own names here; `jobs.py` keeps only its
+#: signature frozen (its docstring says so). Anything else in the directory is
+#: contract and carries the header.
+LANE_MODULES = {
+    "__init__.py",
+    # A1 — ingestion
+    "bases.py", "documents.py", "sync.py", "report.py", "dispatch.py", "jobs.py",
+    # B1a — retrieval
+    "chunker.py", "pipeline.py", "index_sql.py", "search.py", "trace_store.py", "snapshots.py",
+    # B1b — agent tools and citations
+    "tools.py", "citations.py",
+}
+FROZEN_HEADER = "# FROZEN CONTRACT (KB0, D153)"
+
+
 def test_the_contract_modules_are_marked_frozen():
     for path in sorted((BACKEND / "core" / "knowledge").glob("*.py")):
-        if path.name in ("__init__.py", "jobs.py"):
-            continue
-        assert path.read_text("utf-8").startswith("# FROZEN CONTRACT (KB0, D153)"), path.name
-    assert (BACKEND / "core" / "vault_events.py").read_text("utf-8").startswith("# FROZEN CONTRACT (KB0, D153)")
+        marked = path.read_text("utf-8").startswith(FROZEN_HEADER)
+        if path.name in LANE_MODULES:
+            assert not marked, f"{path.name} is a lane module; the frozen header would claim it is contract"
+        else:
+            assert marked, f"{path.name} is neither marked frozen nor a named lane module (CCR-2)"
+    assert (BACKEND / "core" / "vault_events.py").read_text("utf-8").startswith(FROZEN_HEADER)
 
 
 #: Modules cloud's API process imports: no numpy (cloud has none), no provider
