@@ -1,0 +1,8378 @@
+{
+ "Chunking": {
+  "additionalProperties": false,
+  "properties": {
+   "max_tokens": {
+    "default": 800,
+    "maximum": 4000,
+    "minimum": 64,
+    "title": "Max Tokens",
+    "type": "integer"
+   },
+   "mode": {
+    "default": "structure",
+    "enum": [
+     "structure",
+     "fixed",
+     "page",
+     "none"
+    ],
+    "title": "Mode",
+    "type": "string"
+   },
+   "overlap_pct": {
+    "default": 0.0,
+    "maximum": 0.25,
+    "minimum": 0.0,
+    "title": "Overlap Pct",
+    "type": "number"
+   },
+   "target_tokens": {
+    "default": 450,
+    "maximum": 2000,
+    "minimum": 64,
+    "title": "Target Tokens",
+    "type": "integer"
+   }
+  },
+  "title": "Chunking",
+  "type": "object"
+ },
+ "Citation": {
+  "$defs": {
+   "QuoteCheck": {
+    "properties": {
+     "matched": {
+      "title": "Matched",
+      "type": "boolean"
+     },
+     "method": {
+      "enum": [
+       "exact",
+       "normalized"
+      ],
+      "title": "Method",
+      "type": "string"
+     },
+     "quote": {
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "quote",
+     "matched",
+     "method"
+    ],
+    "title": "QuoteCheck",
+    "type": "object"
+   }
+  },
+  "description": "A `[K#]` label resolved to where the words are, and how fresh they are.",
+  "properties": {
+   "char_end": {
+    "title": "Char End",
+    "type": "integer"
+   },
+   "char_start": {
+    "title": "Char Start",
+    "type": "integer"
+   },
+   "chunk_id": {
+    "title": "Chunk Id",
+    "type": "string"
+   },
+   "doc_id": {
+    "title": "Doc Id",
+    "type": "string"
+   },
+   "doc_version": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Doc Version"
+   },
+   "heading_path": {
+    "items": {
+     "type": "string"
+    },
+    "title": "Heading Path",
+    "type": "array"
+   },
+   "indexed_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Indexed At"
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   },
+   "label": {
+    "title": "Label",
+    "type": "string"
+   },
+   "page_end": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Page End"
+   },
+   "page_start": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Page Start"
+   },
+   "path": {
+    "title": "Path",
+    "type": "string"
+   },
+   "quote_check": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/QuoteCheck"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "sha256": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Sha256"
+   },
+   "snapshot_id": {
+    "title": "Snapshot Id",
+    "type": "string"
+   },
+   "snippet": {
+    "default": "",
+    "maxLength": 200,
+    "title": "Snippet",
+    "type": "string"
+   },
+   "source": {
+    "enum": [
+     "upload",
+     "web",
+     "record",
+     "vault"
+    ],
+    "title": "Source",
+    "type": "string"
+   },
+   "source_url": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Source Url"
+   },
+   "title": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Title"
+   }
+  },
+  "required": [
+   "label",
+   "kb_id",
+   "doc_id",
+   "chunk_id",
+   "path",
+   "source",
+   "char_start",
+   "char_end",
+   "snapshot_id"
+  ],
+  "title": "Citation",
+  "type": "object"
+ },
+ "CompletedPart": {
+  "additionalProperties": false,
+  "properties": {
+   "etag": {
+    "title": "Etag",
+    "type": "string"
+   },
+   "part_number": {
+    "minimum": 1,
+    "title": "Part Number",
+    "type": "integer"
+   }
+  },
+  "required": [
+   "part_number",
+   "etag"
+  ],
+  "title": "CompletedPart",
+  "type": "object"
+ },
+ "CostGroup": {
+  "properties": {
+   "charged_microusd": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Charged Microusd"
+   },
+   "est_usd": {
+    "title": "Est Usd",
+    "type": "number"
+   },
+   "input_tokens": {
+    "default": 0,
+    "title": "Input Tokens",
+    "type": "integer"
+   },
+   "key": {
+    "title": "Key",
+    "type": "string"
+   },
+   "units": {
+    "default": 0.0,
+    "title": "Units",
+    "type": "number"
+   }
+  },
+  "required": [
+   "key",
+   "est_usd"
+  ],
+  "title": "CostGroup",
+  "type": "object"
+ },
+ "CostPreview": {
+  "$defs": {
+   "StageEstimate": {
+    "properties": {
+     "cost_source": {
+      "title": "Cost Source",
+      "type": "string"
+     },
+     "est_usd": {
+      "title": "Est Usd",
+      "type": "number"
+     },
+     "model": {
+      "title": "Model",
+      "type": "string"
+     },
+     "stage": {
+      "title": "Stage",
+      "type": "string"
+     },
+     "unit": {
+      "title": "Unit",
+      "type": "string"
+     },
+     "units": {
+      "title": "Units",
+      "type": "number"
+     }
+    },
+    "required": [
+     "stage",
+     "model",
+     "units",
+     "unit",
+     "est_usd",
+     "cost_source"
+    ],
+    "title": "StageEstimate",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "budget_remaining_usd": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Budget Remaining Usd"
+   },
+   "docs": {
+    "title": "Docs",
+    "type": "integer"
+   },
+   "pages": {
+    "title": "Pages",
+    "type": "integer"
+   },
+   "stages": {
+    "items": {
+     "$ref": "#/$defs/StageEstimate"
+    },
+    "title": "Stages",
+    "type": "array"
+   },
+   "total_est_usd": {
+    "title": "Total Est Usd",
+    "type": "number"
+   }
+  },
+  "required": [
+   "docs",
+   "pages",
+   "total_est_usd"
+  ],
+  "title": "CostPreview",
+  "type": "object"
+ },
+ "CostPreviewRequest": {
+  "additionalProperties": false,
+  "description": "Settings to price instead of the stored ones (a draft the settings screen has not saved).",
+  "properties": {
+   "overrides": {
+    "anyOf": [
+     {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Overrides"
+   }
+  },
+  "title": "CostPreviewRequest",
+  "type": "object"
+ },
+ "CostSummary": {
+  "properties": {
+   "by_stage": {
+    "additionalProperties": {
+     "type": "number"
+    },
+    "title": "By Stage",
+    "type": "object"
+   },
+   "total_charged_microusd": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Total Charged Microusd"
+   },
+   "total_est_usd": {
+    "default": 0.0,
+    "title": "Total Est Usd",
+    "type": "number"
+   }
+  },
+  "title": "CostSummary",
+  "type": "object"
+ },
+ "CrawlAccepted": {
+  "properties": {
+   "accepted": {
+    "title": "Accepted",
+    "type": "integer"
+   },
+   "crawl_id": {
+    "title": "Crawl Id",
+    "type": "string"
+   },
+   "status": {
+    "const": "queued",
+    "default": "queued",
+    "title": "Status",
+    "type": "string"
+   }
+  },
+  "required": [
+   "crawl_id",
+   "accepted"
+  ],
+  "title": "CrawlAccepted",
+  "type": "object"
+ },
+ "DeleteAccepted": {
+  "properties": {
+   "status": {
+    "const": "deleting",
+    "default": "deleting",
+    "title": "Status",
+    "type": "string"
+   }
+  },
+  "title": "DeleteAccepted",
+  "type": "object"
+ },
+ "DocumentDetail": {
+  "$defs": {
+   "ChunksReport": {
+    "additionalProperties": false,
+    "properties": {
+     "by_kind": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "By Kind",
+      "type": "object"
+     },
+     "count": {
+      "default": 0,
+      "title": "Count",
+      "type": "integer"
+     },
+     "tokens": {
+      "default": 0,
+      "title": "Tokens",
+      "type": "integer"
+     }
+    },
+    "title": "ChunksReport",
+    "type": "object"
+   },
+   "CostReport": {
+    "additionalProperties": false,
+    "properties": {
+     "by_stage": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "By Stage",
+      "type": "object"
+     },
+     "charged_microusd": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Charged Microusd"
+     },
+     "est_usd": {
+      "default": 0.0,
+      "title": "Est Usd",
+      "type": "number"
+     }
+    },
+    "title": "CostReport",
+    "type": "object"
+   },
+   "ErrorInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "message": {
+      "maxLength": 2000,
+      "title": "Message",
+      "type": "string"
+     },
+     "retryable": {
+      "default": false,
+      "title": "Retryable",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "code",
+     "message"
+    ],
+    "title": "ErrorInfo",
+    "type": "object"
+   },
+   "IngestionReport": {
+    "additionalProperties": false,
+    "description": "What happened to one file, stage by stage — the report drawer's content.\n\nStored in `knowledge_documents.report`. Truncation always reads `partial`\nwith a warning; nothing is left out without saying so.",
+    "properties": {
+     "attempt": {
+      "default": 1,
+      "title": "Attempt",
+      "type": "integer"
+     },
+     "chunks": {
+      "$ref": "#/$defs/ChunksReport"
+     },
+     "cost": {
+      "$ref": "#/$defs/CostReport"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "finished_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Finished At"
+     },
+     "outcome": {
+      "enum": [
+       "queued",
+       "parsing",
+       "indexing",
+       "indexed",
+       "partial",
+       "failed",
+       "skipped",
+       "paused",
+       "blocked",
+       "deleting"
+      ],
+      "title": "Outcome",
+      "type": "string"
+     },
+     "pages": {
+      "$ref": "#/$defs/PagesReport"
+     },
+     "parser": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/ParserInfo"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "report_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Report Version",
+      "type": "integer"
+     },
+     "retry": {
+      "$ref": "#/$defs/RetryHint"
+     },
+     "sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Sha256"
+     },
+     "snapshot_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Snapshot Id"
+     },
+     "stages": {
+      "items": {
+       "$ref": "#/$defs/StageReport"
+      },
+      "title": "Stages",
+      "type": "array"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Started At"
+     },
+     "status_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Status Reason"
+     },
+     "warnings": {
+      "items": {
+       "$ref": "#/$defs/ParseWarning"
+      },
+      "title": "Warnings",
+      "type": "array"
+     }
+    },
+    "required": [
+     "doc_id",
+     "path",
+     "outcome"
+    ],
+    "title": "IngestionReport",
+    "type": "object"
+   },
+   "PagesReport": {
+    "additionalProperties": false,
+    "properties": {
+     "no_text_layer": {
+      "default": 0,
+      "title": "No Text Layer",
+      "type": "integer"
+     },
+     "ocr_applied": {
+      "default": 0,
+      "title": "Ocr Applied",
+      "type": "integer"
+     },
+     "ocr_failed": {
+      "default": 0,
+      "title": "Ocr Failed",
+      "type": "integer"
+     },
+     "skipped": {
+      "items": {
+       "type": "integer"
+      },
+      "maxItems": 200,
+      "title": "Skipped",
+      "type": "array"
+     },
+     "total": {
+      "default": 0,
+      "title": "Total",
+      "type": "integer"
+     },
+     "with_text": {
+      "default": 0,
+      "title": "With Text",
+      "type": "integer"
+     }
+    },
+    "title": "PagesReport",
+    "type": "object"
+   },
+   "ParseWarning": {
+    "additionalProperties": false,
+    "properties": {
+     "block_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Block Id"
+     },
+     "code": {
+      "enum": [
+       "no_text_layer",
+       "ocr_unavailable",
+       "ocr_low_confidence",
+       "ocr_failed",
+       "truncated_pages",
+       "truncated_size",
+       "encrypted",
+       "unsupported_format",
+       "parser_timeout",
+       "parser_memory",
+       "parser_crashed",
+       "hidden_text_removed",
+       "zero_width_removed",
+       "html_comments_removed",
+       "attachment_skipped",
+       "attachment_depth",
+       "table_too_large",
+       "sheet_truncated",
+       "garbled_text",
+       "legacy_converted",
+       "empty_document"
+      ],
+      "title": "Code",
+      "type": "string"
+     },
+     "count": {
+      "default": 1,
+      "title": "Count",
+      "type": "integer"
+     },
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "page": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page"
+     }
+    },
+    "required": [
+     "code",
+     "message"
+    ],
+    "title": "ParseWarning",
+    "type": "object"
+   },
+   "ParserInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "options_hash": {
+      "default": "",
+      "title": "Options Hash",
+      "type": "string"
+     },
+     "version": {
+      "title": "Version",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "version"
+    ],
+    "title": "ParserInfo",
+    "type": "object"
+   },
+   "RetryHint": {
+    "additionalProperties": false,
+    "properties": {
+     "allowed": {
+      "default": true,
+      "title": "Allowed",
+      "type": "boolean"
+     },
+     "hint": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Hint"
+     }
+    },
+    "title": "RetryHint",
+    "type": "object"
+   },
+   "StageReport": {
+    "additionalProperties": false,
+    "properties": {
+     "detail": {
+      "additionalProperties": true,
+      "title": "Detail",
+      "type": "object"
+     },
+     "duration_ms": {
+      "default": 0,
+      "title": "Duration Ms",
+      "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/ErrorInfo"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "stage": {
+      "enum": [
+       "fetch",
+       "parse",
+       "ocr",
+       "sanitize",
+       "chunk",
+       "enrich",
+       "embed",
+       "index"
+      ],
+      "title": "Stage",
+      "type": "string"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Started At"
+     },
+     "status": {
+      "enum": [
+       "ok",
+       "skipped",
+       "partial",
+       "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "stage",
+     "status"
+    ],
+    "title": "StageReport",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "chunks": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Chunks"
+   },
+   "created_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Created At"
+   },
+   "doc_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Doc Date"
+   },
+   "error": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Error"
+   },
+   "id": {
+    "title": "Id",
+    "type": "string"
+   },
+   "indexed_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Indexed At"
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   },
+   "metadata": {
+    "additionalProperties": true,
+    "title": "Metadata",
+    "type": "object"
+   },
+   "mime": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Mime"
+   },
+   "pages": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Pages"
+   },
+   "path": {
+    "title": "Path",
+    "type": "string"
+   },
+   "report": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/IngestionReport"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "sha256": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Sha256"
+   },
+   "size_bytes": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Size Bytes"
+   },
+   "source": {
+    "enum": [
+     "upload",
+     "web",
+     "record",
+     "vault"
+    ],
+    "title": "Source",
+    "type": "string"
+   },
+   "source_url": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Source Url"
+   },
+   "status": {
+    "enum": [
+     "queued",
+     "parsing",
+     "indexing",
+     "indexed",
+     "partial",
+     "failed",
+     "skipped",
+     "paused",
+     "blocked",
+     "deleting"
+    ],
+    "title": "Status",
+    "type": "string"
+   },
+   "status_reason": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Status Reason"
+   },
+   "title": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Title"
+   },
+   "tokens": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Tokens"
+   },
+   "updated_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Updated At"
+   },
+   "version": {
+    "default": 0,
+    "title": "Version",
+    "type": "integer"
+   }
+  },
+  "required": [
+   "id",
+   "kb_id",
+   "path",
+   "source",
+   "status"
+  ],
+  "title": "DocumentDetail",
+  "type": "object"
+ },
+ "DocumentOut": {
+  "properties": {
+   "chunks": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Chunks"
+   },
+   "created_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Created At"
+   },
+   "doc_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Doc Date"
+   },
+   "error": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Error"
+   },
+   "id": {
+    "title": "Id",
+    "type": "string"
+   },
+   "indexed_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Indexed At"
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   },
+   "metadata": {
+    "additionalProperties": true,
+    "title": "Metadata",
+    "type": "object"
+   },
+   "mime": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Mime"
+   },
+   "pages": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Pages"
+   },
+   "path": {
+    "title": "Path",
+    "type": "string"
+   },
+   "sha256": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Sha256"
+   },
+   "size_bytes": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Size Bytes"
+   },
+   "source": {
+    "enum": [
+     "upload",
+     "web",
+     "record",
+     "vault"
+    ],
+    "title": "Source",
+    "type": "string"
+   },
+   "source_url": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Source Url"
+   },
+   "status": {
+    "enum": [
+     "queued",
+     "parsing",
+     "indexing",
+     "indexed",
+     "partial",
+     "failed",
+     "skipped",
+     "paused",
+     "blocked",
+     "deleting"
+    ],
+    "title": "Status",
+    "type": "string"
+   },
+   "status_reason": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Status Reason"
+   },
+   "title": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Title"
+   },
+   "tokens": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Tokens"
+   },
+   "updated_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Updated At"
+   },
+   "version": {
+    "default": 0,
+    "title": "Version",
+    "type": "integer"
+   }
+  },
+  "required": [
+   "id",
+   "kb_id",
+   "path",
+   "source",
+   "status"
+  ],
+  "title": "DocumentOut",
+  "type": "object"
+ },
+ "Embedding": {
+  "additionalProperties": false,
+  "description": "The embedding model. \"\" means the deployment's default (cloud: Titan v2 1024-d).",
+  "properties": {
+   "dims": {
+    "anyOf": [
+     {
+      "maximum": 8192,
+      "minimum": 1,
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Dims"
+   },
+   "model": {
+    "default": "",
+    "title": "Model",
+    "type": "string"
+   },
+   "profile": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Profile"
+   }
+  },
+  "title": "Embedding",
+  "type": "object"
+ },
+ "Enrichment": {
+  "additionalProperties": false,
+  "description": "\"prefix\" is deterministic and free; \"contextual\" is Contextual Retrieval, an opt-in\nbehind a cost preview (D153 #3), on any chat model including the org's own.",
+  "properties": {
+   "contextual_model": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Contextual Model"
+   },
+   "extract_metadata": {
+    "default": false,
+    "title": "Extract Metadata",
+    "type": "boolean"
+   },
+   "mode": {
+    "default": "prefix",
+    "enum": [
+     "prefix",
+     "contextual"
+    ],
+    "title": "Mode",
+    "type": "string"
+   }
+  },
+  "title": "Enrichment",
+  "type": "object"
+ },
+ "Fusion": {
+  "additionalProperties": false,
+  "properties": {
+   "method": {
+    "const": "rrf",
+    "default": "rrf",
+    "title": "Method",
+    "type": "string"
+   },
+   "overfetch": {
+    "default": 50,
+    "maximum": 200,
+    "minimum": 10,
+    "title": "Overfetch",
+    "type": "integer"
+   },
+   "rrf_k": {
+    "default": 60,
+    "maximum": 1000,
+    "minimum": 1,
+    "title": "Rrf K",
+    "type": "integer"
+   },
+   "weights": {
+    "additionalProperties": {
+     "type": "number"
+    },
+    "title": "Weights",
+    "type": "object"
+   }
+  },
+  "title": "Fusion",
+  "type": "object"
+ },
+ "Hit": {
+  "$defs": {
+   "Citation": {
+    "description": "A `[K#]` label resolved to where the words are, and how fresh they are.",
+    "properties": {
+     "char_end": {
+      "title": "Char End",
+      "type": "integer"
+     },
+     "char_start": {
+      "title": "Char Start",
+      "type": "integer"
+     },
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Version"
+     },
+     "heading_path": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Heading Path",
+      "type": "array"
+     },
+     "indexed_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Indexed At"
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "page_end": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page End"
+     },
+     "page_start": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page Start"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "quote_check": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/QuoteCheck"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Sha256"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "snippet": {
+      "default": "",
+      "maxLength": 200,
+      "title": "Snippet",
+      "type": "string"
+     },
+     "source": {
+      "enum": [
+       "upload",
+       "web",
+       "record",
+       "vault"
+      ],
+      "title": "Source",
+      "type": "string"
+     },
+     "source_url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Source Url"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Title"
+     }
+    },
+    "required": [
+     "label",
+     "kb_id",
+     "doc_id",
+     "chunk_id",
+     "path",
+     "source",
+     "char_start",
+     "char_end",
+     "snapshot_id"
+    ],
+    "title": "Citation",
+    "type": "object"
+   },
+   "QuoteCheck": {
+    "properties": {
+     "matched": {
+      "title": "Matched",
+      "type": "boolean"
+     },
+     "method": {
+      "enum": [
+       "exact",
+       "normalized"
+      ],
+      "title": "Method",
+      "type": "string"
+     },
+     "quote": {
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "quote",
+     "matched",
+     "method"
+    ],
+    "title": "QuoteCheck",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "chunk_id": {
+    "title": "Chunk Id",
+    "type": "string"
+   },
+   "citation": {
+    "$ref": "#/$defs/Citation"
+   },
+   "content": {
+    "title": "Content",
+    "type": "string"
+   },
+   "context": {
+    "default": "",
+    "title": "Context",
+    "type": "string"
+   },
+   "doc_id": {
+    "title": "Doc Id",
+    "type": "string"
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   },
+   "label": {
+    "title": "Label",
+    "type": "string"
+   },
+   "metadata": {
+    "additionalProperties": true,
+    "title": "Metadata",
+    "type": "object"
+   },
+   "score": {
+    "title": "Score",
+    "type": "number"
+   },
+   "scores": {
+    "additionalProperties": {
+     "type": "number"
+    },
+    "title": "Scores",
+    "type": "object"
+   }
+  },
+  "required": [
+   "label",
+   "chunk_id",
+   "doc_id",
+   "kb_id",
+   "content",
+   "score",
+   "citation"
+  ],
+  "title": "Hit",
+  "type": "object"
+ },
+ "IngestAccepted": {
+  "$defs": {
+   "DocumentOut": {
+    "properties": {
+     "chunks": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Chunks"
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Created At"
+     },
+     "doc_date": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Date"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Error"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "indexed_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Indexed At"
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+     },
+     "mime": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Mime"
+     },
+     "pages": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Pages"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Sha256"
+     },
+     "size_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Size Bytes"
+     },
+     "source": {
+      "enum": [
+       "upload",
+       "web",
+       "record",
+       "vault"
+      ],
+      "title": "Source",
+      "type": "string"
+     },
+     "source_url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Source Url"
+     },
+     "status": {
+      "enum": [
+       "queued",
+       "parsing",
+       "indexing",
+       "indexed",
+       "partial",
+       "failed",
+       "skipped",
+       "paused",
+       "blocked",
+       "deleting"
+      ],
+      "title": "Status",
+      "type": "string"
+     },
+     "status_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Status Reason"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Title"
+     },
+     "tokens": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Tokens"
+     },
+     "updated_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Updated At"
+     },
+     "version": {
+      "default": 0,
+      "title": "Version",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "kb_id",
+     "path",
+     "source",
+     "status"
+    ],
+    "title": "DocumentOut",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "documents": {
+    "items": {
+     "$ref": "#/$defs/DocumentOut"
+    },
+    "title": "Documents",
+    "type": "array"
+   }
+  },
+  "required": [
+   "documents"
+  ],
+  "title": "IngestAccepted",
+  "type": "object"
+ },
+ "IngestStepConfig": {
+  "additionalProperties": false,
+  "properties": {
+   "id_field": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Id Field"
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   },
+   "metadata_fields": {
+    "items": {
+     "type": "string"
+    },
+    "maxItems": 50,
+    "title": "Metadata Fields",
+    "type": "array"
+   },
+   "records_from": {
+    "title": "Records From",
+    "type": "string"
+   },
+   "text_field": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Text Field"
+   }
+  },
+  "required": [
+   "kb_id",
+   "records_from"
+  ],
+  "title": "IngestStepConfig",
+  "type": "object"
+ },
+ "IngestStepOutput": {
+  "$defs": {
+   "DocumentOut": {
+    "properties": {
+     "chunks": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Chunks"
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Created At"
+     },
+     "doc_date": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Date"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Error"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "indexed_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Indexed At"
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+     },
+     "mime": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Mime"
+     },
+     "pages": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Pages"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Sha256"
+     },
+     "size_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Size Bytes"
+     },
+     "source": {
+      "enum": [
+       "upload",
+       "web",
+       "record",
+       "vault"
+      ],
+      "title": "Source",
+      "type": "string"
+     },
+     "source_url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Source Url"
+     },
+     "status": {
+      "enum": [
+       "queued",
+       "parsing",
+       "indexing",
+       "indexed",
+       "partial",
+       "failed",
+       "skipped",
+       "paused",
+       "blocked",
+       "deleting"
+      ],
+      "title": "Status",
+      "type": "string"
+     },
+     "status_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Status Reason"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Title"
+     },
+     "tokens": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Tokens"
+     },
+     "updated_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Updated At"
+     },
+     "version": {
+      "default": 0,
+      "title": "Version",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "kb_id",
+     "path",
+     "source",
+     "status"
+    ],
+    "title": "DocumentOut",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "documents": {
+    "items": {
+     "$ref": "#/$defs/DocumentOut"
+    },
+    "title": "Documents",
+    "type": "array"
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   }
+  },
+  "required": [
+   "kb_id",
+   "documents"
+  ],
+  "title": "IngestStepOutput",
+  "type": "object"
+ },
+ "IngestionReport": {
+  "$defs": {
+   "ChunksReport": {
+    "additionalProperties": false,
+    "properties": {
+     "by_kind": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "By Kind",
+      "type": "object"
+     },
+     "count": {
+      "default": 0,
+      "title": "Count",
+      "type": "integer"
+     },
+     "tokens": {
+      "default": 0,
+      "title": "Tokens",
+      "type": "integer"
+     }
+    },
+    "title": "ChunksReport",
+    "type": "object"
+   },
+   "CostReport": {
+    "additionalProperties": false,
+    "properties": {
+     "by_stage": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "By Stage",
+      "type": "object"
+     },
+     "charged_microusd": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Charged Microusd"
+     },
+     "est_usd": {
+      "default": 0.0,
+      "title": "Est Usd",
+      "type": "number"
+     }
+    },
+    "title": "CostReport",
+    "type": "object"
+   },
+   "ErrorInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "message": {
+      "maxLength": 2000,
+      "title": "Message",
+      "type": "string"
+     },
+     "retryable": {
+      "default": false,
+      "title": "Retryable",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "code",
+     "message"
+    ],
+    "title": "ErrorInfo",
+    "type": "object"
+   },
+   "PagesReport": {
+    "additionalProperties": false,
+    "properties": {
+     "no_text_layer": {
+      "default": 0,
+      "title": "No Text Layer",
+      "type": "integer"
+     },
+     "ocr_applied": {
+      "default": 0,
+      "title": "Ocr Applied",
+      "type": "integer"
+     },
+     "ocr_failed": {
+      "default": 0,
+      "title": "Ocr Failed",
+      "type": "integer"
+     },
+     "skipped": {
+      "items": {
+       "type": "integer"
+      },
+      "maxItems": 200,
+      "title": "Skipped",
+      "type": "array"
+     },
+     "total": {
+      "default": 0,
+      "title": "Total",
+      "type": "integer"
+     },
+     "with_text": {
+      "default": 0,
+      "title": "With Text",
+      "type": "integer"
+     }
+    },
+    "title": "PagesReport",
+    "type": "object"
+   },
+   "ParseWarning": {
+    "additionalProperties": false,
+    "properties": {
+     "block_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Block Id"
+     },
+     "code": {
+      "enum": [
+       "no_text_layer",
+       "ocr_unavailable",
+       "ocr_low_confidence",
+       "ocr_failed",
+       "truncated_pages",
+       "truncated_size",
+       "encrypted",
+       "unsupported_format",
+       "parser_timeout",
+       "parser_memory",
+       "parser_crashed",
+       "hidden_text_removed",
+       "zero_width_removed",
+       "html_comments_removed",
+       "attachment_skipped",
+       "attachment_depth",
+       "table_too_large",
+       "sheet_truncated",
+       "garbled_text",
+       "legacy_converted",
+       "empty_document"
+      ],
+      "title": "Code",
+      "type": "string"
+     },
+     "count": {
+      "default": 1,
+      "title": "Count",
+      "type": "integer"
+     },
+     "message": {
+      "title": "Message",
+      "type": "string"
+     },
+     "page": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page"
+     }
+    },
+    "required": [
+     "code",
+     "message"
+    ],
+    "title": "ParseWarning",
+    "type": "object"
+   },
+   "ParserInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "options_hash": {
+      "default": "",
+      "title": "Options Hash",
+      "type": "string"
+     },
+     "version": {
+      "title": "Version",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "version"
+    ],
+    "title": "ParserInfo",
+    "type": "object"
+   },
+   "RetryHint": {
+    "additionalProperties": false,
+    "properties": {
+     "allowed": {
+      "default": true,
+      "title": "Allowed",
+      "type": "boolean"
+     },
+     "hint": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Hint"
+     }
+    },
+    "title": "RetryHint",
+    "type": "object"
+   },
+   "StageReport": {
+    "additionalProperties": false,
+    "properties": {
+     "detail": {
+      "additionalProperties": true,
+      "title": "Detail",
+      "type": "object"
+     },
+     "duration_ms": {
+      "default": 0,
+      "title": "Duration Ms",
+      "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/ErrorInfo"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "stage": {
+      "enum": [
+       "fetch",
+       "parse",
+       "ocr",
+       "sanitize",
+       "chunk",
+       "enrich",
+       "embed",
+       "index"
+      ],
+      "title": "Stage",
+      "type": "string"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Started At"
+     },
+     "status": {
+      "enum": [
+       "ok",
+       "skipped",
+       "partial",
+       "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "stage",
+     "status"
+    ],
+    "title": "StageReport",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "description": "What happened to one file, stage by stage — the report drawer's content.\n\nStored in `knowledge_documents.report`. Truncation always reads `partial`\nwith a warning; nothing is left out without saying so.",
+  "properties": {
+   "attempt": {
+    "default": 1,
+    "title": "Attempt",
+    "type": "integer"
+   },
+   "chunks": {
+    "$ref": "#/$defs/ChunksReport"
+   },
+   "cost": {
+    "$ref": "#/$defs/CostReport"
+   },
+   "doc_id": {
+    "title": "Doc Id",
+    "type": "string"
+   },
+   "finished_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Finished At"
+   },
+   "outcome": {
+    "enum": [
+     "queued",
+     "parsing",
+     "indexing",
+     "indexed",
+     "partial",
+     "failed",
+     "skipped",
+     "paused",
+     "blocked",
+     "deleting"
+    ],
+    "title": "Outcome",
+    "type": "string"
+   },
+   "pages": {
+    "$ref": "#/$defs/PagesReport"
+   },
+   "parser": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/ParserInfo"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "path": {
+    "title": "Path",
+    "type": "string"
+   },
+   "report_version": {
+    "const": 1,
+    "default": 1,
+    "title": "Report Version",
+    "type": "integer"
+   },
+   "retry": {
+    "$ref": "#/$defs/RetryHint"
+   },
+   "sha256": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Sha256"
+   },
+   "snapshot_id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Snapshot Id"
+   },
+   "stages": {
+    "items": {
+     "$ref": "#/$defs/StageReport"
+    },
+    "title": "Stages",
+    "type": "array"
+   },
+   "started_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Started At"
+   },
+   "status_reason": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Status Reason"
+   },
+   "warnings": {
+    "items": {
+     "$ref": "#/$defs/ParseWarning"
+    },
+    "title": "Warnings",
+    "type": "array"
+   }
+  },
+  "required": [
+   "doc_id",
+   "path",
+   "outcome"
+  ],
+  "title": "IngestionReport",
+  "type": "object"
+ },
+ "KnowledgeBase": {
+  "$defs": {
+   "Chunking": {
+    "additionalProperties": false,
+    "properties": {
+     "max_tokens": {
+      "default": 800,
+      "maximum": 4000,
+      "minimum": 64,
+      "title": "Max Tokens",
+      "type": "integer"
+     },
+     "mode": {
+      "default": "structure",
+      "enum": [
+       "structure",
+       "fixed",
+       "page",
+       "none"
+      ],
+      "title": "Mode",
+      "type": "string"
+     },
+     "overlap_pct": {
+      "default": 0.0,
+      "maximum": 0.25,
+      "minimum": 0.0,
+      "title": "Overlap Pct",
+      "type": "number"
+     },
+     "target_tokens": {
+      "default": 450,
+      "maximum": 2000,
+      "minimum": 64,
+      "title": "Target Tokens",
+      "type": "integer"
+     }
+    },
+    "title": "Chunking",
+    "type": "object"
+   },
+   "Embedding": {
+    "additionalProperties": false,
+    "description": "The embedding model. \"\" means the deployment's default (cloud: Titan v2 1024-d).",
+    "properties": {
+     "dims": {
+      "anyOf": [
+       {
+        "maximum": 8192,
+        "minimum": 1,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Dims"
+     },
+     "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
+     },
+     "profile": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Profile"
+     }
+    },
+    "title": "Embedding",
+    "type": "object"
+   },
+   "Enrichment": {
+    "additionalProperties": false,
+    "description": "\"prefix\" is deterministic and free; \"contextual\" is Contextual Retrieval, an opt-in\nbehind a cost preview (D153 #3), on any chat model including the org's own.",
+    "properties": {
+     "contextual_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Contextual Model"
+     },
+     "extract_metadata": {
+      "default": false,
+      "title": "Extract Metadata",
+      "type": "boolean"
+     },
+     "mode": {
+      "default": "prefix",
+      "enum": [
+       "prefix",
+       "contextual"
+      ],
+      "title": "Mode",
+      "type": "string"
+     }
+    },
+    "title": "Enrichment",
+    "type": "object"
+   },
+   "Fusion": {
+    "additionalProperties": false,
+    "properties": {
+     "method": {
+      "const": "rrf",
+      "default": "rrf",
+      "title": "Method",
+      "type": "string"
+     },
+     "overfetch": {
+      "default": 50,
+      "maximum": 200,
+      "minimum": 10,
+      "title": "Overfetch",
+      "type": "integer"
+     },
+     "rrf_k": {
+      "default": 60,
+      "maximum": 1000,
+      "minimum": 1,
+      "title": "Rrf K",
+      "type": "integer"
+     },
+     "weights": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Weights",
+      "type": "object"
+     }
+    },
+    "title": "Fusion",
+    "type": "object"
+   },
+   "Rerank": {
+    "additionalProperties": false,
+    "description": "None means the deployment's default: on in cloud, off in OSS unless configured.",
+    "properties": {
+     "candidates": {
+      "default": 50,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Candidates",
+      "type": "integer"
+     },
+     "enabled": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Enabled"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Model"
+     },
+     "top_n": {
+      "default": 8,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Top N",
+      "type": "integer"
+     }
+    },
+    "title": "Rerank",
+    "type": "object"
+   },
+   "Retrieval": {
+    "additionalProperties": false,
+    "properties": {
+     "max_context_tokens": {
+      "default": 6000,
+      "maximum": 100000,
+      "minimum": 500,
+      "title": "Max Context Tokens",
+      "type": "integer"
+     },
+     "neighbor_window": {
+      "default": 1,
+      "maximum": 3,
+      "minimum": 0,
+      "title": "Neighbor Window",
+      "type": "integer"
+     },
+     "parent_expansion": {
+      "default": "off",
+      "enum": [
+       "off",
+       "section",
+       "neighbors"
+      ],
+      "title": "Parent Expansion",
+      "type": "string"
+     },
+     "score_threshold": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score Threshold"
+     },
+     "top_k": {
+      "default": 8,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "title": "Retrieval",
+    "type": "object"
+   },
+   "Web": {
+    "additionalProperties": false,
+    "description": "Per-KB crawl settings, each bounded by the deployment's caps (`config.py`).",
+    "properties": {
+     "max_depth": {
+      "default": 3,
+      "maximum": 5,
+      "minimum": 0,
+      "title": "Max Depth",
+      "type": "integer"
+     },
+     "max_pages": {
+      "default": 500,
+      "maximum": 100000,
+      "minimum": 1,
+      "title": "Max Pages",
+      "type": "integer"
+     },
+     "recrawl_days": {
+      "default": 7,
+      "maximum": 365,
+      "minimum": 0,
+      "title": "Recrawl Days",
+      "type": "integer"
+     },
+     "rps_per_host": {
+      "default": 1.0,
+      "exclusiveMinimum": 0,
+      "maximum": 10,
+      "title": "Rps Per Host",
+      "type": "number"
+     },
+     "sources": {
+      "items": {
+       "$ref": "#/$defs/WebSource"
+      },
+      "maxItems": 50,
+      "title": "Sources",
+      "type": "array"
+     }
+    },
+    "title": "Web",
+    "type": "object"
+   },
+   "WebSource": {
+    "additionalProperties": false,
+    "properties": {
+     "exclude": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Exclude",
+      "type": "array"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "include": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Include",
+      "type": "array"
+     },
+     "kind": {
+      "default": "page",
+      "enum": [
+       "page",
+       "sitemap",
+       "site"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "url": {
+      "maxLength": 2048,
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "url"
+    ],
+    "title": "WebSource",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "budget_monthly_usd": {
+    "anyOf": [
+     {
+      "minimum": 0,
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Budget Monthly Usd"
+   },
+   "chunking": {
+    "$ref": "#/$defs/Chunking"
+   },
+   "created_at": {
+    "default": "",
+    "title": "Created At",
+    "type": "string"
+   },
+   "description": {
+    "default": "",
+    "maxLength": 2000,
+    "title": "Description",
+    "type": "string"
+   },
+   "embedding": {
+    "$ref": "#/$defs/Embedding"
+   },
+   "enrichment": {
+    "$ref": "#/$defs/Enrichment"
+   },
+   "folder": {
+    "title": "Folder",
+    "type": "string"
+   },
+   "fusion": {
+    "$ref": "#/$defs/Fusion"
+   },
+   "id": {
+    "title": "Id",
+    "type": "string"
+   },
+   "language": {
+    "default": "simple",
+    "title": "Language",
+    "type": "string"
+   },
+   "name": {
+    "maxLength": 200,
+    "minLength": 1,
+    "title": "Name",
+    "type": "string"
+   },
+   "rerank": {
+    "$ref": "#/$defs/Rerank"
+   },
+   "retrieval": {
+    "$ref": "#/$defs/Retrieval"
+   },
+   "revision": {
+    "default": 1,
+    "minimum": 1,
+    "title": "Revision",
+    "type": "integer"
+   },
+   "status": {
+    "default": "active",
+    "enum": [
+     "active",
+     "disabled"
+    ],
+    "title": "Status",
+    "type": "string"
+   },
+   "updated_at": {
+    "default": "",
+    "title": "Updated At",
+    "type": "string"
+   },
+   "visitor_access": {
+    "default": false,
+    "title": "Visitor Access",
+    "type": "boolean"
+   },
+   "web": {
+    "$ref": "#/$defs/Web"
+   }
+  },
+  "required": [
+   "id",
+   "name",
+   "folder"
+  ],
+  "title": "KnowledgeBase",
+  "type": "object"
+ },
+ "KnowledgeBaseCreate": {
+  "$defs": {
+   "Chunking": {
+    "additionalProperties": false,
+    "properties": {
+     "max_tokens": {
+      "default": 800,
+      "maximum": 4000,
+      "minimum": 64,
+      "title": "Max Tokens",
+      "type": "integer"
+     },
+     "mode": {
+      "default": "structure",
+      "enum": [
+       "structure",
+       "fixed",
+       "page",
+       "none"
+      ],
+      "title": "Mode",
+      "type": "string"
+     },
+     "overlap_pct": {
+      "default": 0.0,
+      "maximum": 0.25,
+      "minimum": 0.0,
+      "title": "Overlap Pct",
+      "type": "number"
+     },
+     "target_tokens": {
+      "default": 450,
+      "maximum": 2000,
+      "minimum": 64,
+      "title": "Target Tokens",
+      "type": "integer"
+     }
+    },
+    "title": "Chunking",
+    "type": "object"
+   },
+   "Embedding": {
+    "additionalProperties": false,
+    "description": "The embedding model. \"\" means the deployment's default (cloud: Titan v2 1024-d).",
+    "properties": {
+     "dims": {
+      "anyOf": [
+       {
+        "maximum": 8192,
+        "minimum": 1,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Dims"
+     },
+     "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
+     },
+     "profile": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Profile"
+     }
+    },
+    "title": "Embedding",
+    "type": "object"
+   },
+   "Enrichment": {
+    "additionalProperties": false,
+    "description": "\"prefix\" is deterministic and free; \"contextual\" is Contextual Retrieval, an opt-in\nbehind a cost preview (D153 #3), on any chat model including the org's own.",
+    "properties": {
+     "contextual_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Contextual Model"
+     },
+     "extract_metadata": {
+      "default": false,
+      "title": "Extract Metadata",
+      "type": "boolean"
+     },
+     "mode": {
+      "default": "prefix",
+      "enum": [
+       "prefix",
+       "contextual"
+      ],
+      "title": "Mode",
+      "type": "string"
+     }
+    },
+    "title": "Enrichment",
+    "type": "object"
+   },
+   "Fusion": {
+    "additionalProperties": false,
+    "properties": {
+     "method": {
+      "const": "rrf",
+      "default": "rrf",
+      "title": "Method",
+      "type": "string"
+     },
+     "overfetch": {
+      "default": 50,
+      "maximum": 200,
+      "minimum": 10,
+      "title": "Overfetch",
+      "type": "integer"
+     },
+     "rrf_k": {
+      "default": 60,
+      "maximum": 1000,
+      "minimum": 1,
+      "title": "Rrf K",
+      "type": "integer"
+     },
+     "weights": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Weights",
+      "type": "object"
+     }
+    },
+    "title": "Fusion",
+    "type": "object"
+   },
+   "Rerank": {
+    "additionalProperties": false,
+    "description": "None means the deployment's default: on in cloud, off in OSS unless configured.",
+    "properties": {
+     "candidates": {
+      "default": 50,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Candidates",
+      "type": "integer"
+     },
+     "enabled": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Enabled"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Model"
+     },
+     "top_n": {
+      "default": 8,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Top N",
+      "type": "integer"
+     }
+    },
+    "title": "Rerank",
+    "type": "object"
+   },
+   "Retrieval": {
+    "additionalProperties": false,
+    "properties": {
+     "max_context_tokens": {
+      "default": 6000,
+      "maximum": 100000,
+      "minimum": 500,
+      "title": "Max Context Tokens",
+      "type": "integer"
+     },
+     "neighbor_window": {
+      "default": 1,
+      "maximum": 3,
+      "minimum": 0,
+      "title": "Neighbor Window",
+      "type": "integer"
+     },
+     "parent_expansion": {
+      "default": "off",
+      "enum": [
+       "off",
+       "section",
+       "neighbors"
+      ],
+      "title": "Parent Expansion",
+      "type": "string"
+     },
+     "score_threshold": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score Threshold"
+     },
+     "top_k": {
+      "default": 8,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "title": "Retrieval",
+    "type": "object"
+   },
+   "Web": {
+    "additionalProperties": false,
+    "description": "Per-KB crawl settings, each bounded by the deployment's caps (`config.py`).",
+    "properties": {
+     "max_depth": {
+      "default": 3,
+      "maximum": 5,
+      "minimum": 0,
+      "title": "Max Depth",
+      "type": "integer"
+     },
+     "max_pages": {
+      "default": 500,
+      "maximum": 100000,
+      "minimum": 1,
+      "title": "Max Pages",
+      "type": "integer"
+     },
+     "recrawl_days": {
+      "default": 7,
+      "maximum": 365,
+      "minimum": 0,
+      "title": "Recrawl Days",
+      "type": "integer"
+     },
+     "rps_per_host": {
+      "default": 1.0,
+      "exclusiveMinimum": 0,
+      "maximum": 10,
+      "title": "Rps Per Host",
+      "type": "number"
+     },
+     "sources": {
+      "items": {
+       "$ref": "#/$defs/WebSource"
+      },
+      "maxItems": 50,
+      "title": "Sources",
+      "type": "array"
+     }
+    },
+    "title": "Web",
+    "type": "object"
+   },
+   "WebSource": {
+    "additionalProperties": false,
+    "properties": {
+     "exclude": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Exclude",
+      "type": "array"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "include": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Include",
+      "type": "array"
+     },
+     "kind": {
+      "default": "page",
+      "enum": [
+       "page",
+       "sitemap",
+       "site"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "url": {
+      "maxLength": 2048,
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "url"
+    ],
+    "title": "WebSource",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "budget_monthly_usd": {
+    "anyOf": [
+     {
+      "minimum": 0,
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Budget Monthly Usd"
+   },
+   "chunking": {
+    "$ref": "#/$defs/Chunking"
+   },
+   "description": {
+    "default": "",
+    "maxLength": 2000,
+    "title": "Description",
+    "type": "string"
+   },
+   "embedding": {
+    "$ref": "#/$defs/Embedding"
+   },
+   "enrichment": {
+    "$ref": "#/$defs/Enrichment"
+   },
+   "folder": {
+    "title": "Folder",
+    "type": "string"
+   },
+   "fusion": {
+    "$ref": "#/$defs/Fusion"
+   },
+   "language": {
+    "default": "simple",
+    "title": "Language",
+    "type": "string"
+   },
+   "name": {
+    "maxLength": 200,
+    "minLength": 1,
+    "title": "Name",
+    "type": "string"
+   },
+   "rerank": {
+    "$ref": "#/$defs/Rerank"
+   },
+   "retrieval": {
+    "$ref": "#/$defs/Retrieval"
+   },
+   "visitor_access": {
+    "default": false,
+    "title": "Visitor Access",
+    "type": "boolean"
+   },
+   "web": {
+    "$ref": "#/$defs/Web"
+   }
+  },
+  "required": [
+   "name",
+   "folder"
+  ],
+  "title": "KnowledgeBaseCreate",
+  "type": "object"
+ },
+ "KnowledgeBaseOut": {
+  "$defs": {
+   "Chunking": {
+    "additionalProperties": false,
+    "properties": {
+     "max_tokens": {
+      "default": 800,
+      "maximum": 4000,
+      "minimum": 64,
+      "title": "Max Tokens",
+      "type": "integer"
+     },
+     "mode": {
+      "default": "structure",
+      "enum": [
+       "structure",
+       "fixed",
+       "page",
+       "none"
+      ],
+      "title": "Mode",
+      "type": "string"
+     },
+     "overlap_pct": {
+      "default": 0.0,
+      "maximum": 0.25,
+      "minimum": 0.0,
+      "title": "Overlap Pct",
+      "type": "number"
+     },
+     "target_tokens": {
+      "default": 450,
+      "maximum": 2000,
+      "minimum": 64,
+      "title": "Target Tokens",
+      "type": "integer"
+     }
+    },
+    "title": "Chunking",
+    "type": "object"
+   },
+   "Embedding": {
+    "additionalProperties": false,
+    "description": "The embedding model. \"\" means the deployment's default (cloud: Titan v2 1024-d).",
+    "properties": {
+     "dims": {
+      "anyOf": [
+       {
+        "maximum": 8192,
+        "minimum": 1,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Dims"
+     },
+     "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
+     },
+     "profile": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Profile"
+     }
+    },
+    "title": "Embedding",
+    "type": "object"
+   },
+   "Enrichment": {
+    "additionalProperties": false,
+    "description": "\"prefix\" is deterministic and free; \"contextual\" is Contextual Retrieval, an opt-in\nbehind a cost preview (D153 #3), on any chat model including the org's own.",
+    "properties": {
+     "contextual_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Contextual Model"
+     },
+     "extract_metadata": {
+      "default": false,
+      "title": "Extract Metadata",
+      "type": "boolean"
+     },
+     "mode": {
+      "default": "prefix",
+      "enum": [
+       "prefix",
+       "contextual"
+      ],
+      "title": "Mode",
+      "type": "string"
+     }
+    },
+    "title": "Enrichment",
+    "type": "object"
+   },
+   "Fusion": {
+    "additionalProperties": false,
+    "properties": {
+     "method": {
+      "const": "rrf",
+      "default": "rrf",
+      "title": "Method",
+      "type": "string"
+     },
+     "overfetch": {
+      "default": 50,
+      "maximum": 200,
+      "minimum": 10,
+      "title": "Overfetch",
+      "type": "integer"
+     },
+     "rrf_k": {
+      "default": 60,
+      "maximum": 1000,
+      "minimum": 1,
+      "title": "Rrf K",
+      "type": "integer"
+     },
+     "weights": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Weights",
+      "type": "object"
+     }
+    },
+    "title": "Fusion",
+    "type": "object"
+   },
+   "KnowledgeBaseState": {
+    "properties": {
+     "active_snapshot": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Active Snapshot"
+     },
+     "building_snapshot": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Building Snapshot"
+     },
+     "counts_by_status": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Counts By Status",
+      "type": "object"
+     },
+     "month_spend_usd": {
+      "default": 0.0,
+      "title": "Month Spend Usd",
+      "type": "number"
+     },
+     "paused_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Paused Reason"
+     }
+    },
+    "title": "KnowledgeBaseState",
+    "type": "object"
+   },
+   "Rerank": {
+    "additionalProperties": false,
+    "description": "None means the deployment's default: on in cloud, off in OSS unless configured.",
+    "properties": {
+     "candidates": {
+      "default": 50,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Candidates",
+      "type": "integer"
+     },
+     "enabled": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Enabled"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Model"
+     },
+     "top_n": {
+      "default": 8,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Top N",
+      "type": "integer"
+     }
+    },
+    "title": "Rerank",
+    "type": "object"
+   },
+   "Retrieval": {
+    "additionalProperties": false,
+    "properties": {
+     "max_context_tokens": {
+      "default": 6000,
+      "maximum": 100000,
+      "minimum": 500,
+      "title": "Max Context Tokens",
+      "type": "integer"
+     },
+     "neighbor_window": {
+      "default": 1,
+      "maximum": 3,
+      "minimum": 0,
+      "title": "Neighbor Window",
+      "type": "integer"
+     },
+     "parent_expansion": {
+      "default": "off",
+      "enum": [
+       "off",
+       "section",
+       "neighbors"
+      ],
+      "title": "Parent Expansion",
+      "type": "string"
+     },
+     "score_threshold": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score Threshold"
+     },
+     "top_k": {
+      "default": 8,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "title": "Retrieval",
+    "type": "object"
+   },
+   "Web": {
+    "additionalProperties": false,
+    "description": "Per-KB crawl settings, each bounded by the deployment's caps (`config.py`).",
+    "properties": {
+     "max_depth": {
+      "default": 3,
+      "maximum": 5,
+      "minimum": 0,
+      "title": "Max Depth",
+      "type": "integer"
+     },
+     "max_pages": {
+      "default": 500,
+      "maximum": 100000,
+      "minimum": 1,
+      "title": "Max Pages",
+      "type": "integer"
+     },
+     "recrawl_days": {
+      "default": 7,
+      "maximum": 365,
+      "minimum": 0,
+      "title": "Recrawl Days",
+      "type": "integer"
+     },
+     "rps_per_host": {
+      "default": 1.0,
+      "exclusiveMinimum": 0,
+      "maximum": 10,
+      "title": "Rps Per Host",
+      "type": "number"
+     },
+     "sources": {
+      "items": {
+       "$ref": "#/$defs/WebSource"
+      },
+      "maxItems": 50,
+      "title": "Sources",
+      "type": "array"
+     }
+    },
+    "title": "Web",
+    "type": "object"
+   },
+   "WebSource": {
+    "additionalProperties": false,
+    "properties": {
+     "exclude": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Exclude",
+      "type": "array"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "include": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Include",
+      "type": "array"
+     },
+     "kind": {
+      "default": "page",
+      "enum": [
+       "page",
+       "sitemap",
+       "site"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "url": {
+      "maxLength": 2048,
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "url"
+    ],
+    "title": "WebSource",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "budget_monthly_usd": {
+    "anyOf": [
+     {
+      "minimum": 0,
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Budget Monthly Usd"
+   },
+   "chunking": {
+    "$ref": "#/$defs/Chunking"
+   },
+   "created_at": {
+    "default": "",
+    "title": "Created At",
+    "type": "string"
+   },
+   "description": {
+    "default": "",
+    "maxLength": 2000,
+    "title": "Description",
+    "type": "string"
+   },
+   "embedding": {
+    "$ref": "#/$defs/Embedding"
+   },
+   "enrichment": {
+    "$ref": "#/$defs/Enrichment"
+   },
+   "folder": {
+    "title": "Folder",
+    "type": "string"
+   },
+   "fusion": {
+    "$ref": "#/$defs/Fusion"
+   },
+   "id": {
+    "title": "Id",
+    "type": "string"
+   },
+   "language": {
+    "default": "simple",
+    "title": "Language",
+    "type": "string"
+   },
+   "name": {
+    "maxLength": 200,
+    "minLength": 1,
+    "title": "Name",
+    "type": "string"
+   },
+   "reindex_started": {
+    "default": false,
+    "title": "Reindex Started",
+    "type": "boolean"
+   },
+   "rerank": {
+    "$ref": "#/$defs/Rerank"
+   },
+   "retrieval": {
+    "$ref": "#/$defs/Retrieval"
+   },
+   "revision": {
+    "default": 1,
+    "minimum": 1,
+    "title": "Revision",
+    "type": "integer"
+   },
+   "state": {
+    "$ref": "#/$defs/KnowledgeBaseState"
+   },
+   "status": {
+    "default": "active",
+    "enum": [
+     "active",
+     "disabled"
+    ],
+    "title": "Status",
+    "type": "string"
+   },
+   "updated_at": {
+    "default": "",
+    "title": "Updated At",
+    "type": "string"
+   },
+   "visitor_access": {
+    "default": false,
+    "title": "Visitor Access",
+    "type": "boolean"
+   },
+   "web": {
+    "$ref": "#/$defs/Web"
+   }
+  },
+  "required": [
+   "id",
+   "name",
+   "folder"
+  ],
+  "title": "KnowledgeBaseOut",
+  "type": "object"
+ },
+ "KnowledgeBaseState": {
+  "properties": {
+   "active_snapshot": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Active Snapshot"
+   },
+   "building_snapshot": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Building Snapshot"
+   },
+   "counts_by_status": {
+    "additionalProperties": {
+     "type": "integer"
+    },
+    "title": "Counts By Status",
+    "type": "object"
+   },
+   "month_spend_usd": {
+    "default": 0.0,
+    "title": "Month Spend Usd",
+    "type": "number"
+   },
+   "paused_reason": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Paused Reason"
+   }
+  },
+  "title": "KnowledgeBaseState",
+  "type": "object"
+ },
+ "KnowledgeBaseUpdate": {
+  "$defs": {
+   "Chunking": {
+    "additionalProperties": false,
+    "properties": {
+     "max_tokens": {
+      "default": 800,
+      "maximum": 4000,
+      "minimum": 64,
+      "title": "Max Tokens",
+      "type": "integer"
+     },
+     "mode": {
+      "default": "structure",
+      "enum": [
+       "structure",
+       "fixed",
+       "page",
+       "none"
+      ],
+      "title": "Mode",
+      "type": "string"
+     },
+     "overlap_pct": {
+      "default": 0.0,
+      "maximum": 0.25,
+      "minimum": 0.0,
+      "title": "Overlap Pct",
+      "type": "number"
+     },
+     "target_tokens": {
+      "default": 450,
+      "maximum": 2000,
+      "minimum": 64,
+      "title": "Target Tokens",
+      "type": "integer"
+     }
+    },
+    "title": "Chunking",
+    "type": "object"
+   },
+   "Embedding": {
+    "additionalProperties": false,
+    "description": "The embedding model. \"\" means the deployment's default (cloud: Titan v2 1024-d).",
+    "properties": {
+     "dims": {
+      "anyOf": [
+       {
+        "maximum": 8192,
+        "minimum": 1,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Dims"
+     },
+     "model": {
+      "default": "",
+      "title": "Model",
+      "type": "string"
+     },
+     "profile": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Profile"
+     }
+    },
+    "title": "Embedding",
+    "type": "object"
+   },
+   "Enrichment": {
+    "additionalProperties": false,
+    "description": "\"prefix\" is deterministic and free; \"contextual\" is Contextual Retrieval, an opt-in\nbehind a cost preview (D153 #3), on any chat model including the org's own.",
+    "properties": {
+     "contextual_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Contextual Model"
+     },
+     "extract_metadata": {
+      "default": false,
+      "title": "Extract Metadata",
+      "type": "boolean"
+     },
+     "mode": {
+      "default": "prefix",
+      "enum": [
+       "prefix",
+       "contextual"
+      ],
+      "title": "Mode",
+      "type": "string"
+     }
+    },
+    "title": "Enrichment",
+    "type": "object"
+   },
+   "Fusion": {
+    "additionalProperties": false,
+    "properties": {
+     "method": {
+      "const": "rrf",
+      "default": "rrf",
+      "title": "Method",
+      "type": "string"
+     },
+     "overfetch": {
+      "default": 50,
+      "maximum": 200,
+      "minimum": 10,
+      "title": "Overfetch",
+      "type": "integer"
+     },
+     "rrf_k": {
+      "default": 60,
+      "maximum": 1000,
+      "minimum": 1,
+      "title": "Rrf K",
+      "type": "integer"
+     },
+     "weights": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Weights",
+      "type": "object"
+     }
+    },
+    "title": "Fusion",
+    "type": "object"
+   },
+   "Rerank": {
+    "additionalProperties": false,
+    "description": "None means the deployment's default: on in cloud, off in OSS unless configured.",
+    "properties": {
+     "candidates": {
+      "default": 50,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Candidates",
+      "type": "integer"
+     },
+     "enabled": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Enabled"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Model"
+     },
+     "top_n": {
+      "default": 8,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Top N",
+      "type": "integer"
+     }
+    },
+    "title": "Rerank",
+    "type": "object"
+   },
+   "Retrieval": {
+    "additionalProperties": false,
+    "properties": {
+     "max_context_tokens": {
+      "default": 6000,
+      "maximum": 100000,
+      "minimum": 500,
+      "title": "Max Context Tokens",
+      "type": "integer"
+     },
+     "neighbor_window": {
+      "default": 1,
+      "maximum": 3,
+      "minimum": 0,
+      "title": "Neighbor Window",
+      "type": "integer"
+     },
+     "parent_expansion": {
+      "default": "off",
+      "enum": [
+       "off",
+       "section",
+       "neighbors"
+      ],
+      "title": "Parent Expansion",
+      "type": "string"
+     },
+     "score_threshold": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score Threshold"
+     },
+     "top_k": {
+      "default": 8,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "title": "Retrieval",
+    "type": "object"
+   },
+   "Web": {
+    "additionalProperties": false,
+    "description": "Per-KB crawl settings, each bounded by the deployment's caps (`config.py`).",
+    "properties": {
+     "max_depth": {
+      "default": 3,
+      "maximum": 5,
+      "minimum": 0,
+      "title": "Max Depth",
+      "type": "integer"
+     },
+     "max_pages": {
+      "default": 500,
+      "maximum": 100000,
+      "minimum": 1,
+      "title": "Max Pages",
+      "type": "integer"
+     },
+     "recrawl_days": {
+      "default": 7,
+      "maximum": 365,
+      "minimum": 0,
+      "title": "Recrawl Days",
+      "type": "integer"
+     },
+     "rps_per_host": {
+      "default": 1.0,
+      "exclusiveMinimum": 0,
+      "maximum": 10,
+      "title": "Rps Per Host",
+      "type": "number"
+     },
+     "sources": {
+      "items": {
+       "$ref": "#/$defs/WebSource"
+      },
+      "maxItems": 50,
+      "title": "Sources",
+      "type": "array"
+     }
+    },
+    "title": "Web",
+    "type": "object"
+   },
+   "WebSource": {
+    "additionalProperties": false,
+    "properties": {
+     "exclude": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Exclude",
+      "type": "array"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "include": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Include",
+      "type": "array"
+     },
+     "kind": {
+      "default": "page",
+      "enum": [
+       "page",
+       "sitemap",
+       "site"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "url": {
+      "maxLength": 2048,
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "url"
+    ],
+    "title": "WebSource",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "description": "A patch. `revision` is the one the edit started from; a stale one is a 409.",
+  "properties": {
+   "budget_monthly_usd": {
+    "anyOf": [
+     {
+      "minimum": 0,
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Budget Monthly Usd"
+   },
+   "chunking": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/Chunking"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "clear_budget": {
+    "default": false,
+    "title": "Clear Budget",
+    "type": "boolean"
+   },
+   "description": {
+    "anyOf": [
+     {
+      "maxLength": 2000,
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Description"
+   },
+   "embedding": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/Embedding"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "enrichment": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/Enrichment"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "folder": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Folder"
+   },
+   "fusion": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/Fusion"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "language": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Language"
+   },
+   "name": {
+    "anyOf": [
+     {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Name"
+   },
+   "rerank": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/Rerank"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "retrieval": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/Retrieval"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "revision": {
+    "minimum": 1,
+    "title": "Revision",
+    "type": "integer"
+   },
+   "status": {
+    "anyOf": [
+     {
+      "enum": [
+       "active",
+       "disabled"
+      ],
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Status"
+   },
+   "visitor_access": {
+    "anyOf": [
+     {
+      "type": "boolean"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Visitor Access"
+   },
+   "web": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/Web"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "revision"
+  ],
+  "title": "KnowledgeBaseUpdate",
+  "type": "object"
+ },
+ "QuoteCheck": {
+  "properties": {
+   "matched": {
+    "title": "Matched",
+    "type": "boolean"
+   },
+   "method": {
+    "enum": [
+     "exact",
+     "normalized"
+    ],
+    "title": "Method",
+    "type": "string"
+   },
+   "quote": {
+    "title": "Quote",
+    "type": "string"
+   }
+  },
+  "required": [
+   "quote",
+   "matched",
+   "method"
+  ],
+  "title": "QuoteCheck",
+  "type": "object"
+ },
+ "RecordIn": {
+  "additionalProperties": false,
+  "description": "One record: text, or a JSON object, with metadata. Sending the same `id`\nagain replaces it. Stored as `<folder>/_records/<id>.json`.",
+  "properties": {
+   "doc_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Doc Date"
+   },
+   "id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Id"
+   },
+   "json": {
+    "anyOf": [
+     {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Json"
+   },
+   "metadata": {
+    "additionalProperties": true,
+    "title": "Metadata",
+    "type": "object"
+   },
+   "text": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Text"
+   },
+   "title": {
+    "anyOf": [
+     {
+      "maxLength": 1000,
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Title"
+   }
+  },
+  "title": "RecordIn",
+  "type": "object"
+ },
+ "RecordIngestRequest": {
+  "$defs": {
+   "RecordIn": {
+    "additionalProperties": false,
+    "description": "One record: text, or a JSON object, with metadata. Sending the same `id`\nagain replaces it. Stored as `<folder>/_records/<id>.json`.",
+    "properties": {
+     "doc_date": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Date"
+     },
+     "id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Id"
+     },
+     "json": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Json"
+     },
+     "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+     },
+     "text": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Text"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "maxLength": 1000,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Title"
+     }
+    },
+    "title": "RecordIn",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "records": {
+    "items": {
+     "$ref": "#/$defs/RecordIn"
+    },
+    "maxItems": 100,
+    "minItems": 1,
+    "title": "Records",
+    "type": "array"
+   }
+  },
+  "required": [
+   "records"
+  ],
+  "title": "RecordIngestRequest",
+  "type": "object"
+ },
+ "ReplayReport": {
+  "$defs": {
+   "CostLine": {
+    "additionalProperties": false,
+    "properties": {
+     "charged_microusd": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Charged Microusd"
+     },
+     "cost_source": {
+      "title": "Cost Source",
+      "type": "string"
+     },
+     "est_usd": {
+      "default": 0.0,
+      "title": "Est Usd",
+      "type": "number"
+     },
+     "input_tokens": {
+      "default": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+     },
+     "model": {
+      "title": "Model",
+      "type": "string"
+     },
+     "stage": {
+      "title": "Stage",
+      "type": "string"
+     },
+     "unit": {
+      "default": "tokens",
+      "title": "Unit",
+      "type": "string"
+     },
+     "units": {
+      "default": 0.0,
+      "title": "Units",
+      "type": "number"
+     }
+    },
+    "required": [
+     "stage",
+     "model",
+     "cost_source"
+    ],
+    "title": "CostLine",
+    "type": "object"
+   },
+   "Degraded": {
+    "additionalProperties": false,
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "detail": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Detail"
+     }
+    },
+    "required": [
+     "code"
+    ],
+    "title": "Degraded",
+    "type": "object"
+   },
+   "ReplayCheck": {
+    "additionalProperties": false,
+    "properties": {
+     "detail": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Detail"
+     },
+     "name": {
+      "enum": [
+       "snapshot_present",
+       "doc_sha_unchanged",
+       "capabilities_unchanged",
+       "legs_match",
+       "hits_match"
+      ],
+      "title": "Name",
+      "type": "string"
+     },
+     "ok": {
+      "title": "Ok",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "name",
+     "ok"
+    ],
+    "title": "ReplayCheck",
+    "type": "object"
+   },
+   "ReplayDiff": {
+    "additionalProperties": false,
+    "properties": {
+     "added": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Added",
+      "type": "array"
+     },
+     "moved": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Moved",
+      "type": "array"
+     },
+     "removed": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Removed",
+      "type": "array"
+     }
+    },
+    "title": "ReplayDiff",
+    "type": "object"
+   },
+   "TraceCosts": {
+    "additionalProperties": false,
+    "properties": {
+     "rows": {
+      "items": {
+       "$ref": "#/$defs/CostLine"
+      },
+      "title": "Rows",
+      "type": "array"
+     },
+     "total_charged_microusd": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Total Charged Microusd"
+     },
+     "total_est_usd": {
+      "default": 0.0,
+      "title": "Total Est Usd",
+      "type": "number"
+     }
+    },
+    "title": "TraceCosts",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "checks": {
+    "items": {
+     "$ref": "#/$defs/ReplayCheck"
+    },
+    "title": "Checks",
+    "type": "array"
+   },
+   "cost": {
+    "$ref": "#/$defs/TraceCosts"
+   },
+   "degraded": {
+    "items": {
+     "$ref": "#/$defs/Degraded"
+    },
+    "title": "Degraded",
+    "type": "array"
+   },
+   "diffs": {
+    "additionalProperties": {
+     "$ref": "#/$defs/ReplayDiff"
+    },
+    "title": "Diffs",
+    "type": "object"
+   },
+   "mode": {
+    "enum": [
+     "exact",
+     "live"
+    ],
+    "title": "Mode",
+    "type": "string"
+   },
+   "query_id": {
+    "title": "Query Id",
+    "type": "string"
+   },
+   "reproducible": {
+    "title": "Reproducible",
+    "type": "boolean"
+   }
+  },
+  "required": [
+   "query_id",
+   "mode",
+   "reproducible"
+  ],
+  "title": "ReplayReport",
+  "type": "object"
+ },
+ "ReplayRequest": {
+  "additionalProperties": false,
+  "description": "`exact` reuses the stored query vector and rerank scores ($0); it needs the\nsnapshot still present (retired ones are kept `knowledge_snapshot_grace_days`)\nand an exact index. `live` embeds and reranks again against the active\nsnapshot and reports the difference.",
+  "properties": {
+   "mode": {
+    "default": "exact",
+    "enum": [
+     "exact",
+     "live"
+    ],
+    "title": "Mode",
+    "type": "string"
+   },
+   "query_id": {
+    "title": "Query Id",
+    "type": "string"
+   }
+  },
+  "required": [
+   "query_id"
+  ],
+  "title": "ReplayRequest",
+  "type": "object"
+ },
+ "Rerank": {
+  "additionalProperties": false,
+  "description": "None means the deployment's default: on in cloud, off in OSS unless configured.",
+  "properties": {
+   "candidates": {
+    "default": 50,
+    "maximum": 100,
+    "minimum": 1,
+    "title": "Candidates",
+    "type": "integer"
+   },
+   "enabled": {
+    "anyOf": [
+     {
+      "type": "boolean"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Enabled"
+   },
+   "model": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Model"
+   },
+   "top_n": {
+    "default": 8,
+    "maximum": 50,
+    "minimum": 1,
+    "title": "Top N",
+    "type": "integer"
+   }
+  },
+  "title": "Rerank",
+  "type": "object"
+ },
+ "Retrieval": {
+  "additionalProperties": false,
+  "properties": {
+   "max_context_tokens": {
+    "default": 6000,
+    "maximum": 100000,
+    "minimum": 500,
+    "title": "Max Context Tokens",
+    "type": "integer"
+   },
+   "neighbor_window": {
+    "default": 1,
+    "maximum": 3,
+    "minimum": 0,
+    "title": "Neighbor Window",
+    "type": "integer"
+   },
+   "parent_expansion": {
+    "default": "off",
+    "enum": [
+     "off",
+     "section",
+     "neighbors"
+    ],
+    "title": "Parent Expansion",
+    "type": "string"
+   },
+   "score_threshold": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Score Threshold"
+   },
+   "top_k": {
+    "default": 8,
+    "maximum": 50,
+    "minimum": 1,
+    "title": "Top K",
+    "type": "integer"
+   }
+  },
+  "title": "Retrieval",
+  "type": "object"
+ },
+ "RetrieveStepConfig": {
+  "additionalProperties": false,
+  "properties": {
+   "filters": {
+    "anyOf": [
+     {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Filters"
+   },
+   "kb_ids": {
+    "items": {
+     "type": "string"
+    },
+    "maxItems": 10,
+    "minItems": 1,
+    "title": "Kb Ids",
+    "type": "array"
+   },
+   "query": {
+    "maxLength": 4000,
+    "minLength": 1,
+    "title": "Query",
+    "type": "string"
+   },
+   "rerank": {
+    "anyOf": [
+     {
+      "type": "boolean"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Rerank"
+   },
+   "snapshot": {
+    "default": "active",
+    "title": "Snapshot",
+    "type": "string"
+   },
+   "top_k": {
+    "anyOf": [
+     {
+      "maximum": 50,
+      "minimum": 1,
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Top K"
+   }
+  },
+  "required": [
+   "kb_ids",
+   "query"
+  ],
+  "title": "RetrieveStepConfig",
+  "type": "object"
+ },
+ "RetrieveStepOutput": {
+  "$defs": {
+   "Citation": {
+    "description": "A `[K#]` label resolved to where the words are, and how fresh they are.",
+    "properties": {
+     "char_end": {
+      "title": "Char End",
+      "type": "integer"
+     },
+     "char_start": {
+      "title": "Char Start",
+      "type": "integer"
+     },
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Version"
+     },
+     "heading_path": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Heading Path",
+      "type": "array"
+     },
+     "indexed_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Indexed At"
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "page_end": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page End"
+     },
+     "page_start": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page Start"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "quote_check": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/QuoteCheck"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Sha256"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "snippet": {
+      "default": "",
+      "maxLength": 200,
+      "title": "Snippet",
+      "type": "string"
+     },
+     "source": {
+      "enum": [
+       "upload",
+       "web",
+       "record",
+       "vault"
+      ],
+      "title": "Source",
+      "type": "string"
+     },
+     "source_url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Source Url"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Title"
+     }
+    },
+    "required": [
+     "label",
+     "kb_id",
+     "doc_id",
+     "chunk_id",
+     "path",
+     "source",
+     "char_start",
+     "char_end",
+     "snapshot_id"
+    ],
+    "title": "Citation",
+    "type": "object"
+   },
+   "Hit": {
+    "properties": {
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "citation": {
+      "$ref": "#/$defs/Citation"
+     },
+     "content": {
+      "title": "Content",
+      "type": "string"
+     },
+     "context": {
+      "default": "",
+      "title": "Context",
+      "type": "string"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+     },
+     "score": {
+      "title": "Score",
+      "type": "number"
+     },
+     "scores": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Scores",
+      "type": "object"
+     }
+    },
+    "required": [
+     "label",
+     "chunk_id",
+     "doc_id",
+     "kb_id",
+     "content",
+     "score",
+     "citation"
+    ],
+    "title": "Hit",
+    "type": "object"
+   },
+   "QuoteCheck": {
+    "properties": {
+     "matched": {
+      "title": "Matched",
+      "type": "boolean"
+     },
+     "method": {
+      "enum": [
+       "exact",
+       "normalized"
+      ],
+      "title": "Method",
+      "type": "string"
+     },
+     "quote": {
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "quote",
+     "matched",
+     "method"
+    ],
+    "title": "QuoteCheck",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "chunks": {
+    "items": {
+     "$ref": "#/$defs/Hit"
+    },
+    "title": "Chunks",
+    "type": "array"
+   },
+   "citations": {
+    "items": {
+     "$ref": "#/$defs/Citation"
+    },
+    "title": "Citations",
+    "type": "array"
+   },
+   "context": {
+    "title": "Context",
+    "type": "string"
+   },
+   "snapshot_ids": {
+    "additionalProperties": {
+     "type": "string"
+    },
+    "title": "Snapshot Ids",
+    "type": "object"
+   },
+   "trace_id": {
+    "title": "Trace Id",
+    "type": "string"
+   }
+  },
+  "required": [
+   "context",
+   "chunks",
+   "citations",
+   "trace_id",
+   "snapshot_ids"
+  ],
+  "title": "RetrieveStepOutput",
+  "type": "object"
+ },
+ "SearchRequest": {
+  "additionalProperties": false,
+  "properties": {
+   "filters": {
+    "anyOf": [
+     {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Filters"
+   },
+   "include_trace": {
+    "default": false,
+    "title": "Include Trace",
+    "type": "boolean"
+   },
+   "kb_ids": {
+    "items": {
+     "type": "string"
+    },
+    "maxItems": 10,
+    "minItems": 1,
+    "title": "Kb Ids",
+    "type": "array"
+   },
+   "mode": {
+    "default": "hybrid",
+    "enum": [
+     "hybrid",
+     "lexical",
+     "vector"
+    ],
+    "title": "Mode",
+    "type": "string"
+   },
+   "neighbors": {
+    "default": 0,
+    "maximum": 3,
+    "minimum": 0,
+    "title": "Neighbors",
+    "type": "integer"
+   },
+   "path_prefix": {
+    "anyOf": [
+     {
+      "maxLength": 1024,
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Path Prefix"
+   },
+   "query": {
+    "maxLength": 2000,
+    "minLength": 1,
+    "title": "Query",
+    "type": "string"
+   },
+   "rerank": {
+    "anyOf": [
+     {
+      "type": "boolean"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Rerank"
+   },
+   "score_threshold": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Score Threshold"
+   },
+   "snapshot_ids": {
+    "anyOf": [
+     {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "type": "object"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Snapshot Ids"
+   },
+   "top_k": {
+    "anyOf": [
+     {
+      "maximum": 50,
+      "minimum": 1,
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Top K"
+   }
+  },
+  "required": [
+   "query",
+   "kb_ids"
+  ],
+  "title": "SearchRequest",
+  "type": "object"
+ },
+ "SearchResponse": {
+  "$defs": {
+   "Citation": {
+    "description": "A `[K#]` label resolved to where the words are, and how fresh they are.",
+    "properties": {
+     "char_end": {
+      "title": "Char End",
+      "type": "integer"
+     },
+     "char_start": {
+      "title": "Char Start",
+      "type": "integer"
+     },
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Version"
+     },
+     "heading_path": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Heading Path",
+      "type": "array"
+     },
+     "indexed_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Indexed At"
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "page_end": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page End"
+     },
+     "page_start": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page Start"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "quote_check": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/QuoteCheck"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Sha256"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "snippet": {
+      "default": "",
+      "maxLength": 200,
+      "title": "Snippet",
+      "type": "string"
+     },
+     "source": {
+      "enum": [
+       "upload",
+       "web",
+       "record",
+       "vault"
+      ],
+      "title": "Source",
+      "type": "string"
+     },
+     "source_url": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Source Url"
+     },
+     "title": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Title"
+     }
+    },
+    "required": [
+     "label",
+     "kb_id",
+     "doc_id",
+     "chunk_id",
+     "path",
+     "source",
+     "char_start",
+     "char_end",
+     "snapshot_id"
+    ],
+    "title": "Citation",
+    "type": "object"
+   },
+   "CostLine": {
+    "additionalProperties": false,
+    "properties": {
+     "charged_microusd": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Charged Microusd"
+     },
+     "cost_source": {
+      "title": "Cost Source",
+      "type": "string"
+     },
+     "est_usd": {
+      "default": 0.0,
+      "title": "Est Usd",
+      "type": "number"
+     },
+     "input_tokens": {
+      "default": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+     },
+     "model": {
+      "title": "Model",
+      "type": "string"
+     },
+     "stage": {
+      "title": "Stage",
+      "type": "string"
+     },
+     "unit": {
+      "default": "tokens",
+      "title": "Unit",
+      "type": "string"
+     },
+     "units": {
+      "default": 0.0,
+      "title": "Units",
+      "type": "number"
+     }
+    },
+    "required": [
+     "stage",
+     "model",
+     "cost_source"
+    ],
+    "title": "CostLine",
+    "type": "object"
+   },
+   "CostSummary": {
+    "properties": {
+     "by_stage": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "By Stage",
+      "type": "object"
+     },
+     "total_charged_microusd": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Total Charged Microusd"
+     },
+     "total_est_usd": {
+      "default": 0.0,
+      "title": "Total Est Usd",
+      "type": "number"
+     }
+    },
+    "title": "CostSummary",
+    "type": "object"
+   },
+   "Cut": {
+    "additionalProperties": false,
+    "properties": {
+     "dropped": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Dropped"
+     },
+     "dropped_count": {
+      "default": 0,
+      "title": "Dropped Count",
+      "type": "integer"
+     },
+     "rule": {
+      "default": "",
+      "title": "Rule",
+      "type": "string"
+     },
+     "stage": {
+      "enum": [
+       "threshold",
+       "top_k",
+       "dedup",
+       "post_filter",
+       "budget"
+      ],
+      "title": "Stage",
+      "type": "string"
+     }
+    },
+    "required": [
+     "stage"
+    ],
+    "title": "Cut",
+    "type": "object"
+   },
+   "Degraded": {
+    "additionalProperties": false,
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "detail": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Detail"
+     }
+    },
+    "required": [
+     "code"
+    ],
+    "title": "Degraded",
+    "type": "object"
+   },
+   "FusedId": {
+    "additionalProperties": false,
+    "properties": {
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "ranks": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Ranks",
+      "type": "object"
+     },
+     "score": {
+      "title": "Score",
+      "type": "number"
+     }
+    },
+    "required": [
+     "chunk_id",
+     "score"
+    ],
+    "title": "FusedId",
+    "type": "object"
+   },
+   "FusionParams": {
+    "additionalProperties": false,
+    "properties": {
+     "k": {
+      "default": 60,
+      "title": "K",
+      "type": "integer"
+     },
+     "method": {
+      "const": "rrf",
+      "default": "rrf",
+      "title": "Method",
+      "type": "string"
+     },
+     "weights": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Weights",
+      "type": "object"
+     }
+    },
+    "title": "FusionParams",
+    "type": "object"
+   },
+   "FusionTrace": {
+    "additionalProperties": false,
+    "properties": {
+     "candidates": {
+      "items": {
+       "$ref": "#/$defs/FusedId"
+      },
+      "title": "Candidates",
+      "type": "array"
+     },
+     "method": {
+      "const": "rrf",
+      "default": "rrf",
+      "title": "Method",
+      "type": "string"
+     },
+     "params": {
+      "$ref": "#/$defs/FusionParams"
+     }
+    },
+    "title": "FusionTrace",
+    "type": "object"
+   },
+   "Hit": {
+    "properties": {
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "citation": {
+      "$ref": "#/$defs/Citation"
+     },
+     "content": {
+      "title": "Content",
+      "type": "string"
+     },
+     "context": {
+      "default": "",
+      "title": "Context",
+      "type": "string"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+     },
+     "score": {
+      "title": "Score",
+      "type": "number"
+     },
+     "scores": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Scores",
+      "type": "object"
+     }
+    },
+    "required": [
+     "label",
+     "chunk_id",
+     "doc_id",
+     "kb_id",
+     "content",
+     "score",
+     "citation"
+    ],
+    "title": "Hit",
+    "type": "object"
+   },
+   "IndexInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "capabilities": {
+      "additionalProperties": true,
+      "title": "Capabilities",
+      "type": "object"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "version": {
+      "title": "Version",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "version",
+     "capabilities"
+    ],
+    "title": "IndexInfo",
+    "type": "object"
+   },
+   "KbPipeline": {
+    "additionalProperties": false,
+    "properties": {
+     "chunker_version": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Chunker Version"
+     },
+     "embed_dims": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Embed Dims"
+     },
+     "embed_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Embed Model"
+     },
+     "fusion": {
+      "$ref": "#/$defs/FusionParams"
+     },
+     "overfetch": {
+      "default": 50,
+      "title": "Overfetch",
+      "type": "integer"
+     },
+     "parent_expansion": {
+      "default": "off",
+      "title": "Parent Expansion",
+      "type": "string"
+     },
+     "rerank_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rerank Model"
+     },
+     "score_threshold": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score Threshold"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "top_k": {
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "snapshot_id",
+     "top_k"
+    ],
+    "title": "KbPipeline",
+    "type": "object"
+   },
+   "LegTrace": {
+    "additionalProperties": false,
+    "properties": {
+     "candidates": {
+      "items": {
+       "$ref": "#/$defs/RankedId"
+      },
+      "title": "Candidates",
+      "type": "array"
+     },
+     "exact": {
+      "title": "Exact",
+      "type": "boolean"
+     },
+     "filtered": {
+      "title": "Filtered",
+      "type": "boolean"
+     },
+     "latency_ms": {
+      "default": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+     },
+     "leg": {
+      "enum": [
+       "lexical",
+       "vector",
+       "hybrid"
+      ],
+      "title": "Leg",
+      "type": "string"
+     },
+     "requested": {
+      "title": "Requested",
+      "type": "integer"
+     },
+     "returned": {
+      "title": "Returned",
+      "type": "integer"
+     },
+     "scopes": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "title": "Scopes",
+      "type": "array"
+     }
+    },
+    "required": [
+     "leg",
+     "scopes",
+     "requested",
+     "returned",
+     "filtered",
+     "exact"
+    ],
+    "title": "LegTrace",
+    "type": "object"
+   },
+   "Origin": {
+    "additionalProperties": false,
+    "properties": {
+     "agent_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Agent Id"
+     },
+     "api_key_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Api Key Id"
+     },
+     "run_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Run Id"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Session Id"
+     },
+     "step_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Step Id"
+     },
+     "surface": {
+      "enum": [
+       "tool",
+       "step",
+       "api",
+       "mcp",
+       "eval",
+       "ui"
+      ],
+      "title": "Surface",
+      "type": "string"
+     },
+     "turn": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Turn"
+     }
+    },
+    "required": [
+     "surface"
+    ],
+    "title": "Origin",
+    "type": "object"
+   },
+   "QuoteCheck": {
+    "properties": {
+     "matched": {
+      "title": "Matched",
+      "type": "boolean"
+     },
+     "method": {
+      "enum": [
+       "exact",
+       "normalized"
+      ],
+      "title": "Method",
+      "type": "string"
+     },
+     "quote": {
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "quote",
+     "matched",
+     "method"
+    ],
+    "title": "QuoteCheck",
+    "type": "object"
+   },
+   "RankedId": {
+    "additionalProperties": false,
+    "properties": {
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "rank": {
+      "minimum": 1,
+      "title": "Rank",
+      "type": "integer"
+     },
+     "score": {
+      "title": "Score",
+      "type": "number"
+     }
+    },
+    "required": [
+     "chunk_id",
+     "rank",
+     "score"
+    ],
+    "title": "RankedId",
+    "type": "object"
+   },
+   "ReplayInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "exact_possible": {
+      "default": false,
+      "title": "Exact Possible",
+      "type": "boolean"
+     },
+     "notes": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+     },
+     "query_vector_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Query Vector Sha256"
+     }
+    },
+    "title": "ReplayInfo",
+    "type": "object"
+   },
+   "RerankTrace": {
+    "additionalProperties": false,
+    "properties": {
+     "cost_source": {
+      "title": "Cost Source",
+      "type": "string"
+     },
+     "input_count": {
+      "title": "Input Count",
+      "type": "integer"
+     },
+     "latency_ms": {
+      "default": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+     },
+     "model": {
+      "title": "Model",
+      "type": "string"
+     },
+     "results": {
+      "items": {
+       "$ref": "#/$defs/RankedId"
+      },
+      "title": "Results",
+      "type": "array"
+     }
+    },
+    "required": [
+     "model",
+     "cost_source",
+     "input_count"
+    ],
+    "title": "RerankTrace",
+    "type": "object"
+   },
+   "Timings": {
+    "additionalProperties": false,
+    "properties": {
+     "embed": {
+      "default": 0,
+      "title": "Embed",
+      "type": "integer"
+     },
+     "fuse": {
+      "default": 0,
+      "title": "Fuse",
+      "type": "integer"
+     },
+     "lexical": {
+      "default": 0,
+      "title": "Lexical",
+      "type": "integer"
+     },
+     "rerank": {
+      "default": 0,
+      "title": "Rerank",
+      "type": "integer"
+     },
+     "rewrite": {
+      "default": 0,
+      "title": "Rewrite",
+      "type": "integer"
+     },
+     "total": {
+      "default": 0,
+      "title": "Total",
+      "type": "integer"
+     },
+     "vector": {
+      "default": 0,
+      "title": "Vector",
+      "type": "integer"
+     }
+    },
+    "title": "Timings",
+    "type": "object"
+   },
+   "Trace": {
+    "additionalProperties": false,
+    "properties": {
+     "costs": {
+      "$ref": "#/$defs/TraceCosts"
+     },
+     "created_at": {
+      "title": "Created At",
+      "type": "string"
+     },
+     "cuts": {
+      "items": {
+       "$ref": "#/$defs/Cut"
+      },
+      "title": "Cuts",
+      "type": "array"
+     },
+     "degraded": {
+      "items": {
+       "$ref": "#/$defs/Degraded"
+      },
+      "title": "Degraded",
+      "type": "array"
+     },
+     "fusion": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/FusionTrace"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "hits": {
+      "items": {
+       "$ref": "#/$defs/TraceHit"
+      },
+      "title": "Hits",
+      "type": "array"
+     },
+     "index": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/IndexInfo"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "legs": {
+      "items": {
+       "$ref": "#/$defs/LegTrace"
+      },
+      "title": "Legs",
+      "type": "array"
+     },
+     "origin": {
+      "$ref": "#/$defs/Origin"
+     },
+     "pipeline": {
+      "additionalProperties": {
+       "$ref": "#/$defs/KbPipeline"
+      },
+      "title": "Pipeline",
+      "type": "object"
+     },
+     "query_id": {
+      "title": "Query Id",
+      "type": "string"
+     },
+     "replay": {
+      "$ref": "#/$defs/ReplayInfo"
+     },
+     "request": {
+      "$ref": "#/$defs/TraceRequest"
+     },
+     "rerank": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/RerankTrace"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "timings_ms": {
+      "$ref": "#/$defs/Timings"
+     },
+     "trace_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Trace Version",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "query_id",
+     "created_at",
+     "origin",
+     "request"
+    ],
+    "title": "Trace",
+    "type": "object"
+   },
+   "TraceCosts": {
+    "additionalProperties": false,
+    "properties": {
+     "rows": {
+      "items": {
+       "$ref": "#/$defs/CostLine"
+      },
+      "title": "Rows",
+      "type": "array"
+     },
+     "total_charged_microusd": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Total Charged Microusd"
+     },
+     "total_est_usd": {
+      "default": 0.0,
+      "title": "Total Est Usd",
+      "type": "number"
+     }
+    },
+    "title": "TraceCosts",
+    "type": "object"
+   },
+   "TraceHit": {
+    "additionalProperties": false,
+    "properties": {
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Sha256"
+     },
+     "doc_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Version"
+     },
+     "heading_path": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Heading Path",
+      "type": "array"
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "page_end": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page End"
+     },
+     "page_start": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page Start"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "ranks": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Ranks",
+      "type": "object"
+     },
+     "score": {
+      "title": "Score",
+      "type": "number"
+     },
+     "scores": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Scores",
+      "type": "object"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "snippet": {
+      "default": "",
+      "maxLength": 200,
+      "title": "Snippet",
+      "type": "string"
+     }
+    },
+    "required": [
+     "label",
+     "chunk_id",
+     "doc_id",
+     "snapshot_id",
+     "kb_id",
+     "path",
+     "score"
+    ],
+    "title": "TraceHit",
+    "type": "object"
+   },
+   "TraceRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "filters": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Filters"
+     },
+     "kb_ids": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Kb Ids",
+      "type": "array"
+     },
+     "mode": {
+      "default": "hybrid",
+      "enum": [
+       "hybrid",
+       "lexical",
+       "vector"
+      ],
+      "title": "Mode",
+      "type": "string"
+     },
+     "neighbors": {
+      "default": 0,
+      "title": "Neighbors",
+      "type": "integer"
+     },
+     "path_prefix": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Path Prefix"
+     },
+     "pinned_snapshots": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "title": "Pinned Snapshots",
+      "type": "object"
+     },
+     "query": {
+      "maxLength": 2000,
+      "title": "Query",
+      "type": "string"
+     },
+     "rerank": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rerank"
+     },
+     "rewritten_query": {
+      "anyOf": [
+       {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rewritten Query"
+     },
+     "score_threshold": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score Threshold"
+     },
+     "top_k": {
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "query",
+     "kb_ids",
+     "top_k"
+    ],
+    "title": "TraceRequest",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "cost": {
+    "$ref": "#/$defs/CostSummary"
+   },
+   "degraded": {
+    "items": {
+     "type": "string"
+    },
+    "title": "Degraded",
+    "type": "array"
+   },
+   "hits": {
+    "items": {
+     "$ref": "#/$defs/Hit"
+    },
+    "title": "Hits",
+    "type": "array"
+   },
+   "query_id": {
+    "title": "Query Id",
+    "type": "string"
+   },
+   "trace": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/Trace"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "query_id",
+   "hits"
+  ],
+  "title": "SearchResponse",
+  "type": "object"
+ },
+ "StageEstimate": {
+  "properties": {
+   "cost_source": {
+    "title": "Cost Source",
+    "type": "string"
+   },
+   "est_usd": {
+    "title": "Est Usd",
+    "type": "number"
+   },
+   "model": {
+    "title": "Model",
+    "type": "string"
+   },
+   "stage": {
+    "title": "Stage",
+    "type": "string"
+   },
+   "unit": {
+    "title": "Unit",
+    "type": "string"
+   },
+   "units": {
+    "title": "Units",
+    "type": "number"
+   }
+  },
+  "required": [
+   "stage",
+   "model",
+   "units",
+   "unit",
+   "est_usd",
+   "cost_source"
+  ],
+  "title": "StageEstimate",
+  "type": "object"
+ },
+ "Trace": {
+  "$defs": {
+   "CostLine": {
+    "additionalProperties": false,
+    "properties": {
+     "charged_microusd": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Charged Microusd"
+     },
+     "cost_source": {
+      "title": "Cost Source",
+      "type": "string"
+     },
+     "est_usd": {
+      "default": 0.0,
+      "title": "Est Usd",
+      "type": "number"
+     },
+     "input_tokens": {
+      "default": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+     },
+     "model": {
+      "title": "Model",
+      "type": "string"
+     },
+     "stage": {
+      "title": "Stage",
+      "type": "string"
+     },
+     "unit": {
+      "default": "tokens",
+      "title": "Unit",
+      "type": "string"
+     },
+     "units": {
+      "default": 0.0,
+      "title": "Units",
+      "type": "number"
+     }
+    },
+    "required": [
+     "stage",
+     "model",
+     "cost_source"
+    ],
+    "title": "CostLine",
+    "type": "object"
+   },
+   "Cut": {
+    "additionalProperties": false,
+    "properties": {
+     "dropped": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Dropped"
+     },
+     "dropped_count": {
+      "default": 0,
+      "title": "Dropped Count",
+      "type": "integer"
+     },
+     "rule": {
+      "default": "",
+      "title": "Rule",
+      "type": "string"
+     },
+     "stage": {
+      "enum": [
+       "threshold",
+       "top_k",
+       "dedup",
+       "post_filter",
+       "budget"
+      ],
+      "title": "Stage",
+      "type": "string"
+     }
+    },
+    "required": [
+     "stage"
+    ],
+    "title": "Cut",
+    "type": "object"
+   },
+   "Degraded": {
+    "additionalProperties": false,
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "detail": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Detail"
+     }
+    },
+    "required": [
+     "code"
+    ],
+    "title": "Degraded",
+    "type": "object"
+   },
+   "FusedId": {
+    "additionalProperties": false,
+    "properties": {
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "ranks": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Ranks",
+      "type": "object"
+     },
+     "score": {
+      "title": "Score",
+      "type": "number"
+     }
+    },
+    "required": [
+     "chunk_id",
+     "score"
+    ],
+    "title": "FusedId",
+    "type": "object"
+   },
+   "FusionParams": {
+    "additionalProperties": false,
+    "properties": {
+     "k": {
+      "default": 60,
+      "title": "K",
+      "type": "integer"
+     },
+     "method": {
+      "const": "rrf",
+      "default": "rrf",
+      "title": "Method",
+      "type": "string"
+     },
+     "weights": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Weights",
+      "type": "object"
+     }
+    },
+    "title": "FusionParams",
+    "type": "object"
+   },
+   "FusionTrace": {
+    "additionalProperties": false,
+    "properties": {
+     "candidates": {
+      "items": {
+       "$ref": "#/$defs/FusedId"
+      },
+      "title": "Candidates",
+      "type": "array"
+     },
+     "method": {
+      "const": "rrf",
+      "default": "rrf",
+      "title": "Method",
+      "type": "string"
+     },
+     "params": {
+      "$ref": "#/$defs/FusionParams"
+     }
+    },
+    "title": "FusionTrace",
+    "type": "object"
+   },
+   "IndexInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "capabilities": {
+      "additionalProperties": true,
+      "title": "Capabilities",
+      "type": "object"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "version": {
+      "title": "Version",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "version",
+     "capabilities"
+    ],
+    "title": "IndexInfo",
+    "type": "object"
+   },
+   "KbPipeline": {
+    "additionalProperties": false,
+    "properties": {
+     "chunker_version": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Chunker Version"
+     },
+     "embed_dims": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Embed Dims"
+     },
+     "embed_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Embed Model"
+     },
+     "fusion": {
+      "$ref": "#/$defs/FusionParams"
+     },
+     "overfetch": {
+      "default": 50,
+      "title": "Overfetch",
+      "type": "integer"
+     },
+     "parent_expansion": {
+      "default": "off",
+      "title": "Parent Expansion",
+      "type": "string"
+     },
+     "rerank_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rerank Model"
+     },
+     "score_threshold": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score Threshold"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "top_k": {
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "snapshot_id",
+     "top_k"
+    ],
+    "title": "KbPipeline",
+    "type": "object"
+   },
+   "LegTrace": {
+    "additionalProperties": false,
+    "properties": {
+     "candidates": {
+      "items": {
+       "$ref": "#/$defs/RankedId"
+      },
+      "title": "Candidates",
+      "type": "array"
+     },
+     "exact": {
+      "title": "Exact",
+      "type": "boolean"
+     },
+     "filtered": {
+      "title": "Filtered",
+      "type": "boolean"
+     },
+     "latency_ms": {
+      "default": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+     },
+     "leg": {
+      "enum": [
+       "lexical",
+       "vector",
+       "hybrid"
+      ],
+      "title": "Leg",
+      "type": "string"
+     },
+     "requested": {
+      "title": "Requested",
+      "type": "integer"
+     },
+     "returned": {
+      "title": "Returned",
+      "type": "integer"
+     },
+     "scopes": {
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "title": "Scopes",
+      "type": "array"
+     }
+    },
+    "required": [
+     "leg",
+     "scopes",
+     "requested",
+     "returned",
+     "filtered",
+     "exact"
+    ],
+    "title": "LegTrace",
+    "type": "object"
+   },
+   "Origin": {
+    "additionalProperties": false,
+    "properties": {
+     "agent_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Agent Id"
+     },
+     "api_key_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Api Key Id"
+     },
+     "run_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Run Id"
+     },
+     "session_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Session Id"
+     },
+     "step_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Step Id"
+     },
+     "surface": {
+      "enum": [
+       "tool",
+       "step",
+       "api",
+       "mcp",
+       "eval",
+       "ui"
+      ],
+      "title": "Surface",
+      "type": "string"
+     },
+     "turn": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Turn"
+     }
+    },
+    "required": [
+     "surface"
+    ],
+    "title": "Origin",
+    "type": "object"
+   },
+   "RankedId": {
+    "additionalProperties": false,
+    "properties": {
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "rank": {
+      "minimum": 1,
+      "title": "Rank",
+      "type": "integer"
+     },
+     "score": {
+      "title": "Score",
+      "type": "number"
+     }
+    },
+    "required": [
+     "chunk_id",
+     "rank",
+     "score"
+    ],
+    "title": "RankedId",
+    "type": "object"
+   },
+   "ReplayInfo": {
+    "additionalProperties": false,
+    "properties": {
+     "exact_possible": {
+      "default": false,
+      "title": "Exact Possible",
+      "type": "boolean"
+     },
+     "notes": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+     },
+     "query_vector_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Query Vector Sha256"
+     }
+    },
+    "title": "ReplayInfo",
+    "type": "object"
+   },
+   "RerankTrace": {
+    "additionalProperties": false,
+    "properties": {
+     "cost_source": {
+      "title": "Cost Source",
+      "type": "string"
+     },
+     "input_count": {
+      "title": "Input Count",
+      "type": "integer"
+     },
+     "latency_ms": {
+      "default": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+     },
+     "model": {
+      "title": "Model",
+      "type": "string"
+     },
+     "results": {
+      "items": {
+       "$ref": "#/$defs/RankedId"
+      },
+      "title": "Results",
+      "type": "array"
+     }
+    },
+    "required": [
+     "model",
+     "cost_source",
+     "input_count"
+    ],
+    "title": "RerankTrace",
+    "type": "object"
+   },
+   "Timings": {
+    "additionalProperties": false,
+    "properties": {
+     "embed": {
+      "default": 0,
+      "title": "Embed",
+      "type": "integer"
+     },
+     "fuse": {
+      "default": 0,
+      "title": "Fuse",
+      "type": "integer"
+     },
+     "lexical": {
+      "default": 0,
+      "title": "Lexical",
+      "type": "integer"
+     },
+     "rerank": {
+      "default": 0,
+      "title": "Rerank",
+      "type": "integer"
+     },
+     "rewrite": {
+      "default": 0,
+      "title": "Rewrite",
+      "type": "integer"
+     },
+     "total": {
+      "default": 0,
+      "title": "Total",
+      "type": "integer"
+     },
+     "vector": {
+      "default": 0,
+      "title": "Vector",
+      "type": "integer"
+     }
+    },
+    "title": "Timings",
+    "type": "object"
+   },
+   "TraceCosts": {
+    "additionalProperties": false,
+    "properties": {
+     "rows": {
+      "items": {
+       "$ref": "#/$defs/CostLine"
+      },
+      "title": "Rows",
+      "type": "array"
+     },
+     "total_charged_microusd": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Total Charged Microusd"
+     },
+     "total_est_usd": {
+      "default": 0.0,
+      "title": "Total Est Usd",
+      "type": "number"
+     }
+    },
+    "title": "TraceCosts",
+    "type": "object"
+   },
+   "TraceHit": {
+    "additionalProperties": false,
+    "properties": {
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Sha256"
+     },
+     "doc_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Version"
+     },
+     "heading_path": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Heading Path",
+      "type": "array"
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "page_end": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page End"
+     },
+     "page_start": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Page Start"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "ranks": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Ranks",
+      "type": "object"
+     },
+     "score": {
+      "title": "Score",
+      "type": "number"
+     },
+     "scores": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Scores",
+      "type": "object"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "snippet": {
+      "default": "",
+      "maxLength": 200,
+      "title": "Snippet",
+      "type": "string"
+     }
+    },
+    "required": [
+     "label",
+     "chunk_id",
+     "doc_id",
+     "snapshot_id",
+     "kb_id",
+     "path",
+     "score"
+    ],
+    "title": "TraceHit",
+    "type": "object"
+   },
+   "TraceRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "filters": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Filters"
+     },
+     "kb_ids": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Kb Ids",
+      "type": "array"
+     },
+     "mode": {
+      "default": "hybrid",
+      "enum": [
+       "hybrid",
+       "lexical",
+       "vector"
+      ],
+      "title": "Mode",
+      "type": "string"
+     },
+     "neighbors": {
+      "default": 0,
+      "title": "Neighbors",
+      "type": "integer"
+     },
+     "path_prefix": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Path Prefix"
+     },
+     "pinned_snapshots": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "title": "Pinned Snapshots",
+      "type": "object"
+     },
+     "query": {
+      "maxLength": 2000,
+      "title": "Query",
+      "type": "string"
+     },
+     "rerank": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rerank"
+     },
+     "rewritten_query": {
+      "anyOf": [
+       {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rewritten Query"
+     },
+     "score_threshold": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score Threshold"
+     },
+     "top_k": {
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "query",
+     "kb_ids",
+     "top_k"
+    ],
+    "title": "TraceRequest",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "costs": {
+    "$ref": "#/$defs/TraceCosts"
+   },
+   "created_at": {
+    "title": "Created At",
+    "type": "string"
+   },
+   "cuts": {
+    "items": {
+     "$ref": "#/$defs/Cut"
+    },
+    "title": "Cuts",
+    "type": "array"
+   },
+   "degraded": {
+    "items": {
+     "$ref": "#/$defs/Degraded"
+    },
+    "title": "Degraded",
+    "type": "array"
+   },
+   "fusion": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/FusionTrace"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "hits": {
+    "items": {
+     "$ref": "#/$defs/TraceHit"
+    },
+    "title": "Hits",
+    "type": "array"
+   },
+   "index": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/IndexInfo"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "legs": {
+    "items": {
+     "$ref": "#/$defs/LegTrace"
+    },
+    "title": "Legs",
+    "type": "array"
+   },
+   "origin": {
+    "$ref": "#/$defs/Origin"
+   },
+   "pipeline": {
+    "additionalProperties": {
+     "$ref": "#/$defs/KbPipeline"
+    },
+    "title": "Pipeline",
+    "type": "object"
+   },
+   "query_id": {
+    "title": "Query Id",
+    "type": "string"
+   },
+   "replay": {
+    "$ref": "#/$defs/ReplayInfo"
+   },
+   "request": {
+    "$ref": "#/$defs/TraceRequest"
+   },
+   "rerank": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/RerankTrace"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "timings_ms": {
+    "$ref": "#/$defs/Timings"
+   },
+   "trace_version": {
+    "const": 1,
+    "default": 1,
+    "title": "Trace Version",
+    "type": "integer"
+   }
+  },
+  "required": [
+   "query_id",
+   "created_at",
+   "origin",
+   "request"
+  ],
+  "title": "Trace",
+  "type": "object"
+ },
+ "UploadComplete": {
+  "$defs": {
+   "CompletedPart": {
+    "additionalProperties": false,
+    "properties": {
+     "etag": {
+      "title": "Etag",
+      "type": "string"
+     },
+     "part_number": {
+      "minimum": 1,
+      "title": "Part Number",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "part_number",
+     "etag"
+    ],
+    "title": "CompletedPart",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "parts": {
+    "items": {
+     "$ref": "#/$defs/CompletedPart"
+    },
+    "maxItems": 10000,
+    "minItems": 1,
+    "title": "Parts",
+    "type": "array"
+   }
+  },
+  "required": [
+   "parts"
+  ],
+  "title": "UploadComplete",
+  "type": "object"
+ },
+ "UploadInit": {
+  "additionalProperties": false,
+  "properties": {
+   "filename": {
+    "maxLength": 255,
+    "minLength": 1,
+    "title": "Filename",
+    "type": "string"
+   },
+   "metadata": {
+    "additionalProperties": true,
+    "title": "Metadata",
+    "type": "object"
+   },
+   "mime": {
+    "maxLength": 255,
+    "title": "Mime",
+    "type": "string"
+   },
+   "path": {
+    "anyOf": [
+     {
+      "maxLength": 1024,
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Path"
+   },
+   "size_bytes": {
+    "minimum": 1,
+    "title": "Size Bytes",
+    "type": "integer"
+   }
+  },
+  "required": [
+   "filename",
+   "size_bytes",
+   "mime"
+  ],
+  "title": "UploadInit",
+  "type": "object"
+ },
+ "UploadPart": {
+  "properties": {
+   "headers": {
+    "additionalProperties": {
+     "type": "string"
+    },
+    "title": "Headers",
+    "type": "object"
+   },
+   "method": {
+    "const": "PUT",
+    "default": "PUT",
+    "title": "Method",
+    "type": "string"
+   },
+   "part_number": {
+    "title": "Part Number",
+    "type": "integer"
+   },
+   "url": {
+    "title": "Url",
+    "type": "string"
+   }
+  },
+  "required": [
+   "part_number",
+   "url"
+  ],
+  "title": "UploadPart",
+  "type": "object"
+ },
+ "UploadSession": {
+  "$defs": {
+   "UploadPart": {
+    "properties": {
+     "headers": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "title": "Headers",
+      "type": "object"
+     },
+     "method": {
+      "const": "PUT",
+      "default": "PUT",
+      "title": "Method",
+      "type": "string"
+     },
+     "part_number": {
+      "title": "Part Number",
+      "type": "integer"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "part_number",
+     "url"
+    ],
+    "title": "UploadPart",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "expires_at": {
+    "title": "Expires At",
+    "type": "string"
+   },
+   "part_size": {
+    "title": "Part Size",
+    "type": "integer"
+   },
+   "parts": {
+    "items": {
+     "$ref": "#/$defs/UploadPart"
+    },
+    "title": "Parts",
+    "type": "array"
+   },
+   "upload_id": {
+    "title": "Upload Id",
+    "type": "string"
+   }
+  },
+  "required": [
+   "upload_id",
+   "part_size",
+   "parts",
+   "expires_at"
+  ],
+  "title": "UploadSession",
+  "type": "object"
+ },
+ "UrlIngestRequest": {
+  "additionalProperties": false,
+  "properties": {
+   "kind": {
+    "default": "page",
+    "enum": [
+     "page",
+     "sitemap",
+     "site"
+    ],
+    "title": "Kind",
+    "type": "string"
+   },
+   "max_depth": {
+    "anyOf": [
+     {
+      "maximum": 5,
+      "minimum": 0,
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Max Depth"
+   },
+   "max_pages": {
+    "anyOf": [
+     {
+      "minimum": 1,
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Max Pages"
+   },
+   "metadata": {
+    "additionalProperties": true,
+    "title": "Metadata",
+    "type": "object"
+   },
+   "urls": {
+    "items": {
+     "type": "string"
+    },
+    "maxItems": 100,
+    "minItems": 1,
+    "title": "Urls",
+    "type": "array"
+   }
+  },
+  "required": [
+   "urls"
+  ],
+  "title": "UrlIngestRequest",
+  "type": "object"
+ },
+ "Web": {
+  "$defs": {
+   "WebSource": {
+    "additionalProperties": false,
+    "properties": {
+     "exclude": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Exclude",
+      "type": "array"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "include": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Include",
+      "type": "array"
+     },
+     "kind": {
+      "default": "page",
+      "enum": [
+       "page",
+       "sitemap",
+       "site"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "url": {
+      "maxLength": 2048,
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "url"
+    ],
+    "title": "WebSource",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "description": "Per-KB crawl settings, each bounded by the deployment's caps (`config.py`).",
+  "properties": {
+   "max_depth": {
+    "default": 3,
+    "maximum": 5,
+    "minimum": 0,
+    "title": "Max Depth",
+    "type": "integer"
+   },
+   "max_pages": {
+    "default": 500,
+    "maximum": 100000,
+    "minimum": 1,
+    "title": "Max Pages",
+    "type": "integer"
+   },
+   "recrawl_days": {
+    "default": 7,
+    "maximum": 365,
+    "minimum": 0,
+    "title": "Recrawl Days",
+    "type": "integer"
+   },
+   "rps_per_host": {
+    "default": 1.0,
+    "exclusiveMinimum": 0,
+    "maximum": 10,
+    "title": "Rps Per Host",
+    "type": "number"
+   },
+   "sources": {
+    "items": {
+     "$ref": "#/$defs/WebSource"
+    },
+    "maxItems": 50,
+    "title": "Sources",
+    "type": "array"
+   }
+  },
+  "title": "Web",
+  "type": "object"
+ }
+}

@@ -1,0 +1,3131 @@
+{
+ "agent": {
+  "label_re": "\\[K(\\d{1,3})\\]",
+  "read_schema": {
+   "properties": {
+    "label": {
+     "description": "A result's label from search_knowledge, e.g. [K3].",
+     "type": "string"
+    },
+    "window": {
+     "description": "How many neighbouring passages to include on each side, 0 to 3.",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "label"
+   ],
+   "type": "object"
+  },
+  "search_schema": {
+   "properties": {
+    "filters": {
+     "description": "Optional JSON metadata filter, e.g. {\"doc_type\": \"contract\", \"year\": {\"$gte\": 2024}}.",
+     "type": "string"
+    },
+    "kb": {
+     "description": "A knowledge base's id or name. Leave it out to search all of yours.",
+     "type": "string"
+    },
+    "query": {
+     "description": "What to look for, in plain words.",
+     "type": "string"
+    },
+    "top_k": {
+     "description": "How many results, 1 to 20.",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "type": "object"
+  },
+  "tools": [
+   "search_knowledge",
+   "read_knowledge"
+  ]
+ },
+ "cost": {
+  "sources": [
+   "platform",
+   "byok",
+   "local"
+  ],
+  "stages": [
+   "parse",
+   "ocr",
+   "embed",
+   "rerank",
+   "enrich",
+   "rewrite"
+  ],
+  "units": [
+   "tokens",
+   "pages",
+   "search_units",
+   "requests"
+  ]
+ },
+ "events": {
+  "lifecycle": [
+   "knowledge.document.queued",
+   "knowledge.document.indexed",
+   "knowledge.document.partial",
+   "knowledge.document.failed",
+   "knowledge.document.skipped",
+   "knowledge.document.paused",
+   "knowledge.document.blocked",
+   "knowledge.document.deleted",
+   "knowledge.base.reindexed",
+   "knowledge.base.paused",
+   "knowledge.base.resumed",
+   "knowledge.snapshot.failed"
+  ],
+  "owners": {
+   "knowledge_citations": "B1",
+   "knowledge_ingest": "R1",
+   "knowledge_read": "B1",
+   "knowledge_retrieve": "R1",
+   "knowledge_search": "B1"
+  },
+  "run": [
+   "knowledge_search",
+   "knowledge_read",
+   "knowledge_citations",
+   "knowledge_retrieve",
+   "knowledge_ingest"
+  ],
+  "webhooks": {
+   "base.reindexed": "knowledge.base.reindexed",
+   "document.failed": "knowledge.document.failed",
+   "document.indexed": "knowledge.document.indexed",
+   "document.partial": "knowledge.document.partial"
+  }
+ },
+ "filters": {
+  "builtins": {
+   "doc_date": "date",
+   "indexed_at": "datetime",
+   "mime": "string",
+   "path": "string",
+   "source": "enum",
+   "title": "string"
+  },
+  "error_codes": [
+   "bad_json",
+   "not_an_object",
+   "too_deep",
+   "too_many_conditions",
+   "too_many_values",
+   "empty_list",
+   "unknown_operator",
+   "bad_field",
+   "bad_value",
+   "type_mismatch"
+  ],
+  "field_re": "^[A-Za-z_][A-Za-z0-9_]{0,63}$",
+  "limits": {
+   "max_conditions": 50,
+   "max_depth": 4,
+   "max_in_values": 100,
+   "max_string": 1000
+  },
+  "ops": [
+   "$eq",
+   "$ne",
+   "$gt",
+   "$gte",
+   "$lt",
+   "$lte",
+   "$in",
+   "$nin",
+   "$exists",
+   "$and",
+   "$or",
+   "$not"
+  ],
+  "reserved": [
+   "indexed_at",
+   "mime",
+   "path",
+   "source"
+  ],
+  "sources": [
+   "upload",
+   "web",
+   "record",
+   "vault"
+  ]
+ },
+ "ids": {
+  "dirs": [
+   "_web",
+   "_records"
+  ],
+  "prefixes": [
+   "kb_",
+   "kdoc_",
+   "ksnap_",
+   "kq_",
+   "kch_",
+   "kup_",
+   "kcr_",
+   "kev_",
+   "kws_"
+  ],
+  "record_id": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+ },
+ "kb": {
+  "collection": "knowledge_bases",
+  "index_affecting": [
+   "chunking",
+   "embedding",
+   "enrichment",
+   "language"
+  ],
+  "refused_roots": [
+   "compaction_archives",
+   "playwright",
+   "tool_outputs"
+  ],
+  "schema": {
+   "$defs": {
+    "Chunking": {
+     "additionalProperties": false,
+     "properties": {
+      "max_tokens": {
+       "default": 800,
+       "maximum": 4000,
+       "minimum": 64,
+       "title": "Max Tokens",
+       "type": "integer"
+      },
+      "mode": {
+       "default": "structure",
+       "enum": [
+        "structure",
+        "fixed",
+        "page",
+        "none"
+       ],
+       "title": "Mode",
+       "type": "string"
+      },
+      "overlap_pct": {
+       "default": 0.0,
+       "maximum": 0.25,
+       "minimum": 0.0,
+       "title": "Overlap Pct",
+       "type": "number"
+      },
+      "target_tokens": {
+       "default": 450,
+       "maximum": 2000,
+       "minimum": 64,
+       "title": "Target Tokens",
+       "type": "integer"
+      }
+     },
+     "title": "Chunking",
+     "type": "object"
+    },
+    "Embedding": {
+     "additionalProperties": false,
+     "description": "The embedding model. \"\" means the deployment's default (cloud: Titan v2 1024-d).",
+     "properties": {
+      "dims": {
+       "anyOf": [
+        {
+         "maximum": 8192,
+         "minimum": 1,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Dims"
+      },
+      "model": {
+       "default": "",
+       "title": "Model",
+       "type": "string"
+      },
+      "profile": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Profile"
+      }
+     },
+     "title": "Embedding",
+     "type": "object"
+    },
+    "Enrichment": {
+     "additionalProperties": false,
+     "description": "\"prefix\" is deterministic and free; \"contextual\" is Contextual Retrieval, an opt-in\nbehind a cost preview (D153 #3), on any chat model including the org's own.",
+     "properties": {
+      "contextual_model": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Contextual Model"
+      },
+      "extract_metadata": {
+       "default": false,
+       "title": "Extract Metadata",
+       "type": "boolean"
+      },
+      "mode": {
+       "default": "prefix",
+       "enum": [
+        "prefix",
+        "contextual"
+       ],
+       "title": "Mode",
+       "type": "string"
+      }
+     },
+     "title": "Enrichment",
+     "type": "object"
+    },
+    "Fusion": {
+     "additionalProperties": false,
+     "properties": {
+      "method": {
+       "const": "rrf",
+       "default": "rrf",
+       "title": "Method",
+       "type": "string"
+      },
+      "overfetch": {
+       "default": 50,
+       "maximum": 200,
+       "minimum": 10,
+       "title": "Overfetch",
+       "type": "integer"
+      },
+      "rrf_k": {
+       "default": 60,
+       "maximum": 1000,
+       "minimum": 1,
+       "title": "Rrf K",
+       "type": "integer"
+      },
+      "weights": {
+       "additionalProperties": {
+        "type": "number"
+       },
+       "title": "Weights",
+       "type": "object"
+      }
+     },
+     "title": "Fusion",
+     "type": "object"
+    },
+    "Rerank": {
+     "additionalProperties": false,
+     "description": "None means the deployment's default: on in cloud, off in OSS unless configured.",
+     "properties": {
+      "candidates": {
+       "default": 50,
+       "maximum": 100,
+       "minimum": 1,
+       "title": "Candidates",
+       "type": "integer"
+      },
+      "enabled": {
+       "anyOf": [
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Enabled"
+      },
+      "model": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Model"
+      },
+      "top_n": {
+       "default": 8,
+       "maximum": 50,
+       "minimum": 1,
+       "title": "Top N",
+       "type": "integer"
+      }
+     },
+     "title": "Rerank",
+     "type": "object"
+    },
+    "Retrieval": {
+     "additionalProperties": false,
+     "properties": {
+      "max_context_tokens": {
+       "default": 6000,
+       "maximum": 100000,
+       "minimum": 500,
+       "title": "Max Context Tokens",
+       "type": "integer"
+      },
+      "neighbor_window": {
+       "default": 1,
+       "maximum": 3,
+       "minimum": 0,
+       "title": "Neighbor Window",
+       "type": "integer"
+      },
+      "parent_expansion": {
+       "default": "off",
+       "enum": [
+        "off",
+        "section",
+        "neighbors"
+       ],
+       "title": "Parent Expansion",
+       "type": "string"
+      },
+      "score_threshold": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Score Threshold"
+      },
+      "top_k": {
+       "default": 8,
+       "maximum": 50,
+       "minimum": 1,
+       "title": "Top K",
+       "type": "integer"
+      }
+     },
+     "title": "Retrieval",
+     "type": "object"
+    },
+    "Web": {
+     "additionalProperties": false,
+     "description": "Per-KB crawl settings, each bounded by the deployment's caps (`config.py`).",
+     "properties": {
+      "max_depth": {
+       "default": 3,
+       "maximum": 5,
+       "minimum": 0,
+       "title": "Max Depth",
+       "type": "integer"
+      },
+      "max_pages": {
+       "default": 500,
+       "maximum": 100000,
+       "minimum": 1,
+       "title": "Max Pages",
+       "type": "integer"
+      },
+      "recrawl_days": {
+       "default": 7,
+       "maximum": 365,
+       "minimum": 0,
+       "title": "Recrawl Days",
+       "type": "integer"
+      },
+      "rps_per_host": {
+       "default": 1.0,
+       "exclusiveMinimum": 0,
+       "maximum": 10,
+       "title": "Rps Per Host",
+       "type": "number"
+      },
+      "sources": {
+       "items": {
+        "$ref": "#/$defs/WebSource"
+       },
+       "maxItems": 50,
+       "title": "Sources",
+       "type": "array"
+      }
+     },
+     "title": "Web",
+     "type": "object"
+    },
+    "WebSource": {
+     "additionalProperties": false,
+     "properties": {
+      "exclude": {
+       "items": {
+        "type": "string"
+       },
+       "maxItems": 50,
+       "title": "Exclude",
+       "type": "array"
+      },
+      "id": {
+       "title": "Id",
+       "type": "string"
+      },
+      "include": {
+       "items": {
+        "type": "string"
+       },
+       "maxItems": 50,
+       "title": "Include",
+       "type": "array"
+      },
+      "kind": {
+       "default": "page",
+       "enum": [
+        "page",
+        "sitemap",
+        "site"
+       ],
+       "title": "Kind",
+       "type": "string"
+      },
+      "url": {
+       "maxLength": 2048,
+       "title": "Url",
+       "type": "string"
+      }
+     },
+     "required": [
+      "id",
+      "url"
+     ],
+     "title": "WebSource",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "budget_monthly_usd": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Budget Monthly Usd"
+    },
+    "chunking": {
+     "$ref": "#/$defs/Chunking"
+    },
+    "created_at": {
+     "default": "",
+     "title": "Created At",
+     "type": "string"
+    },
+    "description": {
+     "default": "",
+     "maxLength": 2000,
+     "title": "Description",
+     "type": "string"
+    },
+    "embedding": {
+     "$ref": "#/$defs/Embedding"
+    },
+    "enrichment": {
+     "$ref": "#/$defs/Enrichment"
+    },
+    "folder": {
+     "title": "Folder",
+     "type": "string"
+    },
+    "fusion": {
+     "$ref": "#/$defs/Fusion"
+    },
+    "id": {
+     "title": "Id",
+     "type": "string"
+    },
+    "language": {
+     "default": "simple",
+     "title": "Language",
+     "type": "string"
+    },
+    "name": {
+     "maxLength": 200,
+     "minLength": 1,
+     "title": "Name",
+     "type": "string"
+    },
+    "rerank": {
+     "$ref": "#/$defs/Rerank"
+    },
+    "retrieval": {
+     "$ref": "#/$defs/Retrieval"
+    },
+    "revision": {
+     "default": 1,
+     "minimum": 1,
+     "title": "Revision",
+     "type": "integer"
+    },
+    "status": {
+     "default": "active",
+     "enum": [
+      "active",
+      "disabled"
+     ],
+     "title": "Status",
+     "type": "string"
+    },
+    "updated_at": {
+     "default": "",
+     "title": "Updated At",
+     "type": "string"
+    },
+    "visitor_access": {
+     "default": false,
+     "title": "Visitor Access",
+     "type": "boolean"
+    },
+    "web": {
+     "$ref": "#/$defs/Web"
+    }
+   },
+   "required": [
+    "id",
+    "name",
+    "folder"
+   ],
+   "title": "KnowledgeBase",
+   "type": "object"
+  }
+ },
+ "parsed_schema_version": 1,
+ "protocols": {
+  "IngestDispatcher": {
+   "attributes": [],
+   "methods": {
+    "dispatch": {
+     "async": true,
+     "params": [
+      [
+       "job",
+       "POSITIONAL_OR_KEYWORD",
+       "IngestJob",
+       ""
+      ]
+     ]
+    }
+   }
+  },
+  "KnowledgeEmbedder": {
+   "attributes": [
+    "max_batch"
+   ],
+   "methods": {
+    "embed": {
+     "async": true,
+     "params": [
+      [
+       "texts",
+       "POSITIONAL_OR_KEYWORD",
+       "Sequence[str]",
+       ""
+      ],
+      [
+       "kind",
+       "KEYWORD_ONLY",
+       "EmbedKind",
+       ""
+      ],
+      [
+       "spec",
+       "KEYWORD_ONLY",
+       "EmbeddingSpec",
+       ""
+      ],
+      [
+       "settings",
+       "KEYWORD_ONLY",
+       "Mapping[str, Any]",
+       ""
+      ],
+      [
+       "attribution",
+       "KEYWORD_ONLY",
+       "Attribution",
+       ""
+      ]
+     ]
+    }
+   }
+  },
+  "KnowledgeIndex": {
+   "attributes": [
+    "capabilities"
+   ],
+   "methods": {
+    "delete_chunks": {
+     "async": true,
+     "params": [
+      [
+       "scope",
+       "POSITIONAL_OR_KEYWORD",
+       "Scope",
+       ""
+      ],
+      [
+       "chunk_ids",
+       "POSITIONAL_OR_KEYWORD",
+       "Sequence[str]",
+       ""
+      ]
+     ]
+    },
+    "delete_document": {
+     "async": true,
+     "params": [
+      [
+       "kb_id",
+       "POSITIONAL_OR_KEYWORD",
+       "str",
+       ""
+      ],
+      [
+       "doc_id",
+       "POSITIONAL_OR_KEYWORD",
+       "str",
+       ""
+      ],
+      [
+       "snapshot_id",
+       "KEYWORD_ONLY",
+       "str | None",
+       "None"
+      ]
+     ]
+    },
+    "delete_prefix": {
+     "async": true,
+     "params": [
+      [
+       "kb_id",
+       "POSITIONAL_OR_KEYWORD",
+       "str",
+       ""
+      ],
+      [
+       "path_prefix",
+       "POSITIONAL_OR_KEYWORD",
+       "str",
+       ""
+      ]
+     ]
+    },
+    "drop_kb": {
+     "async": true,
+     "params": [
+      [
+       "kb_id",
+       "POSITIONAL_OR_KEYWORD",
+       "str",
+       ""
+      ]
+     ]
+    },
+    "drop_snapshot": {
+     "async": true,
+     "params": [
+      [
+       "scope",
+       "POSITIONAL_OR_KEYWORD",
+       "Scope",
+       ""
+      ]
+     ]
+    },
+    "search_hybrid": {
+     "async": true,
+     "params": [
+      [
+       "query",
+       "POSITIONAL_OR_KEYWORD",
+       "HybridQuery",
+       ""
+      ]
+     ]
+    },
+    "search_lexical": {
+     "async": true,
+     "params": [
+      [
+       "query",
+       "POSITIONAL_OR_KEYWORD",
+       "LexicalQuery",
+       ""
+      ]
+     ]
+    },
+    "search_vector": {
+     "async": true,
+     "params": [
+      [
+       "query",
+       "POSITIONAL_OR_KEYWORD",
+       "VectorQuery",
+       ""
+      ]
+     ]
+    },
+    "stats": {
+     "async": true,
+     "params": [
+      [
+       "scope",
+       "POSITIONAL_OR_KEYWORD",
+       "Scope",
+       ""
+      ]
+     ]
+    },
+    "upsert": {
+     "async": true,
+     "params": [
+      [
+       "entries",
+       "POSITIONAL_OR_KEYWORD",
+       "Sequence[IndexEntry]",
+       ""
+      ]
+     ]
+    }
+   }
+  },
+  "KnowledgeReranker": {
+   "attributes": [
+    "max_documents"
+   ],
+   "methods": {
+    "rerank": {
+     "async": true,
+     "params": [
+      [
+       "query",
+       "POSITIONAL_OR_KEYWORD",
+       "str",
+       ""
+      ],
+      [
+       "documents",
+       "POSITIONAL_OR_KEYWORD",
+       "Sequence[str]",
+       ""
+      ],
+      [
+       "spec",
+       "KEYWORD_ONLY",
+       "RerankSpec",
+       ""
+      ],
+      [
+       "settings",
+       "KEYWORD_ONLY",
+       "Mapping[str, Any]",
+       ""
+      ],
+      [
+       "attribution",
+       "KEYWORD_ONLY",
+       "Attribution",
+       ""
+      ]
+     ]
+    }
+   }
+  },
+  "OcrProvider": {
+   "attributes": [
+    "max_pages_per_call"
+   ],
+   "methods": {
+    "ocr": {
+     "async": true,
+     "params": [
+      [
+       "pages",
+       "POSITIONAL_OR_KEYWORD",
+       "Sequence[PageImage]",
+       ""
+      ],
+      [
+       "lang_hints",
+       "KEYWORD_ONLY",
+       "Sequence[str]",
+       ""
+      ],
+      [
+       "settings",
+       "KEYWORD_ONLY",
+       "Mapping[str, Any]",
+       ""
+      ],
+      [
+       "attribution",
+       "KEYWORD_ONLY",
+       "Attribution",
+       ""
+      ]
+     ]
+    }
+   }
+  }
+ },
+ "reasons": {
+  "blocked": [
+   "egress_blocked",
+   "robots_disallowed"
+  ],
+  "failed": [
+   "parser_timeout",
+   "parser_memory",
+   "parser_crashed",
+   "encrypted",
+   "embed_failed",
+   "embedding_invalid",
+   "index_failed",
+   "fetch_failed",
+   "ocr_failed",
+   "internal"
+  ],
+  "partial": [
+   "truncated_pages",
+   "truncated_size",
+   "no_text_layer",
+   "ocr_failed",
+   "attachment_skipped"
+  ],
+  "paused": [
+   "budget_cap",
+   "wallet_402"
+  ],
+  "skipped": [
+   "unsupported_format",
+   "over_size_cap",
+   "over_page_cap",
+   "empty_document",
+   "excluded"
+  ]
+ },
+ "routes": [
+  [
+   "GET",
+   "/knowledge/bases",
+   null,
+   "list",
+   200,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "POST",
+   "/knowledge/bases",
+   "KnowledgeBaseCreate",
+   "KnowledgeBaseOut",
+   201,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "GET",
+   "/knowledge/bases/{kb_id}",
+   null,
+   "KnowledgeBaseOut",
+   200,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "PATCH",
+   "/knowledge/bases/{kb_id}",
+   "KnowledgeBaseUpdate",
+   "KnowledgeBaseOut",
+   200,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "DELETE",
+   "/knowledge/bases/{kb_id}",
+   null,
+   "DeleteAccepted",
+   202,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/cost-preview",
+   "CostPreviewRequest",
+   "CostPreview",
+   200,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/uploads",
+   "UploadInit",
+   "UploadSession",
+   201,
+   [
+    "internal",
+    "v1"
+   ],
+   "starts",
+   "run"
+  ],
+  [
+   "PUT",
+   "/knowledge/uploads/{upload_id}/parts/{part_number}",
+   null,
+   null,
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "POST",
+   "/knowledge/uploads/{upload_id}/complete",
+   "UploadComplete",
+   "IngestAccepted",
+   202,
+   [
+    "internal",
+    "v1"
+   ],
+   "starts",
+   "run"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/urls",
+   "UrlIngestRequest",
+   "CrawlAccepted",
+   202,
+   [
+    "internal",
+    "v1"
+   ],
+   "starts",
+   "run"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/records",
+   "RecordIngestRequest",
+   "IngestAccepted",
+   202,
+   [
+    "internal",
+    "v1"
+   ],
+   "starts",
+   "run"
+  ],
+  [
+   "DELETE",
+   "/knowledge/bases/{kb_id}/records/{record_id}",
+   null,
+   "DeleteAccepted",
+   202,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "GET",
+   "/knowledge/bases/{kb_id}/documents",
+   null,
+   "list",
+   200,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "GET",
+   "/knowledge/documents/{doc_id}",
+   null,
+   "DocumentDetail",
+   200,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "POST",
+   "/knowledge/documents/{doc_id}/retry",
+   null,
+   "DocumentOut",
+   202,
+   [
+    "internal",
+    "v1"
+   ],
+   "starts",
+   "run"
+  ],
+  [
+   "DELETE",
+   "/knowledge/documents/{doc_id}",
+   null,
+   "DeleteAccepted",
+   202,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "POST",
+   "/knowledge/search",
+   "SearchRequest",
+   "SearchResponse",
+   200,
+   [
+    "internal",
+    "v1"
+   ],
+   "search",
+   "read"
+  ],
+  [
+   "GET",
+   "/knowledge/queries/{query_id}",
+   null,
+   "Trace",
+   200,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "POST",
+   "/knowledge/queries/{query_id}/replay",
+   "ReplayRequest",
+   "ReplayReport",
+   200,
+   [
+    "internal"
+   ],
+   "search",
+   "run"
+  ],
+  [
+   "GET",
+   "/knowledge/bases/{kb_id}/costs",
+   null,
+   "list",
+   200,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "read"
+  ]
+ ],
+ "seam_defaults": [
+  "core.knowledge.index_sql:SqlKnowledgeIndex",
+  "core.knowledge.embedders:ProviderEmbedder",
+  "core.knowledge.rerankers:from_settings",
+  "core.knowledge.jobs:run_ingest_job"
+ ],
+ "seam_functions": {
+  "get_reranker": [
+   [
+    "settings",
+    "POSITIONAL_OR_KEYWORD",
+    "Mapping[str, Any] | None",
+    "None"
+   ]
+  ],
+  "set_ingest_dispatcher": [
+   [
+    "dispatcher",
+    "POSITIONAL_OR_KEYWORD",
+    "IngestDispatcher | None",
+    ""
+   ]
+  ],
+  "set_knowledge_embedder": [
+   [
+    "embedder",
+    "POSITIONAL_OR_KEYWORD",
+    "KnowledgeEmbedder | None",
+    ""
+   ]
+  ],
+  "set_knowledge_index": [
+   [
+    "index",
+    "POSITIONAL_OR_KEYWORD",
+    "KnowledgeIndex | None",
+    ""
+   ]
+  ],
+  "set_ocr_provider": [
+   [
+    "provider",
+    "POSITIONAL_OR_KEYWORD",
+    "OcrProvider | None",
+    ""
+   ]
+  ],
+  "set_reranker": [
+   [
+    "reranker",
+    "POSITIONAL_OR_KEYWORD",
+    "KnowledgeReranker | None",
+    ""
+   ]
+  ]
+ },
+ "settings": {
+  "knowledge_api_search_per_min": 120,
+  "knowledge_crawl_max_depth": 3,
+  "knowledge_crawl_max_pages": 500,
+  "knowledge_crawl_rps_per_host": 1.0,
+  "knowledge_embedding_model": "",
+  "knowledge_enabled": false,
+  "knowledge_ingest_concurrency": 2,
+  "knowledge_max_file_mb": 100,
+  "knowledge_max_file_pages": 2000,
+  "knowledge_recrawl_days": 7,
+  "knowledge_rerank_model": "",
+  "knowledge_snapshot_grace_days": 7,
+  "knowledge_trace_retention_days": 30
+ },
+ "statuses": [
+  "queued",
+  "parsing",
+  "indexing",
+  "indexed",
+  "partial",
+  "failed",
+  "skipped",
+  "paused",
+  "blocked",
+  "deleting"
+ ],
+ "step_types": [
+  "retrieve",
+  "ingest"
+ ],
+ "tables": {
+  "knowledge_chunks": {
+   "checks": [
+    "kind IN ('text', 'table', 'sheet_card')",
+    "role IN ('leaf', 'parent')"
+   ],
+   "columns": [
+    [
+     "id",
+     "INTEGER",
+     "BIGINT",
+     "not null",
+     "pk"
+    ],
+    [
+     "chunk_id",
+     "VARCHAR(64)",
+     "VARCHAR(64)",
+     "not null",
+     ""
+    ],
+    [
+     "tenant_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "kb_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "doc_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "snapshot_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "doc_version",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "doc_sha256",
+     "VARCHAR(64)",
+     "VARCHAR(64)",
+     "null",
+     ""
+    ],
+    [
+     "ordinal",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "kind",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "not null",
+     ""
+    ],
+    [
+     "role",
+     "VARCHAR(10)",
+     "VARCHAR(10)",
+     "not null",
+     ""
+    ],
+    [
+     "parent_id",
+     "VARCHAR(64)",
+     "VARCHAR(64)",
+     "null",
+     ""
+    ],
+    [
+     "content",
+     "TEXT",
+     "TEXT",
+     "not null",
+     ""
+    ],
+    [
+     "context",
+     "TEXT",
+     "TEXT",
+     "not null",
+     ""
+    ],
+    [
+     "heading_path",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "page_start",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "page_end",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "char_start",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "char_end",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "bbox",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "tokens",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "lang",
+     "VARCHAR(32)",
+     "VARCHAR(32)",
+     "not null",
+     ""
+    ],
+    [
+     "block_ids",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "path",
+     "VARCHAR(1024)",
+     "VARCHAR(1024)",
+     "null",
+     ""
+    ],
+    [
+     "source",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "null",
+     ""
+    ],
+    [
+     "mime",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "title",
+     "VARCHAR(1000)",
+     "VARCHAR(1000)",
+     "null",
+     ""
+    ],
+    [
+     "doc_date",
+     "VARCHAR(32)",
+     "VARCHAR(32)",
+     "null",
+     ""
+    ],
+    [
+     "indexed_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "meta",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "embedding",
+     "BLOB",
+     "BYTEA",
+     "null",
+     ""
+    ],
+    [
+     "created_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ]
+   ],
+   "foreign_keys": [
+    [
+     "doc_id",
+     "knowledge_documents.id",
+     "CASCADE"
+    ]
+   ],
+   "indexes": [
+    [
+     "idx_knowledge_chunks_tenant_doc",
+     [
+      "tenant_id",
+      "doc_id",
+      "snapshot_id",
+      "ordinal"
+     ],
+     false
+    ],
+    [
+     "idx_knowledge_chunks_tenant_scope",
+     [
+      "tenant_id",
+      "kb_id",
+      "snapshot_id"
+     ],
+     false
+    ]
+   ],
+   "uniques": [
+    [
+     "uq_knowledge_chunks_tenant_chunk",
+     [
+      "tenant_id",
+      "chunk_id"
+     ]
+    ]
+   ]
+  },
+  "knowledge_costs": {
+   "checks": [
+    "cost_source IN ('platform', 'byok', 'local')",
+    "stage IN ('parse', 'ocr', 'embed', 'rerank', 'enrich', 'rewrite')",
+    "unit IN ('tokens', 'pages', 'search_units', 'requests')",
+    "usage_logged_by IN ('ledger', 'chat')"
+   ],
+   "columns": [
+    [
+     "id",
+     "INTEGER",
+     "BIGINT",
+     "not null",
+     "pk"
+    ],
+    [
+     "tenant_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "not null",
+     ""
+    ],
+    [
+     "kb_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "doc_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "query_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "snapshot_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "run_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "session_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "stage",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "not null",
+     ""
+    ],
+    [
+     "cost_source",
+     "VARCHAR(10)",
+     "VARCHAR(10)",
+     "not null",
+     ""
+    ],
+    [
+     "model",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "provider",
+     "VARCHAR(100)",
+     "VARCHAR(100)",
+     "null",
+     ""
+    ],
+    [
+     "input_tokens",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "output_tokens",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "units",
+     "FLOAT",
+     "FLOAT",
+     "not null",
+     ""
+    ],
+    [
+     "unit",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "not null",
+     ""
+    ],
+    [
+     "est_usd",
+     "FLOAT",
+     "FLOAT",
+     "not null",
+     ""
+    ],
+    [
+     "charged_microusd",
+     "BIGINT",
+     "BIGINT",
+     "null",
+     ""
+    ],
+    [
+     "priced",
+     "BOOLEAN",
+     "BOOLEAN",
+     "not null",
+     ""
+    ],
+    [
+     "usage_logged_by",
+     "VARCHAR(10)",
+     "VARCHAR(10)",
+     "not null",
+     ""
+    ],
+    [
+     "latency_ms",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "request_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "details",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ]
+   ],
+   "foreign_keys": [],
+   "indexes": [
+    [
+     "idx_knowledge_costs_tenant_doc",
+     [
+      "tenant_id",
+      "doc_id"
+     ],
+     false
+    ],
+    [
+     "idx_knowledge_costs_tenant_kb_at",
+     [
+      "tenant_id",
+      "kb_id",
+      "at"
+     ],
+     false
+    ],
+    [
+     "idx_knowledge_costs_tenant_query",
+     [
+      "tenant_id",
+      "query_id"
+     ],
+     false
+    ],
+    [
+     "idx_knowledge_costs_tenant_run",
+     [
+      "tenant_id",
+      "run_id"
+     ],
+     false
+    ]
+   ],
+   "uniques": []
+  },
+  "knowledge_documents": {
+   "checks": [
+    "source IN ('upload', 'web', 'record', 'vault')",
+    "status IN ('queued', 'parsing', 'indexing', 'indexed', 'partial', 'failed', 'skipped', 'paused', 'blocked', 'deleting')"
+   ],
+   "columns": [
+    [
+     "id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     "pk"
+    ],
+    [
+     "tenant_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "kb_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "path",
+     "VARCHAR(1024)",
+     "VARCHAR(1024)",
+     "not null",
+     ""
+    ],
+    [
+     "source",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "not null",
+     ""
+    ],
+    [
+     "source_url",
+     "VARCHAR(2048)",
+     "VARCHAR(2048)",
+     "null",
+     ""
+    ],
+    [
+     "status",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "not null",
+     ""
+    ],
+    [
+     "status_reason",
+     "VARCHAR(64)",
+     "VARCHAR(64)",
+     "null",
+     ""
+    ],
+    [
+     "error",
+     "TEXT",
+     "TEXT",
+     "null",
+     ""
+    ],
+    [
+     "attempts",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "next_attempt_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "sha256",
+     "VARCHAR(64)",
+     "VARCHAR(64)",
+     "null",
+     ""
+    ],
+    [
+     "size_bytes",
+     "BIGINT",
+     "BIGINT",
+     "null",
+     ""
+    ],
+    [
+     "mime",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "etag",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "source_modified_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "version",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "title",
+     "VARCHAR(1000)",
+     "VARCHAR(1000)",
+     "null",
+     ""
+    ],
+    [
+     "doc_date",
+     "VARCHAR(32)",
+     "VARCHAR(32)",
+     "null",
+     ""
+    ],
+    [
+     "language",
+     "VARCHAR(16)",
+     "VARCHAR(16)",
+     "null",
+     ""
+    ],
+    [
+     "meta",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "report",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "parser",
+     "VARCHAR(100)",
+     "VARCHAR(100)",
+     "null",
+     ""
+    ],
+    [
+     "parse_cache_key",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "snapshot_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "pages",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "chunks",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "tokens",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "created_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "updated_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "queued_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "started_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "indexed_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ]
+   ],
+   "foreign_keys": [],
+   "indexes": [
+    [
+     "idx_knowledge_documents_tenant_kb_status",
+     [
+      "tenant_id",
+      "kb_id",
+      "status"
+     ],
+     false
+    ],
+    [
+     "idx_knowledge_documents_tenant_sha",
+     [
+      "tenant_id",
+      "sha256"
+     ],
+     false
+    ]
+   ],
+   "uniques": [
+    [
+     "uq_knowledge_documents_tenant_kb_path",
+     [
+      "tenant_id",
+      "kb_id",
+      "path"
+     ]
+    ]
+   ]
+  },
+  "knowledge_queries": {
+   "checks": [
+    "surface IN ('tool', 'step', 'api', 'mcp', 'eval', 'ui')"
+   ],
+   "columns": [
+    [
+     "id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     "pk"
+    ],
+    [
+     "tenant_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "surface",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "not null",
+     ""
+    ],
+    [
+     "run_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "session_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "agent_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "step_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "api_key_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "kb_ids",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "trace_version",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "trace",
+     "JSON",
+     "JSONB",
+     "not null",
+     ""
+    ],
+    [
+     "query_embedding",
+     "BLOB",
+     "BYTEA",
+     "null",
+     ""
+    ],
+    [
+     "hit_count",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "latency_ms",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "est_usd",
+     "FLOAT",
+     "FLOAT",
+     "null",
+     ""
+    ],
+    [
+     "degraded",
+     "BOOLEAN",
+     "BOOLEAN",
+     "not null",
+     ""
+    ],
+    [
+     "verdict",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "retained_by",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "created_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "not null",
+     ""
+    ]
+   ],
+   "foreign_keys": [],
+   "indexes": [
+    [
+     "idx_knowledge_queries_tenant_created",
+     [
+      "tenant_id",
+      "created_at"
+     ],
+     false
+    ],
+    [
+     "idx_knowledge_queries_tenant_run",
+     [
+      "tenant_id",
+      "run_id"
+     ],
+     false
+    ],
+    [
+     "idx_knowledge_queries_tenant_session",
+     [
+      "tenant_id",
+      "session_id"
+     ],
+     false
+    ]
+   ],
+   "uniques": []
+  },
+  "knowledge_snapshots": {
+   "checks": [
+    "status IN ('building', 'active', 'retired', 'failed')"
+   ],
+   "columns": [
+    [
+     "id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     "pk"
+    ],
+    [
+     "tenant_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "kb_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "status",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "not null",
+     ""
+    ],
+    [
+     "signature",
+     "VARCHAR(64)",
+     "VARCHAR(64)",
+     "null",
+     ""
+    ],
+    [
+     "embed_model",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "null",
+     ""
+    ],
+    [
+     "embed_dims",
+     "INTEGER",
+     "INTEGER",
+     "null",
+     ""
+    ],
+    [
+     "embed_profile_version",
+     "VARCHAR(50)",
+     "VARCHAR(50)",
+     "null",
+     ""
+    ],
+    [
+     "chunker_version",
+     "VARCHAR(50)",
+     "VARCHAR(50)",
+     "null",
+     ""
+    ],
+    [
+     "chunker_settings_hash",
+     "VARCHAR(64)",
+     "VARCHAR(64)",
+     "null",
+     ""
+    ],
+    [
+     "enrichment_mode",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "null",
+     ""
+    ],
+    [
+     "enrichment_version",
+     "VARCHAR(50)",
+     "VARCHAR(50)",
+     "null",
+     ""
+    ],
+    [
+     "index_kind",
+     "VARCHAR(50)",
+     "VARCHAR(50)",
+     "null",
+     ""
+    ],
+    [
+     "docs_total",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "docs_done",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "docs_failed",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "chunks",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "stats",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "created_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "activated_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "retired_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "updated_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ]
+   ],
+   "foreign_keys": [],
+   "indexes": [
+    [
+     "idx_knowledge_snapshots_tenant_kb",
+     [
+      "tenant_id",
+      "kb_id",
+      "created_at"
+     ],
+     false
+    ],
+    [
+     "ux_knowledge_snapshots_tenant_kb_active",
+     [
+      "tenant_id",
+      "kb_id"
+     ],
+     true
+    ]
+   ],
+   "uniques": []
+  }
+ },
+ "telemetry": {
+  "formats": [
+   "pdf",
+   "docx",
+   "doc",
+   "pptx",
+   "ppt",
+   "xlsx",
+   "xls",
+   "csv",
+   "tsv",
+   "odt",
+   "ods",
+   "odp",
+   "rtf",
+   "txt",
+   "md",
+   "html",
+   "eml",
+   "msg",
+   "epub",
+   "json",
+   "xml",
+   "yaml",
+   "code",
+   "image",
+   "record",
+   "other"
+  ],
+  "spans": [
+   "synapse.knowledge.search",
+   "synapse.knowledge.embed",
+   "synapse.knowledge.leg",
+   "synapse.knowledge.rerank",
+   "synapse.knowledge.ingest",
+   "synapse.knowledge.parse",
+   "synapse.knowledge.ocr",
+   "synapse.knowledge.chunk",
+   "synapse.knowledge.enrich",
+   "synapse.knowledge.index",
+   "synapse.knowledge.snapshot.build"
+  ]
+ },
+ "textsearch": {
+  "languages": [
+   "simple",
+   "arabic",
+   "danish",
+   "dutch",
+   "english",
+   "finnish",
+   "french",
+   "german",
+   "greek",
+   "hungarian",
+   "indonesian",
+   "irish",
+   "italian",
+   "lithuanian",
+   "nepali",
+   "norwegian",
+   "portuguese",
+   "romanian",
+   "russian",
+   "spanish",
+   "swedish",
+   "tamil",
+   "turkish"
+  ],
+  "tsv": "to_tsvector(CASE lang WHEN 'arabic' THEN 'arabic'::regconfig WHEN 'danish' THEN 'danish'::regconfig WHEN 'dutch' THEN 'dutch'::regconfig WHEN 'english' THEN 'english'::regconfig WHEN 'finnish' THEN 'finnish'::regconfig WHEN 'french' THEN 'french'::regconfig WHEN 'german' THEN 'german'::regconfig WHEN 'greek' THEN 'greek'::regconfig WHEN 'hungarian' THEN 'hungarian'::regconfig WHEN 'indonesian' THEN 'indonesian'::regconfig WHEN 'irish' THEN 'irish'::regconfig WHEN 'italian' THEN 'italian'::regconfig WHEN 'lithuanian' THEN 'lithuanian'::regconfig WHEN 'nepali' THEN 'nepali'::regconfig WHEN 'norwegian' THEN 'norwegian'::regconfig WHEN 'portuguese' THEN 'portuguese'::regconfig WHEN 'romanian' THEN 'romanian'::regconfig WHEN 'russian' THEN 'russian'::regconfig WHEN 'spanish' THEN 'spanish'::regconfig WHEN 'swedish' THEN 'swedish'::regconfig WHEN 'tamil' THEN 'tamil'::regconfig WHEN 'turkish' THEN 'turkish'::regconfig ELSE 'simple'::regconfig END, coalesce(context, '') || ' ' || coalesce(content, ''))"
+ },
+ "trace": {
+  "degraded": [
+   "post_filtered",
+   "lexical_unavailable",
+   "vector_unavailable",
+   "rerank_failed",
+   "rerank_unconfigured",
+   "ann_approximate",
+   "snapshot_retired",
+   "truncated",
+   "budget_paused",
+   "embed_failed"
+  ],
+  "forbidden_keys": [
+   "embedding",
+   "embedding_vec",
+   "embeddings",
+   "query_embedding",
+   "query_vector"
+  ],
+  "max_bytes": 262144,
+  "snippet_max": 200,
+  "surfaces": [
+   "tool",
+   "step",
+   "api",
+   "mcp",
+   "eval",
+   "ui"
+  ],
+  "version": 1
+ },
+ "transitions": {
+  "blocked": [
+   "deleting",
+   "queued"
+  ],
+  "deleting": [
+   "deleting"
+  ],
+  "failed": [
+   "deleting",
+   "queued"
+  ],
+  "indexed": [
+   "deleting",
+   "queued"
+  ],
+  "indexing": [
+   "deleting",
+   "failed",
+   "indexed",
+   "partial",
+   "paused",
+   "queued"
+  ],
+  "parsing": [
+   "deleting",
+   "failed",
+   "indexing",
+   "paused",
+   "queued",
+   "skipped"
+  ],
+  "partial": [
+   "deleting",
+   "queued"
+  ],
+  "paused": [
+   "deleting",
+   "queued"
+  ],
+  "queued": [
+   "blocked",
+   "deleting",
+   "failed",
+   "parsing",
+   "paused",
+   "skipped"
+  ],
+  "skipped": [
+   "deleting",
+   "queued"
+  ]
+ },
+ "types": {
+  "Attribution": [
+   [
+    "kb_id",
+    "str"
+   ],
+   [
+    "doc_id",
+    "str | None"
+   ],
+   [
+    "query_id",
+    "str | None"
+   ],
+   [
+    "snapshot_id",
+    "str | None"
+   ],
+   [
+    "run_id",
+    "str | None"
+   ],
+   [
+    "session_id",
+    "str | None"
+   ],
+   [
+    "agent_id",
+    "str | None"
+   ],
+   [
+    "source",
+    "str"
+   ]
+  ],
+  "BBoxT": [
+   [
+    "page",
+    "int"
+   ],
+   [
+    "x0",
+    "float"
+   ],
+   [
+    "y0",
+    "float"
+   ],
+   [
+    "x1",
+    "float"
+   ],
+   [
+    "y1",
+    "float"
+   ]
+  ],
+  "Candidate": [
+   [
+    "chunk_id",
+    "str"
+   ],
+   [
+    "doc_id",
+    "str"
+   ],
+   [
+    "kb_id",
+    "str"
+   ],
+   [
+    "snapshot_id",
+    "str"
+   ],
+   [
+    "score",
+    "float"
+   ],
+   [
+    "rank",
+    "int"
+   ]
+  ],
+  "DispatchReceipt": [
+   [
+    "mode",
+    "Literal['inline', 'background', 'queued']"
+   ],
+   [
+    "job_id",
+    "str | None"
+   ]
+  ],
+  "EmbedResult": [
+   [
+    "vectors",
+    "list[list[float]]"
+   ],
+   [
+    "model",
+    "str"
+   ],
+   [
+    "dims",
+    "int"
+   ],
+   [
+    "usage",
+    "Usage"
+   ]
+  ],
+  "EmbeddingSpec": [
+   [
+    "model",
+    "str"
+   ],
+   [
+    "dims",
+    "int | None"
+   ],
+   [
+    "profile",
+    "str | None"
+   ],
+   [
+    "profile_version",
+    "str"
+   ]
+  ],
+  "HybridQuery": [
+   [
+    "lexical",
+    "LexicalQuery"
+   ],
+   [
+    "vector",
+    "VectorQuery"
+   ],
+   [
+    "weights",
+    "Mapping[str, float]"
+   ]
+  ],
+  "IndexCapabilities": [
+   [
+    "name",
+    "str"
+   ],
+   [
+    "version",
+    "str"
+   ],
+   [
+    "lexical",
+    "bool"
+   ],
+   [
+    "vector",
+    "bool"
+   ],
+   [
+    "filter_pushdown",
+    "bool"
+   ],
+   [
+    "per_leg_scores",
+    "bool"
+   ],
+   [
+    "search_mode",
+    "Literal['exact', 'ann']"
+   ],
+   [
+    "max_dims",
+    "int | None"
+   ],
+   [
+    "lexical_languages",
+    "bool"
+   ]
+  ],
+  "IndexEntry": [
+   [
+    "chunk_id",
+    "str"
+   ],
+   [
+    "doc_id",
+    "str"
+   ],
+   [
+    "kb_id",
+    "str"
+   ],
+   [
+    "snapshot_id",
+    "str"
+   ],
+   [
+    "text",
+    "str"
+   ],
+   [
+    "lang",
+    "str"
+   ],
+   [
+    "vector",
+    "Sequence[float] | None"
+   ],
+   [
+    "fields",
+    "Mapping[str, Any]"
+   ]
+  ],
+  "IndexStats": [
+   [
+    "chunks",
+    "int"
+   ],
+   [
+    "vectors",
+    "int"
+   ],
+   [
+    "dims",
+    "int | None"
+   ],
+   [
+    "bytes",
+    "int | None"
+   ]
+  ],
+  "IngestJob": [
+   [
+    "tenant",
+    "str"
+   ],
+   [
+    "kb_id",
+    "str"
+   ],
+   [
+    "op",
+    "IngestOp"
+   ],
+   [
+    "reason",
+    "IngestReason"
+   ],
+   [
+    "path",
+    "str | None"
+   ],
+   [
+    "doc_id",
+    "str | None"
+   ],
+   [
+    "snapshot_id",
+    "str | None"
+   ],
+   [
+    "requested_at",
+    "str"
+   ]
+  ],
+  "LegResult": [
+   [
+    "leg",
+    "LegName"
+   ],
+   [
+    "candidates",
+    "tuple[Candidate, ...]"
+   ],
+   [
+    "filtered",
+    "bool"
+   ],
+   [
+    "exact",
+    "bool"
+   ],
+   [
+    "scanned",
+    "int | None"
+   ],
+   [
+    "notes",
+    "tuple[str, ...]"
+   ],
+   [
+    "usage",
+    "Usage | None"
+   ]
+  ],
+  "LexicalQuery": [
+   [
+    "scopes",
+    "tuple[Scope, ...]"
+   ],
+   [
+    "text",
+    "str"
+   ],
+   [
+    "lang",
+    "str"
+   ],
+   [
+    "filter",
+    "FilterNode | None"
+   ],
+   [
+    "limit",
+    "int"
+   ]
+  ],
+  "OcrPage": [
+   [
+    "page",
+    "int"
+   ],
+   [
+    "text",
+    "str"
+   ],
+   [
+    "confidence",
+    "float | None"
+   ],
+   [
+    "lines",
+    "list[tuple[str, BBoxT]] | None"
+   ]
+  ],
+  "OcrResult": [
+   [
+    "pages",
+    "list[OcrPage]"
+   ],
+   [
+    "engine",
+    "str"
+   ],
+   [
+    "usage",
+    "Usage"
+   ]
+  ],
+  "PageImage": [
+   [
+    "page",
+    "int"
+   ],
+   [
+    "png",
+    "bytes"
+   ],
+   [
+    "width",
+    "int"
+   ],
+   [
+    "height",
+    "int"
+   ],
+   [
+    "dpi",
+    "int"
+   ]
+  ],
+  "RerankResult": [
+   [
+    "ranking",
+    "list[tuple[int, float]]"
+   ],
+   [
+    "model",
+    "str"
+   ],
+   [
+    "usage",
+    "Usage"
+   ]
+  ],
+  "RerankSpec": [
+   [
+    "model",
+    "str"
+   ],
+   [
+    "top_n",
+    "int"
+   ]
+  ],
+  "Scope": [
+   [
+    "kb_id",
+    "str"
+   ],
+   [
+    "snapshot_id",
+    "str"
+   ]
+  ],
+  "Usage": [
+   [
+    "stage",
+    "CostStage"
+   ],
+   [
+    "cost_source",
+    "CostSource"
+   ],
+   [
+    "model",
+    "str"
+   ],
+   [
+    "provider",
+    "str"
+   ],
+   [
+    "input_tokens",
+    "int"
+   ],
+   [
+    "output_tokens",
+    "int"
+   ],
+   [
+    "units",
+    "float"
+   ],
+   [
+    "unit",
+    "Unit"
+   ],
+   [
+    "est_usd",
+    "float"
+   ],
+   [
+    "charged_microusd",
+    "int | None"
+   ],
+   [
+    "priced",
+    "bool"
+   ],
+   [
+    "latency_ms",
+    "int"
+   ],
+   [
+    "request_id",
+    "str | None"
+   ]
+  ],
+  "VectorQuery": [
+   [
+    "scopes",
+    "tuple[Scope, ...]"
+   ],
+   [
+    "vector",
+    "Sequence[float]"
+   ],
+   [
+    "filter",
+    "FilterNode | None"
+   ],
+   [
+    "limit",
+    "int"
+   ]
+  ]
+ },
+ "vault_events": {
+  "change": [
+   [
+    "path",
+    "str"
+   ],
+   [
+    "op",
+    "VaultOp"
+   ],
+   [
+    "is_dir",
+    "bool"
+   ],
+   [
+    "old_path",
+    "str | None"
+   ],
+   [
+    "sha256",
+    "str | None"
+   ],
+   [
+    "size",
+    "int | None"
+   ],
+   [
+    "source",
+    "VaultSource"
+   ]
+  ],
+  "notify": [
+   [
+    "path",
+    "POSITIONAL_OR_KEYWORD",
+    "str",
+    ""
+   ],
+   [
+    "op",
+    "POSITIONAL_OR_KEYWORD",
+    "VaultOp",
+    ""
+   ],
+   [
+    "is_dir",
+    "KEYWORD_ONLY",
+    "bool",
+    "False"
+   ],
+   [
+    "old_path",
+    "KEYWORD_ONLY",
+    "str | None",
+    "None"
+   ],
+   [
+    "sha256",
+    "KEYWORD_ONLY",
+    "str | None",
+    "None"
+   ],
+   [
+    "size",
+    "KEYWORD_ONLY",
+    "int | None",
+    "None"
+   ],
+   [
+    "source",
+    "KEYWORD_ONLY",
+    "VaultSource",
+    "'route'"
+   ]
+  ]
+ },
+ "warning_codes": [
+  "no_text_layer",
+  "ocr_unavailable",
+  "ocr_low_confidence",
+  "ocr_failed",
+  "truncated_pages",
+  "truncated_size",
+  "encrypted",
+  "unsupported_format",
+  "parser_timeout",
+  "parser_memory",
+  "parser_crashed",
+  "hidden_text_removed",
+  "zero_width_removed",
+  "html_comments_removed",
+  "attachment_skipped",
+  "attachment_depth",
+  "table_too_large",
+  "sheet_truncated",
+  "garbled_text",
+  "legacy_converted",
+  "empty_document"
+ ]
+}
