@@ -1,9 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 import React, { useState, useEffect, useCallback } from 'react';
-import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, Save, Eye, EyeOff, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud } from 'lucide-react';
+import Link from 'next/link';
+import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, Save, Eye, EyeOff, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud, Upload, Library } from 'lucide-react';
 import { renderTextContent } from '@/lib/utils';
-import { ConfirmDialog, Modal, Spinner } from '@/components/ui';
+import { Badge, ConfirmDialog, Modal, Spinner, Toast, useToast } from '@/components/ui';
+import {
+    ACCEPTED, REASONS, STATUS, WORKING, knowledgeApi, uploadToKnowledge, useKnowledgeEnabled,
+    type KnowledgeBase, type KnowledgeDocument,
+} from '@/lib/knowledge';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,6 +22,62 @@ interface VaultNode {
     children?: VaultNode[];
 }
 
+/**
+ * What the tree needs to know about Knowledge (D157), when it is on: which
+ * folders are knowledge bases, where each of their files stands, and how to
+ * upload into one. Absent, the tree is the plain Vault it always was.
+ */
+interface VaultKnowledge {
+    baseAt: (path: string) => KnowledgeBase | null;
+    baseHolding: (path: string) => KnowledgeBase | null;
+    docAt: (path: string) => KnowledgeDocument | null;
+    onUpload: (folderPath: string, kb: KnowledgeBase) => void;
+}
+
+function useVaultKnowledge(active: boolean, reloadKey: number) {
+    const [bases, setBases] = useState<KnowledgeBase[]>([]);
+    const [docs, setDocs] = useState<Record<string, KnowledgeDocument>>({});
+    const [tick, setTick] = useState(0);
+
+    useEffect(() => {
+        if (!active) return;
+        let live = true;
+        knowledgeApi.bases()
+            .then(async list => {
+                const all = await Promise.all(list.map(kb => knowledgeApi.documents(kb.id).catch(() => [])));
+                if (!live) return;
+                setBases(list);
+                setDocs(Object.fromEntries(all.flat().map(d => [d.path, d])));
+            })
+            .catch(() => { });
+        return () => { live = false; };
+    }, [active, reloadKey, tick]);
+
+    const working = active && Object.values(docs).some(d => WORKING.has(d.status));
+    useEffect(() => {
+        if (!working) return;
+        const timer = setInterval(() => setTick(t => t + 1), 3000);
+        return () => clearInterval(timer);
+    }, [working]);
+
+    return {
+        bases: active ? bases : [],
+        docs: active ? docs : {},
+        reload: () => setTick(t => t + 1),
+    };
+}
+
+/** A file's Knowledge status, beside its name — never inside the name's button, whose name tests find it by. */
+function DocBadge({ doc }: { doc: KnowledgeDocument }) {
+    const s = STATUS[doc.status];
+    return (
+        <span title={doc.status_reason ? `${s.label}: ${REASONS[doc.status_reason] ?? doc.status_reason}` : s.label}
+            className="shrink-0">
+            <Badge size="sm" tone={s.tone}>{s.label}</Badge>
+        </span>
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tree Node Component
 // ---------------------------------------------------------------------------
@@ -27,6 +88,7 @@ function TreeNode({
     onSelect,
     onDelete,
     onCreateInFolder,
+    knowledge,
     depth = 0,
 }: {
     node: VaultNode;
@@ -34,6 +96,7 @@ function TreeNode({
     onSelect: (node: VaultNode) => void;
     onDelete: (node: VaultNode) => void;
     onCreateInFolder: (folderPath: string) => void;
+    knowledge?: VaultKnowledge;
     depth?: number;
 }) {
     const [expanded, setExpanded] = useState(depth === 0);
@@ -91,6 +154,26 @@ function TreeNode({
                     <span className="flex-1 truncate font-mono">{node.name}</span>
                 </button>
 
+                {isFolder && knowledge?.baseAt(node.path) && (
+                    <span className="shrink-0" title={`Knowledge base: ${knowledge.baseAt(node.path)!.name}`}>
+                        <Badge size="sm" tone="accent">Knowledge</Badge>
+                    </span>
+                )}
+                {!isFolder && knowledge?.docAt(node.path) && <DocBadge doc={knowledge.docAt(node.path)!} />}
+
+                {/* Knowledge: upload into a knowledge base's folder */}
+                {isFolder && knowledge?.baseHolding(node.path) && (
+                    <button
+                        type="button"
+                        onClick={() => knowledge.onUpload(node.path, knowledge.baseHolding(node.path)!)}
+                        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-text-faint hover:text-accent transition-all p-0.5 flex-shrink-0"
+                        aria-label={`Upload files to ${node.name}`}
+                        title={`Upload files to ${node.name}`}
+                    >
+                        <Upload className="h-3 w-3" />
+                    </button>
+                )}
+
                 {/* Folder actions: + new file, delete */}
                 {isFolder && (
                     <button
@@ -125,6 +208,7 @@ function TreeNode({
                             onSelect={onSelect}
                             onDelete={onDelete}
                             onCreateInFolder={onCreateInFolder}
+                            knowledge={knowledge}
                             depth={depth + 1}
                         />
                     ))}
@@ -410,6 +494,17 @@ export function VaultTab() {
     const [s3Bucket, setS3Bucket] = useState<string>('');
     const [storageSource, setStorageSource] = useState<'s3' | 'local'>('s3');
 
+    // Knowledge (D157): only while it is on, and only on the Vault itself — a
+    // bucket's local working copy is not what a knowledge base reads.
+    const knowledgeOn = useKnowledgeEnabled() === true && (!s3Bucket || storageSource === 's3');
+    const [treeLoads, setTreeLoads] = useState(0);
+    const kn = useVaultKnowledge(knowledgeOn, treeLoads);
+    const [binary, setBinary] = useState(false);
+    const uploadInput = React.useRef<HTMLInputElement>(null);
+    const [uploadTarget, setUploadTarget] = useState<{ folder: string; kb: KnowledgeBase } | null>(null);
+    const [uploading, setUploading] = useState(0);
+    const { toast, show, dismiss } = useToast();
+
     const fetchTree = useCallback(async () => {
         setLoading(true);
         try {
@@ -417,6 +512,7 @@ export function VaultTab() {
             if (res.ok) {
                 const data = await res.json();
                 setTree(data.tree || []);
+                setTreeLoads(n => n + 1);
             }
         } catch (e) {
             console.error('Failed to load vault tree', e);
@@ -424,6 +520,35 @@ export function VaultTab() {
             setLoading(false);
         }
     }, [storageSource]);
+
+    const knowledge: VaultKnowledge | undefined = knowledgeOn && kn.bases.length ? {
+        baseAt: path => kn.bases.find(b => b.folder === path) ?? null,
+        baseHolding: path => kn.bases.find(b => b.status === 'active'
+            && (path === b.folder || path.startsWith(`${b.folder}/`))) ?? null,
+        docAt: path => kn.docs[path] ?? null,
+        onUpload: (folder, kb) => { setUploadTarget({ folder, kb }); uploadInput.current?.click(); },
+    } : undefined;
+
+    const uploadFiles = async (files: FileList) => {
+        if (!uploadTarget) return;
+        const { folder, kb } = uploadTarget;
+        const list = [...files];
+        setUploading(n => n + list.length);
+        let failed = 0;
+        for (const file of list) {
+            try {
+                await uploadToKnowledge(kb.id, file, { folder });
+            } catch (e) {
+                failed += 1;
+                show(`${file.name}: ${e instanceof Error ? e.message : String(e)}`, 'danger');
+            } finally {
+                setUploading(n => n - 1);
+            }
+        }
+        if (failed < list.length) show(`${list.length - failed} file(s) added to ${kb.name}.`);
+        await fetchTree();
+        kn.reload();
+    };
 
     useEffect(() => { fetchTree(); }, [fetchTree]);
 
@@ -440,8 +565,13 @@ export function VaultTab() {
         if (!selectedNode || selectedNode.type !== 'file') return;
         setLoadingFile(true);
         setSaveStatus('idle');
+        setBinary(false);
         fetch(`/api/vault/file?path=${encodeURIComponent(selectedNode.path)}&source=${storageSource}`)
-            .then(r => r.ok ? r.json() : null)
+            .then(r => {
+                // 415: a PDF, an image — nothing an editor can open (F323).
+                if (r.status === 415) setBinary(true);
+                return r.ok ? r.json() : null;
+            })
             .then(data => {
                 const c = data?.content ?? '';
                 setFileContent(c);
@@ -621,10 +751,27 @@ export function VaultTab() {
                                     setContextFolder(folderPath);
                                     setCreateDialog({ type: 'file', parentPath: folderPath });
                                 }}
+                                knowledge={knowledge}
                             />
                         ))
                     )}
                 </div>
+
+                <input
+                    ref={uploadInput}
+                    type="file"
+                    multiple
+                    accept={ACCEPTED.join(',')}
+                    className="hidden"
+                    aria-hidden
+                    tabIndex={-1}
+                    onChange={e => { if (e.target.files) uploadFiles(e.target.files); e.target.value = ''; }}
+                />
+                {uploading > 0 && (
+                    <div className="flex items-center gap-2 px-3 py-2 border-t border-zinc-800 text-xs text-text-muted" role="status">
+                        <Spinner size={12} /> Uploading {uploading} file{uploading === 1 ? '' : 's'}…
+                    </div>
+                )}
 
                 {/* Bottom hint */}
                 <div className="px-3 py-2 border-t border-zinc-800">
@@ -650,7 +797,7 @@ export function VaultTab() {
                             {isDirty && <span className="text-[10px] text-amber-400">unsaved changes</span>}
                             <button
                                 onClick={handleSave}
-                                disabled={savingFile || !isDirty}
+                                disabled={savingFile || !isDirty || binary}
                                 className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed
                                     ${saveStatus === 'saved' ? 'bg-emerald-600 text-white' : saveStatus === 'error' ? 'bg-red-600 text-white' : 'bg-accent text-accent-fg hover:bg-accent-hover'}`}
                             >
@@ -659,10 +806,31 @@ export function VaultTab() {
                             </button>
                         </div>
 
+                        {knowledge?.docAt(selectedNode.path) && (() => {
+                            const doc = knowledge.docAt(selectedNode.path)!;
+                            const kb = knowledge.baseHolding(selectedNode.path);
+                            return (
+                                <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2 text-xs text-text-muted flex-shrink-0">
+                                    <Library className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                    <span>In {kb?.name ?? 'a knowledge base'}:</span>
+                                    <DocBadge doc={doc} />
+                                    {doc.status_reason && <span className="truncate">{REASONS[doc.status_reason] ?? doc.status_reason}</span>}
+                                    <Link href="/knowledge" className="ml-auto shrink-0 underline hover:text-text">Open in Knowledge</Link>
+                                </div>
+                            );
+                        })()}
+
                         {/* Editor area */}
                         {loadingFile ? (
                             <div className="flex-1 flex items-center justify-center">
                                 <Spinner size={20} className="text-text-faint" />
+                            </div>
+                        ) : binary ? (
+                            <div className="flex-1 flex flex-col items-center justify-center gap-2 p-8 text-center">
+                                <h3 className="text-sm font-semibold text-text">Not a text file</h3>
+                                <p className="max-w-sm text-xs text-text-muted">
+                                    This file can&apos;t be opened here. Agents and knowledge bases still read it.
+                                </p>
                             </div>
                         ) : selectedNode.ext === '.json' ? (
                             <JsonEditor value={fileContent} onChange={setFileContent} />
@@ -717,6 +885,7 @@ export function VaultTab() {
                     onCancel={() => setDeleteTarget(null)}
                 />
             )}
+            <Toast message={toast.message} tone={toast.tone} onDismiss={dismiss} />
         </div>
         </div>
     );
