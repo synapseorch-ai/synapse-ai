@@ -29,7 +29,8 @@ class TestGeminiBody:
 
     async def test_text_response(self, monkeypatch):
         part = SimpleNamespace(function_call=None, text="gemini answer")
-        monkeypatch.setattr(llm, "_gemini_client", self._fake_client([part]))
+        client = self._fake_client([part])
+        monkeypatch.setattr(llm, "_gemini_client_for", lambda *_a, **_k: client)
         text, it, ot, cr, cw, *_ = await llm.call_gemini(
             "gemini-2.0", [{"role": "user", "content": "q"}], "sys", "key")
         assert text == "gemini answer"
@@ -41,7 +42,7 @@ class TestGeminiBody:
         empty = SimpleNamespace(models=SimpleNamespace(
             generate_content=lambda model, contents, config: SimpleNamespace(
                 candidates=[], usage_metadata=None)))
-        monkeypatch.setattr(llm, "_gemini_client", empty)
+        monkeypatch.setattr(llm, "_gemini_client_for", lambda *_a, **_k: empty)
         with pytest.raises(llm.EmptyAnswer, match="No response candidates"):
             await llm.call_gemini("gemini-2.0", [{"role": "user", "content": "q"}], "sys", "key")
 
@@ -72,7 +73,8 @@ class TestGeminiRetriesOnlyWhatCanSucceed:
         async def _no_sleep(_seconds):
             return None
 
-        monkeypatch.setattr(llm, "_gemini_client", SimpleNamespace(models=_Models()))
+        client = SimpleNamespace(models=_Models())
+        monkeypatch.setattr(llm, "_gemini_client_for", lambda *_a, **_k: client)
         monkeypatch.setattr(llm.asyncio, "sleep", _no_sleep)
         return calls, errors
 

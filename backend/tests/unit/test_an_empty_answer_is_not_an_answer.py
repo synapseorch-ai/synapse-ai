@@ -121,7 +121,8 @@ _TOOLS = [{"type": "function", "function": {
 class TestGemini:
     async def test_a_blocked_reply_raises_once(self, monkeypatch, no_backoff):
         calls = []
-        monkeypatch.setattr(llm, "_gemini_client", _gemini([_gemini_response([], "SAFETY")], calls))
+        client = _gemini([_gemini_response([], "SAFETY")], calls)
+        monkeypatch.setattr(llm, "_gemini_client_for", lambda *_a, **_k: client)
 
         with pytest.raises(llm.EmptyAnswer, match="safety filters") as raised:
             await llm.call_gemini("gemini-2.0", [{"role": "user", "content": "q"}], "sys", "key")
@@ -131,8 +132,9 @@ class TestGemini:
     async def test_a_malformed_call_is_still_asked_again_without_tools(self, monkeypatch, no_backoff):
         calls = []
         text = SimpleNamespace(function_call=None, text="plain answer", thought=None)
-        monkeypatch.setattr(llm, "_gemini_client", _gemini(
-            [_gemini_response([], "MALFORMED_FUNCTION_CALL"), _gemini_response([text])], calls))
+        client = _gemini(
+            [_gemini_response([], "MALFORMED_FUNCTION_CALL"), _gemini_response([text])], calls)
+        monkeypatch.setattr(llm, "_gemini_client_for", lambda *_a, **_k: client)
 
         result = await llm.call_gemini("gemini-2.0", [{"role": "user", "content": "q"}], "sys", "key",
                                        tools=_TOOLS)

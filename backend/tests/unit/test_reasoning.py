@@ -276,7 +276,8 @@ class TestWhatReachesTheWire:
                 return response
 
         from core import llm_providers as llm
-        monkeypatch.setattr(llm, "_gemini_client", types.SimpleNamespace(models=_Models()))
+        client = types.SimpleNamespace(models=_Models())
+        monkeypatch.setattr(llm, "_gemini_client_for", lambda *_a, **_k: client)
         return seen
 
     async def test_gemini_25_takes_a_budget_and_gemini_3_takes_a_level(self, monkeypatch):

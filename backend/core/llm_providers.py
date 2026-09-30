@@ -13,6 +13,9 @@ No API key needed — tool calling is emulated via system prompt injection + <to
 import os
 import re
 import json
+import hashlib
+import hmac
+from collections import OrderedDict
 from typing import NamedTuple
 import tempfile
 import asyncio
@@ -1948,8 +1951,57 @@ def _extract_gemini_response(response) -> tuple[str, str]:
 
     raise EmptyAnswer("Error: Gemini returned no usable content.")
 
-# Global singleton Gemini client — reuses connection pool, prevents socket exhaustion
-_gemini_client = None
+# One Gemini client per credential (F321). A client is kept so its connection
+# pool is reused, but it was kept once per process, built with whichever call's
+# key came first: every later key was ignored, so in a worker shared by many
+# tenants one tenant's key served everyone's Gemini calls. Now each credential
+# has its own, in a small LRU cache keyed by a salted HMAC of the credential —
+# never the key itself. An evicted client is not closed: another thread may
+# still be in a call on it, and the SDK closes it when the last reference goes.
+# Only the sync SDK is used (through `asyncio.to_thread`); `client.aio` would
+# bind a cached client to one event loop, and code indexing runs each call on
+# a fresh one.
+_GEMINI_CLIENTS_MAX = 32
+_GEMINI_CLIENT_SALT = os.urandom(16)
+#: Chat's timeout, and since F321 embeddings' too: one key, one client. It is
+#: the client's only timeout — 5 s above the request timeout.
+_GEMINI_CLIENT_TIMEOUT_MS = int((LLM_REQUEST_TIMEOUT + 5) * 1000)
+_gemini_clients: "OrderedDict[str, object]" = OrderedDict()
+_gemini_clients_lock = threading.Lock()
+
+
+def _gemini_client_key(api_key: str, base_url: str | None, timeout_ms: int) -> str:
+    material = "\0".join((api_key, base_url or "", str(timeout_ms))).encode()
+    return hmac.new(_GEMINI_CLIENT_SALT, material, hashlib.sha256).hexdigest()
+
+
+def _gemini_client_for(api_key: str | None, *, timeout_ms: int, base_url: str | None = None):
+    """The `genai.Client` for this credential, built on first use.
+
+    A call with no key is built fresh and not kept: the SDK then decides what a
+    missing key means, as it did for a first call before there was a cache.
+    """
+    from google import genai
+    from google.genai import types
+
+    def _build():
+        options = {"timeout": timeout_ms, **({"base_url": base_url} if base_url else {})}
+        return genai.Client(api_key=api_key, http_options=types.HttpOptions(**options))
+
+    if not api_key:
+        return _build()
+    key = _gemini_client_key(api_key, base_url, timeout_ms)
+    with _gemini_clients_lock:
+        client = _gemini_clients.get(key)
+        if client is not None:
+            _gemini_clients.move_to_end(key)
+            return client
+        # Built under the lock: two threads asking for a new key at once get
+        # one client between them, and building one does no I/O.
+        client = _gemini_clients[key] = _build()
+        while len(_gemini_clients) > _GEMINI_CLIENTS_MAX:
+            _gemini_clients.popitem(last=False)
+        return client
 
 
 async def call_gemini(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
@@ -1972,20 +2024,15 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     generation is chosen from the model name rather than tried and caught.
     """
     _ = prompt_cache  # reserved for future explicit cached_content support
-    global _gemini_client
-    from google import genai
     from google.genai import errors as _genai_errors
     from google.genai import types
 
     GEMINI_TIMEOUT = LLM_REQUEST_TIMEOUT   # seconds per attempt
     MAX_RETRIES = 5
 
-    if _gemini_client is None:
-        _gemini_client = genai.Client(
-            api_key=api_key,
-            # HTTP timeout 5s above wait_for so wait_for fires first for clean handling
-            http_options=types.HttpOptions(timeout=int((GEMINI_TIMEOUT+5) * 1000)),  # seconds
-        )
+    # This call's own key's client (F321). Its HTTP timeout sits 5 s above
+    # GEMINI_TIMEOUT, so a wait_for around the call would fire first.
+    client = _gemini_client_for(api_key, timeout_ms=_GEMINI_CLIENT_TIMEOUT_MS)
 
     contents = _convert_messages_for_gemini(messages, images=images)
     gemini_tools = _convert_tools_for_gemini(tools)
@@ -2021,7 +2068,7 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
     async def _call(cfg, attempt_label=""):
         _log.debug(f"🔄 Gemini _call start ({attempt_label})")
         result = await asyncio.to_thread(
-            _gemini_client.models.generate_content,
+            client.models.generate_content,
             model=model,
             contents=contents,
             config=cfg,
@@ -3796,12 +3843,10 @@ async def _embed_gemini(
     if not api_key:
         return [[0.0] * output_dim for _ in range(len(texts))]
 
-    from google import genai
     from google.genai import types
 
-    global _gemini_client
-    if _gemini_client is None:
-        _gemini_client = genai.Client(api_key=api_key)
+    # This call's own key's client, shared with chat on the same key (F321).
+    client = _gemini_client_for(api_key, timeout_ms=_GEMINI_CLIENT_TIMEOUT_MS)
 
     try:
         # Specify output_dimensionality so Gemini returns exactly `output_dim` dims
@@ -3809,7 +3854,7 @@ async def _embed_gemini(
         # Without this, the API returns the full 3072-dim vector which exceeds
         # pgvector's 2000-dim HNSW limit.
         result = await asyncio.to_thread(
-            _gemini_client.models.embed_content,
+            client.models.embed_content,
             model=model,
             contents=texts,
             config=types.EmbedContentConfig(output_dimensionality=output_dim),
