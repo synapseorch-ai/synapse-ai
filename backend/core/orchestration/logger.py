@@ -464,6 +464,12 @@ class OrchestrationLogger:
         elif etype == "loop_limit_reached":
             self._write(f"  ⚠️ LOOP LIMIT: step {event.get('orch_step_id', '')} hit {event.get('iterations', 0)}/{event.get('max_iterations', 0)}\n")
 
+        elif etype in ("knowledge_search", "knowledge_read", "knowledge_citations"):
+            # An agent's Knowledge calls and its answer's citations (B1b): labels,
+            # paths and ids — never the passages themselves.
+            from core.knowledge.tools import run_log_text
+            self._write(run_log_text(event))
+
         elif etype == "thinking":
             pass  # skip noise
 

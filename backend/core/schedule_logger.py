@@ -242,6 +242,12 @@ class ScheduleLogger:
         elif etype == "error":
             self._write_bg(f"\n  ERROR: {event.get('message', '')}\n")
 
+        elif etype in ("knowledge_search", "knowledge_read", "knowledge_citations"):
+            # An agent's Knowledge calls and its answer's citations (B1b): labels,
+            # paths and ids — never the passages themselves.
+            from core.knowledge.tools import run_log_text
+            self._write_bg(run_log_text(event, icons=False))
+
         elif etype == "thinking":
             pass  # skip noise
 

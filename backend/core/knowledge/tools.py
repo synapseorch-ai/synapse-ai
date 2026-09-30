@@ -348,19 +348,20 @@ async def run_tool(name: str, args: Any, *, bases: list, turn: KnowledgeTurn, or
 
 # ── the run log ────────────────────────────────────────────────────────────────
 
-def run_log_text(event: dict) -> str:
-    """One Knowledge event as a run-log line: labels, paths, counts and ids, never passage text."""
+def run_log_text(event: dict, *, icons: bool = True) -> str:
+    """One Knowledge event as a run-log line: labels, paths, counts and ids, never passage text.
+    `icons=False` for a log written without them (the schedule log)."""
     kind = event.get("type")
     by = f" (from {event['delegate_agent_name']})" if event.get("delegate_agent_name") else ""
     if kind == KNOWLEDGE_SEARCH:
         labels = " ".join(event.get("labels") or []) or "no passages"
         degraded = f" · degraded: {', '.join(event['degraded'])}" if event.get("degraded") else ""
-        return (f"  🔎 KNOWLEDGE SEARCH{by} (turn {event.get('turn', '?')}): \"{event.get('query', '')}\" in "
+        return (f"  {'🔎 ' if icons else ''}KNOWLEDGE SEARCH{by} (turn {event.get('turn', '?')}): \"{event.get('query', '')}\" in "
                 f"{', '.join(event.get('kb_ids') or [])}{' (filtered)' if event.get('filtered') else ''} → "
                 f"{event.get('hit_count', 0)} · {labels} · {event.get('query_id', '')} · "
                 f"${float(event.get('cost_usd') or 0):.4f}{degraded}\n")
     if kind == KNOWLEDGE_READ:
-        return (f"  📖 KNOWLEDGE READ{by} (turn {event.get('turn', '?')}): {event.get('label', '')} "
+        return (f"  {'📖 ' if icons else ''}KNOWLEDGE READ{by} (turn {event.get('turn', '?')}): {event.get('label', '')} "
                 f"±{event.get('window', 0)} {event.get('path', '')} ({event.get('chunk_id', '')})\n")
     if kind == KNOWLEDGE_CITATIONS:
         parts = []
@@ -370,5 +371,5 @@ def run_log_text(event: dict) -> str:
             pages = _pages(c.get("page_start"), c.get("page_end"))
             parts.append(f"{c.get('label', '')} {c.get('path', '')}{' ' + pages if pages else ''}{mark}")
         unresolved = f" · unresolved: {' '.join(event['unresolved'])}" if event.get("unresolved") else ""
-        return f"  📚 CITATIONS: {'; '.join(parts) or 'none resolved'}{unresolved}\n"
+        return f"  {'📚 ' if icons else ''}CITATIONS: {'; '.join(parts) or 'none resolved'}{unresolved}\n"
     return ""

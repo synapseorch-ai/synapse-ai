@@ -161,10 +161,15 @@ _EXAMPLES = {
 }
 
 
+#: The lanes whose run-log branches have landed; each removes its types' mark in the same commit.
+_LANDED = {"B1"}
+
+
 class TestEvents:
-    @pytest.mark.parametrize("event_type", E.RUN_EVENT_TYPES)
-    @pytest.mark.xfail(strict=True, reason="the owning lane (events.RUN_EVENT_OWNERS) adds the run-log branch "
-                                           "and removes this mark in the same commit")
+    @pytest.mark.parametrize("event_type", [
+        t if E.RUN_EVENT_OWNERS[t] in _LANDED else pytest.param(t, marks=pytest.mark.xfail(
+            strict=True, reason=f"{E.RUN_EVENT_OWNERS[t]} adds the run-log branch and lands its lane in _LANDED"))
+        for t in E.RUN_EVENT_TYPES])
     def test_the_run_log_writes_each_knowledge_event(self, event_type):
         logger = _Captured()
         logger.log_event(_EXAMPLES[event_type])

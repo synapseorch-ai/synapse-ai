@@ -268,6 +268,12 @@ class AgentLogger:
 {sep}
 """)
 
+        elif etype in ("knowledge_search", "knowledge_read", "knowledge_citations"):
+            # An agent's Knowledge calls and its answer's citations (B1b): labels,
+            # paths and ids — never the passages themselves.
+            from core.knowledge.tools import run_log_text
+            self._write_bg(run_log_text(event))
+
         elif etype == "thinking":
             pass  # skip noise
 
