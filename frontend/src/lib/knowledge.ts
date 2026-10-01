@@ -138,11 +138,17 @@ export const REASONS: Record<string, string> = {
     attachment_skipped: 'An attachment was skipped',
 };
 
-/** What an upload accepts (backend `core/knowledge/parse` ACCEPTED_EXTENSIONS). */
+/** What an upload accepts: backend `core/knowledge/parse` ACCEPTED_EXTENSIONS, held equal by
+ *  `tests/unit/test_knowledge_parse_formats.py`. */
 export const ACCEPTED = [
-    '.md', '.markdown', '.txt', '.json', '.csv', '.tsv', '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls',
-    '.odt', '.ods', '.odp', '.rtf', '.html', '.htm', '.eml', '.msg', '.epub', '.xml', '.yaml', '.yml', '.png',
-    '.jpg', '.jpeg', '.tif', '.tiff', '.heic', '.webp',
+    '.markdown', '.md', '.adoc', '.asciidoc', '.cfg', '.conf', '.ini', '.log', '.properties', '.rst', '.tex',
+    '.text', '.toml', '.txt', '.bash', '.bat', '.c', '.cc', '.cjs', '.clj', '.cmake', '.cpp', '.cs', '.css', '.cxx',
+    '.dart', '.erl', '.ex', '.exs', '.go', '.gradle', '.graphql', '.h', '.hcl', '.hpp', '.hs', '.java', '.jl',
+    '.js', '.jsx', '.kt', '.kts', '.less', '.lua', '.m', '.mjs', '.php', '.pl', '.proto', '.ps1', '.py', '.pyi',
+    '.r', '.rb', '.rs', '.scala', '.scss', '.sh', '.sql', '.svelte', '.swift', '.tf', '.ts', '.tsx', '.vue', '.zsh',
+    '.json', '.csv', '.tsv', '.pdf', '.docm', '.docx', '.dotx', '.ppsx', '.pptm', '.pptx', '.xlsm', '.xlsx', '.odt',
+    '.odp', '.ods', '.epub', '.rtf', '.htm', '.html', '.xhtml', '.xml', '.yaml', '.yml', '.eml', '.msg', '.jpeg',
+    '.jpg', '.png', '.tif', '.tiff', '.webp', '.heic', '.heif', '.doc', '.ppt', '.xls',
 ];
 
 /** The API's error, as one line. FastAPI answers `{detail: string}`, or a list for a validation error. */

@@ -257,3 +257,15 @@ def test_importing_the_package_loads_no_parser_library():
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.strip() == ""
+
+
+def test_the_frontend_accepts_what_the_backend_reads():
+    """The upload picker (`frontend/src/lib/knowledge.ts` ACCEPTED) mirrors ACCEPTED_EXTENSIONS: a format
+    added on one side only is either refused at upload or hidden from the picker."""
+    import re
+
+    source = (BACKEND.parent / "frontend" / "src" / "lib" / "knowledge.ts").read_text("utf-8")
+    block = re.search(r"export const ACCEPTED = \[(.*?)\];", source, re.DOTALL)
+    assert block, "ACCEPTED is gone from frontend/src/lib/knowledge.ts"
+    frontend = re.findall(r"'(\.[a-z0-9]+)'", block.group(1))
+    assert len(frontend) == len(set(frontend)) and set(frontend) == set(ACCEPTED_EXTENSIONS)
