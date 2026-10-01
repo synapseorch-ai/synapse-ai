@@ -192,6 +192,79 @@ export const ACCEPTED = [
     '.jpg', '.png', '.tif', '.tiff', '.webp', '.heic', '.heif', '.doc', '.ppt', '.xls',
 ];
 
+/** The settings whose change rebuilds the index (backend `kb_settings.INDEX_AFFECTING`); everything else
+ *  applies to the next search. Held equal by `tests/unit/test_knowledge_presets.py`. */
+export const INDEX_AFFECTING = ['chunking', 'embedding', 'enrichment', 'language'] as const;
+
+/** Keyword-search languages (backend `textsearch.TS_LANGUAGES`); "simple" stems nothing. Held equal by
+ *  `tests/unit/test_knowledge_presets.py`. */
+export const LANGUAGES = [
+    'simple', 'arabic', 'danish', 'dutch', 'english', 'finnish', 'french', 'german', 'greek', 'hungarian',
+    'indonesian', 'irish', 'italian', 'lithuanian', 'nepali', 'norwegian', 'portuguese', 'romanian', 'russian',
+    'spanish', 'swedish', 'tamil', 'turkish',
+] as const;
+
+/** A named starting point for a base's settings: only the fields it names are set (B2b, D167). */
+export type PipelinePreset = {
+    id: string;
+    name: string;
+    description: string;
+    fields: Record<string, Record<string, string | number | boolean | null>>;
+};
+
+/** Backend `core/knowledge/presets.py` PRESETS, as JSON. Held equal by `tests/unit/test_knowledge_presets.py`. */
+export const PRESETS: PipelinePreset[] = [
+    {
+        "id": "cheap", "name": "Cheap",
+        "description": "Larger chunks, no rerank, fewer passages. The least to embed and to search.",
+        "fields": {
+            "chunking": {"mode": "structure", "target_tokens": 600, "max_tokens": 1000, "overlap_pct": 0.0},
+            "rerank": {"enabled": false, "top_n": 8, "candidates": 50},
+            "fusion": {"overfetch": 20},
+            "retrieval": {"top_k": 5, "parent_expansion": "off", "neighbor_window": 1, "max_context_tokens": 4000},
+            "enrichment": {"mode": "prefix"}
+        }
+    },
+    {
+        "id": "balanced", "name": "Balanced",
+        "description": "The defaults: section-sized chunks, rerank where one is configured, eight passages.",
+        "fields": {
+            "chunking": {"mode": "structure", "target_tokens": 450, "max_tokens": 800, "overlap_pct": 0.0},
+            "rerank": {"enabled": null, "top_n": 8, "candidates": 50},
+            "fusion": {"overfetch": 50},
+            "retrieval": {"top_k": 8, "parent_expansion": "off", "neighbor_window": 1, "max_context_tokens": 6000},
+            "enrichment": {"mode": "prefix"}
+        }
+    },
+    {
+        "id": "high_recall", "name": "High recall",
+        "description": "Smaller overlapping chunks, more candidates and passages, each with its neighbours. More to embed and to read.",
+        "fields": {
+            "chunking": {"mode": "structure", "target_tokens": 300, "max_tokens": 600, "overlap_pct": 0.1},
+            "rerank": {"enabled": null, "top_n": 12, "candidates": 100},
+            "fusion": {"overfetch": 100},
+            "retrieval": {"top_k": 12, "parent_expansion": "neighbors", "neighbor_window": 1, "max_context_tokens": 10000},
+            "enrichment": {"mode": "prefix"}
+        }
+    }
+];
+
+/** `kb` with the preset's fields laid over its own (backend `presets.apply`). */
+export function applyPreset<T extends Record<string, unknown>>(kb: T, preset: PipelinePreset): T {
+    const out: Record<string, unknown> = { ...kb };
+    for (const [block, fields] of Object.entries(preset.fields)) {
+        out[block] = { ...(kb[block] as Record<string, unknown> | undefined), ...fields };
+    }
+    return out as T;
+}
+
+/** The preset whose every field `kb` has, or null for custom settings (backend `presets.matches`). */
+export function matchingPreset(kb: Record<string, unknown>): PipelinePreset | null {
+    return PRESETS.find(p => Object.entries(p.fields).every(([block, fields]) =>
+        Object.entries(fields).every(([name, value]) =>
+            ((kb[block] as Record<string, unknown> | undefined)?.[name] ?? null) === value))) ?? null;
+}
+
 /** The API's error, as one line. FastAPI answers `{detail: string}`, or a list for a validation error. */
 export async function errorText(res: Response): Promise<string> {
     try {
