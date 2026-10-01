@@ -150,12 +150,15 @@ def _refuse_ungated_transform(steps: list) -> dict | None:
 KNOWLEDGE_STEP_TYPES = frozenset({"retrieve", "ingest"})
 #: Builder tools that exist only while Knowledge is on — absent from every roster while it is off.
 KNOWLEDGE_BUILDER_TOOLS = frozenset({"list_knowledge_bases"})
+#: Builder tools `"all"` does not reach (`core.tools.permits(opt_in=)`): an agent names them, as the builder's
+#: analyst does. Knowledge on or off, no `"all"` agent's roster — nor its prompt cache — changes (B1b's rule).
+OPT_IN_BUILDER_TOOLS = KNOWLEDGE_BUILDER_TOOLS
 _KNOWLEDGE_OFF = "Knowledge is switched off in this workspace"
 
 
 def builder_tool_offered(name: str) -> bool:
-    """Whether builder tool `name` exists here right now: Knowledge's are absent while it is off, so no agent's
-    roster (nor its prompt cache) changes until Knowledge is switched on."""
+    """Whether builder tool `name` exists here right now: Knowledge's are absent while it is off, even to an agent
+    that names them. (An `"all"` agent never gets them: `OPT_IN_BUILDER_TOOLS`.)"""
     if name not in KNOWLEDGE_BUILDER_TOOLS:
         return True
     from core.knowledge.config import knowledge_enabled

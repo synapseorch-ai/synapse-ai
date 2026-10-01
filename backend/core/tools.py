@@ -296,10 +296,11 @@ async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_
             return VirtualTool(ct["name"], ct.get("description", ""), ct.get("inputSchema") or {"type": "object"})
         return None
 
-    from core.builder_tools import BUILDER_TOOL_SCHEMAS, builder_tool_offered
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS, OPT_IN_BUILDER_TOOLS, builder_tool_offered
     for bt in BUILDER_TOOL_SCHEMAS:
         fn = bt["function"]
-        if fn["name"] == name and permits(allowed, name) and builder_tool_offered(name):
+        if (fn["name"] == name and permits(allowed, name, opt_in=name in OPT_IN_BUILDER_TOOLS)
+                and builder_tool_offered(name)):
             return VirtualTool(name, fn.get("description", ""), fn.get("parameters", {"type": "object"}))
     return None
 
@@ -445,13 +446,14 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
     # Native Builder tools — first-class so any agent that declares them in its
     # `tools` list can call create_orchestration / list_agents / etc. Dispatch
     # to execute_builder_tool is handled in react_engine and ToolStepExecutor.
-    # A tool of a feature that is switched off (Knowledge's) is absent, so the
-    # roster — and the prompt cache — of an `"all"` agent is unchanged by it.
-    from core.builder_tools import BUILDER_TOOL_SCHEMAS, builder_tool_offered
+    # Knowledge's builder tool is opt-in — `"all"` does not reach it — and absent
+    # while Knowledge is off, so no `"all"` agent's roster, nor its prompt
+    # cache, changes with it.
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS, OPT_IN_BUILDER_TOOLS, builder_tool_offered
     for bt in BUILDER_TOOL_SCHEMAS:
         fn = bt["function"]
         bt_name = fn["name"]
-        if permits(allowed_tools, bt_name) and builder_tool_offered(bt_name):
+        if permits(allowed_tools, bt_name, opt_in=bt_name in OPT_IN_BUILDER_TOOLS) and builder_tool_offered(bt_name):
             vt = VirtualTool(bt_name, fn.get("description", ""), fn.get("parameters", {"type": "object"}))
             all_tools.append(vt)
             tool_schema_map[vt.name] = vt.inputSchema

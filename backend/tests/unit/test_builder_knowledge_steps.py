@@ -66,19 +66,23 @@ class TestListKnowledgeBases:
         assert "Knowledge is switched off" in result["error"]
 
     @pytest.mark.parametrize("knowledge", [False, True])
-    async def test_an_all_agent_is_offered_it_only_while_on(self, monkeypatch, knowledge):
+    async def test_an_agent_that_names_it_gets_it_only_while_on_and_all_never_does(self, monkeypatch, knowledge):
+        """`"all"` does not reach it, on or off — so no `"all"` agent's roster or prompt cache changes with
+        Knowledge (B1b's `test_an_agent_with_no_bases_is_offered_the_same_with_knowledge_on_or_off`)."""
         import core.tools as tools_mod
 
         use_saved_settings(monkeypatch)
         if knowledge:
             await enable_knowledge()
         server = types.SimpleNamespace(agent_sessions={}, tool_router={}, memory_store=None, _session_tools={})
-        agent = {"tools": ["all"], "skip_default_tools": True}
-        all_tools, _, _, _ = await tools_mod.aggregate_all_tools(server, agent, [])
-        resolved = await tools_mod.resolve_one_tool(server, "list_knowledge_bases", agent, [])
-        assert ("list_knowledge_bases" in {t.name for t in all_tools}) is knowledge
-        assert (resolved is not None) is knowledge
-        assert "list_agents" in {t.name for t in all_tools}  # every other builder tool, either way
+        everything = {"tools": ["all"], "skip_default_tools": True}
+        naming = {"tools": ["list_agents", "list_knowledge_bases"], "skip_default_tools": True}
+        for agent, offered in ((everything, False), (naming, knowledge)):
+            all_tools, _, _, _ = await tools_mod.aggregate_all_tools(server, agent, [])
+            resolved = await tools_mod.resolve_one_tool(server, "list_knowledge_bases", agent, [])
+            assert ("list_knowledge_bases" in {t.name for t in all_tools}) is offered, agent
+            assert (resolved is not None) is offered, agent
+            assert "list_agents" in {t.name for t in all_tools}  # every other builder tool, either way
 
 
 # ── writing the steps ──────────────────────────────────────────────────────────
