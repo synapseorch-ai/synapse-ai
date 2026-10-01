@@ -14,6 +14,11 @@ exactly once.
   the whole mechanism by which retrieval shows up in a run's cost (the engine's
   finalizer and the fleet's sum `usage_logs` by run) and on both products'
   Usage screens: no finalizer changes.
+* **A call a metering gateway charged (`cost_source = "platform"`) is in the run
+  as what it settled, not as an estimate** (CCR-7, F330): its mirror's
+  `estimated_cost` is 0, as for every `synapse.*` chat call, and its estimate
+  and charge sit in `details`. Cloud adds the gateway's settles to the run's
+  estimate, so an estimate here counted the same call twice.
 
 An ingestion is attributed to `session_id = "knowledge:<kb_id>"` and source
 "knowledge"; a search to the run or chat turn that made it.
@@ -99,11 +104,12 @@ async def _write(rows: Sequence[CostRow]) -> None:
                 agent_id=a.agent_id or "unknown", run_id=a.run_id, tool_name=f"knowledge:{u.stage}",
                 input_tokens=u.input_tokens, output_tokens=u.output_tokens,
                 total_tokens=u.input_tokens + u.output_tokens, context_chars=0,
-                estimated_cost=u.est_usd, latency_seconds=round(u.latency_ms / 1000.0, 2),
+                estimated_cost=0.0 if u.cost_source == "platform" else u.est_usd,
+                latency_seconds=round(u.latency_ms / 1000.0, 2),
                 cache_read_tokens=0, cache_write_tokens=0, estimated_savings=0.0, response_cache_hit=False,
                 details={"stage": u.stage, "kb_id": a.kb_id, "units": u.units, "unit": u.unit,
                          "cost_source": u.cost_source, "knowledge_cost_id": cost.id,
-                         "charged_microusd": u.charged_microusd},
+                         "est_usd": u.est_usd, "charged_microusd": u.charged_microusd},
             ))
 
 

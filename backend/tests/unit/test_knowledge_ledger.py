@@ -48,15 +48,34 @@ async def test_enrich_and_rewrite_are_not_logged_twice():
 
 
 async def test_a_search_in_a_run_is_part_of_the_runs_cost():
-    """The engine's finalizer sums `get_usage_logs(run_id=…)`; retrieval is in that sum with no change to it."""
+    """The engine's finalizer sums `get_usage_logs(run_id=…)`; retrieval on a key of the customer's own is in that
+    sum with no change to it."""
     from core.usage_tracker import get_usage_logs
 
-    await ledger.record_costs([ledger.CostRow(_usage("embed", est=0.002),
+    await ledger.record_costs([ledger.CostRow(_usage("embed", est=0.002, source="byok"),
                                               Attribution(kb_id=KB, run_id="run_7", source="orchestration")),
-                               ledger.CostRow(_usage("rerank", est=0.002),
+                               ledger.CostRow(_usage("rerank", est=0.002, source="byok"),
                                               Attribution(kb_id=KB, run_id="run_7", source="orchestration"))])
     spent = await get_usage_logs(run_id="run_7", limit=100)
     assert round(sum(float(r.get("estimated_cost") or 0) for r in spent), 6) == 0.004
+
+
+async def test_a_platform_cost_is_its_settle_not_an_estimate_in_the_run():
+    """CCR-7 (F330): a call our gateway metered is in the run's cost as what it settled, so its `usage_logs` mirror
+    estimates 0, as every `synapse.*` chat call does; the estimate and the charge stay in `details`, and
+    `knowledge_costs` keeps both for the base's Costs and budget."""
+    from core.usage_tracker import get_usage_logs
+
+    await ledger.record_costs([ledger.CostRow(_usage("embed", est=0.002, charged=1_900),
+                                              Attribution(kb_id=KB, run_id="run_8", source="orchestration"))])
+    spent = await get_usage_logs(run_id="run_8", limit=100)
+    assert [float(r.get("estimated_cost") or 0) for r in spent] == [0.0]
+    (row,) = await _rows(UsageLogDB)
+    assert (row.details["est_usd"], row.details["charged_microusd"], row.details["cost_source"]) == (
+        0.002, 1_900, "platform")
+    (cost,) = await _rows(KnowledgeCostDB)
+    assert (cost.est_usd, cost.charged_microusd) == (0.002, 1_900)
+    assert await ledger.kb_month_spend(KB) == pytest.approx(0.0019)
 
 
 async def test_ingestion_is_attributed_to_the_knowledge_base():
