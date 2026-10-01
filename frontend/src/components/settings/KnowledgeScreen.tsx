@@ -15,9 +15,13 @@
  *
  * Polls every 2 s while anything is still being worked on, else every 10 s, as
  * the Repos screen does.
+ *
+ * A base's settings open in a drawer (`KnowledgeSettings`, B2b). A change to how
+ * its index is built rebuilds it beside the serving one; the line under the
+ * header follows that rebuild, and the Costs section says what the base has spent.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ExternalLink, FolderOpen, Globe, Plus, RotateCcw, Search, Trash2, Upload } from 'lucide-react';
+import { ExternalLink, FolderOpen, Globe, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, Upload } from 'lucide-react';
 
 import {
     Badge, Button, ConfirmDialog, Drawer, EmptyState, ErrorNote, Field, IconButton, Input, Label, Modal, Mono,
@@ -25,13 +29,14 @@ import {
     type SelectOption,
 } from '@/components/ui';
 import { RetrievalTrace } from '@/components/RetrievalTrace';
+import { KnowledgeSettings } from '@/components/settings/KnowledgeSettings';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
 import {
-    ACCEPTED, CRAWLING, DEGRADED, REASONS, RESTING, STATUS, WORKING, formatBytes, inBase, knowledgeApi,
-    uploadToKnowledge, useKnowledgeEnabled,
-    type DocStatus, type KnowledgeBase, type KnowledgeDocument, type KnowledgeDocumentDetail, type SearchResult,
-    type WebCrawlState, type WebSourceKind,
+    ACCEPTED, BUILD_PAUSED, CRAWLING, DEGRADED, PRESETS, REASONS, RESTING, STATUS, WORKING, formatBytes, inBase,
+    knowledgeApi, uploadToKnowledge, useKnowledgeEnabled,
+    type CostGroup, type CostGroupBy, type DocStatus, type KnowledgeBase, type KnowledgeDocument,
+    type KnowledgeDocumentDetail, type SearchResult, type WebCrawlState, type WebSourceKind,
 } from '@/lib/knowledge';
 
 type VaultNode = { name: string; path: string; type: 'file' | 'folder'; children?: VaultNode[] };
@@ -223,13 +228,14 @@ function NewBaseDialog({
     const [name, setName] = useState('');
     const [folder, setFolder] = useState('');
     const [description, setDescription] = useState('');
+    const [preset, setPreset] = useState('balanced');
     const [known, setKnown] = useState<string[]>([]);
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
 
     useEffect(() => {
         if (!open) return;
-        setName(''); setFolder(''); setDescription(''); setError('');
+        setName(''); setFolder(''); setDescription(''); setPreset('balanced'); setError('');
         fetch('/api/vault/tree')
             .then(r => r.json())
             .then(data => setKnown(folders(data?.tree ?? []).filter(p => !/^(tool_outputs|playwright|compaction_archives)(\/|$)/.test(p))))
@@ -240,7 +246,8 @@ function NewBaseDialog({
         setBusy(true);
         setError('');
         try {
-            onCreated(await knowledgeApi.createBase({ name: name.trim(), folder: folder.trim(), description }));
+            const fields = PRESETS.find(p => p.id === preset)?.fields ?? {};
+            onCreated(await knowledgeApi.createBase({ name: name.trim(), folder: folder.trim(), description, ...fields }));
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
         } finally {
@@ -284,6 +291,14 @@ function NewBaseDialog({
                 <Field label="Description" hint="Optional. What is in it, for the people and agents who use it.">
                     <Textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} maxLength={2000} />
                 </Field>
+                <Field label="Preset" hint={PRESETS.find(p => p.id === preset)?.description}>
+                    <Select
+                        value={preset}
+                        onChange={setPreset}
+                        options={PRESETS.map(p => ({ value: p.id, label: p.name }))}
+                        aria-label="Preset"
+                    />
+                </Field>
             </div>
         </Modal>
     );
@@ -310,6 +325,7 @@ function BaseDetail({
     const [removing, setRemoving] = useState<KnowledgeDocument | null>(null);
     const [uploads, setUploads] = useState<Uploading[]>([]);
     const [dragging, setDragging] = useState(false);
+    const [editing, setEditing] = useState(false);
     const input = useRef<HTMLInputElement>(null);
 
     const refresh = useCallback(() => setTick(t => t + 1), []);
@@ -325,8 +341,10 @@ function BaseDetail({
         return () => { live = false; };
     }, [kb.id, tick, notify]);
 
+    const build = kb.state.build ?? null;
+    const rebuilding = build?.status === 'building' && !build.paused_reason;
     const working = !!docs?.some(d => WORKING.has(d.status)) || uploads.some(u => !u.error && u.sent < u.total)
-        || crawls.some(c => CRAWLING.has(c.status));
+        || crawls.some(c => CRAWLING.has(c.status)) || rebuilding;
     useEffect(() => {
         const timer = setInterval(() => { refresh(); onChanged(); }, working ? 2000 : 10000);
         return () => clearInterval(timer);
@@ -362,6 +380,15 @@ function BaseDetail({
         try {
             await knowledgeApi.retry(doc.id);
             refresh();
+        } catch (e) {
+            notify(e instanceof Error ? e.message : String(e), 'danger');
+        }
+    };
+
+    const retryRebuild = async () => {
+        try {  // an edit that changes nothing re-checks the index, and starts the rebuild again
+            await knowledgeApi.updateBase(kb.id, { revision: kb.revision });
+            onChanged();
         } catch (e) {
             notify(e instanceof Error ? e.message : String(e), 'danger');
         }
@@ -412,11 +439,16 @@ function BaseDetail({
                     <Button variant="secondary" onClick={() => setAddingWeb(true)} disabled={kb.status !== 'active'}>
                         <Globe className="size-4" aria-hidden />Add web pages
                     </Button>
+                    <Button variant="secondary" onClick={() => setEditing(true)}>
+                        <SlidersHorizontal className="size-4" aria-hidden />Settings
+                    </Button>
                     <Button variant="ghost" onClick={onDelete}>
                         <Trash2 className="size-4" aria-hidden />Delete
                     </Button>
                 </div>
             </div>
+
+            {build && <RebuildLine build={build} onRetry={retryRebuild} />}
 
             <input
                 ref={input}
@@ -464,6 +496,7 @@ function BaseDetail({
             )}
 
             <TestSearch kb={kb} />
+            <Costs kb={kb} docs={docs} />
 
             <div className="flex items-center justify-between gap-3">
                 <Label>{docs ? count(shown.length, 'document') : 'Documents'}</Label>
@@ -551,6 +584,20 @@ function BaseDetail({
                     onChanged();
                 }}
             />
+            {editing && (
+                <KnowledgeSettings
+                    kb={kb}
+                    documents={(kb.state.counts_by_status.indexed ?? 0) + (kb.state.counts_by_status.partial ?? 0)}
+                    onClose={() => setEditing(false)}
+                    onSaved={saved => {
+                        setEditing(false);
+                        notify(saved.reindex_started
+                            ? 'Saved. The index is being rebuilt; the current one answers meanwhile.'
+                            : 'Saved.');
+                        onChanged();
+                    }}
+                />
+            )}
         </section>
     );
 }
@@ -765,6 +812,127 @@ function WebSources({
                 title={`Remove ${source ? shortUrl(source.url) : 'this source'}?`}
                 description="Its crawl stops, and the pages only it fetched leave the base and the Vault. Pages another source also fetches stay."
             />
+        </Section>
+    );
+}
+
+/** A rebuild of the index after a change to how it is built: how far it has got, why it waits, or why it failed. */
+function RebuildLine({ build, onRetry }: { build: NonNullable<KnowledgeBase['state']['build']>; onRetry: () => void }) {
+    if (build.status === 'failed') {
+        return (
+            <div role="status" className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-danger/40 px-3 py-2 text-sm">
+                <p className="min-w-0 text-text">
+                    The rebuild failed; the current index still answers.
+                    {build.error && <span className="mt-0.5 block break-words text-xs text-text-muted">{build.error}</span>}
+                </p>
+                <Button size="sm" variant="secondary" onClick={onRetry}>
+                    <RotateCcw className="size-4" aria-hidden />Retry rebuild
+                </Button>
+            </div>
+        );
+    }
+    const share = build.docs_total ? Math.min(100, Math.round((build.docs_done / build.docs_total) * 100)) : 0;
+    return (
+        <div role="status" className="rounded-md border border-border px-3 py-2 text-sm">
+            <p className="text-text">
+                {build.paused_reason
+                    ? (BUILD_PAUSED[build.paused_reason] ?? `Paused: ${build.paused_reason}.`)
+                    : `Rebuilding the index: ${build.docs_done} of ${count(build.docs_total, 'document')}. The current index answers meanwhile.`}
+            </p>
+            {!build.paused_reason && (
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-2" aria-hidden>
+                    <div className="h-full bg-accent transition-[width]" style={{ width: `${share}%` }} />
+                </div>
+            )}
+        </div>
+    );
+}
+
+const GROUPS: { value: CostGroupBy; label: string }[] = [
+    { value: 'stage', label: 'By stage' },
+    { value: 'day', label: 'By day' },
+    { value: 'document', label: 'By document' },
+    { value: 'model', label: 'By model' },
+];
+const GROUP_HEADINGS: Record<CostGroupBy, string> = { stage: 'Stage', day: 'Day', document: 'Document', model: 'Model' };
+const STAGE_NAMES: Record<string, string> = {
+    embed: 'Embedding', rerank: 'Reranking', ocr: 'Reading scanned pages', parse: 'Reading files', enrich: 'Context',
+    rewrite: 'Rewriting questions',
+};
+
+/** What the base has cost this month, grouped, against its budget. */
+function Costs({ kb, docs }: { kb: KnowledgeBase; docs: KnowledgeDocument[] | null }) {
+    const [groupBy, setGroupBy] = useState<CostGroupBy>('stage');
+    const [groups, setGroups] = useState<CostGroup[] | null>(null);
+    const [error, setError] = useState('');
+    const spent = kb.state.month_spend_usd;
+    const cap = kb.budget_monthly_usd;
+
+    useEffect(() => {
+        let live = true;
+        knowledgeApi.costs(kb.id, groupBy)
+            .then(g => { if (live) { setGroups(g); setError(''); } })
+            .catch(e => { if (live) setError(e instanceof Error ? e.message : String(e)); });
+        return () => { live = false; };
+    }, [kb.id, groupBy, spent]);
+
+    const paths = useMemo(() => new Map((docs ?? []).map(d => [d.id, inBase(d.path, kb.folder)])), [docs, kb.folder]);
+    const name = (key: string) => {
+        if (groupBy === 'stage') return STAGE_NAMES[key] ?? key;
+        if (groupBy === 'document') return key === 'search' ? 'Searches' : (paths.get(key) ?? 'A deleted document');
+        return key;
+    };
+    const money = (n: number) => (n === 0 ? '$0' : n < 0.01 ? `$${n.toFixed(5)}` : `$${n.toFixed(2)}`);
+
+    return (
+        <Section
+            title="Costs"
+            description="What this knowledge base has cost this month: indexing and searches."
+            summary={<Muted>{money(spent)}{cap != null ? ` of ${money(cap)}` : ''} this month</Muted>}
+        >
+            {cap != null && (
+                <div className="mb-3">
+                    <div className="h-1.5 overflow-hidden rounded-full bg-surface-2" role="meter" aria-label="Budget used"
+                        aria-valuemin={0} aria-valuemax={cap} aria-valuenow={Math.min(spent, cap)}>
+                        <div className={cn('h-full', spent >= cap ? 'bg-danger' : 'bg-accent')}
+                            style={{ width: `${cap ? Math.min(100, (spent / cap) * 100) : 100}%` }} />
+                    </div>
+                    <Muted className="mt-1 block text-xs">
+                        {spent >= cap ? 'The monthly budget is reached: indexing waits and searches use words only.'
+                            : `${money(cap - spent)} left of a ${money(cap)} monthly budget.`}
+                    </Muted>
+                </div>
+            )}
+            <div className="mb-2 flex justify-end">
+                <Select size="sm" value={groupBy} onChange={setGroupBy} options={GROUPS} aria-label="Group costs" />
+            </div>
+            {error ? <ErrorNote>{error}</ErrorNote> : groups === null ? (
+                <div className="flex justify-center py-4"><Spinner /></div>
+            ) : groups.length === 0 ? (
+                <Muted>Nothing has cost anything this month.</Muted>
+            ) : (
+                <Table density="compact" minWidth="24rem">
+                    <THead>
+                        <TR hover={false}>
+                            <TH width="full">{GROUP_HEADINGS[groupBy]}</TH>
+                            <TH width="min" align="right">Tokens</TH>
+                            <TH width="min" align="right">Cost</TH>
+                        </TR>
+                    </THead>
+                    <TBody>
+                        {groups.map(g => (
+                            <TR key={g.key}>
+                                <TD><span className={cn('block truncate', groupBy !== 'stage' && 'font-mono text-xs')}>{name(g.key)}</span></TD>
+                                <TD align="right" nowrap>{g.input_tokens ? g.input_tokens.toLocaleString() : g.units ? `${g.units} units` : '—'}</TD>
+                                <TD align="right" nowrap>
+                                    {money(g.est_usd)}
+                                    {g.charged_microusd != null && <Muted> · charged {money(g.charged_microusd / 1_000_000)}</Muted>}
+                                </TD>
+                            </TR>
+                        ))}
+                    </TBody>
+                </Table>
+            )}
         </Section>
     );
 }

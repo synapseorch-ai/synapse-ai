@@ -3849,6 +3849,47 @@ async def check_knowledge_drawer(browser) -> str:
 
 
 @check
+async def check_knowledge_settings(browser) -> str:
+    """A knowledge base's settings drawer (B2b, D167) is a named dialog whose every control is named; nothing
+    is saved before something changes; a change to how the index is built is priced before it is saved; and
+    Escape closes it without a save."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    patched = []
+    for pattern, handler in _SMOKE_KB_ROUTES:
+        await ctx.route(pattern, handler)
+
+    async def record_patch(route):
+        if route.request.method == "PATCH":
+            patched.append(route.request.post_data)
+        await route.fallback()
+    await ctx.route("**/api/knowledge/bases/*", record_patch)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        await page.get_by_role("button", name="Settings", exact=True).wait_for(timeout=30_000)
+        await _kb_settings_rebuild(page)
+        dialog = page.get_by_role("dialog", name="Settings for Smoke contracts")
+        await dialog.wait_for(timeout=10_000)
+        unnamed = await dialog.evaluate("""d => [...d.querySelectorAll('button, input, [role=combobox]')]
+            .filter(e => e.type !== 'hidden' && !e.getAttribute('aria-label') && !e.labels?.length
+                         && !e.getAttribute('aria-labelledby') && !e.textContent.trim()).length""")
+        if unnamed:
+            raise AssertionError(f"the settings drawer has {unnamed} unnamed control(s)")
+        await dialog.get_by_text("Saving rebuilds the index").wait_for(timeout=10_000)
+        if not await dialog.get_by_role("button", name="Save and rebuild").is_enabled():
+            raise AssertionError("a priced index change cannot be saved")
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.8)
+        if await page.get_by_role("dialog").count():
+            raise AssertionError("Escape did not close the settings drawer")
+        if patched:
+            raise AssertionError(f"closing the drawer saved something: {patched}")
+        return "the settings drawer is named throughout, prices an index change, and Escape closes it unsaved"
+    finally:
+        await ctx.close()
+
+
+@check
 async def check_promptwriter(browser) -> str:
     """The AI Prompt Writer says why it wrote nothing (F183).
 
@@ -5308,14 +5349,27 @@ async def _vault_error(page):
     await page.get_by_role("button", name=re.compile("^save$", re.I)).first.click()
 
 
-#: Knowledge switched on, one base, and a document in every status (D157).
+#: Knowledge switched on, one base, and a document in every status (D157); its settings (B2b, D167).
 _SMOKE_KB = {"id": "kb_00000000smoke", "name": "Smoke contracts", "description": "", "folder": "smoke_kb",
-             "status": "active", "language": "simple", "revision": 1, "created_at": _NOW, "updated_at": _NOW,
+             "status": "active", "language": "simple", "visitor_access": False, "budget_monthly_usd": 5.0,
+             "chunking": {"mode": "structure", "target_tokens": 450, "max_tokens": 800, "overlap_pct": 0.0},
+             "embedding": {"model": "", "dims": None, "profile": None},
+             "rerank": {"enabled": None, "model": None, "top_n": 8, "candidates": 50},
+             "fusion": {"method": "rrf", "rrf_k": 60, "weights": {"lexical": 1.0, "vector": 1.0}, "overfetch": 50},
+             "retrieval": {"top_k": 8, "score_threshold": None, "parent_expansion": "off", "neighbor_window": 1,
+                           "max_context_tokens": 6000},
+             "enrichment": {"mode": "prefix", "contextual_model": None, "extract_metadata": False},
+             "revision": 1, "created_at": _NOW, "updated_at": _NOW,
              "web": {"max_depth": 3, "max_pages": 500, "rps_per_host": 1.0, "recrawl_days": 7, "sources": [
                  {"id": "kws_00000smoke1", "url": "https://docs.example.com/guide/", "kind": "site", "include": [],
                   "exclude": []}]},
-             "state": {"counts_by_status": {"indexed": 1, "failed": 1}, "active_snapshot": None,
-                       "building_snapshot": None, "month_spend_usd": 0.0, "paused_reason": None}}
+             "state": {"counts_by_status": {"indexed": 1, "failed": 1}, "active_snapshot": "ksnap_smoke",
+                       "building_snapshot": None, "month_spend_usd": 1.25, "paused_reason": None, "build": None}}
+#: The same base rebuilding its index after a change to how it is built (B2b).
+_SMOKE_KB_REBUILDING = {**_SMOKE_KB, "state": {
+    **_SMOKE_KB["state"], "building_snapshot": "ksnap_smoke2",
+    "build": {"snapshot_id": "ksnap_smoke2", "status": "building", "docs_total": 2, "docs_done": 1,
+              "docs_failed": 0, "started_at": _NOW, "paused_reason": None, "error": None}}}
 _SMOKE_KB_DOCS = [
     {"id": f"kdoc_smoke{i:02d}", "kb_id": _SMOKE_KB["id"], "path": f"smoke_kb/{s}.md", "source": "upload",
      "source_url": None, "status": s, "status_reason": r, "error": "The model is down." if s == "failed" else None,
@@ -5352,11 +5406,20 @@ _SMOKE_KB_REPORT = {
         "cost": {"est_usd": 0.0, "charged_microusd": None, "by_stage": {}},
         "parser": {"name": "text", "version": "1", "options_hash": ""}, "snapshot_id": None,
         "retry": {"allowed": True, "hint": "The embedding model failed. Retrying usually helps."}}}
+_SMOKE_KB_COSTS = [{"key": "embed", "est_usd": 1.2, "charged_microusd": None, "input_tokens": 60_000_000, "units": 0.0},
+                   {"key": "rerank", "est_usd": 0.05, "charged_microusd": 50_000, "input_tokens": 0, "units": 25.0}]
+_SMOKE_KB_PREVIEW = {"docs": 2, "pages": 0, "total_est_usd": 0.0012, "budget_remaining_usd": 3.75, "stages": [
+    {"stage": "embed", "model": "text-embedding-3-small", "units": 60000, "unit": "tokens", "est_usd": 0.0012,
+     "cost_source": "byok"}]}
 _SMOKE_KB_ROUTES = [
-    ("**/api/settings", _answer({"knowledge_enabled": True})),
+    ("**/api/settings", _answer({"knowledge_enabled": True, "embedding_model": "text-embedding-3-small"})),
+    ("**/api/models", _answer({"providers": {"openai": {"available": True, "models": [],
+                                                        "embedding_models": ["text-embedding-3-small"]}}})),
     ("**/api/knowledge/bases", _answer([_SMOKE_KB])),
     ("**/api/knowledge/bases/*/documents*", _answer(_SMOKE_KB_DOCS)),
     ("**/api/knowledge/bases/*/crawls", _answer(_SMOKE_KB_CRAWLS)),
+    ("**/api/knowledge/bases/*/costs*", _answer(_SMOKE_KB_COSTS)),
+    ("**/api/knowledge/bases/*/cost-preview", _answer(_SMOKE_KB_PREVIEW, methods=("POST",))),
     ("**/api/knowledge/documents/*", _answer(_SMOKE_KB_REPORT)),
 ]
 
@@ -5434,6 +5497,13 @@ _SMOKE_KB_RUN_ROUTES = [
 ]
 
 
+async def _kb_settings_rebuild(page):
+    """Open the base's settings and change how its passages are cut: the drawer prices the rebuild."""
+    await page.get_by_role("button", name="Settings", exact=True).click()
+    await page.get_by_role("combobox", name="Passages").click()
+    await page.get_by_role("option", name="One per page").click()
+
+
 async def _kb_test_search(page):
     await page.get_by_role("button", name=re.compile("^Test search")).click()
     await page.get_by_role("searchbox", name="Search Smoke contracts").fill("what does hosting cost?")
@@ -5453,6 +5523,12 @@ LIGHT_STATES = (
      lambda p: p.get_by_role("button", name="Add web pages").click(), "What to fetch"),
     ("a Retrieve step's trace", "/orchestrations?run=run_smoke_kb", [], _SMOKE_KB_RUN_ROUTES,
      lambda p: p.get_by_text(re.compile(r"^Retrieve · Find clauses")).first.click(), "ksnap_smoke"),
+    ("knowledge settings", "/knowledge", [], _SMOKE_KB_ROUTES, _kb_settings_rebuild, "Saving rebuilds the index"),
+    ("knowledge rebuilding", "/knowledge", [],
+     _SMOKE_KB_ROUTES + [("**/api/knowledge/bases", _answer([_SMOKE_KB_REBUILDING]))], None,
+     "Rebuilding the index: 1 of 2 documents"),
+    ("knowledge costs", "/knowledge", [], _SMOKE_KB_ROUTES,
+     lambda p: p.get_by_role("button", name=re.compile("^Costs")).click(), "Reranking"),
     ("knowledge report", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name="Report for failed.md").click(), "What happened"),
     ("chat tip 5", "/", [CHAT_STUB], [],

@@ -18,12 +18,27 @@ export type DocStatus =
     | 'queued' | 'parsing' | 'indexing' | 'indexed' | 'partial' | 'failed' | 'skipped' | 'paused' | 'blocked'
     | 'deleting';
 
+/** A rebuild of the index after a change to how it is built (`api_models.SnapshotBuild`, CCR-5): the
+ *  serving index answers until the new one holds every document. */
+export type SnapshotBuild = {
+    snapshot_id: string;
+    status: 'building' | 'failed';
+    docs_total: number;
+    docs_done: number;
+    docs_failed: number;
+    started_at: string | null;
+    /** Waiting for budget (`budget_cap`), a wallet (`wallet_402`) or a key (`embedder_unavailable`). */
+    paused_reason: string | null;
+    error: string | null;
+};
+
 export type KnowledgeBaseState = {
     counts_by_status: Partial<Record<DocStatus, number>>;
     active_snapshot: string | null;
     building_snapshot: string | null;
     month_spend_usd: number;
     paused_reason: string | null;
+    build?: SnapshotBuild | null;
 };
 
 export type WebSourceKind = 'page' | 'sitemap' | 'site';
@@ -41,6 +56,38 @@ export type WebSettings = {
     sources: WebSource[];
 };
 
+/** How a base's documents are cut into passages (`kb_settings.Chunking`). Changing it rebuilds the index. */
+export type ChunkingSettings = {
+    mode: 'structure' | 'fixed' | 'page' | 'none';
+    target_tokens: number;
+    max_tokens: number;
+    overlap_pct: number;
+};
+
+/** The embedding model; "" is the workspace's default (`kb_settings.Embedding`). Changing it rebuilds the index. */
+export type EmbeddingSettings = { model: string; dims: number | null; profile: string | null };
+
+/** `enabled` null is the deployment's default: on where a reranker is configured (`kb_settings.Rerank`). */
+export type RerankSettings = { enabled: boolean | null; model: string | null; top_n: number; candidates: number };
+
+export type FusionSettings = {
+    method: 'rrf';
+    rrf_k: number;
+    weights: { lexical?: number; vector?: number };
+    overfetch: number;
+};
+
+export type RetrievalSettings = {
+    top_k: number;
+    score_threshold: number | null;
+    parent_expansion: 'off' | 'section' | 'neighbors';
+    neighbor_window: number;
+    max_context_tokens: number;
+};
+
+/** "prefix" is free; "contextual" (Contextual Retrieval) is not built yet (D167 #1). Changing it rebuilds the index. */
+export type EnrichmentSettings = { mode: 'prefix' | 'contextual'; contextual_model: string | null; extract_metadata: boolean };
+
 export type KnowledgeBase = {
     id: string;
     name: string;
@@ -51,10 +98,20 @@ export type KnowledgeBase = {
     /** Widget and channel visitors may search it, when the tools are ticked there too (D153 #12). */
     visitor_access: boolean;
     web: WebSettings;
+    /** USD a month, every Knowledge cost counted; null: no cap. */
+    budget_monthly_usd: number | null;
+    chunking: ChunkingSettings;
+    embedding: EmbeddingSettings;
+    rerank: RerankSettings;
+    fusion: FusionSettings;
+    retrieval: RetrievalSettings;
+    enrichment: EnrichmentSettings;
     revision: number;
     created_at: string;
     updated_at: string;
     state: KnowledgeBaseState;
+    /** On an edit's answer: a change to how the index is built started a rebuild. */
+    reindex_started?: boolean;
 };
 
 export type KnowledgeDocument = {
@@ -280,9 +337,17 @@ export async function errorText(res: Response): Promise<string> {
     return `${res.status} ${res.statusText}`.trim();
 }
 
+/** A refused call, with its status: a 409 means someone changed the base since it was read. */
+export class KnowledgeApiError extends Error {
+    constructor(message: string, readonly status: number) {
+        super(message);
+        this.name = 'KnowledgeApiError';
+    }
+}
+
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
     const res = await fetch(url, init);
-    if (!res.ok) throw new Error(await errorText(res));
+    if (!res.ok) throw new KnowledgeApiError(await errorText(res), res.status);
     return res.json() as Promise<T>;
 }
 
@@ -336,6 +401,23 @@ export function getQueryTrace(queryId: string): Promise<SearchTrace> {
 export type SearchResult = { query_id: string; hits: SearchHit[]; degraded: string[]; trace: SearchTrace | null };
 
 /** A search's degraded codes (`trace.DEGRADED_CODES`), in words. */
+/** Rerank models by provider prefix (backend `core/knowledge/rerankers.py` ROUTES): suggestions; any model of a
+ *  listed provider works. `key` is the setting the provider needs, saved on Settings → Models. */
+export const RERANK_SUGGESTIONS: { model: string; provider: string; key: string | null }[] = [
+    { model: 'cohere.rerank-v3.5', provider: 'Cohere', key: 'cohere_key' },
+    { model: 'voyage.rerank-2.5', provider: 'Voyage AI', key: 'voyage_key' },
+    { model: 'voyage.rerank-2.5-lite', provider: 'Voyage AI', key: 'voyage_key' },
+    { model: 'jina.jina-reranker-v2-base-multilingual', provider: 'Jina AI', key: 'jina_key' },
+    { model: 'tei.reranker', provider: 'Your rerank server (TEI or Infinity)', key: 'knowledge_rerank_base_url' },
+];
+
+/** Why a rebuild waits, in words. */
+export const BUILD_PAUSED: Record<string, string> = {
+    budget_cap: 'Paused: the monthly budget is reached. Raise it to go on, or it resumes next month.',
+    wallet_402: 'Paused: the wallet is empty.',
+    embedder_unavailable: 'Paused: the embedding model needs a key or address that is not saved.',
+};
+
 export const DEGRADED: Record<string, string> = {
     vector_unavailable: 'Matched by words only: search by meaning needs an embedding model.',
     lexical_unavailable: 'Word matching is not available in this index.',
@@ -349,9 +431,32 @@ export const DEGRADED: Record<string, string> = {
     embed_failed: 'The question could not be embedded; words only.',
 };
 
+/** One stage of a cost preview (`api_models.StageEstimate`). */
+export type StageEstimate = { stage: string; model: string; units: number; unit: string; est_usd: number; cost_source: string };
+
+/** What re-indexing a base under a draft of its settings would cost (`api_models.CostPreview`). */
+export type CostPreview = {
+    docs: number;
+    pages: number;
+    stages: StageEstimate[];
+    total_est_usd: number;
+    budget_remaining_usd: number | null;
+};
+
+export type CostGroupBy = 'day' | 'stage' | 'document' | 'model';
+
+/** A base's spend for one day, stage, document ("search" for searches) or model (`api_models.CostGroup`). */
+export type CostGroup = { key: string; est_usd: number; charged_microusd: number | null; input_tokens: number; units: number };
+
+/** The settings a base can be created with, besides its name and folder. */
+export type BaseSettings = Pick<KnowledgeBase,
+    'language' | 'visitor_access' | 'budget_monthly_usd' | 'chunking' | 'embedding' | 'rerank' | 'fusion' | 'retrieval'
+    | 'enrichment'>;
+
 export const knowledgeApi = {
     bases: () => call<KnowledgeBase[]>('/api/knowledge/bases'),
-    createBase: (body: { name: string; folder: string; description?: string }) =>
+    base: (id: string) => call<KnowledgeBase>(`/api/knowledge/bases/${id}`),
+    createBase: (body: { name: string; folder: string; description?: string } & Partial<BaseSettings>) =>
         call<KnowledgeBase>('/api/knowledge/bases', json('POST', body)),
     deleteBase: (id: string) => call<{ status: string }>(`/api/knowledge/bases/${id}`, { method: 'DELETE' }),
     /** A patch from the revision the edit started at; a stale one is a 409. */
@@ -363,6 +468,14 @@ export const knowledgeApi = {
     }) => call<{ crawl_id: string; accepted: number; status: 'queued' }>(
         `/api/knowledge/bases/${kbId}/urls`, json('POST', body)),
     crawls: (kbId: string) => call<WebCrawlState[]>(`/api/knowledge/bases/${kbId}/crawls`),
+    /** What re-indexing the base under its settings with `overrides` laid over them would cost. Starts nothing. */
+    costPreview: (id: string, overrides: Partial<BaseSettings> | null, init?: { signal?: AbortSignal }) =>
+        call<CostPreview>(`/api/knowledge/bases/${id}/cost-preview`, { ...json('POST', { overrides }), ...init }),
+    /** What the base has cost this month (from `since`, an ISO date), grouped. */
+    costs: (id: string, groupBy: CostGroupBy = 'day', since?: string) => {
+        const q = new URLSearchParams({ group_by: groupBy, ...(since ? { since } : {}) });
+        return call<CostGroup[]>(`/api/knowledge/bases/${id}/costs?${q}`);
+    },
     documents: async (kbId: string) => {
         // Paged by id; a knowledge base's whole list, 1,000 at a time.
         const out: KnowledgeDocument[] = [];
