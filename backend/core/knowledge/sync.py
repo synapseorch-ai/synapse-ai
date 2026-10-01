@@ -209,6 +209,8 @@ class Drift:
     removed: int = 0
     stuck: int = 0
     supported: int = 0
+    #: Chunks indexed keyword-only that this pass embedded (B2a's backfill).
+    embedded: int = 0
 
     def any(self) -> bool:
         return any(asdict(self).values())
@@ -241,7 +243,8 @@ def _scanned_pages_unread(row) -> bool:
 
 async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
     """Bring a base's documents in step with its folder. `startup`: nothing from before is still
-    running, so any document left mid-work is queued again, whatever its age."""
+    running, so any document left mid-work is queued again, whatever its age. Last, chunks indexed
+    keyword-only are embedded once a model can embed them (`backfill.embed_missing`, D163)."""
     from core.knowledge import dispatch, documents
     from core.knowledge.parse import supports
     from core.knowledge.seams import get_ocr_provider
@@ -318,6 +321,9 @@ async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
                 await dispatch.enqueue(kb.id, "upsert", "reconcile", path=row.path, doc_id=row.id)
                 drift.stuck += 1
 
+    from core.knowledge.backfill import embed_missing  # never raises
+
+    drift.embedded = await embed_missing(kb)
     if drift.any():
         _log.info(f"knowledge reconcile {kb.id}: {drift.as_dict()}")
     return drift
