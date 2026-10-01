@@ -33,7 +33,7 @@ async def _on(monkeypatch):
     dispatch.reset()
     use_saved_settings(monkeypatch)
     await enable_knowledge()
-    monkeypatch.setattr(usage_tracker, "_pricing_snapshot", None)  # this test's store's rate card
+    monkeypatch.setattr(usage_tracker, "_pricing_snapshot", {})  # no operator rates: the profiles' prices
     yield
     seams.reset_all()
     dispatch.reset()
@@ -104,12 +104,11 @@ class TestThePreview:
                                                                "overlap_pct": 0.2}}), "embed")
         assert smaller.units > same.units * 1.15, "20% overlap, and a prefix on more chunks"
 
-    async def test_contextual_retrieval_is_priced_one_call_per_chunk(self, jobs):
+    async def test_contextual_retrieval_is_priced_one_call_per_chunk(self, jobs, monkeypatch):
         from core import usage_tracker
 
-        table = dict(await usage_tracker.get_pricing_table())
-        table["claude-haiku-4-5"] = {"provider": "anthropic", "input_per_1m": 1.0, "output_per_1m": 5.0}
-        await usage_tracker.save_pricing_table(table)
+        monkeypatch.setattr(usage_tracker, "_pricing_snapshot", {  # the process's rate card, never the store's
+            "claude-haiku-4-5": {"provider": "anthropic", "input_per_1m": 1.0, "output_per_1m": 5.0}})
         kb = await _indexed(jobs)
         n, content, _ = await _chunk_tokens(kb.id)
         preview = await costs.preview(kb, {"enrichment": {"mode": "contextual", "contextual_model": "claude-haiku-4-5"}})

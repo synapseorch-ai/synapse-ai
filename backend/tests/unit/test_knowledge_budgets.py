@@ -34,8 +34,11 @@ PRICED = "text-embedding-3-small"  # $0.02 per 1M tokens, by its profile
 
 @pytest.fixture(autouse=True)
 async def _on(monkeypatch):
+    from core import usage_tracker
+
     seams.reset_all()
     dispatch.reset()
+    monkeypatch.setattr(usage_tracker, "_pricing_snapshot", {})  # no operator rates: the profiles' prices
     use_saved_settings(monkeypatch)
     await enable_knowledge()
     yield
@@ -96,10 +99,9 @@ class TestEstimates:
     async def test_the_operators_rate_wins_over_the_profiles(self, monkeypatch):
         from core import usage_tracker
 
-        monkeypatch.setattr(usage_tracker, "_pricing_snapshot", None)  # the process's rate card, restored after
-        table = dict(await usage_tracker.get_pricing_table())
-        table[PRICED] = {"input_per_1m": 1.0, "output_per_1m": 0.0}
-        await usage_tracker.save_pricing_table(table)
+        # The process's rate card, as an operator's save leaves it; restored after (never the store's, which
+        # outlives the test on Postgres).
+        monkeypatch.setattr(usage_tracker, "_pricing_snapshot", {PRICED: {"input_per_1m": 1.0, "output_per_1m": 0.0}})
         assert (await budgets.embed_rate(PRICED))[0] == 1.0
 
 
