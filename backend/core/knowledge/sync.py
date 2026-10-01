@@ -251,23 +251,17 @@ async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
     from core.knowledge import dispatch, documents
     from core.knowledge.parse import supports
     from core.knowledge.seams import get_ocr_provider
-    from core.storage import get_blob_store
 
     drift = Drift()
     if kb.status != "active":
         return drift
-    files = {}
-    for stat in await asyncio.to_thread(get_blob_store().list_stats, _key(kb.folder)):
-        path = clean_path(stat.key.removeprefix("vault/"))
-        if not ignored(path) and kb_for_path(path, [kb]) is kb:
-            files[path] = stat
+    files = await _listing(kb)
     rows = {row.path: row for row in await documents.list_for(kb.id)}
     now = datetime.now(timezone.utc)
 
     for path, stat in files.items():
         row = rows.get(path)
-        if row is not None and (row.status == "deleting" or (
-                row.size_bytes == stat.size and _same_moment(row.source_modified_at, stat.modified_at))):
+        if row is not None and _listed_as_recorded(row, stat):
             continue
         found = await _fingerprint(path)
         if found is None:
@@ -296,7 +290,7 @@ async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
                     await dispatch.enqueue(kb.id, "upsert", "reconcile", path=path, doc_id=row.id)
                     drift.supported += 1
             continue
-        if row.source == "web" and row.sha256 is None:
+        if _never_had_a_file(row):
             continue  # a fetch's refusal or failure (S1): it never had a file, so none is missing
         if row.status != "deleting":
             gone = await documents.tombstone(row.id)
@@ -338,6 +332,47 @@ async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
     if drift.any():
         _log.info(f"knowledge reconcile {kb.id}: {drift.as_dict()}")
     return drift
+
+
+async def _listing(kb: KnowledgeBase) -> dict:
+    """The base's files as the blob store lists them, by Vault path: the base's own, ignored names left out."""
+    from core.storage import get_blob_store
+
+    files = {}
+    for stat in await asyncio.to_thread(get_blob_store().list_stats, _key(kb.folder)):
+        path = clean_path(stat.key.removeprefix("vault/"))
+        if not ignored(path) and kb_for_path(path, [kb]) is kb:
+            files[path] = stat
+    return files
+
+
+def _listed_as_recorded(row, stat) -> bool:
+    """A file reconcile need not look at: its document is being deleted, or it was recorded at this size and time."""
+    return row.status == "deleting" or (
+        row.size_bytes == stat.size and _same_moment(row.source_modified_at, stat.modified_at))
+
+
+def _never_had_a_file(row) -> bool:
+    return row.source == "web" and row.sha256 is None
+
+
+async def has_drift(kb: KnowledgeBase) -> bool:
+    """Whether `reconcile` would find a file to look at: one added, resized or re-dated since its document was
+    recorded, or a document whose file is gone. Read-only — no hash, no write — so a process that cannot parse
+    (cloud's fleet) can ask before waking one that can (T1a, D169). Work in flight, paused or left behind is the
+    caller's to judge: it is in the documents' statuses, not the listing."""
+    from core.knowledge import documents
+
+    if kb.status != "active":
+        return False
+    files = await _listing(kb)
+    rows = {row.path: row for row in await documents.list_for(kb.id)}
+    for path, stat in files.items():
+        row = rows.get(path)
+        if row is None or not _listed_as_recorded(row, stat):
+            return True
+    return any(path not in files and row.status != "deleting" and not _never_had_a_file(row)
+               for path, row in rows.items())
 
 
 async def reconcile_all(*, startup: bool = False) -> dict[str, Drift]:

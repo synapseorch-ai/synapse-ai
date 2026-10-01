@@ -230,6 +230,43 @@ class TestReconcile:
         monkeypatch.setattr(parse, "PARSED_EXTENSIONS", parse.PARSED_EXTENSIONS | {".doc"})
         assert (await sync.reconcile(kb)).supported == 1 and _ops(jobs) == [("upsert", "kb/a.doc")]
 
+    async def test_has_drift_asks_what_reconcile_would_look_at_without_hashing_or_writing(
+            self, jobs, store_kind, monkeypatch):
+        """Cloud's fleet cannot parse, so it asks before waking the process that can (T1a, D169): a file added,
+        resized or re-dated since its document was recorded, or a document whose file is gone. Read-only."""
+        kb = await _kb()
+        assert not await sync.has_drift(kb)
+        write_vault("kb/a.md", "same")
+        write_vault("kb/b.md", "other")
+        assert await sync.has_drift(kb), "a new file"
+        await sync.reconcile(kb)
+        jobs.jobs.clear()
+        hashed: list[str] = []
+        real = sync._fingerprint
+
+        async def spy(path):
+            hashed.append(path)
+            return await real(path)
+
+        monkeypatch.setattr(sync, "_fingerprint", spy)
+        before = [(r.path, r.status, r.updated_at) for r in await documents.list_for(kb.id)]
+        assert not await sync.has_drift(kb), "in step"
+        write_vault("kb/a.md", "changed, and longer")
+        assert await sync.has_drift(kb), "a resized file"
+        assert hashed == [] and jobs.jobs == []
+        assert [(r.path, r.status, r.updated_at) for r in await documents.list_for(kb.id)] == before
+        await sync.reconcile(kb)
+        get_blob_store().delete("vault/kb/b.md")
+        assert await sync.has_drift(kb), "a file gone"
+        await sync.reconcile(kb)
+        assert not await sync.has_drift(kb), "its tombstone is not drift"
+
+    async def test_a_disabled_base_never_drifts(self, jobs):
+        kb = await _kb()
+        _, off = await bases.update_base(kb.id, KnowledgeBaseUpdate(revision=1, status="disabled"))
+        write_vault("kb/a.md", "x")
+        assert not await sync.has_drift(off)
+
     async def test_a_disabled_base_is_left_alone(self, jobs):
         kb = await _kb()
         _, off = await bases.update_base(kb.id, KnowledgeBaseUpdate(revision=1, status="disabled"))
