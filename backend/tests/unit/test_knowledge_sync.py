@@ -261,6 +261,31 @@ class TestReconcile:
         await sync.reconcile(kb)
         assert not await sync.has_drift(kb), "its tombstone is not drift"
 
+    async def test_a_store_that_dates_a_file_two_ways_settles_after_one_pass(self, jobs):
+        """S3 dates an object twice: a HEAD (`stat`) to the whole second, a LIST (`list_stats`)
+        to the millisecond — measured on MinIO, 33.000 against 33.456 (T1a, D169). Reconcile
+        compares the listing, so it records the listing's time; recording the HEAD's made every
+        pass on S3 read and hash every file in the base again, and `has_drift` never settle."""
+        from core.storage.base import BlobStat
+
+        class TwoClocks(MemoryBlobStore):
+            def stat(self, key):
+                found = super().stat(key)
+                if found is None:
+                    return None
+                return BlobStat(key=found.key, size=found.size,
+                                modified_at=found.modified_at.replace(microsecond=0))
+
+        store = TwoClocks()
+        set_blob_store(store)
+        kb = await _kb()
+        write_vault("kb/a.md", "hello")
+        store.times = {k: v.replace(microsecond=456_000) for k, v in store.times.items()}
+        assert (await sync.reconcile(kb)).added == 1
+        jobs.jobs.clear()
+        assert not (await sync.reconcile(kb)).any(), "the second pass reads nothing"
+        assert not await sync.has_drift(kb)
+
     async def test_a_disabled_base_never_drifts(self, jobs):
         kb = await _kb()
         _, off = await bases.update_base(kb.id, KnowledgeBaseUpdate(revision=1, status="disabled"))

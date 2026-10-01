@@ -267,6 +267,11 @@ async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
         if found is None:
             continue
         sha, size, modified = found
+        # The listing's own time, which the next pass compares: an object store dates a HEAD to
+        # the whole second and a LIST to the millisecond, and recording the HEAD's made every pass
+        # on S3 read and hash every file again (T1a, D169). A file changed since it was listed
+        # lists a newer time next pass and is looked at then.
+        modified = stat.modified_at or modified
         if row is not None and row.sha256 == sha:
             await documents.set_columns(row.id, source_modified_at=modified, size_bytes=size)
             drift.touched += 1
