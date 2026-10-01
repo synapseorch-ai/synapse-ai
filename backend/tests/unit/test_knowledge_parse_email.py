@@ -129,3 +129,10 @@ class TestMsg:
 
         with pytest.raises(ParseRefused, match="not an Outlook message"):
             _parse(ole_file({("WordDocument",): b"x" * 10}), "mail/odd.msg")
+
+
+def test_a_short_or_truncated_msg_is_refused_not_crashed():
+    """olefile reads bytes under 1,536 as a file name; the reader must never hand it those."""
+    for data in (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 40, msg("Hi", body="x")[:700]):
+        with pytest.raises(ParseRefused, match="not an Outlook message"):
+            _parse(data, "mail/short.msg")

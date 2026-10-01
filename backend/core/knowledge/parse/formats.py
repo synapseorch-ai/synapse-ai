@@ -174,6 +174,21 @@ def sniff(data: bytes) -> str | None:
     return None
 
 
+def open_ole(data: bytes):
+    """An OLE container as an olefile reader, or None when `data` is not one. Always from memory:
+    olefile takes bytes shorter than 1,536 for a file name."""
+    import io
+
+    import olefile
+
+    if not data.startswith(_OLE) or len(data) < 512:
+        return None
+    try:
+        return olefile.OleFileIO(io.BytesIO(data))
+    except OSError:
+        return None
+
+
 def zip_format(data: bytes) -> str | None:
     """Which zip-based format the bytes hold, by their members; None if none we know."""
     import io

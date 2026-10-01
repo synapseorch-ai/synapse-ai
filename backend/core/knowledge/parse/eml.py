@@ -212,11 +212,11 @@ class _Msg:
 
 
 def read_msg(data: bytes, ctx: ReadContext) -> ParsedDocument:
-    import olefile
+    from core.knowledge.parse.formats import open_ole
 
-    if not olefile.isOleFile(data):
+    ole = open_ole(data)
+    if ole is None:
         raise ParseRefused("The file is not an Outlook message.")
-    ole = olefile.OleFileIO(data)
     try:
         root = _Msg(ole, [], top=True)
         if root.string(0x0037) is None and root.string(0x1000) is None and not root.storages("__attach_version1.0_"):
