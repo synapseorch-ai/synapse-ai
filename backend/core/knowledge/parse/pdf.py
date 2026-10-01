@@ -196,6 +196,51 @@ def _hidden_test(page: Any):
     return hidden
 
 
+@dataclass
+class CharLayer:
+    """A page's characters as a reader sees them: the boxes of the visible ones, the hidden runs
+    (text and box), and whether the page has images or much vector drawing. Docling's path uses it
+    too: it is the only view of colour and size, which Docling does not keep."""
+
+    visible: list[tuple[float, float, float, float]]
+    hidden: list[tuple[str, tuple[float, float, float, float]]]
+    images: bool
+    curves: int
+
+    def visible_in(self, box: tuple[float, float, float, float]) -> int:
+        x0, top, x1, bottom = box
+        return sum(1 for b in self.visible
+                   if x0 - 1 <= (b[0] + b[2]) / 2 <= x1 + 1 and top - 1 <= (b[1] + b[3]) / 2 <= bottom + 1)
+
+
+def char_layer(page: Any) -> CharLayer:
+    hidden_test = _hidden_test(page)
+    visible, runs = [], []
+    run_text, run_box, last_top = "", None, None
+    for ch in page.chars:
+        box = _box(ch)
+        if hidden_test(ch):
+            if run_box is not None and last_top is not None and abs(box[1] - last_top) <= 1:
+                run_text += ch.get("text", "")
+                run_box = (min(run_box[0], box[0]), min(run_box[1], box[1]), max(run_box[2], box[2]),
+                           max(run_box[3], box[3]))
+            else:
+                if run_box is not None:
+                    runs.append((run_text, run_box))
+                run_text, run_box = ch.get("text", ""), box
+            last_top = box[1]
+        else:
+            if run_box is not None:
+                runs.append((run_text, run_box))
+                run_text, run_box = "", None
+            if str(ch.get("text", "")).strip():
+                visible.append(box)
+    if run_box is not None:
+        runs.append((run_text, run_box))
+    return CharLayer(visible=visible, hidden=[r for r in runs if r[0].strip()], images=bool(page.images),
+                     curves=len(page.curves))
+
+
 def _read_page(page: Any, number: int) -> _Page:
     out = _Page(number=number, width=float(page.width), height=float(page.height))
     hidden = _hidden_test(page)

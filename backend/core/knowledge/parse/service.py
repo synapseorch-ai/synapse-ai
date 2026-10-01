@@ -100,6 +100,10 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
         if hit is not None:
             return ParseResult(parsed=hit, detail={"runner": "cache"})
     job = {**common, "max_pages": settings.max_file_pages, "ocr": provider is not None, "docling": docling}
+    if docling:
+        from core.knowledge.parse.docling_adapter import artifacts_path
+
+        job["docling_artifacts"] = str(artifacts_path())
     async with _beating(heartbeat), AsyncExitStack() as stack:
         async with _docling_slot() if docling else _no_slot():  # held while the child runs, not during OCR
             out = await stack.enter_async_context(run_parse(

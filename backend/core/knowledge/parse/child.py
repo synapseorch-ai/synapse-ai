@@ -30,6 +30,8 @@ def main(workdir: str) -> int:
 
     root = Path(workdir)
     job = json.loads((root / "job.json").read_text("utf-8"))
+    if job.get("docling_artifacts"):  # the parent found Docling's models; read them from the same place
+        os.environ["DOCLING_ARTIFACTS_PATH"] = job["docling_artifacts"]
     data = (root / "input.bin").read_bytes()
     pages_dir = root / "pages"
     last = [0.0]

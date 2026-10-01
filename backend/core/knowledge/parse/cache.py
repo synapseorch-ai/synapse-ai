@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.metadata
 import posixpath
 import time
 from typing import TYPE_CHECKING
@@ -40,10 +39,9 @@ _last_sweep: dict[str, float] = {}
 def signature(fmt: Format, *, path: str, docling: bool, ocr_engine: str | None) -> str:
     parts = [f"schema{PARSED_SCHEMA_VERSION}", fmt.name, fmt.version, f"ocr={ocr_engine or 'none'}"]
     if docling:
-        try:
-            parts.append(f"docling={importlib.metadata.version('docling')}")
-        except importlib.metadata.PackageNotFoundError:
-            parts.append("docling=?")
+        from core.knowledge.parse.docling_adapter import parser_info
+
+        parts.append(f"docling={parser_info().version}")
     if fmt.name == "csv":
         parts.append(posixpath.basename(path))  # the sheet card prints the file's name
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]

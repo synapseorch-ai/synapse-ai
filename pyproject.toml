@@ -109,6 +109,16 @@ include = [
 ]
 
 [project.optional-dependencies]
+# Knowledge's optional parsers: Docling for PDFs (layout + TableFormer), HEIC
+# photos for OCR. Same list as backend/requirements-knowledge.txt, whose header
+# says how to fetch Docling's models and which system packages it needs.
+knowledge = [
+    "docling-slim[format-pdf,models-local,convert-core,cli]>=2.131,<3",
+    "docling-core>=2.98,<3",
+    "torch>=2.2.2,<3",
+    "torchvision>=0.17,<1",
+    "pillow-heif>=0.18,<2",
+]
 # OpenTelemetry export to an operator's own collector — off until they turn it
 # on (backend/core/telemetry/config.py). Same list as
 # backend/requirements-telemetry.txt.

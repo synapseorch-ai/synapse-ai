@@ -1,0 +1,34 @@
+# Knowledge's optional parsers (A2, D162). Without them Knowledge still reads
+# every format with its own readers; with them, PDFs go through Docling's layout
+# model and TableFormer (tables, reading order, running headers), and HEIC
+# photos can be read by OCR.
+#
+#   pip install 'synapse-orch-ai[knowledge]'             (a packaged install)
+#   pip install -r backend/requirements-knowledge.txt    (from source)
+#
+# Then fetch Docling's models once; nothing is downloaded at run time:
+#
+#   docling-tools models download layout tableformer -o "$DOCLING_ARTIFACTS_PATH"
+#
+# (DOCLING_ARTIFACTS_PATH, else <state dir>/models/docling). Docling is used only
+# when it imports and those models are there; otherwise the basic PDF reader runs.
+#
+# System packages, Debian/Ubuntu: Docling's OpenCV needs `libxcb1 libgl1
+# libglib2.0-0`. LibreOffice (`libreoffice-writer-nogui libreoffice-calc-nogui
+# libreoffice-impress-nogui`) reads .doc/.xls/.ppt; it is found as `soffice` on
+# PATH or at SYNAPSE_SOFFICE.
+#
+# torch is the CPU build in requirements-knowledge.lock (PyTorch's CPU index):
+# Knowledge runs no model on a GPU. Installing the lock therefore needs that index:
+#   pip install -r requirements-knowledge.lock --extra-index-url https://download.pytorch.org/whl/cpu
+#   uv pip install -r requirements-knowledge.lock --torch-backend cpu
+# KB0 measured (16 §8): about 3.5 GB installed with the models, ~2.5 s a page on
+# 2 vCPUs, under 2 GB in 8-page batches.
+# pillow-heif bundles libheif and libde265 (LGPL-3.0), dynamically linked.
+#
+# Upper bounds are mandatory here too — see the header of requirements.txt.
+docling-slim[format-pdf,models-local,convert-core,cli]>=2.131,<3
+docling-core>=2.98,<3
+torch>=2.2.2,<3
+torchvision>=0.17,<1
+pillow-heif>=0.18,<2

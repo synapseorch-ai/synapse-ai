@@ -99,6 +99,17 @@ compile requirements-messaging.lock requirements-messaging.txt \
 compile requirements-telemetry.lock requirements-telemetry.txt \
     -- --constraint requirements.lock
 
+# Knowledge's parsers (Docling). Two differences from the other extras: torch
+# resolves from PyTorch's CPU index (Knowledge runs no model on a GPU, and PyPI's
+# Linux torch brings gigabytes of CUDA), and typer is left out of the base
+# constraint — docling-core caps it below the base lock's pick, and chromadb, its
+# only base user, accepts either.
+grep -v '^typer==' requirements.lock > .knowledge-constraints.txt
+trap 'rm -f .knowledge-constraints.txt' EXIT
+compile requirements-knowledge.lock requirements-knowledge.txt \
+    -- --constraint .knowledge-constraints.txt --torch-backend cpu
+rm -f .knowledge-constraints.txt
+
 compile requirements-worker.lock requirements.txt requirements-worker.txt \
     -- --constraint requirements.lock
 
