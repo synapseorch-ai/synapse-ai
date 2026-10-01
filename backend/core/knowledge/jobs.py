@@ -95,9 +95,13 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
 
     from core.knowledge import documents
     from core.knowledge.config import knowledge_settings
-    from core.knowledge.parse import UnsupportedFormat, parse_bytes
-    from core.knowledge.report import ReportBuilder
-    from core.knowledge.status import PagesReport
+    from core.knowledge.errors import BudgetExceeded, WalletExhausted
+    from core.knowledge.parse import UnsupportedFormat
+    from core.knowledge.parse.limits import ParseRefused
+    from core.knowledge.parse.service import parse_document
+    from core.knowledge.report import ReportBuilder, retry_hint
+    from core.knowledge.status import ErrorInfo, PagesReport
+    from core.knowledge.types import Attribution
     from core.storage import get_blob_store
 
     if row.status != "queued":
@@ -129,26 +133,42 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
         return await rest("skipped", "over_size_cap",
                           f"The file is {len(data) / MIB:.1f} MB; the limit is {settings.max_file_mb} MB.")
 
+    attribution = Attribution(kb_id=kb.id, doc_id=row.id, source="knowledge",
+                              session_id=Attribution.ingestion_session(kb.id))
     try:
         with builder.stage("parse") as stage:
-            parsed = await asyncio.to_thread(
-                parse_bytes, data, path=row.path, source=row.source, sha256=sha, mime=row.mime or "",
-                url=row.source_url, modified_at=row.source_modified_at.isoformat() if row.source_modified_at else None)
-            stage.detail.update(parser=parsed.parser.name, chars=parsed.stats.chars, blocks=len(parsed.blocks))
+            result = await parse_document(
+                data, path=row.path, source=row.source, sha256=sha, mime=row.mime or "", url=row.source_url,
+                modified_at=row.source_modified_at.isoformat() if row.source_modified_at else None,
+                kb=kb, attribution=attribution, heartbeat=lambda: documents.heartbeat(row.id))
+            parsed = result.parsed
+            stage.detail.update(parser=parsed.parser.name, chars=parsed.stats.chars, blocks=len(parsed.blocks),
+                                **result.detail)
             if parsed.stats.truncated:
                 stage.partial(truncated=parsed.stats.truncated_reason)
     except UnsupportedFormat as exc:
         builder.report.stages[-1] = builder.report.stages[-1].model_copy(update={"status": "skipped", "error": None,
                                                                                  "detail": {"reason": str(exc)}})
         return await rest("skipped", "unsupported_format", str(exc))
+    except ParseRefused as exc:  # encrypted, over the page cap, a zip bomb, a timeout or crash with nothing read
+        builder.report.stages[-1] = builder.report.stages[-1].model_copy(update={
+            "status": "skipped" if exc.status == "skipped" else "failed",
+            "error": ErrorInfo(code=exc.reason, message=str(exc)[:2000], retryable=retry_hint(exc.reason).allowed)})
+        return await rest(exc.status, exc.reason, str(exc))
+    except (BudgetExceeded, WalletExhausted) as exc:  # OCR found the budget spent or the wallet empty
+        status, reason = failure_status(exc)
+        return await rest(status, reason, str(exc))
     except Exception as exc:  # noqa: BLE001 — a parser that crashes fails its document, not the worker
         return await rest("failed", "parser_crashed", f"{type(exc).__name__}: {exc}")
+    if result.ocr_stage is not None:
+        builder.add(result.ocr_stage)
 
     removed = {w.code: w.count for w in parsed.warnings
                if w.code in ("zero_width_removed", "html_comments_removed", "hidden_text_removed")}
     builder.add(_ok_stage("sanitize", **removed))
     pages = PagesReport(total=len(parsed.pages), with_text=len(parsed.pages) - parsed.stats.pages_no_text_layer,
-                        no_text_layer=parsed.stats.pages_no_text_layer, ocr_applied=parsed.stats.pages_ocr)
+                        no_text_layer=parsed.stats.pages_no_text_layer, ocr_applied=parsed.stats.pages_ocr,
+                        ocr_failed=sum(w.count for w in parsed.warnings if w.code == "ocr_failed"))
     common = dict(pages=pages, warnings=parsed.warnings, parser=parsed.parser)
     if len(parsed.pages) > settings.max_file_pages:
         return await rest("skipped", "over_page_cap",
@@ -159,10 +179,10 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
     indexing = await documents.transition(row.id, "indexing", previous="parsing")
     if indexing is None:
         return None
-    return await _index(kb, indexing, parsed, sha, builder, common)
+    return await _index(kb, indexing, parsed, sha, builder, common, parse_usage=result.usage)
 
 
-async def _index(kb, row, parsed, sha, builder, common) -> IngestionReport | None:
+async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> IngestionReport | None:
     from datetime import datetime, timezone
 
     from core.config import load_settings
@@ -199,7 +219,7 @@ async def _index(kb, row, parsed, sha, builder, common) -> IngestionReport | Non
         reason = None
     for stage in outcome.stages:
         builder.add(stage)
-    usage = outcome.usage
+    usage = [*parse_usage, *outcome.usage]  # OCR's cost, then indexing's
     charged = [u.charged_microusd for u in usage if u.charged_microusd is not None]
     by_stage: dict[str, float] = {}
     for u in usage:

@@ -221,6 +221,23 @@ async def transition(doc_id: str, target: str, *, reason: str | None = None, err
     return row
 
 
+async def heartbeat(doc_id: str) -> bool:
+    """A document still parsing: move its `started_at` to now, so reconcile (`sync.STUCK_AFTER`)
+    does not take a long parse for a stuck one. Only while it is `parsing`: a tombstone keeps its age.
+    Whether the row was still parsing."""
+    from sqlalchemy import update
+
+    from core.store import session
+    from core.store.models import KnowledgeDocumentDB as D
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        result = await s.execute(
+            update(D).where(D.tenant_id == get_tenant(), D.id == doc_id, D.status == "parsing")
+            .values(started_at=_now()).execution_options(synchronize_session=False))
+    return bool(result.rowcount)
+
+
 async def tombstone(doc_id: str) -> KnowledgeDocumentDB | None:
     """Mark one document `deleting`."""
     return await transition(doc_id, "deleting")

@@ -31,11 +31,21 @@ _HINTS: dict[str, str] = {
     "embed_failed": "The embedding model failed. Retrying usually helps.",
     "embedding_invalid": "The embedding model answered with vectors that cannot be stored. Check the model.",
     "index_failed": "Writing the search index failed. Retrying usually helps.",
+    "parser_timeout": "Reading the file took too long. Retry when the machine is less busy, or split the file.",
+    "parser_memory": "Reading the file needed more memory than allowed. Split the file, or raise the parser's "
+                     "memory limit.",
+    "parser_crashed": "The file could not be read; it may be damaged. Re-save it in its program and upload again.",
+    "encrypted": "The file is protected by a password. Remove the password and upload it again.",
+    "truncated_pages": "Only some pages were read in time; the rest are not searchable. Retry to read them all.",
+    "truncated_size": "The file holds more text than one document may; the rest is not searchable.",
+    "no_text_layer": "Some pages are images with no text layer. They are read once OCR is configured.",
+    "ocr_failed": "Reading scanned pages failed. Retrying usually helps.",
+    "attachment_skipped": "Some attachments could not be read; the report lists which and why.",
 }
 
 #: Reasons a retry cannot change: the same file fails the same way.
 _NOT_RETRYABLE = frozenset({"over_size_cap", "over_page_cap", "empty_document", "excluded", "robots_disallowed",
-                            "egress_blocked", "embedding_invalid"})
+                            "egress_blocked", "embedding_invalid", "encrypted"})
 
 
 def _now() -> str:
