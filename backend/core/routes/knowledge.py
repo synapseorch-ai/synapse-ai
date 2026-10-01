@@ -146,6 +146,10 @@ async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> Knowle
     if budgets.cap_raised(before, after):  # what the budget paused is queued again (B2b)
         await budgets.resume(after, reason="budget_raised")
     started = await snapshots.after_save(before, after)
+    if not started:  # V1: a search setting changed with no rebuild; a switch re-runs on its own event
+        from core.knowledge import evals_auto
+
+        await evals_auto.settings_changed(before, after)
     out = (await _out([after]))[0]
     return out.model_copy(update={"reindex_started": started})
 
@@ -157,8 +161,11 @@ async def delete_knowledge_base(kb_id: str) -> DeleteAccepted:
     from core.knowledge import bases
     from core.knowledge.jobs import drop_base
 
+    from core.knowledge import evals
+
     await bases.require_base(kb_id)
     await drop_base(kb_id)
+    await evals.forget_base(kb_id)  # V1: its question sets and runs go with it
     return DeleteAccepted()
 
 

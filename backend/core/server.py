@@ -829,6 +829,13 @@ async def lifespan(app: FastAPI):
             app.state.knowledge_task = start_knowledge()
         except Exception as e:
             print(f"Warning: Knowledge's Vault hook not started: {e}")
+        # Knowledge's eval (V1, D168): re-run a base's question sets when its index switches, and mark the
+        # runs the last process left as interrupted.
+        try:
+            from core.knowledge.evals_auto import startup as start_knowledge_evals
+            await start_knowledge_evals()
+        except Exception as e:
+            print(f"Warning: Knowledge's eval re-runs not started: {e}")
 
         yield
         

@@ -249,6 +249,9 @@ async def _drive(kb_id: str, run_id: str) -> None:
         await run(kb_id, run_id)
     finally:
         _tasks.pop(run_id, None)
+        from core.knowledge import evals_auto
+
+        await evals_auto.after_run(kb_id, run_id)  # a re-run that waited for this one
 
 
 # ── the run ───────────────────────────────────────────────────────────────────
