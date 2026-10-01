@@ -2,8 +2,9 @@
 search and a search's trace (B1b, D161), web sources and their crawls (S1, D165).
 
 Paths are `/api` + the frozen route table (`core.knowledge.api_models.ROUTES`),
-with its bodies and status codes; a test holds the two equal. Costs, cost
-previews and replay are other lanes' routes and are not mounted here.
+with its bodies and status codes; a test holds the two equal. The cost preview
+and a base's costs are B2b's (D167). Replay is another lane's route and is not
+mounted here.
 
 Knowledge is off until its release: while `knowledge_enabled` is false every
 route here answers 404, as if it did not exist.
@@ -17,9 +18,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from core.knowledge.api_models import (
-    CrawlAccepted, DeleteAccepted, DocumentDetail, DocumentOut, IngestAccepted, KnowledgeBaseCreate,
-    KnowledgeBaseOut, KnowledgeBaseUpdate, RecordIngestRequest, SearchRequest, SearchResponse, UploadComplete,
-    UploadInit, UploadSession, UrlIngestRequest, WebCrawlState,
+    CostGroup, CostPreview, CostPreviewRequest, CrawlAccepted, DeleteAccepted, DocumentDetail, DocumentOut,
+    IngestAccepted, KnowledgeBaseCreate, KnowledgeBaseOut, KnowledgeBaseUpdate, RecordIngestRequest, SearchRequest,
+    SearchResponse, UploadComplete, UploadInit, UploadSession, UrlIngestRequest, WebCrawlState,
 )
 from core.knowledge.trace import Trace
 
@@ -97,8 +98,9 @@ async def list_knowledge_bases() -> list[KnowledgeBaseOut]:
 async def create_knowledge_base(body: KnowledgeBaseCreate) -> KnowledgeBaseOut:
     """A new knowledge base on a Vault folder; the folder is created if missing, and what is already
     in it is queued."""
-    from core.knowledge import bases, dispatch, sync
+    from core.knowledge import bases, costs, dispatch, sync
 
+    costs.check_settings(embedding=body.embedding, rerank=body.rerank)  # 422 before anything is saved
     kb = await bases.create_base(body)
     await sync.ensure_folder(kb)
     await dispatch.enqueue(kb.id, "reindex", "reconcile")
@@ -121,8 +123,9 @@ async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> Knowle
     enrichment, language) rebuilds it beside the serving one, which keeps answering until the new one is
     complete (`reindex_started`; B2b). Any edit retries a rebuild that failed, and a raised or cleared
     budget resumes what it paused."""
-    from core.knowledge import bases, budgets, dispatch, snapshots, sync
+    from core.knowledge import bases, budgets, costs, dispatch, snapshots, sync
 
+    costs.check_settings(embedding=body.embedding, rerank=body.rerank)  # only the blocks the edit sends
     before, after = await bases.update_base(kb_id, body)
     if after.folder != before.folder:
         await sync.rehome(before, after)
@@ -149,6 +152,38 @@ async def delete_knowledge_base(kb_id: str) -> DeleteAccepted:
     await bases.require_base(kb_id)
     await drop_base(kb_id)
     return DeleteAccepted()
+
+
+# ── what it costs (B2b, D167) ──────────────────────────────────────────────────
+
+@router.post("/api/knowledge/bases/{kb_id}/cost-preview", response_model=CostPreview)
+@_errors
+async def preview_costs(kb_id: str, body: CostPreviewRequest) -> CostPreview:
+    """What re-indexing the base's documents under its settings, with `overrides` laid over them (a draft
+    the settings screen has not saved), would cost: OCR, embedding, Contextual Retrieval, and the budget left.
+    Starts nothing."""
+    from core.knowledge import bases, costs
+
+    return await costs.preview(await bases.require_base(kb_id), body.overrides)
+
+
+@router.get("/api/knowledge/bases/{kb_id}/costs", response_model=list[CostGroup])
+@_errors
+async def list_costs(kb_id: str, group_by: str = Query("day"), since: str | None = None, until: str | None = None,
+                     limit: int = Query(1000, ge=1, le=1000)) -> list[CostGroup]:
+    """What the base has cost, grouped by `day` (UTC), `stage`, `document` ("search" for searches) or `model`,
+    from `since` (ISO date or time; the month's start) to `until` (now)."""
+    from datetime import datetime
+
+    from core.knowledge import bases, costs
+
+    await bases.require_base(kb_id)
+    try:
+        start = datetime.fromisoformat(since) if since else None
+        end = datetime.fromisoformat(until) if until else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="since and until are ISO dates or times.") from exc
+    return await costs.report(kb_id, group_by=group_by, since=start, until=end, limit=limit)
 
 
 # ── uploads ────────────────────────────────────────────────────────────────────

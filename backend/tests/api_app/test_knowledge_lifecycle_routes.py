@@ -94,3 +94,68 @@ class TestARebuild:
         await jobs.drain(run_ingest_job)
         after = (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["state"]
         assert after["active_snapshot"] == state["building_snapshot"] and after["build"] is None
+
+
+class TestWhatItCosts:
+    async def test_the_preview_prices_a_draft_and_starts_nothing(self, on, jobs):
+        kb = await _kb(on, budget_monthly_usd=2.0)
+        await on.post(f"/api/knowledge/bases/{kb['id']}/records",
+                      json={"records": [{"id": "r1", "text": "Refunds are paid within thirty days. " * 30}]})
+        await jobs.drain(run_ingest_job)
+        resp = await on.post(f"/api/knowledge/bases/{kb['id']}/cost-preview",
+                             json={"overrides": {"embedding": {"model": "text-embedding-3-small"}}})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["docs"] == 1 and body["budget_remaining_usd"] == 2.0
+        (embed,) = body["stages"]
+        assert embed["stage"] == "embed" and embed["unit"] == "tokens" and embed["units"] > 0
+        assert body["total_est_usd"] == embed["est_usd"] > 0
+        assert jobs.jobs == [] and (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["revision"] == 1
+
+    async def test_an_impossible_draft_is_a_422(self, on):
+        kb = await _kb(on)
+        width = await on.post(f"/api/knowledge/bases/{kb['id']}/cost-preview",
+                              json={"overrides": {"embedding": {"model": "text-embedding-3-small", "dims": 4096}}})
+        assert width.status_code == 422 and "text-embedding-3-small" in width.text
+        field = await on.post(f"/api/knowledge/bases/{kb['id']}/cost-preview", json={"overrides": {"folder": "x"}})
+        assert field.status_code == 422
+        stray = await on.post(f"/api/knowledge/bases/{kb['id']}/cost-preview", json={"draft": {}})
+        assert stray.status_code == 422, "the body refuses unknown fields"
+
+    async def test_the_settings_check_refuses_before_anything_is_saved(self, on):
+        bad = await on.post("/api/knowledge/bases", json={"name": "K", "folder": "k2",
+                                                          "rerank": {"model": "rerank-v3.5"}})
+        assert bad.status_code == 422 and "cohere." in bad.text
+        assert (await on.get("/api/knowledge/bases")).json() == []
+        kb = await _kb(on)
+        width = await on.patch(f"/api/knowledge/bases/{kb['id']}",
+                               json={"revision": 1, "embedding": {"model": "text-embedding-3-small", "dims": 4096}})
+        assert width.status_code == 422
+        assert (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["revision"] == 1
+
+    async def test_the_costs_are_grouped(self, on):
+        from datetime import datetime, timezone
+
+        from core.knowledge.ledger import CostRow, record_costs
+        from core.knowledge.types import Attribution, Usage
+
+        kb = await _kb(on)
+        await record_costs([
+            CostRow(Usage(stage="embed", cost_source="byok", model="m", provider="p", est_usd=0.02, input_tokens=50),
+                    Attribution(kb_id=kb["id"], doc_id="kdoc_1")),
+            CostRow(Usage(stage="rerank", cost_source="platform", model="r", provider="p", est_usd=0.002,
+                          charged_microusd=2000, units=1.0, unit="search_units"),
+                    Attribution(kb_id=kb["id"], query_id="kq_1")),
+        ])
+        today = datetime.now(timezone.utc).date().isoformat()
+        by_day = (await on.get(f"/api/knowledge/bases/{kb['id']}/costs")).json()
+        assert by_day == [{"key": today, "est_usd": 0.022, "charged_microusd": 2000, "input_tokens": 50, "units": 1.0}]
+        by_doc = (await on.get(f"/api/knowledge/bases/{kb['id']}/costs", params={"group_by": "document"})).json()
+        assert [g["key"] for g in by_doc] == ["kdoc_1", "search"]
+        assert (await on.get(f"/api/knowledge/bases/{kb['id']}/costs", params={"group_by": "week"})).status_code == 422
+        assert (await on.get(f"/api/knowledge/bases/{kb['id']}/costs", params={"since": "soon"})).status_code == 422
+        assert (await on.get("/api/knowledge/bases/kb_nope/costs")).status_code == 404
+
+    async def test_both_routes_are_absent_while_knowledge_is_off(self, client):
+        assert (await client.post("/api/knowledge/bases/kb_x/cost-preview", json={})).status_code == 404
+        assert (await client.get("/api/knowledge/bases/kb_x/costs")).status_code == 404

@@ -21,8 +21,6 @@ pytestmark = pytest.mark.usefixtures("knowledge_store")
 
 #: Internal routes other lanes mount; each lane removes its own as it lands.
 NOT_A1S = {
-    ("POST", "/knowledge/bases/{kb_id}/cost-preview"): "B2",
-    ("GET", "/knowledge/bases/{kb_id}/costs"): "B2",
     ("POST", "/knowledge/queries/{query_id}/replay"): "V1/P1",
 }
 
