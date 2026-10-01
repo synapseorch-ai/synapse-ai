@@ -452,6 +452,53 @@
   "title": "CrawlAccepted",
   "type": "object"
  },
+ "CrawlCounts": {
+  "description": "What one crawl of a web source did, page by page (CCR-4, S1).",
+  "properties": {
+   "blocked": {
+    "default": 0,
+    "title": "Blocked",
+    "type": "integer"
+   },
+   "deleted": {
+    "default": 0,
+    "title": "Deleted",
+    "type": "integer"
+   },
+   "failed": {
+    "default": 0,
+    "title": "Failed",
+    "type": "integer"
+   },
+   "fetched": {
+    "default": 0,
+    "title": "Fetched",
+    "type": "integer"
+   },
+   "not_followed": {
+    "default": 0,
+    "title": "Not Followed",
+    "type": "integer"
+   },
+   "skipped": {
+    "default": 0,
+    "title": "Skipped",
+    "type": "integer"
+   },
+   "unchanged": {
+    "default": 0,
+    "title": "Unchanged",
+    "type": "integer"
+   },
+   "written": {
+    "default": 0,
+    "title": "Written",
+    "type": "integer"
+   }
+  },
+  "title": "CrawlCounts",
+  "type": "object"
+ },
  "DeleteAccepted": {
   "properties": {
    "status": {
@@ -8373,6 +8420,168 @@
    }
   },
   "title": "Web",
+  "type": "object"
+ },
+ "WebCrawlState": {
+  "$defs": {
+   "CrawlCounts": {
+    "description": "What one crawl of a web source did, page by page (CCR-4, S1).",
+    "properties": {
+     "blocked": {
+      "default": 0,
+      "title": "Blocked",
+      "type": "integer"
+     },
+     "deleted": {
+      "default": 0,
+      "title": "Deleted",
+      "type": "integer"
+     },
+     "failed": {
+      "default": 0,
+      "title": "Failed",
+      "type": "integer"
+     },
+     "fetched": {
+      "default": 0,
+      "title": "Fetched",
+      "type": "integer"
+     },
+     "not_followed": {
+      "default": 0,
+      "title": "Not Followed",
+      "type": "integer"
+     },
+     "skipped": {
+      "default": 0,
+      "title": "Skipped",
+      "type": "integer"
+     },
+     "unchanged": {
+      "default": 0,
+      "title": "Unchanged",
+      "type": "integer"
+     },
+     "written": {
+      "default": 0,
+      "title": "Written",
+      "type": "integer"
+     }
+    },
+    "title": "CrawlCounts",
+    "type": "object"
+   }
+  },
+  "description": "A web source and its latest crawl (CCR-4, S1). `capped` means the crawl stopped at its page cap,\nso it deleted nothing; `interrupted` means the server stopped mid-crawl, and the next pass runs it\nagain.",
+  "properties": {
+   "counts": {
+    "$ref": "#/$defs/CrawlCounts"
+   },
+   "crawl_id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Crawl Id"
+   },
+   "finished_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Finished At"
+   },
+   "kind": {
+    "enum": [
+     "page",
+     "sitemap",
+     "site"
+    ],
+    "title": "Kind",
+    "type": "string"
+   },
+   "last_error": {
+    "anyOf": [
+     {
+      "maxLength": 2000,
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Last Error"
+   },
+   "next_due_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Next Due At"
+   },
+   "pages": {
+    "default": 0,
+    "title": "Pages",
+    "type": "integer"
+   },
+   "source_id": {
+    "title": "Source Id",
+    "type": "string"
+   },
+   "started_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Started At"
+   },
+   "status": {
+    "default": "idle",
+    "enum": [
+     "idle",
+     "queued",
+     "running",
+     "done",
+     "capped",
+     "failed",
+     "cancelled",
+     "interrupted"
+    ],
+    "title": "Status",
+    "type": "string"
+   },
+   "url": {
+    "title": "Url",
+    "type": "string"
+   }
+  },
+  "required": [
+   "source_id",
+   "url",
+   "kind"
+  ],
+  "title": "WebCrawlState",
   "type": "object"
  }
 }

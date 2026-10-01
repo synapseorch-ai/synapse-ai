@@ -96,6 +96,14 @@ class TestApiModels:
             M.UrlIngestRequest(urls=["file:///etc/passwd"])
         M.UrlIngestRequest(urls=["https://example.com/"])
 
+    def test_a_bases_crawls_are_internal_and_read_only(self):
+        """CCR-4 (S1): the screen's view of each web source; the public API decides later (P1)."""
+        routes = {(r.method, r.path): r for r in M.ROUTES}
+        crawls = routes[("GET", "/knowledge/bases/{kb_id}/crawls")]
+        assert crawls.surfaces == frozenset({"internal"}) and crawls.scope == "read" and crawls.status == 200
+        state = M.WebCrawlState(source_id="kws_000000000000", url="https://example.com/", kind="site")
+        assert state.status == "idle" and state.counts.written == 0
+
     def test_the_retrieve_step_validates_its_filter_too(self):
         with pytest.raises(ValidationError):
             M.RetrieveStepConfig(kb_ids=["kb_1"], query="{{q}}", filters={"$nope": 1})

@@ -257,6 +257,37 @@ class CrawlAccepted(_Response):
     status: Literal["queued"] = "queued"
 
 
+class CrawlCounts(_Response):
+    """What one crawl of a web source did, page by page (CCR-4, S1)."""
+
+    fetched: int = 0       # requests answered
+    unchanged: int = 0     # a 304, or the same content as before
+    written: int = 0       # new or changed pages written to the Vault
+    deleted: int = 0       # pages gone (404/410), marked noindex, or no longer reached
+    blocked: int = 0       # refused by robots.txt or the egress guard
+    failed: int = 0        # network errors and server errors
+    skipped: int = 0       # not a page or document a knowledge base reads, or over a size cap
+    not_followed: int = 0  # links out of scope, past the depth, or past the page cap
+
+
+class WebCrawlState(_Response):
+    """A web source and its latest crawl (CCR-4, S1). `capped` means the crawl stopped at its page cap,
+    so it deleted nothing; `interrupted` means the server stopped mid-crawl, and the next pass runs it
+    again."""
+
+    source_id: str
+    url: str
+    kind: Literal["page", "sitemap", "site"]
+    status: Literal["idle", "queued", "running", "done", "capped", "failed", "cancelled", "interrupted"] = "idle"
+    crawl_id: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    pages: int = 0  # the pages this source holds now
+    counts: CrawlCounts = Field(default_factory=CrawlCounts)
+    next_due_at: str | None = None
+    last_error: str | None = Field(default=None, max_length=2000)
+
+
 # ── records ────────────────────────────────────────────────────────────────────
 
 class RecordIn(_Request):
@@ -463,6 +494,8 @@ ROUTES: tuple[RouteSpec, ...] = (
               "starts", "run"),
     RouteSpec("POST", "/knowledge/bases/{kb_id}/urls", UrlIngestRequest, CrawlAccepted, 202, _BOTH, "starts",
               "run"),
+    RouteSpec("GET", "/knowledge/bases/{kb_id}/crawls", None, list[WebCrawlState], 200, _INTERNAL, None,
+              "read"),  # CCR-4 (S1): the screen's view of each web source; P1 decides v1
     RouteSpec("POST", "/knowledge/bases/{kb_id}/records", RecordIngestRequest, IngestAccepted, 202, _BOTH,
               "starts", "run"),
     RouteSpec("DELETE", "/knowledge/bases/{kb_id}/records/{record_id}", None, DeleteAccepted, 202, _BOTH,

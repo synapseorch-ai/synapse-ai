@@ -24,6 +24,7 @@ NOT_A1S = {
     ("POST", "/knowledge/bases/{kb_id}/cost-preview"): "B2",
     ("GET", "/knowledge/bases/{kb_id}/costs"): "B2",
     ("POST", "/knowledge/bases/{kb_id}/urls"): "S1",
+    ("GET", "/knowledge/bases/{kb_id}/crawls"): "S1",
     ("POST", "/knowledge/queries/{query_id}/replay"): "V1/P1",
 }
 

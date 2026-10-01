@@ -1151,6 +1151,18 @@
    "run"
   ],
   [
+   "GET",
+   "/knowledge/bases/{kb_id}/crawls",
+   null,
+   "list",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "read"
+  ],
+  [
    "POST",
    "/knowledge/bases/{kb_id}/records",
    "RecordIngestRequest",
