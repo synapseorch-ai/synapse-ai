@@ -137,6 +137,8 @@ SECRET_SETTINGS = (
     "openai_compatible_key", "local_compatible_key", "model_gateway_key",
     "huggingface_token", "bedrock_api_key", "aws_secret_access_key", "aws_session_token",
     "n8n_api_key", "metrics_token", "s3_secret_access_key",
+    # Knowledge's bring-your-own rerankers (B2a, D163; `core/knowledge/rerankers.py`).
+    "cohere_key", "voyage_key", "jina_key", "knowledge_rerank_key",
 )
 
 
@@ -254,6 +256,12 @@ _DEFAULTS = {
         "knowledge_rerank_model": "",
         "knowledge_ingest_concurrency": 2,
         "knowledge_snapshot_grace_days": 7,
+        "knowledge_rerank_base_url": "",
+        "knowledge_rerank_key": "",
+        # A `cohere.`, `voyage.` or `jina.` rerank model's own key (B2a, D163).
+        "cohere_key": "",
+        "voyage_key": "",
+        "jina_key": "",
 }
 
 

@@ -266,6 +266,11 @@ class Settings(BaseModel):
     knowledge_rerank_model: str = ""
     knowledge_ingest_concurrency: int = 2
     knowledge_snapshot_grace_days: int = 7
+    knowledge_rerank_base_url: str = ""  # a TEI or Infinity server, for a `tei.` rerank model
+    knowledge_rerank_key: str = ""  # its key, if it takes one
+    cohere_key: str = ""  # a `cohere.` rerank model's key
+    voyage_key: str = ""  # a `voyage.` rerank model's key
+    jina_key: str = ""  # a `jina.` rerank model's key
 
 
 class PersonalAddress(BaseModel):

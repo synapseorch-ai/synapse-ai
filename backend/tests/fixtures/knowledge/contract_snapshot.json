@@ -1347,6 +1347,8 @@
   "knowledge_max_file_mb": 100,
   "knowledge_max_file_pages": 2000,
   "knowledge_recrawl_days": 7,
+  "knowledge_rerank_base_url": "",
+  "knowledge_rerank_key": "",
   "knowledge_rerank_model": "",
   "knowledge_snapshot_grace_days": 7,
   "knowledge_trace_retention_days": 30

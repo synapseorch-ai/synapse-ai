@@ -33,6 +33,9 @@ DEFAULTS: dict[str, Any] = {
     "knowledge_rerank_model": "",
     "knowledge_ingest_concurrency": 2,
     "knowledge_snapshot_grace_days": 7,
+    # CCR-3 (B2a, D163): a bring-your-own TEI/Infinity reranker's address and key.
+    "knowledge_rerank_base_url": "",
+    "knowledge_rerank_key": "",
 }
 
 
@@ -51,6 +54,8 @@ class KnowledgeSettings:
     rerank_model: str
     ingest_concurrency: int
     snapshot_grace_days: int
+    rerank_base_url: str = ""  # CCR-3
+    rerank_key: str = ""  # CCR-3
 
 
 def _get(settings: Mapping[str, Any], key: str) -> Any:
@@ -82,6 +87,8 @@ def knowledge_settings(settings: Mapping[str, Any] | None = None) -> KnowledgeSe
         rerank_model=str(_get(settings, "knowledge_rerank_model") or ""),
         ingest_concurrency=int(_get(settings, "knowledge_ingest_concurrency")),
         snapshot_grace_days=int(_get(settings, "knowledge_snapshot_grace_days")),
+        rerank_base_url=str(_get(settings, "knowledge_rerank_base_url") or ""),
+        rerank_key=str(_get(settings, "knowledge_rerank_key") or ""),
     )
 
 
