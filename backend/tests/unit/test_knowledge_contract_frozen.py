@@ -58,6 +58,8 @@ LANE_MODULES = {
     "chunker.py", "pipeline.py", "index_sql.py", "search.py", "trace_store.py", "snapshots.py",
     # B1b — agent tools and citations
     "tools.py", "citations.py",
+    # B2a — embeddings, rerank, the re-embed backfill
+    "profiles.py", "embedders.py", "rerankers.py", "backfill.py",
 }
 FROZEN_HEADER = "# FROZEN CONTRACT (KB0, D153)"
 

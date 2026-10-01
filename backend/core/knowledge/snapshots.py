@@ -111,12 +111,13 @@ async def snapshot_info(snapshot_ids: Sequence[str]) -> dict[str, dict[str, Any]
             for r in rows}
 
 
-async def record_embedding(snapshot_id: str, model: str, dims: int) -> None:
-    """Note the model that embedded a snapshot's first vectors. Set once; later calls change nothing."""
+async def record_embedding(snapshot_id: str, model: str, dims: int, *, profile_version: str | None = None) -> None:
+    """Note the model that embedded a snapshot's first vectors, and its profile's version (B2a,
+    `core.knowledge.profiles`). Set once; later calls change nothing."""
     from core.store import session
 
     async with session() as s:
         await s.execute(update(KnowledgeSnapshotDB).where(
             KnowledgeSnapshotDB.tenant_id == _tenant(), KnowledgeSnapshotDB.id == snapshot_id,
             KnowledgeSnapshotDB.embed_model.is_(None),
-        ).values(embed_model=model, embed_dims=dims))
+        ).values(embed_model=model, embed_dims=dims, embed_profile_version=profile_version))

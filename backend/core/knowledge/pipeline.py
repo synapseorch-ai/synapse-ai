@@ -23,9 +23,12 @@ and section, versioned `snapshots.ENRICHMENT_VERSION`. A KB that opted into
 Contextual Retrieval still gets the prefix and the stage says so, until that
 mode is built.
 
-**Embedding** happens when an embedder is configured. Until B2 ships the default,
-`get_knowledge_embedder()` raises `EmbedderUnavailable`: the stage is skipped with
-that reason, and the chunks are searchable by keyword only.
+**Embedding** uses the snapshot's own model once it has recorded one, else the
+knowledge base's, else the deployment's (`embedders.snapshot_spec`, D163 #3), so
+one snapshot never holds two models' vectors. With no model configured, or a key
+or server address the model needs not saved (`EmbedderUnavailable`), the stage is
+skipped with that reason and the chunks are searchable by keyword only, until
+`backfill.embed_missing` embeds them on a later reconcile.
 """
 from __future__ import annotations
 
@@ -41,6 +44,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.knowledge.chunker import chunk_document, chunker_version
 from core.knowledge.chunks import Chunk
+from core.knowledge.embedders import profile_version, snapshot_spec
 from core.knowledge.errors import EmbedderUnavailable, KnowledgeIndexError
 from core.knowledge.filters import BUILTINS
 from core.knowledge.ledger import CostRow, check_budget, record_costs
@@ -51,7 +55,7 @@ from core.knowledge.status import REASONS, StageReport
 from core.knowledge.telemetry import (
     KNOWLEDGE_DOC_ID, KNOWLEDGE_KB_ID, KNOWLEDGE_SNAPSHOT_ID, SPAN_INDEX,
 )
-from core.knowledge.types import EmbeddingSpec, IndexEntry, Scope, Usage
+from core.knowledge.types import IndexEntry, Scope, Usage
 from core.log import get_logger
 from core.store.models import KnowledgeChunkDB
 from core.telemetry import spans as _spans
@@ -232,31 +236,38 @@ async def index_document(ctx: IndexContext) -> IndexOutcome:
     stage = _Stage("embed")
     embedded: dict[str, list[float]] = {}
     usage: list[Usage] = []
+    settings = dict(ctx.settings)
     try:
         embedder = get_knowledge_embedder()
+        spec = await snapshot_spec(kb, ctx.snapshot_id, settings)
     except EmbedderUnavailable as exc:
         stages.append(stage.report("skipped", reason=exc.code))
     else:
-        from core.knowledge.config import knowledge_settings
-
-        settings = dict(ctx.settings)
-        spec = EmbeddingSpec(model=kb.embedding.model or knowledge_settings(settings).embedding_model,
-                             dims=kb.embedding.dims, profile=kb.embedding.profile)
         await check_budget(kb, 0.0)
         attribution = replace(ctx.attribution, snapshot_id=ctx.snapshot_id)
         model, dims, batches = spec.model, spec.dims, 0
         step = max(1, embedder.max_batch)
-        for i in range(0, len(chunks), step):
-            batch = chunks[i:i + step]
-            answer = await embedder.embed([c.search_text() for c in batch], kind="document", spec=spec,
-                                          settings=settings, attribution=attribution)
-            for c, vector in zip(batch, answer.vectors):
-                embedded[c.id] = vector
-            usage.append(answer.usage)
-            model, dims, batches = answer.model, answer.dims, batches + 1
+        unavailable: EmbedderUnavailable | None = None
+        try:
+            for i in range(0, len(chunks), step):
+                batch = chunks[i:i + step]
+                answer = await embedder.embed([c.search_text() for c in batch], kind="document", spec=spec,
+                                              settings=settings, attribution=attribution)
+                for c, vector in zip(batch, answer.vectors):
+                    embedded[c.id] = vector
+                usage.append(answer.usage)
+                model, dims, batches = answer.model, answer.dims, batches + 1
+        except EmbedderUnavailable as exc:  # a key or a server address the model needs is not saved
+            unavailable = exc
         if embedded and model and dims:
-            await record_embedding(ctx.snapshot_id, model, dims)
-        stages.append(stage.report(model=model, dims=dims, batches=batches, vectors=len(embedded)))
+            await record_embedding(ctx.snapshot_id, model, dims, profile_version=profile_version(model))
+        if unavailable is not None and not embedded:
+            stages.append(stage.report("skipped", reason=unavailable.code))
+        elif unavailable is not None:
+            stages.append(stage.report(model=model, dims=dims, batches=batches, vectors=len(embedded),
+                                       reason=unavailable.code))
+        else:
+            stages.append(stage.report(model=model, dims=dims, batches=batches, vectors=len(embedded)))
 
     stage = _Stage("index")
     index = get_knowledge_index()

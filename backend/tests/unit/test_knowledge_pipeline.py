@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -255,3 +256,49 @@ async def test_the_embedding_model_is_recorded_once():
     await record_embedding(snap, "model-b", 16)
     info = (await snapshot_info([snap]))[snap]
     assert (info["embed_model"], info["embed_dims"]) == ("model-a", 8)
+
+
+# ── B2a (D163): the default embedder, and the snapshot's model wins ────────────
+
+async def test_a_missing_key_skips_the_embed_stage_rather_than_failing_the_document(monkeypatch):
+    """The default embedder with a model configured but no key: keyword-only now, the backfill later."""
+    import core.llm_providers as llm
+
+    async def no_key(*a, **k):
+        raise llm.EmbeddingFailed("OpenAI embeddings need an OpenAI key.", provider="openai", missing="openai_key")
+
+    monkeypatch.setattr(llm, "embed_batch_ex", no_key)
+    await _document()
+    ctx = await _ctx(_parsed("pdf_contract"))
+    ctx = dataclasses.replace(ctx, settings={"knowledge_embedding_model": "text-embedding-3-small"})
+    outcome = await index_document(ctx)
+
+    assert outcome.status == "partial" and [(s.stage, s.status) for s in outcome.stages][2] == ("embed", "skipped")
+    assert outcome.stages[2].detail == {"reason": "embedder_unavailable"}
+    assert all(r.embedding is None for r in await _rows()) and len(await _rows()) == 3
+
+
+async def test_a_snapshot_keeps_embedding_with_the_model_it_recorded():
+    embedder = HashingEmbedder(dims=16)
+    seams.set_knowledge_embedder(embedder)
+    snap = await serving_snapshot(KB)
+    await record_embedding(snap, "model-a", 16, profile_version="model-a@1")
+    await _document()
+    ctx = await _ctx(_parsed("pdf_contract"))
+    ctx = dataclasses.replace(ctx, settings={"knowledge_embedding_model": "model-b"})
+    await index_document(ctx)
+
+    assert {c["spec"].model for c in embedder.calls} == {"model-a"}, "the deployment's new default waits for B2b"
+    async with session() as s:
+        row = (await s.execute(select(KnowledgeSnapshotDB).where(KnowledgeSnapshotDB.id == snap))).scalar_one()
+    assert (row.embed_model, row.embed_profile_version) == ("model-a", "model-a@1")
+
+
+async def test_the_profile_version_is_recorded_with_the_model():
+    seams.set_knowledge_embedder(HashingEmbedder(dims=16, model="text-embedding-3-small"))
+    await _document()
+    await index_document(await _ctx(_parsed("pdf_contract")))
+    snap = (await active_snapshots([KB.id]))[KB.id]
+    async with session() as s:
+        row = (await s.execute(select(KnowledgeSnapshotDB).where(KnowledgeSnapshotDB.id == snap))).scalar_one()
+    assert (row.embed_model, row.embed_profile_version) == ("text-embedding-3-small", "text-embedding-3-small@1")

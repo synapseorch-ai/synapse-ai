@@ -43,9 +43,16 @@ class TestDefaults:
         with pytest.raises(KnowledgeUnavailable):
             seams.get_knowledge_index()
 
-    def test_an_unbuilt_embedder_is_an_honest_refusal(self):
+    def test_an_unbuilt_embedder_is_an_honest_refusal(self, monkeypatch):
+        monkeypatch.setattr(seams, "_load", lambda dotted: None)
         with pytest.raises(EmbedderUnavailable):
             seams.get_knowledge_embedder()
+
+    def test_the_default_embedder_is_the_provider_one_behind_the_guard(self):
+        from core.knowledge.embedders import ProviderEmbedder
+        embedder = seams.get_knowledge_embedder()
+        assert isinstance(embedder, seams._Validated) and isinstance(embedder.inner, ProviderEmbedder)
+        assert isinstance(embedder.inner, seams.KnowledgeEmbedder)
 
     def test_no_reranker_and_no_ocr_by_default(self):
         assert seams.get_reranker({}) is None
