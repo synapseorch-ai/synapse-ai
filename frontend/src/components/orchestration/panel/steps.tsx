@@ -907,7 +907,7 @@ function KnowledgeBasesPicker({ value, onChange, knowledgeBases }: {
     onChange: (ids: string[]) => void;
     knowledgeBases?: KnowledgeBaseOption[];
 }) {
-    if (!knowledgeBases) return <KeyChips value={value} onChange={onChange} suggestions={[]} />;
+    if (!knowledgeBases) return <KeyChips value={value} onChange={onChange} suggestions={[]} inputLabel="Add a knowledge base id" />;
     const remaining = knowledgeBases.filter((kb) => isActive(kb) && !value.includes(kb.id));
     return (
         <div className="space-y-1.5">
@@ -1152,6 +1152,7 @@ function IngestSection({ step, update, stateKeys, knowledgeBases }: StepSectionP
                     value={settings.metadata_fields || []}
                     onChange={(metadata_fields) => set({ metadata_fields })}
                     suggestions={[]}
+                    inputLabel="Add a metadata field"
                 />
             </Field>
         </div>

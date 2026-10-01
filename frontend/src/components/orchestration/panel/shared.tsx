@@ -125,10 +125,13 @@ export function KeyChips({
     value,
     onChange,
     suggestions,
+    inputLabel = 'Add a custom input key',
 }: {
     value: string[];
     onChange: (keys: string[]) => void;
     suggestions: string[];
+    /** What the free-text box adds, for a screen reader: input keys unless the caller says otherwise. */
+    inputLabel?: string;
 }) {
     const [custom, setCustom] = useState('');
     const remaining = suggestions.filter((k) => !value.includes(k));
@@ -191,7 +194,7 @@ export function KeyChips({
                     }
                 }}
                 placeholder="Add a custom key…"
-                aria-label="Add a custom input key"
+                aria-label={inputLabel}
             />
         </div>
     );

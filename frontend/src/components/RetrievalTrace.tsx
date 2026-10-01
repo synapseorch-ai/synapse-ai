@@ -22,6 +22,11 @@ function usd(n: number): string {
     return n > 0 && n < 0.0001 ? `$${n.toFixed(6)}` : `$${n.toFixed(4)}`;
 }
 
+/** A score as read: a keyword score can be ~1e-6 on a small base, which three decimals would show as 0. */
+function score(n: number): string {
+    return n !== 0 && Math.abs(n) < 0.001 ? n.toExponential(2) : n.toFixed(3);
+}
+
 function pages(start?: number | null, end?: number | null): string {
     if (!start) return '';
     return end && end !== start ? ` pp. ${start}–${end}` : ` p. ${start}`;
@@ -97,7 +102,7 @@ export function RetrievalTrace({ trace, withDegraded = false, withHits = false, 
             {withHits && (trace.hits || []).map((hit) => (
                 <Row key={`hit-${hit.label}`} label={hit.label} dense={dense}>
                     <span className="font-mono" translate="no">{hit.path}{pages(hit.page_start, hit.page_end)}</span>
-                    {` · ${hit.score.toFixed(3)}`}
+                    {` · ${score(hit.score)}`}
                 </Row>
             ))}
         </dl>
