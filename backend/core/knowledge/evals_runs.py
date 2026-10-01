@@ -173,6 +173,10 @@ async def estimate(kb: KnowledgeBase, body: EvalRunRequest, settings: Mapping[st
         lines.append(EvalCostLine(part="search", model=model or "", calls=len(questions) * len(snaps),
                                   est_usd=None if rate is None else rate * len(questions) * len(snaps),
                                   counts_toward_budget=True))
+    if body.judge is not None:
+        from core.knowledge import evals_judge
+
+        lines.extend(await evals_judge.estimate(kb, questions, body.judge))
     unpriced = sorted({line.model for line in lines if line.est_usd is None})
     remaining = None
     if kb.budget_monthly_usd is not None:
@@ -210,7 +214,9 @@ async def start(kb: KnowledgeBase, body: EvalRunRequest, *, started_by: str = "p
     if not cases:
         raise ValueError("This question set has no questions yet.")
     if body.judge is not None:
-        raise ValueError("Grading answers is not built yet.")
+        from core.knowledge import evals_judge
+
+        evals_judge.check_families(body.judge)
     snaps = await snapshots_for(kb, body.snapshot_ids)
     est = await estimate(kb, body, settings)
     on, model = rerank_plan(kb, body.rerank, settings)
@@ -317,6 +323,10 @@ async def run(kb_id: str, run_id: str) -> None:
         cases = await evals.cases_of(kb_id, row.set_id)
         status, error, results = await _search_all(kb, run_id, dict(row.config or {}), cases)
         summary = await score(kb, dict(row.config or {}), results)
+        if status == "completed" and (row.config or {}).get("judge"):
+            from core.knowledge import evals_judge
+
+            status, error = await evals_judge.grade(kb, run_id, dict(row.config or {}), results, summary)
         await _update(run_id, status=status, error=error, results=results, summary=summary,
                       done_count=len(results["cases"]), cost_usd=await spent(run_id), finished_at=_now())
     except Exception as exc:  # noqa: BLE001 — a run's failure is its own, never the server's
@@ -369,8 +379,9 @@ async def _search_all(kb: KnowledgeBase, run_id: str, config: dict, cases: list[
                 "rel": {str(where[cid]): held_ev for cid, held_ev in rel.items()},
                 "latency_ms": int((time.monotonic() - t0) * 1000),
                 "top": [{"path": h.citation.path, "snippet": h.citation.snippet, "relevant": h.chunk_id in rel}
-                        for h in response.hits[:TOP_SHOWN]],
-                "hits": [h.model_dump(mode="json") for h in response.hits] if config.get("judge") else None}
+                        for h in response.hits[:TOP_SHOWN]]}
+            if config.get("judge") and snap == snaps[0]:  # what the answer is drawn from; dropped once graded
+                entry["by_snapshot"][snap]["hits"] = [h.model_dump(mode="json") for h in response.hits]
             if "budget_paused" in response.degraded:
                 status = "failed"
                 error = (f"The knowledge base reached its monthly budget at question {n + 1} of {len(cases)}; "

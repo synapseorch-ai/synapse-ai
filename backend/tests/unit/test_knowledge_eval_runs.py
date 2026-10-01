@@ -12,7 +12,7 @@ from sqlalchemy import func, select, update
 
 from _fakes.knowledge_db import knowledge_store  # noqa: F401 — fixture
 from _fakes.knowledge_env import enable_knowledge, use_saved_settings, write_vault
-from _fakes.knowledge_eval import POLICIES, policies, write
+from _fakes.knowledge_eval import POLICIES, QUESTIONS, finished, policies, question_set, write
 from core.knowledge import bases, dispatch, documents, evals, evals_generate as G, evals_runs as RUNS, search
 from core.knowledge import seams, snapshots
 from core.knowledge.api_models import EvalCompareRequest, EvalRunRequest, EvalSetCreate, KnowledgeBaseUpdate
@@ -25,14 +25,6 @@ from core.store.models import KnowledgeChunkDB, KnowledgeEvalRunDB, KnowledgeQue
 
 pytestmark = pytest.mark.usefixtures("knowledge_store")
 
-QUESTIONS = [  # (path, question, the words that answer it)
-    ("policies/refunds.md", "Who issues refunds and how long do they take?",
-     "Refunds are issued by the billing team in Lisbon and arrive in five working days."),
-    ("policies/support.md", "How fast are urgent Beacon tickets answered?",
-     "urgent tickets marked with the Beacon flag go to the duty officer within two hours"),
-    ("policies/security.md", "How often are encryption keys rotated?",
-     "Stored data is encrypted at rest with keys rotated quarterly"),
-]
 
 
 @pytest.fixture(autouse=True)
@@ -55,31 +47,6 @@ def jobs():
     recorder = RecordingDispatcher()
     seams.set_ingest_dispatcher(recorder)
     return recorder
-
-
-async def finished() -> None:
-    await asyncio.gather(*list(RUNS.tasks().values()), return_exceptions=True)
-
-
-async def evidence(kb, path: str, quote: str) -> dict:
-    serving = await snapshots.serving_snapshot(kb)
-    async with session() as s:
-        rows = (await s.execute(select(KnowledgeChunkDB).where(
-            KnowledgeChunkDB.kb_id == kb.id, KnowledgeChunkDB.snapshot_id == serving,
-            KnowledgeChunkDB.path == path))).scalars().all()
-    for row in rows:
-        drawn = G.Drawn(chunk_id=row.chunk_id, doc_id=row.doc_id, path=row.path, doc_sha256=row.doc_sha256,
-                        char_start=row.char_start, char_end=row.char_end, content=row.content, kind=row.kind)
-        found = G.evidence(drawn, quote)
-        if found:
-            return found
-    raise AssertionError(f"{quote!r} is not in {path}")
-
-
-async def question_set(kb, questions=QUESTIONS):
-    cases = [{"kind": "direct", "question": q, "evidence": [await evidence(kb, path, quote)]}
-             for path, q, quote in questions]
-    return await evals.create_set(kb.id, EvalSetCreate(name="Policies", cases=cases))
 
 
 async def run_set(kb, made, **kw):

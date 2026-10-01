@@ -86,3 +86,57 @@ class Writer:
             return json.dumps({"question": question, "answer": "Both say so.",
                                "quotes": [self.quote(p) for p in found]})
         return json.dumps({"question": question, "answer": "It says so.", "quote": self.quote(found[0])})
+
+
+# ── a question set over POLICIES, and runs ───────────────────────────────────
+
+QUESTIONS = [  # (path, question, the words that answer it)
+    ("policies/refunds.md", "Who issues refunds and how long do they take?",
+     "Refunds are issued by the billing team in Lisbon and arrive in five working days."),
+    ("policies/support.md", "How fast are urgent Beacon tickets answered?",
+     "urgent tickets marked with the Beacon flag go to the duty officer within two hours"),
+    ("policies/security.md", "How often are encryption keys rotated?",
+     "Stored data is encrypted at rest with keys rotated quarterly"),
+]
+
+
+async def finished() -> None:
+    """Every run this process started, done."""
+    import asyncio
+
+    from core.knowledge import evals_runs as RUNS
+
+    await asyncio.gather(*list(RUNS.tasks().values()), return_exceptions=True)
+
+
+async def evidence(kb, path: str, quote: str) -> dict:
+    """The evidence `quote` of `path` is, in `kb`'s serving snapshot."""
+    from sqlalchemy import select
+
+    from core.knowledge import evals_generate as G
+    from core.knowledge import snapshots
+    from core.store import session
+    from core.store.models import KnowledgeChunkDB
+
+    serving = await snapshots.serving_snapshot(kb)
+    async with session() as s:
+        rows = (await s.execute(select(KnowledgeChunkDB).where(
+            KnowledgeChunkDB.kb_id == kb.id, KnowledgeChunkDB.snapshot_id == serving,
+            KnowledgeChunkDB.path == path))).scalars().all()
+    for row in rows:
+        drawn = G.Drawn(chunk_id=row.chunk_id, doc_id=row.doc_id, path=row.path, doc_sha256=row.doc_sha256,
+                        char_start=row.char_start, char_end=row.char_end, content=row.content, kind=row.kind)
+        found = G.evidence(drawn, quote)
+        if found:
+            return found
+    raise AssertionError(f"{quote!r} is not in {path}")
+
+
+async def question_set(kb, questions=QUESTIONS):
+    """A set asking QUESTIONS, each answered by its quote."""
+    from core.knowledge import evals
+    from core.knowledge.api_models import EvalSetCreate
+
+    cases = [{"kind": "direct", "question": q, "evidence": [await evidence(kb, path, quote)]}
+             for path, q, quote in questions]
+    return await evals.create_set(kb.id, EvalSetCreate(name="Policies", cases=cases))
