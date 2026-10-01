@@ -1,10 +1,9 @@
 """Knowledge's internal API: knowledge bases, uploads, records and documents (A1, D157),
-search and a search's trace (B1b, D161).
+search and a search's trace (B1b, D161), web sources and their crawls (S1, D165).
 
 Paths are `/api` + the frozen route table (`core.knowledge.api_models.ROUTES`),
 with its bodies and status codes; a test holds the two equal. Costs, cost
-previews, replay and web sources are other lanes' routes and are not mounted
-here.
+previews and replay are other lanes' routes and are not mounted here.
 
 Knowledge is off until its release: while `knowledge_enabled` is false every
 route here answers 404, as if it did not exist.
@@ -18,9 +17,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from core.knowledge.api_models import (
-    DeleteAccepted, DocumentDetail, DocumentOut, IngestAccepted, KnowledgeBaseCreate, KnowledgeBaseOut,
-    KnowledgeBaseUpdate, RecordIngestRequest, SearchRequest, SearchResponse, UploadComplete, UploadInit,
-    UploadSession,
+    CrawlAccepted, DeleteAccepted, DocumentDetail, DocumentOut, IngestAccepted, KnowledgeBaseCreate,
+    KnowledgeBaseOut, KnowledgeBaseUpdate, RecordIngestRequest, SearchRequest, SearchResponse, UploadComplete,
+    UploadInit, UploadSession, UrlIngestRequest, WebCrawlState,
 )
 from core.knowledge.trace import Trace
 
@@ -127,6 +126,10 @@ async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> Knowle
         await sync.rehome(before, after)
     elif after.status == "active" and before.status != "active":
         await dispatch.enqueue(after.id, "reindex", "reconcile")
+    if after.web.sources != before.web.sources:  # S1: a removed source's pages go; an added one is crawled
+        from core.knowledge import web
+
+        await web.sources_changed(before, after)
     out = (await _out([after]))[0]
     return out.model_copy(update={"reindex_started": False})
 
@@ -203,6 +206,31 @@ async def delete_record(kb_id: str, record_id: str) -> DeleteAccepted:
 
     await ingest.delete_record(await bases.require_base(kb_id), record_id)
     return DeleteAccepted()
+
+
+# ── web pages ──────────────────────────────────────────────────────────────────
+
+@router.post("/api/knowledge/bases/{kb_id}/urls", response_model=CrawlAccepted, status_code=202)
+@_errors
+async def add_urls(kb_id: str, body: UrlIngestRequest) -> CrawlAccepted:
+    """Public web pages as sources: a page, a sitemap's pages, or a site crawled from a URL. Each URL is
+    recorded in the base's `web.sources` (the same URL and kind again crawls it again now), and its
+    crawl starts; the pages arrive as documents."""
+    from core.knowledge import bases, web
+
+    kb = await bases.require_base(kb_id)
+    if kb.status != "active":
+        raise HTTPException(status_code=409, detail="This knowledge base is disabled.")
+    return await web.add_urls(kb, body)
+
+
+@router.get("/api/knowledge/bases/{kb_id}/crawls", response_model=list[WebCrawlState])
+@_errors
+async def list_crawls(kb_id: str) -> list[WebCrawlState]:
+    """Each web source of the base with its latest crawl: status, counts, when it is next due."""
+    from core.knowledge import bases, web
+
+    return await web.crawl_states(await bases.require_base(kb_id))
 
 
 # ── documents ──────────────────────────────────────────────────────────────────

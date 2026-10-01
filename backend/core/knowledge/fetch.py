@@ -71,6 +71,17 @@ class RobotsDisallowed(Exception):
         self.url = url
 
 
+class RobotsUnreachable(Exception):
+    """The host's robots.txt could not be read (a server error, no answer), so nothing on it is fetched
+    now (RFC 9309). A failure, not a refusal: it says nothing about what the site allows, so pages
+    already held are kept."""
+
+    def __init__(self, url: str):
+        super().__init__(f"The site's robots.txt could not be read, so {url} was not fetched; it is tried again "
+                         "at the next crawl.")
+        self.url = url
+
+
 # ── robots.txt (RFC 9309) ──────────────────────────────────────────────────────
 
 @dataclass
@@ -88,6 +99,7 @@ class Robots:
     crawl_delay: float | None = None
     disallow_all: bool = False
     sitemaps: list[str] = field(default_factory=list)
+    unreachable_: bool = False  # disallow_all because it could not be read, not because the site said so
 
     @classmethod
     def allow_all(cls) -> Robots:
@@ -95,7 +107,7 @@ class Robots:
 
     @classmethod
     def unreachable(cls) -> Robots:
-        return cls(disallow_all=True)
+        return cls(disallow_all=True, unreachable_=True)
 
     @classmethod
     def parse(cls, text: str) -> Robots:
@@ -281,8 +293,11 @@ class Fetcher:
     async def get(self, url: str, *, validator: str | None = None, max_bytes: int = HTML_MAX_BYTES) -> Fetched:
         """GET a page robots.txt allows, conditionally when `validator` is given.
 
-        Raises `RobotsDisallowed`, or `safe_fetch`'s `FetchBlocked` / `FetchTooLarge` / `FetchRefused`."""
+        Raises `RobotsDisallowed`, `RobotsUnreachable`, or `safe_fetch`'s `FetchBlocked` / `FetchTooLarge` /
+        `FetchRefused`."""
         robots = await self.robots(url)
+        if robots.unreachable_:
+            raise RobotsUnreachable(url)
         if not robots.allows(url):
             raise RobotsDisallowed(url)
         return await self._get(url, headers=conditional_headers(validator), max_bytes=max_bytes)
