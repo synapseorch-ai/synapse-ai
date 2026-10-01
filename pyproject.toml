@@ -51,6 +51,9 @@ dependencies = [
     "pypdf>=4.0,<7",
     "pdfplumber>=0.10,<1",
     "pandas>=2.0,<4",
+    # Knowledge's vector leg (core/knowledge/index_sql.py). Already resolved through
+    # pandas and chromadb; named because the engine imports it directly.
+    "numpy>=1.26,<3",
     "openpyxl>=3.1,<4",
     # Knowledge's parsers (A2, D162); see backend/requirements.txt.
     "pypdfium2>=4.30,<6",

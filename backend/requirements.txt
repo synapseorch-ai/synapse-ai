@@ -42,6 +42,10 @@ psycopg2-binary>=2.9,<3
 pymysql>=1.1,<2
 pdfplumber>=0.10,<1
 pandas>=2.0,<4
+# Knowledge's vector leg: an exact cosine scan over float32 embeddings
+# (core/knowledge/index_sql.py). Already resolved through pandas and chromadb;
+# named because the engine imports it directly.
+numpy>=1.26,<3
 openpyxl>=3.1,<4
 # Knowledge's parsers (A2, D162), imported directly: pypdfium2 opens and renders PDFs,
 # Pillow writes the pages OCR reads, psutil caps the parsing process's memory,

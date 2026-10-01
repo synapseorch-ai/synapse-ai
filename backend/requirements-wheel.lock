@@ -422,6 +422,7 @@ nltk==3.10.2
 numpy==2.4.6 ; python_full_version < '3.12'
     # via
     #   -c requirements.lock
+    #   synapse-orch-ai (../pyproject.toml)
     #   alphashape
     #   chromadb
     #   cocoindex
@@ -435,6 +436,7 @@ numpy==2.4.6 ; python_full_version < '3.12'
 numpy==2.5.2 ; python_full_version >= '3.12'
     # via
     #   -c requirements.lock
+    #   synapse-orch-ai (../pyproject.toml)
     #   alphashape
     #   chromadb
     #   cocoindex
