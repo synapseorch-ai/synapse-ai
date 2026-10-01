@@ -261,6 +261,12 @@ async def index_document(ctx: IndexContext) -> IndexOutcome:
                 model, dims, batches = answer.model, answer.dims, batches + 1
         except EmbedderUnavailable as exc:  # a key or a server address the model needs is not saved
             unavailable = exc
+        except Exception:
+            # The batches already embedded were billed by their provider (settled by our gateway): their cost is
+            # recorded before the error goes up, though nothing is indexed (F329).
+            if usage:
+                await record_costs([CostRow(u, attribution) for u in usage])
+            raise
         if embedded and model and dims:
             await record_embedding(ctx.snapshot_id, model, dims, profile_version=profile_version(model))
         if unavailable is not None and not embedded:

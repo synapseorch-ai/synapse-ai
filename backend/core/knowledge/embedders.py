@@ -17,8 +17,9 @@ For each call it:
 **Errors.** A missing key or server address is `EmbedderUnavailable`: indexing skips the embed stage and the
 chunks stay searchable by keyword until a backfill embeds them (`backfill.py`). Our gateway's 402 is
 `WalletExhausted` (the document pauses). Everything else is `EmbeddingError`, retryable when the provider's
-failure is (a rate limit, an outage). A failed call our gateway still charged for is recorded in the cost ledger
-before the error is raised, because no `Usage` will carry it.
+failure is (a rate limit, an outage). When a call fails, what it already cost is recorded in the cost ledger before
+the error is raised, because no `Usage` will carry it: the slices answered before the failing one (their tokens and
+our gateway's charges) and whatever the failing slice itself was charged (F329).
 
 `llm_providers` is imported inside the functions: cloud's API process imports the seams, and it has no provider
 SDKs to load.
@@ -82,14 +83,27 @@ def _knowledge_error(exc: Exception, model: str) -> KnowledgeError:
     return EmbeddingError(f"{model}: {exc}", retryable=bool(getattr(exc, "retryable", False)))
 
 
-async def _record_failed_charge(exc: Exception, *, model: str, provider: str, attribution: Attribution) -> None:
-    charged = getattr(exc, "charged_microusd", None)
-    if not charged:
+async def _record_failed_charge(exc: Exception, *, model: str, provider: str, attribution: Attribution,
+                                tokens: int = 0, charged: int | None = None,
+                                profile: profiles.EmbeddingProfile | None = None) -> None:
+    """Record what a failed call cost: `tokens` and `charged` from the slices answered before the failing one, plus
+    whatever the failing slice was charged. A settled charge is the cost; without one, the tokens at the model's
+    rate (a key of the customer's own was billed for them). Nothing answered and nothing charged: no row."""
+    failed = getattr(exc, "charged_microusd", None)
+    settled = (charged or 0) + (int(failed) if failed else 0) if (charged is not None or failed) else None
+    if not settled and tokens <= 0:
         return
     from core.knowledge.ledger import CostRow, record_costs
 
-    usage = Usage(stage="embed", cost_source=cost_source(provider), model=model, provider=provider,
-                  est_usd=charged / 1_000_000, charged_microusd=int(charged), priced=True)
+    source = cost_source(provider)
+    if settled:
+        est, rate = settled / 1_000_000, 0.0
+    else:
+        rate = 0.0 if source == "local" else await usd_per_mtok(model, profile or profiles.UNKNOWN)
+        est = round(tokens * (rate or 0.0) / 1_000_000, 10)
+    usage = Usage(stage="embed", cost_source=source, model=model, provider=provider, input_tokens=tokens,
+                  units=float(tokens), unit="tokens", est_usd=est, charged_microusd=settled,
+                  priced=bool(settled) or rate is not None)
     await record_costs([CostRow(usage, attribution, details={"failed": str(exc)[:500]})])
 
 
@@ -141,6 +155,9 @@ class ProviderEmbedder:
             raise _knowledge_error(exc, model) from exc
         dims = profile.request_dims(spec.dims)
         prepared = [profile.prepare(t, kind) for t in texts]
+        # Our gateway takes the kind for every model and passes it on only where the model reads it; it also sets
+        # how long the call may take, so a question is never given a document batch's wait (F329).
+        input_type = profile.input_type(kind) or (kind if provider.id == "model_gateway" else None)
 
         vectors: list[list[float]] = []
         tokens = 0
@@ -150,10 +167,10 @@ class ProviderEmbedder:
         for i in range(0, len(prepared), step):
             batch = prepared[i:i + step]
             try:
-                answer = await llm.embed_batch_ex(batch, model, call_settings, input_type=profile.input_type(kind),
-                                                  dims=dims)
+                answer = await llm.embed_batch_ex(batch, model, call_settings, input_type=input_type, dims=dims)
             except llm.EmbeddingFailed as exc:
-                await _record_failed_charge(exc, model=model, provider=provider.id, attribution=attribution)
+                await _record_failed_charge(exc, model=model, provider=provider.id, attribution=attribution,
+                                            tokens=tokens, charged=charged, profile=profile)
                 raise _knowledge_error(exc, model) from exc
             vectors.extend(answer.vectors)
             tokens += answer.input_tokens or profiles.estimate_tokens(batch)

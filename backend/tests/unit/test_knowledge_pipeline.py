@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import func, select
 
 from core.knowledge import seams
-from core.knowledge.errors import BudgetExceeded, EmbeddingError, KnowledgeIndexError
+from core.knowledge.errors import BudgetExceeded, EmbeddingError, KnowledgeIndexError, WalletExhausted
 from core.knowledge.index_sql import SqlKnowledgeIndex
 from core.knowledge.kb_settings import Chunking, Enrichment, KnowledgeBase
 from core.knowledge.parsed import ParsedDocument
@@ -124,6 +124,34 @@ async def test_a_failed_embedding_writes_nothing():
     with pytest.raises(EmbeddingError):
         await index_document(await _ctx(_parsed("pdf_contract")))
     assert await _rows() == []
+
+
+@pytest.mark.parametrize("failure", [EmbeddingError("provider down"),
+                                     WalletExhausted("wallet empty", needed_microusd=40, available_microusd=0)])
+async def test_a_failure_mid_document_records_the_batches_already_embedded(failure):
+    """F329: a provider bills each batch it answers. A later batch's failure writes no chunk, but the batches
+    already paid for reach the cost ledger before the error goes up."""
+
+    class SecondCallFails(HashingEmbedder):
+        async def embed(self, texts, **kw):
+            if self.calls:
+                raise failure
+            return await super().embed(texts, **kw)
+
+    embedder = SecondCallFails(dims=16, max_batch=2, cost_source="byok", usd_per_mtok=20.0)
+    seams.set_knowledge_embedder(embedder)
+    await _document()
+    ctx = await _ctx(_parsed("pdf_contract"))
+    with pytest.raises(type(failure)):
+        await index_document(ctx)
+
+    assert await _rows() == []
+    async with session() as s:
+        costs = (await s.execute(select(KnowledgeCostDB))).scalars().all()
+        usage = (await s.execute(select(UsageLogDB))).scalars().all()
+    assert [(c.stage, c.cost_source, c.doc_id, c.snapshot_id) for c in costs] == [
+        ("embed", "byok", ctx.doc_id, ctx.snapshot_id)]
+    assert costs[0].input_tokens > 0 and len(usage) == 1
 
 
 async def test_a_spent_budget_pauses_before_any_work():

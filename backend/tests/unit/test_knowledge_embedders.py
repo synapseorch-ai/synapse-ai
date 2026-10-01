@@ -248,6 +248,81 @@ async def test_our_gateway_s_402_pauses_and_a_charged_failure_is_recorded(monkey
         (7, "platform", "kb_1")]
 
 
+async def test_a_failed_slice_records_what_the_slices_before_it_settled(monkeypatch):
+    """F329: our gateway settles every slice it answers. When a later slice of the same call fails, the charges of
+    the slices before it are recorded with the failed slice's own, not lost with the call."""
+    recorded, sent = [], []
+
+    async def answer(texts, model, settings, *, input_type=None, dims=None):
+        sent.append(len(texts))
+        if len(sent) == 2:
+            raise llm.EmbeddingFailed("HTTP 503: busy", provider="model_gateway", status=503, charged_microusd=3)
+        return llm.EmbeddingResponse([[1.0, 0.0] for _ in texts], model, "model_gateway",
+                                     input_tokens=2 * len(texts), charged_microusd=5)
+
+    async def record(rows):
+        recorded.extend(rows)
+
+    monkeypatch.setattr(llm, "embed_batch_ex", answer)
+    from core.knowledge import ledger
+    monkeypatch.setattr(ledger, "record_costs", record)
+    with pytest.raises(EmbeddingError):
+        await _embed([f"t{i}" for i in range(40)], "synapse.titan-embed-v2")
+    assert sent == [32, 8]
+    assert [(r.usage.charged_microusd, r.usage.input_tokens, r.usage.cost_source, r.attribution.kb_id)
+            for r in recorded] == [(8, 64, "platform", "kb_1")]
+    assert recorded[0].usage.est_usd == pytest.approx(8 / 1_000_000)
+
+
+async def test_a_failed_slice_records_what_a_byok_key_already_paid_for(calls, monkeypatch):
+    """F329: the customer's own provider billed the slices it answered; a later slice's failure keeps them."""
+    recorded = []
+    answered = llm.embed_batch_ex
+
+    async def answer(texts, model, settings, *, input_type=None, dims=None):
+        if calls:
+            raise llm.EmbeddingFailed("HTTP 500: down", provider="openai", status=500)
+        return await answered(texts, model, settings, input_type=input_type, dims=dims)
+
+    async def record(rows):
+        recorded.extend(rows)
+
+    monkeypatch.setattr(llm, "embed_batch_ex", answer)
+    from core.knowledge import ledger
+    monkeypatch.setattr(ledger, "record_costs", record)
+    with pytest.raises(EmbeddingError):
+        await _embed([f"t{i}" for i in range(300)], "text-embedding-3-small")
+    assert [(r.usage.charged_microusd, r.usage.input_tokens, r.usage.cost_source) for r in recorded] == [
+        (None, 768, "byok")]
+    assert recorded[0].usage.est_usd == pytest.approx(768 * 0.02 / 1_000_000)
+
+
+async def test_a_failure_with_nothing_answered_or_charged_records_nothing(monkeypatch):
+    recorded = []
+
+    async def fail(*a, **k):
+        raise llm.EmbeddingFailed("HTTP 500: down", provider="openai", status=500)
+
+    async def record(rows):
+        recorded.extend(rows)
+
+    monkeypatch.setattr(llm, "embed_batch_ex", fail)
+    from core.knowledge import ledger
+    monkeypatch.setattr(ledger, "record_costs", record)
+    with pytest.raises(EmbeddingError):
+        await _embed(["a"], "text-embedding-3-small")
+    assert recorded == []
+
+
+@pytest.mark.parametrize("kind", ["query", "document"])
+async def test_our_gateway_is_told_the_kind_for_every_model(calls, kind):
+    """F329: the kind sets how long the gateway's client waits — a question 30 s, a document batch past the
+    gateway's own 150 s — so a Titan question is told it is one. The gateway accepts the kind for every model and
+    passes it on only where the model reads it (C1)."""
+    await _embed(["q"], "synapse.titan-embed-v2", kind=kind)
+    assert calls[-1]["input_type"] == kind
+
+
 async def test_through_the_seam_a_zero_vector_still_never_passes(monkeypatch):
     async def zeros(texts, model, settings, *, input_type=None, dims=None):
         return llm.EmbeddingResponse([[0.0, 0.0] for _ in texts], model, "openai")

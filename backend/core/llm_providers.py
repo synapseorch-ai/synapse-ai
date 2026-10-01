@@ -4013,7 +4013,12 @@ async def embed_batch_ex(texts: list[str], model: str, settings: dict, *, input_
         raise EmbeddingFailed(str(e), provider=e.provider or spec.id, status=e.status, code=e.code) from e
     except Exception as e:  # noqa: BLE001 — an SDK's own error, worded and classified here
         raise EmbeddingFailed(f"{spec.label} embedding failed: {e}", provider=spec.id) from e
-    _check_embeddings(answer, len(texts), dims, spec)
+    try:
+        _check_embeddings(answer, len(texts), dims, spec)
+    except EmbeddingFailed as e:
+        # A metering server settled the call before its answer was refused here (F329).
+        e.charged_microusd = answer.charged_microusd
+        raise
     return answer
 
 

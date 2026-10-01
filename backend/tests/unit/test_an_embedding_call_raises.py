@@ -192,6 +192,16 @@ async def test_a_failed_gateway_batch_says_what_it_already_charged(monkeypatch):
     assert caught.value.charged_microusd == 9 and caught.value.retryable
 
 
+async def test_a_gateway_answer_that_cannot_be_stored_still_says_what_it_charged(monkeypatch):
+    """F329: the gateway settled the call before its answer was refused here, so the refusal carries the charge."""
+    body = _openai_shaped([[0.0, 0.0]])
+    body["usage"].update(charged_microusd=6, cost_source="platform")
+    install_httpx(monkeypatch, _Answer(body))
+    with pytest.raises(llm.EmbeddingFailed, match="zero") as caught:
+        await llm.embed_batch_ex(["a"], "synapse.titan-embed-v2", KEYS)
+    assert caught.value.charged_microusd == 6
+
+
 async def test_an_openai_compatible_server_is_not_told_the_kind(monkeypatch):
     seen = {}
 
