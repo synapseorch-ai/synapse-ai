@@ -369,6 +369,18 @@ class TestSources:
         assert [c["kind"] for c in await crawls(on, kb["id"])] == ["page"]
         assert await web.load_state(base["web"]["sources"][0]["id"]) == {}
 
+    async def test_fetching_again_keeps_the_sources_own_caps_and_metadata(self, on, site, jobs, indexer):
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/", max_pages=2, metadata={"team": "legal"})
+        await drain(jobs)
+        [source] = (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["web"]["sources"]
+        await add(on, kb["id"], f"{site}/docs/")  # the screen's "Fetch again now": the URL and kind only
+        await drain(jobs)
+        state = await web.load_state(source["id"])
+        assert (state["max_pages"], state["metadata"]) == (2, {"team": "legal"})
+        assert state["status"] == "capped" and state["counts"]["written"] == 0  # same pages, same metadata
+        assert {r.meta.get("team") for r in (await docs(kb["id"])).values()} == {"legal"}
+
     async def test_metadata_reaches_every_page(self, on, site, jobs, indexer):
         kb = await _kb(on)
         await add(on, kb["id"], f"{site}/docs/a", kind="page", metadata={"team": "legal"})
@@ -417,15 +429,6 @@ class TestSearchable:
         assert "termination clause" in hit["content"]
 
 
-async def refetched() -> None:
-    """Wait for every Retry's background fetch."""
-    from core import background
-
-    while pending := [t for t in background._running if (t.get_name() or "").startswith("knowledge-refetch")
-                      and not t.done()]:
-        await asyncio.gather(*pending, return_exceptions=True)
-
-
 class TestTheGuards:
     """What a page with no file needs from A1's reconcile, Retry and job (each failed before S1)."""
 
@@ -449,8 +452,7 @@ class TestTheGuards:
         _Site.pages["/robots.txt"] = (200, {}, b"User-agent: *\nDisallow:\n")
         resp = await on.post(f"/api/knowledge/documents/{row.id}/retry")
         assert resp.status_code == 202 and resp.json()["status"] == "queued"
-        await refetched()
-        await drain(jobs)
+        await drain(jobs)  # A1's Retry queues the document; its ingest job fetches the page
         [again] = (await docs(kb["id"])).values()
         assert again.id == row.id and again.status == "indexed" and again.sha256
         assert "Never fetched." in get_blob_store().get(f"vault/{again.path}")
@@ -460,21 +462,36 @@ class TestTheGuards:
         await add(on, kb["id"], f"{site}/private/x", kind="page")
         [row] = (await docs(kb["id"])).values()
         assert (await on.post(f"/api/knowledge/documents/{row.id}/retry")).status_code == 202
-        await refetched()
+        await drain(jobs)
         [again] = (await docs(kb["id"])).values()
         assert (again.status, again.status_reason, again.sha256) == ("blocked", "robots_disallowed", None)
 
-    async def test_a_fetch_that_never_finished_is_failed_not_deleted(self, on, site, jobs, indexer):
+    async def test_retry_in_a_disabled_base_waits_queued_like_any_document(self, on, site, jobs, indexer):
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/private/x", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        base = (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()
+        off = await on.patch(f"/api/knowledge/bases/{kb['id']}", json={"revision": base["revision"], "status": "disabled"})
+        assert off.status_code == 200
+        before = len(_Site.hits)
+        resp = await on.post(f"/api/knowledge/documents/{row.id}/retry")
+        assert resp.status_code == 202 and resp.json()["status"] == "queued"
+        await drain(jobs)
+        [again] = (await docs(kb["id"])).values()
+        assert (again.id, again.status) == (row.id, "queued") and len(_Site.hits) == before  # nothing fetched
+
+    async def test_a_fetch_a_restart_cut_short_is_fetched_by_its_job_not_deleted(self, on, site, jobs, indexer):
         from core.knowledge import bases
 
         kb = await _kb(on)
         base = await bases.require_base(kb["id"])
-        row, _ = await documents.upsert_for_path(base, f"site/_web/{host(site)}/docs/x.md", source="web", sha256=None,
-                                                 size=None, source_url=f"{site}/docs/x")
-        await dispatch.enqueue(base.id, "upsert", "reconcile", path=row.path, doc_id=row.id)  # reconcile's stuck pass
-        await drain(jobs)
-        [again] = (await docs(kb["id"])).values()
-        assert (again.id, again.status, again.status_reason) == (row.id, "failed", "fetch_failed")
+        for page, status in (("a", "indexed"), ("gone", "failed")):
+            row, _ = await documents.upsert_for_path(base, f"site/_web/{host(site)}/docs/{page}.md", source="web",
+                                                     sha256=None, size=None, source_url=f"{site}/docs/{page}")
+            await dispatch.enqueue(base.id, "upsert", "reconcile", path=row.path, doc_id=row.id)  # reconcile's stuck pass
+            await drain(jobs)
+            again = await documents.get(row.id)
+            assert (again.status, again.sha256 is not None) == (status, status == "indexed")
 
     async def test_deleting_a_base_stops_its_crawls_and_clears_their_state(self, on, site, jobs, indexer):
         kb = await _kb(on)

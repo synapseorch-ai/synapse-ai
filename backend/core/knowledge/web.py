@@ -30,8 +30,9 @@ deletes nothing.
 source, a `site`'s start URL): `blocked` (`robots_disallowed`,
 `egress_blocked`), `failed` (`fetch_failed`) or `skipped`, with a report whose
 `fetch` stage says why. Such a row never had a file (`sha256` is null), so
-reconcile keeps it (`sync`) and Retry fetches it again (`refetch`). Links a
-crawl found and could not fetch are only counted.
+reconcile keeps it (`sync`); queued again — by Retry, or a restart — its ingest
+job fetches the page (`fetch_document`). Links a crawl found and could not
+fetch are only counted.
 
 **Re-crawl** is due `recrawl_days` after a crawl finished (0: never). OSS's
 reconcile loop starts what is due (`start_due_crawls`) — and any crawl a
@@ -390,7 +391,11 @@ async def add_urls(kb: KnowledgeBase, body: UrlIngestRequest) -> CrawlAccepted:
             if attempt == 2:
                 raise
     crawl_id = new_id(CRAWL_PREFIX)
-    request = {"metadata": dict(body.metadata or {}), "max_depth": body.max_depth, "max_pages": body.max_pages}
+    # Only what this request says changes a source's own metadata and caps: "fetch it again now" (the same
+    # URL and kind, nothing else) keeps them, so its pages keep their metadata and are not indexed again.
+    request = {name: (dict(value or {}) if name == "metadata" else value)
+               for name, value in (("metadata", body.metadata), ("max_depth", body.max_depth),
+                                   ("max_pages", body.max_pages)) if name in body.model_fields_set}
     for source in chosen:
         await _queue(kb, source, crawl_id, **request)
     return CrawlAccepted(crawl_id=crawl_id, accepted=len(chosen))
@@ -520,6 +525,7 @@ class _Crawl:
     capped: bool = False
     last_error: str | None = None
     checked_at: float = 0.0
+    owned: bool = True  # a source of the base runs it; False: one page fetched for a document no source holds
 
     def rel(self, path: str) -> str:
         return path[len(self.kb.folder) + 1:] if path.startswith(self.kb.folder + "/") else path
@@ -657,7 +663,7 @@ async def _check(c: _Crawl) -> None:
     kb = await bases.get_base(c.kb.id)
     if kb is None or kb.status != "active" or not knowledge_enabled():
         raise _Stop("The knowledge base was deleted or disabled, or Knowledge was switched off.")
-    if not any(s.id == c.source.id for s in kb.web.sources):
+    if c.owned and not any(s.id == c.source.id for s in kb.web.sources):
         raise _Stop("The source was removed.")
 
 
@@ -962,34 +968,23 @@ async def record_outcome(kb: KnowledgeBase, path: str, url: str, status: str, re
                                       report=report.model_dump(mode="json"))
 
 
-# ── Retry on a page that never had a file ──────────────────────────────────────
+# ── a page with no file, queued: fetch it ──────────────────────────────────────
 
-async def refetch(row: KnowledgeDocumentDB) -> KnowledgeDocumentDB | None:
-    """Fetch a refused or failed page again (Retry on a document with no file). Returns the document,
-    queued, or None when it is not resting. The fetch runs in the background."""
-    from core.background import spawn_background
-    from core.knowledge import bases, documents
-
-    kb = await bases.get_base(row.kb_id)
-    if kb is None or kb.status != "active":
-        raise ValueError("This knowledge base is disabled; switch it on to fetch the page again.")
-    again = await documents.transition(row.id, "queued", previous=row.status)
-    if again is None:
-        return None
-    spawn_background(_refetch(kb.id, again.id), name=f"knowledge-refetch-{again.id}")
-    return again
-
-
-async def _refetch(kb_id: str, doc_id: str) -> None:
-    from core.knowledge import bases, documents
+async def fetch_document(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> None:
+    """Fetch the page a queued document with no file stands for — a refusal or failure being retried
+    (A1's Retry queues it like any document), or a fetch a restart cut short — and leave it written
+    (and queued for indexing) or resting with why. The ingest job calls this (`jobs._ingest`), so it
+    runs wherever jobs run: OSS's in-process dispatcher, cloud's worker."""
+    from core.knowledge import documents
     from core.knowledge.fetch import Fetcher
     from core.knowledge.kb_settings import WebSource
 
-    kb = await bases.get_base(kb_id)
-    row = await documents.get(doc_id)
-    if kb is None or row is None or not row.source_url:
+    try:
+        url = normalize_url(row.source_url or "")
+    except ValueError:
+        await record_outcome(kb, row.path, row.source_url or "", "failed", "fetch_failed",
+                             "The document has no address to fetch.", existing=row)
         return
-    url = normalize_url(row.source_url)
     rel = row.path[len(kb.folder) + 1:]
     owner = None
     for source in kb.web.sources:
@@ -1004,16 +999,16 @@ async def _refetch(kb_id: str, doc_id: str) -> None:
     try:
         async with Fetcher(rps=rps) as fetcher:
             c = _Crawl(kb=kb, source=source, fetcher=fetcher, metadata=metadata, doc_cap=doc_cap, by_url=by_url,
-                       by_path=by_path, named={url}, seen={url})
+                       by_path=by_path, named={url}, seen={url}, owned=owner is not None)
             await _page(c, url, links_needed=False)
     except Exception as exc:  # noqa: BLE001 — the document must not stay queued
-        _log.warning(f"knowledge refetch of {doc_id} failed: {exc!r}")
+        _log.warning(f"knowledge fetch of {row.id} failed: {exc!r}")
         await record_outcome(kb, row.path, url, "failed", "fetch_failed", f"{type(exc).__name__}: {exc}",
                              metadata=metadata or None)
         return
-    current = await documents.get(doc_id)
+    current = await documents.get(row.id)
     if current is not None and current.status == "queued" and not current.sha256:
-        # Nothing was written and no outcome recorded (a 304 with no file, a redirect elsewhere): say so.
+        # Nothing was written and no outcome recorded (a redirect elsewhere, a duplicate): say so.
         await record_outcome(kb, row.path, url, "failed", "fetch_failed",
                              "The page did not come back as something to keep; it is tried again at the next crawl.",
-                             metadata=metadata or None)
+                             metadata=metadata or None, existing=current)

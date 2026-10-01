@@ -108,11 +108,11 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
         return None  # another job has it, or it is resting: nothing asked for
     data = await asyncio.to_thread(get_blob_store().get_bytes, f"vault/{row.path}")
     if data is None and row.source == "web" and row.sha256 is None:
-        # A page whose fetch never finished (S1): it never had a file. Say so; Retry fetches it again.
-        from core.knowledge.web import record_outcome
+        # A web page that never had a file (S1) — refused or failed, then queued again by Retry or a
+        # restart: fetch it. It comes back written (and queued for indexing) or resting with why.
+        from core.knowledge.web import fetch_document
 
-        await record_outcome(kb, row.path, row.source_url or "", "failed", "fetch_failed",
-                             "The fetch did not finish. Retry fetches the page again.", existing=row)
+        await fetch_document(kb, row)
         return None
     if data is None:  # the file went away while the document waited
         gone = await documents.tombstone(row.id)
