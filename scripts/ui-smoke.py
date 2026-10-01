@@ -5500,7 +5500,7 @@ _SMOKE_KB_RUN_ROUTES = [
 async def _kb_settings_rebuild(page):
     """Open the base's settings and change how its passages are cut: the drawer prices the rebuild."""
     await page.get_by_role("button", name="Settings", exact=True).click()
-    await page.get_by_role("combobox", name="Passages").click()
+    await page.get_by_role("combobox", name="Passages", exact=True).click()
     await page.get_by_role("option", name="One per page").click()
 
 

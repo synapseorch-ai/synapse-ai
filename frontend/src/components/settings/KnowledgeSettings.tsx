@@ -23,8 +23,8 @@ import {
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import {
-    INDEX_AFFECTING, KnowledgeApiError, LANGUAGES, PRESETS, RERANK_SUGGESTIONS, applyPreset, knowledgeApi,
-    matchingPreset,
+    INDEX_AFFECTING, KnowledgeApiError, LANGUAGES, PRESETS, RERANK_SUGGESTIONS, applyPreset, formatUsd as usd,
+    knowledgeApi, matchingPreset,
     type BaseSettings, type CostPreview, type KnowledgeBase,
 } from '@/lib/knowledge';
 import { modelOptions, withUnreachable, type ProviderModels } from '@/lib/models';
@@ -42,10 +42,6 @@ function same(a: unknown, b: unknown): boolean {
     return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function usd(n: number): string {
-    if (n === 0) return '$0';
-    return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
-}
 
 /** A number field that keeps what is typed and reports a number, or null when empty (if `optional`). */
 function NumberInput({

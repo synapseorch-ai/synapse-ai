@@ -33,7 +33,7 @@ import { KnowledgeSettings } from '@/components/settings/KnowledgeSettings';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
 import {
-    ACCEPTED, BUILD_PAUSED, CRAWLING, DEGRADED, PRESETS, REASONS, RESTING, STATUS, WORKING, formatBytes, inBase,
+    ACCEPTED, BUILD_PAUSED, CRAWLING, DEGRADED, PRESETS, REASONS, RESTING, STATUS, WORKING, formatBytes, formatUsd, inBase,
     knowledgeApi, uploadToKnowledge, useKnowledgeEnabled,
     type CostGroup, type CostGroupBy, type DocStatus, type KnowledgeBase, type KnowledgeDocument,
     type KnowledgeDocumentDetail, type SearchResult, type WebCrawlState, type WebSourceKind,
@@ -428,7 +428,7 @@ function BaseDetail({
                     <p className="mt-0.5 flex items-center gap-1.5 text-sm text-text-muted">
                         <FolderOpen className="size-3.5 shrink-0" aria-hidden />
                         <Mono>{kb.folder}</Mono>
-                        {kb.state.month_spend_usd > 0 && <Muted>· ${kb.state.month_spend_usd.toFixed(4)} this month</Muted>}
+                        {kb.state.month_spend_usd > 0 && <Muted>· {formatUsd(kb.state.month_spend_usd)} this month</Muted>}
                     </p>
                     {kb.description && <p className="mt-1 text-sm text-text-muted">{kb.description}</p>}
                 </div>
@@ -882,7 +882,7 @@ function Costs({ kb, docs }: { kb: KnowledgeBase; docs: KnowledgeDocument[] | nu
         if (groupBy === 'document') return key === 'search' ? 'Searches' : (paths.get(key) ?? 'A deleted document');
         return key;
     };
-    const money = (n: number) => (n === 0 ? '$0' : n < 0.01 ? `$${n.toFixed(5)}` : `$${n.toFixed(2)}`);
+    const money = formatUsd;
 
     return (
         <Section

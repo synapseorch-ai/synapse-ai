@@ -322,6 +322,16 @@ export function matchingPreset(kb: Record<string, unknown>): PipelinePreset | nu
             ((kb[block] as Record<string, unknown> | undefined)?.[name] ?? null) === value))) ?? null;
 }
 
+/** An amount in USD as people read it: cents for a cent or more, two significant digits below that (a
+ *  knowledge base's embedding often costs millionths), "$0" for nothing. */
+export function formatUsd(n: number): string {
+    if (!n) return '$0';
+    if (n >= 0.01) return `$${n.toFixed(2)}`;
+    if (n < 0.000001) return 'under $0.000001';
+    const digits = Math.ceil(-Math.log10(n)) + 1;
+    return `$${n.toFixed(digits).replace(/0+$/, '')}`;
+}
+
 /** The API's error, as one line. FastAPI answers `{detail: string}`, or a list for a validation error. */
 export async function errorText(res: Response): Promise<string> {
     try {
