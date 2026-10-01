@@ -6,7 +6,8 @@
  * A knowledge base is a Vault folder made searchable. Each file in it is a
  * document with a status; a document's report says what happened to it, stage
  * by stage. Uploads go in parts (at most 8 MiB each, under the proxy's body
- * limit): open a session, PUT each part, complete.
+ * limit): open a session, PUT each part, complete. Web sources (S1, D165) are
+ * crawled into the folder's `_web/`; each page is a document too.
  */
 import { useEffect, useState } from 'react';
 
@@ -25,6 +26,21 @@ export type KnowledgeBaseState = {
     paused_reason: string | null;
 };
 
+export type WebSourceKind = 'page' | 'sitemap' | 'site';
+
+/** One URL the base keeps fetched (`kb_settings.WebSource`). */
+export type WebSource = { id: string; url: string; kind: WebSourceKind; include: string[]; exclude: string[] };
+
+/** A base's crawl settings and sources (`kb_settings.Web`). */
+export type WebSettings = {
+    max_depth: number;
+    max_pages: number;
+    rps_per_host: number;
+    /** Days between re-crawls; 0 never re-crawls. */
+    recrawl_days: number;
+    sources: WebSource[];
+};
+
 export type KnowledgeBase = {
     id: string;
     name: string;
@@ -34,6 +50,7 @@ export type KnowledgeBase = {
     language: string;
     /** Widget and channel visitors may search it, when the tools are ticked there too (D153 #12). */
     visitor_access: boolean;
+    web: WebSettings;
     revision: number;
     created_at: string;
     updated_at: string;
@@ -92,6 +109,30 @@ export type IngestionReport = {
 };
 
 export type KnowledgeDocumentDetail = KnowledgeDocument & { report: IngestionReport | null };
+
+export type CrawlStatus = 'idle' | 'queued' | 'running' | 'done' | 'capped' | 'failed' | 'cancelled' | 'interrupted';
+
+/** A web source and its latest crawl (`api_models.WebCrawlState`, CCR-4). */
+export type WebCrawlState = {
+    source_id: string;
+    url: string;
+    kind: WebSourceKind;
+    status: CrawlStatus;
+    crawl_id: string | null;
+    started_at: string | null;
+    finished_at: string | null;
+    /** The pages this source holds now. */
+    pages: number;
+    counts: {
+        fetched: number; unchanged: number; written: number; deleted: number; blocked: number; failed: number;
+        skipped: number; not_followed: number;
+    };
+    next_due_at: string | null;
+    last_error: string | null;
+};
+
+/** Crawls something is still working on: the screen polls faster while one is. */
+export const CRAWLING: ReadonlySet<CrawlStatus> = new Set(['queued', 'running']);
 
 /** Statuses something is still working on: the screen polls faster while any document is in one. */
 export const WORKING: ReadonlySet<DocStatus> = new Set(['queued', 'parsing', 'indexing', 'deleting']);
@@ -220,6 +261,15 @@ export const knowledgeApi = {
     createBase: (body: { name: string; folder: string; description?: string }) =>
         call<KnowledgeBase>('/api/knowledge/bases', json('POST', body)),
     deleteBase: (id: string) => call<{ status: string }>(`/api/knowledge/bases/${id}`, { method: 'DELETE' }),
+    /** A patch from the revision the edit started at; a stale one is a 409. */
+    updateBase: (id: string, patch: Partial<Omit<KnowledgeBase, 'id' | 'state'>> & { revision: number }) =>
+        call<KnowledgeBase>(`/api/knowledge/bases/${id}`, json('PATCH', patch)),
+    /** Fetch web pages into the base: each URL becomes a source (the same URL and kind again crawls it now). */
+    addUrls: (kbId: string, body: {
+        urls: string[]; kind: WebSourceKind; max_depth?: number; max_pages?: number; metadata?: Record<string, unknown>;
+    }) => call<{ crawl_id: string; accepted: number; status: 'queued' }>(
+        `/api/knowledge/bases/${kbId}/urls`, json('POST', body)),
+    crawls: (kbId: string) => call<WebCrawlState[]>(`/api/knowledge/bases/${kbId}/crawls`),
     documents: async (kbId: string) => {
         // Paged by id; a knowledge base's whole list, 1,000 at a time.
         const out: KnowledgeDocument[] = [];

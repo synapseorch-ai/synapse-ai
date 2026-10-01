@@ -8,11 +8,16 @@
  * uploads. A document opens a drawer with its ingestion report: what happened
  * to it, stage by stage, and whether retrying can help.
  *
+ * Web pages (S1, D165) come in through "Add web pages": a page, a sitemap's
+ * pages, or a site crawled from a URL. Each URL is a web source, listed with
+ * its latest crawl; every fetched page is a document like any other, with its
+ * URL beside it.
+ *
  * Polls every 2 s while anything is still being worked on, else every 10 s, as
  * the Repos screen does.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FolderOpen, Plus, RotateCcw, Search, Trash2, Upload } from 'lucide-react';
+import { ExternalLink, FolderOpen, Globe, Plus, RotateCcw, Search, Trash2, Upload } from 'lucide-react';
 
 import {
     Badge, Button, ConfirmDialog, Drawer, EmptyState, ErrorNote, Field, IconButton, Input, Label, Modal, Mono,
@@ -22,9 +27,10 @@ import {
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
 import {
-    ACCEPTED, DEGRADED, REASONS, RESTING, STATUS, WORKING, formatBytes, inBase, knowledgeApi, uploadToKnowledge,
-    useKnowledgeEnabled,
+    ACCEPTED, CRAWLING, DEGRADED, REASONS, RESTING, STATUS, WORKING, formatBytes, inBase, knowledgeApi,
+    uploadToKnowledge, useKnowledgeEnabled,
     type DocStatus, type KnowledgeBase, type KnowledgeDocument, type KnowledgeDocumentDetail, type SearchResult,
+    type WebCrawlState, type WebSourceKind,
 } from '@/lib/knowledge';
 
 type VaultNode = { name: string; path: string; type: 'file' | 'folder'; children?: VaultNode[] };
@@ -40,6 +46,30 @@ function folders(nodes: VaultNode[], out: string[] = []): string[] {
 
 function when(iso: string | null | undefined): string {
     return iso ? new Date(iso).toLocaleString() : '—';
+}
+
+/** A URL as a person reads it: host and path, no scheme. */
+function shortUrl(url: string): string {
+    try {
+        const u = new URL(url);
+        return `${u.host}${u.pathname === '/' ? '' : u.pathname}${u.search}`;
+    } catch {
+        return url;
+    }
+}
+
+function WebLink({ url, className }: { url: string; className?: string }) {
+    return (
+        <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn('inline-flex min-w-0 max-w-full items-center gap-1 text-xs text-text-muted hover:text-text hover:underline', className)}
+        >
+            <span className="truncate" translate="no">{shortUrl(url)}</span>
+            <ExternalLink className="size-3 shrink-0" aria-hidden />
+        </a>
+    );
 }
 
 function StatusBadge({ status }: { status: DocStatus }) {
@@ -269,6 +299,8 @@ function BaseDetail({
     notify: (message: string, tone?: 'success' | 'warning' | 'danger') => void;
 }) {
     const [docs, setDocs] = useState<KnowledgeDocument[] | null>(null);
+    const [crawls, setCrawls] = useState<WebCrawlState[]>([]);
+    const [addingWeb, setAddingWeb] = useState(false);
     const [tick, setTick] = useState(0);
     const [filter, setFilter] = useState<'all' | DocStatus>('all');
     const [open, setOpen] = useState<string | null>(null);
@@ -286,10 +318,14 @@ function BaseDetail({
         knowledgeApi.documents(kb.id)
             .then(list => { if (live) setDocs(list); })
             .catch(e => notify(e instanceof Error ? e.message : String(e), 'danger'));
+        knowledgeApi.crawls(kb.id)
+            .then(list => { if (live) setCrawls(list); })
+            .catch(() => { if (live) setCrawls([]); });
         return () => { live = false; };
     }, [kb.id, tick, notify]);
 
-    const working = !!docs?.some(d => WORKING.has(d.status)) || uploads.some(u => !u.error && u.sent < u.total);
+    const working = !!docs?.some(d => WORKING.has(d.status)) || uploads.some(u => !u.error && u.sent < u.total)
+        || crawls.some(c => CRAWLING.has(c.status));
     useEffect(() => {
         const timer = setInterval(() => { refresh(); onChanged(); }, working ? 2000 : 10000);
         return () => clearInterval(timer);
@@ -368,9 +404,12 @@ function BaseDetail({
                     </p>
                     {kb.description && <p className="mt-1 text-sm text-text-muted">{kb.description}</p>}
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                     <Button variant="secondary" onClick={() => input.current?.click()}>
                         <Upload className="size-4" aria-hidden />Upload files
+                    </Button>
+                    <Button variant="secondary" onClick={() => setAddingWeb(true)} disabled={kb.status !== 'active'}>
+                        <Globe className="size-4" aria-hidden />Add web pages
                     </Button>
                     <Button variant="ghost" onClick={onDelete}>
                         <Trash2 className="size-4" aria-hidden />Delete
@@ -419,6 +458,10 @@ function BaseDetail({
                 </ul>
             )}
 
+            {kb.web.sources.length > 0 && (
+                <WebSources kb={kb} crawls={crawls} notify={notify} onChanged={() => { refresh(); onChanged(); }} />
+            )}
+
             <TestSearch kb={kb} />
 
             <div className="flex items-center justify-between gap-3">
@@ -455,6 +498,7 @@ function BaseDetail({
                                     >
                                         {inBase(d.path, kb.folder)}
                                     </button>
+                                    {d.source === 'web' && d.source_url && <WebLink url={d.source_url} className="flex" />}
                                     {d.status_reason && (
                                         <span className="block truncate text-xs text-text-faint">
                                             {REASONS[d.status_reason] ?? d.status_reason}
@@ -490,9 +534,237 @@ function BaseDetail({
                 onClose={() => setRemoving(null)}
                 onConfirm={remove}
                 title={`Delete ${removing ? inBase(removing.path, kb.folder) : 'document'}?`}
-                description="This deletes the file from the Vault too; a file left there would be indexed again."
+                description={removing?.source === 'web'
+                    ? "This deletes the fetched page. Its source's next crawl fetches it again, unless the source excludes it."
+                    : 'This deletes the file from the Vault too; a file left there would be indexed again.'}
+            />
+            <AddWebDialog
+                kb={kb}
+                open={addingWeb}
+                onClose={() => setAddingWeb(false)}
+                onAdded={n => {
+                    setAddingWeb(false);
+                    notify(n === 1 ? 'Fetching it now. Its pages appear below as they arrive.'
+                        : `Fetching ${n} sources now. Their pages appear below as they arrive.`);
+                    refresh();
+                    onChanged();
+                }}
             />
         </section>
+    );
+}
+
+const KINDS: { value: WebSourceKind; label: string; hint: string }[] = [
+    { value: 'page', label: 'Pages', hint: 'Exactly these addresses, one page each.' },
+    { value: 'sitemap', label: 'Sitemaps', hint: 'Every page a sitemap lists (sitemap.xml).' },
+    { value: 'site', label: 'Sites', hint: 'Follows links from each address, on the same site and under its folder.' },
+];
+
+/** Add public web pages: each URL becomes a web source, fetched now and again every week (S1). */
+function AddWebDialog({
+    kb, open, onClose, onAdded,
+}: {
+    kb: KnowledgeBase;
+    open: boolean;
+    onClose: () => void;
+    onAdded: (accepted: number) => void;
+}) {
+    const [text, setText] = useState('');
+    const [kind, setKind] = useState<WebSourceKind>('page');
+    const [depth, setDepth] = useState('default');
+    const [pages, setPages] = useState('');
+    const [error, setError] = useState('');
+    const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+        if (!open) return;
+        setText(''); setKind('page'); setDepth('default'); setPages(''); setError('');
+    }, [open]);
+
+    const urls = text.split(/\s+/).map(u => u.trim()).filter(Boolean);
+    const add = async () => {
+        setBusy(true);
+        setError('');
+        try {
+            const accepted = await knowledgeApi.addUrls(kb.id, {
+                urls, kind,
+                ...(kind === 'site' && depth !== 'default' ? { max_depth: Number(depth) } : {}),
+                ...(kind !== 'page' && pages ? { max_pages: Number(pages) } : {}),
+            });
+            onAdded(accepted.accepted);
+        } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const depthOptions = useMemo(() => [
+        { value: 'default', label: `The base's setting (${kb.web.max_depth})` },
+        ...[0, 1, 2, 3, 4, 5].map(n => ({
+            value: String(n),
+            label: n === 0 ? '0 — only the address itself' : count(n, 'link') + ' away',
+        })),
+    ], [kb.web.max_depth]);
+
+    return (
+        <Modal
+            open={open}
+            onClose={onClose}
+            title="Add web pages"
+            description="Public pages are fetched into this base, respecting each site's robots.txt, and fetched again every week."
+            footer={
+                <>
+                    <Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button>
+                    <Button onClick={add} loading={busy} disabled={!urls.length}>
+                        {urls.length > 1 ? `Add ${urls.length} addresses` : 'Add'}
+                    </Button>
+                </>
+            }
+        >
+            <div className="space-y-4">
+                {error && <ErrorNote>{error}</ErrorNote>}
+                <Field label="Addresses" required hint="One per line, starting with https:// or http://.">
+                    <Textarea
+                        value={text}
+                        onChange={e => setText(e.target.value)}
+                        rows={4}
+                        placeholder="https://docs.example.com/guide/"
+                        spellCheck={false}
+                        autoComplete="off"
+                    />
+                </Field>
+                <Field label="What to fetch" hint={KINDS.find(k => k.value === kind)?.hint}>
+                    <Select
+                        value={kind}
+                        onChange={setKind}
+                        options={KINDS.map(k => ({ value: k.value, label: k.label, hint: k.hint }))}
+                    />
+                </Field>
+                {kind === 'site' && (
+                    <Field label="How far to follow links">
+                        <Select value={depth} onChange={setDepth} options={depthOptions} />
+                    </Field>
+                )}
+                {kind !== 'page' && (
+                    <Field label="Most pages" hint={`At most this many pages per address; empty uses the base's ${kb.web.max_pages}.`}>
+                        <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={1}
+                            value={pages}
+                            onChange={e => setPages(e.target.value)}
+                            placeholder={String(kb.web.max_pages)}
+                        />
+                    </Field>
+                )}
+            </div>
+        </Modal>
+    );
+}
+
+function crawlLine(c: WebCrawlState): string {
+    const n = c.counts;
+    switch (c.status) {
+        case 'queued': return 'Waiting to fetch';
+        case 'running': return 'Fetching now…';
+        case 'interrupted': return 'Interrupted by a restart; fetched again shortly';
+        case 'cancelled': return 'Stopped';
+        case 'failed': return c.last_error ? `Failed: ${c.last_error}` : 'Failed';
+        case 'idle': return 'Not fetched yet';
+    }
+    const changed = [n.written && `${n.written} new or changed`, n.deleted && `${n.deleted} removed`,
+        n.blocked && `${n.blocked} disallowed`, n.failed && `${n.failed} failed`].filter(Boolean).join(', ');
+    const head = `${count(c.pages, 'page')} · fetched ${when(c.finished_at)}`;
+    const tail = c.status === 'capped' ? ' · stopped at the page limit, so nothing was removed' : '';
+    return `${head}${changed ? ` · ${changed}` : ''}${tail}`;
+}
+
+/** The base's web sources, each with its latest crawl: fetch again, or remove (and its pages with it). */
+function WebSources({
+    kb, crawls, notify, onChanged,
+}: {
+    kb: KnowledgeBase;
+    crawls: WebCrawlState[];
+    notify: (message: string, tone?: 'success' | 'warning' | 'danger') => void;
+    onChanged: () => void;
+}) {
+    const [removing, setRemoving] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    const byId = new Map(crawls.map(c => [c.source_id, c]));
+    const active = crawls.filter(c => CRAWLING.has(c.status)).length;
+    const source = kb.web.sources.find(s => s.id === removing);
+
+    const again = async (url: string, kind: WebSourceKind) => {
+        try {
+            await knowledgeApi.addUrls(kb.id, { urls: [url], kind });
+            onChanged();
+        } catch (e) {
+            notify(e instanceof Error ? e.message : String(e), 'danger');
+        }
+    };
+
+    const remove = async () => {
+        if (!removing) return;
+        setBusy(true);
+        try {
+            await knowledgeApi.updateBase(kb.id, {
+                revision: kb.revision,
+                web: { ...kb.web, sources: kb.web.sources.filter(s => s.id !== removing) },
+            });
+            notify('Source removed, with the pages only it fetched.');
+            setRemoving(null);
+            onChanged();
+        } catch (e) {
+            notify(e instanceof Error ? e.message : String(e), 'danger');
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <Section
+            title="Web sources"
+            description={kb.web.recrawl_days > 0
+                ? `Fetched again every ${count(kb.web.recrawl_days, 'day')}, respecting each site's robots.txt.`
+                : "Fetched only when you ask, respecting each site's robots.txt."}
+            summary={<Muted>{count(kb.web.sources.length, 'source')}{active ? ` · ${active} fetching` : ''}</Muted>}
+            defaultOpen
+        >
+            <ul className="divide-y divide-border" aria-label="Web sources">
+                {kb.web.sources.map(s => {
+                    const c = byId.get(s.id);
+                    return (
+                        <li key={s.id} className="flex items-start gap-3 py-2.5">
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                                <div className="flex min-w-0 items-center gap-2">
+                                    <Badge size="sm" tone="neutral">{KINDS.find(k => k.value === s.kind)?.label.replace(/s$/, '') ?? s.kind}</Badge>
+                                    <WebLink url={s.url} className="text-sm text-text" />
+                                </div>
+                                <p className={cn('text-xs', c?.status === 'failed' ? 'text-danger' : 'text-text-faint')} aria-live="polite">
+                                    {c ? crawlLine(c) : 'Not fetched yet'}
+                                </p>
+                            </div>
+                            <TableActions>
+                                <IconButton size="sm" label={`Fetch ${shortUrl(s.url)} again now`} icon={RotateCcw}
+                                    disabled={!!c && CRAWLING.has(c.status)} onClick={() => again(s.url, s.kind)} />
+                                <IconButton size="sm" tone="danger" label={`Remove ${shortUrl(s.url)}`} icon={Trash2}
+                                    onClick={() => setRemoving(s.id)} />
+                            </TableActions>
+                        </li>
+                    );
+                })}
+            </ul>
+            <ConfirmDialog
+                open={!!removing}
+                onClose={() => setRemoving(null)}
+                onConfirm={remove}
+                busy={busy}
+                confirmLabel="Remove"
+                title={`Remove ${source ? shortUrl(source.url) : 'this source'}?`}
+                description="Its crawl stops, and the pages only it fetched leave the base and the Vault. Pages another source also fetches stay."
+            />
+        </Section>
     );
 }
 
@@ -649,7 +921,9 @@ function ReportDrawer({
                     )}
 
                     <dl className="divide-y divide-border">
-                        <Fact label="Source">{doc.source}</Fact>
+                        <Fact label="Source">
+                            {doc.source === 'web' && doc.source_url ? <WebLink url={doc.source_url} /> : doc.source}
+                        </Fact>
                         <Fact label="Size">{formatBytes(doc.size_bytes)}</Fact>
                         <Fact label="Type"><Mono>{doc.mime ?? '—'}</Mono></Fact>
                         {doc.title && <Fact label="Title">{doc.title}</Fact>}

@@ -30,6 +30,9 @@ interface VaultNode {
 interface VaultKnowledge {
     baseAt: (path: string) => KnowledgeBase | null;
     baseHolding: (path: string) => KnowledgeBase | null;
+    /** A folder Knowledge fills itself — a base's fetched pages (`_web`) or records (`_records`): no
+     *  uploads or new files there (the backend refuses them, and the next crawl would overwrite them). */
+    managed: (path: string) => boolean;
     docAt: (path: string) => KnowledgeDocument | null;
     onUpload: (folderPath: string, kb: KnowledgeBase) => void;
 }
@@ -162,7 +165,7 @@ function TreeNode({
                 {!isFolder && knowledge?.docAt(node.path) && <DocBadge doc={knowledge.docAt(node.path)!} />}
 
                 {/* Knowledge: upload into a knowledge base's folder */}
-                {isFolder && knowledge?.baseHolding(node.path) && (
+                {isFolder && knowledge?.baseHolding(node.path) && !knowledge.managed(node.path) && (
                     <button
                         type="button"
                         onClick={() => knowledge.onUpload(node.path, knowledge.baseHolding(node.path)!)}
@@ -175,7 +178,7 @@ function TreeNode({
                 )}
 
                 {/* Folder actions: + new file, delete */}
-                {isFolder && (
+                {isFolder && !knowledge?.managed(node.path) && (
                     <button
                         type="button"
                         onClick={() => onCreateInFolder(node.path)}
@@ -525,6 +528,10 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
         baseAt: path => kn.bases.find(b => b.folder === path) ?? null,
         baseHolding: path => kn.bases.find(b => b.status === 'active'
             && (path === b.folder || path.startsWith(`${b.folder}/`))) ?? null,
+        managed: path => kn.bases.some(b => ['_web', '_records'].some(dir => {
+            const root = `${b.folder}/${dir}`;
+            return path === root || path.startsWith(`${root}/`);
+        })),
         docAt: path => kn.docs[path] ?? null,
         onUpload: (folder, kb) => { setUploadTarget({ folder, kb }); uploadInput.current?.click(); },
     } : undefined;

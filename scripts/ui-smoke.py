@@ -5311,6 +5311,9 @@ async def _vault_error(page):
 #: Knowledge switched on, one base, and a document in every status (D157).
 _SMOKE_KB = {"id": "kb_00000000smoke", "name": "Smoke contracts", "description": "", "folder": "smoke_kb",
              "status": "active", "language": "simple", "revision": 1, "created_at": _NOW, "updated_at": _NOW,
+             "web": {"max_depth": 3, "max_pages": 500, "rps_per_host": 1.0, "recrawl_days": 7, "sources": [
+                 {"id": "kws_00000smoke1", "url": "https://docs.example.com/guide/", "kind": "site", "include": [],
+                  "exclude": []}]},
              "state": {"counts_by_status": {"indexed": 1, "failed": 1}, "active_snapshot": None,
                        "building_snapshot": None, "month_spend_usd": 0.0, "paused_reason": None}}
 _SMOKE_KB_DOCS = [
@@ -5321,7 +5324,19 @@ _SMOKE_KB_DOCS = [
      "indexed_at": _NOW}
     for i, (s, r) in enumerate((("indexed", None), ("partial", "truncated_size"), ("failed", "embed_failed"),
                                 ("skipped", "unsupported_format"), ("paused", "budget_cap"), ("queued", None),
-                                ("indexing", None), ("blocked", "egress_blocked")))]
+                                ("indexing", None), ("blocked", "egress_blocked")))] + [
+    {"id": "kdoc_smokeweb", "kb_id": _SMOKE_KB["id"], "path": "smoke_kb/_web/docs.example.com/guide/install.md",
+     "source": "web", "source_url": "https://docs.example.com/guide/install", "status": "indexed",
+     "status_reason": None, "error": None, "version": 1, "sha256": "f" * 64, "size_bytes": 900,
+     "mime": "text/markdown", "title": "Install", "doc_date": None, "metadata": {}, "pages": None, "chunks": 2,
+     "tokens": 60, "created_at": _NOW, "updated_at": _NOW, "indexed_at": _NOW}]
+#: The base's one web source and its latest crawl (S1, CCR-4): stopped at its page cap.
+_SMOKE_KB_CRAWLS = [{
+    "source_id": "kws_00000smoke1", "url": "https://docs.example.com/guide/", "kind": "site", "status": "capped",
+    "crawl_id": "kcr_smoke", "started_at": _NOW, "finished_at": _NOW, "pages": 500,
+    "counts": {"fetched": 500, "unchanged": 480, "written": 20, "deleted": 0, "blocked": 3, "failed": 0, "skipped": 1,
+               "not_followed": 42},
+    "next_due_at": _NOW, "last_error": None}]
 _SMOKE_KB_REPORT = {
     **_SMOKE_KB_DOCS[2], "report": {
         "report_version": 1, "doc_id": "kdoc_smoke02", "path": "smoke_kb/failed.md", "sha256": None, "attempt": 2,
@@ -5341,6 +5356,7 @@ _SMOKE_KB_ROUTES = [
     ("**/api/settings", _answer({"knowledge_enabled": True})),
     ("**/api/knowledge/bases", _answer([_SMOKE_KB])),
     ("**/api/knowledge/bases/*/documents*", _answer(_SMOKE_KB_DOCS)),
+    ("**/api/knowledge/bases/*/crawls", _answer(_SMOKE_KB_CRAWLS)),
     ("**/api/knowledge/documents/*", _answer(_SMOKE_KB_REPORT)),
 ]
 
@@ -5391,6 +5407,9 @@ LIGHT_STATES = (
      _SMOKE_KB_ROUTES + [("**/api/knowledge/search", _answer(_SMOKE_KB_SEARCH, methods=("POST",)))],
      _kb_test_search, "score 4.258"),
     ("knowledge statuses", "/knowledge", [], _SMOKE_KB_ROUTES, None, "Partly indexed"),
+    ("knowledge web sources", "/knowledge", [], _SMOKE_KB_ROUTES, None, "stopped at the page limit"),
+    ("knowledge add web pages", "/knowledge", [], _SMOKE_KB_ROUTES,
+     lambda p: p.get_by_role("button", name="Add web pages").click(), "What to fetch"),
     ("knowledge report", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name="Report for failed.md").click(), "What happened"),
     ("chat tip 5", "/", [CHAT_STUB], [],
