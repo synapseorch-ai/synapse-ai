@@ -303,6 +303,9 @@ class GeneratePromptRequest(BaseModel):
     tools: list[str] = []
     existing_prompt: str = ""
     agents: list[dict] = []  # list of {id, name, description, type} — for delegate agents
+    # The knowledge bases the agent answers from, as {name, description} (Knowledge,
+    # B1b): the writer replaces its "Tool vs. Knowledge" rule for such an agent.
+    knowledge_bases: list[dict] = []
 
 
 class GoogleCredsRequest(BaseModel):

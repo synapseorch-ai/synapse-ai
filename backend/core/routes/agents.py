@@ -456,6 +456,27 @@ async def generate_agent_prompt(req: GeneratePromptRequest):
             f"results when multiple agents are involved."
         )
 
+    # The knowledge bases it answers from (Knowledge, B1b). The methodology's
+    # "Tool vs. Knowledge" rule means the model's own knowledge, which for this
+    # agent reads backwards; it is replaced here, never for an agent without bases.
+    knowledge_section = ""
+    if req.knowledge_bases:
+        base_lines = "\n".join(
+            f"  - {str(kb.get('name') or '').strip()[:200]}"
+            + (f": {str(kb.get('description')).strip()[:300]}" if str(kb.get('description') or '').strip() else "")
+            for kb in req.knowledge_bases[:10] if isinstance(kb, dict) and str(kb.get("name") or "").strip()
+        )
+        knowledge_section = (
+            f"\n\n━━━ KNOWLEDGE BASES ━━━\n"
+            f"This agent answers from these collections of the user's own documents:\n"
+            f"{base_lines}\n"
+            f"\nFor this agent, replace the METHODOLOGY \"Tool vs. Knowledge\" rule with: answer questions these "
+            f"collections cover from their passages first, before general knowledge; quote the words relied on and "
+            f"cite each passage by the label it came with (e.g. [K2]); when the collections do not hold the answer, "
+            f"say so plainly rather than filling the gap from general knowledge. Describe the collections by what "
+            f"they hold, never by tool name."
+        )
+
     user_message = (
         f"Current Date & Time: {current_datetime}\n\n"
         f"━━━ AGENT TYPE ━━━\n"
@@ -468,6 +489,7 @@ async def generate_agent_prompt(req: GeneratePromptRequest):
         f"genuinely useful vs. just technically correct?"
         f"{tools_section}"
         f"{delegates_section}"
+        f"{knowledge_section}"
         f"{existing_section}"
     )
 
