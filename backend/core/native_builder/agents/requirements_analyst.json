@@ -14,6 +14,7 @@
         "list_server_tools",
         "list_repos",
         "list_db_configs",
+        "list_knowledge_bases",
         "list_custom_tools",
         "list_skills",
         "get_skill",

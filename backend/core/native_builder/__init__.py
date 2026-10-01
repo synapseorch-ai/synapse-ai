@@ -27,6 +27,7 @@ __all__ = [
     "BUILDER_RUN_PREFIX",
     "SYSTEM_MARKER",
     "STEP_TYPE_CHEATSHEET",
+    "KNOWLEDGE_STEPS_PALETTE",
 ]
 
 
@@ -74,4 +75,16 @@ State lifecycle rules (CRITICAL — think of state keys as step outputs):
   (b) Some step in the orchestration has `output_key: X`.
 - Branch conditioning is NOT the validator's concern. If a key's producer sits on one branch and a downstream step on another branch still reads it, that's fine — the engine falls back to the schema default on unset reads. Iterative refinement loops (first pass reads the default, subsequent passes read real data) are first-class patterns.
 - When designing `state_schema`, for each declared key you must be able to name the single step whose `output_key` writes it. If you cannot name the writer, delete the key — don't declare or read phantom keys.
+"""
+
+
+# Knowledge's two step types (R1), for the builder's prompts only while
+# Knowledge is on: `routes/builder.py` puts this in the run's `knowledge_steps`
+# state key (empty while off), which the analyst's, the drafter's and the
+# savers' prompts read. Kept out of `STEP_TYPE_CHEATSHEET` so a workspace
+# without Knowledge is never offered steps that would fail its runs.
+KNOWLEDGE_STEPS_PALETTE = """\
+Knowledge steps — this workspace can also search its documents (`list_knowledge_bases` names its knowledge bases):
+- **retrieve**: searches knowledge bases, with no model call. Required: `retrieve_kb_ids` (ids from `list_knowledge_bases`) and `retrieve_query` — what to look for, with `{state.key}` placeholders, e.g. `{state.user_input}`. Optional: `retrieve_filters_json` (a metadata filter such as `'{"doc_type":"contract"}'`), `retrieve_top_k`, `retrieve_rerank`, `retrieve_snapshot` (`active`, or a `ksnap_…` id to pin one knowledge base's version). Its `output_key` holds `{context, chunks, citations, trace_id, snapshot_ids}`: a later agent or llm step reads the passages as `{{ state.<output_key>.context }}` in its `prompt_template` — double braces, because a single-brace reference reads only a top-level key — each under a `[K#]` label and marked as documents, not instructions; `citations` says where each label's words are. Use it to ground an answer in the workspace's own documents.
+- **ingest**: adds records to a knowledge base so later searches find them, with no model call. Required: `ingest_kb_id` and `ingest_records_from` — the state key holding a list of objects (put an `extract_json` step after a model step to make one). Optional: `ingest_id_field` (the same id replaces its record; unset, the id comes from the record's content), `ingest_text_field` (unset, the whole object is indexed), `ingest_metadata_fields` (copied for retrieve filters). Indexing happens after the step, so a retrieve in the same run may not find what it just added.
 """

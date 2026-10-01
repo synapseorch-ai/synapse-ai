@@ -296,10 +296,10 @@ async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_
             return VirtualTool(ct["name"], ct.get("description", ""), ct.get("inputSchema") or {"type": "object"})
         return None
 
-    from core.builder_tools import BUILDER_TOOL_SCHEMAS
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS, builder_tool_offered
     for bt in BUILDER_TOOL_SCHEMAS:
         fn = bt["function"]
-        if fn["name"] == name and permits(allowed, name):
+        if fn["name"] == name and permits(allowed, name) and builder_tool_offered(name):
             return VirtualTool(name, fn.get("description", ""), fn.get("parameters", {"type": "object"}))
     return None
 
@@ -445,11 +445,13 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
     # Native Builder tools — first-class so any agent that declares them in its
     # `tools` list can call create_orchestration / list_agents / etc. Dispatch
     # to execute_builder_tool is handled in react_engine and ToolStepExecutor.
-    from core.builder_tools import BUILDER_TOOL_SCHEMAS
+    # A tool of a feature that is switched off (Knowledge's) is absent, so the
+    # roster — and the prompt cache — of an `"all"` agent is unchanged by it.
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS, builder_tool_offered
     for bt in BUILDER_TOOL_SCHEMAS:
         fn = bt["function"]
         bt_name = fn["name"]
-        if permits(allowed_tools, bt_name):
+        if permits(allowed_tools, bt_name) and builder_tool_offered(bt_name):
             vt = VirtualTool(bt_name, fn.get("description", ""), fn.get("parameters", {"type": "object"}))
             all_tools.append(vt)
             tool_schema_map[vt.name] = vt.inputSchema

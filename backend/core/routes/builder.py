@@ -204,6 +204,15 @@ MISSING_BUILDER = {
 }
 
 
+
+def _knowledge_steps() -> str:
+    """The Retrieve and Ingest palette while Knowledge is on, else nothing."""
+    from core.knowledge.config import knowledge_enabled
+    from core.native_builder import KNOWLEDGE_STEPS_PALETTE
+
+    return KNOWLEDGE_STEPS_PALETTE if knowledge_enabled() else ""
+
+
 async def prepare_builder_run(request: BuilderChatRequest, server_module, *, panel: bool = False):
     """Everything up to the first step: the run's id and the engine's generator.
 
@@ -237,6 +246,10 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         "chat_history": _format_history(request.history),
         "selected_agent_ids": list(request.selected_agent_ids or []),
         "can_create_agents": bool(request.can_create_agents),
+        # Knowledge's two step types, for the builder's prompts while Knowledge
+        # is on; empty while off, so no workspace is offered steps that would
+        # fail its runs (R1).
+        "knowledge_steps": _knowledge_steps(),
         **await _target_state(
             request.message,
             request.current_orchestration_id,

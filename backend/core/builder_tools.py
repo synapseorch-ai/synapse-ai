@@ -146,6 +146,40 @@ def _refuse_ungated_transform(steps: list) -> dict | None:
     }
 
 
+#: Knowledge's step types (R1): they search knowledge bases and add records to one.
+KNOWLEDGE_STEP_TYPES = frozenset({"retrieve", "ingest"})
+#: Builder tools that exist only while Knowledge is on — absent from every roster while it is off.
+KNOWLEDGE_BUILDER_TOOLS = frozenset({"list_knowledge_bases"})
+_KNOWLEDGE_OFF = "Knowledge is switched off in this workspace"
+
+
+def builder_tool_offered(name: str) -> bool:
+    """Whether builder tool `name` exists here right now: Knowledge's are absent while it is off, so no agent's
+    roster (nor its prompt cache) changes until Knowledge is switched on."""
+    if name not in KNOWLEDGE_BUILDER_TOOLS:
+        return True
+    from core.knowledge.config import knowledge_enabled
+
+    return knowledge_enabled()
+
+
+def _refuse_knowledge_off(steps: list) -> dict | None:
+    """Refuse Retrieve and Ingest steps while Knowledge is off: each would fail its run at that step."""
+    offenders = [s.get("id") or "?" for s in steps if s.get("type") in KNOWLEDGE_STEP_TYPES]
+    if not offenders:
+        return None
+    from core.knowledge.config import knowledge_enabled
+
+    if knowledge_enabled():
+        return None
+    return {
+        "error": (
+            f"Retrieve and Ingest steps search and fill knowledge bases, and {_KNOWLEDGE_OFF}: "
+            f"{offenders}. Build the orchestration without them."
+        )
+    }
+
+
 #: The five step fields that carry an expression. `core.expressions` decides
 #: what one may contain; this is only the list of places to look.
 _EXPRESSION_FIELDS = (
@@ -216,7 +250,8 @@ STEPS_JSON_DESCRIPTION = (
     "lean — include only fields that differ from zero-defaults.\n"
     "Sub-structures MUST be JSON strings inside each step: route_map_json, "
     "route_descriptions_json, parallel_branches_json, human_fields_json, "
-    "switch_cases_json.\n"
+    "switch_cases_json. Retrieve and ingest steps take add_single_step's flat "
+    "retrieve_* / ingest_* fields.\n"
     "Minimal example (2 agent steps):\n"
     "'[{\"id\":\"step_abc1234\",\"name\":\"Analyse\",\"type\":\"agent\","
     "\"agent_id\":\"agent_123\",\"prompt_template\":\"Summarise {state.user_input}\","
@@ -229,7 +264,8 @@ PATCH_JSON_DESCRIPTION = (
     "JSON-encoded object with the step fields you want to change. Omit any "
     "field you don't want touched. Use *_json string keys for sub-structures "
     "(route_map_json, parallel_branches_json, human_fields_json, "
-    "route_descriptions_json). "
+    "route_descriptions_json); a retrieve or ingest step's flat retrieve_* / ingest_* "
+    "fields change only those settings. "
     "Example: '{\"prompt_template\":\"New prompt\",\"next_step_id\":\"step_xyz7890\"}'"
 )
 
@@ -768,7 +804,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "name": {"type": "string", "description": "Human-readable step name"},
                     "type": {
                         "type": "string",
-                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end"],
+                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest"],
                         "description": "Step type",
                     },
                     "agent_id": {"type": "string", "description": "Agent ID (required for agent/tool steps)"},
@@ -848,6 +884,30 @@ BUILDER_TOOL_SCHEMAS = [
                         ),
                     },
                     "switch_default_step_id": {"type": "string", "description": "Fallback step when no switch case matches"},
+                    # ── Knowledge steps: retrieve / ingest (only while Knowledge is on) ──
+                    "retrieve_kb_ids": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Knowledge base ids to search, from list_knowledge_bases (retrieve steps; at most 10)",
+                    },
+                    "retrieve_query": {"type": "string", "description": "What to search for, with {state.key} placeholders, e.g. `{state.question}` (retrieve steps)"},
+                    "retrieve_filters_json": {
+                        "type": "string",
+                        "description": (
+                            "Optional JSON metadata filter (retrieve steps), e.g. '{\"doc_type\":\"contract\",\"year\":{\"$gte\":2024}}'. "
+                            "Operators: $eq $ne $in $nin $gt $gte $lt $lte, combined with $and $or $not"
+                        ),
+                    },
+                    "retrieve_top_k": {"type": "integer", "description": "How many passages, 1-50; unset: the knowledge base's own (retrieve steps)"},
+                    "retrieve_rerank": {"type": "boolean", "description": "Rerank on or off; unset: the knowledge base's default (retrieve steps)"},
+                    "retrieve_snapshot": {"type": "string", "description": "\"active\" (default), or a ksnap_… id to pin ONE knowledge base's index version (retrieve steps)"},
+                    "ingest_kb_id": {"type": "string", "description": "Knowledge base id the records are added to, from list_knowledge_bases (ingest steps)"},
+                    "ingest_records_from": {"type": "string", "description": "State key holding the list of objects to add, e.g. `tickets` (ingest steps)"},
+                    "ingest_id_field": {"type": "string", "description": "Field naming each record, e.g. `ticket_id`: the same id replaces its record. Unset: an id from the record's content (ingest steps)"},
+                    "ingest_text_field": {"type": "string", "description": "Field holding the text to index; unset: the whole object is indexed as JSON (ingest steps)"},
+                    "ingest_metadata_fields": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Fields copied into each record's metadata, so retrieve steps can filter on them (ingest steps)",
+                    },
                     "max_iterations": {"type": "integer", "description": "How many times this step may run in one run (default 3). A route to it after that fails the run, unless on_exhausted_step_id names where to go. Raise it for a cycle a person drives (a revision or clarification loop)."},
                     "on_exhausted_step_id": {"type": "string", "description": "Step the run goes to when a route reaches this step after it has run max_iterations times, e.g. an escalation or a best-effort finish. Unset, the run fails with \"'<step>' gave up after N attempts\"."},
                     # ──────────────────────────────────────────────────────────
@@ -893,7 +953,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "name": {"type": "string", "description": "Step name"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end"],
+                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest"],
                                 },
                                 "agent_id": {"type": "string"},
                                 "prompt_template": {"type": "string"},
@@ -924,6 +984,17 @@ BUILDER_TOOL_SCHEMAS = [
                                 "switch_expression": {"type": "string", "description": "Expression to evaluate for switch steps. Same restricted expression syntax as if_condition."},
                                 "switch_cases_json": {"type": "string", "description": "JSON string: '{\"value\":\"step_id\"}'"},
                                 "switch_default_step_id": {"type": "string", "description": "Fallback step when no case matches"},
+                                "retrieve_kb_ids": {"type": "array", "items": {"type": "string"}, "description": "Knowledge base ids to search (retrieve steps)"},
+                                "retrieve_query": {"type": "string", "description": "Search query with {state.key} placeholders (retrieve steps)"},
+                                "retrieve_filters_json": {"type": "string", "description": "JSON metadata filter (retrieve steps)"},
+                                "retrieve_top_k": {"type": "integer"},
+                                "retrieve_rerank": {"type": "boolean"},
+                                "retrieve_snapshot": {"type": "string", "description": "\"active\" or a ksnap_… id (retrieve steps)"},
+                                "ingest_kb_id": {"type": "string", "description": "Knowledge base id the records go into (ingest steps)"},
+                                "ingest_records_from": {"type": "string", "description": "State key holding the list of objects (ingest steps)"},
+                                "ingest_id_field": {"type": "string"},
+                                "ingest_text_field": {"type": "string"},
+                                "ingest_metadata_fields": {"type": "array", "items": {"type": "string"}},
                                 "max_iterations": {"type": "integer", "description": "Times this step may run in one run (default 3); a route to it after that fails the run unless on_exhausted_step_id is set"},
                                 "on_exhausted_step_id": {"type": "string", "description": "Step to go to when this step has used its max_iterations"},
                                 "max_turns": {"type": "integer"},
@@ -1017,6 +1088,18 @@ BUILDER_TOOL_SCHEMAS = [
         "function": {
             "name": "list_skills",
             "description": "List the skills available in this workspace (name, description, source). Skills are reusable instruction documents an agent loads on demand.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_knowledge_bases",
+            "description": (
+                "List this workspace's knowledge bases (id, name, description, folder, status, top_k): searchable "
+                "folders of documents. A retrieve step searches them by id (retrieve_kb_ids); an ingest step adds "
+                "records to one (ingest_kb_id). Only active ones can be used."
+            ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -1710,6 +1793,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_ungated_transform(steps)
         if refused:
             return refused
+        refused = _refuse_knowledge_off(steps)
+        if refused:
+            return refused
         refused = _refuse_unsafe_expression(steps)
         if refused:
             return refused
@@ -1749,6 +1835,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if "steps" in fields and isinstance(fields["steps"], list):
             fields["steps"] = _fill_step_defaults(fields["steps"])
             refused = _refuse_ungated_transform(fields["steps"])
+            if refused:
+                return refused
+            refused = _refuse_knowledge_off(fields["steps"])
             if refused:
                 return refused
             refused = _refuse_unsafe_expression(fields["steps"])
@@ -1821,6 +1910,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_ungated_transform(filled)
         if refused:
             return refused
+        refused = _refuse_knowledge_off(filled)
+        if refused:
+            return refused
         refused = _refuse_unsafe_expression(filled)
         if refused:
             return refused
@@ -1873,6 +1965,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_ungated_transform(filled)
         if refused:
             return refused
+        refused = _refuse_knowledge_off(filled)
+        if refused:
+            return refused
         refused = _refuse_unsafe_expression(filled)
         if refused:
             return refused
@@ -1922,6 +2017,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
 
         filled = _fill_step_defaults(processed)
         refused = _refuse_ungated_transform(filled)
+        if refused:
+            return refused
+        refused = _refuse_knowledge_off(filled)
         if refused:
             return refused
         refused = _refuse_unsafe_expression(filled)
@@ -1982,6 +2080,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_ungated_transform([steps[sidx]])
         if refused:
             return refused
+        refused = _refuse_knowledge_off([steps[sidx]])
+        if refused:
+            return refused
         refused = _refuse_unsafe_expression([steps[sidx]])
         if refused:
             return refused
@@ -2024,7 +2125,13 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # The agents its steps name, so a step whose agent is missing or runs no
         # orchestration is caught here rather than on the first run (F264).
         agents = {a.get("id"): a for a in await load_user_agents() if a.get("id")}
-        verdict = _validate_orchestration(orch, agents=agents)
+        # And the knowledge bases its Retrieve and Ingest steps name, while Knowledge is on.
+        knowledge_on = builder_tool_offered("list_knowledge_bases")
+        kbs = None
+        if knowledge_on and any(s.get("type") in KNOWLEDGE_STEP_TYPES for s in orch.get("steps") or []):
+            from core.knowledge import bases
+            kbs = {kb.id: kb for kb in await bases.list_bases()}
+        verdict = _validate_orchestration(orch, agents=agents, kbs=kbs, knowledge_off=not knowledge_on)
         if verdict.get("ok") and orch.pop("building_run", None) is not None:
             await save_orchestration(orch)  # finished: `finish_build` keeps it
         return verdict
@@ -2161,6 +2268,15 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         return {"status": "deleted", "id": name, "name": name}
 
     # ── Skills ───────────────────────────────────────────────────────────────
+
+    elif tool_name == "list_knowledge_bases":
+        if not builder_tool_offered(tool_name):
+            return {"error": f"{_KNOWLEDGE_OFF}: there are no knowledge bases to list, and retrieve and "
+                             f"ingest steps are not available."}
+        from core.knowledge import bases
+        return [{"id": kb.id, "name": kb.name, "description": kb.description, "folder": kb.folder,
+                 "status": kb.status, "top_k": kb.retrieval.top_k}
+                for kb in await bases.list_bases()]
 
     elif tool_name == "list_skills":
         from core import skills as skills_mod
@@ -2421,10 +2537,38 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
 
 
 #: Steps that exist to produce a value, so losing it is worth an issue.
-_RESULT_STEP_TYPES = frozenset({"agent", "llm", "tool", "merge", "transform", "extract_json", "human"})
+_RESULT_STEP_TYPES = frozenset({"agent", "llm", "tool", "merge", "transform", "extract_json", "human", "retrieve"})
 
 
-def _validate_orchestration(orch: dict, agents: dict | None = None) -> dict:
+def _knowledge_step_issues(step: dict, kbs: dict | None, knowledge_off: bool) -> list[str]:
+    """A Retrieve or Ingest step's settings held to the contract, and the bases it names checked against the
+    workspace's (R1). `kbs` (id → base) is None when they were not looked up: then only the settings are."""
+    from core.knowledge import workflow_steps as W
+
+    sid = step.get("id", "?")
+    kind = "Retrieve" if step.get("type") == "retrieve" else "Ingest"
+    if knowledge_off:
+        return [f"{kind} step '{sid}' cannot run while Knowledge is switched off in this workspace — remove it."]
+    try:
+        if kind == "Retrieve":
+            named = W.retrieve_config(step.get("retrieve"), step_name=sid).kb_ids
+        else:
+            named = [W.ingest_config(step.get("ingest"), step_name=sid).kb_id]
+    except W.StepFailed as exc:
+        return [f"{exc} — set it with the {kind.lower()}_* fields."]
+    issues = []
+    for kb_id in named if kbs is not None else []:
+        kb = kbs.get(kb_id)
+        if kb is None:
+            issues.append(f"{kind} step '{sid}' uses knowledge base '{kb_id}', which does not exist — use an id "
+                          f"list_knowledge_bases returns.")
+        elif kb.status != "active":
+            issues.append(f"{kind} step '{sid}' uses knowledge base '{kb.name}' ({kb_id}), which is disabled.")
+    return issues
+
+
+def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
+                            knowledge_off: bool = False) -> dict:
     """Return {"ok": bool, "issues": [str, ...]} describing wiring problems.
 
     Checks (matches the engine's expectations in core.orchestration.engine):
@@ -2442,6 +2586,10 @@ def _validate_orchestration(orch: dict, agents: dict | None = None) -> dict:
         is of that type
       - a human step with fields writes a mapping, so its key is not declared
         as text or a number, and no Print shows that mapping whole (F189)
+      - a retrieve or ingest step's settings hold to the contract, the
+        knowledge bases it names exist (`kbs`, when given) and are active, an
+        ingest step reads a key something writes or the schema declares, and
+        neither is in an orchestration while Knowledge is off (R1)
     """
     issues: list[str] = []
     steps = orch.get("steps", []) or []
@@ -2578,6 +2726,8 @@ def _validate_orchestration(orch: dict, agents: dict | None = None) -> dict:
             issues.append(f"Extract JSON step '{sid}' has no output_key — extracted JSON will not be stored.")
         if stype == "print" and not s.get("print_content"):
             issues.append(f"Print step '{sid}' has no print_content.")
+        if stype in KNOWLEDGE_STEP_TYPES:
+            issues.extend(_knowledge_step_issues(s, kbs, knowledge_off))
         if stype == "loop":
             body = s.get("loop_step_ids") or []
             if sid in body:
@@ -2662,6 +2812,17 @@ def _validate_orchestration(orch: dict, agents: dict | None = None) -> dict:
                     f"Step '{sid}' reads input_key '{k}', which nothing writes — give an "
                     f"earlier step '{k}' as its output_key, or change the read to a key that "
                     f"is already written. Remove the read only if the step does not need that value."
+                )
+        # An Ingest step reads its records from one key. A key the schema
+        # declares counts too: a run's caller can fill it, and a list default
+        # is a way to seed records.
+        if s.get("type") == "ingest" and isinstance(s.get("ingest"), dict):
+            source = str(s["ingest"].get("records_from") or "").strip()
+            source = source[len("state."):] if source.startswith("state.") else source
+            if source and source not in writable and source not in (orch.get("state_schema") or {}):
+                issues.append(
+                    f"Ingest step '{sid}' reads its records from '{source}', which nothing writes — give the "
+                    f"step that makes them '{source}' as its output_key, or declare it in the state schema."
                 )
     # What a run makes (F249): a result_key no step writes is never the result.
     result_key = orch.get("result_key") or ""
@@ -2857,7 +3018,31 @@ def _normalize_step_inputs(step: dict) -> dict:
         s["human_fields"] = _parse_json_field(s.pop("human_fields_json"), [])
     if "switch_cases_json" in s:
         s["switch_cases"] = _parse_json_field(s.pop("switch_cases_json"), {})
+    # A Retrieve or Ingest step keeps its settings as one block, the contract's
+    # own body (`step.retrieve` / `step.ingest`); the model writes them flat.
+    # Folded into whatever block the step already has, so a patch of one field
+    # changes only that field. A filter that is not JSON stays a string, for
+    # `validate_orchestration` to name, rather than vanishing.
+    for block, names in _KNOWLEDGE_FLAT_FIELDS.items():
+        if f"{block}_json" in s:
+            given = _parse_json_field(s.pop(f"{block}_json"), {})
+            if isinstance(given, dict):
+                s[block] = {**(s.get(block) or {}), **given}
+        flat = {field: s.pop(name) for name, field in names.items() if name in s}
+        if isinstance(flat.get("filters"), str):
+            flat["filters"] = _parse_json_field(flat["filters"], flat["filters"]) if flat["filters"].strip() else None
+        if flat:
+            s[block] = {**(s.get(block) or {}), **flat}
     return s
+
+
+#: The flat builder fields of a Retrieve or Ingest step → its settings block's field (R1).
+_KNOWLEDGE_FLAT_FIELDS: dict[str, dict[str, str]] = {
+    "retrieve": {"retrieve_kb_ids": "kb_ids", "retrieve_query": "query", "retrieve_filters_json": "filters",
+                 "retrieve_top_k": "top_k", "retrieve_rerank": "rerank", "retrieve_snapshot": "snapshot"},
+    "ingest": {"ingest_kb_id": "kb_id", "ingest_records_from": "records_from", "ingest_id_field": "id_field",
+               "ingest_text_field": "text_field", "ingest_metadata_fields": "metadata_fields"},
+}
 
 
 def _normalize_state_schema_arg(args: dict) -> None:
