@@ -17,15 +17,16 @@ import json
 import re
 from typing import Any
 
-from core.knowledge.parsed import Block, ParseWarning, SheetData, TableData
+from core.knowledge.parse.sheets import ROW_GROUP_MAX_ROWS, ROW_GROUP_SIZE, SAMPLE_ROWS, sheet_parts
+from core.knowledge.parsed import Block, ParseWarning, TableData
 
 #: Past these, the rest is cut and the document ends `partial` with a warning.
 MAX_TEXT_CHARS = 5_000_000
 MAX_BLOCKS = 20_000
-#: A CSV up to this many data rows is also indexed row group by row group.
-ROW_GROUP_MAX_ROWS = 500
-ROW_GROUP_SIZE = 25
-SAMPLE_ROWS = 20
+#: The sheet card and its row-group sizes live in `sheets.py`, shared by every tabular format;
+#: they are re-exported here for the callers that knew them from this module.
+__all__ =["MAX_TEXT_CHARS", "MAX_BLOCKS", "ROW_GROUP_MAX_ROWS", "ROW_GROUP_SIZE", "SAMPLE_ROWS", "paragraphs",
+           "parse_markdown", "parse_plain", "parse_code", "render_json", "parse_delimited"]
 
 
 class _Blocks:
@@ -191,6 +192,11 @@ def parse_plain(text: str) -> list[Block]:
     return paragraphs(text).blocks
 
 
+def parse_code(text: str) -> list[Block]:
+    """Source code: blank-line-separated runs, as `code` blocks."""
+    return [b.model_copy(update={"kind": "code"}) for b in paragraphs(text).blocks]
+
+
 # ── JSON ───────────────────────────────────────────────────────────────────────
 
 def _scalar(value: Any) -> str:
@@ -240,64 +246,20 @@ def render_json(value: Any) -> tuple[str, bool]:
 
 # ── CSV / TSV ──────────────────────────────────────────────────────────────────
 
-_NUMBER = re.compile(r"^[-+]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?([eE][-+]?\d+)?$")
-_DATEISH = re.compile(r"^\d{4}-\d{2}(-\d{2})?([ T]\d{2}:\d{2}(:\d{2})?)?$")
-
-
-def _dtype(values: list[str]) -> str:
-    seen = [v.strip() for v in values if v.strip()]
-    if not seen:
-        return "string"
-    if all(_NUMBER.match(v) for v in seen):
-        return "number"
-    if all(_DATEISH.match(v) for v in seen):
-        return "date"
-    if all(v.lower() in ("true", "false", "yes", "no") for v in seen):
-        return "bool"
-    return "string"
-
-
-def _column(n: int) -> str:
-    name = ""
-    while n:
-        n, rem = divmod(n - 1, 26)
-        name = chr(65 + rem) + name
-    return name or "A"
-
-
 def parse_delimited(text: str, *, name: str, delimiter: str) -> tuple[str, list[Block], list[ParseWarning]]:
     """A sheet card, and row groups of `ROW_GROUP_SIZE` for a small sheet. Returns (text, blocks, warnings)."""
-    rows = [r for r in csv.reader(io.StringIO(text), delimiter=delimiter) if any(c.strip() for c in r)]
-    warnings: list[ParseWarning] = []
-    if not rows:
-        return "", [], warnings
-    header, data = rows[0], rows[1:]
-    width = max(len(r) for r in rows)
-    header = header + [""] * (width - len(header))
-    data = [r + [""] * (width - len(r)) for r in data]
-    dtypes = [_dtype([r[c] for r in data[:1000]]) for c in range(width)]
-    card = f"Sheet {name}: {', '.join(h or _column(c + 1) for c, h in enumerate(header))} ({len(data)} rows)"
-    parts, spans = [card], [(0, len(card))]
-    pos = len(card) + 2
-    groups = []
-    if len(data) <= ROW_GROUP_MAX_ROWS:
-        for start in range(0, len(data), ROW_GROUP_SIZE):
-            group = data[start:start + ROW_GROUP_SIZE]
-            body = "\n".join(" | ".join(r) for r in [header, *group])
-            parts.append(body)
-            spans.append((pos, pos + len(body)))
-            groups.append(group)
-            pos += len(body) + 2
-    elif data:
-        warnings.append(ParseWarning(code="sheet_truncated", count=len(data), message=(
-            f"{len(data)} rows: the sheet is indexed as its card (headers, types, {SAMPLE_ROWS} sample rows), "
-            f"not row by row, above {ROW_GROUP_MAX_ROWS} rows.")))
-    full = "\n\n".join(parts)
+    rows = list(csv.reader(io.StringIO(text), delimiter=delimiter))
+    parts = sheet_parts(name, rows)
+    if parts is None:
+        return "", [], []
+    pieces = [parts.card, *(body for body, _ in parts.groups)]
+    full = "\n\n".join(pieces)
     blocks = _Blocks(full)
-    blocks.add("sheet", *spans[0], sheet=SheetData(
-        name=name, range=f"A1:{_column(width)}{len(rows)}", n_rows=len(data), n_cols=width, headers=header,
-        sample_rows=data[:SAMPLE_ROWS], dtypes=dtypes, truncated=len(data) > ROW_GROUP_MAX_ROWS))
-    for (start, end), group in zip(spans[1:], groups):
-        blocks.add("table", start, end, table=TableData(rows=[header, *group], header_rows=1, n_rows=len(group) + 1,
-                                                        n_cols=width))
-    return full, blocks.blocks, warnings
+    pos = 0
+    for k, piece in enumerate(pieces):
+        if k == 0:
+            blocks.add("sheet", pos, pos + len(piece), sheet=parts.data)
+        else:
+            blocks.add("table", pos, pos + len(piece), table=parts.groups[k - 1][1])
+        pos += len(piece) + 2
+    return full, blocks.blocks, parts.warnings
