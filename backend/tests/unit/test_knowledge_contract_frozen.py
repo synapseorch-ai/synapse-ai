@@ -66,6 +66,8 @@ LANE_MODULES = {
     "workflow_steps.py",
     # B2b — budgets, cost previews and costs, presets
     "budgets.py", "costs.py", "presets.py",
+    # V1 — test a knowledge base: scores
+    "evals_metrics.py",
 }
 FROZEN_HEADER = "# FROZEN CONTRACT (KB0, D153)"
 
