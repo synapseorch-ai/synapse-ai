@@ -3849,6 +3849,45 @@ async def check_knowledge_drawer(browser) -> str:
 
 
 @check
+async def check_knowledge_eval(browser) -> str:
+    """A knowledge base's eval (V1, D168): the Run dialog is named, every control in it is named, it prices the
+    run before anything starts, and Escape closes it without starting one."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    started = []
+    for pattern, handler in _SMOKE_KB_EVAL_ROUTES:
+        await ctx.route(pattern, handler)
+
+    async def record_start(route):
+        if route.request.method == "POST":
+            started.append(route.request.post_data)
+        await route.fallback()
+    await ctx.route("**/api/knowledge/bases/*/eval/runs", record_start)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile("^Evaluate")).wait_for(timeout=30_000)
+        await _kb_eval(page)
+        await page.get_by_role("button", name="Run", exact=True).click()
+        dialog = page.get_by_role("dialog", name="Run Smoke questions")
+        await dialog.wait_for(timeout=10_000)
+        unnamed = await dialog.evaluate("""d => [...d.querySelectorAll('button, input, [role=combobox], [role=checkbox]')]
+            .filter(e => e.type !== 'hidden' && !e.getAttribute('aria-label') && !e.labels?.length
+                         && !e.getAttribute('aria-labelledby') && !e.textContent.trim()).length""")
+        if unnamed:
+            raise AssertionError(f"the Run dialog has {unnamed} unnamed control(s)")
+        await dialog.get_by_text(re.compile(r"^About \$")).wait_for(timeout=10_000)
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.8)
+        if await page.get_by_role("dialog").count():
+            raise AssertionError("Escape did not close the Run dialog")
+        if started:
+            raise AssertionError(f"closing the dialog started a run: {started}")
+        return "the Run dialog is named throughout, prices the run, and Escape closes it without starting one"
+    finally:
+        await ctx.close()
+
+
+@check
 async def check_knowledge_settings(browser) -> str:
     """A knowledge base's settings drawer (B2b, D167) is a named dialog whose every control is named; nothing
     is saved before something changes; a change to how the index is built is priced before it is saved; and
@@ -5365,6 +5404,57 @@ _SMOKE_KB = {"id": "kb_00000000smoke", "name": "Smoke contracts", "description":
                   "exclude": []}]},
              "state": {"counts_by_status": {"indexed": 1, "failed": 1}, "active_snapshot": "ksnap_smoke",
                        "building_snapshot": None, "month_spend_usd": 1.25, "paused_reason": None, "build": None}}
+#: A base's eval (V1, D168): one question set, a finished run scored four ways with a judge, and drafts.
+_SMOKE_EVAL_SCORES = {"cases": 2, "hit_at": {"1": 0.5, "3": 1.0, "5": 1.0, "10": 1.0}, "mrr": 0.75,
+                      "ndcg_at_10": 0.82, "recall_at_10": 1.0, "complete_at_10": 1.0}
+_SMOKE_EVAL_RESULTS = [
+    {"key": f"ksnap_smoke:{config}", "snapshot_id": "ksnap_smoke", "config": config, "label": label,
+     "available": config != "vector", "reason": "Not available: nothing in this index is embedded."
+     if config == "vector" else None, "weights": None, "rrf_k": None, "agent_sees": 8 if config == "served" else None,
+     "scores": _SMOKE_EVAL_SCORES, "by_kind": {"direct": _SMOKE_EVAL_SCORES}}
+    for config, label in (("lexical", "Keyword only"), ("vector", "Vector only"), ("hybrid", "Hybrid (fused)"),
+                          ("served", "As served"))]
+_SMOKE_EVAL_RUN_SUMMARY = {
+    "id": "krun_smoke", "kb_id": "kb_00000000smoke", "set_id": "kset_smoke", "status": "completed",
+    "started_by": "person", "case_count": 2, "done_count": 2, "compared_cases": 2, "stale_cases": 0,
+    "snapshots": [{"snapshot_id": "ksnap_smoke", "status": "active", "docs_done": None, "docs_total": None,
+                   "comparable": True, "embed_model": None, "chunker_version": "structure-1", "settings": {}}],
+    "results": _SMOKE_EVAL_RESULTS, "notes": [], "est_usd": 0.01, "cost_usd": 0.0123, "error": None,
+    "judge": {"answer_model": "gpt-4o-mini", "judge_model": "claude-haiku-4-5", "rubric_id": "rub_kgrounded",
+              "rubric_version": 1, "scale_max": 10.0, "mean_score": 8.5, "judged": 2, "failed": 0, "quotes": 2,
+              "quotes_matched": 2, "unresolved_labels": 0, "warning": None},
+    "created_at": _NOW, "started_at": _NOW, "finished_at": _NOW}
+_SMOKE_EVAL_EVIDENCE = {"doc_id": "kdoc_smoke1", "path": "smoke_kb/acme.md", "attachment": None,
+                        "doc_sha256": "a" * 64, "char_start": 10, "char_end": 60,
+                        "quote": "The hosting fee is 1,200 a month, billed in advance."}
+_SMOKE_EVAL_CASES = [
+    {"id": "case_smoke1", "kind": "direct", "question": "What does hosting cost each month?",
+     "reference_answer": "1,200.", "evidence": [_SMOKE_EVAL_EVIDENCE], "query_id": None, "overlap": 0.6,
+     "created_at": _NOW},
+    {"id": "case_smoke2", "kind": "paraphrase", "question": "How much do we pay to keep the site online?",
+     "reference_answer": "1,200 a month.", "evidence": [_SMOKE_EVAL_EVIDENCE], "query_id": None, "overlap": 0.0,
+     "created_at": _NOW},
+]
+_SMOKE_EVAL_SET_SUMMARY = {"id": "kset_smoke", "kb_id": "kb_00000000smoke", "name": "Smoke questions", "revision": 1,
+                           "case_count": 2, "counts_by_kind": {"direct": 1, "paraphrase": 1}, "created_at": _NOW,
+                           "updated_at": _NOW, "last_run": _SMOKE_EVAL_RUN_SUMMARY}
+_SMOKE_EVAL_SET = {**_SMOKE_EVAL_SET_SUMMARY, "cases": _SMOKE_EVAL_CASES}
+_SMOKE_EVAL_RUN = {**_SMOKE_EVAL_RUN_SUMMARY, "cases": [
+    {"case_id": c["id"], "kind": c["kind"], "question": c["question"], "stale": False, "trimmed": False,
+     "ranks": {"ksnap_smoke:served": 1, "ksnap_smoke:hybrid": 2, "ksnap_smoke:lexical": 1},
+     "found": {"ksnap_smoke:served": 1}, "query_ids": {"ksnap_smoke": "kq_smoke"},
+     "top": [{"path": "smoke_kb/acme.md", "snippet": "The hosting fee…", "relevant": True}],
+     "answer": 'Hosting costs "1,200 a month" [K1].', "quote_check": {"quotes": 1, "matched": 1, "unresolved": []},
+     "verdict": {"score": 8.5, "reasoning": "Supported by its passage.", "per_criterion": {}, "error": None}}
+    for c in _SMOKE_EVAL_CASES]}
+_SMOKE_EVAL_DRAFTS = {"model": "gpt-4o-mini", "dropped": {"quote_not_found": 1}, "saved": False, "drafts": [
+    {"kind": "multi_hop", "question": "Which team sets the hosting fee and issues refunds?",
+     "reference_answer": "The billing team.", "evidence": [_SMOKE_EVAL_EVIDENCE, {**_SMOKE_EVAL_EVIDENCE,
+                                                                                  "path": "smoke_kb/refunds.md"}],
+     "overlap": 0.2}]}
+_SMOKE_EVAL_ESTIMATE = {"lines": [{"part": "drafts", "model": "gpt-4o-mini", "calls": 10, "input_tokens": 9000,
+                                   "output_tokens": 1200, "est_usd": 0.0021, "counts_toward_budget": False}],
+                        "total_est_usd": 0.0021, "unpriced": [], "budget_remaining_usd": None}
 #: The same base rebuilding its index after a change to how it is built (B2b).
 _SMOKE_KB_REBUILDING = {**_SMOKE_KB, "state": {
     **_SMOKE_KB["state"], "building_snapshot": "ksnap_smoke2",
@@ -5421,6 +5511,18 @@ _SMOKE_KB_ROUTES = [
     ("**/api/knowledge/bases/*/costs*", _answer(_SMOKE_KB_COSTS)),
     ("**/api/knowledge/bases/*/cost-preview", _answer(_SMOKE_KB_PREVIEW, methods=("POST",))),
     ("**/api/knowledge/documents/*", _answer(_SMOKE_KB_REPORT)),
+    ("**/api/knowledge/bases/*/eval/sets", _answer([_SMOKE_EVAL_SET_SUMMARY])),
+    ("**/api/knowledge/bases/*/eval/sets/*", _answer(_SMOKE_EVAL_SET)),
+    ("**/api/knowledge/bases/*/eval/runs*", _answer([_SMOKE_EVAL_RUN_SUMMARY])),
+    ("**/api/knowledge/bases/*/eval/runs/*", _answer(_SMOKE_EVAL_RUN)),
+    ("**/api/knowledge/bases/*/eval/drafts", _answer(_SMOKE_EVAL_DRAFTS, methods=("POST",))),
+    ("**/api/knowledge/bases/*/eval/estimate", _answer(_SMOKE_EVAL_ESTIMATE, methods=("POST",))),
+]
+#: The eval's dialogs start from the workspace's model.
+_SMOKE_KB_EVAL_ROUTES = _SMOKE_KB_ROUTES + [
+    ("**/api/settings", _answer({"knowledge_enabled": True, "model": "gpt-4o-mini", "judge_model": ""})),
+    ("**/api/models", _answer({"providers": {"openai": {"available": True, "models": ["gpt-4o-mini"],
+                                                        "embedding_models": ["text-embedding-3-small"]}}})),
 ]
 
 
@@ -5504,6 +5606,17 @@ async def _kb_settings_rebuild(page):
     await page.get_by_role("option", name="One per page").click()
 
 
+async def _kb_eval(page):
+    await page.get_by_role("button", name=re.compile("^Evaluate")).click()
+    await page.get_by_text("Hit@5").first.wait_for(timeout=20_000)
+
+
+async def _kb_eval_drafts(page):
+    await _kb_eval(page)
+    await page.get_by_role("button", name="Draft questions").click()
+    await page.get_by_role("button", name=re.compile("^Draft 10 questions")).click()
+
+
 async def _kb_test_search(page):
     await page.get_by_role("button", name=re.compile("^Test search")).click()
     await page.get_by_role("searchbox", name="Search Smoke contracts").fill("what does hosting cost?")
@@ -5531,6 +5644,9 @@ LIGHT_STATES = (
      lambda p: p.get_by_role("button", name=re.compile("^Costs")).click(), "Reranking"),
     ("knowledge report", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name="Report for failed.md").click(), "What happened"),
+    ("knowledge eval results", "/knowledge", [], _SMOKE_KB_EVAL_ROUTES, _kb_eval, "Grounded in cited sources"),
+    ("knowledge eval suggestions", "/knowledge", [], _SMOKE_KB_EVAL_ROUTES, _kb_eval_drafts,
+     "Suggestions only — nothing is saved until you add them."),
     ("chat tip 5", "/", [CHAT_STUB], [],
      lambda p: p.get_by_role("button", name="Show tip 5: Automate with schedules").click(),
      "Automate with schedules"),

@@ -19,6 +19,9 @@
  * A base's settings open in a drawer (`KnowledgeSettings`, B2b). A change to how
  * its index is built rebuilds it beside the serving one; the line under the
  * header follows that rebuild, and the Costs section says what the base has spent.
+ *
+ * Evaluate (`KnowledgeEval`, V1) tests the base on its own documents: question sets, runs scored with no judge,
+ * snapshots side by side, and an optional grounded judge.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, FolderOpen, Globe, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, Upload } from 'lucide-react';
@@ -29,6 +32,7 @@ import {
     type SelectOption,
 } from '@/components/ui';
 import { RetrievalTrace } from '@/components/RetrievalTrace';
+import { Evaluate } from '@/components/settings/KnowledgeEval';
 import { KnowledgeSettings } from '@/components/settings/KnowledgeSettings';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
@@ -497,6 +501,7 @@ function BaseDetail({
 
             <TestSearch kb={kb} />
             <Costs kb={kb} docs={docs} />
+            <Evaluate kb={kb} notify={notify} />
 
             <div className="flex items-center justify-between gap-3">
                 <Label>{docs ? count(shown.length, 'document') : 'Documents'}</Label>

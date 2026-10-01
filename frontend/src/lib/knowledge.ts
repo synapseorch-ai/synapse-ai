@@ -365,6 +365,12 @@ const json = (method: string, body: unknown): RequestInit => ({
     method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 });
 
+/** A call answered with no body (204). */
+async function callNone(url: string, init?: RequestInit): Promise<void> {
+    const res = await fetch(url, init);
+    if (!res.ok) throw new KnowledgeApiError(await errorText(res), res.status);
+}
+
 /** One passage a search found (`api_models.Hit`). */
 export type SearchHit = {
     label: string;
@@ -463,6 +469,94 @@ export type BaseSettings = Pick<KnowledgeBase,
     'language' | 'visitor_access' | 'budget_monthly_usd' | 'chunking' | 'embedding' | 'rerank' | 'fusion' | 'retrieval'
     | 'enrichment'>;
 
+// ── evaluation: test a knowledge base on its own documents (V1, D168) ──────────
+
+export type EvalCaseKind = 'direct' | 'paraphrase' | 'multi_hop' | 'promoted';
+export type EvalConfig = 'lexical' | 'vector' | 'hybrid' | 'served' | 'custom';
+export type EvalRunStatus = 'queued' | 'running' | 'cancelling' | 'completed' | 'cancelled' | 'failed' | 'interrupted'
+    | 'skipped';
+
+/** Where a case's answer is written: a quote, and its span in the document (`api_models.EvalEvidence`). */
+export type EvalEvidence = {
+    doc_id: string; path: string; attachment?: string | null; doc_sha256?: string | null;
+    char_start: number; char_end: number; quote: string;
+};
+export type EvalCase = {
+    id?: string | null; kind: EvalCaseKind; question: string; reference_answer: string; evidence: EvalEvidence[];
+    query_id?: string | null; overlap?: number | null; created_at?: string | null;
+};
+export type EvalScores = {
+    cases: number; hit_at: Record<string, number>; mrr: number; ndcg_at_10: number; recall_at_10: number;
+    complete_at_10: number;
+};
+/** One configuration's scores in one snapshot (`api_models.EvalConfigResult`). */
+export type EvalConfigResult = {
+    key: string; snapshot_id: string; config: EvalConfig; label: string; available: boolean; reason: string | null;
+    weights: Record<string, number> | null; rrf_k: number | null; agent_sees: number | null;
+    scores: EvalScores; by_kind: Record<string, EvalScores>;
+};
+export type EvalSnapshotInfo = {
+    snapshot_id: string; status: string; docs_done: number | null; docs_total: number | null; comparable: boolean;
+    embed_model: string | null; chunker_version: string | null; settings: Record<string, unknown>;
+};
+export type EvalJudgeSummary = {
+    answer_model: string; judge_model: string; rubric_id: string; rubric_version: number | null; scale_max: number;
+    mean_score: number | null; judged: number; failed: number; quotes: number; quotes_matched: number;
+    unresolved_labels: number; warning: string | null;
+};
+export type EvalRunSummary = {
+    id: string; kb_id: string; set_id: string; status: EvalRunStatus; started_by: 'person' | 'settings';
+    case_count: number; done_count: number; compared_cases: number; stale_cases: number;
+    snapshots: EvalSnapshotInfo[]; results: EvalConfigResult[]; judge: EvalJudgeSummary | null; notes: string[];
+    est_usd: number | null; cost_usd: number | null; error: string | null;
+    created_at: string | null; started_at: string | null; finished_at: string | null;
+};
+export type EvalVerdict = { score: number | null; reasoning: string; per_criterion: Record<string, { score: number; reasoning: string }>; error: string | null };
+export type EvalCaseResult = {
+    case_id: string; kind: EvalCaseKind; question: string; stale: boolean; trimmed: boolean;
+    ranks: Record<string, number | null>; found: Record<string, number>; query_ids: Record<string, string>;
+    top: { path: string; snippet: string; relevant: boolean }[];
+    answer: string | null; quote_check: { quotes: number; matched: number; unresolved: number[] } | null;
+    verdict: EvalVerdict | null;
+};
+export type EvalRun = EvalRunSummary & { cases: EvalCaseResult[] };
+export type EvalSetSummary = {
+    id: string; kb_id: string; name: string; revision: number; case_count: number;
+    counts_by_kind: Record<string, number>; created_at: string | null; updated_at: string | null;
+    last_run: EvalRunSummary | null;
+};
+export type EvalSet = EvalSetSummary & { cases: EvalCase[] };
+export type EvalDraft = { kind: EvalCaseKind; question: string; reference_answer: string; evidence: EvalEvidence[]; overlap: number | null };
+export type EvalDrafts = { drafts: EvalDraft[]; model: string; dropped: Record<string, number>; saved: false };
+export type EvalDraftRequest = { model?: string; direct: number; paraphrase: number; multi_hop: number; set_id?: string; seed?: number };
+export type EvalJudgeRequest = { answer_model: string; judge_model: string };
+export type EvalRunRequest = { set_id: string; snapshot_ids?: string[]; rerank?: boolean | null; judge?: EvalJudgeRequest | null };
+export type EvalCostLine = {
+    part: 'drafts' | 'search' | 'answers' | 'judge'; model: string; calls: number; input_tokens: number;
+    output_tokens: number; est_usd: number | null; counts_toward_budget: boolean;
+};
+export type EvalEstimate = { lines: EvalCostLine[]; total_est_usd: number; unpriced: string[]; budget_remaining_usd: number | null };
+export type EvalQuery = {
+    query_id: string; query: string; surface: string; created_at: string; retained_by: string | null;
+    hits: { label: string; chunk_id: string; doc_id: string; path: string; snippet: string; score: number | null }[];
+};
+
+export const EVAL_KINDS: Record<EvalCaseKind, string> = {
+    direct: 'Direct', paraphrase: 'Paraphrase', multi_hop: 'Multi-hop', promoted: 'Real search',
+};
+/** Why the server dropped a draft, in words. */
+export const DRAFT_DROPPED: Record<string, string> = {
+    quote_not_found: 'the words it quoted are not in the passage',
+    too_close_to_passage: 'it kept the passage\'s own words',
+    unreadable: 'the model did not answer in the expected form',
+    failed: 'the model call failed',
+    timed_out: 'the model took too long',
+    no_partner: 'no second document shares enough with the first',
+    no_passage: 'there were no more passages to ask about',
+};
+
+const evalBase = (kbId: string) => `/api/knowledge/bases/${kbId}/eval`;
+
 export const knowledgeApi = {
     bases: () => call<KnowledgeBase[]>('/api/knowledge/bases'),
     base: (id: string) => call<KnowledgeBase>(`/api/knowledge/bases/${id}`),
@@ -504,6 +598,33 @@ export const knowledgeApi = {
     /** What an agent searching these bases would find, with the trace that decided it. */
     search: (body: { query: string; kb_ids: string[]; top_k?: number; include_trace?: boolean }) =>
         call<SearchResult>('/api/knowledge/search', json('POST', body)),
+    /** A base's eval (V1): question sets, drafts that are never saved, runs. */
+    eval: {
+        sets: (kbId: string) => call<EvalSetSummary[]>(`${evalBase(kbId)}/sets`),
+        createSet: (kbId: string, body: { name: string; cases?: EvalCase[] }) =>
+            call<EvalSet>(`${evalBase(kbId)}/sets`, json('POST', body)),
+        set: (kbId: string, setId: string) => call<EvalSet>(`${evalBase(kbId)}/sets/${setId}`),
+        /** A save from the revision the edit started at; a stale one is a 409. */
+        saveSet: (kbId: string, setId: string, body: { revision: number; name?: string; cases?: EvalCase[] }) =>
+            call<EvalSet>(`${evalBase(kbId)}/sets/${setId}`, json('PUT', body)),
+        deleteSet: (kbId: string, setId: string) => callNone(`${evalBase(kbId)}/sets/${setId}`, { method: 'DELETE' }),
+        promote: (kbId: string, setId: string, body: { query_id: string; chunk_ids: string[]; question?: string }) =>
+            call<EvalSet>(`${evalBase(kbId)}/sets/${setId}/promote`, json('POST', body)),
+        /** Paid: one model call per question. Saves nothing. */
+        drafts: (kbId: string, body: EvalDraftRequest) => call<EvalDrafts>(`${evalBase(kbId)}/drafts`, json('POST', body)),
+        estimate: (kbId: string, body: { drafts: EvalDraftRequest } | { run: EvalRunRequest }, init?: { signal?: AbortSignal }) =>
+            call<EvalEstimate>(`${evalBase(kbId)}/estimate`, { ...json('POST', body), ...init }),
+        queries: (kbId: string) => call<EvalQuery[]>(`${evalBase(kbId)}/queries`),
+        startRun: (kbId: string, body: EvalRunRequest) => call<EvalRunSummary>(`${evalBase(kbId)}/runs`, json('POST', body)),
+        runs: (kbId: string, setId: string) =>
+            call<EvalRunSummary[]>(`${evalBase(kbId)}/runs?${new URLSearchParams({ set_id: setId })}`),
+        run: (kbId: string, runId: string) => call<EvalRun>(`${evalBase(kbId)}/runs/${runId}`),
+        cancelRun: (kbId: string, runId: string) =>
+            call<EvalRunSummary>(`${evalBase(kbId)}/runs/${runId}/cancel`, { method: 'POST' }),
+        /** The run's searches fused again with other weights: no search, $0. */
+        compare: (kbId: string, runId: string, body: { weights: Record<string, number>; rrf_k: number }) =>
+            call<EvalConfigResult[]>(`${evalBase(kbId)}/runs/${runId}/compare`, json('POST', body)),
+    },
 };
 
 /**
