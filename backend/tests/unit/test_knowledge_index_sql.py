@@ -223,3 +223,138 @@ async def test_hybrid_fuses_both_legs_by_rrf(harness):
     top = result.candidates[0].chunk_id
     assert top == corpus.entries(corpus.SCOPE_A1)[5].chunk_id, "first on both legs, first fused"
     assert all(c.snapshot_id == corpus.SNAP_A1 for c in result.candidates)
+
+
+# ── B2a (D163): the numpy vector leg ───────────────────────────────────────────
+
+def _random_entries(count: int, dims: int, seed: int = 7) -> list[IndexEntry]:
+    """`count` chunks of KB A's first snapshot with seeded random vectors, two of them the same vector."""
+    import random
+
+    rng = random.Random(seed)
+    base = corpus.entries(corpus.SCOPE_A1)[0]
+    out = []
+    for n in range(count):
+        vector = [rng.uniform(-1.0, 1.0) for _ in range(dims)]
+        out.append(replace(base, chunk_id="kch_" + f"{n + 1:032x}", vector=vector))
+    out[-1] = replace(out[-1], vector=list(out[0].vector))  # a tie, broken by chunk id
+    return out
+
+
+def _reference(entries, query, limit):
+    """The scan B1a shipped: float32 storage, float64 cosine, ties by chunk id."""
+    from core.knowledge import vectors
+
+    scored = [(e.chunk_id, corpus.cosine(vectors.unpack(vectors.pack(e.vector)), list(query))) for e in entries]
+    scored.sort(key=lambda p: (-p[1], p[0]))
+    return scored[:limit]
+
+
+async def test_the_numpy_scan_answers_what_the_pure_python_one_did(harness):
+    import random
+
+    entries = _random_entries(150, 48)
+    query = [random.Random(3).uniform(-1, 1) for _ in range(48)]
+    with harness.tenant("t1"):
+        index = SqlKnowledgeIndex()
+        await harness.prepare(entries)
+        await index.upsert(entries)
+        result = await index.search_vector(VectorQuery((corpus.SCOPE_A1,), query, None, 20))
+    want = _reference(entries, query, 20)
+    assert [c.chunk_id for c in result.candidates] == [cid for cid, _ in want]
+    for got, (_, score) in zip(result.candidates, want):
+        assert abs(got.score - score) < 1e-9
+    assert result.exact and result.scanned == 150
+
+
+async def test_a_snapshot_s_matrix_is_read_once_then_kept(harness, monkeypatch):
+    import core.knowledge.index_sql as index_sql
+
+    reads = []
+    real = index_sql._block
+    monkeypatch.setattr(index_sql, "_block", lambda rows, snap: reads.append(len(rows)) or real(rows, snap))
+    with harness.tenant("t1"):
+        index = SqlKnowledgeIndex()
+        await harness.prepare(corpus.all_entries())
+        await index.upsert(corpus.all_entries())
+        query = VectorQuery((corpus.SCOPE_A1,), corpus.direction(0), None, 5)
+        first = await index.search_vector(query)
+        second = await index.search_vector(query)
+    assert reads == [15], "read once (15 embedded chunks), then kept"
+    assert first == second and index._vectors.nbytes > 0
+
+
+async def test_a_write_from_another_process_is_seen_at_the_next_search(harness):
+    """Another replica, or the worker that indexed: its rows change the fingerprint, and the matrix is read again."""
+    with harness.tenant("t1"):
+        searcher, writer = SqlKnowledgeIndex(), SqlKnowledgeIndex()
+        await harness.prepare(corpus.entries(corpus.SCOPE_A1))
+        await writer.upsert(corpus.entries(corpus.SCOPE_A1))
+        query = VectorQuery((corpus.SCOPE_A1,), corpus.direction(7), None, 50)
+        before = await searcher.search_vector(query)
+        extra = replace(corpus.entries(corpus.SCOPE_A1)[0], chunk_id="kch_" + "0" * 32, vector=corpus.direction(7))
+        await harness.prepare([extra])
+        await writer.upsert([extra])
+        after = await searcher.search_vector(query)
+    assert extra.chunk_id not in [c.chunk_id for c in before.candidates]
+    assert after.candidates[0].chunk_id == extra.chunk_id and len(after.candidates) == len(before.candidates) + 1
+
+
+async def test_this_process_s_own_writes_drop_what_it_kept(harness):
+    with harness.tenant("t1"):
+        index = SqlKnowledgeIndex()
+        await harness.prepare(corpus.all_entries())
+        await index.upsert(corpus.all_entries())
+        for scope in (corpus.SCOPE_A1, corpus.SCOPE_B1):
+            await index.search_vector(VectorQuery((scope,), corpus.direction(0), None, 3))
+        kept = index._vectors.nbytes
+        await index.drop_snapshot(corpus.SCOPE_A1)
+        assert 0 < index._vectors.nbytes < kept, "only the dropped snapshot's matrix goes"
+        await index.drop_kb(corpus.KB_B)
+        assert index._vectors.nbytes == 0
+
+
+async def test_a_snapshot_too_big_to_keep_is_scanned_in_batches(harness, monkeypatch):
+    import core.knowledge.index_sql as index_sql
+
+    entries = _random_entries(40, 16)
+    query = corpus.direction(1, 2, 0.5) + [0.0] * 8
+    with harness.tenant("t1"):
+        await harness.prepare(entries)
+        await SqlKnowledgeIndex().upsert(entries)
+        kept = await SqlKnowledgeIndex().search_vector(VectorQuery((corpus.SCOPE_A1,), query, None, 12))
+        monkeypatch.setattr(index_sql, "_SCAN_ROWS", 7)
+        small = SqlKnowledgeIndex(vector_cache_bytes=100)
+        streamed = await small.search_vector(VectorQuery((corpus.SCOPE_A1,), query, None, 12))
+    assert [c.chunk_id for c in streamed.candidates] == [c.chunk_id for c in kept.candidates]
+    assert streamed.scanned == 40 and small._vectors.nbytes == 0
+
+
+def test_the_least_recently_searched_matrix_leaves_first():
+    import numpy as np
+
+    from core.knowledge.index_sql import _Block, _VectorCache
+
+    def block() -> _Block:
+        return _Block(["a"], ["d"], np.zeros((1, 4), dtype="<f4"), np.zeros(1))
+
+    cache = _VectorCache(capacity=2 * block().nbytes)
+    cache.put(("t", "kb", "s1"), (1,), block())
+    cache.put(("t", "kb", "s2"), (1,), block())
+    assert cache.get(("t", "kb", "s1"), (1,)) is not None  # s1 used: s2 is now the oldest
+    cache.put(("t", "kb", "s3"), (1,), block())
+    assert cache.get(("t", "kb", "s2"), (1,)) is None and cache.get(("t", "kb", "s1"), (1,)) is not None
+    assert cache.get(("t", "kb", "s1"), (2,)) is None, "a changed fingerprint is a miss, and the stale one goes"
+    assert cache.nbytes == block().nbytes
+
+
+def test_importing_the_index_does_not_import_numpy():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[2]
+    script = (f"import sys; sys.path.insert(0, {str(backend)!r}); import core.knowledge.index_sql; "
+              f"print('numpy' in sys.modules)")
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+    assert result.stdout.strip() == "False", result.stderr[-1500:]

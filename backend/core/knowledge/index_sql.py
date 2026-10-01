@@ -34,19 +34,28 @@ must match a natural-language question that no single chunk answers word for
 word. Both dialects create their schema lazily, once per engine, here and only
 here — the one documented dialect exception beside `filters_sql`.
 
-**The vector leg** is an exact cosine scan in pure Python over the float32 BLOBs
-(`vectors.unpack`), with the tenant, scopes, filter and path prefix applied in
-the same SQL that fetches them. Exact and dependency-free (cloud's API has no
-numpy), but slow on a large knowledge base: B2 replaces the scan with numpy
-and a per-(KB, snapshot) cache. Nothing in B1 searches vectors outside tests.
+**The vector leg** (B2a, D163) is an exact cosine scan with numpy over the
+float32 BLOBs (`numpy.frombuffer(blob, "<f4")`, the bytes `vectors.pack` wrote).
+Each (tenant, KB, snapshot)'s matrix is kept in memory, up to
+`VECTOR_CACHE_BYTES` across all of them (least recently used first out), and
+checked before every search against one aggregate of the rows: their count,
+highest id and id sum. A row written by another process (a worker, a second
+replica) changes it and the matrix is read again; this process's own writes
+drop it at once. A snapshot too big to keep is read and scored in batches.
+Scores are float64 over the float32 values, as the scan before this did, and
+ties break by chunk id. The filter and path prefix are one SQL query for the ids
+they allow, so a top-k is never padded with rows they exclude. numpy is
+imported inside the leg: cloud's API process imports this module and has none.
 """
 from __future__ import annotations
 
-import math
 import re
 import weakref
-from collections.abc import Sequence
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from functools import reduce
+from typing import Any
 
 from sqlalchemy import and_, bindparam, column, delete, false, func, literal_column, or_, select, table
 from sqlalchemy import text as sql_text
@@ -74,6 +83,11 @@ MAX_TERMS = 32
 RRF_K = 60
 _TERM = re.compile(r"[^\W_]+", re.UNICODE)
 _IN_BATCH = 500
+
+#: Bytes of embeddings the vector leg keeps in memory, across every (KB, snapshot) it has searched.
+VECTOR_CACHE_BYTES = 256 * 1024 * 1024
+#: Rows read and scored at a time when a snapshot is too big to keep, and rows scored per float64 pass.
+_SCAN_ROWS = 4096
 
 _T = KnowledgeChunkDB.__table__
 _COLS = FilterColumns.for_table(_T)
@@ -129,8 +143,123 @@ def _sqlite_ddl() -> list[str]:
     return ddl
 
 
-def _cosine_norm(vector: Sequence[float]) -> float:
-    return math.sqrt(sum(x * x for x in vector))
+# ── the vector leg's matrices ─────────────────────────────────────────────────
+
+@dataclass
+class _Block:
+    """Some of one snapshot's embedded rows: ids, documents, float32 vectors, and their norms in float64."""
+
+    ids: list[str]
+    docs: list[str]
+    matrix: Any  # numpy (n, d) float32
+    norms: Any  # numpy (n,) float64
+
+    @property
+    def nbytes(self) -> int:
+        return int(self.matrix.nbytes + self.norms.nbytes)
+
+
+def _block(rows: Sequence[Any], snapshot_id: str) -> _Block:
+    """Rows of (chunk_id, doc_id, embedding) as one block. Mixed widths are refused, as `upsert` refuses them."""
+    import numpy as np
+
+    widths = {len(r.embedding) for r in rows}
+    if len(widths) > 1 or any(w % vectors.BYTES_PER_DIM for w in widths):
+        raise IndexDimensionError(f"snapshot {snapshot_id} holds vectors of more than one width")
+    dims = widths.pop() // vectors.BYTES_PER_DIM
+    matrix = np.frombuffer(b"".join(r.embedding for r in rows), dtype="<f4").reshape(len(rows), dims)
+    norms = np.empty(len(rows), dtype=np.float64)
+    for start in range(0, len(rows), _SCAN_ROWS):
+        part = matrix[start:start + _SCAN_ROWS].astype(np.float64)
+        norms[start:start + _SCAN_ROWS] = np.sqrt((part * part).sum(axis=1))
+    return _Block([r.chunk_id for r in rows], [r.doc_id for r in rows], matrix, norms)
+
+
+def _cosines(block: _Block, want: Any, want_norm: float, rows: Any | None) -> Any:
+    """Cosine of `want` with the block's rows (all, or the positions `rows`), in float64, a batch at a time."""
+    import numpy as np
+
+    count = block.matrix.shape[0] if rows is None else len(rows)
+    out = np.empty(count, dtype=np.float64)
+    for start in range(0, count, _SCAN_ROWS):
+        stop = start + _SCAN_ROWS
+        pick = slice(start, stop) if rows is None else rows[start:stop]
+        # Each row summed on its own, never `@`: BLAS may score two equal rows a bit apart (its kernels differ by
+        # a row's place in the batch), and then a tie breaks by noise instead of by chunk id.
+        dots = (block.matrix[pick].astype(np.float64) * want).sum(axis=1)
+        denom = block.norms[pick] * want_norm
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out[start:stop] = np.where(denom > 0, dots / np.where(denom > 0, denom, 1.0), 0.0)
+    return out
+
+
+def _best(block: _Block, scope: Scope, want: Any, want_norm: float, limit: int,
+          allowed: set[str] | None) -> tuple[list[tuple[str, str, str, str, float]], int]:
+    """The block's `limit` best rows (with every row tied at the cut, for chunk id to decide), and how many it
+    scored."""
+    import numpy as np
+
+    if allowed is None:
+        rows = None
+        count = len(block.ids)
+    else:
+        rows = np.nonzero(np.fromiter((cid in allowed for cid in block.ids), dtype=bool,
+                                      count=len(block.ids)))[0]
+        count = len(rows)
+    if count == 0:
+        return [], 0
+    scores = _cosines(block, want, want_norm, rows)
+    k = min(limit, count)
+    if k < count:
+        kth = np.partition(scores, count - k)[count - k]
+        keep = np.nonzero(scores >= kth)[0]
+    else:
+        keep = np.arange(count)
+    at = (lambda i: i) if rows is None else (lambda i: int(rows[i]))
+    return ([(block.ids[at(i)], block.docs[at(i)], scope.kb_id, scope.snapshot_id, float(scores[i]))
+             for i in keep], count)
+
+
+class _VectorCache:
+    """Each (tenant, KB, snapshot)'s block with the fingerprint it was read at; least recently used out first."""
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self._blocks: OrderedDict[tuple[str, str, str], tuple[tuple, _Block]] = OrderedDict()
+        self._bytes = 0
+
+    def get(self, key: tuple[str, str, str], fingerprint: tuple) -> _Block | None:
+        found = self._blocks.get(key)
+        if found is None:
+            return None
+        if found[0] != fingerprint:
+            self._pop(key)
+            return None
+        self._blocks.move_to_end(key)
+        return found[1]
+
+    def put(self, key: tuple[str, str, str], fingerprint: tuple, block: _Block) -> None:
+        self._pop(key)
+        if block.nbytes > self.capacity:
+            return
+        self._blocks[key] = (fingerprint, block)
+        self._bytes += block.nbytes
+        while self._bytes > self.capacity:
+            self._pop(next(iter(self._blocks)))
+
+    def drop(self, tenant: str, kb_id: str, snapshot_id: str | None = None) -> None:
+        for key in [k for k in self._blocks if k[0] == tenant and k[1] == kb_id
+                    and (snapshot_id is None or k[2] == snapshot_id)]:
+            self._pop(key)
+
+    def _pop(self, key: tuple[str, str, str]) -> None:
+        found = self._blocks.pop(key, None)
+        if found is not None:
+            self._bytes -= found[1].nbytes
+
+    @property
+    def nbytes(self) -> int:
+        return self._bytes
 
 
 class SqlKnowledgeIndex:
@@ -138,8 +267,9 @@ class SqlKnowledgeIndex:
 
     capabilities = CAPABILITIES
 
-    def __init__(self) -> None:
+    def __init__(self, *, vector_cache_bytes: int = VECTOR_CACHE_BYTES) -> None:
         self._ready: weakref.WeakSet = weakref.WeakSet()
+        self._vectors = _VectorCache(vector_cache_bytes)
 
     # ── plumbing ───────────────────────────────────────────────────────────────
 
@@ -237,7 +367,14 @@ class SqlKnowledgeIndex:
                  "_emb": vectors.pack(e.vector) if e.vector is not None else None}
                 for e in entries
             ])
+        for kb_id, snapshot_id in {(e.kb_id, e.snapshot_id) for e in entries}:
+            self._forget(kb_id, snapshot_id)
         return len(entries)
+
+    def _forget(self, kb_id: str, snapshot_id: str | None = None) -> None:
+        """This process wrote: the kept matrices it touched are read again on the next search."""
+        from core.tenancy import get_tenant
+        self._vectors.drop(get_tenant(), kb_id, snapshot_id)
 
     async def _delete(self, *where) -> int:
         async with self._session() as s:
@@ -253,24 +390,33 @@ class SqlKnowledgeIndex:
         for i in range(0, len(ids), _IN_BATCH):
             removed += await self._delete(_T.c.kb_id == scope.kb_id, _T.c.snapshot_id == scope.snapshot_id,
                                           _T.c.chunk_id.in_(ids[i:i + _IN_BATCH]))
+        self._forget(scope.kb_id, scope.snapshot_id)
         return removed
 
     async def delete_document(self, kb_id: str, doc_id: str, *, snapshot_id: str | None = None) -> int:
         where = [_T.c.kb_id == kb_id, _T.c.doc_id == doc_id]
         if snapshot_id is not None:
             where.append(_T.c.snapshot_id == snapshot_id)
-        return await self._delete(*where)
+        removed = await self._delete(*where)
+        self._forget(kb_id, snapshot_id)
+        return removed
 
     async def delete_prefix(self, kb_id: str, path_prefix: str) -> int:
         if not (path_prefix or "").strip("/"):
             raise ValueError("delete_prefix needs a prefix; drop_kb deletes a whole knowledge base")
-        return await self._delete(_T.c.kb_id == kb_id, path_prefix_sql(_T.c.path, path_prefix))
+        removed = await self._delete(_T.c.kb_id == kb_id, path_prefix_sql(_T.c.path, path_prefix))
+        self._forget(kb_id)
+        return removed
 
     async def drop_snapshot(self, scope: Scope) -> int:
-        return await self._delete(_T.c.kb_id == scope.kb_id, _T.c.snapshot_id == scope.snapshot_id)
+        removed = await self._delete(_T.c.kb_id == scope.kb_id, _T.c.snapshot_id == scope.snapshot_id)
+        self._forget(scope.kb_id, scope.snapshot_id)
+        return removed
 
     async def drop_kb(self, kb_id: str) -> int:
-        return await self._delete(_T.c.kb_id == kb_id)
+        removed = await self._delete(_T.c.kb_id == kb_id)
+        self._forget(kb_id)
+        return removed
 
     # ── searches ───────────────────────────────────────────────────────────────
 
@@ -307,28 +453,67 @@ class SqlKnowledgeIndex:
 
     async def search_vector(self, query: VectorQuery) -> LegResult:
         narrowed = query.filter is not None or bool(query.path_prefix and query.path_prefix.strip("/"))
-        want = [float(x) for x in query.vector]
         if not query.scopes or query.limit <= 0:
             return LegResult("vector", (), filtered=narrowed, exact=True, scanned=0)
-        norm = _cosine_norm(want)
+        import numpy as np
+
+        want = np.asarray([float(x) for x in query.vector], dtype=np.float64)
+        want_norm = float(np.sqrt(want @ want))
+        found: list[tuple[str, str, str, str, float]] = []
+        scanned = 0
         async with self._session() as s:
             await self._ensure(s)
-            rows = (await s.execute(
-                select(_T.c.chunk_id, _T.c.doc_id, _T.c.kb_id, _T.c.snapshot_id, _T.c.embedding).where(
-                    self._tenant(), self._scopes(query.scopes), _T.c.embedding.isnot(None),
-                    *self._narrow(query.filter, query.path_prefix)))).all()
-        scored = []
-        for r in rows:
-            have = vectors.unpack(r.embedding)
-            if len(have) != len(want):
-                raise IndexDimensionError(f"query has {len(want)} dimensions; snapshot {r.snapshot_id} "
-                                          f"holds {len(have)}")
-            denom = norm * _cosine_norm(have)
-            cosine = sum(a * b for a, b in zip(have, want)) / denom if denom else 0.0
-            scored.append((r.chunk_id, r.doc_id, r.kb_id, r.snapshot_id, cosine))
-        scored.sort(key=lambda p: (-p[4], p[0]))
-        return LegResult("vector", _candidates(scored[:query.limit]), filtered=narrowed, exact=True,
-                         scanned=len(rows))
+            allowed = None
+            narrow = self._narrow(query.filter, query.path_prefix)
+            if narrow:
+                allowed = set((await s.execute(select(_T.c.chunk_id).where(
+                    self._tenant(), self._scopes(query.scopes), _T.c.embedding.isnot(None), *narrow))).scalars())
+            for scope in dict.fromkeys(query.scopes):
+                async for block in self._snapshot_blocks(s, scope):
+                    if block.matrix.shape[1] != len(want):
+                        raise IndexDimensionError(f"query has {len(want)} dimensions; snapshot {scope.snapshot_id} "
+                                                  f"holds {block.matrix.shape[1]}")
+                    best, count = _best(block, scope, want, want_norm, query.limit, allowed)
+                    found.extend(best)
+                    scanned += count
+        found.sort(key=lambda p: (-p[4], p[0]))
+        return LegResult("vector", _candidates(found[:query.limit]), filtered=narrowed, exact=True,
+                         scanned=scanned)
+
+    async def _snapshot_blocks(self, s, scope: Scope) -> AsyncIterator[_Block]:
+        """One snapshot's embedded rows: its kept matrix if still current, else read (and kept if it fits)."""
+        from core.tenancy import get_tenant
+
+        where = (self._tenant(), _T.c.kb_id == scope.kb_id, _T.c.snapshot_id == scope.snapshot_id,
+                 _T.c.embedding.isnot(None))
+        count, highest, total = (await s.execute(
+            select(func.count(), func.max(_T.c.id), func.sum(_T.c.id)).where(*where))).one()
+        if not count:
+            return
+        key = (get_tenant(), scope.kb_id, scope.snapshot_id)
+        fingerprint = (int(count), int(highest), int(total))
+        kept = self._vectors.get(key, fingerprint)
+        if kept is not None:
+            yield kept
+            return
+        width = (await s.execute(select(func.length(_T.c.embedding)).where(*where).limit(1))).scalar() or 0
+        columns = (_T.c.id, _T.c.chunk_id, _T.c.doc_id, _T.c.embedding)
+        if int(count) * (int(width) + 8) <= self._vectors.capacity:
+            rows = (await s.execute(select(*columns).where(*where).order_by(_T.c.id))).all()
+            block = _block(rows, scope.snapshot_id)
+            self._vectors.put(key, fingerprint, block)
+            yield block
+            return
+        last = None
+        while True:  # too big to keep: a batch at a time, by id
+            stmt = select(*columns).where(*where).order_by(_T.c.id).limit(_SCAN_ROWS)
+            if last is not None:
+                stmt = stmt.where(_T.c.id > last)
+            rows = (await s.execute(stmt)).all()
+            if not rows:
+                return
+            yield _block(rows, scope.snapshot_id)
+            last = rows[-1].id
 
     async def search_hybrid(self, query: HybridQuery) -> LegResult:
         """Both legs fused by weighted RRF (`Σ w / (k + rank)`, ties by chunk id). The pipeline uses
