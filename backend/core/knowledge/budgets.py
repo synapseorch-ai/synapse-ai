@@ -148,14 +148,18 @@ def cap_raised(before: KnowledgeBase, after: KnowledgeBase) -> bool:
     return new is None or new > old
 
 
-async def resume(kb: KnowledgeBase, *, reason: str, paused_before: datetime | None = None) -> int:
+async def resume(kb: KnowledgeBase, *, reason: str, paused_before: datetime | None = None,
+                 reasons: Sequence[str] = (BUDGET_REASON,)) -> int:
     """Queue `kb`'s documents paused on its budget again (only those paused before `paused_before`,
-    when given), and a rebuild waiting for budget. Returns how many documents were queued."""
+    when given), and a rebuild waiting for budget. Returns how many documents were queued.
+
+    `reasons` names the pauses to lift: the budget's by default. Cloud lifts `wallet_402` with it once the
+    org's model wallet can pay again (T1a, D169), which OSS never sees."""
     from core.knowledge import dispatch, documents
 
     queued = 0
     for row in await documents.list_for(kb.id, status="paused"):
-        if row.status_reason != BUDGET_REASON:
+        if row.status_reason not in reasons:
             continue
         if paused_before is not None and (paused_at(row) or paused_before) >= paused_before:
             continue
@@ -165,7 +169,7 @@ async def resume(kb: KnowledgeBase, *, reason: str, paused_before: datetime | No
             queued += 1
     from core.knowledge.snapshots import resume_build
 
-    rebuilt = await resume_build(kb, reasons=(BUDGET_REASON,), paused_before=paused_before)
+    rebuilt = await resume_build(kb, reasons=tuple(reasons), paused_before=paused_before)
     if queued or rebuilt:
         _log.info(f"knowledge base {kb.id}: {queued} paused document(s) queued again"
                   f"{' and its rebuild resumed' if rebuilt else ''} ({reason})")

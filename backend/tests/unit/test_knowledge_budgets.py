@@ -199,6 +199,31 @@ class TestPauseAndResume:
         resumed = [e for e in heard if e.type == "knowledge.base.resumed"]
         assert len(resumed) == 1 and resumed[0].status_reason == "budget_raised"
 
+    async def test_a_top_up_resumes_only_what_the_wallet_paused(self, monkeypatch, jobs, heard):
+        """Cloud resumes `wallet_402` the way a raised cap resumes `budget_cap`: the same transition (with its
+        `queued_at`, so reconcile never takes it for stale), the same dispatch, the rebuild too (T1a, D169)."""
+        from core.knowledge import snapshots
+
+        rebuilds = []
+
+        async def resume_build(kb, *, reasons, paused_before=None):
+            rebuilds.append(tuple(reasons))
+            return False
+
+        monkeypatch.setattr(snapshots, "resume_build", resume_build)
+        kb = await _kb()
+        capped = await _paused(monkeypatch, kb, "a.md", BudgetExceeded(kb.id, 1.0, 1.0))
+        wallet = await _paused(monkeypatch, kb, "b.md", WalletExhausted())
+        jobs.jobs.clear()
+        assert await budgets.resume(kb, reason="wallet_topup", reasons=("wallet_402",)) == 1
+        again = await documents.get(wallet.id)
+        assert again.status == "queued" and again.queued_at is not None
+        assert (await documents.get(capped.id)).status == "paused", "a budget cap waits for its own room"
+        assert [(j.op, j.reason, j.doc_id) for j in jobs.jobs] == [("upsert", "budget_resume", wallet.id)]
+        assert rebuilds == [("wallet_402",)]
+        resumed = [e for e in heard if e.type == "knowledge.base.resumed"]
+        assert len(resumed) == 1 and resumed[0].status_reason == "wallet_topup"
+
     async def test_nothing_paused_means_nothing_announced(self, heard):
         kb = await _kb()
         assert await budgets.resume(kb, reason="budget_raised") == 0
