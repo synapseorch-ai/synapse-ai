@@ -24,6 +24,7 @@ import {
     Muted, Screen, Section, Select, Spinner, TBody, TD, TH, THead, TR, Table, TableActions, Textarea, Toast, useToast,
     type SelectOption,
 } from '@/components/ui';
+import { RetrievalTrace } from '@/components/RetrievalTrace';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
 import {
@@ -847,20 +848,7 @@ function TestSearch({ kb }: { kb: KnowledgeBase }) {
                                 Trace · <span className="font-mono" translate="no">{trace.query_id}</span>
                                 {trace.timings_ms.total != null && ` · ${trace.timings_ms.total} ms`}
                             </summary>
-                            <dl className="mt-2 space-y-1">
-                                {trace.legs.map((leg, i) => (
-                                    <Fact key={`leg-${i}`} label={`Leg: ${leg.leg}`}>
-                                        {leg.returned} of {leg.requested}{leg.filtered ? ', filtered in the index' : ''}
-                                        {` · ${leg.latency_ms} ms`}
-                                    </Fact>
-                                ))}
-                                {trace.cuts.map((cut, i) => (
-                                    <Fact key={`cut-${i}`} label={`Cut: ${cut.stage}`}>
-                                        {cut.dropped_count} dropped{cut.rule ? ` (${cut.rule})` : ''}
-                                    </Fact>
-                                ))}
-                                {trace.legs.length === 0 && trace.cuts.length === 0 && <Muted>No legs ran.</Muted>}
-                            </dl>
+                            <RetrievalTrace trace={trace} className="mt-2" />
                         </details>
                     )}
                 </div>

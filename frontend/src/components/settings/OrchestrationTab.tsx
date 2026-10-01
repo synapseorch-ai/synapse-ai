@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowDown, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX, MoreHorizontal } from 'lucide-react';
+import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowDown, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX, MoreHorizontal, BookOpenText } from 'lucide-react';
 import { Button, buttonStyles, Combobox, Hint, IconButton, Mark, Markdown, Menu, MenuItem, MenuSeparator, Modal, SearchInput, Spinner } from '@/components/ui';
 import { matchesQuery } from '@/lib/search';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
@@ -20,7 +20,8 @@ import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
 import { humanAnswer, initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
 import type { KnowledgeBaseOption } from '../orchestration/panel/shared';
-import { knowledgeApi, useKnowledgeEnabled } from '@/lib/knowledge';
+import { getQueryTrace, knowledgeApi, useKnowledgeEnabled, type SearchTrace } from '@/lib/knowledge';
+import { RetrievalTrace } from '@/components/RetrievalTrace';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ConfirmationModal } from './ConfirmationModal';
@@ -40,7 +41,9 @@ type TasksLogEntry = { kind: 'tasks'; step_name?: string; tasks: { content: stri
 // chrome where a row of pictographs read as a group chat.
 type LineTone = 'start' | 'ok' | 'error' | 'pause' | 'loop' | 'flow' | 'parallel' | 'merge' | 'end' | 'info' | 'warn' | 'compact' | 'branch' | 'muted';
 type LineLogEntry = { kind: 'line'; tone: LineTone; text: string };
-type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry | ReasoningLogEntry | ThoughtLogEntry | TasksLogEntry | LineLogEntry;
+// A Retrieve step's search (R1): its trace is stored by id and fetched when the row is opened.
+type RetrievalLogEntry = { kind: 'retrieval'; step_name?: string; query_id: string; hit_count: number; cost_usd: number; degraded: string[] };
+type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry | ReasoningLogEntry | ThoughtLogEntry | TasksLogEntry | LineLogEntry | RetrievalLogEntry;
 
 const line = (tone: LineTone, text: string): LineLogEntry => ({ kind: 'line', tone, text });
 
@@ -124,6 +127,46 @@ interface NestedRun {
     steps_completed: number;
     total_cost_usd?: number;
     error?: string | null;
+}
+
+/**
+ * A Retrieve step's search in the run log (R1): the passage count, cost and
+ * what degraded, and its trace — the legs, cuts, index versions and passages —
+ * fetched the first time the row is opened (`GET /api/knowledge/queries/{id}`,
+ * kept 30 days).
+ */
+function RetrievalRow({ entry }: { entry: RetrievalLogEntry }) {
+    const [trace, setTrace] = useState<SearchTrace | null>(null);
+    const [failed, setFailed] = useState<string | null>(null);
+    const [loading, setLoading] = useState(false);
+    const load = () => {
+        if (trace || loading) return;
+        setLoading(true);
+        setFailed(null);
+        getQueryTrace(entry.query_id)
+            .then(setTrace)
+            .catch((err) => setFailed(err instanceof Error ? err.message : String(err)))
+            .finally(() => setLoading(false));
+    };
+    const n = entry.hit_count;
+    return (
+        <div className="pl-2 text-accent">
+            <details onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) load(); }}>
+                <summary className="cursor-pointer list-none">
+                    <BookOpenText size={11} className="mr-1 inline-block align-[-1px]" aria-hidden />
+                    Retrieve{entry.step_name ? ` · ${entry.step_name}` : ''}: {n} passage{n !== 1 ? 's' : ''}
+                    <span className="text-text-faint"> · ${entry.cost_usd.toFixed(4)}</span>
+                    {entry.degraded.length > 0 && <span className="text-text-faint"> · {entry.degraded.join(', ')}</span>}
+                </summary>
+                <div className="mt-0.5 rounded-md bg-zinc-800/50 px-2 py-1 text-zinc-300">
+                    {loading && <Spinner />}
+                    {failed && <span className="text-red-300">Trace unavailable: {failed}</span>}
+                    {trace && <RetrievalTrace trace={trace} withDegraded withHits dense />}
+                    <div className="pt-0.5 text-[10px] text-text-faint" translate="no">{entry.query_id}</div>
+                </div>
+            </details>
+        </div>
+    );
 }
 
 /** The runs nested directly under this run — one per run of a nested step (F251). */
@@ -1479,6 +1522,27 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                 break;
             }
 
+            case 'knowledge_retrieve':
+                setRunLog(prev => [...prev, {
+                    kind: 'retrieval',
+                    step_name: data.step_name,
+                    query_id: data.query_id,
+                    hit_count: data.hit_count ?? 0,
+                    cost_usd: data.cost_usd ?? 0,
+                    degraded: Array.isArray(data.degraded) ? data.degraded : [],
+                } as RetrievalLogEntry]);
+                break;
+
+            case 'knowledge_ingest': {
+                const docs: { status?: string }[] = Array.isArray(data.documents) ? data.documents : [];
+                const byStatus = new Map<string, number>();
+                for (const d of docs) byStatus.set(d.status || 'unknown', (byStatus.get(d.status || 'unknown') || 0) + 1);
+                const statuses = [...byStatus].map(([status, n]) => `${n} ${status}`).join(', ');
+                setRunLog(prev => [...prev, line('info',
+                    `Ingest · ${data.step_name || ''}: ${docs.length} record${docs.length !== 1 ? 's' : ''} → ${data.kb_id || ''}${statuses ? ` · ${statuses}` : ''}`)]);
+                break;
+            }
+
             case 'tasks_incomplete': {
                 const n = Array.isArray(data.tasks) ? data.tasks.length : 0;
                 setRunLog(prev => [...prev, line('warn', `Step ended with ${n} open task${n !== 1 ? 's' : ''}`)]);
@@ -2507,6 +2571,9 @@ function BottomPanel({
                                                     </details>
                                                 </div>
                                             );
+                                        }
+                                        if (entry.kind === 'retrieval') {
+                                            return <RetrievalRow key={i} entry={entry} />;
                                         }
                                         if (entry.kind === 'tool_result') {
                                             return (

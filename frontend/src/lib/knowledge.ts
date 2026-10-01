@@ -231,14 +231,34 @@ export type SearchHit = {
     citation: KnowledgeCitation;
 };
 
-/** What decided a search's hits (`trace.Trace`), as far as the test search shows it. */
+/**
+ * What decided a search's hits (`trace.Trace`), as far as the test search and a
+ * Retrieve step's run log show it (`RetrievalTrace`). The fields past `timings_ms`
+ * are optional only so an older trace still reads.
+ */
 export type SearchTrace = {
     query_id: string;
     degraded: { code: string; detail?: string | null }[];
     legs: { leg: string; requested: number; returned: number; filtered: boolean; exact: boolean; latency_ms: number }[];
     cuts: { stage: string; dropped_count: number; rule?: string | null }[];
     timings_ms: Record<string, number | null>;
+    request?: { query: string; kb_ids: string[]; top_k: number; pinned_snapshots?: Record<string, string> };
+    /** Per knowledge base: the index version that answered. */
+    pipeline?: Record<string, { snapshot_id: string; embed_model?: string | null; rerank_model?: string | null }>;
+    fusion?: { params: { k: number; weights: Record<string, number> } } | null;
+    rerank?: { model: string; cost_source: string; input_count: number; latency_ms: number; results: { chunk_id: string }[] } | null;
+    hits?: { label: string; path: string; page_start?: number | null; page_end?: number | null; score: number }[];
+    costs?: {
+        total_est_usd: number;
+        total_charged_microusd?: number | null;
+        rows: { stage: string; model: string; cost_source: string; est_usd: number }[];
+    };
 };
+
+/** A stored search's trace (`GET /api/knowledge/queries/{id}`, kept 30 days) — a Retrieve step's, for its run log. */
+export function getQueryTrace(queryId: string): Promise<SearchTrace> {
+    return call<SearchTrace>(`/api/knowledge/queries/${encodeURIComponent(queryId)}`);
+}
 
 export type SearchResult = { query_id: string; hits: SearchHit[]; degraded: string[]; trace: SearchTrace | null };
 

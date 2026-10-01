@@ -5393,6 +5393,47 @@ _SMOKE_KB_SEARCH = {
 }
 
 
+#: A run with a Retrieve and an Ingest step (R1): the run log's retrieval row, opened, draws its trace.
+_SMOKE_KB_RUN_ORCH = {
+    "id": "orch_smoke_kb", "name": "Smoke knowledge flow", "description": "", "trigger": "manual",
+    "state_schema": {}, "entry_step_id": "s1", "max_total_turns": 100, "timeout_minutes": 30,
+    "steps": [{"id": "s1", "name": "Index tickets", "type": "ingest", "next_step_id": "s2", "output_key": "kept",
+               "ingest": {"kb_id": _SMOKE_KB["id"], "records_from": "tickets"}},
+              {"id": "s2", "name": "Find clauses", "type": "retrieve", "next_step_id": "s_end", "output_key": "found",
+               "retrieve": {"kb_ids": [_SMOKE_KB["id"]], "query": "{state.user_input}"}},
+              {"id": "s_end", "name": "End", "type": "end", "next_step_id": None}]}
+_SMOKE_KB_TRACE = {
+    **_SMOKE_KB_SEARCH["trace"],
+    "pipeline": {_SMOKE_KB["id"]: {"snapshot_id": "ksnap_smoke", "embed_model": None, "rerank_model": None}},
+    "fusion": None, "rerank": None,
+    "hits": [{"label": "[K1]", "path": "contracts/acme.pdf", "page_start": 4, "page_end": 4, "score": 4.258}],
+    "costs": {"total_est_usd": 0.0, "total_charged_microusd": None, "rows": []},
+}
+_SMOKE_KB_RUN_STREAM = "".join([
+    _frame({"type": "step_start", "orch_step_id": "s1", "step_name": "Index tickets", "step_type": "ingest"}, "1"),
+    _frame({"type": "knowledge_ingest", "orch_step_id": "s1", "step_name": "Index tickets", "kb_id": _SMOKE_KB["id"],
+            "documents": [{"doc_id": "kdoc_smoke01", "record_id": "T-1", "status": "queued"}]}, "2"),
+    _frame({"type": "step_complete", "orch_step_id": "s1", "step_name": "Index tickets", "duration_seconds": 0.1}, "3"),
+    _frame({"type": "step_start", "orch_step_id": "s2", "step_name": "Find clauses", "step_type": "retrieve"}, "4"),
+    _frame({"type": "knowledge_retrieve", "orch_step_id": "s2", "step_name": "Find clauses", "query_id": "kq_smoke",
+            "snapshot_ids": ["ksnap_smoke"], "hit_count": 1, "cost_usd": 0.0, "latency_ms": 9,
+            "degraded": ["vector_unavailable"]}, "5"),
+    _frame({"type": "step_complete", "orch_step_id": "s2", "step_name": "Find clauses", "duration_seconds": 0.1}, "6"),
+    _frame({"type": "stream_complete"})])
+_SMOKE_KB_RUN_ROUTES = [
+    ("**/api/orchestrations", _answer([_SMOKE_KB_RUN_ORCH])),
+    ("**/api/orchestrations/runs", _answer([{**_SMOKE_RUNS[1], "run_id": "run_smoke_kb",
+                                              "orchestration_id": "orch_smoke_kb"}])),
+    ("**/api/orchestrations/runs/run_smoke_kb", _answer(
+        {"run_id": "run_smoke_kb", "orchestration_id": "orch_smoke_kb", "status": "completed",
+         "step_history": [], "waiting_for_human": False})),
+    ("**/api/orchestrations/runs/run_smoke_kb/events/stream*",
+     _answer(_SMOKE_KB_RUN_STREAM, content_type="text/event-stream")),
+    ("**/api/orchestrations/runs/run_smoke_kb/children", _answer([])),
+    ("**/api/knowledge/queries/kq_smoke", _answer(_SMOKE_KB_TRACE)),
+]
+
+
 async def _kb_test_search(page):
     await page.get_by_role("button", name=re.compile("^Test search")).click()
     await page.get_by_role("searchbox", name="Search Smoke contracts").fill("what does hosting cost?")
@@ -5410,6 +5451,8 @@ LIGHT_STATES = (
     ("knowledge web sources", "/knowledge", [], _SMOKE_KB_ROUTES, None, "stopped at the page limit"),
     ("knowledge add web pages", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name="Add web pages").click(), "What to fetch"),
+    ("a Retrieve step's trace", "/orchestrations?run=run_smoke_kb", [], _SMOKE_KB_RUN_ROUTES,
+     lambda p: p.get_by_text(re.compile(r"^Retrieve · Find clauses")).first.click(), "ksnap_smoke"),
     ("knowledge report", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name="Report for failed.md").click(), "What happened"),
     ("chat tip 5", "/", [CHAT_STUB], [],
