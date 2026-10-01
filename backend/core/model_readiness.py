@@ -25,20 +25,12 @@ from __future__ import annotations
 import httpx
 
 from core.llm_providers import _ollama_base_url, detect_provider_from_model
+from core.providers.registry import PROVIDERS
 
-_KEYED = {
-    "openai": ("openai_key", "OpenAI"),
-    "anthropic": ("anthropic_key", "Anthropic"),
-    "gemini": ("gemini_key", "Gemini"),
-    "grok": ("grok_key", "Grok"),
-    "deepseek": ("deepseek_key", "DeepSeek"),
-}
-
-_ADDRESSED = {
-    "openai_compatible": ("openai_compatible_base_url", "OpenAI-compatible"),
-    "local_compatible": ("local_compatible_base_url", "local OpenAI-compatible"),
-    "model_gateway": ("model_gateway_base_url", "model gateway"),
-}
+#: What each provider needs saved before it can answer, from the provider table:
+#: {provider id: (setting, label)}.
+_KEYED = {p.id: (p.keys[0], p.label) for p in PROVIDERS if p.readiness == "key"}
+_ADDRESSED = {p.id: (p.address, p.label) for p in PROVIDERS if p.readiness == "address"}
 
 #: A page load waits on the model list, so it is short.
 TAGS_TIMEOUT = 2.0

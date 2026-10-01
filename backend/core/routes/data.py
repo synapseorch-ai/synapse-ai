@@ -436,7 +436,8 @@ async def get_models():
 
     async def fetch_bedrock() -> tuple[bool, list[str], list[str]]:
         if not bedrock_available:
-            return False, BEDROCK_FALLBACK, ["amazon.titan-embed-text-v1", "amazon.titan-embed-text-v2:0"]
+            # Prefixed like every Bedrock id: bare, they were sent to Ollama (F322).
+            return False, BEDROCK_FALLBACK, ["bedrock.amazon.titan-embed-text-v1", "bedrock.amazon.titan-embed-text-v2:0"]
         try:
             region = (settings.get("aws_region") or "us-east-1").strip() or "us-east-1"
             api_key = (settings.get("bedrock_api_key") or "").strip()

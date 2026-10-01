@@ -75,7 +75,8 @@ class TestWhatTheAdapterSends:
                 seen["config"] = config
                 return response
 
-        monkeypatch.setattr(llm, "_gemini_client", types.SimpleNamespace(models=_Models()))
+        client = types.SimpleNamespace(models=_Models())
+        monkeypatch.setattr(llm, "_gemini_client_for", lambda *_a, **_k: client)
         return seen
 
     async def test_gemini_3_flash_off_is_thinking_level_minimal(self, monkeypatch):
