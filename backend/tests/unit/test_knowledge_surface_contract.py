@@ -104,6 +104,39 @@ class TestApiModels:
         state = M.WebCrawlState(source_id="kws_000000000000", url="https://example.com/", kind="site")
         assert state.status == "idle" and state.counts.written == 0
 
+    def test_evaluation_is_internal_and_follows_the_route_rules(self):
+        """CCR-6 (V1): a knowledge base's eval. Internal until P1 decides v1; reads are GETs, a run is a start."""
+        evals = [r for r in M.ROUTES if "/eval/" in r.path]
+        assert len(evals) == 14
+        assert all(r.surfaces == frozenset({"internal"}) and r.path.startswith("/knowledge/bases/{kb_id}/eval/")
+                   for r in evals)
+        routes = {(r.method, r.path): r for r in evals}
+        start = routes[("POST", "/knowledge/bases/{kb_id}/eval/runs")]
+        assert (start.status, start.bucket, start.scope, start.request) == (202, "starts", "run", M.EvalRunRequest)
+        drafts = routes[("POST", "/knowledge/bases/{kb_id}/eval/drafts")]
+        assert (drafts.status, drafts.bucket, drafts.scope) == (200, None, "run")  # paid, and saves nothing
+        gone = routes[("DELETE", "/knowledge/bases/{kb_id}/eval/sets/{set_id}")]
+        assert (gone.status, gone.response) == (204, None)
+        assert routes[("POST", "/knowledge/bases/{kb_id}/eval/runs/{run_id}/cancel")].request is None
+
+    def test_an_eval_request_says_what_it_prices_and_drafts(self):
+        with pytest.raises(ValidationError):
+            M.EvalDraftRequest(direct=0, paraphrase=0, multi_hop=0)
+        with pytest.raises(ValidationError):
+            M.EvalDraftRequest(direct=6, paraphrase=6, multi_hop=0)
+        with pytest.raises(ValidationError):
+            M.EvalEstimateRequest()
+        with pytest.raises(ValidationError):
+            M.EvalEstimateRequest(drafts=M.EvalDraftRequest(), run=M.EvalRunRequest(set_id="kset_1"))
+        with pytest.raises(ValidationError):
+            M.EvalCompareRequest(weights={"lexical": 0, "vector": 0})
+        with pytest.raises(ValidationError):
+            M.EvalCompareRequest(weights={"keyword": 1})
+        with pytest.raises(ValidationError):
+            M.EvalCase(kind="direct", question="Why?", evidence=[])
+        assert M.EvalDrafts(model="m").saved is False
+        assert M.EvalRunRequest(set_id="kset_1").rerank is None  # as the knowledge base serves
+
     def test_the_retrieve_step_validates_its_filter_too(self):
         with pytest.raises(ValidationError):
             M.RetrieveStepConfig(kb_ids=["kb_1"], query="{{q}}", filters={"$nope": 1})

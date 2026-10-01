@@ -670,8 +670,9 @@ class TenantDB(Base):
 #
 # FROZEN CONTRACT (KB0, D153): change these through a contract-change request.
 #
-# The engine owns these five tables in every deployment. Cloud mirrors them
-# column for column (plus `org_id` and FORCE RLS, as it does the eval tables)
+# The engine owns these six tables in every deployment (the sixth, eval runs,
+# is CCR-6's). Cloud mirrors them column for column (plus `org_id` and FORCE
+# RLS, as it does the eval tables)
 # and adds two Postgres-only columns of its own to `knowledge_chunks` — an
 # untyped `vector` and a generated `tsvector` — which is why neither is here:
 # a Postgres-only type in this module would stop SQLite installs at
@@ -915,4 +916,46 @@ class KnowledgeCostDB(Base):
         Index("idx_knowledge_costs_tenant_run", "tenant_id", "run_id"),
         Index("idx_knowledge_costs_tenant_doc", "tenant_id", "doc_id"),
         Index("idx_knowledge_costs_tenant_query", "tenant_id", "query_id"),
+    )
+
+
+class KnowledgeEvalRunDB(Base):
+    """One run of a knowledge base's question set (V1, CCR-6): each question searched once per snapshot, the
+    configurations those searches were scored under, and the grounded judge's verdicts when asked for.
+
+    The question sets themselves live in `collections` (`knowledge_eval_sets`). `summary` is what lists read;
+    `results` holds each question's compact legs and verdict. At most one queued, running or cancelling run per
+    set. Cloud's mirror is V1c's (the routes are internal).
+    """
+
+    __tablename__ = "knowledge_eval_runs"
+
+    id = Column(String(255), primary_key=True)                # krun_<32 hex>
+    tenant_id = _tenant_column()
+    kb_id = Column(String(255), nullable=False)
+    set_id = Column(String(255), nullable=False)              # kset_<32 hex>
+    status = Column(String(20), nullable=False, default="queued")
+    started_by = Column(String(20), nullable=False, default="person")  # person | settings
+    config = Column(JSONType)                                 # snapshots, rerank, top_k, judge, settings fingerprints
+    summary = Column(JSONType)                                # scores per configuration and per question kind
+    results = Column(JSONType)                                # per question: legs, relevance, query ids, verdict
+    case_count = Column(Integer, nullable=False, default=0)
+    done_count = Column(Integer, nullable=False, default=0)
+    est_usd = Column(Float)
+    cost_usd = Column(Float)
+    error = Column(Text)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    started_at = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+    finished_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('queued', 'running', 'cancelling', 'completed', 'cancelled', 'failed', "
+                        "'interrupted', 'skipped')", name="ck_knowledge_eval_runs_status"),
+        CheckConstraint("started_by IN ('person', 'settings')", name="ck_knowledge_eval_runs_started_by"),
+        Index("ux_knowledge_eval_runs_tenant_set_active", "tenant_id", "set_id", unique=True,
+              sqlite_where=text("status IN ('queued', 'running', 'cancelling')"),
+              postgresql_where=text("status IN ('queued', 'running', 'cancelling')")),
+        Index("idx_knowledge_eval_runs_tenant_kb", "tenant_id", "kb_id", "created_at"),
+        Index("idx_knowledge_eval_runs_tenant_set", "tenant_id", "set_id", "created_at"),
     )

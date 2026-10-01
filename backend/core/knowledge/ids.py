@@ -29,6 +29,9 @@ UPLOAD_PREFIX = "kup_"
 CRAWL_PREFIX = "kcr_"
 EVENT_PREFIX = "kev_"
 WEB_SOURCE_PREFIX = "kws_"
+#: CCR-6 (V1, D168): a question set (a `knowledge_eval_sets` collection key) and one run of it.
+EVAL_SET_PREFIX = "kset_"
+EVAL_RUN_PREFIX = "krun_"
 
 #: Under a KB's folder: fetched web pages (`_web/<host>/…`) and records sent by
 #: the API or the Ingest step (`_records/<record_id>.json`).
@@ -45,7 +48,7 @@ _PATTERNS = {
     WEB_SOURCE_PREFIX: re.compile(r"^kws_[0-9a-f]{12}$"),
     **{p: re.compile(rf"^{p}{_HEX32}$") for p in (
         DOCUMENT_PREFIX, SNAPSHOT_PREFIX, QUERY_PREFIX, CHUNK_PREFIX,
-        UPLOAD_PREFIX, CRAWL_PREFIX, EVENT_PREFIX,
+        UPLOAD_PREFIX, CRAWL_PREFIX, EVENT_PREFIX, EVAL_SET_PREFIX, EVAL_RUN_PREFIX,
     )},
 }
 

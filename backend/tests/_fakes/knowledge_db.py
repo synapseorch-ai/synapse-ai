@@ -15,7 +15,7 @@ import pytest
 PG_URL = os.environ.get("SYNAPSE_TEST_POSTGRES_URL", "")
 DIALECTS = ["sqlite"] + (["postgres"] if PG_URL else [])
 
-_EMPTIED = ("knowledge_chunks", "knowledge_costs", "knowledge_queries", "knowledge_snapshots",
+_EMPTIED = ("knowledge_eval_runs", "knowledge_chunks", "knowledge_costs", "knowledge_queries", "knowledge_snapshots",
             "knowledge_documents", "usage_logs", "scale_settings")
 
 

@@ -29,7 +29,7 @@ module you need. The contract (frozen by KB0, changed only by a request in
 | `pipeline_contract` | the one call from ingestion into indexing |
 | `kb_settings` | the knowledge base record and its folder rules |
 | `config` | the settings, and the `knowledge_enabled()` gate |
-| `api_models` | every API body, and the route table |
+| `api_models` | every API body, and the route table (the eval's too: CCR-6) |
 | `agent_contract` | the agent tools' names and schemas; `[K#]` labels |
 | `telemetry` | span names |
 | `testing` | reference fakes and the index conformance suite |

@@ -1,4 +1,4 @@
-"""The five Knowledge tables: portable, tenant-scoped, and saying no to what they must refuse (D153).
+"""The six Knowledge tables: portable, tenant-scoped, and saying no to what they must refuse (D153, CCR-6).
 
 SQLite always; Postgres too when `SYNAPSE_TEST_POSTGRES_URL` is set.
 """
@@ -13,15 +13,17 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateTable
 
-from core.knowledge import status, trace, types
+from core.knowledge import api_models, status, trace, types
 from core.knowledge.chunks import CHUNK_KINDS, CHUNK_ROLES
 from core.knowledge.parsed import SourceKind
 from core.knowledge.vectors import pack, unpack
 from core.store.models import (
-    Base, KnowledgeChunkDB, KnowledgeCostDB, KnowledgeDocumentDB, KnowledgeQueryDB, KnowledgeSnapshotDB,
+    Base, KnowledgeChunkDB, KnowledgeCostDB, KnowledgeDocumentDB, KnowledgeEvalRunDB, KnowledgeQueryDB,
+    KnowledgeSnapshotDB,
 )
 
-TABLES = ("knowledge_documents", "knowledge_chunks", "knowledge_snapshots", "knowledge_queries", "knowledge_costs")
+TABLES = ("knowledge_documents", "knowledge_chunks", "knowledge_snapshots", "knowledge_queries", "knowledge_costs",
+          "knowledge_eval_runs")
 
 
 def _check_values(model, name: str) -> set[str]:
@@ -42,6 +44,17 @@ def test_the_check_values_match_the_contract():
     assert _check_values(KnowledgeCostDB, "ck_knowledge_costs_stage") == set(types.COST_STAGES)
     assert _check_values(KnowledgeCostDB, "ck_knowledge_costs_cost_source") == set(types.COST_SOURCES)
     assert _check_values(KnowledgeCostDB, "ck_knowledge_costs_unit") == set(types.UNITS)
+    assert _check_values(KnowledgeEvalRunDB, "ck_knowledge_eval_runs_status") == set(api_models.EVAL_RUN_STATUSES)
+    assert _check_values(KnowledgeEvalRunDB, "ck_knowledge_eval_runs_started_by") == set(api_models.EVAL_STARTED_BY)
+
+
+def test_an_active_eval_run_is_one_the_index_counts():
+    """The partial index's statuses are the contract's active ones (CCR-6)."""
+    index = next(i for i in KnowledgeEvalRunDB.__table__.indexes if i.name == "ux_knowledge_eval_runs_tenant_set_active")
+    for where in (index.dialect_options["sqlite"]["where"], index.dialect_options["postgresql"]["where"]):
+        text = str(where)
+        assert {v.strip().strip("'") for v in text[text.index("(") + 1: text.rindex(")")].split(",")} == set(
+            api_models.EVAL_ACTIVE_STATUSES)
 
 
 @pytest.mark.parametrize("name", TABLES)
@@ -203,5 +216,29 @@ async def test_a_cost_row_takes_the_contracts_values(db):
     async with db() as s:
         s.add(KnowledgeCostDB(tenant_id="default", kb_id="kb_00000000000a", stage="translate",
                               cost_source="byok", unit="tokens"))
+        with pytest.raises(IntegrityError):
+            await s.commit()
+
+
+async def test_one_active_eval_run_per_set(db):
+    def run(rid: str, state: str, set_id: str = "kset_a", tenant: str = "default") -> KnowledgeEvalRunDB:
+        return KnowledgeEvalRunDB(id=rid, tenant_id=tenant, kb_id="kb_00000000000a", set_id=set_id, status=state)
+
+    async with db() as s:
+        s.add_all([run("krun_a", "running"), run("krun_b", "completed"), run("krun_c", "skipped"),
+                   run("krun_d", "queued", set_id="kset_b"), run("krun_e", "running", tenant="t2")])
+        await s.commit()
+    for state in ("queued", "cancelling"):
+        async with db() as s:
+            s.add(run(f"krun_{state}", state))
+            with pytest.raises(IntegrityError):
+                await s.commit()
+    async with db() as s:
+        s.add(run("krun_f", "started"))  # not a status
+        with pytest.raises(IntegrityError):
+            await s.commit()
+    async with db() as s:
+        s.add(KnowledgeEvalRunDB(id="krun_g", tenant_id="default", kb_id="kb_00000000000a", set_id="kset_c",
+                                 started_by="cron"))
         with pytest.raises(IntegrityError):
             await s.commit()

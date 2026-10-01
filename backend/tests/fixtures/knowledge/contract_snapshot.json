@@ -67,6 +67,52 @@
    "requests"
   ]
  },
+ "eval": {
+  "active": [
+   "queued",
+   "running",
+   "cancelling"
+  ],
+  "configs": [
+   "lexical",
+   "vector",
+   "hybrid",
+   "served",
+   "custom"
+  ],
+  "hit_ks": [
+   1,
+   3,
+   5,
+   10
+  ],
+  "kinds": [
+   "direct",
+   "paraphrase",
+   "multi_hop",
+   "promoted"
+  ],
+  "limits": [
+   200,
+   10,
+   3,
+   4
+  ],
+  "started_by": [
+   "person",
+   "settings"
+  ],
+  "statuses": [
+   "queued",
+   "running",
+   "cancelling",
+   "completed",
+   "cancelled",
+   "failed",
+   "interrupted",
+   "skipped"
+  ]
+ },
  "events": {
   "lifecycle": [
    "knowledge.document.queued",
@@ -172,7 +218,9 @@
    "kup_",
    "kcr_",
    "kev_",
-   "kws_"
+   "kws_",
+   "kset_",
+   "krun_"
   ],
   "record_id": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
  },
@@ -1290,6 +1338,174 @@
    ],
    null,
    "read"
+  ],
+  [
+   "GET",
+   "/knowledge/bases/{kb_id}/eval/sets",
+   null,
+   "list",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/eval/sets",
+   "EvalSetCreate",
+   "EvalSet",
+   201,
+   [
+    "internal"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "GET",
+   "/knowledge/bases/{kb_id}/eval/sets/{set_id}",
+   null,
+   "EvalSet",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "PUT",
+   "/knowledge/bases/{kb_id}/eval/sets/{set_id}",
+   "EvalSetUpdate",
+   "EvalSet",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "DELETE",
+   "/knowledge/bases/{kb_id}/eval/sets/{set_id}",
+   null,
+   null,
+   204,
+   [
+    "internal"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/eval/sets/{set_id}/promote",
+   "EvalPromote",
+   "EvalSet",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/eval/drafts",
+   "EvalDraftRequest",
+   "EvalDrafts",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/eval/estimate",
+   "EvalEstimateRequest",
+   "EvalEstimate",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "GET",
+   "/knowledge/bases/{kb_id}/eval/queries",
+   null,
+   "list",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/eval/runs",
+   "EvalRunRequest",
+   "EvalRunSummary",
+   202,
+   [
+    "internal"
+   ],
+   "starts",
+   "run"
+  ],
+  [
+   "GET",
+   "/knowledge/bases/{kb_id}/eval/runs",
+   null,
+   "list",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "GET",
+   "/knowledge/bases/{kb_id}/eval/runs/{run_id}",
+   null,
+   "EvalRun",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "read"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/eval/runs/{run_id}/cancel",
+   null,
+   "EvalRunSummary",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "run"
+  ],
+  [
+   "POST",
+   "/knowledge/bases/{kb_id}/eval/runs/{run_id}/compare",
+   "EvalCompareRequest",
+   "list",
+   200,
+   [
+    "internal"
+   ],
+   null,
+   "run"
   ]
  ],
  "seam_defaults": [
@@ -2134,6 +2350,170 @@
      ]
     ]
    ]
+  },
+  "knowledge_eval_runs": {
+   "checks": [
+    "started_by IN ('person', 'settings')",
+    "status IN ('queued', 'running', 'cancelling', 'completed', 'cancelled', 'failed', 'interrupted', 'skipped')"
+   ],
+   "columns": [
+    [
+     "id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     "pk"
+    ],
+    [
+     "tenant_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "kb_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "set_id",
+     "VARCHAR(255)",
+     "VARCHAR(255)",
+     "not null",
+     ""
+    ],
+    [
+     "status",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "not null",
+     ""
+    ],
+    [
+     "started_by",
+     "VARCHAR(20)",
+     "VARCHAR(20)",
+     "not null",
+     ""
+    ],
+    [
+     "config",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "summary",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "results",
+     "JSON",
+     "JSONB",
+     "null",
+     ""
+    ],
+    [
+     "case_count",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "done_count",
+     "INTEGER",
+     "INTEGER",
+     "not null",
+     ""
+    ],
+    [
+     "est_usd",
+     "FLOAT",
+     "FLOAT",
+     "null",
+     ""
+    ],
+    [
+     "cost_usd",
+     "FLOAT",
+     "FLOAT",
+     "null",
+     ""
+    ],
+    [
+     "error",
+     "TEXT",
+     "TEXT",
+     "null",
+     ""
+    ],
+    [
+     "created_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "not null",
+     ""
+    ],
+    [
+     "started_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "updated_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ],
+    [
+     "finished_at",
+     "DATETIME",
+     "TIMESTAMP WITH TIME ZONE",
+     "null",
+     ""
+    ]
+   ],
+   "foreign_keys": [],
+   "indexes": [
+    [
+     "idx_knowledge_eval_runs_tenant_kb",
+     [
+      "tenant_id",
+      "kb_id",
+      "created_at"
+     ],
+     false
+    ],
+    [
+     "idx_knowledge_eval_runs_tenant_set",
+     [
+      "tenant_id",
+      "set_id",
+      "created_at"
+     ],
+     false
+    ],
+    [
+     "ux_knowledge_eval_runs_tenant_set_active",
+     [
+      "tenant_id",
+      "set_id"
+     ],
+     true
+    ]
+   ],
+   "uniques": []
   },
   "knowledge_queries": {
    "checks": [

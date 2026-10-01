@@ -1507,6 +1507,4615 @@
   "title": "Enrichment",
   "type": "object"
  },
+ "EvalCase": {
+  "$defs": {
+   "EvalEvidence": {
+    "additionalProperties": false,
+    "description": "Where a case's answer is written: a quote, and its span in the document's parsed text (an attachment's own\ntext when `attachment` is set). A retrieved passage is relevant when it covers half the span of the same\nversion, or holds the quote.",
+    "properties": {
+     "attachment": {
+      "anyOf": [
+       {
+        "maxLength": 1024,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Attachment"
+     },
+     "char_end": {
+      "minimum": 0,
+      "title": "Char End",
+      "type": "integer"
+     },
+     "char_start": {
+      "minimum": 0,
+      "title": "Char Start",
+      "type": "integer"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Sha256"
+     },
+     "path": {
+      "maxLength": 1024,
+      "title": "Path",
+      "type": "string"
+     },
+     "quote": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "doc_id",
+     "path",
+     "char_start",
+     "char_end",
+     "quote"
+    ],
+    "title": "EvalEvidence",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "created_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Created At"
+   },
+   "evidence": {
+    "items": {
+     "$ref": "#/$defs/EvalEvidence"
+    },
+    "maxItems": 4,
+    "minItems": 1,
+    "title": "Evidence",
+    "type": "array"
+   },
+   "id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Id"
+   },
+   "kind": {
+    "enum": [
+     "direct",
+     "paraphrase",
+     "multi_hop",
+     "promoted"
+    ],
+    "title": "Kind",
+    "type": "string"
+   },
+   "overlap": {
+    "anyOf": [
+     {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Overlap"
+   },
+   "query_id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Query Id"
+   },
+   "question": {
+    "maxLength": 2000,
+    "minLength": 1,
+    "title": "Question",
+    "type": "string"
+   },
+   "reference_answer": {
+    "default": "",
+    "maxLength": 4000,
+    "title": "Reference Answer",
+    "type": "string"
+   }
+  },
+  "required": [
+   "kind",
+   "question",
+   "evidence"
+  ],
+  "title": "EvalCase",
+  "type": "object"
+ },
+ "EvalCaseResult": {
+  "$defs": {
+   "EvalHitSummary": {
+    "properties": {
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "relevant": {
+      "default": false,
+      "title": "Relevant",
+      "type": "boolean"
+     },
+     "snippet": {
+      "default": "",
+      "title": "Snippet",
+      "type": "string"
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "title": "EvalHitSummary",
+    "type": "object"
+   },
+   "EvalVerdict": {
+    "properties": {
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Error"
+     },
+     "per_criterion": {
+      "additionalProperties": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "title": "Per Criterion",
+      "type": "object"
+     },
+     "reasoning": {
+      "default": "",
+      "title": "Reasoning",
+      "type": "string"
+     },
+     "score": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score"
+     }
+    },
+    "title": "EvalVerdict",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "answer": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Answer"
+   },
+   "case_id": {
+    "title": "Case Id",
+    "type": "string"
+   },
+   "found": {
+    "additionalProperties": {
+     "type": "integer"
+    },
+    "title": "Found",
+    "type": "object"
+   },
+   "kind": {
+    "enum": [
+     "direct",
+     "paraphrase",
+     "multi_hop",
+     "promoted"
+    ],
+    "title": "Kind",
+    "type": "string"
+   },
+   "query_ids": {
+    "additionalProperties": {
+     "type": "string"
+    },
+    "title": "Query Ids",
+    "type": "object"
+   },
+   "question": {
+    "title": "Question",
+    "type": "string"
+   },
+   "quote_check": {
+    "anyOf": [
+     {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Quote Check"
+   },
+   "ranks": {
+    "additionalProperties": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "title": "Ranks",
+    "type": "object"
+   },
+   "stale": {
+    "default": false,
+    "title": "Stale",
+    "type": "boolean"
+   },
+   "top": {
+    "items": {
+     "$ref": "#/$defs/EvalHitSummary"
+    },
+    "title": "Top",
+    "type": "array"
+   },
+   "trimmed": {
+    "default": false,
+    "title": "Trimmed",
+    "type": "boolean"
+   },
+   "verdict": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/EvalVerdict"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "case_id",
+   "kind",
+   "question"
+  ],
+  "title": "EvalCaseResult",
+  "type": "object"
+ },
+ "EvalCompareRequest": {
+  "additionalProperties": false,
+  "description": "Fuse the run's stored legs again with other weights: no search, $0.",
+  "properties": {
+   "rrf_k": {
+    "default": 60,
+    "maximum": 1000,
+    "minimum": 1,
+    "title": "Rrf K",
+    "type": "integer"
+   },
+   "weights": {
+    "additionalProperties": {
+     "type": "number"
+    },
+    "title": "Weights",
+    "type": "object"
+   }
+  },
+  "required": [
+   "weights"
+  ],
+  "title": "EvalCompareRequest",
+  "type": "object"
+ },
+ "EvalConfigResult": {
+  "$defs": {
+   "EvalScores": {
+    "properties": {
+     "cases": {
+      "default": 0,
+      "title": "Cases",
+      "type": "integer"
+     },
+     "complete_at_10": {
+      "default": 0.0,
+      "title": "Complete At 10",
+      "type": "number"
+     },
+     "hit_at": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Hit At",
+      "type": "object"
+     },
+     "mrr": {
+      "default": 0.0,
+      "title": "Mrr",
+      "type": "number"
+     },
+     "ndcg_at_10": {
+      "default": 0.0,
+      "title": "Ndcg At 10",
+      "type": "number"
+     },
+     "recall_at_10": {
+      "default": 0.0,
+      "title": "Recall At 10",
+      "type": "number"
+     }
+    },
+    "title": "EvalScores",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "agent_sees": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Agent Sees"
+   },
+   "available": {
+    "default": true,
+    "title": "Available",
+    "type": "boolean"
+   },
+   "by_kind": {
+    "additionalProperties": {
+     "$ref": "#/$defs/EvalScores"
+    },
+    "title": "By Kind",
+    "type": "object"
+   },
+   "config": {
+    "enum": [
+     "lexical",
+     "vector",
+     "hybrid",
+     "served",
+     "custom"
+    ],
+    "title": "Config",
+    "type": "string"
+   },
+   "key": {
+    "title": "Key",
+    "type": "string"
+   },
+   "label": {
+    "title": "Label",
+    "type": "string"
+   },
+   "reason": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Reason"
+   },
+   "rrf_k": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Rrf K"
+   },
+   "scores": {
+    "$ref": "#/$defs/EvalScores"
+   },
+   "snapshot_id": {
+    "title": "Snapshot Id",
+    "type": "string"
+   },
+   "weights": {
+    "anyOf": [
+     {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "type": "object"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Weights"
+   }
+  },
+  "required": [
+   "key",
+   "snapshot_id",
+   "config",
+   "label"
+  ],
+  "title": "EvalConfigResult",
+  "type": "object"
+ },
+ "EvalCostLine": {
+  "properties": {
+   "calls": {
+    "title": "Calls",
+    "type": "integer"
+   },
+   "counts_toward_budget": {
+    "default": false,
+    "title": "Counts Toward Budget",
+    "type": "boolean"
+   },
+   "est_usd": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Est Usd"
+   },
+   "input_tokens": {
+    "default": 0,
+    "title": "Input Tokens",
+    "type": "integer"
+   },
+   "model": {
+    "title": "Model",
+    "type": "string"
+   },
+   "output_tokens": {
+    "default": 0,
+    "title": "Output Tokens",
+    "type": "integer"
+   },
+   "part": {
+    "enum": [
+     "drafts",
+     "search",
+     "answers",
+     "judge"
+    ],
+    "title": "Part",
+    "type": "string"
+   }
+  },
+  "required": [
+   "part",
+   "model",
+   "calls"
+  ],
+  "title": "EvalCostLine",
+  "type": "object"
+ },
+ "EvalDraft": {
+  "$defs": {
+   "EvalEvidence": {
+    "additionalProperties": false,
+    "description": "Where a case's answer is written: a quote, and its span in the document's parsed text (an attachment's own\ntext when `attachment` is set). A retrieved passage is relevant when it covers half the span of the same\nversion, or holds the quote.",
+    "properties": {
+     "attachment": {
+      "anyOf": [
+       {
+        "maxLength": 1024,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Attachment"
+     },
+     "char_end": {
+      "minimum": 0,
+      "title": "Char End",
+      "type": "integer"
+     },
+     "char_start": {
+      "minimum": 0,
+      "title": "Char Start",
+      "type": "integer"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Sha256"
+     },
+     "path": {
+      "maxLength": 1024,
+      "title": "Path",
+      "type": "string"
+     },
+     "quote": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "doc_id",
+     "path",
+     "char_start",
+     "char_end",
+     "quote"
+    ],
+    "title": "EvalEvidence",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "evidence": {
+    "items": {
+     "$ref": "#/$defs/EvalEvidence"
+    },
+    "title": "Evidence",
+    "type": "array"
+   },
+   "kind": {
+    "enum": [
+     "direct",
+     "paraphrase",
+     "multi_hop",
+     "promoted"
+    ],
+    "title": "Kind",
+    "type": "string"
+   },
+   "overlap": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Overlap"
+   },
+   "question": {
+    "title": "Question",
+    "type": "string"
+   },
+   "reference_answer": {
+    "default": "",
+    "title": "Reference Answer",
+    "type": "string"
+   }
+  },
+  "required": [
+   "kind",
+   "question",
+   "evidence"
+  ],
+  "title": "EvalDraft",
+  "type": "object"
+ },
+ "EvalDraftRequest": {
+  "additionalProperties": false,
+  "properties": {
+   "direct": {
+    "default": 4,
+    "maximum": 10,
+    "minimum": 0,
+    "title": "Direct",
+    "type": "integer"
+   },
+   "model": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Model"
+   },
+   "multi_hop": {
+    "default": 2,
+    "maximum": 10,
+    "minimum": 0,
+    "title": "Multi Hop",
+    "type": "integer"
+   },
+   "paraphrase": {
+    "default": 4,
+    "maximum": 10,
+    "minimum": 0,
+    "title": "Paraphrase",
+    "type": "integer"
+   },
+   "seed": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Seed"
+   },
+   "set_id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Set Id"
+   }
+  },
+  "title": "EvalDraftRequest",
+  "type": "object"
+ },
+ "EvalDrafts": {
+  "$defs": {
+   "EvalDraft": {
+    "properties": {
+     "evidence": {
+      "items": {
+       "$ref": "#/$defs/EvalEvidence"
+      },
+      "title": "Evidence",
+      "type": "array"
+     },
+     "kind": {
+      "enum": [
+       "direct",
+       "paraphrase",
+       "multi_hop",
+       "promoted"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "overlap": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Overlap"
+     },
+     "question": {
+      "title": "Question",
+      "type": "string"
+     },
+     "reference_answer": {
+      "default": "",
+      "title": "Reference Answer",
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "question",
+     "evidence"
+    ],
+    "title": "EvalDraft",
+    "type": "object"
+   },
+   "EvalEvidence": {
+    "additionalProperties": false,
+    "description": "Where a case's answer is written: a quote, and its span in the document's parsed text (an attachment's own\ntext when `attachment` is set). A retrieved passage is relevant when it covers half the span of the same\nversion, or holds the quote.",
+    "properties": {
+     "attachment": {
+      "anyOf": [
+       {
+        "maxLength": 1024,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Attachment"
+     },
+     "char_end": {
+      "minimum": 0,
+      "title": "Char End",
+      "type": "integer"
+     },
+     "char_start": {
+      "minimum": 0,
+      "title": "Char Start",
+      "type": "integer"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Sha256"
+     },
+     "path": {
+      "maxLength": 1024,
+      "title": "Path",
+      "type": "string"
+     },
+     "quote": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "doc_id",
+     "path",
+     "char_start",
+     "char_end",
+     "quote"
+    ],
+    "title": "EvalEvidence",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "drafts": {
+    "items": {
+     "$ref": "#/$defs/EvalDraft"
+    },
+    "title": "Drafts",
+    "type": "array"
+   },
+   "dropped": {
+    "additionalProperties": {
+     "type": "integer"
+    },
+    "title": "Dropped",
+    "type": "object"
+   },
+   "model": {
+    "title": "Model",
+    "type": "string"
+   },
+   "saved": {
+    "const": false,
+    "default": false,
+    "title": "Saved",
+    "type": "boolean"
+   }
+  },
+  "required": [
+   "model"
+  ],
+  "title": "EvalDrafts",
+  "type": "object"
+ },
+ "EvalEstimate": {
+  "$defs": {
+   "EvalCostLine": {
+    "properties": {
+     "calls": {
+      "title": "Calls",
+      "type": "integer"
+     },
+     "counts_toward_budget": {
+      "default": false,
+      "title": "Counts Toward Budget",
+      "type": "boolean"
+     },
+     "est_usd": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Est Usd"
+     },
+     "input_tokens": {
+      "default": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+     },
+     "model": {
+      "title": "Model",
+      "type": "string"
+     },
+     "output_tokens": {
+      "default": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+     },
+     "part": {
+      "enum": [
+       "drafts",
+       "search",
+       "answers",
+       "judge"
+      ],
+      "title": "Part",
+      "type": "string"
+     }
+    },
+    "required": [
+     "part",
+     "model",
+     "calls"
+    ],
+    "title": "EvalCostLine",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "budget_remaining_usd": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Budget Remaining Usd"
+   },
+   "lines": {
+    "items": {
+     "$ref": "#/$defs/EvalCostLine"
+    },
+    "title": "Lines",
+    "type": "array"
+   },
+   "total_est_usd": {
+    "default": 0.0,
+    "title": "Total Est Usd",
+    "type": "number"
+   },
+   "unpriced": {
+    "items": {
+     "type": "string"
+    },
+    "title": "Unpriced",
+    "type": "array"
+   }
+  },
+  "title": "EvalEstimate",
+  "type": "object"
+ },
+ "EvalEstimateRequest": {
+  "$defs": {
+   "EvalDraftRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "direct": {
+      "default": 4,
+      "maximum": 10,
+      "minimum": 0,
+      "title": "Direct",
+      "type": "integer"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Model"
+     },
+     "multi_hop": {
+      "default": 2,
+      "maximum": 10,
+      "minimum": 0,
+      "title": "Multi Hop",
+      "type": "integer"
+     },
+     "paraphrase": {
+      "default": 4,
+      "maximum": 10,
+      "minimum": 0,
+      "title": "Paraphrase",
+      "type": "integer"
+     },
+     "seed": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Seed"
+     },
+     "set_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Set Id"
+     }
+    },
+    "title": "EvalDraftRequest",
+    "type": "object"
+   },
+   "EvalJudgeRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "answer_model": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Answer Model",
+      "type": "string"
+     },
+     "judge_model": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Judge Model",
+      "type": "string"
+     }
+    },
+    "required": [
+     "answer_model",
+     "judge_model"
+    ],
+    "title": "EvalJudgeRequest",
+    "type": "object"
+   },
+   "EvalRunRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "judge": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/EvalJudgeRequest"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "rerank": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rerank"
+     },
+     "set_id": {
+      "title": "Set Id",
+      "type": "string"
+     },
+     "snapshot_ids": {
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 3,
+      "title": "Snapshot Ids",
+      "type": "array"
+     }
+    },
+    "required": [
+     "set_id"
+    ],
+    "title": "EvalRunRequest",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "drafts": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/EvalDraftRequest"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "run": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/EvalRunRequest"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "title": "EvalEstimateRequest",
+  "type": "object"
+ },
+ "EvalEvidence": {
+  "additionalProperties": false,
+  "description": "Where a case's answer is written: a quote, and its span in the document's parsed text (an attachment's own\ntext when `attachment` is set). A retrieved passage is relevant when it covers half the span of the same\nversion, or holds the quote.",
+  "properties": {
+   "attachment": {
+    "anyOf": [
+     {
+      "maxLength": 1024,
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Attachment"
+   },
+   "char_end": {
+    "minimum": 0,
+    "title": "Char End",
+    "type": "integer"
+   },
+   "char_start": {
+    "minimum": 0,
+    "title": "Char Start",
+    "type": "integer"
+   },
+   "doc_id": {
+    "title": "Doc Id",
+    "type": "string"
+   },
+   "doc_sha256": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Doc Sha256"
+   },
+   "path": {
+    "maxLength": 1024,
+    "title": "Path",
+    "type": "string"
+   },
+   "quote": {
+    "maxLength": 1000,
+    "minLength": 1,
+    "title": "Quote",
+    "type": "string"
+   }
+  },
+  "required": [
+   "doc_id",
+   "path",
+   "char_start",
+   "char_end",
+   "quote"
+  ],
+  "title": "EvalEvidence",
+  "type": "object"
+ },
+ "EvalHitSummary": {
+  "properties": {
+   "path": {
+    "title": "Path",
+    "type": "string"
+   },
+   "relevant": {
+    "default": false,
+    "title": "Relevant",
+    "type": "boolean"
+   },
+   "snippet": {
+    "default": "",
+    "title": "Snippet",
+    "type": "string"
+   }
+  },
+  "required": [
+   "path"
+  ],
+  "title": "EvalHitSummary",
+  "type": "object"
+ },
+ "EvalJudgeRequest": {
+  "additionalProperties": false,
+  "properties": {
+   "answer_model": {
+    "maxLength": 255,
+    "minLength": 1,
+    "title": "Answer Model",
+    "type": "string"
+   },
+   "judge_model": {
+    "maxLength": 255,
+    "minLength": 1,
+    "title": "Judge Model",
+    "type": "string"
+   }
+  },
+  "required": [
+   "answer_model",
+   "judge_model"
+  ],
+  "title": "EvalJudgeRequest",
+  "type": "object"
+ },
+ "EvalJudgeSummary": {
+  "properties": {
+   "answer_model": {
+    "title": "Answer Model",
+    "type": "string"
+   },
+   "failed": {
+    "default": 0,
+    "title": "Failed",
+    "type": "integer"
+   },
+   "judge_model": {
+    "title": "Judge Model",
+    "type": "string"
+   },
+   "judged": {
+    "default": 0,
+    "title": "Judged",
+    "type": "integer"
+   },
+   "mean_score": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Mean Score"
+   },
+   "quotes": {
+    "default": 0,
+    "title": "Quotes",
+    "type": "integer"
+   },
+   "quotes_matched": {
+    "default": 0,
+    "title": "Quotes Matched",
+    "type": "integer"
+   },
+   "rubric_id": {
+    "title": "Rubric Id",
+    "type": "string"
+   },
+   "rubric_version": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Rubric Version"
+   },
+   "scale_max": {
+    "default": 10.0,
+    "title": "Scale Max",
+    "type": "number"
+   },
+   "unresolved_labels": {
+    "default": 0,
+    "title": "Unresolved Labels",
+    "type": "integer"
+   },
+   "warning": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Warning"
+   }
+  },
+  "required": [
+   "answer_model",
+   "judge_model",
+   "rubric_id"
+  ],
+  "title": "EvalJudgeSummary",
+  "type": "object"
+ },
+ "EvalPromote": {
+  "additionalProperties": false,
+  "description": "Make a real search a case: the passages a person ticked are where its answer is written.",
+  "properties": {
+   "chunk_ids": {
+    "items": {
+     "type": "string"
+    },
+    "maxItems": 4,
+    "minItems": 1,
+    "title": "Chunk Ids",
+    "type": "array"
+   },
+   "query_id": {
+    "title": "Query Id",
+    "type": "string"
+   },
+   "question": {
+    "anyOf": [
+     {
+      "maxLength": 2000,
+      "minLength": 1,
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Question"
+   }
+  },
+  "required": [
+   "query_id",
+   "chunk_ids"
+  ],
+  "title": "EvalPromote",
+  "type": "object"
+ },
+ "EvalQuery": {
+  "$defs": {
+   "EvalQueryHit": {
+    "properties": {
+     "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "score": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score"
+     },
+     "snippet": {
+      "default": "",
+      "title": "Snippet",
+      "type": "string"
+     }
+    },
+    "required": [
+     "label",
+     "chunk_id",
+     "doc_id",
+     "path"
+    ],
+    "title": "EvalQueryHit",
+    "type": "object"
+   }
+  },
+  "description": "A real search of this knowledge base that a person can make a case of.",
+  "properties": {
+   "created_at": {
+    "title": "Created At",
+    "type": "string"
+   },
+   "hits": {
+    "items": {
+     "$ref": "#/$defs/EvalQueryHit"
+    },
+    "title": "Hits",
+    "type": "array"
+   },
+   "query": {
+    "title": "Query",
+    "type": "string"
+   },
+   "query_id": {
+    "title": "Query Id",
+    "type": "string"
+   },
+   "retained_by": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Retained By"
+   },
+   "surface": {
+    "title": "Surface",
+    "type": "string"
+   }
+  },
+  "required": [
+   "query_id",
+   "query",
+   "surface",
+   "created_at"
+  ],
+  "title": "EvalQuery",
+  "type": "object"
+ },
+ "EvalQueryHit": {
+  "properties": {
+   "chunk_id": {
+    "title": "Chunk Id",
+    "type": "string"
+   },
+   "doc_id": {
+    "title": "Doc Id",
+    "type": "string"
+   },
+   "label": {
+    "title": "Label",
+    "type": "string"
+   },
+   "path": {
+    "title": "Path",
+    "type": "string"
+   },
+   "score": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Score"
+   },
+   "snippet": {
+    "default": "",
+    "title": "Snippet",
+    "type": "string"
+   }
+  },
+  "required": [
+   "label",
+   "chunk_id",
+   "doc_id",
+   "path"
+  ],
+  "title": "EvalQueryHit",
+  "type": "object"
+ },
+ "EvalRun": {
+  "$defs": {
+   "EvalCaseResult": {
+    "properties": {
+     "answer": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Answer"
+     },
+     "case_id": {
+      "title": "Case Id",
+      "type": "string"
+     },
+     "found": {
+      "additionalProperties": {
+       "type": "integer"
+      },
+      "title": "Found",
+      "type": "object"
+     },
+     "kind": {
+      "enum": [
+       "direct",
+       "paraphrase",
+       "multi_hop",
+       "promoted"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "query_ids": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "title": "Query Ids",
+      "type": "object"
+     },
+     "question": {
+      "title": "Question",
+      "type": "string"
+     },
+     "quote_check": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Quote Check"
+     },
+     "ranks": {
+      "additionalProperties": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "title": "Ranks",
+      "type": "object"
+     },
+     "stale": {
+      "default": false,
+      "title": "Stale",
+      "type": "boolean"
+     },
+     "top": {
+      "items": {
+       "$ref": "#/$defs/EvalHitSummary"
+      },
+      "title": "Top",
+      "type": "array"
+     },
+     "trimmed": {
+      "default": false,
+      "title": "Trimmed",
+      "type": "boolean"
+     },
+     "verdict": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/EvalVerdict"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "case_id",
+     "kind",
+     "question"
+    ],
+    "title": "EvalCaseResult",
+    "type": "object"
+   },
+   "EvalConfigResult": {
+    "properties": {
+     "agent_sees": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Agent Sees"
+     },
+     "available": {
+      "default": true,
+      "title": "Available",
+      "type": "boolean"
+     },
+     "by_kind": {
+      "additionalProperties": {
+       "$ref": "#/$defs/EvalScores"
+      },
+      "title": "By Kind",
+      "type": "object"
+     },
+     "config": {
+      "enum": [
+       "lexical",
+       "vector",
+       "hybrid",
+       "served",
+       "custom"
+      ],
+      "title": "Config",
+      "type": "string"
+     },
+     "key": {
+      "title": "Key",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Reason"
+     },
+     "rrf_k": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rrf K"
+     },
+     "scores": {
+      "$ref": "#/$defs/EvalScores"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "weights": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "number"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Weights"
+     }
+    },
+    "required": [
+     "key",
+     "snapshot_id",
+     "config",
+     "label"
+    ],
+    "title": "EvalConfigResult",
+    "type": "object"
+   },
+   "EvalHitSummary": {
+    "properties": {
+     "path": {
+      "title": "Path",
+      "type": "string"
+     },
+     "relevant": {
+      "default": false,
+      "title": "Relevant",
+      "type": "boolean"
+     },
+     "snippet": {
+      "default": "",
+      "title": "Snippet",
+      "type": "string"
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "title": "EvalHitSummary",
+    "type": "object"
+   },
+   "EvalJudgeSummary": {
+    "properties": {
+     "answer_model": {
+      "title": "Answer Model",
+      "type": "string"
+     },
+     "failed": {
+      "default": 0,
+      "title": "Failed",
+      "type": "integer"
+     },
+     "judge_model": {
+      "title": "Judge Model",
+      "type": "string"
+     },
+     "judged": {
+      "default": 0,
+      "title": "Judged",
+      "type": "integer"
+     },
+     "mean_score": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Mean Score"
+     },
+     "quotes": {
+      "default": 0,
+      "title": "Quotes",
+      "type": "integer"
+     },
+     "quotes_matched": {
+      "default": 0,
+      "title": "Quotes Matched",
+      "type": "integer"
+     },
+     "rubric_id": {
+      "title": "Rubric Id",
+      "type": "string"
+     },
+     "rubric_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rubric Version"
+     },
+     "scale_max": {
+      "default": 10.0,
+      "title": "Scale Max",
+      "type": "number"
+     },
+     "unresolved_labels": {
+      "default": 0,
+      "title": "Unresolved Labels",
+      "type": "integer"
+     },
+     "warning": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Warning"
+     }
+    },
+    "required": [
+     "answer_model",
+     "judge_model",
+     "rubric_id"
+    ],
+    "title": "EvalJudgeSummary",
+    "type": "object"
+   },
+   "EvalScores": {
+    "properties": {
+     "cases": {
+      "default": 0,
+      "title": "Cases",
+      "type": "integer"
+     },
+     "complete_at_10": {
+      "default": 0.0,
+      "title": "Complete At 10",
+      "type": "number"
+     },
+     "hit_at": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Hit At",
+      "type": "object"
+     },
+     "mrr": {
+      "default": 0.0,
+      "title": "Mrr",
+      "type": "number"
+     },
+     "ndcg_at_10": {
+      "default": 0.0,
+      "title": "Ndcg At 10",
+      "type": "number"
+     },
+     "recall_at_10": {
+      "default": 0.0,
+      "title": "Recall At 10",
+      "type": "number"
+     }
+    },
+    "title": "EvalScores",
+    "type": "object"
+   },
+   "EvalSnapshotInfo": {
+    "properties": {
+     "chunker_version": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Chunker Version"
+     },
+     "comparable": {
+      "default": true,
+      "title": "Comparable",
+      "type": "boolean"
+     },
+     "docs_done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Docs Done"
+     },
+     "docs_total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Docs Total"
+     },
+     "embed_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Embed Model"
+     },
+     "fingerprint": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Fingerprint"
+     },
+     "settings": {
+      "additionalProperties": true,
+      "title": "Settings",
+      "type": "object"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "status": {
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "snapshot_id",
+     "status"
+    ],
+    "title": "EvalSnapshotInfo",
+    "type": "object"
+   },
+   "EvalVerdict": {
+    "properties": {
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Error"
+     },
+     "per_criterion": {
+      "additionalProperties": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "title": "Per Criterion",
+      "type": "object"
+     },
+     "reasoning": {
+      "default": "",
+      "title": "Reasoning",
+      "type": "string"
+     },
+     "score": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Score"
+     }
+    },
+    "title": "EvalVerdict",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "case_count": {
+    "default": 0,
+    "title": "Case Count",
+    "type": "integer"
+   },
+   "cases": {
+    "items": {
+     "$ref": "#/$defs/EvalCaseResult"
+    },
+    "title": "Cases",
+    "type": "array"
+   },
+   "compared_cases": {
+    "default": 0,
+    "title": "Compared Cases",
+    "type": "integer"
+   },
+   "cost_usd": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Cost Usd"
+   },
+   "created_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Created At"
+   },
+   "done_count": {
+    "default": 0,
+    "title": "Done Count",
+    "type": "integer"
+   },
+   "error": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Error"
+   },
+   "est_usd": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Est Usd"
+   },
+   "finished_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Finished At"
+   },
+   "id": {
+    "title": "Id",
+    "type": "string"
+   },
+   "judge": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/EvalJudgeSummary"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   },
+   "notes": {
+    "items": {
+     "type": "string"
+    },
+    "title": "Notes",
+    "type": "array"
+   },
+   "results": {
+    "items": {
+     "$ref": "#/$defs/EvalConfigResult"
+    },
+    "title": "Results",
+    "type": "array"
+   },
+   "set_id": {
+    "title": "Set Id",
+    "type": "string"
+   },
+   "snapshots": {
+    "items": {
+     "$ref": "#/$defs/EvalSnapshotInfo"
+    },
+    "title": "Snapshots",
+    "type": "array"
+   },
+   "stale_cases": {
+    "default": 0,
+    "title": "Stale Cases",
+    "type": "integer"
+   },
+   "started_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Started At"
+   },
+   "started_by": {
+    "default": "person",
+    "enum": [
+     "person",
+     "settings"
+    ],
+    "title": "Started By",
+    "type": "string"
+   },
+   "status": {
+    "enum": [
+     "queued",
+     "running",
+     "cancelling",
+     "completed",
+     "cancelled",
+     "failed",
+     "interrupted",
+     "skipped"
+    ],
+    "title": "Status",
+    "type": "string"
+   }
+  },
+  "required": [
+   "id",
+   "kb_id",
+   "set_id",
+   "status"
+  ],
+  "title": "EvalRun",
+  "type": "object"
+ },
+ "EvalRunRequest": {
+  "$defs": {
+   "EvalJudgeRequest": {
+    "additionalProperties": false,
+    "properties": {
+     "answer_model": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Answer Model",
+      "type": "string"
+     },
+     "judge_model": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Judge Model",
+      "type": "string"
+     }
+    },
+    "required": [
+     "answer_model",
+     "judge_model"
+    ],
+    "title": "EvalJudgeRequest",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "judge": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/EvalJudgeRequest"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "rerank": {
+    "anyOf": [
+     {
+      "type": "boolean"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Rerank"
+   },
+   "set_id": {
+    "title": "Set Id",
+    "type": "string"
+   },
+   "snapshot_ids": {
+    "items": {
+     "type": "string"
+    },
+    "maxItems": 3,
+    "title": "Snapshot Ids",
+    "type": "array"
+   }
+  },
+  "required": [
+   "set_id"
+  ],
+  "title": "EvalRunRequest",
+  "type": "object"
+ },
+ "EvalRunSummary": {
+  "$defs": {
+   "EvalConfigResult": {
+    "properties": {
+     "agent_sees": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Agent Sees"
+     },
+     "available": {
+      "default": true,
+      "title": "Available",
+      "type": "boolean"
+     },
+     "by_kind": {
+      "additionalProperties": {
+       "$ref": "#/$defs/EvalScores"
+      },
+      "title": "By Kind",
+      "type": "object"
+     },
+     "config": {
+      "enum": [
+       "lexical",
+       "vector",
+       "hybrid",
+       "served",
+       "custom"
+      ],
+      "title": "Config",
+      "type": "string"
+     },
+     "key": {
+      "title": "Key",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Reason"
+     },
+     "rrf_k": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rrf K"
+     },
+     "scores": {
+      "$ref": "#/$defs/EvalScores"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "weights": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "number"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Weights"
+     }
+    },
+    "required": [
+     "key",
+     "snapshot_id",
+     "config",
+     "label"
+    ],
+    "title": "EvalConfigResult",
+    "type": "object"
+   },
+   "EvalJudgeSummary": {
+    "properties": {
+     "answer_model": {
+      "title": "Answer Model",
+      "type": "string"
+     },
+     "failed": {
+      "default": 0,
+      "title": "Failed",
+      "type": "integer"
+     },
+     "judge_model": {
+      "title": "Judge Model",
+      "type": "string"
+     },
+     "judged": {
+      "default": 0,
+      "title": "Judged",
+      "type": "integer"
+     },
+     "mean_score": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Mean Score"
+     },
+     "quotes": {
+      "default": 0,
+      "title": "Quotes",
+      "type": "integer"
+     },
+     "quotes_matched": {
+      "default": 0,
+      "title": "Quotes Matched",
+      "type": "integer"
+     },
+     "rubric_id": {
+      "title": "Rubric Id",
+      "type": "string"
+     },
+     "rubric_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rubric Version"
+     },
+     "scale_max": {
+      "default": 10.0,
+      "title": "Scale Max",
+      "type": "number"
+     },
+     "unresolved_labels": {
+      "default": 0,
+      "title": "Unresolved Labels",
+      "type": "integer"
+     },
+     "warning": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Warning"
+     }
+    },
+    "required": [
+     "answer_model",
+     "judge_model",
+     "rubric_id"
+    ],
+    "title": "EvalJudgeSummary",
+    "type": "object"
+   },
+   "EvalScores": {
+    "properties": {
+     "cases": {
+      "default": 0,
+      "title": "Cases",
+      "type": "integer"
+     },
+     "complete_at_10": {
+      "default": 0.0,
+      "title": "Complete At 10",
+      "type": "number"
+     },
+     "hit_at": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Hit At",
+      "type": "object"
+     },
+     "mrr": {
+      "default": 0.0,
+      "title": "Mrr",
+      "type": "number"
+     },
+     "ndcg_at_10": {
+      "default": 0.0,
+      "title": "Ndcg At 10",
+      "type": "number"
+     },
+     "recall_at_10": {
+      "default": 0.0,
+      "title": "Recall At 10",
+      "type": "number"
+     }
+    },
+    "title": "EvalScores",
+    "type": "object"
+   },
+   "EvalSnapshotInfo": {
+    "properties": {
+     "chunker_version": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Chunker Version"
+     },
+     "comparable": {
+      "default": true,
+      "title": "Comparable",
+      "type": "boolean"
+     },
+     "docs_done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Docs Done"
+     },
+     "docs_total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Docs Total"
+     },
+     "embed_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Embed Model"
+     },
+     "fingerprint": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Fingerprint"
+     },
+     "settings": {
+      "additionalProperties": true,
+      "title": "Settings",
+      "type": "object"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "status": {
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "snapshot_id",
+     "status"
+    ],
+    "title": "EvalSnapshotInfo",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "case_count": {
+    "default": 0,
+    "title": "Case Count",
+    "type": "integer"
+   },
+   "compared_cases": {
+    "default": 0,
+    "title": "Compared Cases",
+    "type": "integer"
+   },
+   "cost_usd": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Cost Usd"
+   },
+   "created_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Created At"
+   },
+   "done_count": {
+    "default": 0,
+    "title": "Done Count",
+    "type": "integer"
+   },
+   "error": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Error"
+   },
+   "est_usd": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Est Usd"
+   },
+   "finished_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Finished At"
+   },
+   "id": {
+    "title": "Id",
+    "type": "string"
+   },
+   "judge": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/EvalJudgeSummary"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   },
+   "notes": {
+    "items": {
+     "type": "string"
+    },
+    "title": "Notes",
+    "type": "array"
+   },
+   "results": {
+    "items": {
+     "$ref": "#/$defs/EvalConfigResult"
+    },
+    "title": "Results",
+    "type": "array"
+   },
+   "set_id": {
+    "title": "Set Id",
+    "type": "string"
+   },
+   "snapshots": {
+    "items": {
+     "$ref": "#/$defs/EvalSnapshotInfo"
+    },
+    "title": "Snapshots",
+    "type": "array"
+   },
+   "stale_cases": {
+    "default": 0,
+    "title": "Stale Cases",
+    "type": "integer"
+   },
+   "started_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Started At"
+   },
+   "started_by": {
+    "default": "person",
+    "enum": [
+     "person",
+     "settings"
+    ],
+    "title": "Started By",
+    "type": "string"
+   },
+   "status": {
+    "enum": [
+     "queued",
+     "running",
+     "cancelling",
+     "completed",
+     "cancelled",
+     "failed",
+     "interrupted",
+     "skipped"
+    ],
+    "title": "Status",
+    "type": "string"
+   }
+  },
+  "required": [
+   "id",
+   "kb_id",
+   "set_id",
+   "status"
+  ],
+  "title": "EvalRunSummary",
+  "type": "object"
+ },
+ "EvalScores": {
+  "properties": {
+   "cases": {
+    "default": 0,
+    "title": "Cases",
+    "type": "integer"
+   },
+   "complete_at_10": {
+    "default": 0.0,
+    "title": "Complete At 10",
+    "type": "number"
+   },
+   "hit_at": {
+    "additionalProperties": {
+     "type": "number"
+    },
+    "title": "Hit At",
+    "type": "object"
+   },
+   "mrr": {
+    "default": 0.0,
+    "title": "Mrr",
+    "type": "number"
+   },
+   "ndcg_at_10": {
+    "default": 0.0,
+    "title": "Ndcg At 10",
+    "type": "number"
+   },
+   "recall_at_10": {
+    "default": 0.0,
+    "title": "Recall At 10",
+    "type": "number"
+   }
+  },
+  "title": "EvalScores",
+  "type": "object"
+ },
+ "EvalSet": {
+  "$defs": {
+   "EvalCase": {
+    "additionalProperties": false,
+    "properties": {
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Created At"
+     },
+     "evidence": {
+      "items": {
+       "$ref": "#/$defs/EvalEvidence"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Evidence",
+      "type": "array"
+     },
+     "id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Id"
+     },
+     "kind": {
+      "enum": [
+       "direct",
+       "paraphrase",
+       "multi_hop",
+       "promoted"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "overlap": {
+      "anyOf": [
+       {
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Overlap"
+     },
+     "query_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Query Id"
+     },
+     "question": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+     },
+     "reference_answer": {
+      "default": "",
+      "maxLength": 4000,
+      "title": "Reference Answer",
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "question",
+     "evidence"
+    ],
+    "title": "EvalCase",
+    "type": "object"
+   },
+   "EvalConfigResult": {
+    "properties": {
+     "agent_sees": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Agent Sees"
+     },
+     "available": {
+      "default": true,
+      "title": "Available",
+      "type": "boolean"
+     },
+     "by_kind": {
+      "additionalProperties": {
+       "$ref": "#/$defs/EvalScores"
+      },
+      "title": "By Kind",
+      "type": "object"
+     },
+     "config": {
+      "enum": [
+       "lexical",
+       "vector",
+       "hybrid",
+       "served",
+       "custom"
+      ],
+      "title": "Config",
+      "type": "string"
+     },
+     "key": {
+      "title": "Key",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Reason"
+     },
+     "rrf_k": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rrf K"
+     },
+     "scores": {
+      "$ref": "#/$defs/EvalScores"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "weights": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "number"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Weights"
+     }
+    },
+    "required": [
+     "key",
+     "snapshot_id",
+     "config",
+     "label"
+    ],
+    "title": "EvalConfigResult",
+    "type": "object"
+   },
+   "EvalEvidence": {
+    "additionalProperties": false,
+    "description": "Where a case's answer is written: a quote, and its span in the document's parsed text (an attachment's own\ntext when `attachment` is set). A retrieved passage is relevant when it covers half the span of the same\nversion, or holds the quote.",
+    "properties": {
+     "attachment": {
+      "anyOf": [
+       {
+        "maxLength": 1024,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Attachment"
+     },
+     "char_end": {
+      "minimum": 0,
+      "title": "Char End",
+      "type": "integer"
+     },
+     "char_start": {
+      "minimum": 0,
+      "title": "Char Start",
+      "type": "integer"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Sha256"
+     },
+     "path": {
+      "maxLength": 1024,
+      "title": "Path",
+      "type": "string"
+     },
+     "quote": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "doc_id",
+     "path",
+     "char_start",
+     "char_end",
+     "quote"
+    ],
+    "title": "EvalEvidence",
+    "type": "object"
+   },
+   "EvalJudgeSummary": {
+    "properties": {
+     "answer_model": {
+      "title": "Answer Model",
+      "type": "string"
+     },
+     "failed": {
+      "default": 0,
+      "title": "Failed",
+      "type": "integer"
+     },
+     "judge_model": {
+      "title": "Judge Model",
+      "type": "string"
+     },
+     "judged": {
+      "default": 0,
+      "title": "Judged",
+      "type": "integer"
+     },
+     "mean_score": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Mean Score"
+     },
+     "quotes": {
+      "default": 0,
+      "title": "Quotes",
+      "type": "integer"
+     },
+     "quotes_matched": {
+      "default": 0,
+      "title": "Quotes Matched",
+      "type": "integer"
+     },
+     "rubric_id": {
+      "title": "Rubric Id",
+      "type": "string"
+     },
+     "rubric_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rubric Version"
+     },
+     "scale_max": {
+      "default": 10.0,
+      "title": "Scale Max",
+      "type": "number"
+     },
+     "unresolved_labels": {
+      "default": 0,
+      "title": "Unresolved Labels",
+      "type": "integer"
+     },
+     "warning": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Warning"
+     }
+    },
+    "required": [
+     "answer_model",
+     "judge_model",
+     "rubric_id"
+    ],
+    "title": "EvalJudgeSummary",
+    "type": "object"
+   },
+   "EvalRunSummary": {
+    "properties": {
+     "case_count": {
+      "default": 0,
+      "title": "Case Count",
+      "type": "integer"
+     },
+     "compared_cases": {
+      "default": 0,
+      "title": "Compared Cases",
+      "type": "integer"
+     },
+     "cost_usd": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Cost Usd"
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Created At"
+     },
+     "done_count": {
+      "default": 0,
+      "title": "Done Count",
+      "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Error"
+     },
+     "est_usd": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Est Usd"
+     },
+     "finished_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Finished At"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "judge": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/EvalJudgeSummary"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "notes": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+     },
+     "results": {
+      "items": {
+       "$ref": "#/$defs/EvalConfigResult"
+      },
+      "title": "Results",
+      "type": "array"
+     },
+     "set_id": {
+      "title": "Set Id",
+      "type": "string"
+     },
+     "snapshots": {
+      "items": {
+       "$ref": "#/$defs/EvalSnapshotInfo"
+      },
+      "title": "Snapshots",
+      "type": "array"
+     },
+     "stale_cases": {
+      "default": 0,
+      "title": "Stale Cases",
+      "type": "integer"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Started At"
+     },
+     "started_by": {
+      "default": "person",
+      "enum": [
+       "person",
+       "settings"
+      ],
+      "title": "Started By",
+      "type": "string"
+     },
+     "status": {
+      "enum": [
+       "queued",
+       "running",
+       "cancelling",
+       "completed",
+       "cancelled",
+       "failed",
+       "interrupted",
+       "skipped"
+      ],
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "kb_id",
+     "set_id",
+     "status"
+    ],
+    "title": "EvalRunSummary",
+    "type": "object"
+   },
+   "EvalScores": {
+    "properties": {
+     "cases": {
+      "default": 0,
+      "title": "Cases",
+      "type": "integer"
+     },
+     "complete_at_10": {
+      "default": 0.0,
+      "title": "Complete At 10",
+      "type": "number"
+     },
+     "hit_at": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Hit At",
+      "type": "object"
+     },
+     "mrr": {
+      "default": 0.0,
+      "title": "Mrr",
+      "type": "number"
+     },
+     "ndcg_at_10": {
+      "default": 0.0,
+      "title": "Ndcg At 10",
+      "type": "number"
+     },
+     "recall_at_10": {
+      "default": 0.0,
+      "title": "Recall At 10",
+      "type": "number"
+     }
+    },
+    "title": "EvalScores",
+    "type": "object"
+   },
+   "EvalSnapshotInfo": {
+    "properties": {
+     "chunker_version": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Chunker Version"
+     },
+     "comparable": {
+      "default": true,
+      "title": "Comparable",
+      "type": "boolean"
+     },
+     "docs_done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Docs Done"
+     },
+     "docs_total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Docs Total"
+     },
+     "embed_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Embed Model"
+     },
+     "fingerprint": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Fingerprint"
+     },
+     "settings": {
+      "additionalProperties": true,
+      "title": "Settings",
+      "type": "object"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "status": {
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "snapshot_id",
+     "status"
+    ],
+    "title": "EvalSnapshotInfo",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "case_count": {
+    "default": 0,
+    "title": "Case Count",
+    "type": "integer"
+   },
+   "cases": {
+    "items": {
+     "$ref": "#/$defs/EvalCase"
+    },
+    "title": "Cases",
+    "type": "array"
+   },
+   "counts_by_kind": {
+    "additionalProperties": {
+     "type": "integer"
+    },
+    "title": "Counts By Kind",
+    "type": "object"
+   },
+   "created_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Created At"
+   },
+   "id": {
+    "title": "Id",
+    "type": "string"
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   },
+   "last_run": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/EvalRunSummary"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "name": {
+    "title": "Name",
+    "type": "string"
+   },
+   "revision": {
+    "default": 1,
+    "title": "Revision",
+    "type": "integer"
+   },
+   "updated_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Updated At"
+   }
+  },
+  "required": [
+   "id",
+   "kb_id",
+   "name"
+  ],
+  "title": "EvalSet",
+  "type": "object"
+ },
+ "EvalSetCreate": {
+  "$defs": {
+   "EvalCase": {
+    "additionalProperties": false,
+    "properties": {
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Created At"
+     },
+     "evidence": {
+      "items": {
+       "$ref": "#/$defs/EvalEvidence"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Evidence",
+      "type": "array"
+     },
+     "id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Id"
+     },
+     "kind": {
+      "enum": [
+       "direct",
+       "paraphrase",
+       "multi_hop",
+       "promoted"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "overlap": {
+      "anyOf": [
+       {
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Overlap"
+     },
+     "query_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Query Id"
+     },
+     "question": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+     },
+     "reference_answer": {
+      "default": "",
+      "maxLength": 4000,
+      "title": "Reference Answer",
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "question",
+     "evidence"
+    ],
+    "title": "EvalCase",
+    "type": "object"
+   },
+   "EvalEvidence": {
+    "additionalProperties": false,
+    "description": "Where a case's answer is written: a quote, and its span in the document's parsed text (an attachment's own\ntext when `attachment` is set). A retrieved passage is relevant when it covers half the span of the same\nversion, or holds the quote.",
+    "properties": {
+     "attachment": {
+      "anyOf": [
+       {
+        "maxLength": 1024,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Attachment"
+     },
+     "char_end": {
+      "minimum": 0,
+      "title": "Char End",
+      "type": "integer"
+     },
+     "char_start": {
+      "minimum": 0,
+      "title": "Char Start",
+      "type": "integer"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Sha256"
+     },
+     "path": {
+      "maxLength": 1024,
+      "title": "Path",
+      "type": "string"
+     },
+     "quote": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "doc_id",
+     "path",
+     "char_start",
+     "char_end",
+     "quote"
+    ],
+    "title": "EvalEvidence",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "properties": {
+   "cases": {
+    "items": {
+     "$ref": "#/$defs/EvalCase"
+    },
+    "maxItems": 200,
+    "title": "Cases",
+    "type": "array"
+   },
+   "name": {
+    "maxLength": 200,
+    "minLength": 1,
+    "title": "Name",
+    "type": "string"
+   }
+  },
+  "required": [
+   "name"
+  ],
+  "title": "EvalSetCreate",
+  "type": "object"
+ },
+ "EvalSetSummary": {
+  "$defs": {
+   "EvalConfigResult": {
+    "properties": {
+     "agent_sees": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Agent Sees"
+     },
+     "available": {
+      "default": true,
+      "title": "Available",
+      "type": "boolean"
+     },
+     "by_kind": {
+      "additionalProperties": {
+       "$ref": "#/$defs/EvalScores"
+      },
+      "title": "By Kind",
+      "type": "object"
+     },
+     "config": {
+      "enum": [
+       "lexical",
+       "vector",
+       "hybrid",
+       "served",
+       "custom"
+      ],
+      "title": "Config",
+      "type": "string"
+     },
+     "key": {
+      "title": "Key",
+      "type": "string"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Reason"
+     },
+     "rrf_k": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rrf K"
+     },
+     "scores": {
+      "$ref": "#/$defs/EvalScores"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "weights": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "number"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Weights"
+     }
+    },
+    "required": [
+     "key",
+     "snapshot_id",
+     "config",
+     "label"
+    ],
+    "title": "EvalConfigResult",
+    "type": "object"
+   },
+   "EvalJudgeSummary": {
+    "properties": {
+     "answer_model": {
+      "title": "Answer Model",
+      "type": "string"
+     },
+     "failed": {
+      "default": 0,
+      "title": "Failed",
+      "type": "integer"
+     },
+     "judge_model": {
+      "title": "Judge Model",
+      "type": "string"
+     },
+     "judged": {
+      "default": 0,
+      "title": "Judged",
+      "type": "integer"
+     },
+     "mean_score": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Mean Score"
+     },
+     "quotes": {
+      "default": 0,
+      "title": "Quotes",
+      "type": "integer"
+     },
+     "quotes_matched": {
+      "default": 0,
+      "title": "Quotes Matched",
+      "type": "integer"
+     },
+     "rubric_id": {
+      "title": "Rubric Id",
+      "type": "string"
+     },
+     "rubric_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rubric Version"
+     },
+     "scale_max": {
+      "default": 10.0,
+      "title": "Scale Max",
+      "type": "number"
+     },
+     "unresolved_labels": {
+      "default": 0,
+      "title": "Unresolved Labels",
+      "type": "integer"
+     },
+     "warning": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Warning"
+     }
+    },
+    "required": [
+     "answer_model",
+     "judge_model",
+     "rubric_id"
+    ],
+    "title": "EvalJudgeSummary",
+    "type": "object"
+   },
+   "EvalRunSummary": {
+    "properties": {
+     "case_count": {
+      "default": 0,
+      "title": "Case Count",
+      "type": "integer"
+     },
+     "compared_cases": {
+      "default": 0,
+      "title": "Compared Cases",
+      "type": "integer"
+     },
+     "cost_usd": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Cost Usd"
+     },
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Created At"
+     },
+     "done_count": {
+      "default": 0,
+      "title": "Done Count",
+      "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Error"
+     },
+     "est_usd": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Est Usd"
+     },
+     "finished_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Finished At"
+     },
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "judge": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/EvalJudgeSummary"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "kb_id": {
+      "title": "Kb Id",
+      "type": "string"
+     },
+     "notes": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
+     },
+     "results": {
+      "items": {
+       "$ref": "#/$defs/EvalConfigResult"
+      },
+      "title": "Results",
+      "type": "array"
+     },
+     "set_id": {
+      "title": "Set Id",
+      "type": "string"
+     },
+     "snapshots": {
+      "items": {
+       "$ref": "#/$defs/EvalSnapshotInfo"
+      },
+      "title": "Snapshots",
+      "type": "array"
+     },
+     "stale_cases": {
+      "default": 0,
+      "title": "Stale Cases",
+      "type": "integer"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Started At"
+     },
+     "started_by": {
+      "default": "person",
+      "enum": [
+       "person",
+       "settings"
+      ],
+      "title": "Started By",
+      "type": "string"
+     },
+     "status": {
+      "enum": [
+       "queued",
+       "running",
+       "cancelling",
+       "completed",
+       "cancelled",
+       "failed",
+       "interrupted",
+       "skipped"
+      ],
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "kb_id",
+     "set_id",
+     "status"
+    ],
+    "title": "EvalRunSummary",
+    "type": "object"
+   },
+   "EvalScores": {
+    "properties": {
+     "cases": {
+      "default": 0,
+      "title": "Cases",
+      "type": "integer"
+     },
+     "complete_at_10": {
+      "default": 0.0,
+      "title": "Complete At 10",
+      "type": "number"
+     },
+     "hit_at": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "title": "Hit At",
+      "type": "object"
+     },
+     "mrr": {
+      "default": 0.0,
+      "title": "Mrr",
+      "type": "number"
+     },
+     "ndcg_at_10": {
+      "default": 0.0,
+      "title": "Ndcg At 10",
+      "type": "number"
+     },
+     "recall_at_10": {
+      "default": 0.0,
+      "title": "Recall At 10",
+      "type": "number"
+     }
+    },
+    "title": "EvalScores",
+    "type": "object"
+   },
+   "EvalSnapshotInfo": {
+    "properties": {
+     "chunker_version": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Chunker Version"
+     },
+     "comparable": {
+      "default": true,
+      "title": "Comparable",
+      "type": "boolean"
+     },
+     "docs_done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Docs Done"
+     },
+     "docs_total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Docs Total"
+     },
+     "embed_model": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Embed Model"
+     },
+     "fingerprint": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Fingerprint"
+     },
+     "settings": {
+      "additionalProperties": true,
+      "title": "Settings",
+      "type": "object"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "status": {
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "snapshot_id",
+     "status"
+    ],
+    "title": "EvalSnapshotInfo",
+    "type": "object"
+   }
+  },
+  "properties": {
+   "case_count": {
+    "default": 0,
+    "title": "Case Count",
+    "type": "integer"
+   },
+   "counts_by_kind": {
+    "additionalProperties": {
+     "type": "integer"
+    },
+    "title": "Counts By Kind",
+    "type": "object"
+   },
+   "created_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Created At"
+   },
+   "id": {
+    "title": "Id",
+    "type": "string"
+   },
+   "kb_id": {
+    "title": "Kb Id",
+    "type": "string"
+   },
+   "last_run": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/EvalRunSummary"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "name": {
+    "title": "Name",
+    "type": "string"
+   },
+   "revision": {
+    "default": 1,
+    "title": "Revision",
+    "type": "integer"
+   },
+   "updated_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Updated At"
+   }
+  },
+  "required": [
+   "id",
+   "kb_id",
+   "name"
+  ],
+  "title": "EvalSetSummary",
+  "type": "object"
+ },
+ "EvalSetUpdate": {
+  "$defs": {
+   "EvalCase": {
+    "additionalProperties": false,
+    "properties": {
+     "created_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Created At"
+     },
+     "evidence": {
+      "items": {
+       "$ref": "#/$defs/EvalEvidence"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Evidence",
+      "type": "array"
+     },
+     "id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Id"
+     },
+     "kind": {
+      "enum": [
+       "direct",
+       "paraphrase",
+       "multi_hop",
+       "promoted"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "overlap": {
+      "anyOf": [
+       {
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Overlap"
+     },
+     "query_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Query Id"
+     },
+     "question": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+     },
+     "reference_answer": {
+      "default": "",
+      "maxLength": 4000,
+      "title": "Reference Answer",
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "question",
+     "evidence"
+    ],
+    "title": "EvalCase",
+    "type": "object"
+   },
+   "EvalEvidence": {
+    "additionalProperties": false,
+    "description": "Where a case's answer is written: a quote, and its span in the document's parsed text (an attachment's own\ntext when `attachment` is set). A retrieved passage is relevant when it covers half the span of the same\nversion, or holds the quote.",
+    "properties": {
+     "attachment": {
+      "anyOf": [
+       {
+        "maxLength": 1024,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Attachment"
+     },
+     "char_end": {
+      "minimum": 0,
+      "title": "Char End",
+      "type": "integer"
+     },
+     "char_start": {
+      "minimum": 0,
+      "title": "Char Start",
+      "type": "integer"
+     },
+     "doc_id": {
+      "title": "Doc Id",
+      "type": "string"
+     },
+     "doc_sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Doc Sha256"
+     },
+     "path": {
+      "maxLength": 1024,
+      "title": "Path",
+      "type": "string"
+     },
+     "quote": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Quote",
+      "type": "string"
+     }
+    },
+    "required": [
+     "doc_id",
+     "path",
+     "char_start",
+     "char_end",
+     "quote"
+    ],
+    "title": "EvalEvidence",
+    "type": "object"
+   }
+  },
+  "additionalProperties": false,
+  "description": "A save. `revision` is the one the edit started from; a stale one is a 409.",
+  "properties": {
+   "cases": {
+    "anyOf": [
+     {
+      "items": {
+       "$ref": "#/$defs/EvalCase"
+      },
+      "maxItems": 200,
+      "type": "array"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Cases"
+   },
+   "name": {
+    "anyOf": [
+     {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Name"
+   },
+   "revision": {
+    "minimum": 1,
+    "title": "Revision",
+    "type": "integer"
+   }
+  },
+  "required": [
+   "revision"
+  ],
+  "title": "EvalSetUpdate",
+  "type": "object"
+ },
+ "EvalSnapshotInfo": {
+  "properties": {
+   "chunker_version": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Chunker Version"
+   },
+   "comparable": {
+    "default": true,
+    "title": "Comparable",
+    "type": "boolean"
+   },
+   "docs_done": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Docs Done"
+   },
+   "docs_total": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Docs Total"
+   },
+   "embed_model": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Embed Model"
+   },
+   "fingerprint": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Fingerprint"
+   },
+   "settings": {
+    "additionalProperties": true,
+    "title": "Settings",
+    "type": "object"
+   },
+   "snapshot_id": {
+    "title": "Snapshot Id",
+    "type": "string"
+   },
+   "status": {
+    "title": "Status",
+    "type": "string"
+   }
+  },
+  "required": [
+   "snapshot_id",
+   "status"
+  ],
+  "title": "EvalSnapshotInfo",
+  "type": "object"
+ },
+ "EvalVerdict": {
+  "properties": {
+   "error": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Error"
+   },
+   "per_criterion": {
+    "additionalProperties": {
+     "additionalProperties": true,
+     "type": "object"
+    },
+    "title": "Per Criterion",
+    "type": "object"
+   },
+   "reasoning": {
+    "default": "",
+    "title": "Reasoning",
+    "type": "string"
+   },
+   "score": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Score"
+   }
+  },
+  "title": "EvalVerdict",
+  "type": "object"
+ },
  "Fusion": {
   "additionalProperties": false,
   "properties": {
