@@ -13,6 +13,10 @@ import { ToastNotification } from './ToastNotification';
 import { AgentActivity, ActivityTab } from './AgentActivity';
 import { AgentMemory } from './AgentMemory';
 import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, type ToolPolicy } from './ToolPolicy';
+import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
+
+/** One search covers an agent's bases, so it names at most this many (`core.models.AGENT_KNOWLEDGE_MAX`). */
+const MAX_KNOWLEDGE_BASES = 10;
 
 /** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
 const AGENT_NAME_MAX = 100;
@@ -65,6 +69,8 @@ export const AgentsTab = ({
     const dispatch = useDispatch<AppDispatch>();
     const [repos, setRepos] = useState<any[]>([]);
     const [allSkills, setAllSkills] = useState<any[]>([]);
+    const knowledgeOn = useKnowledgeEnabled();
+    const [allBases, setAllBases] = useState<KnowledgeBase[]>([]);
     const [dbConfigs, setDbConfigs] = useState<any[]>([]);
     const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string }[]>([]);
     const [expandedCaps, setExpandedCaps] = useState<Set<string>>(new Set());
@@ -205,6 +211,15 @@ export const AgentsTab = ({
     }, [selectedAgentId]);
 
     useEffect(() => {
+        if (!knowledgeOn) return;
+        let live = true;
+        knowledgeApi.bases()
+            .then(list => { if (live) setAllBases(list); })
+            .catch(err => console.error('Failed to fetch knowledge bases', err));
+        return () => { live = false; };
+    }, [knowledgeOn]);
+
+    useEffect(() => {
         fetch('/api/repos')
             .then(res => res.json())
             .then(data => setRepos(data))
@@ -316,6 +331,11 @@ export const AgentsTab = ({
                     tools: selectedTools,
                     existing_prompt: draftAgent.system_prompt || '',
                     agents: delegateAgents,
+                    // What it answers from: the writer replaces its "use your own
+                    // knowledge" rule for such an agent (B1b).
+                    knowledge_bases: allBases
+                        .filter(kb => (draftAgent.knowledge || []).includes(kb.id))
+                        .map(kb => ({ name: kb.name, description: kb.description || '' })),
                 }),
                 signal: AbortSignal.timeout(180_000), // 3 minutes timeout for LLM generation
             });
@@ -1109,6 +1129,64 @@ export const AgentsTab = ({
                                         </div>
                                         <p className="text-2xs text-text-faint mt-1">A selected skill costs one roster line in the prompt; the agent loads its full instructions with load_skill only when needed.</p>
                                     </div>
+
+                                    {/* Knowledge bases — what this agent answers from, with sources (B1b) */}
+                                    {knowledgeOn && (() => {
+                                        const chosen: string[] = draftAgent.knowledge || [];
+                                        const known = new Set(allBases.map(kb => kb.id));
+                                        const gone = chosen.filter(id => !known.has(id));
+                                        const full = chosen.length >= MAX_KNOWLEDGE_BASES;
+                                        const toggle = (id: string) => setDraftAgent({
+                                            ...draftAgent,
+                                            knowledge: chosen.includes(id) ? chosen.filter(k => k !== id) : [...chosen, id],
+                                        });
+                                        const chip = (selected: boolean) => `px-3 py-1.5 text-xs font-bold border transition-colors rounded-md disabled:opacity-50 disabled:cursor-not-allowed ${selected
+                                            ? 'bg-accent text-accent-fg border-border-strong'
+                                            : 'bg-surface border-border text-text-muted hover:border-text-faint'}`;
+                                        return (
+                                            <div className="space-y-1">
+                                                <Label className="block">Knowledge bases</Label>
+                                                <div className="bg-bg border border-border p-3 flex flex-wrap gap-2 min-h-[50px] rounded-md">
+                                                    {allBases.length === 0 && gone.length === 0 && (
+                                                        <span className="text-xs text-text-faint">
+                                                            No knowledge bases yet — create one on the{' '}
+                                                            <Link href="/knowledge" className="underline">Knowledge</Link> page.
+                                                        </span>
+                                                    )}
+                                                    {allBases.map(kb => {
+                                                        const selected = chosen.includes(kb.id);
+                                                        const notes = [kb.description, kb.status !== 'active' ? 'Switched off: not searched' : '',
+                                                            kb.visitor_access ? 'Open to visitors' : ''].filter(Boolean).join(' · ');
+                                                        return (
+                                                            <button
+                                                                key={kb.id}
+                                                                type="button"
+                                                                aria-pressed={selected}
+                                                                title={notes || undefined}
+                                                                disabled={!selected && full}
+                                                                onClick={() => toggle(kb.id)}
+                                                                className={chip(selected)}
+                                                            >
+                                                                {kb.name}{kb.status !== 'active' && ' (off)'} {selected && '✓'}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                    {gone.map(id => (
+                                                        <button key={id} type="button" aria-pressed onClick={() => toggle(id)}
+                                                            title="This knowledge base no longer exists. Click to remove it."
+                                                            className={chip(true)}>
+                                                            Removed base ✕
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                <p className="text-2xs text-text-faint mt-1">
+                                                    The agent searches these with <span className="font-mono">search_knowledge</span> and cites the
+                                                    passages it uses. Up to {MAX_KNOWLEDGE_BASES}. A widget&apos;s visitors reach only bases open to
+                                                    visitors, and only when the widget allows the tool.
+                                                </p>
+                                            </div>
+                                        );
+                                    })()}
 
                                     {/* Planning — the native task list, on unless this agent
                                         has no use for one. Above Memory because it is the

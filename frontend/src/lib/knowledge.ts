@@ -31,6 +31,8 @@ export type KnowledgeBase = {
     folder: string;
     status: 'active' | 'disabled';
     language: string;
+    /** Widget and channel visitors may search it, when the tools are ticked there too (D153 #12). */
+    visitor_access: boolean;
     revision: number;
     created_at: string;
     updated_at: string;
