@@ -268,6 +268,10 @@ class AgentStepExecutor:
                     # kept with the lead's snapshot, as chat parks it.
                     if event.get("delegate_pending"):
                         run.step_progress[step.id]["delegate_pending"] = event["delegate_pending"]
+                    # The step's [K#] labels (Knowledge): a resumed step's answer
+                    # still cites what it searched before the crash.
+                    if event.get("knowledge"):
+                        run.step_progress[step.id]["knowledge"] = event["knowledge"]
                     try:
                         await SharedState(run).checkpoint(columns=("step_progress",))
                     except Exception as ckpt_err:

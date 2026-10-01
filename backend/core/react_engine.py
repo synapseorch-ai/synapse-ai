@@ -916,6 +916,7 @@ async def run_agent_step(
     should_stop=None,                     # async () -> bool; checked between turns, a True ends the step as cancelled
     persist_turn: bool = True,            # False = not a conversation with a person (a delegated hand-off)
     untrusted_message: bool = False,      # True = `message` carries text nobody typed (an expanded @[file])
+    knowledge_turn=None,                  # the root turn's [K#] labels (core.knowledge.citations.KnowledgeTurn); a delegate gets its lead's
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1192,6 +1193,42 @@ async def run_agent_step(
         _log.debug(f"🧠 memory enabled for agent '{agent_id_for_session}' "
               f"({len(_memory_index_text.splitlines())} index lines)")
 
+    # ── KNOWLEDGE: search_knowledge / read_knowledge over the agent's bases ──
+    # Only for an agent that names knowledge bases, while Knowledge is on, and
+    # never for a caller with its own tool list (the builder). In a visitor's
+    # turn only the bases open to visitors count (D153 #12); the visitor filter
+    # below still wants the tools ticked. The roster in the description is
+    # sorted, so the tools are the same on every turn (prompt cache). See
+    # core/knowledge/tools.py.
+    _knowledge_bases: list = []
+    _kn_names: frozenset = frozenset()
+    if tools_override is None and active_agent.get("knowledge"):
+        from core.knowledge import tools as _kn_tools
+        _knowledge_bases = await _kn_tools.agent_bases(
+            active_agent, visitor=_visitor_mod.current() is not None, settings=current_settings)
+    if _knowledge_bases:
+        from core.knowledge.agent_contract import KNOWLEDGE_TOOL_NAMES
+        _kn_names = KNOWLEDGE_TOOL_NAMES
+        # A same-named MCP tool is hidden: the name means Knowledge for this agent.
+        all_tools = [t for t in all_tools if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) not in _kn_names]
+        ollama_tools = [t for t in ollama_tools if t.get("function", {}).get("name") not in _kn_names]
+        for _kn_tool in _kn_tools.build_tools(_knowledge_bases):
+            all_tools.append(_kn_tool)
+            tool_schema_map[_kn_tool.name] = _kn_tool.inputSchema
+            ollama_tools.append({"type": "function", "function": {
+                "name": _kn_tool.name,
+                "description": _kn_tool.description,
+                "parameters": _kn_tool.inputSchema,
+            }})
+        tools_json = str([
+            {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+             "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+             "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+            for t in all_tools
+        ])
+        _log.debug(f"📚 knowledge for agent '{agent_id_for_session}': "
+                   f"{', '.join(kb.id for kb in _knowledge_bases)}")
+
     # ── VISITOR: a stranger's turn holds only what its owner ticked (F280) ──
     # Applied last, over everything assembled above — the agent's own tools,
     # the defaults its type carries, the delegate and subtask tools — so
@@ -1213,9 +1250,12 @@ async def run_agent_step(
                           | set(DEFAULT_TOOLS_BY_TYPE.get(agent_type, set())))
 
         def _admits(name: str) -> bool:
+            # The knowledge tools are the agent's by its bases, not its tool
+            # list; offered here only over bases open to visitors (above), and
+            # still only when the owner ticked them (`allows`).
             return _visitor.allows(name) and (
                 "all" in allowed_tools or name in allowed_tools or name in _type_defaults
-                or name in _visitor_mod.ENGINE_TOOLS)
+                or name in _visitor_mod.ENGINE_TOOLS or name in _kn_names)
         all_tools = [t for t in all_tools if _admits(_tool_label(t))]
         ollama_tools = [t for t in ollama_tools if _admits(t.get("function", {}).get("name", ""))]
         tool_schema_map = {n: s for n, s in tool_schema_map.items() if _admits(n)}
@@ -1237,6 +1277,9 @@ async def run_agent_step(
             _delegate_agents_map = {}
         _log.debug(f"🚪 visitor turn ({_visitor.surface}) for '{agent_id_for_session}': "
                    f"{len(all_tools)} tools")
+    # The knowledge tools this turn holds: all of them for a member, those a
+    # visitor's owner ticked for a visitor. Only these reach the handler.
+    _knowledge_offered = frozenset(n for n in _kn_names if n in tool_schema_map)
 
 
     async def generate_response(prompt_msg, sys_prompt, tools=None, history_messages=None, memory_context_text="",
@@ -1444,6 +1487,15 @@ async def run_agent_step(
         or (_pending_call or {}).get("tool") == "remember"
     )
 
+    # The [K#] labels of this root turn: made here for a root, the lead's for a
+    # delegate (core/knowledge/citations.py). A resumed turn takes its labels
+    # back from the snapshot — merged into the lead's when a delegate resumes.
+    from core.knowledge.citations import KnowledgeTurn
+    _kturn_root = knowledge_turn is None
+    _kturn = knowledge_turn if knowledge_turn is not None else KnowledgeTurn()
+    if (resume_state or {}).get("knowledge"):
+        _kturn.merge(KnowledgeTurn.from_state(resume_state["knowledge"]))
+
     # ── Mid-node resume: seed the loop from a prior interrupted attempt ──────
     # The orchestration executor checkpoints a _step_progress snapshot after
     # each completed tool turn; on resume_failed it hands it back here so the
@@ -1492,6 +1544,7 @@ async def run_agent_step(
         always_allowed.add(SKILL_TOOL_NAME)
     if _memory_enabled:
         always_allowed |= set(MEMORY_TOOL_NAMES)  # injected via the memory flag, same reason
+    always_allowed |= _kn_names  # injected via the agent's knowledge bases, same reason
     if _visitor is not None:
         # The default file tools are admitted here by the agent's *type*, not by
         # what it was offered. For a visitor the guard admits what was offered
@@ -2213,6 +2266,27 @@ async def run_agent_step(
                     _log.debug(f"🧠 {tool_name}: {_mem_preview}")
                     continue
 
+                # ── KNOWLEDGE tools: handled in-engine (see core/knowledge/tools.py) ──
+                # Only the ones this turn offered; any other call of the name
+                # goes on to the guard like any unknown tool.
+                if tool_name in _knowledge_offered:
+                    # Passages are content nobody typed (F279), as any tool's
+                    # result past the gate below is.
+                    _memory_tainted = True
+                    from core.knowledge.trace import Origin as _KnOrigin
+                    _kn_result = await _kn_tools.run_tool(
+                        tool_name, tool_args, bases=_knowledge_bases, turn=_kturn,
+                        origin=_KnOrigin(surface="tool", run_id=run_id, session_id=session_id,
+                                         agent_id=agent_id_for_session, turn=turn + 1),
+                        settings=current_settings, transcript_turn=turn + 1)
+                    current_context_text += _kn_result.observation
+                    if _kn_result.event is not None:
+                        yield _kn_result.event
+                    tools_used_summary.append(f"{tool_name}: {_kn_result.preview}")
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _kn_result.preview}
+                    _log.debug(f"📚 {tool_name}: {_kn_result.preview}")
+                    continue
+
                 # ── SESSION_HISTORY: this conversation's earlier turns (F242) ──
                 if tool_name == SESSION_HISTORY_TOOL_NAME and _session_history_enabled:
                     try:
@@ -2364,7 +2438,11 @@ async def run_agent_step(
                     # its own and a stub for a prompt, answered from the model's
                     # knowledge, and was reported as the workflow's result.
                     if target_agent.get("type") == "orchestrator":
-                        sub_final = await _delegate_to_workflow(target_agent, task_message, server_module)
+                        # A workflow's steps label their own searches; such a
+                        # label cannot name one of this turn's passages.
+                        from core.knowledge.citations import neutralize as _kn_neutralize
+                        sub_final = _kn_neutralize(
+                            await _delegate_to_workflow(target_agent, task_message, server_module))
                         raw_output = maybe_vault(tool_name, sub_final)
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Agent '{agent_name}' response:\n{raw_output}\n"
                         tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
@@ -2405,6 +2483,9 @@ async def run_agent_step(
                             # answered and its turn picked up again (F286).
                             progress_events=True,
                             resume_state=_resuming,
+                            # One root turn's labels: the delegate's searches
+                            # continue the lead's [K#] count (agent_contract).
+                            knowledge_turn=_kturn,
                         ):
                             if sub_event.get("type") == "_step_progress":
                                 # The delegate's state, not the lead's: forwarded,
@@ -2422,7 +2503,9 @@ async def run_agent_step(
                                 # lead replayed it as its own (blocked, or run under
                                 # the lead's identity and policy).
                                 if progress_events and _chat_approval.approvals_answerable():
+                                    _kn_state = _kturn.to_state()  # the labels now, the delegate's included
                                     yield {"type": "_step_progress", **(_last_progress or {"turn": turn}),
+                                           **({"knowledge": _kn_state} if _kn_state else {}),
                                            "delegate_pending": {
                                                **_call_args,
                                                "progress": _delegate_progress or {},
@@ -2797,6 +2880,11 @@ async def run_agent_step(
                     # stay as they were.
                     _last_progress["reasoning"] = panel_text(_turn_reasoning)
                     _last_progress["thoughts"] = panel_text(_turn_thoughts)
+                _kn_state = _kturn.to_state()
+                if _kn_state:
+                    # The turn's [K#] labels, so a resumed answer still cites
+                    # them. Absent for a turn that searched nothing.
+                    _last_progress["knowledge"] = _kn_state
                 yield {"type": "_step_progress", **_last_progress}
         else:
             _ran_out = True
@@ -2830,6 +2918,21 @@ async def run_agent_step(
         except Exception as _mem_exc:
             _log.warning(f"session memory note failed: {_mem_exc}")
 
+    # The answer's [K#] labels resolved, with their quote checks
+    # (core/knowledge/citations.py): once, by the root turn — a delegate's
+    # labels live in its lead's turn. Only a turn that searched, or an agent
+    # offered the tools whose answer cites labels anyway (they come back
+    # unresolved); every other turn announces nothing.
+    _kn_citations = None
+    if _kturn_root and (_kturn or _knowledge_offered):
+        try:
+            from core.knowledge.agent_contract import labels_in as _kn_labels_in
+            from core.knowledge.citations import citations_event
+            if _kturn or _kn_labels_in(final_response):
+                _kn_citations = await citations_event(final_response, _kturn)
+        except Exception as _kn_exc:
+            _log.warning(f"knowledge citations skipped: {_kn_exc}")
+
     # Persist the conversation turn (skip for orchestrator agents, for a
     # delegated hand-off, which is work done for another agent, not a chat, and
     # for a workflow's step, F261)
@@ -2845,10 +2948,15 @@ async def run_agent_step(
                 images=image_notes(images),
                 reasoning=_turn_reasoning,
                 thoughts=_turn_thoughts,
+                # The Sources a reopened answer draws — never for a visitor:
+                # the widget shows none, and they name the owner's files.
+                citations=_kn_citations if _visitor is None else None,
             )
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
 
+    if _kn_citations is not None:
+        yield _kn_citations
     yield {"type": "final", "response": final_response, "intent": last_intent, "data": last_data, "tool_name": tool_name}
 
 

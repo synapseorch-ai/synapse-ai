@@ -232,6 +232,30 @@ class TestWhatTheModelReads:
         again = await _call("search_knowledge", {"query": "x"}, bases=[CONTRACTS])
         assert first.observation == again.observation, "the engine's repeat guard compares them"
 
+    async def test_the_same_search_again_answers_the_same_labels_without_searching(self, stub_search, monkeypatch):
+        """The engine stops a model that repeats a call with the same result; new labels for
+        the same passages would hide the repeat from it."""
+        from core.knowledge import search
+
+        stub_search.append(_hit(1, "Fees exclude VAT."))
+        calls = []
+        real = search.search
+
+        async def counted(*a, **kw):
+            calls.append(1)
+            return await real(*a, **kw)
+
+        monkeypatch.setattr(search, "search", counted)
+        turn = KnowledgeTurn()
+        first = await _call("search_knowledge", {"query": "fees", "top_k": 3}, bases=[CONTRACTS], turn=turn,
+                            transcript_turn=1)
+        again = await _call("search_knowledge", {"query": "fees", "top_k": 3}, bases=[CONTRACTS], turn=turn,
+                            transcript_turn=2)
+        assert len(calls) == 1 and again.event["labels"] == first.event["labels"] == ["[K1]"]
+        assert again.observation == first.observation.replace("[Turn 1 —", "[Turn 2 —") and again.event["turn"] == 2
+        other = await _call("search_knowledge", {"query": "fees", "top_k": 2}, bases=[CONTRACTS], turn=turn)
+        assert len(calls) == 2 and other.event["labels"] == ["[K2]"], "different arguments search again"
+
     async def test_passages_past_the_budget_are_listed_not_shown(self, stub_search, monkeypatch):
         from core.knowledge import chunker
 

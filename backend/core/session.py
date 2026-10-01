@@ -77,6 +77,10 @@ def _turns(messages: list[dict]) -> list[dict]:
         if assistant.get("approval"):
             # A question nobody answered: the card, marked why (F247).
             turn["approval"] = assistant["approval"]
+        if assistant.get("citations") or assistant.get("unresolved_citations"):
+            # The answer's Sources: its [K#] labels resolved (Knowledge, B1b).
+            turn["citations"] = assistant.get("citations") or []
+            turn["unresolved_citations"] = assistant.get("unresolved_citations") or []
         turns.append(turn)
         i += 2
     return turns
@@ -294,12 +298,15 @@ async def _save_conversation_turn(
     images: list[dict] | None = None,
     reasoning: list[str] | None = None,
     thoughts: list[str] | None = None,
+    citations: dict | None = None,
 ):
     """Append a turn to the session and update last_message_at.
 
     `images` is `image_notes(...)` of what the question carried (F245);
     `reasoning` and `thoughts` are what the turn thought (U60), kept for a
     person reading it back and never sent to the model as history.
+    `citations` is the answer's `knowledge_citations` event: its Sources, kept
+    for a reopened chat to draw again.
     """
     from core.store import sessions as store
 
@@ -313,6 +320,10 @@ async def _save_conversation_turn(
     for key, items in (("reasoning", reasoning), ("thoughts", thoughts)):
         if kept := panel_text(items):
             answer[key] = kept
+    if citations and (citations.get("citations") or citations.get("unresolved")):
+        answer["citations"] = list(citations.get("citations") or [])
+        if citations.get("unresolved"):
+            answer["unresolved_citations"] = list(citations["unresolved"])
     await store.append_turn(
         session_id,
         _agent(agent_id),

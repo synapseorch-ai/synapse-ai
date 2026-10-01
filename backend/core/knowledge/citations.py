@@ -109,6 +109,9 @@ class KnowledgeTurn:
     def __init__(self) -> None:
         self.next_label = 1
         self.labels: dict[int, LabelEntry] = {}
+        #: Live only: the latest search's arguments and result. The same search again
+        #: answers the same labels and text, so the engine's repeat guard sees a repeat.
+        self.last_search: tuple[str, Any] | None = None
 
     def __bool__(self) -> bool:
         return bool(self.labels)

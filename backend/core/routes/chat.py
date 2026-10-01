@@ -351,6 +351,9 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 "truncated_output", "context_trimmed",
                 "tool_call_unparsed", "tool_approval_replay",
                 "cancelled",
+                # An agent's Knowledge calls and its answer's Sources (B1b):
+                # ids, labels, paths and citations, never passage text.
+                "knowledge_search", "knowledge_read", "knowledge_citations",
             ):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
 
