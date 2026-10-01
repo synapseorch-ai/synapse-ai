@@ -285,3 +285,151 @@ def odf(kind: str, body: str, *, styles: str = "", title: str | None = None) -> 
                                "<meta:creation-date>2024-05-06T10:00:00</meta:creation-date></office:meta>"
                                "</office:document-meta>")
     return zipped(members, first="mimetype")
+
+
+# ── OLE compound files and Outlook .msg ────────────────────────────────────────
+
+_FREE, _END, _FAT = 0xFFFFFFFF, 0xFFFFFFFE, 0xFFFFFFFD
+_NOSTREAM = 0xFFFFFFFF
+
+
+def ole_file(streams: dict[tuple[str, ...], bytes]) -> bytes:
+    """A version-3 compound file (MS-CFB) holding `streams` at their storage paths.
+
+    Small streams live in the mini stream, as the format requires (olefile reads
+    them from there); storages are implied by the paths. Siblings are kept as a
+    right-leaning chain in the format's name order, which readers accept.
+    """
+    import struct as st
+
+    # The directory: a tree of storages with their children.
+    tree: dict[tuple[str, ...], dict] = {(): {"kind": 5, "children": []}}
+    for path, data in sorted(streams.items()):
+        for depth in range(1, len(path)):
+            node = path[:depth]
+            if node not in tree:
+                tree[node] = {"kind": 1, "children": []}
+                tree[path[:depth - 1]]["children"].append(node)
+        tree[path] = {"kind": 2, "data": data}
+        tree[path[:-1]]["children"].append(path)
+    order = [()] + [p for p in tree if p != ()]
+    index = {p: k for k, p in enumerate(order)}
+
+    def name_key(path):
+        return (len(path[-1]), path[-1].upper())
+
+    small = {p: e["data"] for p, e in tree.items() if e["kind"] == 2 and len(e["data"]) < 4096}
+    big = {p: e["data"] for p, e in tree.items() if e["kind"] == 2 and len(e["data"]) >= 4096}
+    sectors: list[bytes] = []
+    fat: list[int] = []
+
+    def chain(data: bytes, size: int = 512) -> int:
+        count = max(1, -(-len(data) // size))
+        first = len(sectors)
+        for k in range(count):
+            sectors.append(data[k * size:(k + 1) * size].ljust(size, b"\0"))
+            fat.append(first + k + 1 if k < count - 1 else _END)
+        return first
+
+    start: dict[tuple, int] = {}
+    for path, data in big.items():
+        start[path] = chain(data)
+    mini, minifat = bytearray(), []
+    for path, data in small.items():
+        count = max(1, -(-len(data) // 64))
+        first = len(mini) // 64
+        mini += data.ljust(count * 64, b"\0")
+        minifat += [first + k + 1 if k < count - 1 else _END for k in range(count)]
+        start[path] = first
+    mini_start = chain(bytes(mini)) if mini else _END
+    minifat_start = chain(b"".join(st.pack("<I", v) for v in minifat).ljust(512 * max(1, -(-len(minifat) // 128)),
+                                                                          b"\xff")) if minifat else _END
+    n_minifat = -(-len(minifat) // 128) if minifat else 0
+
+    entries = []
+    for path in order:
+        entry = tree[path]
+        name = "Root Entry" if path == () else path[-1]
+        encoded = (name + "\0").encode("utf-16-le")
+        siblings = sorted(tree[path[:-1]]["children"], key=name_key) if path else []
+        right = siblings[siblings.index(path) + 1] if path and siblings.index(path) + 1 < len(siblings) else None
+        kids = sorted(entry.get("children", []), key=name_key)
+        if entry["kind"] == 5:
+            sect, size = mini_start, len(mini)
+        elif entry["kind"] == 2:
+            sect, size = start[path], len(entry["data"])
+        else:
+            sect, size = 0, 0
+        entries.append(encoded.ljust(64, b"\0") + st.pack("<HBB", len(encoded), entry["kind"], 1)
+                       + st.pack("<III", _NOSTREAM, index[right] if right else _NOSTREAM,
+                                 index[kids[0]] if kids else _NOSTREAM)
+                       + b"\0" * 16 + st.pack("<I", 0) + b"\0" * 16 + st.pack("<IQ", sect, size))
+    directory = b"".join(entries)
+    dir_start = chain(directory.ljust(512 * max(1, -(-len(directory) // 512)), b"\0"))
+
+    n_fat = 1
+    while (len(sectors) + n_fat) > 128 * n_fat:
+        n_fat += 1
+    fat_start = len(sectors)
+    fat += [_FAT] * n_fat
+    fat += [_FREE] * (128 * n_fat - len(fat))
+    for k in range(n_fat):
+        sectors.append(b"".join(st.pack("<I", v) for v in fat[k * 128:(k + 1) * 128]))
+    difat = [fat_start + k for k in range(n_fat)] + [_FREE] * (109 - n_fat)
+    header = (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 16 + st.pack("<HHHHH", 0x3E, 3, 0xFFFE, 9, 6)
+              + b"\0" * 6 + st.pack("<IIIIIIIII", 0, n_fat, dir_start, 0, 4096, minifat_start, n_minifat, _END, 0)
+              + b"".join(st.pack("<I", v) for v in difat))
+    return header + b"".join(sectors)
+
+
+def _prop(tag: int, value: int) -> bytes:
+    import struct as st
+
+    return st.pack("<IIQ", tag, 6, value)
+
+
+def msg(subject: str, *, body: str | None = None, html: str | None = None, sender: str = "Ada",
+        address: str = "ada@example.com", to: str = "Ops", sent: tuple[int, int, int] | None = (2025, 3, 4),
+        attachments: list[tuple[str, str, bytes]] = (), inline_image: bool = False,
+        embedded: list[tuple[str, str, str]] = ()) -> bytes:
+    """An Outlook message: `attachments` as (name, mime, data); `embedded` as (name, subject, body) messages."""
+    from datetime import datetime, timezone
+
+    def text(prop: int, value: str) -> tuple[str, bytes]:
+        return f"__substg1.0_{prop:04X}001F", value.encode("utf-16-le")
+
+    def message(prefix: tuple[str, ...], subject: str, body: str | None, *, top: bool) -> dict:
+        streams = {}
+        for prop, value in ((0x0037, subject), (0x0C1A, sender), (0x5D01, address), (0x0E04, to)):
+            name, data = text(prop, value)
+            streams[(*prefix, name)] = data
+        if body is not None:
+            name, data = text(0x1000, body)
+            streams[(*prefix, name)] = data
+        props = b"\0" * (32 if top else 24)
+        if sent:
+            delta = datetime(*sent, 9, 30, tzinfo=timezone.utc) - datetime(1601, 1, 1, tzinfo=timezone.utc)
+            props += _prop((0x0039 << 16) | 0x0040, int(delta.total_seconds() * 10_000_000))
+        streams[(*prefix, "__properties_version1.0")] = props
+        return streams
+
+    streams = message((), subject, body, top=True)
+    if html is not None:
+        streams[("__substg1.0_10130102",)] = html.encode("utf-8")
+    parts = list(attachments)
+    if inline_image:
+        parts.append(("logo.png", "image/png", b"\x89PNG\r\n\x1a\n"))
+    for k, (name, mime, data) in enumerate(parts):
+        store = f"__attach_version1.0_#{k:08X}"
+        streams[(store, "__substg1.0_3707001F")] = name.encode("utf-16-le")
+        streams[(store, "__substg1.0_370E001F")] = mime.encode("utf-16-le")
+        streams[(store, "__substg1.0_37010102")] = data
+        if inline_image and name == "logo.png":
+            streams[(store, "__substg1.0_3712001F")] = "logo@cid".encode("utf-16-le")
+        streams[(store, "__properties_version1.0")] = b"\0" * 8
+    for k, (name, subject_, body_) in enumerate(embedded, start=len(parts)):
+        store = f"__attach_version1.0_#{k:08X}"
+        streams[(store, "__substg1.0_3707001F")] = name.encode("utf-16-le")
+        streams[(store, "__properties_version1.0")] = b"\0" * 8
+        streams.update(message((store, "__substg1.0_3701000D"), subject_, body_, top=False))
+    return ole_file(streams)
