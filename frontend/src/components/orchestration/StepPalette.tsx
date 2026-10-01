@@ -14,14 +14,14 @@
 import { useMemo, useState } from 'react';
 import {
     Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench,
-    Braces, GitFork, ArrowLeftRight, FileText, PanelLeftClose, PanelLeftOpen,
+    Braces, GitFork, ArrowLeftRight, FileText, BookOpenText, FileInput, PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react';
 import { SearchInput, usePersisted } from '@/components/ui';
 import { STEP_TYPE_META, type StepCategory, type StepType } from '@/types/orchestration';
 
 const ICONS: Record<string, React.FC<{ size?: number; className?: string }>> = {
     Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench,
-    Braces, GitFork, ArrowLeftRight, FileText,
+    Braces, GitFork, ArrowLeftRight, FileText, BookOpenText, FileInput,
 };
 
 const CATEGORY_ORDER: StepCategory[] = ['Core', 'Logic', 'Data', 'I/O'];
@@ -51,7 +51,11 @@ export function usePaletteCollapsed() {
     );
 }
 
-export function StepPalette({ onAdd }: { onAdd: (type: StepType) => void }) {
+/**
+ * `hiddenTypes`: step types this workspace does not offer — Knowledge's while
+ * it is off. Optional, so a shell that predates it still mounts the palette.
+ */
+export function StepPalette({ onAdd, hiddenTypes }: { onAdd: (type: StepType) => void; hiddenTypes?: readonly StepType[] }) {
     const [query, setQuery] = useState('');
     const [collapsed, setCollapsed] = usePaletteCollapsed();
 
@@ -59,13 +63,14 @@ export function StepPalette({ onAdd }: { onAdd: (type: StepType) => void }) {
         const q = query.trim().toLowerCase();
         const byCategory = new Map<StepCategory, StepType[]>();
         for (const [type, meta] of Object.entries(STEP_TYPE_META) as [StepType, (typeof STEP_TYPE_META)[StepType]][]) {
+            if (hiddenTypes?.includes(type)) continue;
             if (q && !meta.label.toLowerCase().includes(q) && !meta.blurb.toLowerCase().includes(q)) continue;
             const bucket = byCategory.get(meta.category);
             if (bucket) bucket.push(type);
             else byCategory.set(meta.category, [type]);
         }
         return CATEGORY_ORDER.filter((c) => byCategory.has(c)).map((c) => [c, byCategory.get(c)!] as const);
-    }, [query]);
+    }, [query, hiddenTypes]);
 
     if (collapsed === '1') {
         return (

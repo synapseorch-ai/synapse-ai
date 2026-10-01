@@ -225,6 +225,7 @@ const TYPE_SPECIFIC_FIELDS: (keyof StepConfig)[] = [
     'transform_code', 'print_content', 'if_condition', 'if_true_step_id', 'if_false_step_id',
     'switch_expression', 'switch_cases', 'switch_default_step_id',
     'human_prompt', 'human_fields', 'human_channel_id',
+    'retrieve', 'ingest',
 ];
 
 export function hasTypeSpecificConfig(step: StepConfig): boolean {

@@ -15,6 +15,14 @@ import { Combobox, Input } from '@/components/ui';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
 
 /** Props every per-type section receives. */
+/** A knowledge base as the Retrieve and Ingest pickers show it. */
+export interface KnowledgeBaseOption {
+    id: string;
+    name: string;
+    status?: string;
+    description?: string;
+}
+
 export interface StepSectionProps {
     step: StepConfig;
     update: (patch: Partial<StepConfig>) => void;
@@ -32,6 +40,8 @@ export interface StepSectionProps {
      * reaches the one it cannot — the code editor, which is `contenteditable`.
      */
     readOnly?: boolean;
+    /** The workspace's knowledge bases (Retrieve and Ingest); unset, ids are typed. */
+    knowledgeBases?: KnowledgeBaseOption[];
 }
 
 /** Neutral explainer block — replaces the per-type rainbow of tinted boxes. */

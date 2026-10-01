@@ -1,6 +1,34 @@
 import type { Node, Edge } from '@xyflow/react';
 
-export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'extract_json' | 'if_else' | 'switch' | 'print' | 'end';
+export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'extract_json' | 'if_else' | 'switch' | 'print' | 'end' | 'retrieve' | 'ingest';
+
+/** Knowledge's two steps (R1). Offered only while Knowledge is on: a shell that does not say so hides them. */
+export const KNOWLEDGE_STEP_TYPES: readonly StepType[] = ['retrieve', 'ingest'];
+
+/**
+ * A Retrieve step's settings, as stored under `step.retrieve` — the engine's
+ * `RetrieveStepConfig`. Saved half-filled while being edited; the run checks it.
+ */
+export interface RetrieveSettings {
+    kb_ids?: string[];
+    /** A template: `{state.key}` or `{{ state.key.path }}`. */
+    query?: string;
+    filters?: Record<string, unknown> | null;
+    top_k?: number | null;
+    rerank?: boolean | null;
+    /** `active`, or a `ksnap_…` id pinning one knowledge base's index version. */
+    snapshot?: string;
+}
+
+/** An Ingest step's settings, as stored under `step.ingest` — the engine's `IngestStepConfig`. */
+export interface IngestSettings {
+    kb_id?: string;
+    /** The state key holding a list of objects. */
+    records_from?: string;
+    id_field?: string | null;
+    text_field?: string | null;
+    metadata_fields?: string[];
+}
 
 export interface StepConfig {
     id: string;
@@ -88,6 +116,10 @@ export interface StepConfig {
     max_iterations?: number;
     /** Where a route to this step goes once it has used max_iterations. Unset, the run fails (F248). */
     on_exhausted_step_id?: string | null;
+
+    // RETRIEVE / INGEST — Knowledge's steps (R1)
+    retrieve?: RetrieveSettings | null;
+    ingest?: IngestSettings | null;
 
     // Visual canvas position
     position_x?: number;
@@ -207,4 +239,6 @@ export const STEP_TYPE_META: Record<StepType, {
     switch:       { label: 'Switch',       color: '#06b6d4', icon: 'ArrowLeftRight', category: 'Logic', blurb: 'Match a value to a case' },
     print:        { label: 'Print',        color: '#84cc16', icon: 'FileText',      category: 'I/O',   blurb: 'Write text/markdown to state' },
     end:          { label: 'End',          color: '#6b7280', icon: 'Square',        category: 'I/O',   blurb: 'Terminate the flow here' },
+    retrieve:     { label: 'Retrieve',     color: '#0ea5e9', icon: 'BookOpenText',  category: 'Data',  blurb: 'Search knowledge bases' },
+    ingest:       { label: 'Ingest',       color: '#d946ef', icon: 'FileInput',     category: 'Data',  blurb: 'Add records to a knowledge base' },
 };

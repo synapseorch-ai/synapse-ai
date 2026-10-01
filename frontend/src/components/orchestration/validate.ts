@@ -24,7 +24,7 @@ const error = (message: string): StepIssue => ({ severity: 'error', message });
 const warning = (message: string): StepIssue => ({ severity: 'warning', message });
 
 /** Steps that exist to produce a value, so losing it is worth saying. */
-const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform', 'extract_json', 'human']);
+const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform', 'extract_json', 'human', 'retrieve']);
 
 /**
  * `agents` is the list the caller already holds for the picker. When it is
@@ -199,6 +199,34 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
             case 'extract_json':
                 if (!s.input_keys?.length) add(s.id, warning('No input keys — nothing to extract from'));
                 break;
+            // Knowledge's steps (R1): what the engine checks when the step runs
+            // (`core.knowledge.workflow_steps`), said while it is being edited.
+            case 'retrieve': {
+                const settings = s.retrieve || {};
+                const kbs = settings.kb_ids || [];
+                const pin = settings.snapshot && settings.snapshot !== 'active' ? settings.snapshot : '';
+                if (kbs.length === 0) add(s.id, error('No knowledge base selected'));
+                if (kbs.length > 10) add(s.id, error('At most 10 knowledge bases'));
+                if (!settings.query?.trim()) add(s.id, error('No query set'));
+                if (settings.top_k != null && (settings.top_k < 1 || settings.top_k > 50)) {
+                    add(s.id, error('Passages is between 1 and 50'));
+                }
+                if (pin && !pin.startsWith('ksnap_')) add(s.id, error('An index version is “active” or a ksnap_… id'));
+                else if (pin && kbs.length > 1) {
+                    add(s.id, error('A pinned index version is one knowledge base’s — search exactly one, or clear the version'));
+                }
+                break;
+            }
+            case 'ingest': {
+                const settings = s.ingest || {};
+                const source = (settings.records_from || '').replace(/^state\./, '');
+                if (!settings.kb_id) add(s.id, error('No knowledge base selected'));
+                if (!source) add(s.id, error('No state key to read records from'));
+                else if (!knownKeys.has(source)) {
+                    add(s.id, warning(`Records from “${source}”, which no step writes and the schema does not declare`));
+                }
+                break;
+            }
         }
 
         // A step whose whole purpose is a value, with nowhere to put it.

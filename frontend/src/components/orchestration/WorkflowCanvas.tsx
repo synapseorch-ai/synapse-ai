@@ -26,6 +26,7 @@ import { layoutPositions } from './layout';
 import { validateOrchestration } from './validate';
 import { STEP_TYPE_META } from '@/types/orchestration';
 import type { Orchestration, StepConfig, StepIssue, StepNodeData, StepType } from '@/types/orchestration';
+import { KNOWLEDGE_STEP_TYPES } from '@/types/orchestration';
 
 interface WorkflowCanvasProps {
     orchestration: Orchestration;
@@ -42,6 +43,12 @@ interface WorkflowCanvasProps {
     showPalette?: boolean;
     /** Look, don't touch: no drag, connect, delete, drop, palette, Tidy up or issue badges. See `canvasFlags`. */
     readOnly?: boolean;
+    /**
+     * Whether Knowledge is on: its Retrieve and Ingest steps are in the palette
+     * only then. Unset reads as off, so a shell that has not wired it offers
+     * neither step rather than steps that would fail their runs.
+     */
+    knowledgeEnabled?: boolean;
 }
 
 const noop = () => {};
@@ -333,6 +340,7 @@ export function WorkflowCanvas({
     runStepErrors,
     showPalette = true,
     readOnly = false,
+    knowledgeEnabled = false,
 }: WorkflowCanvasProps) {
     const { fitView, getNodes, screenToFlowPosition, zoomIn, zoomOut } = useReactFlow();
     const coarsePointer = useSyncExternalStore(subscribeCoarse, readCoarse, serverCoarse);
@@ -597,7 +605,7 @@ export function WorkflowCanvas({
                     // 1rem = the Panel's own m-2 twice over, so the rail ends
                     // the same 8px from the bottom edge as it starts from the top.
                     <Panel position="top-left" className="!m-2 flex max-h-[calc(100%-1rem)]">
-                        <StepPalette onAdd={addStep} />
+                        <StepPalette onAdd={addStep} hiddenTypes={knowledgeEnabled ? undefined : KNOWLEDGE_STEP_TYPES} />
                     </Panel>
                 )}
                 {/* One cluster for every canvas control — the default <Controls>

@@ -23,10 +23,10 @@ import {
     Badge, Button, ConfirmDialog, Checkbox, ErrorNote, Field, IconButton, Input, Section, Select, TemplateScope, usePersisted,
 } from '@/components/ui';
 import type { Orchestration, StepConfig, StepType } from '@/types/orchestration';
-import { STEP_TYPE_META } from '@/types/orchestration';
+import { KNOWLEDGE_STEP_TYPES, STEP_TYPE_META } from '@/types/orchestration';
 import { collectStateKeys, hasTypeSpecificConfig, isLinearStep } from './graph';
 import { validateOrchestration } from './validate';
-import { KeyChips, StepTargetSelect, intOrUndefined, type StepSectionProps } from './panel/shared';
+import { KeyChips, StepTargetSelect, intOrUndefined, type KnowledgeBaseOption, type StepSectionProps } from './panel/shared';
 import { STEP_SECTIONS } from './panel/steps';
 import { useAvailableTools } from './panel/use-available-tools';
 
@@ -70,6 +70,14 @@ interface StepConfigPanelProps {
      * "Set as entry point"; and `onUpdate` is never called, whatever reaches it.
      */
     readOnly?: boolean;
+    /**
+     * Whether Knowledge is on. Its Retrieve and Ingest types are offered only
+     * then — though never taken from a step that already is one — and unset
+     * reads as off, as on the canvas.
+     */
+    knowledgeEnabled?: boolean;
+    /** The workspace's knowledge bases, for the Retrieve and Ingest pickers. Without them the ids are typed. */
+    knowledgeBases?: KnowledgeBaseOption[];
 }
 
 // The engine asks the runner for the internet (`Network.INTERNET` in the
@@ -78,7 +86,7 @@ interface StepConfigPanelProps {
 const SELF_HOSTED_RUNNER_NOTE =
     'Runs in Docker by default (512MB RAM, up to a minute, with internet access); switch to host mode in Settings → General to lift the sandbox.';
 
-const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end'];
+const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end', 'retrieve', 'ingest'];
 
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
@@ -86,7 +94,7 @@ const MAX_WIDTH = 640;
 export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
     availableModels, orchestration, showVaultHints = true, canRunCode = true,
-    codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, readOnly = false,
+    codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, readOnly = false, knowledgeEnabled = false, knowledgeBases,
 }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => {
         if (!readOnly) onUpdate({ ...step, ...patch });
@@ -148,7 +156,7 @@ export function StepConfigPanel({
     const sectionProps: StepSectionProps = {
         step, update, otherSteps, agents,
         availableModels: availableModels || [],
-        availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration, readOnly,
+        availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration, readOnly, knowledgeBases,
     };
     const TypeSection = STEP_SECTIONS[step.type];
     const isLinear = isLinearStep(step);
@@ -210,7 +218,8 @@ export function StepConfigPanel({
                             aria-label="Step type"
                             value={step.type}
                             onChange={(t) => changeType(t as StepType)}
-                            options={STEP_TYPES.map((t) => ({
+                            options={STEP_TYPES.filter((t) => knowledgeEnabled || t === step.type
+                                || !KNOWLEDGE_STEP_TYPES.includes(t)).map((t) => ({
                                 value: t,
                                 label: STEP_TYPE_META[t].label,
                                 hint: t === 'transform' && !canRunCode

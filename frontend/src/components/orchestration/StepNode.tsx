@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { AlertTriangle, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText } from 'lucide-react';
+import { AlertTriangle, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText, BookOpenText, FileInput } from 'lucide-react';
 import { STEP_TYPE_META } from '@/types/orchestration';
 import type { StepConfig, StepIssue, StepType } from '@/types/orchestration';
 import { ROUTE_COLORS } from './graph';
@@ -10,6 +10,7 @@ import { reasonHeadline } from '@/lib/runErrors';
 
 const ICONS: Record<string, React.FC<{ size?: number; className?: string }>> = {
     Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText,
+    BookOpenText, FileInput,
 };
 
 /** Evenly distribute n source handles down the right edge. */
@@ -70,6 +71,14 @@ function summaryFor(step: StepConfig, agentName?: string): string | null {
             return cases.length ? `${cases.length} case${cases.length !== 1 ? 's' : ''}: ${cases.join(', ')}` : 'No cases yet';
         }
         case 'transform': return step.transform_code ? 'Python transform' : 'No code set';
+        case 'retrieve': {
+            const n = step.retrieve?.kb_ids?.length ?? 0;
+            if (!n) return 'No knowledge base';
+            return step.retrieve?.query ? clip(step.retrieve.query) : `${n} knowledge base${n !== 1 ? 's' : ''}, no query`;
+        }
+        case 'ingest':
+            if (!step.ingest?.kb_id) return 'No knowledge base';
+            return step.ingest.records_from ? `From: ${step.ingest.records_from}` : 'No records key';
         default: return null;
     }
 }

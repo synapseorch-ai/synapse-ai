@@ -19,6 +19,8 @@ import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
 import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
 import { humanAnswer, initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
+import type { KnowledgeBaseOption } from '../orchestration/panel/shared';
+import { knowledgeApi, useKnowledgeEnabled } from '@/lib/knowledge';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ConfirmationModal } from './ConfirmationModal';
@@ -247,6 +249,18 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         return () => window.removeEventListener(RESOURCE_SAVED_EVENT, onSaved);
     }, [dirty, selectedOrchId, loadSavedOrchestration]);
     const [agents, setAgents] = useState<any[]>([]);
+    // Knowledge (R1): its Retrieve and Ingest steps are offered only while it is
+    // on, and their pickers list the workspace's knowledge bases.
+    const knowledgeEnabled = useKnowledgeEnabled() === true;
+    const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseOption[] | undefined>(undefined);
+    useEffect(() => {
+        if (!knowledgeEnabled) return;
+        let live = true;
+        knowledgeApi.bases()
+            .then((bases) => { if (live) setKnowledgeBases(bases.map(({ id, name, status, description }) => ({ id, name, status, description }))); })
+            .catch(() => { /* the pickers fall back to typed ids */ });
+        return () => { live = false; };
+    }, [knowledgeEnabled]);
     const [availableModels, setAvailableModels] = useState<string[]>([]);
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'warning' | 'error' } | null>(null);
@@ -1977,6 +1991,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                     onUpdateOrchestration={updateOrchestration}
                                     runStepStatuses={runStepStatuses}
                                     runStepErrors={runStepErrors}
+                                    knowledgeEnabled={knowledgeEnabled}
                                 />
                             </ReactFlowProvider>
                         </div>
@@ -1994,6 +2009,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                 onSetEntry={() => setEntryPoint(selectedStep.id)}
                                 availableModels={availableModels}
                                 orchestration={draft}
+                                knowledgeEnabled={knowledgeEnabled}
+                                knowledgeBases={knowledgeBases}
                             />
                         )}
                     </div>

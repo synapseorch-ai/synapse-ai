@@ -159,7 +159,7 @@ function ReasoningCollapsible({ reasoning, stepName }: { reasoning: string[]; st
 function StepDivider({ stepName, stepType }: { stepName: string; stepType?: string }) {
   const typeIcon: Record<string, string> = {
     agent: '🤖', evaluator: '🔀', parallel: '⚡', merge: '🔗',
-    loop: '🔄', human: '👤', transform: '⚙️', end: '🏁',
+    loop: '🔄', human: '👤', transform: '⚙️', end: '🏁', retrieve: '🔎', ingest: '📥',
   };
   const icon = typeIcon[stepType || ''] ?? '▶';
   return (

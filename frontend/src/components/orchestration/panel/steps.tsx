@@ -9,13 +9,13 @@
 
 import { useEffect, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { Button, Checkbox, Combobox, Field, Input, MarkdownEditor, Select, Textarea } from '@/components/ui';
+import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Select, TemplateInput, Textarea } from '@/components/ui';
 import { vaultMentions } from '@/components/VaultMention';
 import { humanizeToolName } from '@/lib/toolNames';
-import type { StepConfig, StepType } from '@/types/orchestration';
+import type { IngestSettings, RetrieveSettings, StepConfig, StepType } from '@/types/orchestration';
 import {
-    LocalInput, ModelSelect, Note, StateKeyHelper, StepTargetSelect,
-    type StepSectionProps,
+    KeyChips, LocalInput, ModelSelect, Note, StateKeyHelper, StepTargetSelect, intOrUndefined,
+    type KnowledgeBaseOption, type StepSectionProps,
 } from './shared';
 import { PythonEditor } from './PythonEditor';
 import { HUMAN_FIELD_TYPES, humanFieldType } from '../humanFields';
@@ -891,6 +891,273 @@ function SwitchSection({ step, update, otherSteps, stateKeys }: StepSectionProps
     );
 }
 
+/* ── Knowledge: Retrieve and Ingest (R1) ────────────────────────────────── */
+
+function isActive(kb: KnowledgeBaseOption): boolean {
+    return (kb.status ?? 'active') === 'active';
+}
+
+/**
+ * Knowledge bases picked by name. A base the step names that is gone or
+ * disabled stays on it, flagged, rather than vanishing; without the list
+ * (a shell that does not pass it) the ids are typed.
+ */
+function KnowledgeBasesPicker({ value, onChange, knowledgeBases }: {
+    value: string[];
+    onChange: (ids: string[]) => void;
+    knowledgeBases?: KnowledgeBaseOption[];
+}) {
+    if (!knowledgeBases) return <KeyChips value={value} onChange={onChange} suggestions={[]} />;
+    const remaining = knowledgeBases.filter((kb) => isActive(kb) && !value.includes(kb.id));
+    return (
+        <div className="space-y-1.5">
+            {value.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                    {value.map((id) => {
+                        const kb = knowledgeBases.find((b) => b.id === id);
+                        const problem = !kb ? 'not found' : !isActive(kb) ? 'disabled' : null;
+                        return (
+                            <span
+                                key={id}
+                                title={id}
+                                className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] ${problem ? 'bg-danger-subtle text-danger' : 'bg-accent-subtle text-accent'}`}
+                            >
+                                {kb?.name ?? <span className="font-code" translate="no">{id}</span>}
+                                {problem && <span>· {problem}</span>}
+                                <button
+                                    type="button"
+                                    aria-label={`Remove ${kb?.name ?? id}`}
+                                    onClick={() => onChange(value.filter((k) => k !== id))}
+                                    className="rounded-sm opacity-70 transition-opacity hover:opacity-100"
+                                >
+                                    <Trash2 size={10} aria-hidden />
+                                </button>
+                            </span>
+                        );
+                    })}
+                </div>
+            )}
+            {remaining.length > 0 ? (
+                <Combobox
+                    size="sm"
+                    aria-label="Add a knowledge base"
+                    value={undefined}
+                    onChange={(id) => id && onChange([...value, id])}
+                    options={remaining.map((kb) => ({ value: kb.id, label: kb.name, hint: kb.description || kb.id }))}
+                    placeholder="Add a knowledge base…"
+                    searchPlaceholder="Search knowledge bases…"
+                />
+            ) : knowledgeBases.filter(isActive).length === 0 ? (
+                <p className="text-[11px] text-text-faint">No knowledge bases yet — make one on the Knowledge screen.</p>
+            ) : null}
+        </div>
+    );
+}
+
+/** The filter as JSON, kept as typed: a value that is not a JSON object is shown, and not saved, until it is one. */
+function FilterEditor({ value, onChange }: {
+    value: RetrieveSettings['filters'];
+    onChange: (filters: Record<string, unknown> | undefined) => void;
+}) {
+    const [text, setText] = useState(() => (value ? JSON.stringify(value, null, 2) : ''));
+    let problem: string | null = null;
+    if (text.trim()) {
+        try {
+            const parsed = JSON.parse(text);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) problem = 'A filter is a JSON object.';
+        } catch {
+            problem = null; // the editor says what is wrong with the JSON itself
+        }
+    }
+    return (
+        <>
+            <CodeEditor
+                language="json"
+                lint="json"
+                height={96}
+                value={text}
+                onChange={(next) => {
+                    setText(next);
+                    if (!next.trim()) return onChange(undefined);
+                    try {
+                        const parsed = JSON.parse(next);
+                        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) onChange(parsed);
+                    } catch {
+                        // not JSON yet: keep what was saved
+                    }
+                }}
+                placeholder={'{"doc_type": "contract", "year": {"$gte": 2024}}'}
+                aria-label="Metadata filter"
+            />
+            {problem && <p className="text-[11px] text-danger">{problem}</p>}
+        </>
+    );
+}
+
+function RetrieveSection({ step, update, knowledgeBases }: StepSectionProps) {
+    const settings: RetrieveSettings = step.retrieve || {};
+    const set = (patch: Partial<RetrieveSettings>) => update({ retrieve: { ...settings, ...patch } });
+    const kbIds = settings.kb_ids || [];
+    const snapshot = settings.snapshot && settings.snapshot !== 'active' ? settings.snapshot : '';
+    return (
+        <div className="space-y-3">
+            <Note>
+                <strong>Retrieve</strong> — searches knowledge bases, with no model call. The output key holds{' '}
+                <code className="font-code">context</code> (the passages under <code className="font-code">[K#]</code> labels,
+                marked as documents), <code className="font-code">chunks</code>, <code className="font-code">citations</code> and{' '}
+                <code className="font-code">trace_id</code>. Read the passages in a later prompt as{' '}
+                <code className="font-code">{'{{ state.key.context }}'}</code>.
+            </Note>
+            <Field label="Knowledge bases" required composite>
+                <KnowledgeBasesPicker
+                    value={kbIds}
+                    onChange={(kb_ids) => set({ kb_ids })}
+                    knowledgeBases={knowledgeBases}
+                />
+            </Field>
+            <Field
+                label="Query"
+                required
+                hint={<>What to search for. Type <span className="font-code">{'{{'}</span> for state and variables — <span className="font-code">{'{{ state.question }}'}</span>.</>}
+            >
+                <TemplateInput
+                    size="sm"
+                    profile="step-prompt"
+                    aria-label="Query"
+                    value={settings.query || ''}
+                    onChange={(e) => set({ query: e.target.value })}
+                    placeholder="{{ state.user_input }}"
+                />
+            </Field>
+            <Field
+                label="Metadata filter"
+                composite
+                hint={<>Optional, over each document&apos;s metadata. <span className="font-code">$eq $ne $in $nin $gt $gte $lt $lte</span>, combined with <span className="font-code">$and $or $not</span>.</>}
+            >
+                <FilterEditor key={step.id} value={settings.filters} onChange={(filters) => set({ filters })} />
+            </Field>
+            <div className="grid grid-cols-2 gap-2">
+                <Field label="Passages" hint="1–50. Blank: the knowledge base's own.">
+                    <Input
+                        size="sm"
+                        type="number"
+                        min={1}
+                        max={50}
+                        value={settings.top_k ?? ''}
+                        onChange={(e) => set({ top_k: intOrUndefined(e.target.value) })}
+                        placeholder="8"
+                    />
+                </Field>
+                <Field label="Rerank">
+                    <Select
+                        size="sm"
+                        aria-label="Rerank"
+                        value={settings.rerank == null ? 'default' : settings.rerank ? 'on' : 'off'}
+                        onChange={(v) => set({ rerank: v === 'default' ? undefined : v === 'on' })}
+                        options={[
+                            { value: 'default', label: 'Base default' },
+                            { value: 'on', label: 'On' },
+                            { value: 'off', label: 'Off' },
+                        ]}
+                    />
+                </Field>
+            </div>
+            <Field
+                label="Index version"
+                hint={kbIds.length > 1
+                    ? 'Searches each knowledge base’s version in use at run time. A pin names one base’s version, so it needs exactly one base.'
+                    : 'Blank searches the version in use at run time. A ksnap_… id pins this step to one version, even after re-indexing.'}
+            >
+                <Input
+                    size="sm"
+                    className="font-code"
+                    aria-label="Index version"
+                    value={snapshot}
+                    onChange={(e) => set({ snapshot: e.target.value.trim() || undefined })}
+                    placeholder="active"
+                />
+            </Field>
+        </div>
+    );
+}
+
+function IngestSection({ step, update, stateKeys, knowledgeBases }: StepSectionProps) {
+    const settings: IngestSettings = step.ingest || {};
+    const set = (patch: Partial<IngestSettings>) => update({ ingest: { ...settings, ...patch } });
+    const options = (knowledgeBases || []).filter((kb) => isActive(kb) || kb.id === settings.kb_id);
+    return (
+        <div className="space-y-3">
+            <Note>
+                <strong>Ingest</strong> — adds each object in a state key to a knowledge base as a record, with no model
+                call. They are indexed after the step, so a Retrieve later in the same run may not find them yet. The
+                output key lists each document and its status.
+            </Note>
+            <Field label="Knowledge base" required>
+                {knowledgeBases ? (
+                    <Combobox
+                        size="sm"
+                        aria-label="Knowledge base"
+                        value={settings.kb_id}
+                        onChange={(kb_id) => set({ kb_id: kb_id || undefined })}
+                        options={options.map((kb) => ({
+                            value: kb.id, label: kb.name, hint: isActive(kb) ? kb.description || kb.id : 'disabled',
+                        }))}
+                        placeholder="Select a knowledge base…"
+                        searchPlaceholder="Search knowledge bases…"
+                    />
+                ) : (
+                    <Input
+                        size="sm"
+                        className="font-code"
+                        aria-label="Knowledge base"
+                        value={settings.kb_id || ''}
+                        onChange={(e) => set({ kb_id: e.target.value.trim() || undefined })}
+                        placeholder="kb_…"
+                    />
+                )}
+            </Field>
+            <Field label="Records from" required hint="The state key holding a list of objects. An Extract JSON step makes one from a model's answer.">
+                <Input
+                    size="sm"
+                    className="font-code"
+                    aria-label="Records from"
+                    value={settings.records_from || ''}
+                    onChange={(e) => set({ records_from: e.target.value.trim() || undefined })}
+                    placeholder="tickets"
+                />
+            </Field>
+            <StateKeyHelper stateKeys={stateKeys} onInsert={(token) => set({ records_from: token.replace(/^state\./, '') })} />
+            <Field label="Id field" hint="Names each record; the same id replaces its record. Blank: an id from the record's content, so the same record twice is one.">
+                <Input
+                    size="sm"
+                    className="font-code"
+                    aria-label="Id field"
+                    value={settings.id_field || ''}
+                    onChange={(e) => set({ id_field: e.target.value.trim() || undefined })}
+                    placeholder="ticket_id"
+                />
+            </Field>
+            <Field label="Text field" hint="The field holding the text to index. Blank: the whole object is indexed as JSON.">
+                <Input
+                    size="sm"
+                    className="font-code"
+                    aria-label="Text field"
+                    value={settings.text_field || ''}
+                    onChange={(e) => set({ text_field: e.target.value.trim() || undefined })}
+                    placeholder="body"
+                />
+            </Field>
+            <Field label="Metadata fields" composite hint="Copied into each record's metadata, so a Retrieve step can filter on them.">
+                <KeyChips
+                    value={settings.metadata_fields || []}
+                    onChange={(metadata_fields) => set({ metadata_fields })}
+                    suggestions={[]}
+                />
+            </Field>
+        </div>
+    );
+}
+
 function EndSection() {
     return <p className="text-xs text-text-faint">This node terminates the orchestration. No configuration needed.</p>;
 }
@@ -910,4 +1177,6 @@ export const STEP_SECTIONS: Record<StepType, React.FC<StepSectionProps>> = {
     switch: SwitchSection,
     print: PrintSection,
     end: EndSection,
+    retrieve: RetrieveSection,
+    ingest: IngestSection,
 };
