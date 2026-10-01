@@ -246,8 +246,11 @@ class MessagingManager:
             agent = await resolve_agent_for_run(agent_id)
         except Exception:
             agent = None
+        # A channel shows no Sources, so an answer goes without its [K#] labels (D161).
+        from core.knowledge.citations import strip_labels
+
         if agent and agent.get("type") == "orchestrator":
-            return await self._run_orchestrator(agent, message, session_id, channel_id)
+            return strip_labels(await self._run_orchestrator(agent, message, session_id, channel_id))
 
         from core.chat_approval import nobody_to_ask
 
@@ -273,7 +276,7 @@ class MessagingManager:
             # workspace's key or account (F133), and anything else is ours.
             logger.error("[Manager] run_agent error (agent=%s): %s", agent_id, e)
             final_response = FAILED_REPLY
-        return final_response
+        return strip_labels(final_response)
 
     async def _run_orchestrator(
         self, agent: dict, message: str, session_id: str, channel_id: Optional[str],

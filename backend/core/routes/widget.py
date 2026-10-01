@@ -468,7 +468,10 @@ def _visitor_fields(event: dict) -> dict:
     """
     kind = event.get("type")
     if kind in ("final", "response"):
-        return {"type": kind, "content": event.get("response") or event.get("content") or ""}
+        # Without its [K#] labels: the widget shows no Sources to read them by (D161).
+        from core.knowledge.citations import strip_labels
+
+        return {"type": kind, "content": strip_labels(event.get("response") or event.get("content") or "")}
     return {"type": kind}
 
 
@@ -502,8 +505,12 @@ async def widget_history(authorization: str | None = Header(default=None)):
     # A saved turn also holds its tools' calls and results and the model's
     # reasoning, which the visitor's stream never shows (`_VISITOR_EVENTS`);
     # cloud's widget history answers the same two keys.
+    # An answer without its [K#] labels, as the stream showed it (D161).
+    from core.knowledge.citations import strip_labels
+
     messages = [
-        {"role": m.get("role"), "content": m.get("content") or ""}
+        {"role": m.get("role"),
+         "content": strip_labels(m.get("content") or "") if m.get("role") == "assistant" else m.get("content") or ""}
         for m in (row or {}).get("messages") or []
         if isinstance(m, dict) and m.get("role") in ("user", "assistant")
     ]
@@ -630,6 +637,14 @@ async def visitor_tool_choices(agent_id: str):
             note(_named("spawn_subtask"))
         if node.get("type") == "delegate":
             note(_named("delegate_to_agent"))
+        # Knowledge's tools, over the agent's bases opened to visitors (D153 #12):
+        # with none, a ticked tool would reach nothing.
+        from core.knowledge import tools as knowledge_tools
+
+        visitor_bases = await knowledge_tools.agent_bases(node, visitor=True)
+        if visitor_bases:
+            for tool in knowledge_tools.build_tools(visitor_bases):
+                note(tool)
 
     await walk(agent, 0)
     return {"tools": [{"name": n, "category": c} for n, c in sorted(found.items())]}
