@@ -1,5 +1,6 @@
 """Knowledge's internal API: knowledge bases, uploads, records and documents (A1, D157),
-search and a search's trace (B1b, D161), web sources and their crawls (S1, D165).
+search and a search's trace (B1b, D161), web sources and their crawls (S1, D165), and a base's eval:
+question sets, drafts, runs (V1, D168).
 
 Paths are `/api` + the frozen route table (`core.knowledge.api_models.ROUTES`),
 with its bodies and status codes; a test holds the two equal. The cost preview
@@ -19,14 +20,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from core.knowledge.api_models import (
     CostGroup, CostPreview, CostPreviewRequest, CrawlAccepted, DeleteAccepted, DocumentDetail, DocumentOut,
-    IngestAccepted, KnowledgeBaseCreate, KnowledgeBaseOut, KnowledgeBaseUpdate, RecordIngestRequest, SearchRequest,
-    SearchResponse, UploadComplete, UploadInit, UploadSession, UrlIngestRequest, WebCrawlState,
+    EvalPromote, EvalQuery, EvalSet, EvalSetCreate, EvalSetSummary, EvalSetUpdate, IngestAccepted,
+    KnowledgeBaseCreate, KnowledgeBaseOut, KnowledgeBaseUpdate, RecordIngestRequest, SearchRequest, SearchResponse,
+    UploadComplete, UploadInit, UploadSession, UrlIngestRequest, WebCrawlState,
 )
 from core.knowledge.trace import Trace
 
 #: Search's own "not found" codes (`core.knowledge.search`): a base or a pinned snapshot the
 #: search names does not exist.
-_NOT_FOUND_CODES = frozenset({"kb_not_found", "snapshot_not_found"})
+_NOT_FOUND_CODES = frozenset({"kb_not_found", "snapshot_not_found", "eval_not_found"})
+#: A question set's run is under way (V1).
+_CONFLICT_CODES = frozenset({"eval_busy"})
 
 
 def _require_enabled() -> None:
@@ -63,6 +67,8 @@ def _errors(handler: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[A
         except KnowledgeError as exc:  # last: the ones above are its subclasses
             if exc.code in _NOT_FOUND_CODES:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
+            if exc.code in _CONFLICT_CODES:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             raise
 
     return wrapped
@@ -337,3 +343,70 @@ async def get_query_trace(query_id: str) -> Trace:
     if trace is None:
         raise HTTPException(status_code=404, detail="No such query.")
     return trace
+
+
+# ── evaluation: test a knowledge base on its own documents (V1, D168) ──────────
+
+@router.get("/api/knowledge/bases/{kb_id}/eval/sets", response_model=list[EvalSetSummary])
+@_errors
+async def list_eval_sets(kb_id: str) -> list[EvalSetSummary]:
+    """The base's question sets, each with its newest run."""
+    from core.knowledge import bases, evals
+
+    await bases.require_base(kb_id)
+    return await evals.list_sets(kb_id)
+
+
+@router.post("/api/knowledge/bases/{kb_id}/eval/sets", response_model=EvalSet, status_code=201)
+@_errors
+async def create_eval_set(kb_id: str, body: EvalSetCreate) -> EvalSet:
+    from core.knowledge import evals
+
+    return await evals.create_set(kb_id, body)
+
+
+@router.get("/api/knowledge/bases/{kb_id}/eval/sets/{set_id}", response_model=EvalSet)
+@_errors
+async def get_eval_set(kb_id: str, set_id: str) -> EvalSet:
+    from core.knowledge import evals
+
+    return await evals.get_set(kb_id, set_id)
+
+
+@router.put("/api/knowledge/bases/{kb_id}/eval/sets/{set_id}", response_model=EvalSet)
+@_errors
+async def update_eval_set(kb_id: str, set_id: str, body: EvalSetUpdate) -> EvalSet:
+    """Save the cases a person accepted or edited, from the revision the edit started at (409 if stale)."""
+    from core.knowledge import evals
+
+    return await evals.update_set(kb_id, set_id, body)
+
+
+@router.delete("/api/knowledge/bases/{kb_id}/eval/sets/{set_id}", status_code=204, response_model=None)
+@_errors
+async def delete_eval_set(kb_id: str, set_id: str) -> Response:
+    """Forget the set and its runs (409 while a run is under way)."""
+    from core.knowledge import evals
+
+    await evals.delete_set(kb_id, set_id)
+    return Response(status_code=204)
+
+
+@router.post("/api/knowledge/bases/{kb_id}/eval/sets/{set_id}/promote", response_model=EvalSet)
+@_errors
+async def promote_eval_query(kb_id: str, set_id: str, body: EvalPromote) -> EvalSet:
+    """Make one of the base's real searches a case: the passages ticked are where its answer is written.
+    Its trace is then kept past the 30-day cleanup."""
+    from core.knowledge import evals
+
+    return await evals.promote(kb_id, set_id, body)
+
+
+@router.get("/api/knowledge/bases/{kb_id}/eval/queries", response_model=list[EvalQuery])
+@_errors
+async def list_eval_queries(kb_id: str, limit: int = Query(50, ge=1, le=200)) -> list[EvalQuery]:
+    """The base's newest real searches (any surface but the eval's own), to promote."""
+    from core.knowledge import bases, evals
+
+    await bases.require_base(kb_id)
+    return await evals.recent_queries(kb_id, limit=limit)
