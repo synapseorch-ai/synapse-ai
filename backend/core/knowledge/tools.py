@@ -40,7 +40,9 @@ from core.knowledge.agent_contract import (
     SEARCH_TOOL, format_label, parse_label,
 )
 from core.knowledge.citations import MAX_LABEL, KnowledgeTurn, sanitize
-from core.knowledge.events import KNOWLEDGE_CITATIONS, KNOWLEDGE_READ, KNOWLEDGE_SEARCH, QUERY_PREVIEW
+from core.knowledge.events import (
+    KNOWLEDGE_CITATIONS, KNOWLEDGE_INGEST, KNOWLEDGE_READ, KNOWLEDGE_RETRIEVE, KNOWLEDGE_SEARCH, QUERY_PREVIEW,
+)
 from core.log import get_logger
 
 _log = get_logger(__name__)
@@ -364,7 +366,8 @@ async def run_tool(name: str, args: Any, *, bases: list, turn: KnowledgeTurn, or
 
 def run_log_text(event: dict, *, icons: bool = True) -> str:
     """One Knowledge event as a run-log line: labels, paths, counts and ids, never passage text.
-    `icons=False` for a log written without them (the schedule log)."""
+    `icons=False` for a log written without them (the schedule log). A workflow's Retrieve and
+    Ingest steps (R1) write theirs here too."""
     kind = event.get("type")
     by = f" (from {event['delegate_agent_name']})" if event.get("delegate_agent_name") else ""
     if kind == KNOWLEDGE_SEARCH:
@@ -386,4 +389,20 @@ def run_log_text(event: dict, *, icons: bool = True) -> str:
             parts.append(f"{c.get('label', '')} {c.get('path', '')}{' ' + pages if pages else ''}{mark}")
         unresolved = f" · unresolved: {' '.join(event['unresolved'])}" if event.get("unresolved") else ""
         return f"  {'📚 ' if icons else ''}CITATIONS: {'; '.join(parts) or 'none resolved'}{unresolved}\n"
+    if kind == KNOWLEDGE_RETRIEVE:
+        count = int(event.get("hit_count") or 0)
+        snapshots = " ".join(event.get("snapshot_ids") or []) or "nothing indexed"
+        degraded = f" · degraded: {', '.join(event['degraded'])}" if event.get("degraded") else ""
+        return (f"  {'🔎 ' if icons else ''}RETRIEVE (step '{event.get('step_name', '')}'): {count} "
+                f"passage{'s' if count != 1 else ''} · {event.get('query_id', '')} · {snapshots} · "
+                f"${float(event.get('cost_usd') or 0):.4f}{degraded}\n")
+    if kind == KNOWLEDGE_INGEST:
+        docs = event.get("documents") or []
+        by_status: dict[str, int] = {}
+        for doc in docs:
+            by_status[str(doc.get("status"))] = by_status.get(str(doc.get("status")), 0) + 1
+        statuses = ", ".join(f"{n} {status}" for status, n in by_status.items())
+        return (f"  {'📥 ' if icons else ''}INGEST (step '{event.get('step_name', '')}'): {len(docs)} "
+                f"record{'s' if len(docs) != 1 else ''} → {event.get('kb_id', '')}"
+                f"{' · ' + statuses if statuses else ''}\n")
     return ""

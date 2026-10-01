@@ -1,4 +1,4 @@
-"""Every run log writes an agent's Knowledge events (B1b, D161).
+"""Every run log writes an agent's Knowledge events (B1b, D161), and a workflow's Retrieve and Ingest steps (R1, D166).
 
 A log drops an event type it has no branch for, silently. The surface
 contract test holds the orchestration log to it; these hold the agent log (a
@@ -22,6 +22,13 @@ CITATIONS = {"type": "knowledge_citations", "unresolved": ["[K9]"], "citations":
     {"label": "[K1]", "path": "contracts/a.pdf", "page_start": 4, "page_end": 5, "snippet": "SECRET PASSAGE TEXT",
      "quote_check": {"quote": "SECRET QUOTE", "matched": False, "method": "normalized"}},
     {"label": "[K2]", "path": "contracts/b.pdf", "snippet": "SECRET PASSAGE TEXT", "quote_check": None}]}
+RETRIEVE = {"type": "knowledge_retrieve", "orch_step_id": "find", "step_name": "Find clauses", "query_id": "kq_7",
+            "snapshot_ids": ["ksnap_1"], "hit_count": 3, "cost_usd": 0.0012, "latency_ms": 40,
+            "degraded": ["vector_unavailable"]}
+INGEST = {"type": "knowledge_ingest", "orch_step_id": "keep", "step_name": "Index tickets", "kb_id": "kb_t",
+          "documents": [{"doc_id": "kdoc_1", "record_id": "T-1", "status": "queued"},
+                        {"doc_id": "kdoc_2", "record_id": "T-2", "status": "indexed"},
+                        {"doc_id": "kdoc_3", "record_id": "T-3", "status": "queued"}]}
 
 
 def _captured(cls):
@@ -53,8 +60,26 @@ class TestEveryLog:
         assert "unresolved: [K9]" in line
         assert "SECRET" not in line
 
+    def test_a_retrieve_step(self, cls):
+        log, lines = _captured(cls)
+        log.log_event(RETRIEVE)
+        [line] = lines
+        assert "RETRIEVE (step 'Find clauses'): 3 passages · kq_7 · ksnap_1 · $0.0012" in line
+        assert "degraded: vector_unavailable" in line
+
+    def test_an_ingest_step(self, cls):
+        log, lines = _captured(cls)
+        log.log_event(INGEST)
+        [line] = lines
+        assert "INGEST (step 'Index tickets'): 3 records → kb_t · 2 queued, 1 indexed" in line
+        log.log_event({**INGEST, "documents": []})
+        assert "INGEST (step 'Index tickets'): 0 records → kb_t" in lines[1]
+
 
 def test_the_schedule_log_keeps_its_plain_style():
     log, lines = _captured(ScheduleLogger)
     log.log_event(READ)
-    assert lines[0].startswith("  KNOWLEDGE READ")
+    log.log_event(RETRIEVE)
+    log.log_event(INGEST)
+    assert lines[0].startswith("  KNOWLEDGE READ") and lines[1].startswith("  RETRIEVE")
+    assert lines[2].startswith("  INGEST")

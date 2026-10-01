@@ -268,9 +268,11 @@ class AgentLogger:
 {sep}
 """)
 
-        elif etype in ("knowledge_search", "knowledge_read", "knowledge_citations"):
-            # An agent's Knowledge calls and its answer's citations (B1b): labels,
-            # paths and ids — never the passages themselves.
+        elif etype in ("knowledge_search", "knowledge_read", "knowledge_citations",
+                       "knowledge_retrieve", "knowledge_ingest"):
+            # An agent's Knowledge calls and its answer's citations (B1b), and a
+            # workflow's Retrieve and Ingest steps (R1): labels, paths, counts and
+            # ids — never the passages themselves.
             from core.knowledge.tools import run_log_text
             self._write_bg(run_log_text(event))
 

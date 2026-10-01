@@ -170,7 +170,7 @@ _EXAMPLES = {
 
 
 #: The lanes whose run-log branches have landed; each removes its types' mark in the same commit.
-_LANDED = {"B1"}
+_LANDED = {"B1", "R1"}
 
 
 class TestEvents:
