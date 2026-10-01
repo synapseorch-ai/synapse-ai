@@ -12,19 +12,19 @@
  * the Repos screen does.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FolderOpen, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
+import { FolderOpen, Plus, RotateCcw, Search, Trash2, Upload } from 'lucide-react';
 
 import {
     Badge, Button, ConfirmDialog, Drawer, EmptyState, ErrorNote, Field, IconButton, Input, Label, Modal, Mono,
-    Muted, Screen, Select, Spinner, TBody, TD, TH, THead, TR, Table, TableActions, Textarea, Toast, useToast,
+    Muted, Screen, Section, Select, Spinner, TBody, TD, TH, THead, TR, Table, TableActions, Textarea, Toast, useToast,
     type SelectOption,
 } from '@/components/ui';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
 import {
-    ACCEPTED, REASONS, RESTING, STATUS, WORKING, formatBytes, inBase, knowledgeApi, uploadToKnowledge,
+    ACCEPTED, DEGRADED, REASONS, RESTING, STATUS, WORKING, formatBytes, inBase, knowledgeApi, uploadToKnowledge,
     useKnowledgeEnabled,
-    type DocStatus, type KnowledgeBase, type KnowledgeDocument, type KnowledgeDocumentDetail,
+    type DocStatus, type KnowledgeBase, type KnowledgeDocument, type KnowledgeDocumentDetail, type SearchResult,
 } from '@/lib/knowledge';
 
 type VaultNode = { name: string; path: string; type: 'file' | 'folder'; children?: VaultNode[] };
@@ -419,6 +419,8 @@ function BaseDetail({
                 </ul>
             )}
 
+            <TestSearch kb={kb} />
+
             <div className="flex items-center justify-between gap-3">
                 <Label>{docs ? count(shown.length, 'document') : 'Documents'}</Label>
                 <Select size="sm" value={filter} onChange={setFilter} options={statuses} aria-label="Filter by status" />
@@ -491,6 +493,107 @@ function BaseDetail({
                 description="This deletes the file from the Vault too; a file left there would be indexed again."
             />
         </section>
+    );
+}
+
+/** Ask what an agent would, and see what it would find — and why (B1b). */
+function TestSearch({ kb }: { kb: KnowledgeBase }) {
+    const [query, setQuery] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [result, setResult] = useState<SearchResult | null>(null);
+    const [error, setError] = useState<string | null>(null);
+
+    const run = async (e: React.FormEvent) => {
+        e.preventDefault();
+        const q = query.trim();
+        if (!q || busy) return;
+        setBusy(true);
+        setError(null);
+        try {
+            setResult(await knowledgeApi.search({ query: q, kb_ids: [kb.id], include_trace: true }));
+        } catch (err) {
+            setResult(null);
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const trace = result?.trace;
+    return (
+        <Section title="Test search" description="Ask what an agent would ask, and see the passages it would get.">
+            <form onSubmit={run} className="flex gap-2">
+                <Input
+                    type="search"
+                    value={query}
+                    onChange={e => setQuery(e.target.value)}
+                    placeholder="e.g. When does the contract renew?"
+                    aria-label={`Search ${kb.name}`}
+                    autoComplete="off"
+                    maxLength={2000}
+                />
+                <Button type="submit" variant="secondary" disabled={busy || !query.trim()}>
+                    {busy ? <Spinner /> : <Search className="size-4" aria-hidden />}Search
+                </Button>
+            </form>
+            {error && <ErrorNote className="mt-3">{error}</ErrorNote>}
+            {result && (
+                <div className="mt-3 space-y-3" aria-live="polite">
+                    <Muted>{result.hits.length ? count(result.hits.length, 'passage') : 'Nothing matched.'}</Muted>
+                    {result.degraded.length > 0 && (
+                        <ul className="space-y-0.5 text-xs text-text-muted">
+                            {result.degraded.map(code => <li key={code}>{DEGRADED[code] ?? code}</li>)}
+                        </ul>
+                    )}
+                    {result.hits.length > 0 && (
+                        <ol className="space-y-3">
+                            {result.hits.map(hit => {
+                                const c = hit.citation;
+                                const pages = c.page_start
+                                    ? (c.page_end && c.page_end !== c.page_start ? `pp. ${c.page_start}–${c.page_end}` : `p. ${c.page_start}`)
+                                    : '';
+                                const where = [inBase(c.path, kb.folder), pages, (c.heading_path || []).join(' › ')]
+                                    .filter(Boolean).join(' · ');
+                                return (
+                                    <li key={hit.chunk_id} className="flex gap-3 text-sm">
+                                        <span className="font-mono text-xs text-text-faint" translate="no">{hit.label}</span>
+                                        <div className="min-w-0 flex-1 space-y-1">
+                                            <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+                                                <span className="min-w-0 truncate font-mono text-xs text-text">{where}</span>
+                                                <Muted className="tabular-nums">score {hit.score.toFixed(3)}</Muted>
+                                            </div>
+                                            <p className="line-clamp-3 whitespace-pre-line text-text-muted">{hit.content}</p>
+                                        </div>
+                                    </li>
+                                );
+                            })}
+                        </ol>
+                    )}
+                    {trace && (
+                        <details className="rounded-md border border-border px-3 py-2 text-xs">
+                            <summary className="cursor-pointer select-none text-text-muted">
+                                Trace · <span className="font-mono" translate="no">{trace.query_id}</span>
+                                {trace.timings_ms.total != null && ` · ${trace.timings_ms.total} ms`}
+                            </summary>
+                            <dl className="mt-2 space-y-1">
+                                {trace.legs.map((leg, i) => (
+                                    <Fact key={`leg-${i}`} label={`Leg: ${leg.leg}`}>
+                                        {leg.returned} of {leg.requested}{leg.filtered ? ', filtered in the index' : ''}
+                                        {` · ${leg.latency_ms} ms`}
+                                    </Fact>
+                                ))}
+                                {trace.cuts.map((cut, i) => (
+                                    <Fact key={`cut-${i}`} label={`Cut: ${cut.stage}`}>
+                                        {cut.dropped_count} dropped{cut.rule ? ` (${cut.rule})` : ''}
+                                    </Fact>
+                                ))}
+                                {trace.legs.length === 0 && trace.cuts.length === 0 && <Muted>No legs ran.</Muted>}
+                            </dl>
+                        </details>
+                    )}
+                </div>
+            )}
+        </Section>
     );
 }
 

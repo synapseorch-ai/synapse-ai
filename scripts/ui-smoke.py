@@ -5345,8 +5345,51 @@ _SMOKE_KB_ROUTES = [
 ]
 
 
+def _smoke_citation(n: int, page: int, matched: bool | None) -> dict:
+    return {"label": f"[K{n}]", "kb_id": _SMOKE_KB["id"], "doc_id": "kdoc_smoke00", "chunk_id": f"kch_smoke{n}",
+            "path": "smoke_kb/contract.md", "source": "upload", "source_url": None, "title": "Master Services Agreement",
+            "page_start": page, "page_end": page + 1, "char_start": 0, "char_end": 40,
+            "heading_path": ["Agreement", "Fees"], "snippet": "Service | Monthly fee Hosting | 1,200 Support | 300",
+            "indexed_at": _NOW, "snapshot_id": "ksnap_smoke",
+            "quote_check": None if matched is None else {"quote": "Hosting | 1,200" if matched else "support is free",
+                                                         "matched": matched, "method": "exact"}}
+
+
+#: A reopened answer with its Sources (B1b): a quote found, one not found, and a label nothing resolved.
+_SMOKE_SOURCES_HISTORY = {"turns": [{
+    "user": "what does hosting cost?", "tools": [], "timestamp": "",
+    "assistant": 'Hosting is "Hosting | 1,200" [K1] a month; "support is free" [K3]; see also [K2].',
+    "citations": [_smoke_citation(1, 4, True), _smoke_citation(3, 7, False)],
+    "unresolved_citations": ["[K2]"]}], "pending_approval": None, "running": None}
+
+#: The Knowledge screen's test search (B1b): two passages and their trace.
+_SMOKE_KB_SEARCH = {
+    "query_id": "kq_smoke", "degraded": ["vector_unavailable"],
+    "hits": [{"label": f"[K{n}]", "chunk_id": f"kch_smoke{n}", "doc_id": "kdoc_smoke00", "kb_id": _SMOKE_KB["id"],
+              "content": "Service | Monthly fee\nHosting | 1,200\nSupport | 300", "context": "", "score": 4.258 / n,
+              "scores": {"lexical": 4.258 / n}, "metadata": {}, "citation": _smoke_citation(n, 4, None)}
+             for n in (1, 2)],
+    "trace": {"query_id": "kq_smoke", "degraded": [{"code": "vector_unavailable", "detail": None}],
+              "legs": [{"leg": "lexical", "requested": 8, "returned": 2, "filtered": False, "exact": True,
+                        "latency_ms": 4}],
+              "cuts": [{"stage": "threshold", "dropped_count": 1, "rule": "score < 1.0"}],
+              "timings_ms": {"lexical": 4, "total": 9}},
+}
+
+
+async def _kb_test_search(page):
+    await page.get_by_role("button", name=re.compile("^Test search")).click()
+    await page.get_by_role("searchbox", name="Search Smoke contracts").fill("what does hosting cost?")
+    await page.get_by_role("button", name="Search", exact=True).click()
+
+
 #: (name, path, init scripts, routes, action, a text proving the state is on screen)
 LIGHT_STATES = (
+    ("chat sources", "/", [CHAT_STUB, "window.__fakeHistory = " + json.dumps(_SMOKE_SOURCES_HISTORY) + ";"], [],
+     None, "Not from a search in this answer"),
+    ("knowledge test search", "/knowledge", [],
+     _SMOKE_KB_ROUTES + [("**/api/knowledge/search", _answer(_SMOKE_KB_SEARCH, methods=("POST",)))],
+     _kb_test_search, "score 4.258"),
     ("knowledge statuses", "/knowledge", [], _SMOKE_KB_ROUTES, None, "Partly indexed"),
     ("knowledge report", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name="Report for failed.md").click(), "What happened"),

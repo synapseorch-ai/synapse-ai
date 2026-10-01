@@ -11,6 +11,7 @@
 import { useEffect, useState } from 'react';
 
 import type { BadgeTone } from '@/components/ui';
+import type { KnowledgeCitation } from '@/types';
 
 export type DocStatus =
     | 'queued' | 'parsing' | 'indexing' | 'indexed' | 'partial' | 'failed' | 'skipped' | 'paused' | 'blocked'
@@ -169,6 +170,45 @@ const json = (method: string, body: unknown): RequestInit => ({
     method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 });
 
+/** One passage a search found (`api_models.Hit`). */
+export type SearchHit = {
+    label: string;
+    chunk_id: string;
+    doc_id: string;
+    kb_id: string;
+    content: string;
+    context: string;
+    score: number;
+    scores: Record<string, number>;
+    metadata: Record<string, unknown>;
+    citation: KnowledgeCitation;
+};
+
+/** What decided a search's hits (`trace.Trace`), as far as the test search shows it. */
+export type SearchTrace = {
+    query_id: string;
+    degraded: { code: string; detail?: string | null }[];
+    legs: { leg: string; requested: number; returned: number; filtered: boolean; exact: boolean; latency_ms: number }[];
+    cuts: { stage: string; dropped_count: number; rule?: string | null }[];
+    timings_ms: Record<string, number | null>;
+};
+
+export type SearchResult = { query_id: string; hits: SearchHit[]; degraded: string[]; trace: SearchTrace | null };
+
+/** A search's degraded codes (`trace.DEGRADED_CODES`), in words. */
+export const DEGRADED: Record<string, string> = {
+    vector_unavailable: 'Matched by words only: search by meaning needs an embedding model.',
+    lexical_unavailable: 'Word matching is not available in this index.',
+    post_filtered: 'The filter was applied after the search, so fewer results may show.',
+    rerank_failed: 'Reranking failed; results are in search order.',
+    rerank_unconfigured: 'No reranker is set; results are in search order.',
+    ann_approximate: 'The index searched approximately.',
+    snapshot_retired: 'This search used an index version that has been replaced.',
+    truncated: 'The trace was shortened to fit.',
+    budget_paused: "This knowledge base hit its monthly budget.",
+    embed_failed: 'The question could not be embedded; words only.',
+};
+
 export const knowledgeApi = {
     bases: () => call<KnowledgeBase[]>('/api/knowledge/bases'),
     createBase: (body: { name: string; folder: string; description?: string }) =>
@@ -189,6 +229,9 @@ export const knowledgeApi = {
     document: (id: string) => call<KnowledgeDocumentDetail>(`/api/knowledge/documents/${id}`),
     retry: (id: string) => call<KnowledgeDocument>(`/api/knowledge/documents/${id}/retry`, { method: 'POST' }),
     deleteDocument: (id: string) => call<{ status: string }>(`/api/knowledge/documents/${id}`, { method: 'DELETE' }),
+    /** What an agent searching these bases would find, with the trace that decided it. */
+    search: (body: { query: string; kb_ids: string[]; top_k?: number; include_trace?: boolean }) =>
+        call<SearchResult>('/api/knowledge/search', json('POST', body)),
 };
 
 /**
