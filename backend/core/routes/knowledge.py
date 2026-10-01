@@ -20,8 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from core.knowledge.api_models import (
     CostGroup, CostPreview, CostPreviewRequest, CrawlAccepted, DeleteAccepted, DocumentDetail, DocumentOut,
-    EvalDraftRequest, EvalDrafts, EvalPromote, EvalQuery, EvalSet, EvalSetCreate, EvalSetSummary, EvalSetUpdate,
-    IngestAccepted,
+    EvalCompareRequest, EvalConfigResult, EvalDraftRequest, EvalDrafts, EvalEstimate, EvalEstimateRequest,
+    EvalPromote, EvalQuery, EvalRun, EvalRunRequest, EvalRunSummary, EvalSet, EvalSetCreate, EvalSetSummary,
+    EvalSetUpdate, IngestAccepted,
     KnowledgeBaseCreate, KnowledgeBaseOut, KnowledgeBaseUpdate, RecordIngestRequest, SearchRequest, SearchResponse,
     UploadComplete, UploadInit, UploadSession, UrlIngestRequest, WebCrawlState,
 )
@@ -425,3 +426,67 @@ async def draft_eval_questions(kb_id: str, body: EvalDraftRequest) -> EvalDrafts
     asked = [ev for case in (await evals.cases_of(kb_id, body.set_id) if body.set_id else [])
              for ev in case.get("evidence") or []]
     return await evals_generate.draft(kb, body, load_settings(), exclude=asked)
+
+
+@router.post("/api/knowledge/bases/{kb_id}/eval/estimate", response_model=EvalEstimate)
+@_errors
+async def estimate_eval(kb_id: str, body: EvalEstimateRequest) -> EvalEstimate:
+    """What drafting, or a run, would cost — before anything is spent. A model the rate card does not price
+    is listed as unpriced."""
+    from core.config import load_settings
+    from core.knowledge import bases, evals_generate, evals_runs
+
+    kb = await bases.require_base(kb_id)
+    if body.drafts is not None:
+        return await evals_generate.estimate_drafts(kb, body.drafts, load_settings())
+    return await evals_runs.estimate(kb, body.run)
+
+
+@router.post("/api/knowledge/bases/{kb_id}/eval/runs", response_model=EvalRunSummary, status_code=202)
+@_errors
+async def start_eval_run(kb_id: str, body: EvalRunRequest) -> EvalRunSummary:
+    """Run a question set: each question searched once per snapshot, scored keyword-only, vector-only, fused
+    and as served; and, when asked, an answer graded by a judge of another model family. 422 when the
+    searches would cross the base's budget; 409 while the set has a run under way."""
+    from core.knowledge import bases, evals_runs
+
+    kb = await bases.require_base(kb_id)
+    if kb.status != "active":
+        raise HTTPException(status_code=409, detail="This knowledge base is disabled.")
+    return await evals_runs.start(kb, body)
+
+
+@router.get("/api/knowledge/bases/{kb_id}/eval/runs", response_model=list[EvalRunSummary])
+@_errors
+async def list_eval_runs(kb_id: str, set_id: str | None = None,
+                         limit: int = Query(50, ge=1, le=200)) -> list[EvalRunSummary]:
+    from core.knowledge import bases, evals
+
+    await bases.require_base(kb_id)
+    return await evals.list_runs(kb_id, set_id=set_id, limit=limit)
+
+
+@router.get("/api/knowledge/bases/{kb_id}/eval/runs/{run_id}", response_model=EvalRun)
+@_errors
+async def get_eval_run(kb_id: str, run_id: str) -> EvalRun:
+    """A run with each question's result: where its evidence ranked in each configuration."""
+    from core.knowledge import evals_runs
+
+    return await evals_runs.get_run(kb_id, run_id)
+
+
+@router.post("/api/knowledge/bases/{kb_id}/eval/runs/{run_id}/cancel", response_model=EvalRunSummary)
+@_errors
+async def cancel_eval_run(kb_id: str, run_id: str) -> EvalRunSummary:
+    from core.knowledge import evals_runs
+
+    return await evals_runs.cancel(kb_id, run_id)
+
+
+@router.post("/api/knowledge/bases/{kb_id}/eval/runs/{run_id}/compare", response_model=list[EvalConfigResult])
+@_errors
+async def compare_eval_run(kb_id: str, run_id: str, body: EvalCompareRequest) -> list[EvalConfigResult]:
+    """The run's searches fused again with other weights: no search, $0."""
+    from core.knowledge import evals_runs
+
+    return await evals_runs.compare(kb_id, run_id, body)
