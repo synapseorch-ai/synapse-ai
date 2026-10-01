@@ -219,3 +219,10 @@ def test_real_docling_reads_a_pdf(monkeypatch):
     doc = _parse(pdf([p1]))
     assert doc.parser.name == "docling" and "Revenue grew twelve percent." in doc.text
     assert any(b.kind == "table" for b in doc.blocks)
+
+
+def test_the_pdfs_own_title_and_date_win_as_in_the_basic_reader(fake_docling):
+    """Measured on NIST AI 100-1: Docling found no title item, the PDF's metadata names it."""
+    fake_docling["documents"] = {1: [Item("text", "Body.", _at(1, 60, 75))]}
+    doc = _parse(pdf([text_page("Body.")], title="Microsoft Word - Hosting Terms.docx"))
+    assert (doc.title, doc.doc_date) == ("Hosting Terms", "2025-03-14")

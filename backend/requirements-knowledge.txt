@@ -22,13 +22,17 @@
 # Knowledge runs no model on a GPU. Installing the lock therefore needs that index:
 #   pip install -r requirements-knowledge.lock --extra-index-url https://download.pytorch.org/whl/cpu
 #   uv pip install -r requirements-knowledge.lock --torch-backend cpu
-# KB0 measured (16 §8): about 3.5 GB installed with the models, ~2.5 s a page on
-# 2 vCPUs, under 2 GB in 8-page batches.
+# Measured (A2, 16 §8, python:3.12-slim): the image with this extra, its models and
+# LibreOffice is 2.97 GB (models 0.67 GB); a 48-page PDF parses at 2.2 s a page on
+# 2 vCPUs, peaking at 1.8 GB in 4-page batches.
 # pillow-heif bundles libheif and libde265 (LGPL-3.0), dynamically linked.
 #
 # Upper bounds are mandatory here too — see the header of requirements.txt.
 docling-slim[format-pdf,models-local,convert-core,cli]>=2.131,<3
 docling-core>=2.98,<3
+# TableFormer imports cv2; docling-ibm-models leaves OpenCV to an extra, which full
+# `docling` reaches only through RapidOCR (left out here). Headless: no GUI libraries.
+opencv-python-headless>=4.6,<5
 torch>=2.2.2,<3
 torchvision>=0.17,<1
 pillow-heif>=0.18,<2

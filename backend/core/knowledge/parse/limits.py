@@ -7,7 +7,8 @@ process's memory. Cloud's knowledge worker keeps its ARQ `job_timeout` above
 (D153 #11) stay the per-file caps a person sees.
 
 KB0 measured Docling (16 §8 → "KB0"): one pass over a 48-page PDF peaks at
-2.4 GB, 8-page batches stay under 2 GB, about 2.5 s a page on 2 vCPUs.
+2.4 GB, 8-page batches stay under 2 GB, about 2.5 s a page on 2 vCPUs. A2
+measured the slim extra the same way: 4-page batches, 1.8 GB, 2.2 s a page.
 """
 from __future__ import annotations
 
@@ -56,8 +57,9 @@ def parse_memory_mb(*, docling: bool = False) -> int:
 
 
 def docling_batch_pages() -> int:
-    """Docling converts this many pages at a time (KB0: under 2 GB at 8)."""
-    return _env_int("SYNAPSE_KNOWLEDGE_DOCLING_BATCH_PAGES", 8)
+    """Docling converts this many pages at a time. Measured on NIST AI 100-1 (48 pages, 2 vCPUs, a 2 GB
+    cap): 8 pages peaked at 1,994 MB in 130 s, 4 pages at 1,789 MB in 105 s with the same output."""
+    return _env_int("SYNAPSE_KNOWLEDGE_DOCLING_BATCH_PAGES", 4)
 
 
 def ocr_timeout_s() -> int:

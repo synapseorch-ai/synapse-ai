@@ -146,6 +146,7 @@ numpy==2.4.6 ; python_full_version < '3.12'
     #   accelerate
     #   docling-ibm-models
     #   docling-slim
+    #   opencv-python-headless
     #   pandas
     #   safetensors
     #   scipy
@@ -157,11 +158,14 @@ numpy==2.5.2 ; python_full_version >= '3.12'
     #   accelerate
     #   docling-ibm-models
     #   docling-slim
+    #   opencv-python-headless
     #   pandas
     #   safetensors
     #   scipy
     #   torchvision
     #   transformers
+opencv-python-headless==4.14.0.94
+    # via -r requirements-knowledge.txt
 packaging==26.3
     # via
     #   -c .knowledge-constraints.txt

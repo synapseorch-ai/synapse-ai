@@ -115,6 +115,7 @@ include = [
 knowledge = [
     "docling-slim[format-pdf,models-local,convert-core,cli]>=2.131,<3",
     "docling-core>=2.98,<3",
+    "opencv-python-headless>=4.6,<5",
     "torch>=2.2.2,<3",
     "torchvision>=0.17,<1",
     "pillow-heif>=0.18,<2",

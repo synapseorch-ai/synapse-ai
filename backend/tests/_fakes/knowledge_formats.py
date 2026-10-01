@@ -433,3 +433,21 @@ def msg(subject: str, *, body: str | None = None, html: str | None = None, sende
         streams[(store, "__properties_version1.0")] = b"\0" * 8
         streams.update(message((store, "__substg1.0_3701000D"), subject_, body_, top=False))
     return ole_file(streams)
+
+
+def flat_odf(kind: str, body: str) -> bytes:
+    """A flat OpenDocument file (`.fodt` / `.fodp`): one XML file LibreOffice opens directly. Tests hand it
+    to LibreOffice to write a 97–2003 file, since a hand-built OOXML zip lacks the parts LibreOffice wants."""
+    element, mimetype = _ODF_KINDS[kind]
+    return (f'<?xml version="1.0" encoding="UTF-8"?><office:document {ODF_NS} '
+            'xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" office:version="1.3" '
+            f'office:mimetype="{mimetype}"><office:body><office:{element}>{body}</office:{element}>'
+            "</office:body></office:document>").encode()
+
+
+FODT_MEMO = ('<text:h text:outline-level="1">Quarterly memo</text:h>'
+             "<text:p>Revenue rose four percent.</text:p>")
+FODP_DECK = ('<draw:page draw:name="p1"><draw:frame presentation:class="title" svg:x="1cm" svg:y="1cm" '
+             'svg:width="20cm" svg:height="3cm"><draw:text-box><text:p>Kickoff</text:p></draw:text-box></draw:frame>'
+             '<draw:frame svg:x="1cm" svg:y="5cm" svg:width="20cm" svg:height="10cm"><draw:text-box>'
+             "<text:p>Goals</text:p><text:p>Owners</text:p></draw:text-box></draw:frame></draw:page>")

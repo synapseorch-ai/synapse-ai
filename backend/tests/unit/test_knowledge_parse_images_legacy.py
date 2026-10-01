@@ -183,12 +183,14 @@ class TestLegacy:
     @pytest.mark.skipif(not (shutil.which("soffice") or shutil.which("libreoffice")),
                         reason="LibreOffice is not installed here; the container run covers it")
     def test_real_libreoffice_round_trip(self, tmp_path, monkeypatch):
-        """A .docx written to .doc by LibreOffice, then read back through it (no .doc is committed: KB0)."""
+        """A document written to .doc by LibreOffice, then read back through it (no .doc is committed: KB0)."""
         import subprocess
 
+        from _fakes.knowledge_formats import FODT_MEMO, flat_odf
+
         monkeypatch.delenv("SYNAPSE_SOFFICE", raising=False)
-        source = tmp_path / "memo.docx"
-        source.write_bytes(docx(w_p("Quarterly memo", style="Heading1") + w_p("Revenue rose four percent.")))
+        source = tmp_path / "memo.fodt"  # LibreOffice wants a complete package; a flat ODF is one
+        source.write_bytes(flat_odf("odt", FODT_MEMO))
         binary = shutil.which("soffice") or shutil.which("libreoffice")
         subprocess.run([binary, f"-env:UserInstallation={(tmp_path / 'p').as_uri()}", "--headless", "--convert-to",
                         "doc", "--outdir", str(tmp_path), str(source)], check=True, capture_output=True, timeout=180,

@@ -9,9 +9,11 @@ every cold start). Fetch them once with
 
 KB0's measurements decide the shape (16 §8 → "KB0"):
 
-* **8 pages at a time** (`limits.docling_batch_pages`): a one-pass 48-page PDF
-  peaks at 2.4 GB, 8-page batches stay under 2 GB. Each batch's progress is
-  saved, so a timeout keeps the pages read.
+* **4 pages at a time** (`limits.docling_batch_pages`): a one-pass 48-page PDF
+  peaks at 2.4 GB (KB0); measured here on the same PDF under a 2 GB cap,
+  8-page batches peak at 1,994 MB in 130 s and 4-page batches at 1,789 MB in
+  105 s, with the same output. Each batch's progress is saved, so a timeout
+  keeps the pages read (measured: a 60 s cut kept 16 of 48 pages).
 * **No Docling OCR** (`do_ocr=False`): OCR is ~9× slower and D153 #5 sends
   pages without a text layer to the OCR seam instead — the same quality gate
   as the basic reader decides which.
@@ -105,6 +107,11 @@ def read_pdf_docling(data: bytes, ctx: ReadContext, document: Any) -> ParsedDocu
     total = len(document)
     parser = parser_info()
     state = _State(ctx, parser, total)
+    try:
+        meta = document.get_metadata_dict()
+    except Exception:  # noqa: BLE001 — a PDF without readable metadata still parses
+        meta = {}
+    state.meta_title, state.meta_date = basic._title(meta), basic._date(meta)
     converter = _converter(artifacts)
     batch = limits.docling_batch_pages()
     with pdfplumber.open(io.BytesIO(data)) as plumb:
@@ -139,6 +146,8 @@ class _State:
         self.headings = Headings()
         self.title: str | None = None
         self.no_text: list[int] = []
+        self.meta_title: str | None = None  # the PDF's own Title, as the basic reader uses it
+        self.meta_date: str | None = None
         self.list_items: list[tuple[str, int, BBox | None]] = []
 
     def flush_list(self) -> None:
@@ -218,7 +227,7 @@ class _State:
             builder.warnings.append(no_text_layer_warning(self.no_text, ocr=False))
         if read < self.total:
             builder.cut("truncated_pages", f"Pages 1–{read} of {self.total} were read; the rest were not.")
-        return builder.build(self.ctx.source, self.parser, title=self.title)
+        return builder.build(self.ctx.source, self.parser, title=self.meta_title or self.title, doc_date=self.meta_date)
 
     def snapshot(self, read: int) -> ParsedDocument:
         """What a timeout would keep: everything read so far, marked cut."""
