@@ -128,8 +128,9 @@ class TestDecoding:
         with pytest.raises(UnsupportedFormat):
             _parse(b"%PDF\x00\x01\x02", "kb/looks.txt")
 
-    def test_formats_not_read_yet_are_refused_honestly(self):
-        with pytest.raises(UnsupportedFormat, match=r"\.pdf"):
-            _parse(b"%PDF-1.7", "kb/a.pdf")
-        assert supports("kb/a.MD") and not supports("kb/a.pdf")
+    def test_formats_not_read_here_are_refused_honestly(self, monkeypatch):
+        monkeypatch.setenv("SYNAPSE_SOFFICE", "/nonexistent/soffice")  # a .doc needs LibreOffice (A2)
+        with pytest.raises(UnsupportedFormat, match=r"LibreOffice|\.doc"):
+            _parse(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504, "kb/a.doc")
+        assert supports("kb/a.MD") and not supports("kb/a.doc")
         assert PARSED_EXTENSIONS < ACCEPTED_EXTENSIONS and ".docx" in ACCEPTED_EXTENSIONS

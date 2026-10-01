@@ -61,6 +61,7 @@ class DocBuilder:
         self.warnings: list[ParseWarning] = []
         self.truncated = False
         self.truncated_reason: str | None = None
+        self._cut_message: str | None = None
         self.hidden_removed = 0
         self._removed: Counter[str] = Counter()
         self._numbers: Counter[str] = Counter()
@@ -103,10 +104,11 @@ class DocBuilder:
         self.blocks.append(block)
         return block
 
-    def cut(self, reason: str) -> None:
-        """The rest of the document is not read: `reason` is `truncated_size` or `truncated_pages`."""
+    def cut(self, reason: str, message: str | None = None) -> None:
+        """The rest of the document is not read: `reason` is `truncated_size` or `truncated_pages`;
+        `message` says what was read, for the warning."""
         if not self.truncated:
-            self.truncated, self.truncated_reason = True, reason
+            self.truncated, self.truncated_reason, self._cut_message = True, reason, message
 
     def warn(self, code: str, message: str, *, page: int | None = None, count: int = 1) -> None:
         self.warnings.append(ParseWarning(code=code, message=message, page=page, count=count))  # type: ignore[arg-type]
@@ -136,8 +138,9 @@ class DocBuilder:
                 "of the file never sees.")))
         if self.truncated:
             warnings.append(ParseWarning(code=self.truncated_reason or "truncated_size", message=(  # type: ignore[arg-type]
-                "The document was cut: the rest is not indexed." if self.truncated_reason != "truncated_pages"
-                else "Only some pages were read; the rest are not indexed.")))
+                self._cut_message or ("The document was cut: the rest is not indexed."
+                                      if self.truncated_reason != "truncated_pages"
+                                      else "Only some pages were read; the rest are not indexed."))))
         if not self.blocks and not any(w.code == "empty_document" for w in warnings):
             warnings.append(ParseWarning(code="empty_document", message="The file has no text to index."))
         pages = [self._page_chars(p) for _, p in sorted(self.pages.items())]
@@ -199,7 +202,10 @@ def merge_ocr(doc: ParsedDocument, texts: dict[int, tuple[str, float | None]], *
                                                f"({confidence:.0%}); its text may be wrong.", page=number)
     builder.warnings = [w for w in doc.warnings if w.code not in (*_SANITIZE_CODES, "hidden_text_removed",
                                                                  "empty_document", "truncated_size",
-                                                                 "truncated_pages")] + builder.warnings
+                                                                 "truncated_pages", "no_text_layer")] + builder.warnings
+    unread = [n for n, p in sorted(builder.pages.items()) if p.quality.no_text_layer and not p.quality.ocr_applied]
+    if unread:  # a page OCR did not read stays reported; one it read no longer is
+        builder.warnings.append(no_text_layer_warning(unread, ocr=True))
     builder.hidden_removed = sum(w.count for w in doc.warnings if w.code == "hidden_text_removed")
     for warning in doc.warnings:
         if warning.code in _SANITIZE_CODES:
@@ -208,6 +214,14 @@ def merge_ocr(doc: ParsedDocument, texts: dict[int, tuple[str, float | None]], *
         builder.cut(doc.stats.truncated_reason or "truncated_size")
     fields = {k: getattr(doc, k) for k in ("title", "language", "doc_date", "metadata", "attachments")}
     return builder.build(doc.source, doc.parser, **fields)
+
+
+def no_text_layer_warning(pages: list[int], *, ocr: bool) -> ParseWarning:
+    """One warning for every page with no text layer: they are images until OCR reads them."""
+    shown = ", ".join(str(n) for n in pages[:20]) + (" …" if len(pages) > 20 else "")
+    what = "OCR did not read them" if ocr else "they are read once OCR is configured"
+    return ParseWarning(code="no_text_layer", count=len(pages), page=pages[0] if len(pages) == 1 else None,
+                        message=f"{len(pages)} page(s) have no text layer (page {shown}); {what}.")
 
 
 def _readd(builder: DocBuilder, block: Block) -> None:

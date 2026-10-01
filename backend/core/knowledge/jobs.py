@@ -174,7 +174,10 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
         return await rest("skipped", "over_page_cap",
                           f"The file has {len(parsed.pages)} pages; the limit is {settings.max_file_pages}.", **common)
     if not parsed.blocks:
-        return await rest("skipped", "empty_document", "The file has no text to index.", **common)
+        scanned = parsed.stats.pages_no_text_layer - parsed.stats.pages_ocr
+        return await rest("skipped", "empty_document", (
+            f"All {scanned} page(s) are images with no text layer; they are read once OCR is configured."
+            if scanned else "The file has no text to index."), **common)
 
     indexing = await documents.transition(row.id, "indexing", previous="parsing")
     if indexing is None:

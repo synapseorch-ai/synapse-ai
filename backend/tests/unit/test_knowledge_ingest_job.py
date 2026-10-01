@@ -126,9 +126,10 @@ class TestOneDocument:
 
 
 class TestSkipped:
-    async def test_a_format_not_read_yet(self, indexer):
+    async def test_a_format_not_read_yet(self, indexer, monkeypatch):
+        monkeypatch.setenv("SYNAPSE_SOFFICE", "/nonexistent/soffice")  # a .doc needs LibreOffice (A2)
         kb = await _kb()
-        row = await _queued(kb, "kb/scan.pdf", b"%PDF-1.7 \x00\x01")
+        row = await _queued(kb, "kb/old.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504)
         report = await run_ingest_job(_job(row))
         done = await documents.get(row.id)
         assert (done.status, done.status_reason) == ("skipped", "unsupported_format") and indexer.contexts == []

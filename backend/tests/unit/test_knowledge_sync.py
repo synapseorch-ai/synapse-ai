@@ -218,16 +218,17 @@ class TestReconcile:
     async def test_a_format_that_becomes_readable_is_queued_again(self, jobs, monkeypatch):
         import core.knowledge.parse as parse
 
+        monkeypatch.setenv("SYNAPSE_SOFFICE", "/nonexistent/soffice")  # a .doc needs LibreOffice (A2)
         kb = await _kb()
-        write_vault("kb/a.pdf", b"%PDF-1.7")
+        write_vault("kb/a.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504)
         await sync.reconcile(kb)
-        row = await documents.get_by_path(kb.id, "kb/a.pdf")
+        row = await documents.get_by_path(kb.id, "kb/a.doc")
         await documents.transition(row.id, "parsing")
         await documents.transition(row.id, "skipped", reason="unsupported_format")
         jobs.jobs.clear()
         assert not (await sync.reconcile(kb)).any()
-        monkeypatch.setattr(parse, "PARSED_EXTENSIONS", parse.PARSED_EXTENSIONS | {".pdf"})
-        assert (await sync.reconcile(kb)).supported == 1 and _ops(jobs) == [("upsert", "kb/a.pdf")]
+        monkeypatch.setattr(parse, "PARSED_EXTENSIONS", parse.PARSED_EXTENSIONS | {".doc"})
+        assert (await sync.reconcile(kb)).supported == 1 and _ops(jobs) == [("upsert", "kb/a.doc")]
 
     async def test_a_disabled_base_is_left_alone(self, jobs):
         kb = await _kb()

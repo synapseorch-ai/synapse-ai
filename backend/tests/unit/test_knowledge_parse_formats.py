@@ -221,7 +221,7 @@ class TestMergeOcr:
         quality = after.pages[1].quality
         assert quality.ocr_applied and quality.ocr_engine == "fake" and quality.ocr_confidence == 0.91
         assert after.stats.pages_no_text_layer == 1 and after.stats.pages_ocr == 1
-        assert [w.code for w in after.warnings] == ["no_text_layer"]  # kept: the report counts what OCR read
+        assert after.warnings == []  # read now: the page no longer makes the document partial
 
     def test_low_confidence_is_a_warning(self):
         after = merge_ocr(self._scanned_middle(), {2: ("blurry", 0.2)}, engine="fake")
@@ -230,6 +230,16 @@ class TestMergeOcr:
     def test_an_empty_ocr_answer_does_not_mark_the_page_read(self):
         after = _valid(merge_ocr(self._scanned_middle(), {2: ("  ", 0.9)}, engine="fake"))
         assert not after.pages[1].quality.ocr_applied and after.stats.pages_ocr == 0
+        (warning,) = after.warnings
+        assert (warning.code, warning.count, warning.page) == ("no_text_layer", 1, 2)
+
+    def test_the_pipeline_sees_a_fully_read_scan_as_whole(self):
+        from core.knowledge.pipeline import partial_reason
+
+        before = self._scanned_middle()
+        assert partial_reason(before) == "no_text_layer"
+        assert partial_reason(merge_ocr(before, {2: ("read", 0.9)}, engine="fake")) is None
+        assert partial_reason(merge_ocr(before, {2: ("", 0.9)}, engine="fake")) == "no_text_layer"
 
 
 def test_importing_the_package_loads_no_parser_library():

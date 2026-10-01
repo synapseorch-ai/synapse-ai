@@ -69,10 +69,14 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
                          kb: KnowledgeBase | None = None, attribution: Attribution | None = None,
                          heartbeat: Callable[[], Awaitable[Any]] | None = None) -> ParseResult:
     from core.knowledge.config import knowledge_settings
-    from core.knowledge.parse import formats, parse_bytes
+    from core.knowledge.parse import UnsupportedFormat, formats, parse_bytes
     from core.knowledge.parse.runner import run_parse
 
     fmt = formats.resolve(path, data)
+    if not formats.reader_built(fmt):
+        raise UnsupportedFormat(f"{formats.extension(path)} is not read yet.")
+    if not formats.has_capability(fmt.needs):
+        raise UnsupportedFormat(formats.missing_capability_message(fmt))
     settings = knowledge_settings()
     common = dict(path=path, source=source, sha256=sha256, mime=mime, url=url, modified_at=modified_at)
     if fmt.text and len(data) <= limits.IN_PROCESS_MAX_BYTES:
