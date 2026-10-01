@@ -498,7 +498,15 @@ async def widget_history(authorization: str | None = Header(default=None)):
     from core.store import sessions as _sessions
 
     row = await _sessions.get(claims.session_id, claims.agent_id)
-    messages = (row or {}).get("messages") or []
+    # What the visitor wrote and what the agent answered — nothing else (F325).
+    # A saved turn also holds its tools' calls and results and the model's
+    # reasoning, which the visitor's stream never shows (`_VISITOR_EVENTS`);
+    # cloud's widget history answers the same two keys.
+    messages = [
+        {"role": m.get("role"), "content": m.get("content") or ""}
+        for m in (row or {}).get("messages") or []
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+    ]
     # A turn still being written is not in `messages` yet — a turn is saved when
     # it ends. `running` is what lets a reloaded frame show the question and
     # follow the reply (`/api/widget/stream`).
