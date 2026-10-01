@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -83,16 +83,26 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
         parsed = await asyncio.to_thread(parse_bytes, data, **common)
         return ParseResult(parsed=parsed, detail={"runner": "thread"})
 
+    from core.knowledge.seams import get_ocr_provider
+
+    provider = get_ocr_provider()
     docling = fmt.name == "pdf" and docling_ready()
-    job = {**common, "max_pages": settings.max_file_pages, "ocr": False, "docling": docling}
-    slot = _docling_slot() if docling else _no_slot()
-    async with slot, _beating(heartbeat):
-        async with run_parse(data, job, timeout_s=limits.parse_timeout_s(),
-                             memory_mb=limits.parse_memory_mb(docling=docling)) as out:
-            detail = {"runner": "subprocess", "duration_ms": out.duration_ms, "peak_rss_mb": out.peak_rss_mb}
-            if out.cut:
-                detail["cut"] = out.cut
-            return ParseResult(parsed=out.parsed, detail=detail)
+    job = {**common, "max_pages": settings.max_file_pages, "ocr": provider is not None, "docling": docling}
+    async with _beating(heartbeat), AsyncExitStack() as stack:
+        async with _docling_slot() if docling else _no_slot():  # held while the child runs, not during OCR
+            out = await stack.enter_async_context(run_parse(
+                data, job, timeout_s=limits.parse_timeout_s(), memory_mb=limits.parse_memory_mb(docling=docling)))
+        detail: dict[str, Any] = {"runner": "subprocess", "duration_ms": out.duration_ms,
+                                  "peak_rss_mb": out.peak_rss_mb}
+        if out.cut:
+            detail["cut"] = out.cut
+        result = ParseResult(parsed=out.parsed, detail=detail)
+        if provider is not None and out.rendered:
+            from core.knowledge.parse.ocr import read_scanned_pages
+
+            result.parsed, result.usage, result.ocr_stage = await read_scanned_pages(
+                out.parsed, out, provider, kb=kb, attribution=attribution)
+        return result
 
 
 @asynccontextmanager

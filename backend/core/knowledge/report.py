@@ -38,7 +38,8 @@ _HINTS: dict[str, str] = {
     "encrypted": "The file is protected by a password. Remove the password and upload it again.",
     "truncated_pages": "Only some pages were read in time; the rest are not searchable. Retry to read them all.",
     "truncated_size": "The file holds more text than one document may; the rest is not searchable.",
-    "no_text_layer": "Some pages are images with no text layer. They are read once OCR is configured.",
+    "no_text_layer": "Some pages are images with no text layer. They are read once OCR is configured; if it "
+                     "already is, Retry reads them again.",
     "ocr_failed": "Reading scanned pages failed. Retrying usually helps.",
     "attachment_skipped": "Some attachments could not be read; the report lists which and why.",
 }

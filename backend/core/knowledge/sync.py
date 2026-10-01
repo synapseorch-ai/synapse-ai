@@ -228,11 +228,23 @@ def _same_moment(a: datetime | None, b: datetime | None) -> bool:
     return a is not None and b is not None and abs((a - b).total_seconds()) < 1e-3
 
 
+def _scanned_pages_unread(row) -> bool:
+    """A document indexed (or skipped) before OCR was configured: pages with no text layer, and no OCR
+    stage in its report. An OCR stage that ran — read, failed or empty — is never retried from here."""
+    if row.status not in ("partial", "skipped") or not isinstance(row.report, dict):
+        return False
+    pages = row.report.get("pages") or {}
+    stages = row.report.get("stages") or []
+    return (pages.get("no_text_layer") or 0) > (pages.get("ocr_applied") or 0) and not any(
+        isinstance(s, dict) and s.get("stage") == "ocr" for s in stages)
+
+
 async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
     """Bring a base's documents in step with its folder. `startup`: nothing from before is still
     running, so any document left mid-work is queued again, whatever its age."""
     from core.knowledge import dispatch, documents
     from core.knowledge.parse import supports
+    from core.knowledge.seams import get_ocr_provider
     from core.storage import get_blob_store
 
     drift = Drift()
@@ -268,10 +280,12 @@ async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
             else:
                 drift.changed += 1
 
+    ocr_ready = get_ocr_provider() is not None
     for path, row in rows.items():
         if path in files:
-            if row.status == "skipped" and row.status_reason == "unsupported_format" and supports(path):
-                again = await documents.transition(row.id, "queued", previous="skipped")
+            readable = row.status == "skipped" and row.status_reason == "unsupported_format" and supports(path)
+            if readable or (ocr_ready and _scanned_pages_unread(row)):
+                again = await documents.transition(row.id, "queued", previous=row.status)
                 if again is not None:
                     await dispatch.enqueue(kb.id, "upsert", "reconcile", path=path, doc_id=row.id)
                     drift.supported += 1

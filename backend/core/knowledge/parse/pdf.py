@@ -257,7 +257,7 @@ def _lines(words: list[dict]) -> list[_Line]:
 def _line(words: list[dict]) -> _Line:
     weights = [len(w["text"]) for w in words]
     sizes = [float(w.get("size") or 0) for w in words]
-    bold = sum(n for n, w in zip(weights, words) if "bold" in str(w.get("fontname", "")).lower())
+    bold = sum(n for n, w in zip(weights, words, strict=True) if "bold" in str(w.get("fontname", "")).lower())
     return _Line(text=" ".join(w["text"] for w in words), x0=float(words[0]["x0"]), x1=float(words[-1]["x1"]),
                  top=min(float(w["top"]) for w in words), bottom=max(float(w["bottom"]) for w in words),
                  size=round(statistics.median(sizes) * 2) / 2, bold=bold >= 0.6 * sum(weights))
