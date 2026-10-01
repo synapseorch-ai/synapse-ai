@@ -99,7 +99,10 @@ async def _embed_missing(kb: KnowledgeBase, *, settings: Mapping[str, Any] | Non
     if not rows:
         return 0
     try:
-        await check_budget(kb, 0.0)
+        from core.knowledge.budgets import embed_estimate_usd
+
+        await check_budget(kb, await embed_estimate_usd(spec.model, [
+            f"{c.context} {c.content}".strip() if c.context else c.content for c, _url in rows]))
     except BudgetExceeded as exc:
         _log.info(f"knowledge backfill {kb.id}: paused, {exc}")
         return 0

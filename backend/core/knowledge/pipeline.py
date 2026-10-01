@@ -243,7 +243,9 @@ async def index_document(ctx: IndexContext) -> IndexOutcome:
     except EmbedderUnavailable as exc:
         stages.append(stage.report("skipped", reason=exc.code))
     else:
-        await check_budget(kb, 0.0)
+        from core.knowledge.budgets import embed_estimate_usd
+
+        await check_budget(kb, await embed_estimate_usd(spec.model, [c.search_text() for c in chunks]))
         attribution = replace(ctx.attribution, snapshot_id=ctx.snapshot_id)
         model, dims, batches = spec.model, spec.dims, 0
         step = max(1, embedder.max_batch)

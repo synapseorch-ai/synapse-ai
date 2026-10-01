@@ -212,6 +212,8 @@ class Drift:
     supported: int = 0
     #: Chunks indexed keyword-only that this pass embedded (B2a's backfill).
     embedded: int = 0
+    #: Documents a budget paused in an earlier month, queued again at this month's start (B2b).
+    resumed: int = 0
 
     def any(self) -> bool:
         return any(asdict(self).values())
@@ -327,6 +329,9 @@ async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
     from core.knowledge.backfill import embed_missing  # never raises
 
     drift.embedded = await embed_missing(kb)
+    from core.knowledge import budgets  # never raises
+
+    drift.resumed = await budgets.tend(kb)
     if drift.any():
         _log.info(f"knowledge reconcile {kb.id}: {drift.as_dict()}")
     return drift

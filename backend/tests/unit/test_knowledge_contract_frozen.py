@@ -64,6 +64,8 @@ LANE_MODULES = {
     "web.py", "fetch.py", "sitemaps.py",
     # R1 — the Retrieve and Ingest workflow steps
     "workflow_steps.py",
+    # B2b — budgets, cost previews and costs, presets
+    "budgets.py",
 }
 FROZEN_HEADER = "# FROZEN CONTRACT (KB0, D153)"
 

@@ -133,6 +133,8 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
         report = builder.finish(status, reason, **fields)
         done = await documents.transition(row.id, status, reason=reason, error=error, previous=parsing.status,
                                           report=report.model_dump(mode="json"))
+        if done is not None and status == "paused":
+            await _paused(kb.id, reason)
         return report if done is not None else None
 
     if len(data) > settings.max_file_mb * MIB:
@@ -223,8 +225,10 @@ async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> In
         builder.add(StageReport(stage="index", status="failed", error=error_info(exc)))
         status, reason = failure_status(exc)
         report = builder.finish(status, reason, snapshot_id=snapshot_id, **common)
-        await documents.transition(row.id, status, reason=reason, error=str(exc)[:2000], previous="indexing",
-                                   report=report.model_dump(mode="json"))
+        done = await documents.transition(row.id, status, reason=reason, error=str(exc)[:2000], previous="indexing",
+                                          report=report.model_dump(mode="json"))
+        if done is not None and status == "paused":
+            await _paused(kb.id, reason)
         return report
 
     reason = outcome.status_reason
@@ -274,6 +278,13 @@ def failure_status(exc: Exception) -> tuple[str, str]:
     if isinstance(exc, KnowledgeIndexError):
         return "failed", "index_failed"
     return "failed", "internal"
+
+
+async def _paused(kb_id: str, reason: str | None) -> None:
+    """A document paused on a budget or an empty wallet: the knowledge base's first pause is announced (B2b)."""
+    from core.knowledge.budgets import on_document_paused
+
+    await on_document_paused(kb_id, reason)
 
 
 def _record_metadata(row, parsed) -> dict:

@@ -119,7 +119,7 @@ async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> Knowle
     """Edit from the revision the edit started at (409 if it is stale). A new folder moves the documents;
     switching a base back on reconciles it. A change to how the index is built applies to documents
     indexed from now on until blue/green rebuilds arrive (B2): `reindex_started` is false."""
-    from core.knowledge import bases, dispatch, sync
+    from core.knowledge import bases, budgets, dispatch, sync
 
     before, after = await bases.update_base(kb_id, body)
     if after.folder != before.folder:
@@ -130,6 +130,8 @@ async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> Knowle
         from core.knowledge import web
 
         await web.sources_changed(before, after)
+    if budgets.cap_raised(before, after):  # what the budget paused is queued again (B2b)
+        await budgets.resume(after, reason="budget_raised")
     out = (await _out([after]))[0]
     return out.model_copy(update={"reindex_started": False})
 
