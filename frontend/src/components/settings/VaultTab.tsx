@@ -552,6 +552,25 @@ export function VaultTab() {
 
     useEffect(() => { fetchTree(); }, [fetchTree]);
 
+    // Opened from an answer's Sources (`/vault?path=…`, B1b): that file, once the
+    // tree is in. Read once from the address; a later visit to the tree is the person's.
+    const [linkedPath, setLinkedPath] = useState<string | null>(
+        () => (typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('path')));
+    useEffect(() => {
+        if (!linkedPath || tree.length === 0) return;
+        const find = (nodes: VaultNode[]): VaultNode | null => {
+            for (const node of nodes) {
+                if (node.type === 'file' && node.path === linkedPath) return node;
+                const inside = node.children ? find(node.children) : null;
+                if (inside) return inside;
+            }
+            return null;
+        };
+        const node = find(tree);
+        if (node) setSelectedNode(node);
+        setLinkedPath(null);
+    }, [linkedPath, tree]);
+
     // Fetch scale config to show S3 banner when configured
     useEffect(() => {
         fetch('/api/scale/config')

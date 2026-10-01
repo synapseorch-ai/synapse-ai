@@ -51,7 +51,23 @@ const COMPONENTS: Components = {
   ol: ({ children }) => <ol className="mb-2.5 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
   li: ({ children }) => <li className="leading-relaxed">{children}</li>,
 
-  a: ({ href, children }) => (
+  // A link within the page — an answer's [K#] to its Sources row — scrolls to
+  // its target and focuses it, without a new tab or a change to the address.
+  a: ({ href, children }) => href?.startsWith('#') ? (
+    <a
+      href={href}
+      onClick={event => {
+        const target = document.getElementById(decodeURIComponent(href.slice(1)));
+        if (!target) return;
+        event.preventDefault();
+        target.scrollIntoView({ block: 'nearest' });
+        target.focus({ preventScroll: true });
+      }}
+      className="text-accent underline underline-offset-2 hover:text-accent-hover"
+    >
+      {children}
+    </a>
+  ) : (
     <a
       href={href}
       target="_blank"

@@ -66,6 +66,32 @@ export interface Message {
     // Calls this answer's turn did not run, and why (U68) — the answer is the
     // model's words and can still say "done".
     refused?: { tool: string; reason: string }[];
+    // The answer's Sources: its [K#] labels resolved by the server (Knowledge,
+    // B1b), and the labels it used that no search in its turn produced.
+    citations?: KnowledgeCitation[];
+    unresolvedCitations?: string[];
+}
+
+/** A `[K#]` label resolved to where the words are (`core.knowledge.api_models.Citation`). */
+export interface KnowledgeCitation {
+    label: string;
+    kb_id: string;
+    doc_id: string;
+    chunk_id: string;
+    path: string;
+    source: string;
+    source_url?: string | null;
+    title?: string | null;
+    page_start?: number | null;
+    page_end?: number | null;
+    char_start: number;
+    char_end: number;
+    heading_path: string[];
+    snippet: string;
+    indexed_at?: string | null;
+    snapshot_id: string;
+    /** Whether the words the answer quoted for this label are in its passage. */
+    quote_check?: { quote: string; matched: boolean; method: 'exact' | 'normalized' } | null;
 }
 
 export interface SystemStatus {

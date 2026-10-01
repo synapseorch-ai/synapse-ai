@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useId } from 'react';
 import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Square, Pencil, RotateCcw, Search} from 'lucide-react';
 import * as RPopover from '@radix-ui/react-popover';
 import { Command } from 'cmdk';
@@ -17,7 +17,8 @@ import { Markdown, Spinner } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
-import { Message, OrchMsgType, SystemStatus } from '@/types';
+import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
+import { KnowledgeSources, linkLabels } from '@/components/KnowledgeSources';
 
 // ─── LLM Thought Collapsible ────────────────────────────────────────────────
 type ThoughtEntry =
@@ -198,6 +199,7 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
   // Fallback chain: content → data.content → data.result → empty
   const displayContent = msg.content || (msg.data as any)?.content || (msg.data as any)?.result || '';
   const [copied, setCopied] = useState(false);
+  const anchor = `src-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   return (
     <div className="flex gap-3 max-w-4xl">
       <div className="h-7 w-7 shrink-0 flex items-center justify-center border border-accent/40 bg-accent-subtle text-accent mt-1 rounded-sm">
@@ -217,7 +219,7 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
           <p className="text-[12px] text-text-faint">Its output is the answer below.</p>
         ) : (
         <div className="p-3 text-[14px] leading-7 border border-accent/40 bg-accent-subtle relative font-sans rounded-sm group">
-          <Markdown>{displayContent}</Markdown>
+          <Markdown>{linkLabels(displayContent, msg.citations, anchor)}</Markdown>
           <button
             onClick={() => { navigator.clipboard.writeText(displayContent); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
             className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-accent-subtle hover:bg-accent/20 text-accent hover:text-accent-hover"
@@ -227,6 +229,7 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
           </button>
         </div>
         )}
+        <KnowledgeSources citations={msg.citations} unresolved={msg.unresolvedCitations} anchor={anchor} />
         {/* Thoughts */}
         {msg.thoughts && msg.thoughts.length > 0 && (
           <ThoughtCollapsible thoughts={msg.thoughts} stepName={msg.stepName} />
@@ -245,6 +248,7 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
 // ─── Assistant Message Bubble ────────────────────────────────────────────────
 function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }) {
   const [copied, setCopied] = useState(false);
+  const anchor = `src-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   return (
     // The 288px floor keeps a short answer from looking like a chip, and only
     // from `sm` up: a phone has less than that beside the avatar, so every
@@ -267,7 +271,7 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
             {agentName}
           </div>
         )}
-        <Markdown>{msg.content}</Markdown>
+        <Markdown>{linkLabels(msg.content, msg.citations, anchor)}</Markdown>
         {msg.images && msg.images.length > 0 && <ImageThumbnails images={msg.images} />}
         <button
           onClick={() => { navigator.clipboard.writeText(msg.content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
@@ -277,6 +281,7 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
           {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
         </button>
       </div>
+      <KnowledgeSources citations={msg.citations} unresolved={msg.unresolvedCitations} anchor={anchor} />
       {msg.thoughts && msg.thoughts.length > 0 && (
         <ThoughtCollapsible thoughts={msg.thoughts} />
       )}
@@ -386,6 +391,9 @@ type SessionTurn = {
    *  the Thinking and Reasoning panels a reopened answer draws again (U60). Absent on older turns. */
   reasoning?: string[];
   thoughts?: string[];
+  /** The answer's Sources, as the turn saved them (Knowledge, B1b). Absent on most turns. */
+  citations?: KnowledgeCitation[];
+  unresolved_citations?: string[];
 };
 
 /** The loop's own line before every model call (`react_engine.py`): no news once the agent has had a thought. */
@@ -936,6 +944,10 @@ export default function Home() {
   const lastThoughtRef = useRef<string | null>(null);
   /** The turn's calls that were not run (U68), shown under its answer. */
   const refusedRef = useRef<{ tool: string; reason: string }[]>([]);
+  /** The answer's Sources (`knowledge_citations`, B1b), drawn under the answer that follows;
+   *  a workflow step's under that step's result. */
+  const sourcesRef = useRef<{ citations: KnowledgeCitation[]; unresolvedCitations: string[] } | null>(null);
+  const stepSourcesRef = useRef<Record<string, { citations: KnowledgeCitation[]; unresolvedCitations: string[] }>>({});
   // SSE abort controller — cancelled on new chat, unmount, or confirmed Settings navigation
   const sseAbortRef = useRef<AbortController | null>(null);
   // True while a chat/SSE request is in flight — gates the wake/network
@@ -1096,6 +1108,9 @@ export default function Home() {
           ...(t.thoughts && t.thoughts.length > 0 ? { thoughts: withoutEcho(t.thoughts, t.assistant) } : {}),
           // What the turn did not run, as live (U68).
           ...(notRun.length > 0 ? { refused: notRun } : {}),
+          // Its Sources, as live (B1b).
+          ...(t.citations?.length || t.unresolved_citations?.length
+            ? { citations: t.citations ?? [], unresolvedCitations: t.unresolved_citations ?? [] } : {}),
         });
       }
       if (parked) {
@@ -1553,6 +1568,7 @@ export default function Home() {
     lastCursorRef.current = null;
     lastThoughtRef.current = null;
     refusedRef.current = [];
+    sourcesRef.current = null;
     const controller = new AbortController();
     sseAbortRef.current = controller;
     try {
@@ -1632,6 +1648,8 @@ export default function Home() {
     lastToolRef.current = null;
     lastThoughtRef.current = null;
     refusedRef.current = [];
+    sourcesRef.current = null;
+    stepSourcesRef.current = {};
     try {
       await work();
     } catch (error) {
@@ -1828,6 +1846,8 @@ export default function Home() {
         const capturedReasoning = [...pendingReasoningRef.current];
         const refused = refusedRef.current;
         refusedRef.current = [];
+        const sources = sourcesRef.current;
+        sourcesRef.current = null;
         setMessages(prev => [...answerOnce(prev, data.content as string), {
           role: 'assistant',
           content: data.content as string,
@@ -1837,6 +1857,7 @@ export default function Home() {
           thoughts: capturedThoughts,
           reasoning: capturedReasoning,
           ...(refused.length > 0 ? { refused } : {}),
+          ...(sources ?? {}),
         }]);
         pendingThoughtsRef.current = [];
         pendingReasoningRef.current = [];
@@ -1861,6 +1882,7 @@ export default function Home() {
             orchStepId: data.orch_step_id,
             thoughts: capturedThoughts,
             reasoning: capturedReasoning,
+            ...(stepSourcesRef.current[data.orch_step_id as string] ?? {}),
           }]);
           stepState.thoughts = [];
           stepState.reasoning = [];
@@ -1871,6 +1893,8 @@ export default function Home() {
           const capturedReasoning = [...pendingReasoningRef.current];
           const refused = refusedRef.current;
           refusedRef.current = [];
+          const sources = sourcesRef.current;
+          sourcesRef.current = null;
           setMessages(prev => [...answerOnce(prev, data.response as string), {
             role: 'assistant',
             content: data.response as string,
@@ -1880,6 +1904,7 @@ export default function Home() {
             thoughts: capturedThoughts,
             reasoning: capturedReasoning,
             ...(refused.length > 0 ? { refused } : {}),
+            ...(sources ?? {}),
           }]);
           pendingThoughtsRef.current = [];
           pendingReasoningRef.current = [];
@@ -1913,8 +1938,9 @@ export default function Home() {
         }]);
         break;
 
-      case 'agent_step_result':
+      case 'agent_step_result': {
         stepState.receivedAgentStep = true;
+        const stepSources = stepSourcesRef.current[data.orch_step_id as string];
         setMessages(prev => [...prev, {
           role: 'assistant',
           content: data.content as string,
@@ -1926,10 +1952,25 @@ export default function Home() {
           orchStepId: data.orch_step_id,
           thoughts: withoutEcho([...stepState.thoughts], data.content),
           reasoning: [...stepState.reasoning],
+          ...(stepSources ?? {}),
         }]);
         stepState.thoughts = [];
         stepState.reasoning = [];
         break;
+      }
+
+      case 'knowledge_citations': {
+        // The answer's [K#] labels resolved (B1b). Its own turn's only: a
+        // delegate's labels are resolved in its lead's answer.
+        if (data.delegate_from) break;
+        const sources = {
+          citations: (data.citations as KnowledgeCitation[] | undefined) ?? [],
+          unresolvedCitations: (data.unresolved as string[] | undefined) ?? [],
+        };
+        if (data.orch_step_id) stepSourcesRef.current[data.orch_step_id as string] = sources;
+        else sourcesRef.current = sources;
+        break;
+      }
 
       case 'step_complete':
         setStreamingActivity(`✓ ${(data.step_name as string) || 'Step'} complete`);
