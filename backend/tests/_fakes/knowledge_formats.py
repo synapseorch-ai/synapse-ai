@@ -152,3 +152,136 @@ def zipped(members: dict[str, bytes | str], *, first: str | None = None) -> byte
             if name != first:
                 zf.writestr(name, body)
     return buf.getvalue()
+
+
+# ── Word ───────────────────────────────────────────────────────────────────────
+
+W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+WORD_STYLES = (
+    f'<w:styles {W}>'
+    '<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/></w:style>'
+    '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>'
+    '<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>'
+    '<w:style w:type="paragraph" w:styleId="Secret"><w:name w:val="Secret"/><w:rPr><w:vanish/></w:rPr></w:style>'
+    '<w:style w:type="character" w:styleId="Ghost"><w:name w:val="Ghost"/><w:rPr><w:color w:val="FFFFFF"/></w:rPr>'
+    '</w:style></w:styles>')
+
+
+def w_run(text: str, props: str = "") -> str:
+    return f'<w:r>{f"<w:rPr>{props}</w:rPr>" if props else ""}<w:t xml:space="preserve">{text}</w:t></w:r>'
+
+
+def w_p(*runs: str, style: str | None = None, numbered: bool = False) -> str:
+    ppr = ""
+    if style or numbered:
+        ppr = ("<w:pPr>" + (f'<w:pStyle w:val="{style}"/>' if style else "")
+               + ('<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>' if numbered else "") + "</w:pPr>")
+    body = "".join(r if r.startswith("<") else w_run(r) for r in runs)
+    return f"<w:p>{ppr}{body}</w:p>"
+
+
+def w_table(rows: list[list[str]]) -> str:
+    return "<w:tbl>" + "".join("<w:tr>" + "".join(f"<w:tc>{w_p(c)}</w:tc>" for c in row) + "</w:tr>"
+                               for row in rows) + "</w:tbl>"
+
+
+def docx(body: str, *, styles: str = WORD_STYLES, title: str | None = None, created: str | None = None,
+         footnotes: list[str] | None = None) -> bytes:
+    members: dict[str, bytes | str] = {
+        "[Content_Types].xml": '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        "word/document.xml": f"<w:document {W}><w:body>{body}</w:body></w:document>",
+        "word/styles.xml": styles,
+    }
+    if title or created:
+        members["docProps/core.xml"] = (
+            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/">'
+            + (f"<dc:title>{title}</dc:title>" if title else "")
+            + (f"<dcterms:created>{created}</dcterms:created>" if created else "") + "</cp:coreProperties>")
+    if footnotes:
+        members["word/footnotes.xml"] = (
+            f'<w:footnotes {W}><w:footnote w:type="separator" w:id="-1">{w_p("———")}</w:footnote>'
+            + "".join(f'<w:footnote w:id="{k}">{w_p(t)}</w:footnote>' for k, t in enumerate(footnotes, 1))
+            + "</w:footnotes>")
+    return zipped(members)
+
+
+# ── PowerPoint ─────────────────────────────────────────────────────────────────
+
+P_NS = ('xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"')
+RELS_NS = 'xmlns="http://schemas.openxmlformats.org/package/2006/relationships"'
+
+
+def p_shape(paragraphs: list[str], *, ph: str | None = None, hidden: bool = False, size: int | None = None) -> str:
+    rpr = f'<a:rPr sz="{size}"/>' if size else ""
+    body = "".join(f"<a:p><a:r>{rpr}<a:t>{t}</a:t></a:r></a:p>" for t in paragraphs)
+    return ('<p:sp><p:nvSpPr><p:cNvPr id="2" name="s"' + (' hidden="1"' if hidden else "") + "/><p:cNvSpPr/>"
+            + (f'<p:nvPr><p:ph type="{ph}"/></p:nvPr>' if ph else "<p:nvPr/>")
+            + f"</p:nvSpPr><p:txBody>{body}</p:txBody></p:sp>")
+
+
+def p_table(rows: list[list[str]]) -> str:
+    cells = "".join("<a:tr>" + "".join(f"<a:tc><a:txBody><a:p><a:r><a:t>{c}</a:t></a:r></a:p></a:txBody></a:tc>"
+                                       for c in row) + "</a:tr>" for row in rows)
+    return ('<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="9" name="t"/></p:nvGraphicFramePr>'
+            f"<a:graphic><a:graphicData><a:tbl>{cells}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>")
+
+
+def pptx(slides: list[str], *, notes: dict[int, str] | None = None, hidden: set[int] = frozenset(),
+         title: str | None = None) -> bytes:
+    notes = notes or {}
+    ids = "".join(f'<p:sldId id="{255 + k}" r:id="rId{k}"/>' for k in range(1, len(slides) + 1))
+    members: dict[str, bytes | str] = {
+        "[Content_Types].xml": '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        "ppt/presentation.xml": f"<p:presentation {P_NS}><p:sldIdLst>{ids}</p:sldIdLst></p:presentation>",
+        "ppt/_rels/presentation.xml.rels": f"<Relationships {RELS_NS}>" + "".join(
+            f'<Relationship Id="rId{k}" Type="slide" Target="slides/slide{k}.xml"/>'
+            for k in range(1, len(slides) + 1)) + "</Relationships>",
+    }
+    for k, shapes in enumerate(slides, start=1):
+        show = ' show="0"' if k in hidden else ""
+        members[f"ppt/slides/slide{k}.xml"] = (f"<p:sld {P_NS}{show}><p:cSld><p:spTree>{shapes}"
+                                               "</p:spTree></p:cSld></p:sld>")
+        if k in notes:
+            members[f"ppt/slides/_rels/slide{k}.xml.rels"] = (
+                f'<Relationships {RELS_NS}><Relationship Id="rId1" Type="notesSlide" '
+                f'Target="../notesSlides/notesSlide{k}.xml"/></Relationships>')
+            members[f"ppt/notesSlides/notesSlide{k}.xml"] = (
+                f"<p:notes {P_NS}><p:cSld><p:spTree>{p_shape(['1'], ph='sldNum')}{p_shape([notes[k]], ph='body')}"
+                "</p:spTree></p:cSld></p:notes>")
+    if title:
+        members["docProps/core.xml"] = ('<cp:coreProperties xmlns:cp="x" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                                        f"<dc:title>{title}</dc:title></cp:coreProperties>")
+    return zipped(members)
+
+
+# ── OpenDocument ───────────────────────────────────────────────────────────────
+
+ODF_NS = ('xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+          'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+          'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+          'xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" '
+          'xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" '
+          'xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" '
+          'xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" '
+          'xmlns:dc="http://purl.org/dc/elements/1.1/"')
+_ODF_KINDS = {"odt": ("text", "application/vnd.oasis.opendocument.text"),
+              "odp": ("presentation", "application/vnd.oasis.opendocument.presentation"),
+              "ods": ("spreadsheet", "application/vnd.oasis.opendocument.spreadsheet")}
+
+
+def odf(kind: str, body: str, *, styles: str = "", title: str | None = None) -> bytes:
+    element, mimetype = _ODF_KINDS[kind]
+    members: dict[str, bytes | str] = {
+        "mimetype": mimetype,
+        "content.xml": (f"<office:document-content {ODF_NS}><office:automatic-styles>{styles}"
+                        f"</office:automatic-styles><office:body><office:{element}>{body}</office:{element}>"
+                        "</office:body></office:document-content>"),
+    }
+    if title:
+        members["meta.xml"] = (f"<office:document-meta {ODF_NS}><office:meta><dc:title>{title}</dc:title>"
+                               "<meta:creation-date>2024-05-06T10:00:00</meta:creation-date></office:meta>"
+                               "</office:document-meta>")
+    return zipped(members, first="mimetype")

@@ -55,10 +55,12 @@ class SheetParts:
     warnings: list[ParseWarning] = field(default_factory=list)
 
 
-def sheet_parts(name: str, rows: list[list[str]]) -> SheetParts | None:
+def sheet_parts(name: str, rows: list[list[str]], *, more_rows: int = 0) -> SheetParts | None:
     """The card and the row groups for one sheet; None when it has no non-empty row.
 
     The first non-empty row is the header. Ragged rows are padded to the widest.
+    `more_rows`: data rows past `rows` that a reader counted without keeping
+    (a big sheet is its card, so only its first rows are needed).
     """
     rows = [r for r in rows if any(c.strip() for c in r)]
     if not rows:
@@ -73,18 +75,19 @@ def sheet_parts(name: str, rows: list[list[str]]) -> SheetParts | None:
     header = rows[0] + [""] * (width - len(rows[0]))
     data = [r + [""] * (width - len(r)) for r in rows[1:]]
     dtypes = [dtype([r[c] for r in data[:1000]]) for c in range(width)]
-    card = f"Sheet {name}: {', '.join(h or column(c + 1) for c, h in enumerate(header))} ({len(data)} rows)"
+    total = len(data) + more_rows
+    card = f"Sheet {name}: {', '.join(h or column(c + 1) for c, h in enumerate(header))} ({total} rows)"
     parts = SheetParts(card=card, warnings=warnings, data=SheetData(
-        name=name, range=f"A1:{column(width)}{len(rows)}", n_rows=len(data), n_cols=width, headers=header,
-        sample_rows=data[:SAMPLE_ROWS], dtypes=dtypes, truncated=len(data) > ROW_GROUP_MAX_ROWS))
-    if len(data) <= ROW_GROUP_MAX_ROWS:
+        name=name, range=f"A1:{column(width)}{len(rows) + more_rows}", n_rows=total, n_cols=width, headers=header,
+        sample_rows=data[:SAMPLE_ROWS], dtypes=dtypes, truncated=total > ROW_GROUP_MAX_ROWS))
+    if total <= ROW_GROUP_MAX_ROWS:
         for start in range(0, len(data), ROW_GROUP_SIZE):
             group = data[start:start + ROW_GROUP_SIZE]
             body = "\n".join(" | ".join(r) for r in [header, *group])
             parts.groups.append((body, TableData(rows=[header, *group], header_rows=1, n_rows=len(group) + 1,
                                                  n_cols=width)))
     elif data:
-        warnings.append(ParseWarning(code="sheet_truncated", count=len(data), message=(
-            f"{len(data)} rows: the sheet is indexed as its card (headers, types, {SAMPLE_ROWS} sample rows), "
+        warnings.append(ParseWarning(code="sheet_truncated", count=total, message=(
+            f"{total} rows: the sheet is indexed as its card (headers, types, {SAMPLE_ROWS} sample rows), "
             f"not row by row, above {ROW_GROUP_MAX_ROWS} rows.")))
     return parts
