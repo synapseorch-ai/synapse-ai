@@ -52,6 +52,12 @@ dependencies = [
     "pdfplumber>=0.10,<1",
     "pandas>=2.0,<4",
     "openpyxl>=3.1,<4",
+    # Knowledge's parsers (A2, D162); see backend/requirements.txt.
+    "pypdfium2>=4.30,<6",
+    "pillow>=10.0,<13",
+    "psutil>=5.9,<8",
+    "defusedxml>=0.7,<1",
+    "olefile>=0.46,<1",
     "requests>=2.31,<3",
     "anthropic>=0.28,<1",
     "crawl4ai>=0.4,<1",

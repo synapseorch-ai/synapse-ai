@@ -117,7 +117,9 @@ cryptography==50.0.0
 cssselect==1.5.0
     # via crawl4ai
 defusedxml==0.7.1
-    # via nltk
+    # via
+    #   -r requirements.txt
+    #   nltk
 distro==1.9.0
     # via
     #   anthropic
@@ -296,6 +298,8 @@ numpy==2.5.2 ; python_full_version >= '3.12'
     #   trimesh
 oauthlib==3.3.1
     # via requests-oauthlib
+olefile==0.47
+    # via -r requirements.txt
 ollama==0.6.2
     # via -r requirements.txt
 onnxruntime==1.28.0
@@ -343,6 +347,7 @@ pdfplumber==0.11.10
     # via -r requirements.txt
 pillow==12.3.0
     # via
+    #   -r requirements.txt
     #   crawl4ai
     #   pdfplumber
 playwright==1.62.0
@@ -367,6 +372,7 @@ protobuf==7.35.1
     #   proto-plus
 psutil==7.2.2
     # via
+    #   -r requirements.txt
     #   cocoindex
     #   crawl4ai
 psycopg==3.3.4
@@ -422,7 +428,9 @@ pyopenssl==26.4.0
 pyparsing==3.3.2
     # via httplib2
 pypdfium2==5.12.1
-    # via pdfplumber
+    # via
+    #   -r requirements.txt
+    #   pdfplumber
 pypika==0.51.1
     # via chromadb
 pyproject-hooks==1.2.0

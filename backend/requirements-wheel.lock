@@ -171,6 +171,7 @@ cssselect==1.5.0
 defusedxml==0.7.1
     # via
     #   -c requirements.lock
+    #   synapse-orch-ai (../pyproject.toml)
     #   nltk
 discord-py==2.7.1
     # via
@@ -449,6 +450,10 @@ oauthlib==3.3.1
     #   -c requirements-messaging.lock
     #   -c requirements.lock
     #   requests-oauthlib
+olefile==0.47
+    # via
+    #   -c requirements.lock
+    #   synapse-orch-ai (../pyproject.toml)
 ollama==0.6.2
     # via
     #   -c requirements.lock
@@ -527,6 +532,7 @@ pdfplumber==0.11.10
 pillow==12.3.0
     # via
     #   -c requirements.lock
+    #   synapse-orch-ai (../pyproject.toml)
     #   crawl4ai
     #   pdfplumber
 playwright==1.62.0
@@ -562,6 +568,7 @@ protobuf==7.35.1
 psutil==7.2.2
     # via
     #   -c requirements.lock
+    #   synapse-orch-ai (../pyproject.toml)
     #   cocoindex
     #   crawl4ai
 psycopg==3.3.4
@@ -649,6 +656,7 @@ pypdf==6.19.0
 pypdfium2==5.12.1
     # via
     #   -c requirements.lock
+    #   synapse-orch-ai (../pyproject.toml)
     #   pdfplumber
 pypika==0.51.1
     # via

@@ -43,6 +43,15 @@ pymysql>=1.1,<2
 pdfplumber>=0.10,<1
 pandas>=2.0,<4
 openpyxl>=3.1,<4
+# Knowledge's parsers (A2, D162), imported directly: pypdfium2 opens and renders PDFs,
+# Pillow writes the pages OCR reads, psutil caps the parsing process's memory,
+# defusedxml reads Office XML safely, olefile reads Outlook .msg files. All but
+# olefile were already installed through pdfplumber, crawl4ai and chromadb.
+pypdfium2>=4.30,<6
+pillow>=10.0,<13
+psutil>=5.9,<8
+defusedxml>=0.7,<1
+olefile>=0.46,<1
 requests>=2.31,<3
 anthropic>=0.28,<1
 google-genai>=1.0,<3
