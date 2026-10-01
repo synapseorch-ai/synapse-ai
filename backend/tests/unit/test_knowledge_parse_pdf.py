@@ -81,6 +81,16 @@ class TestStructure:
         assert [b.text for b in doc.blocks if not b.furniture] == [f"Body of page {n}." for n in (1, 2, 3)]
         assert all(p.text_chars == len("Body of page 1.") for p in doc.pages)  # furniture is not text
 
+    def test_a_folio_set_high_and_a_roman_numeral_are_furniture_and_a_section_line_is_not(self):
+        """NIST AI 100-1 sets "Page 7" at 89% of the page; front matter counts i, ii, iii."""
+        pages = [PdfPage().text(72, 760, f"Section {n}").text(72, 600, "Body.").text(300, 85, folio)
+                 for n, folio in ((2, "ii"), (5, "Page 7"), (9, "iii"))]
+        doc = _parse(pdf(pages))
+        assert sorted(b.text for b in doc.blocks if b.furniture) == ["Page 7", "ii", "iii"]
+        # a number that does not keep step with the page is content, not a running header
+        assert [(b.text, b.furniture) for b in doc.blocks if b.text.startswith("Section")] == [
+            ("Section 2", False), ("Section 5", False), ("Section 9", False)]
+
     def test_two_columns_are_read_left_then_right(self):
         page = PdfPage().text(72, 760, "A Two Column Article", size=18, bold=True)
         page.lines(72, 720, [f"left {k}" for k in range(6)], leading=14)

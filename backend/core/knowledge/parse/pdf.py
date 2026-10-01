@@ -46,10 +46,16 @@ MIN_VISIBLE_PT = 1.0
 GARBLED_RATIO = 0.3
 #: The top and bottom bands where running headers and footers live, as a share of the page height.
 FURNITURE_BAND = 0.08
+#: A wider band for a line that is only a page number: some layouts set the folio well above the margin
+#: (NIST AI 100-1's sits at 89% of the page). Wider for repeated lines would take "Section 3" at the top
+#: of every page for a running header.
+PAGE_NUMBER_BAND = 0.12
 #: Vector paths on a page with no characters that suggest text drawn as outlines.
 OUTLINED_TEXT_CURVES = 50
 
-_PAGE_NUMBER = re.compile(r"^\W*(page\s*)?\d{1,4}(\s*(of|/)\s*\d{1,4})?\W*$", re.IGNORECASE)
+_PAGE_NUMBER = re.compile(r"^\W*(?i:page\s*)?\d{1,4}(\s*(?i:of|/)\s*\d{1,4})?\W*$")
+#: A front-matter page number: a valid lowercase Roman numeral (i, iv, xii), alone on its line.
+_ROMAN_PAGE = re.compile(r"^\W*(?=[ivxlc])(x{0,3}|xl|l?x{0,3}|xc|c{0,3})(ix|iv|v?i{0,3})\W*$")
 _BULLET = re.compile(r"^\s*([•◦▪▫●○■□‣⁃∙·\-–—*]|\(?\d{1,3}[.)]|\(?[a-zA-Z][.)])\s+")
 _GARBLE = re.compile(r"\(cid:\d+\)|[�-]")
 
@@ -428,8 +434,9 @@ def _groups(lines: list[_Line], page: _Page, body: float):
     out: list[tuple[str, list[_Line]]] = []
 
     def kind_of(line: _Line) -> str:
-        band = page.height * FURNITURE_BAND
-        if (line.top < band or line.bottom > page.height - band) and _PAGE_NUMBER.match(line.text):
+        band = page.height * PAGE_NUMBER_BAND
+        if (line.top < band or line.bottom > page.height - band) and (
+                _PAGE_NUMBER.match(line.text) or _ROMAN_PAGE.match(line.text)):
             return "furniture"
         if body and line.size >= body * 1.15 and len(line.text) <= 200:
             return "heading"
@@ -494,15 +501,35 @@ def _key(text: str) -> str:
 
 
 def _furniture(pages: list[_Page]) -> set[str]:
-    """Lines in the top or bottom band that repeat on at least half the pages (and on two or more)."""
-    seen: Counter[str] = Counter()
+    """Lines in the top or bottom band that repeat on at least half the pages (and on two or more).
+
+    A line repeats when its text is the same, or when only its number changes and that number keeps
+    step with the page ("Q3 report — 7" on page 7, "— 8" on page 8: a folio inside a header). A
+    number that does not keep step ("Section 2", "Section 5" at the top of pages 2 and 3) is content.
+    """
+    seen: dict[str, list[tuple[int, str]]] = {}
     readable = [p for p in pages if p.lines]
     for page in readable:
         band = page.height * FURNITURE_BAND
-        keys = {_key(ln.text) for ln in page.lines if ln.top < band or ln.bottom > page.height - band}
-        seen.update(keys)
+        for line in page.lines:
+            if line.top < band or line.bottom > page.height - band:
+                key = _key(line.text)
+                if key and (page.number, line.text) not in seen.get(key, []):
+                    seen.setdefault(key, []).append((page.number, line.text.strip()))
     need = max(2, (len(readable) + 1) // 2)
-    return {k for k, n in seen.items() if n >= need and k}
+    out = set()
+    for key, hits in seen.items():
+        if len({n for n, _ in hits}) < need:
+            continue
+        texts = {t for _, t in hits}
+        if len(texts) == 1:
+            out.add(key)
+            continue
+        numbers = [re.findall(r"\d+", t) for _, t in hits]
+        if all(len(ns) == 1 for ns in numbers) and len({int(ns[0]) - n for ns, (n, _) in zip(numbers, hits,
+                                                                                            strict=True)}) == 1:
+            out.add(key)
+    return out
 
 
 def _title(meta: dict) -> str | None:
