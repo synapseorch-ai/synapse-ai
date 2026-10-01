@@ -2710,6 +2710,65 @@ class PrintStepExecutor:
         }
 
 
+class RetrieveStepExecutor:
+    """Search knowledge bases (Knowledge, R1): `core.knowledge.workflow_steps.retrieve`.
+
+    The query is the step's template filled in from shared state, both
+    reference families in one pass (`_fill_task_template`, F19). The output —
+    the passages as `context`, the hits, their citations, the trace's id and the
+    snapshots searched — goes to `output_key`; its costs are the run's.
+    """
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        from core.knowledge import workflow_steps
+        from core.knowledge.trace import Origin
+
+        from .context import _fill_task_template
+
+        try:
+            workflow_steps.check_enabled("Retrieve", step.name)
+            config = workflow_steps.retrieve_config(step.retrieve, step_name=step.name)
+            query = _fill_task_template(config.query, run.shared_state,
+                                        getattr(engine, "global_variables", None) or {})
+            yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Retrieve] {query[:500]}"}
+            found = await workflow_steps.retrieve(
+                config, query, step_id=step.id, step_name=step.name,
+                origin=Origin(surface="step", run_id=run.run_id,
+                              session_id=run.session_id or f"orch_{run.run_id}", step_id=step.id))
+        except workflow_steps.StepFailed as e:
+            # Raised so the engine fails the step and the run; its words are the
+            # step's `reason` in the run log and on the step card (F195).
+            raise RuntimeError(str(e)) from None
+        for warning in found.warnings:
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
+        if step.output_key:
+            run.shared_state[step.output_key] = found.output.model_dump(mode="json")
+        yield found.event
+
+
+class IngestStepExecutor:
+    """Add the records in `state[records_from]` to a knowledge base (Knowledge, R1):
+    `core.knowledge.workflow_steps.ingest`. Answers with each document as it
+    stands — new and changed ones `queued` — and never waits for indexing."""
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        from core.knowledge import workflow_steps
+
+        try:
+            workflow_steps.check_enabled("Ingest", step.name)
+            config = workflow_steps.ingest_config(step.ingest, step_name=step.name)
+            done = await workflow_steps.ingest(config, run.shared_state, step_id=step.id, step_name=step.name)
+        except workflow_steps.StepFailed as e:
+            raise RuntimeError(str(e)) from None
+        if step.output_key:
+            run.shared_state[step.output_key] = done.output.model_dump(mode="json")
+        yield done.event
+
+
 class EndStepExecutor:
     """Terminate the orchestration."""
 
@@ -2736,4 +2795,6 @@ STEP_EXECUTORS = {
     StepType.SWITCH: SwitchStepExecutor(),
     StepType.PRINT: PrintStepExecutor(),
     StepType.END: EndStepExecutor(),
+    StepType.RETRIEVE: RetrieveStepExecutor(),
+    StepType.INGEST: IngestStepExecutor(),
 }

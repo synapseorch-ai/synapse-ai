@@ -101,6 +101,9 @@ STRUCTURAL_EVENT_TYPES = frozenset({
     # A task list is the run's shape: past the event cap a long run must keep
     # its plan exactly when the plan matters most.
     "tasks_updated", "tasks_incomplete",
+    # A Retrieve step's trace id and an Ingest step's documents: one event per
+    # execution, and the run panel's only way back to what the step found.
+    "knowledge_retrieve", "knowledge_ingest",
 })
 
 

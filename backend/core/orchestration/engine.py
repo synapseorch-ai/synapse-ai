@@ -69,7 +69,8 @@ class RouteFailed(Exception):
 
 
 #: Step types with no model to override: they run no LLM at all.
-_MODEL_FREE_STEP_TYPES = {"end", "human", "merge", "parallel", "loop", "print", "transform"}
+_MODEL_FREE_STEP_TYPES = {"end", "human", "merge", "parallel", "loop", "print", "transform",
+                          "retrieve", "ingest"}
 
 
 def apply_model_override(orchestration: "Orchestration", model: str | None) -> None:

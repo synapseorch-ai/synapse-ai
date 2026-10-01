@@ -25,6 +25,9 @@ class StepType(str, Enum):
     SWITCH = "switch"
     PRINT = "print"
     END = "end"
+    # Knowledge (R1): search knowledge bases, and add records to one.
+    RETRIEVE = "retrieve"
+    INGEST = "ingest"
 
 
 class StepConfig(BaseModel):
@@ -97,6 +100,15 @@ class StepConfig(BaseModel):
     human_fields: list[dict[str, str]] = []  # [{name, type, label}]
     human_channel_id: str | None = None      # messaging channel to notify (optional)
     human_timeout_seconds: int = int(ORCH_HUMAN_TIMEOUT)  # how long to wait for messaging response
+
+    # RETRIEVE / INGEST -- Knowledge's two steps (R1). Each holds the contract's
+    # own body, `core.knowledge.api_models.RetrieveStepConfig` /
+    # `IngestStepConfig`, as stored: {"kb_ids": [...], "query": "{state.q}", ...}.
+    # Held to it when the step runs, not here, so the editor saves a step that is
+    # still being filled in (as it saves an agent step with no agent yet) and a
+    # bad body never stops an orchestration from loading.
+    retrieve: dict[str, Any] | None = None
+    ingest: dict[str, Any] | None = None
 
     # I/O mapping
     # Whether this step's agent sees the attachments the caller sent. Off by
