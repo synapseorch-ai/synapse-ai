@@ -397,8 +397,8 @@ function BaseDetail({
                     dragging ? 'border-accent bg-accent-subtle/30' : 'border-border',
                 )}
             >
-                Drop files here to add them to <span className="font-mono">{kb.folder}</span>. PDF, Office and email files are
-                kept and read once Synapse reads their type; text, Markdown, JSON and CSV are indexed now.
+                Drop files here to add them to <span className="font-mono">{kb.folder}</span>. Documents, spreadsheets,
+                slides, email, web pages and code are read; scanned pages and images are read once OCR is configured.
             </div>
             {uploads.length > 0 && (
                 <ul className="space-y-1" aria-label="Uploads">
