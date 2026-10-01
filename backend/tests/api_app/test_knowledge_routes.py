@@ -23,7 +23,6 @@ pytestmark = pytest.mark.usefixtures("knowledge_store")
 NOT_A1S = {
     ("POST", "/knowledge/queries/{query_id}/replay"): "P1",
     # CCR-6: V1 mounts each as it lands.
-    ("POST", "/knowledge/bases/{kb_id}/eval/drafts"): "V1",
     ("POST", "/knowledge/bases/{kb_id}/eval/estimate"): "V1",
     ("POST", "/knowledge/bases/{kb_id}/eval/runs"): "V1",
     ("GET", "/knowledge/bases/{kb_id}/eval/runs"): "V1",

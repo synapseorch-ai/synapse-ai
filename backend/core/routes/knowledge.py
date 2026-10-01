@@ -20,7 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from core.knowledge.api_models import (
     CostGroup, CostPreview, CostPreviewRequest, CrawlAccepted, DeleteAccepted, DocumentDetail, DocumentOut,
-    EvalPromote, EvalQuery, EvalSet, EvalSetCreate, EvalSetSummary, EvalSetUpdate, IngestAccepted,
+    EvalDraftRequest, EvalDrafts, EvalPromote, EvalQuery, EvalSet, EvalSetCreate, EvalSetSummary, EvalSetUpdate,
+    IngestAccepted,
     KnowledgeBaseCreate, KnowledgeBaseOut, KnowledgeBaseUpdate, RecordIngestRequest, SearchRequest, SearchResponse,
     UploadComplete, UploadInit, UploadSession, UrlIngestRequest, WebCrawlState,
 )
@@ -410,3 +411,17 @@ async def list_eval_queries(kb_id: str, limit: int = Query(50, ge=1, le=200)) ->
 
     await bases.require_base(kb_id)
     return await evals.recent_queries(kb_id, limit=limit)
+
+
+@router.post("/api/knowledge/bases/{kb_id}/eval/drafts", response_model=EvalDrafts)
+@_errors
+async def draft_eval_questions(kb_id: str, body: EvalDraftRequest) -> EvalDrafts:
+    """Draft questions from the base's own passages (paid: one chat call each). Saves nothing: a person adds
+    the ones they keep to a set."""
+    from core.config import load_settings
+    from core.knowledge import bases, evals, evals_generate
+
+    kb = await bases.require_base(kb_id)
+    asked = [ev for case in (await evals.cases_of(kb_id, body.set_id) if body.set_id else [])
+             for ev in case.get("evidence") or []]
+    return await evals_generate.draft(kb, body, load_settings(), exclude=asked)
