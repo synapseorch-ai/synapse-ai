@@ -228,8 +228,13 @@ async def states(kbs: list[KnowledgeBase]) -> dict[str, KnowledgeBaseState]:
                 .where(KnowledgeDocumentDB.tenant_id == tenant, KnowledgeDocumentDB.kb_id.in_(ids),
                        KnowledgeDocumentDB.status == "paused"))).all():
             paused.setdefault(kb_id, reason)
+    from core.knowledge.snapshots import build_states
+
+    builds = await build_states(kbs)  # CCR-5 (B2b): a rebuild's progress, pause or failure
     return {kb_id: KnowledgeBaseState(counts_by_status=counts[kb_id], active_snapshot=active.get(kb_id),
                                       building_snapshot=building.get(kb_id),
                                       month_spend_usd=round(await kb_month_spend(kb_id), 6),
-                                      paused_reason=paused.get(kb_id))
+                                      paused_reason=paused.get(kb_id) or getattr(builds.get(kb_id), "paused_reason",
+                                                                                 None),
+                                      build=builds.get(kb_id))
             for kb_id in ids}

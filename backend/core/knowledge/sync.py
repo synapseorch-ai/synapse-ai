@@ -332,6 +332,9 @@ async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
     from core.knowledge import budgets  # never raises
 
     drift.resumed = await budgets.tend(kb)
+    from core.knowledge import snapshots  # never raises
+
+    await snapshots.tend(kb, startup=startup)
     if drift.any():
         _log.info(f"knowledge reconcile {kb.id}: {drift.as_dict()}")
     return drift

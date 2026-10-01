@@ -93,9 +93,10 @@ class TestEstimates:
         assert await budgets.embed_estimate_usd("", ["x"]) == 0.0
         assert await budgets.embed_estimate_usd(PRICED, []) == 0.0
 
-    async def test_the_operators_rate_wins_over_the_profiles(self):
+    async def test_the_operators_rate_wins_over_the_profiles(self, monkeypatch):
         from core import usage_tracker
 
+        monkeypatch.setattr(usage_tracker, "_pricing_snapshot", None)  # the process's rate card, restored after
         table = dict(await usage_tracker.get_pricing_table())
         table[PRICED] = {"input_per_1m": 1.0, "output_per_1m": 0.0}
         await usage_tracker.save_pricing_table(table)

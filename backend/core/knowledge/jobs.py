@@ -67,6 +67,11 @@ async def _run(job: IngestJob) -> IngestionReport | None:
     kb = await bases.get_base(job.kb_id)
     if kb is None:
         return None
+    if job.op == "reindex" and job.snapshot_id:  # one step of a blue/green rebuild (B2b)
+        from core.knowledge import snapshots
+
+        await snapshots.build_step(kb, job.snapshot_id)
+        return None
     if job.op == "reindex":
         from core.knowledge import sync
 
@@ -216,7 +221,7 @@ async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> In
         entry = resolve_index_entrypoint()
         snapshot_id = await _serving_snapshot(kb)
         ctx = IndexContext(
-            kb=kb, doc_id=row.id, doc_version=version, sha256=sha, path=row.path, source=row.source, parsed=parsed,
+            kb=await _as_built(kb, snapshot_id), doc_id=row.id, doc_version=version, sha256=sha, path=row.path, source=row.source, parsed=parsed,
             snapshot_id=snapshot_id, settings=load_settings(), metadata=metadata,
             attribution=Attribution(kb_id=kb.id, doc_id=row.id, snapshot_id=snapshot_id, source="knowledge",
                                     session_id=Attribution.ingestion_session(kb.id)))
@@ -315,6 +320,14 @@ async def _serving_snapshot(kb: KnowledgeBase) -> str:
         raise KnowledgeUnavailable("Knowledge snapshots are not built yet (lane B1).")
     result = serving(kb)
     return await result if inspect.isawaitable(result) else result
+
+
+async def _as_built(kb: KnowledgeBase, snapshot_id: str) -> KnowledgeBase:
+    """`kb` with the index settings its serving snapshot was built with: while a rebuild for new settings
+    runs, a new version still joins the serving snapshot the way the rest of it was made (B2b)."""
+    from core.knowledge.snapshots import as_built
+
+    return await as_built(kb, snapshot_id)
 
 
 def _ok_stage(name: str, **detail):

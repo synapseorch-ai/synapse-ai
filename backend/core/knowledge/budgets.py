@@ -143,8 +143,12 @@ async def resume(kb: KnowledgeBase, *, reason: str, paused_before: datetime | No
         if again is not None:
             await dispatch.enqueue(kb.id, "upsert", "budget_resume", path=again.path, doc_id=again.id)
             queued += 1
-    if queued:
-        _log.info(f"knowledge base {kb.id}: {queued} paused document(s) queued again ({reason})")
+    from core.knowledge.snapshots import resume_build
+
+    rebuilt = await resume_build(kb, reasons=(BUDGET_REASON,), paused_before=paused_before)
+    if queued or rebuilt:
+        _log.info(f"knowledge base {kb.id}: {queued} paused document(s) queued again"
+                  f"{' and its rebuild resumed' if rebuilt else ''} ({reason})")
         await announce("knowledge.base.resumed", kb.id, status="queued", status_reason=reason)
     return queued
 

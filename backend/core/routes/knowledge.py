@@ -117,9 +117,11 @@ async def get_knowledge_base(kb_id: str) -> KnowledgeBaseOut:
 @_errors
 async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> KnowledgeBaseOut:
     """Edit from the revision the edit started at (409 if it is stale). A new folder moves the documents;
-    switching a base back on reconciles it. A change to how the index is built applies to documents
-    indexed from now on until blue/green rebuilds arrive (B2): `reindex_started` is false."""
-    from core.knowledge import bases, budgets, dispatch, sync
+    switching a base back on reconciles it. A change to how the index is built (chunking, embedding,
+    enrichment, language) rebuilds it beside the serving one, which keeps answering until the new one is
+    complete (`reindex_started`; B2b). Any edit retries a rebuild that failed, and a raised or cleared
+    budget resumes what it paused."""
+    from core.knowledge import bases, budgets, dispatch, snapshots, sync
 
     before, after = await bases.update_base(kb_id, body)
     if after.folder != before.folder:
@@ -132,8 +134,9 @@ async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> Knowle
         await web.sources_changed(before, after)
     if budgets.cap_raised(before, after):  # what the budget paused is queued again (B2b)
         await budgets.resume(after, reason="budget_raised")
+    started = await snapshots.after_save(before, after)
     out = (await _out([after]))[0]
-    return out.model_copy(update={"reindex_started": False})
+    return out.model_copy(update={"reindex_started": started})
 
 
 @router.delete("/api/knowledge/bases/{kb_id}", response_model=DeleteAccepted, status_code=202)

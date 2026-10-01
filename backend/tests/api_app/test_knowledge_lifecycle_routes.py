@@ -68,3 +68,29 @@ class TestTheBudget:
         cleared = await on.patch(f"/api/knowledge/bases/{kb['id']}", json={"revision": 1, "clear_budget": True})
         assert cleared.status_code == 200 and cleared.json()["budget_monthly_usd"] is None
         assert {r.status for r in await documents.list_for(kb["id"])} == {"queued"}
+
+
+class TestARebuild:
+    async def test_an_index_change_answers_reindex_started_and_the_state_shows_the_build(self, on, jobs):
+        kb = await _kb(on)
+        await on.post(f"/api/knowledge/bases/{kb['id']}/records", json={"records": [{"id": "r1", "text": "Refunds."}]})
+        await jobs.drain(run_ingest_job)  # B1's real pipeline: the base's first snapshot
+        served = (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["state"]["active_snapshot"]
+        assert served
+
+        same = await on.patch(f"/api/knowledge/bases/{kb['id']}", json={"revision": 1, "retrieval": {"top_k": 3}})
+        assert same.status_code == 200 and same.json()["reindex_started"] is False
+        changed = await on.patch(f"/api/knowledge/bases/{kb['id']}",
+                                 json={"revision": 2, "chunking": {"mode": "fixed"}})
+        assert changed.status_code == 200, changed.text
+        body = changed.json()
+        assert body["reindex_started"] is True
+        state = body["state"]
+        assert state["active_snapshot"] == served and state["building_snapshot"]
+        assert state["build"] == {"snapshot_id": state["building_snapshot"], "status": "building", "docs_total": 1,
+                                  "docs_done": 0, "docs_failed": 0, "started_at": state["build"]["started_at"],
+                                  "paused_reason": None, "error": None}
+
+        await jobs.drain(run_ingest_job)
+        after = (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["state"]
+        assert after["active_snapshot"] == state["building_snapshot"] and after["build"] is None
