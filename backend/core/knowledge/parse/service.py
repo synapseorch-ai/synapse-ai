@@ -3,7 +3,9 @@
 Around `parse_bytes` it adds what one document's parse needs in a server:
 
 1. **The parse cache** (`cache.py`): a file parsed before, by the same parser
-   with the same OCR, is never parsed again (a re-embed, a blue/green build).
+   with the same OCR, is never parsed again (a re-embed, a retry, B2b's
+   blue/green build — which calls this with the file's bytes and gets the
+   cached parse back).
 2. **Where it runs:** a text file up to `IN_PROCESS_MAX_BYTES` in a thread;
    everything else in a subprocess with a timeout and a memory cap
    (`runner.py`), Docling one at a time per process.
@@ -83,10 +85,20 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
         parsed = await asyncio.to_thread(parse_bytes, data, **common)
         return ParseResult(parsed=parsed, detail={"runner": "thread"})
 
+    from core.knowledge.parse import cache
+    from core.knowledge.parse.ocr import engine_id
+    from core.knowledge.parse.tree import source_info
     from core.knowledge.seams import get_ocr_provider
 
     provider = get_ocr_provider()
     docling = fmt.name == "pdf" and docling_ready()
+    sig = None if fmt.text else cache.signature(fmt, path=path, docling=docling,
+                                                ocr_engine=engine_id(provider) if provider else None)
+    if sig is not None:
+        hit = await cache.get(sha256, sig, source_info(path=path, sha256=sha256, size=len(data), mime=mime,
+                                                       source=source, url=url, modified_at=modified_at))
+        if hit is not None:
+            return ParseResult(parsed=hit, detail={"runner": "cache"})
     job = {**common, "max_pages": settings.max_file_pages, "ocr": provider is not None, "docling": docling}
     async with _beating(heartbeat), AsyncExitStack() as stack:
         async with _docling_slot() if docling else _no_slot():  # held while the child runs, not during OCR
@@ -102,6 +114,8 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
 
             result.parsed, result.usage, result.ocr_stage = await read_scanned_pages(
                 out.parsed, out, provider, kb=kb, attribution=attribution)
+        if sig is not None and cache.cacheable(result.parsed, cut=out.cut):
+            await cache.put(sha256, sig, result.parsed)
         return result
 
 

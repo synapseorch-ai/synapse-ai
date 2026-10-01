@@ -332,6 +332,12 @@ async def reconcile_all(*, startup: bool = False) -> dict[str, Drift]:
             out[kb.id] = await reconcile(kb, startup=startup)
         except Exception as exc:  # noqa: BLE001 — one base's failure never stops the others
             _log.warning(f"knowledge reconcile of {kb.id} failed: {exc}")
+    try:
+        from core.knowledge.parse.cache import sweep
+
+        await sweep()  # parses of content no document has any more; at most hourly
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(f"parse cache sweep failed: {exc}")
     return out
 
 

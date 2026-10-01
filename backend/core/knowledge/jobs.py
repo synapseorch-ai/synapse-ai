@@ -330,6 +330,7 @@ async def delete_document(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> bool:
         return False
     if not await documents.delete_row(row):
         return False
+    await _forget_parse(row.sha256)
     if await _exists(row.path):  # written again while it was being deleted
         fresh, queued = await documents.upsert_for_path(kb, row.path, source="vault", sha256=None, size=None)
         if queued:
@@ -349,7 +350,10 @@ async def drop_base(kb_id: str) -> None:
         await get_knowledge_index().drop_kb(kb_id)
     except KnowledgeUnavailable:
         pass
+    contents = {row.sha256 for row in await documents.list_for(kb_id)}
     await documents.delete_all_rows(kb_id)
+    for sha in contents:
+        await _forget_parse(sha)
     await bases.delete_base_record(kb_id)
 
 
@@ -361,6 +365,17 @@ async def _resume(kb: KnowledgeBase) -> None:
         again = await documents.transition(row.id, "queued", previous="paused")
         if again is not None:
             await dispatch.enqueue(kb.id, "upsert", "budget_resume", path=again.path, doc_id=again.id)
+
+
+async def _forget_parse(sha256: str | None) -> None:
+    """A deleted document's parse goes with it, unless another document has the same content (A2)."""
+    from core.knowledge.parse.cache import forget_unreferenced
+    from core.log import get_logger
+
+    try:
+        await forget_unreferenced(sha256)
+    except Exception as exc:  # noqa: BLE001 — the hourly sweep removes what this misses
+        get_logger(__name__).warning(f"parse cache entry for {str(sha256)[:12]} not removed: {exc}")
 
 
 async def _exists(path: str) -> bool:

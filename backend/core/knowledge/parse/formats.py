@@ -35,6 +35,7 @@ class Format:
     text: bool = False                # cheap enough to parse in a thread when small
     needs: str | None = None          # a capability: "ocr", "libreoffice", "heic"
     paged: bool = False               # has pages (or slides) the page cap counts
+    version: str = "1"                # the reader's output version: bump it and the parse cache misses
 
 
 def _f(name: str, label: str, exts: str, reader: str, **kw) -> Format:
