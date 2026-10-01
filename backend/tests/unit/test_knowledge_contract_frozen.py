@@ -60,6 +60,8 @@ LANE_MODULES = {
     "tools.py", "citations.py",
     # B2a — embeddings, rerank, the re-embed backfill
     "profiles.py", "embedders.py", "rerankers.py", "backfill.py",
+    # S1 — web sources: the crawl, its HTTP, sitemaps
+    "web.py", "fetch.py", "sitemaps.py",
 }
 FROZEN_HEADER = "# FROZEN CONTRACT (KB0, D153)"
 

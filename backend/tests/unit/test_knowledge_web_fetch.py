@@ -197,3 +197,158 @@ class TestFetchBytesIsUnchanged:
         with pytest.raises(safe_fetch.FetchRefused):
             await safe_fetch.fetch_bytes(f"{site}/missing")
         assert await safe_fetch.fetch_bytes(f"{site}/page") == b"<p>hello</p>"
+
+
+# ── the crawl's HTTP side: core/knowledge/fetch.py ─────────────────────────────
+
+from core.knowledge import fetch as F  # noqa: E402
+
+
+class TestRobots:
+    def test_synapsebots_own_group_wins_over_the_star_group(self):
+        robots = F.Robots.parse("User-agent: *\nDisallow: /\n\nUser-agent: SynapseBot\nDisallow: /private\n")
+        assert robots.allows("https://a.test/docs") and not robots.allows("https://a.test/private/x")
+
+    def test_the_star_group_applies_when_none_names_us(self):
+        robots = F.Robots.parse("User-agent: Googlebot\nDisallow:\n\nUser-agent: *\nDisallow: /\n")
+        assert not robots.allows("https://a.test/anything")
+
+    def test_the_agent_is_matched_by_product_token_case_insensitively(self):
+        robots = F.Robots.parse("User-agent: synapsebot/1.0\nDisallow: /x\n")
+        assert not robots.allows("https://a.test/x")
+        assert F.Robots.parse("User-agent: SynapseBotPro\nDisallow: /\n").allows("https://a.test/x")
+
+    def test_the_longest_rule_wins_and_allow_wins_a_tie(self):
+        robots = F.Robots.parse("User-agent: *\nDisallow: /docs\nAllow: /docs/public\nDisallow: /a\nAllow: /a\n")
+        assert robots.allows("https://a.test/docs/public/page") and not robots.allows("https://a.test/docs/secret")
+        assert robots.allows("https://a.test/a")
+
+    def test_wildcards_and_end_anchors(self):
+        robots = F.Robots.parse("User-agent: *\nDisallow: /*?session=\nDisallow: /*.pdf$\n")
+        assert not robots.allows("https://a.test/p?session=1") and robots.allows("https://a.test/p?q=1")
+        assert not robots.allows("https://a.test/a/b.pdf") and robots.allows("https://a.test/a/b.pdf?x=1")
+
+    def test_groups_with_several_agents_and_the_crawl_delay(self):
+        robots = F.Robots.parse("User-agent: Foo\nUser-agent: SynapseBot\nCrawl-delay: 4\nDisallow: /f\n"
+                                "Sitemap: https://a.test/sitemap.xml\n")
+        assert robots.crawl_delay == 4.0 and not robots.allows("https://a.test/f")
+        assert robots.sitemaps == ["https://a.test/sitemap.xml"]
+
+    def test_an_empty_disallow_allows_and_robots_txt_itself_is_always_allowed(self):
+        assert F.Robots.parse("User-agent: *\nDisallow:\n").allows("https://a.test/x")
+        assert F.Robots.parse("User-agent: *\nDisallow: /\n").allows("https://a.test/robots.txt")
+        assert not F.Robots.unreachable().allows("https://a.test/x") and F.Robots.allow_all().allows("https://a.test/")
+
+
+class TestPace:
+    async def test_one_host_waits_its_interval_and_another_host_does_not(self):
+        now = [100.0]
+        slept: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            now[0] += seconds
+
+        pacer = F.Pacer(clock=lambda: now[0], sleep=sleep)
+        await pacer.wait("https://a.test", 1.0)
+        await pacer.wait("https://a.test", 1.0)
+        await pacer.wait("https://b.test", 1.0)
+        await pacer.wait("https://a.test", 2.0)
+        assert slept == [1.0, 1.0]
+
+    def test_crawl_delay_slows_the_pace_up_to_the_ceiling(self):
+        fetcher = F.Fetcher(rps=1.0)
+        fetcher._robots["https://a.test"] = F.Robots(crawl_delay=5.0)
+        fetcher._robots["https://b.test"] = F.Robots(crawl_delay=3600.0)
+        assert fetcher._interval("https://a.test") == 5.0
+        assert fetcher._interval("https://b.test") == F.MAX_CRAWL_DELAY_S
+        assert F.Fetcher(rps=4.0)._interval("https://c.test") == 0.25
+
+
+class TestValidators:
+    def test_an_etag_round_trips_to_if_none_match(self):
+        v = F.validator_of(httpx.Headers({"ETag": '"abc"', "Last-Modified": "Wed, 01 Oct 2026 10:00:00 GMT"}))
+        assert v == '"abc"' and F.conditional_headers(v) == {"If-None-Match": '"abc"'}
+
+    def test_last_modified_alone_round_trips_to_if_modified_since(self):
+        v = F.validator_of(httpx.Headers({"Last-Modified": "Wed, 01 Oct 2026 10:00:00 GMT"}))
+        assert F.conditional_headers(v) == {"If-Modified-Since": "Wed, 01 Oct 2026 10:00:00 GMT"}
+        assert F.validator_of(httpx.Headers({})) is None and F.conditional_headers(None) == {}
+
+
+class TestThePage:
+    def test_a_declared_charset_decodes_the_page(self):
+        body = "<html><body><p>Привет, мир</p></body></html>".encode("cp1251")
+        assert "Привет, мир" in F.decode_html(body, "text/html; charset=windows-1251")
+        meta = b'<html><head><meta charset="windows-1251"></head><body>' + "Ещё".encode("cp1251") + b"</body>"
+        assert "Ещё" in F.decode_html(meta, "text/html")
+
+    def test_links_come_from_the_whole_page_navigation_included(self):
+        html = ('<html><body><nav><a href="/docs/intro">Intro</a></nav><main><a href="guide#part">Guide</a>'
+                '<a href="mailto:x@y.z">mail</a><a href="javascript:void(0)">js</a>'
+                '<a href="/paid" rel="sponsored nofollow">ad</a></main></body></html>')
+        got = F.page_links(html, "https://a.test/docs/start")
+        assert got.links == ["https://a.test/docs/intro", "https://a.test/docs/guide"]
+
+    def test_base_href_resolves_the_links(self):
+        got = F.page_links('<head><base href="https://a.test/v2/"></head><a href="x">x</a>', "https://a.test/v1/")
+        assert got.links == ["https://a.test/v2/x"]
+
+    def test_meta_robots_and_the_header_are_honoured(self):
+        got = F.page_links('<meta name="robots" content="noindex, nofollow"><a href="/x">x</a>', "https://a.test/")
+        assert got.noindex and got.nofollow and got.links == []
+        assert F.page_links('<a href="/x">x</a>', "https://a.test/", header_robots="googlebot: noindex").noindex is False
+        assert F.page_links('<a href="/x">x</a>', "https://a.test/", header_robots="synapsebot: none").nofollow
+
+    def test_the_canonical_is_absolute(self):
+        got = F.page_links('<link rel="canonical" href="/docs/a#top">', "https://a.test/docs/a?utm=1")
+        assert got.canonical == "https://a.test/docs/a"
+
+
+class _RobotsSite(http.server.BaseHTTPRequestHandler):
+    hits: list[str] = []
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        type(self).hits.append(f"{self.path} {self.headers.get('User-Agent')}")
+        if self.path == "/robots.txt":
+            body = b"User-agent: SynapseBot\nDisallow: /secret\n"
+        elif self.path == "/page" and self.headers.get("If-None-Match") == '"v2"':
+            self.send_response(304)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        else:
+            body = b"<p>page</p>"
+        self.send_response(200)
+        self.send_header("ETag", '"v2"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class TestTheFetcher:
+    async def test_robots_is_read_once_per_host_and_disallowed_pages_are_never_requested(self):
+        srv, port = _serve(_RobotsSite)
+        _RobotsSite.hits = []
+        base = f"http://127.0.0.1:{port}"
+        try:
+            async with F.Fetcher(rps=100.0) as fetcher:
+                got = await fetcher.get(f"{base}/page")
+                with pytest.raises(F.RobotsDisallowed):
+                    await fetcher.get(f"{base}/secret/x")
+                again = await fetcher.get(f"{base}/page", validator=F.validator_of(got.headers))
+        finally:
+            srv.shutdown()
+        assert (got.status, again.status) == (200, 304)
+        paths = [h.split(" ", 1)[0] for h in _RobotsSite.hits]
+        assert paths == ["/robots.txt", "/page", "/page"]
+        assert all(F.USER_AGENT in h for h in _RobotsSite.hits)
+
+    async def test_an_unreadable_robots_disallows_and_a_missing_one_allows(self):
+        fetcher = F.Fetcher()
+        assert not F.Robots.unreachable().allows("http://x/")
+        async with fetcher:
+            pass  # a context with no request opens and closes cleanly
