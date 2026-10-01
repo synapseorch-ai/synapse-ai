@@ -505,3 +505,58 @@ async def test_the_query_s_embedding_is_a_cost_of_the_run_that_searched():
         usage = (await s.execute(select(UsageLogDB).where(UsageLogDB.run_id == "run_1"))).scalars().all()
     assert (cost.stage, cost.run_id, cost.session_id, cost.kb_id) == ("embed", "run_1", "sess_1", CONTRACTS.id)
     assert [(u.source, u.tool_name, u.session_id) for u in usage] == [("orchestration", "knowledge:embed", "sess_1")]
+
+
+# ── B2b (D167): a knowledge base at its monthly budget ─────────────────────────
+
+async def _spent(kb_id: str, usd: float) -> None:
+    from core.knowledge.ledger import CostRow, record_costs
+    from core.knowledge.types import Usage
+
+    await record_costs([CostRow(Usage(stage="embed", cost_source="byok", model="m", provider="p", est_usd=usd),
+                                Attribution(kb_id=kb_id))])
+
+
+async def test_a_base_at_its_cap_is_searched_by_keyword_only_and_says_so():
+    """Fails against B2a's search: it embedded the query whatever the base had spent (Naveen, D167 #3)."""
+    embedder = await _embedded_corpus(budget_monthly_usd=0.01)
+    await _spent(CONTRACTS.id, 0.02)
+    embedder.calls.clear()
+    response = await _search(query=QUERY, include_trace=True)
+    assert response.degraded == ["budget_paused"] and response.hits
+    assert [leg.leg for leg in response.trace.legs] == ["lexical"]
+    assert [c for c in embedder.calls if c["kind"] == "query"] == [], "no query embedding was paid for"
+    assert "Contracts" in next(d.detail for d in response.trace.degraded if d.code == "budget_paused")
+
+
+async def test_room_under_the_cap_searches_both_legs():
+    await _embedded_corpus(budget_monthly_usd=5.0)
+    await _spent(CONTRACTS.id, 0.02)
+    response = await _search(query=QUERY, include_trace=True)
+    assert response.degraded == [] and {leg.leg for leg in response.trace.legs} == {"lexical", "vector"}
+
+
+async def test_a_base_at_its_cap_pays_for_no_rerank():
+    await _embedded_corpus(budget_monthly_usd=0.01)
+    await _spent(CONTRACTS.id, 0.02)
+    reranker = FakeReranker()
+    seams.set_reranker(reranker)
+    response = await _search(query=QUERY, rerank=True, include_trace=True)
+    assert reranker.calls == [] and response.trace.rerank is None and "budget_paused" in response.degraded
+
+
+async def test_only_the_base_at_its_cap_loses_its_vector_leg():
+    embedder = await _embedded_corpus(budget_monthly_usd=0.01)
+    await _spent(CONTRACTS.id, 0.02)
+    embedder.calls.clear()
+    response = await _search(query=QUERY, kb_ids=[CONTRACTS.id, REPORTS.id], include_trace=True)
+    vector = [leg for leg in response.trace.legs if leg.leg == "vector"]
+    assert len(vector) == 1 and [s["kb_id"] for s in vector[0].scopes] == [REPORTS.id]
+    assert "budget_paused" in response.degraded
+
+
+async def test_a_keyword_search_at_the_cap_costs_nothing_and_is_not_degraded():
+    await _embedded_corpus(budget_monthly_usd=0.01)
+    await _spent(CONTRACTS.id, 0.02)
+    response = await _search(query=QUERY, mode="lexical")
+    assert response.degraded == [] and response.hits

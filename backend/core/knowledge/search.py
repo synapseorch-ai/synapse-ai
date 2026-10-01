@@ -29,7 +29,10 @@ reads the reranker's score, or a single leg's: fused scores are not comparable.
 
 **Costs.** The query's embedding and the rerank are priced calls: each is a cost
 row (`ledger.record_costs`) attributed to the run or chat that searched, and
-both are in the response's `cost` and the trace's `costs`.
+both are in the response's `cost` and the trace's `costs`. A knowledge base at
+its monthly budget (B2b, D167 #3) is searched by keyword only — no query
+embedding for its snapshots, and no rerank when the rerank would be charged to
+it — and the trace says `budget_paused`.
 
 **Filters and the path prefix run inside the index's query** when the index can
 (`filter_pushdown`), so a top-k is never filled with rows the filter excludes;
@@ -401,6 +404,21 @@ async def search(req: SearchRequest, *, origin: Origin, label_start: int = 1,
         _note(degraded, "rerank_unconfigured", "no rerank model is configured")
         rerank_on = False
 
+    # A knowledge base at its monthly budget searches by keyword only ($0), and pays for no rerank (B2b, D167 #3).
+    from core.knowledge.budgets import capped as _capped
+    from core.knowledge.rerankers import route_for
+
+    over: set[str] = set()
+    if vector_groups or rerank_on:  # nothing else in a search costs money
+        route = route_for(rerank_model or "") if rerank_on else None
+        over = await _capped(kbs, query=req.query, models={
+            kb.id: (info.get(snapshot_of.get(kb.id) or "") or {}).get("embed_model") for kb in kbs},
+            rerank_usd=float(getattr(route, "usd_per_search", None) or 0.0))
+    if over:
+        _note(degraded, "budget_paused", "monthly budget reached: " + ", ".join(by_id[k].name for k in sorted(over)))
+        vector_groups = {key: kept for key, scopes in vector_groups.items()
+                         if (kept := [s for s in scopes if s.kb_id not in over])}
+
     deep = len(groups) + len(vector_groups) > 1 or rerank_on
     fetch = max(top_k, max((kb.fusion.overfetch for kb in kbs), default=top_k)) if deep else top_k
     if not (caps.filter_pushdown or (node is None and prefix is None)):
@@ -507,6 +525,8 @@ async def search(req: SearchRequest, *, origin: Origin, label_start: int = 1,
     rerank_trace = None
     reranked = False
     reranked_by: str | None = None
+    if rerank_on and candidates and candidates[0][0].kb_id in over:
+        rerank_on = False  # the rerank would be charged to a base at its cap: the fused order stands
     if rerank_on and candidates:
         window = min(max(top_k, max(kb.rerank.candidates for kb in kbs)),
                      int(getattr(reranker, "max_documents", MAX_RERANK) or MAX_RERANK), MAX_RERANK)

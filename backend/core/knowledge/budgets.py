@@ -62,6 +62,26 @@ async def embed_estimate_usd(model: str, texts: Sequence[str]) -> float:
     return estimate_tokens(texts) * (rate or 0.0) / 1_000_000
 
 
+async def capped(kbs: Sequence[KnowledgeBase], *, query: str, models: dict[str, str | None],
+                 rerank_usd: float = 0.0) -> set[str]:
+    """The knowledge bases a search may not spend on: their cap would be crossed by embedding `query` with
+    their snapshot's model (`models`: kb_id → model) plus a rerank they might pay for (Naveen, D167 #3).
+    Bases without a cap are never checked (no query is made for them)."""
+    from core.knowledge.errors import BudgetExceeded
+    from core.knowledge.ledger import check_budget
+
+    out: set[str] = set()
+    for kb in kbs:
+        if kb.budget_monthly_usd is None:
+            continue
+        estimate = await embed_estimate_usd(models.get(kb.id) or "", [query]) + max(0.0, rerank_usd)
+        try:
+            await check_budget(kb, estimate)
+        except BudgetExceeded:
+            out.add(kb.id)
+    return out
+
+
 # ── pausing and resuming ───────────────────────────────────────────────────────
 
 def _now() -> datetime:
