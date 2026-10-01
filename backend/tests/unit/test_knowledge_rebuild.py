@@ -440,3 +440,21 @@ class TestAfterTheSwitch:
         active = (await _snaps(kb.id))["active"]
         assert active.stats["settings"]["chunking"]["target_tokens"] == 200
         assert active.embed_model == "fake-16", "the same model, rebuilt"
+
+
+async def test_a_rebuild_counts_each_document_as_it_goes(jobs, embedder):
+    """Found in the browser (B2b): the counts were written once per 25-document step, so a small base's
+    rebuild read "0 of 4" until it switched. Each built document now counts at once."""
+    kb = await _indexed_base(jobs)
+    kb, _ = await _edit(kb.id, embedding=Embedding(model="fake-24"))
+    seen: list[int] = []
+    real = embedder.embed
+
+    async def watching(texts, **kw):
+        if kw["spec"].model == "fake-24" and kw["kind"] == "document":
+            seen.append((await _snaps(kb.id))["building"].docs_done)
+        return await real(texts, **kw)
+
+    embedder.embed = watching
+    await jobs.drain(run_ingest_job)
+    assert seen == [0, 1, 2], "the second and third documents see the ones before them counted"

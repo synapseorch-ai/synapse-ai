@@ -388,17 +388,18 @@ async def _claim(snapshot_id: str) -> KnowledgeSnapshotDB | None:
     return snapshot if await _write_stats(snapshot, stats) else None
 
 
-async def _beat(snapshot: KnowledgeSnapshotDB, **changes: Any) -> bool:
-    """Renew the lease (and write `changes` into stats). False: the build was cancelled or superseded meanwhile."""
+async def _beat(snapshot: KnowledgeSnapshotDB, columns: dict[str, Any] | None = None, **changes: Any) -> bool:
+    """Renew the lease (and write `changes` into stats, `columns` into the row). False: the build was cancelled
+    or superseded meanwhile."""
     stats = {**(snapshot.stats or {}), **changes, "lease_until": _iso(_now() + LEASE)}
-    if await _write_stats(snapshot, stats):
+    if await _write_stats(snapshot, stats, **(columns or {})):
         return True
     fresh = await _row(snapshot.id)  # a concurrent write that was not a cancel: read and try once more
     if fresh is None or fresh.status != "building":
         return False
     snapshot.stats, snapshot.updated_at = fresh.stats, fresh.updated_at
     stats = {**(fresh.stats or {}), **changes, "lease_until": _iso(_now() + LEASE)}
-    return await _write_stats(snapshot, stats)
+    return await _write_stats(snapshot, stats, **(columns or {}))
 
 
 async def _release(snapshot: KnowledgeSnapshotDB, **changes: Any) -> bool:
@@ -563,16 +564,18 @@ async def build_step(kb: KnowledgeBase, snapshot_id: str) -> str:
     deadline = time.monotonic() + STEP_SECONDS
     cursor = str(stats.get("cursor") or "")
     batch = await _to_build(kb.id, snapshot.id, cursor, STEP_DOCS)
+    done = int(snapshot.docs_done or 0)
     for row in batch:
         try:
-            await _build_document(kb, snapshot, row)
+            built = await _build_document(kb, snapshot, row)
         except _Pause as pause:
             return await _pause(kb, snapshot, pause.reason, str(pause))
         except _Fail as failure:
             await _fail(kb, snapshot, str(failure), failure.doc, failure.code)
             return "failed"
         cursor = row.id
-        if not await _beat(snapshot, cursor=cursor):
+        done += 1 if built else 0  # counted as it goes: a screen follows a rebuild document by document
+        if not await _beat(snapshot, {"docs_done": done}, cursor=cursor):
             await _drop(kb.id, snapshot.id)  # cancelled meanwhile: what this step wrote goes too
             return "left"
         if time.monotonic() > deadline:
