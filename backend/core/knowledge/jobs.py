@@ -107,6 +107,13 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
     if row.status != "queued":
         return None  # another job has it, or it is resting: nothing asked for
     data = await asyncio.to_thread(get_blob_store().get_bytes, f"vault/{row.path}")
+    if data is None and row.source == "web" and row.sha256 is None:
+        # A page whose fetch never finished (S1): it never had a file. Say so; Retry fetches it again.
+        from core.knowledge.web import record_outcome
+
+        await record_outcome(kb, row.path, row.source_url or "", "failed", "fetch_failed",
+                             "The fetch did not finish. Retry fetches the page again.", existing=row)
+        return None
     if data is None:  # the file went away while the document waited
         gone = await documents.tombstone(row.id)
         if gone is not None:
@@ -165,6 +172,10 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
 
     removed = {w.code: w.count for w in parsed.warnings
                if w.code in ("zero_width_removed", "html_comments_removed", "hidden_text_removed")}
+    if row.source == "web":  # a fetched page's extraction left these out before it was written (S1)
+        from core.knowledge.web import fetched_counts
+
+        removed.update(fetched_counts(parsed.text))
     builder.add(_ok_stage("sanitize", **removed))
     pages = PagesReport(total=len(parsed.pages), with_text=len(parsed.pages) - parsed.stats.pages_no_text_layer,
                         no_text_layer=parsed.stats.pages_no_text_layer, ocr_applied=parsed.stats.pages_ocr,
@@ -339,12 +350,17 @@ async def delete_document(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> bool:
 
 
 async def drop_base(kb_id: str) -> None:
-    """A deleted knowledge base: its index, its documents and snapshots, then its record.
-    The Vault folder and its files stay (Naveen, D157)."""
+    """A deleted knowledge base: its crawls and their state, its index, its documents and snapshots,
+    then its record. The Vault folder and its files stay (Naveen, D157)."""
     from core.knowledge import bases, documents
     from core.knowledge.errors import KnowledgeUnavailable
     from core.knowledge.seams import get_knowledge_index
 
+    kb = await bases.get_base(kb_id)
+    if kb is not None:
+        from core.knowledge.web import forget_base
+
+        await forget_base(kb)  # S1: no crawl keeps writing into a base that is going
     await documents.tombstone_under(kb_id)
     try:
         await get_knowledge_index().drop_kb(kb_id)

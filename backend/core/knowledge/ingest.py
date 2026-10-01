@@ -328,6 +328,10 @@ async def retry_document(row: KnowledgeDocumentDB) -> KnowledgeDocumentDB | None
 
     if row.status not in RESTING:
         return None
+    if row.source == "web" and row.sha256 is None and row.source_url:
+        from core.knowledge import web
+
+        return await web.refetch(row)  # a page refused or failed before it had a file: fetch it again (S1)
     again = await documents.transition(row.id, "queued", previous=row.status)
     if again is not None:
         await dispatch.enqueue(row.kb_id, "retry", "retry", path=again.path, doc_id=again.id)

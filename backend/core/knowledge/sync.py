@@ -15,7 +15,8 @@ are queued, changed ones (size or mtime differs, then the sha256 does) are
 queued again, missing ones are deleted, and work left behind — a job lost to
 a crash, a document stuck mid-parse, a tombstone whose delete failed — is
 queued again. A file skipped as a format not read yet is queued again once
-it is read. It catches every write the hook never sees: the sandbox's
+it is read. A web page's refusal or failure (S1) is a document with no file
+(`sha256` null): reconcile leaves it be. It catches every write the hook never sees: the sandbox's
 `vault_*` tools (a separate process, with no observer), the Filesystem MCP,
 `run_bash`, a crash between a write and its notification.
 
@@ -293,6 +294,8 @@ async def reconcile(kb: KnowledgeBase, *, startup: bool = False) -> Drift:
                     await dispatch.enqueue(kb.id, "upsert", "reconcile", path=path, doc_id=row.id)
                     drift.supported += 1
             continue
+        if row.source == "web" and row.sha256 is None:
+            continue  # a fetch's refusal or failure (S1): it never had a file, so none is missing
         if row.status != "deleting":
             gone = await documents.tombstone(row.id)
             if gone is not None:
@@ -349,7 +352,7 @@ async def reconcile_all(*, startup: bool = False) -> dict[str, Drift]:
 
 async def reconcile_forever(interval: float = RECONCILE_INTERVAL_S) -> None:
     """OSS's loop: at startup, then every `interval` seconds, while Knowledge is on. Each pass also
-    sweeps upload sessions past their expiry."""
+    sweeps upload sessions past their expiry and starts the web crawls that are due (S1)."""
     from core.knowledge.config import knowledge_enabled
 
     startup = not _scale_mode()
@@ -361,9 +364,20 @@ async def reconcile_forever(interval: float = RECONCILE_INTERVAL_S) -> None:
                 from core.knowledge.ingest import sweep_expired_uploads
 
                 await sweep_expired_uploads()
+                await _due_crawls()
         except Exception as exc:  # noqa: BLE001 — the loop outlives any one pass
             _log.warning(f"knowledge reconcile pass failed: {exc}")
         await asyncio.sleep(interval)
+
+
+async def _due_crawls() -> None:
+    """Re-crawls that are due, and crawls a restart interrupted (`web.start_due_crawls`, S1)."""
+    try:
+        from core.knowledge.web import start_due_crawls
+
+        await start_due_crawls()
+    except Exception as exc:  # noqa: BLE001 — a crawl's trouble never stops reconcile
+        _log.warning(f"knowledge web crawls not started: {exc}")
 
 
 def _scale_mode() -> bool:

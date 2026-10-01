@@ -27,6 +27,8 @@ _HINTS: dict[str, str] = {
     "wallet_402": "The model wallet is empty. Top it up, then retry.",
     "egress_blocked": "The address was refused by the network guard.",
     "robots_disallowed": "The site's robots.txt disallows fetching this page.",
+    "fetch_failed": "The page could not be fetched (no answer, or an error from the site). Retry fetches it "
+                    "again; the next crawl does too.",
     "internal": "Something inside Synapse failed. Retrying may help; the error says what.",
     "embed_failed": "The embedding model failed. Retrying usually helps.",
     "embedding_invalid": "The embedding model answered with vectors that cannot be stored. Check the model.",
