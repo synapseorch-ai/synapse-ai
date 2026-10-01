@@ -474,7 +474,7 @@ function PlainTextEditor({ value, onChange }: { value: string; onChange: (v: str
 // Main VaultTab Component
 // ---------------------------------------------------------------------------
 
-export function VaultTab() {
+export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
     const [tree, setTree] = useState<VaultNode[]>([]);
     const [loading, setLoading] = useState(true);
     const [selectedNode, setSelectedNode] = useState<VaultNode | null>(null);
@@ -553,9 +553,8 @@ export function VaultTab() {
     useEffect(() => { fetchTree(); }, [fetchTree]);
 
     // Opened from an answer's Sources (`/vault?path=…`, B1b): that file, once the
-    // tree is in. Read once from the address; a later visit to the tree is the person's.
-    const [linkedPath, setLinkedPath] = useState<string | null>(
-        () => (typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('path')));
+    // tree is in. Once only; a later visit to the tree is the person's.
+    const [linkedPath, setLinkedPath] = useState<string | null>(initialPath ?? null);
     useEffect(() => {
         if (!linkedPath || tree.length === 0) return;
         const find = (nodes: VaultNode[]): VaultNode | null => {
