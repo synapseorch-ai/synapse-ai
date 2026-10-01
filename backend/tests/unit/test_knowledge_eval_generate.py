@@ -169,6 +169,13 @@ class TestDrafts:
         assert pairs == {frozenset({"policies/refunds.md", "policies/hosting.md"}),
                          frozenset({"policies/support.md", "policies/security.md"})}
 
+    async def test_pairs_are_drawn_before_the_single_passages_use_them_up(self, jobs, writer):
+        """Found in the browser walk: multi-hop drafted last got only the passages the others left, and no pair."""
+        kb = await policies(jobs)
+        out = await G.draft(kb, EvalDraftRequest(direct=3, paraphrase=0, multi_hop=1, seed=5), SETTINGS)
+        assert [d.kind for d in out.drafts].count("multi_hop") == 1
+        assert out.dropped == {"no_passage": 1}  # four passages: the pair takes two, the directs the rest
+
     async def test_no_model_is_a_sentence(self, jobs, writer):
         kb = await policies(jobs)
         with pytest.raises(ValueError, match="Choose a model"):

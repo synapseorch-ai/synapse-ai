@@ -344,7 +344,8 @@ async def draft(kb: KnowledgeBase, body: EvalDraftRequest, settings: Mapping[str
     dropped: dict[str, int] = {}
     jobs: list[tuple[str, list[Drawn]]] = []
     free = list(pool)
-    for kind, count in (("direct", body.direct), ("paraphrase", body.paraphrase), ("multi_hop", body.multi_hop)):
+    # Pairs first: they need two passages that share rare terms, and the single-passage kinds would use them up.
+    for kind, count in (("multi_hop", body.multi_hop), ("direct", body.direct), ("paraphrase", body.paraphrase)):
         for _ in range(count):
             if not free:
                 dropped["no_passage"] = dropped.get("no_passage", 0) + 1

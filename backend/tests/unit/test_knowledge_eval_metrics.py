@@ -214,3 +214,15 @@ def test_labels():
     assert EM.label("served", reranked=True) == "As served (reranked)"
     assert EM.label("custom", rrf_k=30, weights={"lexical": 2.0, "vector": 1.0}) == "Keyword 2 · vector 1 · k 30"
     assert EM.label("lexical") == "Keyword only"
+
+
+def test_a_leg_weighted_zero_adds_nothing():
+    """Found in the browser walk: a zero-weight leg's candidates were appended at score 0, in chunk-id order, and
+    flattered hit@10 over the keyword leg alone."""
+    pipeline = {"snapshot_id": "ksnap_1", "fusion": {"k": 60, "weights": {"lexical": 1.0, "vector": 1.0}},
+                "overfetch": 50, "top_k": 10}
+    legs = EM.legs_of(_synthetic({"lexical": ["kch_b", "kch_c"], "vector": ["kch_a", "kch_b", "kch_d"]},
+                                 pipeline=pipeline), "kb_1")
+    keyword_only = EM.ranking(legs, "custom", kb_id="kb_1", snapshot_id="ksnap_1", rrf_k=60,
+                              weights={"lexical": 1.0, "vector": 0.0})
+    assert keyword_only == EM.ranking(legs, "lexical", kb_id="kb_1", snapshot_id="ksnap_1") == ["kch_b", "kch_c"]

@@ -236,14 +236,17 @@ def legs_of(trace: Any, kb_id: str) -> CaseLegs:
 
 def refuse(legs: CaseLegs, *, kb_id: str, snapshot_id: str, rrf_k: int,
            weights: Mapping[str, float]) -> list[str] | None:
-    """The two legs fused by `search.fuse` with `rrf_k` and `weights` (by leg kind); None without both legs."""
+    """The two legs fused by `search.fuse` with `rrf_k` and `weights` (by leg kind); None without both legs. A leg
+    weighted 0 is left out, so keyword 1 / vector 0 ranks as the keyword leg alone."""
     from core.knowledge.kb_settings import Fusion
     from core.knowledge.search import fuse
     from core.knowledge.types import Candidate
 
     if legs.lexical is None or legs.vector is None:
         return None
-    named = [("lexical", legs.lexical), ("vector", legs.vector)]
+    # A leg weighted 0 adds nothing: its candidates would otherwise trail the list at score 0, in chunk-id order.
+    named = [(kind, order) for kind, order in (("lexical", legs.lexical), ("vector", legs.vector))
+             if float(weights.get(kind, 1.0)) > 0]
     results = [(kind, kind, [Candidate(chunk_id=legs.ids[i], doc_id="", kb_id=kb_id, snapshot_id=snapshot_id,
                                        score=0.0, rank=place + 1) for place, i in enumerate(order)])
                for kind, order in named]
