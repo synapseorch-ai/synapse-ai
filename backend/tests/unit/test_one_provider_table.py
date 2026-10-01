@@ -53,7 +53,7 @@ def test_every_key_it_names_is_a_secret():
 
 def test_every_adapter_it_names_exists():
     for p in PROVIDERS:
-        for name in filter(None, (p.chat, p.embed)):
+        for name in filter(None, (p.chat, p.embed, p.embed_ex)):
             assert inspect.iscoroutinefunction(registry.resolve(name)), (p.id, name)
 
 
@@ -113,8 +113,9 @@ def test_every_model_with_a_reasoning_channel_belongs_to_a_provider_that_has_one
         assert provider_for(prefix).caps.reasoning, prefix
 
 
-def test_nothing_reranks_yet():
-    assert not any(p.caps.rerank for p in PROVIDERS)
+def test_only_our_gateway_reranks():
+    """`/v1/rerank` (C1, D160). The rerank-only vendors are `core.knowledge.rerankers`' table (B2a, D163)."""
+    assert [p.id for p in PROVIDERS if p.caps.rerank] == ["model_gateway"]
 
 
 async def test_every_provider_the_model_list_names_is_in_the_table(client, monkeypatch):

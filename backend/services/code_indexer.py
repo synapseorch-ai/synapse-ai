@@ -184,7 +184,9 @@ def probe_embedding_dim(model: str, settings: dict) -> int:
             result = new_loop.run_until_complete(embed_batch(["dimension probe"], model, probe_settings))
         finally:
             new_loop.close()
-        if result and len(result[0]) > 0:
+        # `embed_batch` answers a failed call with zeros, whose length is a
+        # default, not the model's width: refuse it (B2a, D163).
+        if result and len(result[0]) > 0 and any(result[0]):
             dim = len(result[0])
             print(f"[index] Probed embedding dim for '{model}': {dim}")
             return dim

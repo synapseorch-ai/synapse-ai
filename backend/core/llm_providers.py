@@ -3930,3 +3930,369 @@ async def _embed_ollama(texts: list[str], model: str, settings: dict | None = No
     except Exception as e:
         _log.error(f"Ollama embedding failed: {e}")
         return [[0.0] * 768 for _ in range(len(texts))]
+
+
+# ─── Embeddings that raise (B2a, D163) ──────────────────────────────────────
+#
+# `embed_batch` above answers zeros (OpenAI, Gemini, Ollama) or `[]` (Bedrock)
+# when a call fails, and code search lives with that. Knowledge cannot: a zero
+# vector stores fine and then matches nothing, or everything. So
+# `embed_batch_ex` raises on every failure, says what the call cost, and takes
+# the two things retrieval models need: which side of a search a text is on, and
+# how wide its vectors should be. Each provider in the table names its adapter
+# (`embed_ex`), as it names `embed`.
+
+#: How long an embedding call may take. A query is one short text a person is
+#: waiting on; a document batch is not.
+EMBED_QUERY_TIMEOUT = 30.0
+EMBED_DOCUMENT_TIMEOUT = 60.0
+#: Our gateway gives a document batch up at 150 s and still charges for the
+#: texts it embedded, so its client waits longer than that (C1, D160).
+GATEWAY_EMBED_TIMEOUT = 160.0
+#: Bedrock's Titan takes one text a call; this many go at once.
+BEDROCK_EMBED_CONCURRENCY = 8
+#: Cohere on Bedrock takes at most this many texts a call.
+COHERE_EMBED_BATCH = 96
+
+
+class EmbeddingResponse(NamedTuple):
+    """What an embedding call answered. `input_tokens` is 0 when the provider
+    does not say (Gemini's API); `charged_microusd` is what a metering server
+    settled for it (our gateway), None everywhere else."""
+
+    vectors: list[list[float]]
+    model: str
+    provider: str
+    input_tokens: int = 0
+    request_id: str | None = None
+    charged_microusd: int | None = None
+
+
+class EmbeddingFailed(LLMError):
+    """An embedding call that did not answer.
+
+    `missing` names the setting that must be saved first (a key, a server's
+    address): nothing was called. `charged_microusd` is what a metering gateway
+    charged for the texts it embedded before failing (C1's
+    `error.charged_microusd`); `needed_microusd` / `available_microusd` come
+    with its 402.
+    """
+
+    def __init__(self, message: str = "", *, provider: str | None = None, status: int | None = None,
+                 code: str | None = None, missing: str | None = None, charged_microusd: int | None = None,
+                 needed_microusd: int | None = None, available_microusd: int | None = None):
+        super().__init__(message, provider=provider, status=status, code=code)
+        self.missing = missing
+        self.charged_microusd = charged_microusd
+        self.needed_microusd = needed_microusd
+        self.available_microusd = available_microusd
+
+
+async def embed_batch_ex(texts: list[str], model: str, settings: dict, *, input_type: str | None = None,
+                         dims: int | None = None) -> EmbeddingResponse:
+    """Embed `texts` with `model`, or raise `EmbeddingFailed`. Never zeros, never a short list.
+
+    `input_type` is "document" or "query" for a model whose provider takes it
+    (Cohere's `input_type`, Gemini's `task_type`, our gateway's); other
+    providers ignore it, and prefix conventions are the caller's. `dims` asks a
+    Matryoshka model for a narrower width; None is its native one.
+    """
+    if not texts:
+        raise ValueError("embed_batch_ex needs at least one text")
+    if input_type not in (None, "document", "query"):
+        raise ValueError(f"input_type is 'document' or 'query', not {input_type!r}")
+    spec = _providers.provider_for(model)
+    if spec.embed_ex is None:
+        raise EmbeddingFailed(f"{spec.label} does not embed ({model}).", provider=spec.id, code=PROVIDER_REFUSED)
+    try:
+        answer = await _providers.resolve(spec.embed_ex)(list(texts), model, settings, spec,
+                                                         input_type=input_type, dims=dims)
+    except EmbeddingFailed:
+        raise
+    except LLMError as e:
+        raise EmbeddingFailed(str(e), provider=e.provider or spec.id, status=e.status, code=e.code) from e
+    except Exception as e:  # noqa: BLE001 — an SDK's own error, worded and classified here
+        raise EmbeddingFailed(f"{spec.label} embedding failed: {e}", provider=spec.id) from e
+    _check_embeddings(answer, len(texts), dims, spec)
+    return answer
+
+
+def _check_embeddings(answer: EmbeddingResponse, count: int, dims: int | None, spec) -> None:
+    """Refuse an answer that cannot be stored: short, empty, mixed widths, the wrong width, zero or non-finite."""
+    import math
+
+    def refuse(why: str):
+        raise EmbeddingFailed(f"{spec.label} answered {count} texts with {why}.", provider=spec.id, code=MODEL_ERROR)
+
+    vectors = answer.vectors
+    if len(vectors) != count:
+        refuse(f"{len(vectors)} vectors")
+    width = len(vectors[0]) if vectors else 0
+    if width == 0:
+        refuse("an empty vector")
+    if dims is not None and width != dims:
+        refuse(f"{width}-dimensional vectors, not {dims}")
+    for i, vector in enumerate(vectors):
+        if len(vector) != width:
+            refuse(f"vectors of {width} and {len(vector)} dimensions")
+        norm = math.fsum(float(x) * float(x) for x in vector)
+        if not math.isfinite(norm):
+            refuse(f"a non-finite value in vector {i}")
+        if norm == 0.0:
+            refuse(f"a zero vector at {i}")
+
+
+def _embed_timeout(input_type: str | None) -> float:
+    return EMBED_QUERY_TIMEOUT if input_type == "query" else EMBED_DOCUMENT_TIMEOUT
+
+
+def _embedding_refusal(resp, provider: str, label: str) -> EmbeddingFailed:
+    """An HTTP error answer as `EmbeddingFailed`, with what the server said it cost or needed."""
+    status = int(resp.status_code)
+    detail: dict = {}
+    try:
+        body = resp.json()
+        detail = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else {}
+        if not detail and isinstance(body, dict) and isinstance(body.get("error"), str):
+            detail = {"message": body["error"]}
+    except Exception:  # noqa: BLE001 — a body that is not JSON
+        detail = {}
+    message = str(detail.get("message") or (resp.text or "")[:200] or "no message").strip()
+
+    def _int(name: str) -> int | None:
+        value = detail.get(name)
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    return EmbeddingFailed(f"{label} embedding refused: HTTP {status}: {message}", provider=provider, status=status,
+                           charged_microusd=_int("charged_microusd"), needed_microusd=_int("needed_microusd"),
+                           available_microusd=_int("available_microusd"))
+
+
+async def _post_embeddings(url: str, headers: dict, body: dict, *, provider: str, label: str,
+                           timeout: float) -> tuple[dict, dict]:
+    """POST one embeddings request; its JSON and headers, or `EmbeddingFailed`."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, headers=headers, json=body)
+    except httpx.HTTPError as e:
+        raise EmbeddingFailed(f"{label} embedding failed: {type(e).__name__}: {e}", provider=provider,
+                              code=PROVIDER_UNAVAILABLE) from e
+    if resp.status_code >= 400:
+        raise _embedding_refusal(resp, provider, label)
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise EmbeddingFailed(f"{label} embedding answered something that is not JSON.", provider=provider) from e
+    return (data if isinstance(data, dict) else {}), dict(getattr(resp, "headers", None) or {})
+
+
+def _openai_shaped_vectors(data: dict, provider: str, label: str) -> list[list[float]]:
+    items = data.get("data")
+    if not isinstance(items, list):
+        raise EmbeddingFailed(f"{label} embedding answered without `data`.", provider=provider)
+    try:
+        ordered = sorted(items, key=lambda item: item.get("index", 0)) if all("index" in i for i in items) else items
+        return [list(item["embedding"]) for item in ordered]
+    except (KeyError, TypeError) as e:
+        raise EmbeddingFailed(f"{label} embedding answered a malformed item.", provider=provider) from e
+
+
+def _prompt_tokens(data: dict) -> int:
+    usage = data.get("usage") or {}
+    value = usage.get("prompt_tokens") or usage.get("total_tokens") or 0
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _header(headers: dict, name: str) -> str | None:
+    for key, value in headers.items():
+        if key.lower() == name:
+            return value
+    return None
+
+
+async def _embed_ex_openai(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                           dims: int | None = None) -> EmbeddingResponse:
+    key = (settings.get("openai_key") or "").strip()
+    if not key:
+        raise EmbeddingFailed("OpenAI embeddings need an OpenAI key (Settings → Models).", provider=spec.id,
+                              code=PROVIDER_REFUSED, missing="openai_key")
+    body: dict = {"model": model, "input": texts}
+    if dims is not None:
+        if not model.lower().startswith("text-embedding-3-"):
+            raise EmbeddingFailed(f"{model} has one width; it cannot answer {dims} dimensions.", provider=spec.id,
+                                  code=PROVIDER_REFUSED)
+        body["dimensions"] = dims
+    data, headers = await _post_embeddings("https://api.openai.com/v1/embeddings",
+                                           {"Authorization": f"Bearer {key}"}, body, provider=spec.id,
+                                           label=spec.label, timeout=_embed_timeout(input_type))
+    return EmbeddingResponse(_openai_shaped_vectors(data, spec.id, spec.label), model, spec.id,
+                             _prompt_tokens(data), _header(headers, "x-request-id"))
+
+
+async def _embed_ex_v1(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                       dims: int | None = None) -> EmbeddingResponse:
+    """Our gateway, `oaic.` and `locv1.`. Only the gateway is told the kind: it serves Cohere, and an
+    OpenAI-compatible server may refuse a field it does not know."""
+    base = (settings.get(spec.address) or "").strip()
+    if not base:
+        raise EmbeddingFailed(f"{spec.label} embeddings need the server's address ({spec.address}).",
+                              provider=spec.id, code=PROVIDER_REFUSED, missing=spec.address)
+    gateway = spec.id == "model_gateway"
+    key = (settings.get(spec.keys[0]) or "").strip() if spec.keys else ""
+    body: dict = {"model": spec.bare(model), "input": texts}
+    if dims is not None:
+        body["dimensions"] = dims
+    if gateway and input_type:
+        body["input_type"] = input_type
+    timeout = GATEWAY_EMBED_TIMEOUT if gateway and input_type != "query" else _embed_timeout(input_type)
+    data, headers = await _post_embeddings(f"{_normalize_v1_base_url(base)}/v1/embeddings",
+                                           {"Authorization": f"Bearer {key}"} if key else {}, body,
+                                           provider=spec.id, label=spec.label, timeout=timeout)
+    charged = None
+    if gateway:
+        value = (data.get("usage") or {}).get("charged_microusd")
+        charged = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    return EmbeddingResponse(_openai_shaped_vectors(data, spec.id, spec.label), model, spec.id,
+                             _prompt_tokens(data), _header(headers, "x-request-id"), charged)
+
+
+async def _embed_ex_gemini(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                           dims: int | None = None) -> EmbeddingResponse:
+    key = (settings.get("gemini_key") or "").strip()
+    if not key:
+        raise EmbeddingFailed("Gemini embeddings need a Gemini key (Settings → Models).", provider=spec.id,
+                              code=PROVIDER_REFUSED, missing="gemini_key")
+    from google.genai import types
+
+    config: dict = {}
+    if input_type:
+        config["task_type"] = "RETRIEVAL_QUERY" if input_type == "query" else "RETRIEVAL_DOCUMENT"
+    if dims is not None:
+        config["output_dimensionality"] = dims
+    # This key's own client, shared with chat on the same key (F321); the sync
+    # SDK in a thread, since `client.aio` binds a cached client to one loop.
+    client = _gemini_client_for(key, timeout_ms=_GEMINI_CLIENT_TIMEOUT_MS)
+    try:
+        result = await asyncio.to_thread(client.models.embed_content, model=model, contents=texts,
+                                         config=types.EmbedContentConfig(**config))
+    except Exception as e:  # noqa: BLE001 — the SDK's errors carry "429 RESOURCE_EXHAUSTED"-shaped codes
+        raise EmbeddingFailed(f"Gemini embedding failed: {e}", provider=spec.id) from e
+    vectors = [list(em.values or []) for em in (result.embeddings or [])]
+    return EmbeddingResponse(vectors, model, spec.id)
+
+
+def _bedrock_failure(e: Exception, model_id: str, region: str) -> EmbeddingFailed:
+    if isinstance(e, botocore.exceptions.NoCredentialsError):
+        return EmbeddingFailed("Bedrock embeddings need a Bedrock API key or AWS credentials (Settings → Models).",
+                               provider="bedrock", code=PROVIDER_REFUSED, missing="bedrock_api_key")
+    if isinstance(e, botocore.exceptions.ClientError):
+        error = e.response.get("Error", {}) or {}
+        status = (e.response.get("ResponseMetadata", {}) or {}).get("HTTPStatusCode")
+        code, message = error.get("Code", ""), error.get("Message", "")
+        hint = ""
+        if code == "ResourceNotFoundException" or "unknown model" in message.lower():
+            hint = (f" Is {model_id} enabled in {region}? A model with no on-demand throughput needs its "
+                    f"inference profile (bedrock.us.…).")
+        return EmbeddingFailed(f"Bedrock embedding refused: HTTP {status}: {code}: {message}.{hint}",
+                               provider="bedrock", status=int(status) if status else None)
+    return EmbeddingFailed(f"Bedrock embedding failed: {type(e).__name__}: {e}", provider="bedrock")
+
+
+async def _embed_ex_bedrock(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                            dims: int | None = None) -> EmbeddingResponse:
+    """Titan (one text a call, several at once) and Cohere v3/v4 (up to 96 a call), in the shapes C1's gateway
+    sends (`api/gateway/bedrock.py`)."""
+    region = (settings.get("aws_region") or "us-east-1").strip() or "us-east-1"
+    client = _make_aws_client("bedrock-runtime", region, settings)
+    model_id = spec.bare(model)
+    lowered = model_id.lower()
+
+    async def invoke(body: dict) -> tuple[dict, int, str | None]:
+        def _run():
+            return client.invoke_model(body=json.dumps(body), modelId=model_id, accept="application/json",
+                                       contentType="application/json")
+        try:
+            resp = await asyncio.to_thread(_run)
+        except Exception as e:  # noqa: BLE001 — worded per kind below
+            raise _bedrock_failure(e, model_id, region) from e
+        meta = resp.get("ResponseMetadata", {}) or {}
+        tokens = (meta.get("HTTPHeaders", {}) or {}).get("x-amzn-bedrock-input-token-count")
+        try:
+            parsed = json.loads(resp["body"].read())
+        except Exception as e:  # noqa: BLE001
+            raise EmbeddingFailed(f"Bedrock embedding answered something that is not JSON ({model_id}).",
+                                  provider=spec.id) from e
+        return parsed, int(tokens) if tokens and str(tokens).isdigit() else 0, meta.get("RequestId")
+
+    if "cohere" in lowered:
+        v4 = "embed-v4" in lowered
+        if dims is not None and not v4:
+            raise EmbeddingFailed(f"{model_id} has one width; it cannot answer {dims} dimensions.",
+                                  provider=spec.id, code=PROVIDER_REFUSED)
+        vectors: list[list[float]] = []
+        tokens = 0
+        request_id = None
+        for i in range(0, len(texts), COHERE_EMBED_BATCH):
+            batch = texts[i:i + COHERE_EMBED_BATCH]
+            body: dict = {
+                # Cohere v3 on Bedrock takes at most 2,048 characters a text.
+                "texts": batch if v4 else [t[:2048] for t in batch],
+                "input_type": "search_query" if input_type == "query" else "search_document",
+                "truncate": "END",
+            }
+            if v4:
+                body["embedding_types"] = ["float"]
+                if dims is not None:
+                    body["output_dimension"] = dims
+            parsed, used, rid = await invoke(body)
+            found = parsed.get("embeddings")
+            if isinstance(found, dict):
+                found = found.get("float")
+            if not isinstance(found, list):
+                raise EmbeddingFailed(f"Cohere on Bedrock answered without embeddings ({model_id}).",
+                                      provider=spec.id)
+            vectors.extend(list(v) for v in found)
+            tokens += used
+            request_id = request_id or rid
+        return EmbeddingResponse(vectors, model, spec.id, tokens, request_id)
+
+    v2 = "titan-embed-text-v2" in lowered
+    if dims is not None and not v2:
+        raise EmbeddingFailed(f"{model_id} has one width; it cannot answer {dims} dimensions.", provider=spec.id,
+                              code=PROVIDER_REFUSED)
+    gate = asyncio.Semaphore(BEDROCK_EMBED_CONCURRENCY)
+
+    async def one(text: str) -> tuple[list[float], int, str | None]:
+        body: dict = {"inputText": text}
+        if v2:
+            body["normalize"] = True
+            if dims is not None:
+                body["dimensions"] = dims
+        async with gate:
+            parsed, used, rid = await invoke(body)
+        vector = parsed.get("embedding")
+        if not isinstance(vector, list):
+            raise EmbeddingFailed(f"Bedrock answered without an embedding ({model_id}).", provider=spec.id)
+        return list(vector), used or int(parsed.get("inputTextTokenCount") or 0), rid
+
+    answers = await asyncio.gather(*(one(t) for t in texts))
+    return EmbeddingResponse([a[0] for a in answers], model, spec.id, sum(a[1] for a in answers),
+                             next((a[2] for a in answers if a[2]), None))
+
+
+async def _embed_ex_ollama(texts: list[str], model: str, settings: dict, spec, *, input_type: str | None = None,
+                           dims: int | None = None) -> EmbeddingResponse:
+    """Ollama's batched `/api/embed` (Ollama 0.3, 2024). The one-text `/api/embeddings` that `_embed_ollama`
+    falls back to is not tried: it answers an empty list for a model it lacks."""
+    base = _ollama_base_url(settings)
+    body: dict = {"model": spec.bare(model), "input": texts}
+    if dims is not None:
+        body["dimensions"] = dims
+    data, _headers = await _post_embeddings(f"{base}/api/embed", {}, body, provider=spec.id,
+                                            label=f"Ollama at {base}", timeout=_embed_timeout(input_type))
+    vectors = data.get("embeddings")
+    if not isinstance(vectors, list):
+        raise EmbeddingFailed(f"Ollama at {base} answered without embeddings.", provider=spec.id)
+    tokens = data.get("prompt_eval_count") or 0
+    return EmbeddingResponse([list(v) for v in vectors], model, spec.id,
+                             int(tokens) if isinstance(tokens, (int, float)) else 0)

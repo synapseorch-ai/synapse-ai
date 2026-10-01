@@ -11,8 +11,10 @@ of step — Settings offered OpenAI's and Gemini's embedding models, and
 
 **Adding a provider** is one entry here plus its call functions: a chat adapter
 (and an embed adapter, if it embeds) taking `(call, spec)` / `(texts, model,
-settings, spec)`, named by `chat` / `embed`. Adapters live in
-`core.llm_providers` unless the name says `module:function`.
+settings, spec)`, named by `chat` / `embed`. A provider that embeds also names
+the adapter that raises instead of answering zeros (`embed_ex`, which takes
+`input_type=` and `dims=` too). Adapters live in `core.llm_providers` unless the
+name says `module:function`.
 
 The table is data and the standard library only, so `core.images` and
 `core.model_readiness` read it without loading any provider SDK, and
@@ -47,6 +49,9 @@ class Capabilities:
     #: Whether some of its models think on a channel of their own. Which models,
     #: and how they are asked, is `core.reasoning`'s to say.
     reasoning: bool
+    #: Whether its server reranks (`/v1/rerank`): our gateway only. The
+    #: rerank-only vendors (Cohere, Voyage, Jina, TEI) serve no chat, so they
+    #: are `core.knowledge.rerankers`' table, not rows here (B2a, D163).
     rerank: bool = False
 
 
@@ -76,6 +81,10 @@ class ProviderSpec:
     #: Adapter names. `embed` None: `embed_batch` has nothing to call.
     chat: str = ""
     embed: str | None = None
+    #: The embed adapter that raises instead of answering zeros, and takes the
+    #: query/document kind and a width (`embed_batch_ex`, B2a). Named exactly
+    #: when `embed` is.
+    embed_ex: str | None = None
     #: How a failure that is not already an `LLMError` is worded. None: the
     #: adapter words its own (Ollama's says where it looked).
     error: str | None = None
@@ -122,7 +131,8 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         # `text-embedding-3-*` and `-ada-*` — Google's are `text-embedding-00N`.
         prefixes=("gpt", "chatgpt", "text-embedding-3-", "text-embedding-ada-"), pattern=re.compile(r"o\d"),
         keys=("openai_key",), readiness="key",
-        chat="_chat_openai", embed="_embed_via_openai", error="Cloud API Error", caps=_NATIVE,
+        chat="_chat_openai", embed="_embed_via_openai", embed_ex="_embed_ex_openai",
+        error="Cloud API Error", caps=_NATIVE,
     ),
     ProviderSpec(
         id="anthropic", label="Anthropic", mode="cloud", prefixes=("claude",),
@@ -136,14 +146,15 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         # `embedding-001` — offered by Settings, and sent to Ollama (F322).
         prefixes=("gemini", "gemma", "lyria"), pattern=re.compile(r"(?:text-)?embedding-\d{3}(?!\d)"),
         keys=("gemini_key",), readiness="key",
-        chat="_chat_gemini", embed="_embed_via_gemini", error="Cloud API Error", caps=_NATIVE,
+        chat="_chat_gemini", embed="_embed_via_gemini", embed_ex="_embed_ex_gemini",
+        error="Cloud API Error", caps=_NATIVE,
     ),
     ProviderSpec(
         id="bedrock", label="Bedrock", mode="bedrock", prefixes=("bedrock",), strip="bedrock.",
         # Bedrock also authenticates through boto's own credential chain, so it
         # is never called "not ready" on a guess.
         keys=("bedrock_api_key", "aws_secret_access_key", "aws_session_token"),
-        chat="_chat_bedrock", embed="_embed_via_bedrock", error="Cloud API Error",
+        chat="_chat_bedrock", embed="_embed_via_bedrock", embed_ex="_embed_ex_bedrock", error="Cloud API Error",
         caps=Capabilities(tools="prompt", images=True, reasoning=True),
     ),
     ProviderSpec(
@@ -160,12 +171,14 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         id="model_gateway", label="model gateway", mode="cloud", prefixes=("synapse.",), strip="synapse.",
         keys=("model_gateway_key",), address="model_gateway_base_url", readiness="address",
-        chat="_chat_model_gateway", embed="_embed_via_v1", error="Cloud API Error", caps=_NATIVE,
+        chat="_chat_model_gateway", embed="_embed_via_v1", embed_ex="_embed_ex_v1",
+        error="Cloud API Error", caps=Capabilities(tools="native", images=True, reasoning=True, rerank=True),
     ),
     ProviderSpec(
         id="openai_compatible", label="OpenAI-compatible", mode="cloud", prefixes=("oaic.",), strip="oaic.",
         keys=("openai_compatible_key",), address="openai_compatible_base_url", readiness="address",
-        chat="_chat_v1_compatible", embed="_embed_via_v1", error="Cloud API Error", caps=_NATIVE,
+        chat="_chat_v1_compatible", embed="_embed_via_v1", embed_ex="_embed_ex_v1",
+        error="Cloud API Error", caps=_NATIVE,
     ),
     ProviderSpec(
         # An OpenAI v1 server on this machine (LM Studio, vLLM). Its mode is
@@ -174,12 +187,13 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         id="local_compatible", label="local OpenAI-compatible", mode="cloud", prefixes=("locv1.",),
         strip="locv1.",
         keys=("local_compatible_key",), address="local_compatible_base_url", readiness="address",
-        chat="_chat_v1_compatible", embed="_embed_via_v1", error="Cloud API Error", caps=_NATIVE,
+        chat="_chat_v1_compatible", embed="_embed_via_v1", embed_ex="_embed_ex_v1",
+        error="Cloud API Error", caps=_NATIVE,
     ),
     ProviderSpec(
         id="ollama", label="Ollama", mode="local", prefixes=("ollama.",), strip="ollama.",
         address="ollama_base_url",
-        chat="_chat_ollama", embed="_embed_via_ollama",
+        chat="_chat_ollama", embed="_embed_via_ollama", embed_ex="_embed_ex_ollama",
         caps=Capabilities(tools="native", images=True, reasoning=True),  # `think`
     ),
     ProviderSpec(
