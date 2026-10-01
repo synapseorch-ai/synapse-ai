@@ -293,3 +293,215 @@ async def test_record_purges_at_most_once_a_day(monkeypatch):
 
 def test_a_stored_trace_validates_as_one():
     assert Trace.model_fields["trace_version"].default == 1
+
+
+# ── B2a (D163): the vector leg, fusion, rerank, costs ──────────────────────────
+
+from core.knowledge.testing.fakes import FakeReranker, HashingEmbedder  # noqa: E402
+from core.knowledge.testing.reference_index import reference_rrf  # noqa: E402
+from core.store.models import KnowledgeCostDB, UsageLogDB  # noqa: E402
+
+QUERY = "renewal invoice fees agreement"
+
+
+async def _embedded_corpus(embedder: HashingEmbedder | None = None, **kb_updates) -> HashingEmbedder:
+    embedder = embedder or HashingEmbedder(dims=32)
+    seams.set_knowledge_embedder(embedder)
+    contracts = KnowledgeBase.model_validate({**CONTRACTS.model_dump(), **kb_updates})
+    await _save(contracts, REPORTS)
+    await _index(contracts, "pdf_contract", 1, "contracts/acme.pdf", {"doc_type": "contract", "region": "EU"})
+    await _index(contracts, "eml_with_attachment", 2, "contracts/mail/renewal.eml", {"doc_type": "email"})
+    await _index(REPORTS, "xlsx_two_sheets", 3, "reports/q3.xlsx", {"doc_type": "report"})
+    return embedder
+
+
+def _fused_order(trace) -> list[str]:
+    legs = [LegResult(leg.leg, tuple(_cands(leg)), filtered=leg.filtered, exact=leg.exact) for leg in trace.legs]
+    return [cid for cid, _ in reference_rrf(legs, {"lexical": 1.0, "vector": 1.0})]
+
+
+def _cands(leg):
+    from core.knowledge.types import Candidate
+    return [Candidate(chunk_id=c.chunk_id, doc_id="", kb_id="", snapshot_id="", score=c.score, rank=c.rank)
+            for c in leg.candidates]
+
+
+async def test_a_hybrid_search_asks_both_legs_and_fuses_them_by_rank():
+    embedder = await _embedded_corpus()
+    response = await _search(query=QUERY, include_trace=True)
+    trace = response.trace
+
+    assert response.degraded == [] and [leg.leg for leg in trace.legs] == ["lexical", "vector"]
+    assert trace.fusion is not None and trace.fusion.params.weights == {"lexical": 1.0, "vector": 1.0}
+    assert [h.chunk_id for h in response.hits] == _fused_order(trace)[:len(response.hits)]
+    assert trace.legs[0].requested == 50 and trace.legs[1].requested == 50, "each leg over-fetches"
+    both = next(h for h in response.hits if len(h.scores) == 2)
+    assert set(both.scores) == {"lexical", "vector"}
+    assert set(trace.hits[0].ranks) <= {"lexical", "vector"}
+    assert trace.pipeline[CONTRACTS.id].embed_model == "hash-64" and trace.pipeline[CONTRACTS.id].embed_dims == 32
+    query_call = embedder.calls[-1]
+    assert query_call["kind"] == "query" and query_call["texts"] == [QUERY]
+    assert query_call["spec"].model == "hash-64", "the query is embedded with the snapshot's own model"
+
+
+async def test_a_knowledge_base_s_weights_decide_the_fusion():
+    await _embedded_corpus(fusion={"weights": {"lexical": 0.0, "vector": 1.0}})
+    vector_only = await _search(query=QUERY, include_trace=True)
+    vector_leg = next(leg for leg in vector_only.trace.legs if leg.leg == "vector")
+    assert [h.chunk_id for h in vector_only.hits] == [c.chunk_id for c in vector_leg.candidates][:len(vector_only.hits)]
+    assert vector_only.trace.fusion.params.weights == {"lexical": 0.0, "vector": 1.0}
+
+
+def test_fusion_is_the_reference_rrf_for_one_knowledge_base():
+    import random
+
+    from core.knowledge.kb_settings import Fusion
+    from core.knowledge.search import fuse
+    from core.knowledge.types import Candidate
+
+    rng = random.Random(11)
+    ids = [f"kch_{n:032x}" for n in range(40)]
+
+    def leg(name):
+        picked = rng.sample(ids, 25)
+        return LegResult(name, tuple(Candidate(cid, "d", "kb", "s", 1.0 / (i + 1), i + 1)
+                                     for i, cid in enumerate(picked)), filtered=True, exact=True)
+
+    lexical, vector = leg("lexical"), leg("vector")
+    weights = {"lexical": 0.7, "vector": 1.3}
+    ours = fuse([("lexical", "lexical", lexical.candidates), ("vector", "vector", vector.candidates)],
+                {"kb": Fusion(rrf_k=30, weights=weights)})
+    want = reference_rrf([lexical, vector], weights, k=30)
+    assert [c.chunk_id for c, _, _ in ours] == [cid for cid, _ in want]
+    assert all(abs(score - w) < 1e-12 for (_, score, _), (_, w) in zip(ours, want))
+
+
+async def test_the_query_vector_is_kept_beside_the_trace_never_in_it():
+    import hashlib
+
+    await _embedded_corpus()
+    response = await _search(query=QUERY, include_trace=True)
+    async with session() as s:
+        row = (await s.execute(select(KnowledgeQueryDB).where(KnowledgeQueryDB.id == response.query_id))).scalar_one()
+    assert row.query_embedding is not None and len(row.query_embedding) == 32 * 4
+    assert response.trace.replay.query_vector_sha256 == hashlib.sha256(row.query_embedding).hexdigest()
+    assert response.trace.replay.exact_possible
+    assert not _keys(response.trace.model_dump(mode="json")) & FORBIDDEN_KEYS
+
+
+async def test_an_embedding_that_fails_leaves_the_keyword_leg_and_says_so():
+    embedder = await _embedded_corpus()
+    embedder.fail_on = {QUERY}
+    response = await _search(query=QUERY, include_trace=True)
+    assert response.hits and response.degraded == ["embed_failed"]
+    assert [leg.leg for leg in response.trace.legs] == ["lexical"] and response.trace.fusion is None
+    assert response.trace.degraded[0].detail.startswith("hash-64:")
+
+
+async def test_a_lexical_search_never_embeds_the_query():
+    embedder = await _embedded_corpus()
+    calls = len(embedder.calls)
+    response = await _search(query=QUERY, mode="lexical", include_trace=True)
+    assert len(embedder.calls) == calls and [leg.leg for leg in response.trace.legs] == ["lexical"]
+    assert response.degraded == []
+
+
+async def test_a_vector_search_answers_from_the_vector_leg_alone():
+    await _embedded_corpus()
+    response = await _search(query=QUERY, mode="vector", include_trace=True)
+    assert response.hits and [leg.leg for leg in response.trace.legs] == ["vector"]
+    assert all(set(h.scores) == {"vector"} for h in response.hits) and response.degraded == []
+
+
+async def test_a_base_with_nothing_embedded_says_so_beside_one_that_has():
+    seams.set_knowledge_embedder(None)  # REPORTS is indexed keyword-only
+    await _save(CONTRACTS, REPORTS)
+    await _index(REPORTS, "xlsx_two_sheets", 3, "reports/q3.xlsx")
+    seams.set_knowledge_embedder(HashingEmbedder(dims=32))
+    await _index(CONTRACTS, "pdf_contract", 1, "contracts/acme.pdf")
+    response = await _search(query="revenue fees", kb_ids=[CONTRACTS.id, REPORTS.id], include_trace=True)
+    assert response.degraded == ["vector_unavailable"] and "Reports" in response.trace.degraded[0].detail
+    vector_leg = next(leg for leg in response.trace.legs if leg.leg == "vector")
+    assert vector_leg.scopes == [{"kb_id": CONTRACTS.id, "snapshot_id": await serving_snapshot(CONTRACTS)}]
+
+
+async def test_two_embedding_models_are_two_vector_legs_and_no_kept_query_vector():
+    seams.set_knowledge_embedder(HashingEmbedder(dims=32, model="hash-a"))
+    await _save(CONTRACTS, REPORTS)
+    await _index(CONTRACTS, "pdf_contract", 1, "contracts/acme.pdf")
+    second = HashingEmbedder(dims=32, model="hash-b")  # one fake serves both models: same width
+    seams.set_knowledge_embedder(second)
+    await _index(REPORTS, "xlsx_two_sheets", 3, "reports/q3.xlsx")
+    response = await _search(query="revenue fees", kb_ids=[CONTRACTS.id, REPORTS.id], include_trace=True)
+    assert [leg.leg for leg in response.trace.legs] == ["lexical", "vector", "vector"]
+    assert set(response.trace.fusion.params.weights) == {"lexical", "vector:hash-a", "vector:hash-b"}
+    assert sorted(c["spec"].model for c in second.calls if c["kind"] == "query") == ["hash-a", "hash-b"]
+    assert response.trace.replay.query_vector_sha256 is None and not response.trace.replay.exact_possible
+
+
+# ── rerank ─────────────────────────────────────────────────────────────────────
+
+async def test_a_reranker_asked_for_reorders_the_fused_candidates():
+    await _embedded_corpus()
+    reranker = FakeReranker()
+    seams.set_reranker(reranker)
+    response = await _search(query="hosting monthly fee", rerank=True, include_trace=True)
+    trace = response.trace
+
+    assert trace.rerank is not None and trace.rerank.model == "fake-rerank"
+    assert trace.rerank.input_count == len(reranker.calls[0]["documents"]) <= 50
+    assert [h.chunk_id for h in response.hits] == [r.chunk_id for r in trace.rerank.results][:len(response.hits)]
+    assert all("rerank" in h.scores and h.score == h.scores["rerank"] for h in response.hits)
+    assert trace.hits[0].ranks["rerank"] == 1 and reranker.calls[0]["query"] == "hosting monthly fee"
+    assert trace.pipeline[CONTRACTS.id].rerank_model == "fake-rerank", "the model that answered"
+    assert response.degraded == []
+
+
+async def test_a_reranker_that_fails_leaves_the_fused_order_and_says_so():
+    await _embedded_corpus()
+    seams.set_reranker(FakeReranker(fail=True))
+    response = await _search(query=QUERY, rerank=True, include_trace=True)
+    assert response.degraded == ["rerank_failed"] and response.trace.rerank is None
+    assert [h.chunk_id for h in response.hits] == _fused_order(response.trace)[:len(response.hits)]
+
+
+async def test_a_rerank_asked_for_with_none_configured_says_so():
+    await _embedded_corpus()
+    response = await _search(query=QUERY, rerank=True)
+    assert response.degraded == ["rerank_unconfigured"] and response.hits
+
+
+async def test_by_default_a_configured_reranker_reranks_and_none_is_no_degradation():
+    await _embedded_corpus()
+    plain = await _search(query=QUERY, include_trace=True)
+    assert plain.trace.rerank is None and plain.degraded == []
+    seams.set_reranker(FakeReranker())
+    reranked = await _search(query=QUERY, include_trace=True)
+    assert reranked.trace.rerank is not None
+    off = KnowledgeBase.model_validate({**CONTRACTS.model_dump(), "rerank": {"enabled": False}})
+    await _save(off, REPORTS)
+    assert (await _search(query=QUERY, include_trace=True)).trace.rerank is None, "a base can switch it off"
+
+
+async def test_a_threshold_reads_the_reranker_s_score():
+    await _embedded_corpus()
+    seams.set_reranker(FakeReranker())
+    response = await _search(query="hosting monthly fee", rerank=True, score_threshold=0.99, include_trace=True)
+    assert response.hits and all(h.score >= 0.99 for h in response.hits)
+    assert any(c.stage == "threshold" for c in response.trace.cuts)
+
+
+# ── costs ──────────────────────────────────────────────────────────────────────
+
+async def test_the_query_s_embedding_is_a_cost_of_the_run_that_searched():
+    await _embedded_corpus(HashingEmbedder(dims=32, cost_source="byok", usd_per_mtok=20.0))
+    response = await _search(query=QUERY, include_trace=True)
+
+    assert response.cost.total_est_usd > 0 and set(response.cost.by_stage) == {"embed"}
+    assert response.trace.costs.rows[0].stage == "embed" and response.trace.costs.rows[0].cost_source == "byok"
+    async with session() as s:
+        cost = (await s.execute(select(KnowledgeCostDB).where(
+            KnowledgeCostDB.query_id == response.query_id))).scalar_one()
+        usage = (await s.execute(select(UsageLogDB).where(UsageLogDB.run_id == "run_1"))).scalars().all()
+    assert (cost.stage, cost.run_id, cost.session_id, cost.kb_id) == ("embed", "run_1", "sess_1", CONTRACTS.id)
+    assert [(u.source, u.tool_name, u.session_id) for u in usage] == [("orchestration", "knowledge:embed", "sess_1")]
