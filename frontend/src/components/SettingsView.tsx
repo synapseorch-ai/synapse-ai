@@ -21,6 +21,9 @@ import { VariablesTab } from './settings/VariablesTab';
 import { MemoryTab } from './settings/MemoryTab';
 import { DataLabTab } from './settings/DataLabTab';
 import { ModelsTab } from './settings/ModelsTab';
+import {
+    KNOWLEDGE_MODEL_DEFAULTS, KNOWLEDGE_SECRETS, type KnowledgeModelSettings,
+} from './settings/KnowledgeModels';
 import { SavedSecretsContext, pickSecrets, type SecretState } from './settings/SavedSecret';
 import { IntegrationsTab } from './settings/IntegrationsTab';
 import { ToastNotification } from './settings/ToastNotification';
@@ -86,6 +89,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [geminiCliModels, setGeminiCliModels] = useState('');
     const [codexCliModels, setCodexCliModels] = useState('');
     const [githubCopilotCliModels, setGithubCopilotCliModels] = useState('');
+    const [knowledgeModels, setKnowledgeModels] = useState<KnowledgeModelSettings>(KNOWLEDGE_MODEL_DEFAULTS);
     const [transformRuntime, setTransformRuntime] = useState<'docker' | 'host'>('docker');
     const [awsRegion, setAwsRegion] = useState('us-east-1');
     const [sqlConnectionString, setSqlConnectionString] = useState('');
@@ -161,6 +165,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         grok_key: setGrokKey, deepseek_key: setDeepseekKey, bedrock_api_key: setBedrockApiKey,
         openai_compatible_key: setOpenaiCompatibleKey, local_compatible_key: setLocalCompatibleKey,
         huggingface_token: setHuggingfaceToken, n8n_api_key: setN8nApiKey,
+        ...Object.fromEntries(KNOWLEDGE_SECRETS.map(name => [
+            name, (v: string) => setKnowledgeModels(k => ({ ...k, [name]: v })),
+        ])),
     };
     const SECRET_NAMES = Object.keys(secretSetters);
 
@@ -224,6 +231,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             tool_policy_defaults: toolPolicyDefaults,
             embed_code: embedCode,
             bash_allowed_dirs: bashAllowedDirs,
+            ...knowledgeModels,
         };
 
         try {
@@ -432,6 +440,12 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setGeminiCliModels(data.gemini_cli_models || '');
                 setCodexCliModels(data.codex_cli_models || '');
                 setGithubCopilotCliModels(data.github_copilot_cli_models || '');
+                setKnowledgeModels({
+                    ...KNOWLEDGE_MODEL_DEFAULTS,
+                    knowledge_embedding_model: data.knowledge_embedding_model || '',
+                    knowledge_rerank_model: data.knowledge_rerank_model || '',
+                    knowledge_rerank_base_url: data.knowledge_rerank_base_url || '',
+                });
                 setTransformRuntime((data.transform_runtime === 'host' ? 'host' : 'docker'));
                 setBedrockApiKey(data.bedrock_api_key || '');
                 setAwsRegion(data.aws_region || 'us-east-1');
@@ -635,6 +649,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         geminiCliModels={geminiCliModels} setGeminiCliModels={setGeminiCliModels}
                         codexCliModels={codexCliModels} setCodexCliModels={setCodexCliModels}
                         githubCopilotCliModels={githubCopilotCliModels} setGithubCopilotCliModels={setGithubCopilotCliModels}
+                        knowledgeModels={knowledgeModels} setKnowledgeModels={setKnowledgeModels}
                     />
                 )}
 

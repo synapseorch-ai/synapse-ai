@@ -5,6 +5,7 @@ import { modelOptions as buildModelOptions, providerLabel, withUnreachable } fro
 /** `builder_model` is empty when it should follow `model`; a Combobox needs a value. */
 const DEFAULT_SENTINEL = '__default__';
 import React, { useState } from 'react';
+import { KnowledgeModels, type KnowledgeModelSettings } from './KnowledgeModels';
 import { SavedSecret, secretPlaceholder, useSavedSecrets } from './SavedSecret';
 
 type BrandIconProps = { className?: string; style?: React.CSSProperties };
@@ -95,6 +96,8 @@ interface ModelsTabProps {
     geminiCliModels: string; setGeminiCliModels: (v: string) => void;
     codexCliModels: string; setCodexCliModels: (v: string) => void;
     githubCopilotCliModels: string; setGithubCopilotCliModels: (v: string) => void;
+    /** Knowledge's default models and rerank keys (B2b), shown while Knowledge is on. */
+    knowledgeModels: KnowledgeModelSettings; setKnowledgeModels: (v: KnowledgeModelSettings) => void;
     // Backward compat
     mode: string; setMode: (v: string) => void;
     localModels: string[]; cloudModels: string[];
@@ -235,6 +238,7 @@ export const ModelsTab = ({
     geminiCliModels, setGeminiCliModels,
     codexCliModels, setCodexCliModels,
     githubCopilotCliModels, setGithubCopilotCliModels,
+    knowledgeModels, setKnowledgeModels,
 }: ModelsTabProps) => {
 
     const { secrets } = useSavedSecrets();
@@ -736,6 +740,9 @@ export const ModelsTab = ({
                     </p>
                 </div>
             </div>
+
+            <KnowledgeModels value={knowledgeModels} onChange={setKnowledgeModels} providers={providers}
+                embeddingModel={embeddingModel} />
 
             <div className="pt-4 flex justify-end">
                 <button
