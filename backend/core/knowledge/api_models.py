@@ -114,12 +114,30 @@ class KnowledgeBaseUpdate(_Request):
     web: Web | None = None
 
 
+class SnapshotBuild(_Response):
+    """A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a
+    change to how the index is built. `failed` means the serving snapshot was kept; a rebuild
+    that is waiting for budget or wallet is still `building`, with `paused_reason`."""
+
+    snapshot_id: str
+    status: Literal["building", "failed"]
+    docs_total: int = 0
+    docs_done: int = 0
+    docs_failed: int = 0
+    started_at: str | None = None
+    paused_reason: str | None = None
+    error: str | None = None
+
+
 class KnowledgeBaseState(_Response):
     counts_by_status: dict[str, int] = Field(default_factory=dict)
     active_snapshot: str | None = None
     building_snapshot: str | None = None
     month_spend_usd: float = 0.0
     paused_reason: str | None = None
+    # CCR-5 (B2b, D167): the rebuild in progress, or the last one that failed while the base still
+    # differs from its serving snapshot.
+    build: SnapshotBuild | None = None
 
 
 class KnowledgeBaseOut(KnowledgeBase):

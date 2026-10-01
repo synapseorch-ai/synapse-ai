@@ -3803,6 +3803,17 @@
       "default": null,
       "title": "Active Snapshot"
      },
+     "build": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/SnapshotBuild"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
      "building_snapshot": {
       "anyOf": [
        {
@@ -3937,6 +3948,80 @@
      }
     },
     "title": "Retrieval",
+    "type": "object"
+   },
+   "SnapshotBuild": {
+    "description": "A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a\nchange to how the index is built. `failed` means the serving snapshot was kept; a rebuild\nthat is waiting for budget or wallet is still `building`, with `paused_reason`.",
+    "properties": {
+     "docs_done": {
+      "default": 0,
+      "title": "Docs Done",
+      "type": "integer"
+     },
+     "docs_failed": {
+      "default": 0,
+      "title": "Docs Failed",
+      "type": "integer"
+     },
+     "docs_total": {
+      "default": 0,
+      "title": "Docs Total",
+      "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Error"
+     },
+     "paused_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Paused Reason"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Started At"
+     },
+     "status": {
+      "enum": [
+       "building",
+       "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "snapshot_id",
+     "status"
+    ],
+    "title": "SnapshotBuild",
     "type": "object"
    },
    "Web": {
@@ -4138,6 +4223,82 @@
   "type": "object"
  },
  "KnowledgeBaseState": {
+  "$defs": {
+   "SnapshotBuild": {
+    "description": "A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a\nchange to how the index is built. `failed` means the serving snapshot was kept; a rebuild\nthat is waiting for budget or wallet is still `building`, with `paused_reason`.",
+    "properties": {
+     "docs_done": {
+      "default": 0,
+      "title": "Docs Done",
+      "type": "integer"
+     },
+     "docs_failed": {
+      "default": 0,
+      "title": "Docs Failed",
+      "type": "integer"
+     },
+     "docs_total": {
+      "default": 0,
+      "title": "Docs Total",
+      "type": "integer"
+     },
+     "error": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Error"
+     },
+     "paused_reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Paused Reason"
+     },
+     "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+     },
+     "started_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Started At"
+     },
+     "status": {
+      "enum": [
+       "building",
+       "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+     }
+    },
+    "required": [
+     "snapshot_id",
+     "status"
+    ],
+    "title": "SnapshotBuild",
+    "type": "object"
+   }
+  },
   "properties": {
    "active_snapshot": {
     "anyOf": [
@@ -4150,6 +4311,17 @@
     ],
     "default": null,
     "title": "Active Snapshot"
+   },
+   "build": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/SnapshotBuild"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
    },
    "building_snapshot": {
     "anyOf": [
@@ -7066,6 +7238,80 @@
    "hits"
   ],
   "title": "SearchResponse",
+  "type": "object"
+ },
+ "SnapshotBuild": {
+  "description": "A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a\nchange to how the index is built. `failed` means the serving snapshot was kept; a rebuild\nthat is waiting for budget or wallet is still `building`, with `paused_reason`.",
+  "properties": {
+   "docs_done": {
+    "default": 0,
+    "title": "Docs Done",
+    "type": "integer"
+   },
+   "docs_failed": {
+    "default": 0,
+    "title": "Docs Failed",
+    "type": "integer"
+   },
+   "docs_total": {
+    "default": 0,
+    "title": "Docs Total",
+    "type": "integer"
+   },
+   "error": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Error"
+   },
+   "paused_reason": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Paused Reason"
+   },
+   "snapshot_id": {
+    "title": "Snapshot Id",
+    "type": "string"
+   },
+   "started_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Started At"
+   },
+   "status": {
+    "enum": [
+     "building",
+     "failed"
+    ],
+    "title": "Status",
+    "type": "string"
+   }
+  },
+  "required": [
+   "snapshot_id",
+   "status"
+  ],
+  "title": "SnapshotBuild",
   "type": "object"
  },
  "StageEstimate": {
