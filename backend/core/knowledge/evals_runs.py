@@ -25,6 +25,15 @@ calls from `usage_logs` (`spent`).
 **Cancel** sets `cancelling`; the run stops before its next question and keeps
 what it scored. A run left `running` by a process that stopped is
 `interrupted` (marked at startup, or when read and seen stale here).
+
+**Where a run is driven.** In OSS, this process (`spawn_background`). Cloud
+sets an `EvalRunner` (V1c): a run is then a worker job, so this process cannot
+know whether a run is alive — a run reports after every question
+(`updated_at`), and one that has not reported for `RUNNER_STALE` is taken as
+left by a worker that stopped. Before every question the run reads its own row
+and stops when it is no longer `running`: cancelled, deleted with its base, or
+marked interrupted by a reader. Its last write is a compare-and-set, so it never
+overwrites what a reader decided.
 """
 from __future__ import annotations
 
@@ -34,10 +43,10 @@ import json
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from core.knowledge import evals_metrics as EM
-from core.knowledge.evals import EvalBusy, EvalNotFound
+from core.knowledge.evals import EvalBusy, EvalNotFound, EvalUnavailable
 from core.knowledge.ids import EVAL_RUN_PREFIX, new_id
 from core.log import get_logger
 
@@ -52,21 +61,61 @@ _log = get_logger(__name__)
 SESSION_PREFIX = "knowledge-eval:"
 #: A run not touched for this long, with no task in this process, was left by a process that stopped.
 STALE_AFTER = timedelta(minutes=5)
+#: With a runner: a run not touched for this long, by status, was left by a worker that stopped. A queued run
+#: waits for a free worker (cloud's job expires sooner, so it never starts after being called stale); a running
+#: one reports after every question, which a judge's two calls can stretch to minutes.
+RUNNER_STALE = {"queued": timedelta(minutes=25), "running": timedelta(minutes=10),
+                "cancelling": timedelta(minutes=10)}
 #: Snapshots a run may search.
 SEARCHABLE = ("active", "building", "retired")
 #: The served passages a case result shows.
 TOP_SHOWN = 3
 SCORED = ("lexical", "vector", "hybrid", "served")
+#: How a run ends when its row is no longer running (deleted, or marked interrupted): nothing more is written.
+GONE = "gone"
+_STOPPED = "The server stopped during the run."
+_NEVER_STARTED = "The run was not started in time."
 
 _tasks: dict[str, asyncio.Task] = {}
+#: The clock a run's deadline is read on (tests move it).
+_clock = time.monotonic
+
+
+class EvalRunner(Protocol):
+    """Where runs are driven when not in this process — cloud's worker jobs (V1c). None of these raises except
+    where said."""
+
+    async def admit(self, kb_id: str, started_by: str) -> None:
+        """Before a run is recorded: raise `EvalBusy` when the deployment's limit on runs under way is reached."""
+
+    async def start(self, kb_id: str, run_id: str) -> None:
+        """Drive `run(kb_id, run_id)` elsewhere. Raising leaves the run `failed`."""
+
+    async def after_switch(self, kb_id: str) -> None:
+        """The base's index switched: wait for it to settle, then `evals_auto.rerun(kb_id)`."""
+
+    async def rerun_later(self, kb_id: str, set_id: str) -> None:
+        """A re-run of `set_id` could not start (a run under way, or the limit): start it when one ends."""
+
+    async def platform_usd(self, session_id: str) -> float:
+        """What the platform settled for every call of `session_id`: its searches and its chat calls."""
+
+
+_runner: EvalRunner | None = None
+
+
+def set_eval_runner(runner: EvalRunner | None) -> None:
+    """Cloud: runs are driven by `runner`. None: by this process (OSS)."""
+    global _runner
+    _runner = runner
+
+
+def get_eval_runner() -> EvalRunner | None:
+    return _runner
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _aware(at: datetime | None) -> datetime | None:
-    return None if at is None else (at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc))
 
 
 def _tenant() -> str:
@@ -235,15 +284,36 @@ async def start(kb: KnowledgeBase, body: EvalRunRequest, *, started_by: str = "p
         if started_by == "person":
             raise ValueError(f"{exc} Raise the budget, or run fewer questions.") from None
         row.status, row.error, row.finished_at = "skipped", str(exc), _now()
+    if row.status == "queued" and _runner is not None:
+        await _runner.admit(kb.id, started_by)
+    await reap(set_id=body.set_id)  # a run its worker left must not hold the set
     try:
         async with session() as s:
             s.add(row)
-    except IntegrityError:
+    except IntegrityError as exc:
+        if not _one_active_per_set(exc):
+            raise
         raise EvalBusy("A run of this question set is already under way.") from None
     if row.status == "queued":
-        _tasks[run_id] = spawn_background(_drive(kb.id, run_id), name=f"knowledge-eval:{run_id}")
+        if _runner is None:
+            _tasks[run_id] = spawn_background(_drive(kb.id, run_id), name=f"knowledge-eval:{run_id}")
+        else:
+            try:
+                await _runner.start(kb.id, run_id)
+            except Exception as exc:  # noqa: BLE001 — said to the person; the run must not wait for nothing
+                _log.warning(f"knowledge eval {run_id} could not be queued: {exc}")
+                await _move(run_id, ("queued",), status="failed", error="The run could not be queued.",
+                            finished_at=_now())
+                raise EvalUnavailable("The run could not be started. Try again in a moment.") from None
     async with session() as s:
         return evals.run_summary(await s.get(R, run_id))
+
+
+def _one_active_per_set(exc: Exception) -> bool:
+    """The insert broke the one-active-run-per-set index — not a check or a key of another kind."""
+    text = str(getattr(exc, "orig", exc))
+    return "ux_knowledge_eval_runs_tenant_set_active" in text or (
+        "UNIQUE constraint failed" in text and "knowledge_eval_runs.set_id" in text)
 
 
 async def _drive(kb_id: str, run_id: str) -> None:
@@ -324,8 +394,11 @@ async def _held(snapshot_id: str, cases: Sequence[Mapping[str, Any]]) -> dict[st
     return out
 
 
-async def run(kb_id: str, run_id: str) -> None:
-    """Drive run `run_id` to its end. Never raises: a failure is the run's `error`."""
+async def run(kb_id: str, run_id: str, *, deadline: float | None = None) -> None:
+    """Drive run `run_id` to its end. Never raises: a failure is the run's `error`.
+
+    `deadline` (on `_clock`): past it the run stops before its next question, keeps what it scored and is
+    `failed`, saying so — a worker job's time limit would otherwise cut it off with nothing written."""
     from core.knowledge import bases, evals
     from core.store import session
     from core.store.models import KnowledgeEvalRunDB as R
@@ -341,22 +414,43 @@ async def run(kb_id: str, run_id: str) -> None:
     try:
         kb = await bases.require_base(kb_id)
         cases = await evals.cases_of(kb_id, row.set_id)
-        status, error, results = await _search_all(kb, run_id, dict(row.config or {}), cases)
+        status, error, results = await _search_all(kb, run_id, dict(row.config or {}), cases, deadline=deadline)
+        if status == GONE:
+            return
         summary = await score(kb, dict(row.config or {}), results)
         if status == "completed" and (row.config or {}).get("judge"):
             from core.knowledge import evals_judge
 
-            status, error = await evals_judge.grade(kb, run_id, dict(row.config or {}), results, summary)
-        await _update(run_id, status=status, error=error, results=results, summary=summary,
-                      done_count=len(results["cases"]), cost_usd=await spent(run_id), finished_at=_now())
+            status, error = await evals_judge.grade(kb, run_id, dict(row.config or {}), results, summary,
+                                                    deadline=deadline)
+            if status == GONE:
+                return
+        await _move(run_id, ("running", "cancelling"), status=status, error=error, results=results,
+                    summary=summary, done_count=len(results["cases"]), cost_usd=await spent(run_id),
+                    finished_at=_now())
     except Exception as exc:  # noqa: BLE001 — a run's failure is its own, never the server's
         _log.warning(f"knowledge eval {run_id} failed: {exc}")
-        await _update(run_id, status="failed", error=str(exc)[:2000], cost_usd=await spent(run_id),
-                      finished_at=_now())
+        await _move(run_id, ("running", "cancelling"), status="failed", error=str(exc)[:2000],
+                    cost_usd=await spent(run_id), finished_at=_now())
 
 
-async def _search_all(kb: KnowledgeBase, run_id: str, config: dict, cases: list[dict]
-                      ) -> tuple[str, str | None, dict]:
+async def checkpoint(run_id: str, n: int, total: int, deadline: float | None) -> tuple[str, str | None] | None:
+    """Before question `n` (from 0) of `total`: None when the run goes on, else how it ends — `cancelled` on a
+    cancel, `failed` past its deadline, `GONE` when its row is no longer running (its base deleted, or marked
+    interrupted by a reader that took it for left)."""
+    state = await _status(run_id)
+    if state == "cancelling":
+        return "cancelled", None
+    if state != "running":
+        return GONE, None
+    if deadline is not None and _clock() >= deadline:
+        return "failed", (f"The run reached its time limit at question {n + 1} of {total}; "
+                          "what it scored before then is kept.")
+    return None
+
+
+async def _search_all(kb: KnowledgeBase, run_id: str, config: dict, cases: list[dict], *,
+                      deadline: float | None = None) -> tuple[str, str | None, dict]:
     from core.knowledge.api_models import SearchRequest
     from core.knowledge.errors import KnowledgeError
     from core.knowledge.search import load_chunks, search
@@ -369,8 +463,9 @@ async def _search_all(kb: KnowledgeBase, run_id: str, config: dict, cases: list[
     gone: dict[str, str] = {}
     status, error = "completed", None
     for n, case in enumerate(cases):
-        if await _status(run_id) == "cancelling":
-            status = "cancelled"
+        ended = await checkpoint(run_id, n, len(cases), deadline)
+        if ended is not None:
+            status, error = ended
             break
         entry = {"id": case["id"], "kind": case["kind"], "question": case["question"],
                  "evidence": len(case["evidence"]), "by_snapshot": {}}
@@ -492,6 +587,10 @@ async def spent(run_id: str) -> float:
       from their `usage_logs` mirror, which reads 0 for a platform cost (CCR-7: a platform cost is its settle);
     * its chat calls (drafts, answers, verdicts) from `usage_logs`. A platform chat call estimates 0 there too:
       cloud adds what its gateway settled (V1c).
+
+    With a runner, every platform call is what the runner says the platform settled for the session — searches
+    and chat alike — and the knowledge ledger's platform rows are left out, so none is counted twice (a platform
+    row can hold an estimate with no settled charge while the platform's own ledger holds the charge).
     """
     from sqlalchemy import or_, select
 
@@ -501,14 +600,19 @@ async def spent(run_id: str) -> float:
     from core.store.models import UsageLogDB as U
 
     own = session_of(run_id)
+    platform = _runner is not None
     async with session() as s:
-        searches = (await s.execute(select(K.est_usd, K.charged_microusd).where(
-            K.tenant_id == _tenant(), K.session_id == own))).all()
+        searched = select(K.est_usd, K.charged_microusd).where(K.tenant_id == _tenant(), K.session_id == own)
+        if platform:
+            searched = searched.where(K.cost_source != "platform")
+        searches = (await s.execute(searched)).all()
         chat = (await s.execute(select(U.estimated_cost).where(
             U.tenant_id == _tenant(), U.session_id == own,
             or_(U.event_type.is_(None), U.event_type != USAGE_EVENT_TYPE)))).scalars().all()
     total = sum(charged / 1_000_000 if charged is not None else float(est or 0.0) for est, charged in searches)
     total += sum(float(cost or 0.0) for cost in chat)
+    if platform:
+        total += float(await _runner.platform_usd(own) or 0.0)
     return round(total, 8)
 
 
@@ -522,12 +626,41 @@ async def _row(kb_id: str, run_id: str):
         row = await s.get(R, run_id)
     if row is None or row.tenant_id != _tenant() or row.kb_id != kb_id:
         raise EvalNotFound(f"No run {run_id!r} of this knowledge base.")
-    if row.status in ("queued", "running", "cancelling") and run_id not in _tasks and (
-            _now() - (_aware(row.updated_at) or _now())) > STALE_AFTER:
-        await _update(run_id, status="interrupted", error="The server stopped during the run.", finished_at=_now())
+    if row.status in ("queued", "running", "cancelling") and await reap(run_id=run_id):
         async with session() as s:
             row = await s.get(R, run_id)
     return row
+
+
+async def reap(*, set_id: str | None = None, run_id: str | None = None) -> int:
+    """Mark `interrupted` the runs under way (of `set_id`, or `run_id`) that whoever drove them left: in OSS,
+    with no task in this process and untouched for `STALE_AFTER`; with a runner, untouched for `RUNNER_STALE`
+    of their status. One update with the test in its WHERE, so a run that finished meanwhile stays finished."""
+    from sqlalchemy import and_, update
+
+    from core.store import session
+    from core.store.models import KnowledgeEvalRunDB as R
+
+    now = _now()
+    if _runner is None:
+        lapses = [(("queued", "running", "cancelling"), STALE_AFTER, _STOPPED)]
+    else:
+        lapses = [(("queued",), RUNNER_STALE["queued"], _NEVER_STARTED),
+                  (("running", "cancelling"), RUNNER_STALE["running"], _STOPPED)]
+    reaped = 0
+    async with session() as s:
+        for statuses, after, why in lapses:
+            stale = [R.tenant_id == _tenant(), R.status.in_(list(statuses)), R.updated_at < now - after]
+            if _runner is None:
+                stale.append(R.id.notin_(list(_tasks)))
+            if set_id is not None:
+                stale.append(R.set_id == set_id)
+            if run_id is not None:
+                stale.append(R.id == run_id)
+            result = await s.execute(update(R).where(and_(*stale)).values(
+                status="interrupted", error=why, finished_at=now, updated_at=now))
+            reaped += int(result.rowcount or 0)
+    return reaped
 
 
 def case_results(row: Any) -> list[dict[str, Any]]:
@@ -578,7 +711,10 @@ async def cancel(kb_id: str, run_id: str) -> EvalRunSummary:
     from core.store.models import KnowledgeEvalRunDB as R
 
     await _row(kb_id, run_id)
-    if run_id in _tasks:  # its task stops before its next question, or at its start
+    if _runner is not None:  # a worker may hold it: one not yet started ends now, one under way at its next question
+        if not await _move(run_id, ("queued",), status="cancelled", finished_at=_now()):
+            await _move(run_id, ("running",), status="cancelling")
+    elif run_id in _tasks:  # its task stops before its next question, or at its start
         await _move(run_id, ("queued", "running"), status="cancelling")
     else:  # nothing here is driving it
         await _move(run_id, ("queued", "running"), status="cancelled", finished_at=_now())
@@ -603,13 +739,16 @@ async def compare(kb_id: str, run_id: str, body: EvalCompareRequest) -> list[Eva
 
 
 async def mark_interrupted() -> int:
-    """At startup: every run this process's predecessor left under way was interrupted."""
+    """At startup: every run this process's predecessor left under way was interrupted. Not with a runner: other
+    workers may be driving them (they are reaped when stale instead)."""
     from sqlalchemy import update
 
     from core.knowledge.api_models import EVAL_ACTIVE_STATUSES
     from core.store import session
     from core.store.models import KnowledgeEvalRunDB as R
 
+    if _runner is not None:
+        return 0
     async with session() as s:
         result = await s.execute(update(R).where(R.status.in_(EVAL_ACTIVE_STATUSES), R.id.notin_(list(_tasks)))
                                  .values(status="interrupted", error="The server stopped during the run.",

@@ -227,13 +227,14 @@ async def grade_one(kb: KnowledgeBase, question: str, hits: Sequence[Any], *, an
 
 # ── a run's grading ───────────────────────────────────────────────────────────
 
-async def grade(kb: KnowledgeBase, run_id: str, config: Mapping[str, Any], results: dict, summary: dict
-                ) -> tuple[str, str | None]:
+async def grade(kb: KnowledgeBase, run_id: str, config: Mapping[str, Any], results: dict, summary: dict, *,
+                deadline: float | None = None) -> tuple[str, str | None]:
     """Grade each question the first snapshot answered; fills `results` and `summary["judge"]`. Returns the run's
-    (status, error): a cancel between questions stops it."""
+    (status, error): a cancel or the deadline between questions stops it, and a row no longer running ends it
+    (`evals_runs.GONE`)."""
     from core.config import load_settings
     from core.knowledge.api_models import Hit
-    from core.knowledge.evals_runs import _status, _update, session_of
+    from core.knowledge.evals_runs import GONE, _update, checkpoint, session_of
 
     judge = config["judge"]
     record = await rubric()
@@ -248,8 +249,11 @@ async def grade(kb: KnowledgeBase, run_id: str, config: Mapping[str, Any], resul
         hits = [Hit.model_validate(h) for h in per.pop("hits", None) or []][:config.get("agent_sees") or None]
         if per.get("state") != "ok":
             continue
-        if await _status(run_id) == "cancelling":
-            status = "cancelled"
+        ended = await checkpoint(run_id, n, len(results["cases"]), deadline)
+        if ended is not None:
+            status, error = ended
+            if status == GONE:
+                return status, error
             break
         graded = await grade_one(kb, entry["question"], hits, answer_model=judge["answer_model"],
                                  judge_model=judge["judge_model"], rubric_record=record, settings=settings,

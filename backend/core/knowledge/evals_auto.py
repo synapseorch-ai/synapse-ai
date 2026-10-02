@@ -20,6 +20,11 @@ Only sets that already have a completed run take part — a person ran them once
 
 The pending re-runs live in this process (`_pending`); a restart forgets them,
 and the screen still shows which settings each run was scored under.
+
+**With a runner** (cloud, V1c: runs are worker jobs) the waiting is the
+runner's: the observer hands it the switch (`EvalRunner.after_switch`, awaited
+by the job that switched — nothing is left running in a worker that may stop),
+and a re-run that cannot start yet is handed to `EvalRunner.rerun_later`.
 """
 from __future__ import annotations
 
@@ -30,6 +35,8 @@ from typing import TYPE_CHECKING, Any
 from core.log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Awaitable
+
     from core.knowledge.events import KnowledgeLifecycleEvent
     from core.knowledge.kb_settings import KnowledgeBase
 
@@ -71,20 +78,28 @@ async def startup() -> None:
         _log.info(f"knowledge eval: {left} run(s) the last process left were interrupted")
 
 
-def _observer(event: KnowledgeLifecycleEvent) -> None:
-    """Only spawns: the switch announcing this must not wait on an eval."""
+def _observer(event: KnowledgeLifecycleEvent) -> Awaitable[None] | None:
+    """Only spawns: the switch announcing this must not wait on an eval. With a runner, returns its
+    `after_switch` (queuing the wait), which `events.emit` awaits."""
     if event.type != "knowledge.base.reindexed":
-        return
+        return None
     from core.background import spawn_background
+    from core.knowledge.evals_runs import get_eval_runner
+
+    runner = get_eval_runner()
+    if runner is not None:
+        return runner.after_switch(event.kb_id)
 
     key = (_tenant(), event.kb_id)
     waiting = _waiting.pop(key, None)
     if waiting is not None and not waiting.done():
         waiting.cancel()  # a newer switch: wait from here instead
     _waiting[key] = spawn_background(_after_switch(event.kb_id), name=f"knowledge-eval-settle:{event.kb_id}")
+    return None
 
 
-async def _settled(kb_id: str) -> bool:
+async def settled(kb_id: str) -> bool:
+    """No document of the base is waiting to be indexed."""
     from sqlalchemy import func, select
 
     from core.store import session
@@ -100,7 +115,7 @@ async def _after_switch(kb_id: str) -> None:
     key = (_tenant(), kb_id)
     try:
         deadline = time.monotonic() + SETTLE_MAX_S
-        while not await _settled(kb_id) and time.monotonic() < deadline:
+        while not await settled(kb_id) and time.monotonic() < deadline:
             await asyncio.sleep(SETTLE_POLL_S)
         await asyncio.sleep(DEBOUNCE_S)
         await rerun(kb_id)
@@ -166,9 +181,11 @@ async def _active(set_id: str):
     from sqlalchemy import select
 
     from core.knowledge.api_models import EVAL_ACTIVE_STATUSES
+    from core.knowledge.evals_runs import reap
     from core.store import session
     from core.store.models import KnowledgeEvalRunDB as R
 
+    await reap(set_id=set_id)  # a run its worker left is not "under way"
     async with session() as s:
         return (await s.execute(select(R).where(
             R.tenant_id == _tenant(), R.set_id == set_id, R.status.in_(EVAL_ACTIVE_STATUSES)))).scalars().first()
@@ -199,10 +216,12 @@ async def _rerun_set(kb: KnowledgeBase, set_id: str, *, fusion_only: bool) -> st
 
     active = await _active(set_id)
     if active is not None and active.started_by == "settings" and active.status in ("queued", "running"):
+        if await _measures_now(kb, active):
+            return None  # the automatic run under way already searches what the base serves now
         await evals_runs.cancel(kb.id, active.id)  # replaced: the newer settings are what count
         active = await _active(set_id)  # a run with no task here ends at once; a live one at its next question
     if active is not None:
-        _pending[(_tenant(), set_id)] = kb.id
+        await _later(kb.id, set_id)
         return None
     if fusion_only:
         made = await rescore(kb, set_id)
@@ -211,9 +230,37 @@ async def _rerun_set(kb: KnowledgeBase, set_id: str, *, fusion_only: bool) -> st
     try:
         run = await evals_runs.start(kb, EvalRunRequest(set_id=set_id), started_by="settings")
     except EvalBusy:
-        _pending[(_tenant(), set_id)] = kb.id
+        await _later(kb.id, set_id)
         return None
     return run.id
+
+
+async def rerun_set(kb: KnowledgeBase, set_id: str) -> str | None:
+    """Re-run one set that waited (cloud's job, once a run under way ended). Returns the run started, if any."""
+    return await _rerun_set(kb, set_id, fusion_only=False)
+
+
+async def _later(kb_id: str, set_id: str) -> None:
+    from core.knowledge.evals_runs import get_eval_runner
+
+    runner = get_eval_runner()
+    if runner is None:
+        _pending[(_tenant(), set_id)] = kb_id
+    else:
+        await runner.rerun_later(kb_id, set_id)
+
+
+async def _measures_now(kb: KnowledgeBase, active: Any) -> bool:
+    """`active` (an automatic run) searches the snapshot the base serves, under the search settings it has now."""
+    from core.knowledge import evals_runs
+
+    config = dict(active.config or {})
+    try:
+        serving = [s["snapshot_id"] for s in await evals_runs.snapshots_for(kb, [])]
+    except Exception:  # noqa: BLE001 — nothing indexed: nothing to compare
+        return False
+    return (config.get("query_settings") == evals_runs.query_settings(kb)
+            and [s.get("snapshot_id") for s in config.get("snapshots") or []] == serving)
 
 
 async def after_run(kb_id: str, run_id: str) -> None:

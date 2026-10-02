@@ -36,6 +36,7 @@ import json
 import math
 import random
 import re
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -332,8 +333,12 @@ async def draft_one(kind: str, passages: Sequence[Drawn], *, model: str, setting
 
 
 async def draft(kb: KnowledgeBase, body: EvalDraftRequest, settings: Mapping[str, Any], *,
-                exclude: Sequence[Mapping[str, Any]] = ()) -> EvalDrafts:
-    """Draft `body`'s questions from `kb`'s passages. Saves nothing."""
+                exclude: Sequence[Mapping[str, Any]] = (), deadline: float | None = None) -> EvalDrafts:
+    """Draft `body`'s questions from `kb`'s passages. Saves nothing.
+
+    `deadline` (on `time.monotonic`): the drafts finished by then are kept and the rest are dropped as
+    `timed_out` — cloud drafts in a worker job a request waits on (V1c), and a draft lost with its request
+    would still have been paid for."""
     from core.knowledge.api_models import EvalDrafts
 
     model = body.model or default_model(settings)
@@ -367,8 +372,21 @@ async def draft(kb: KnowledgeBase, body: EvalDraftRequest, settings: Mapping[str
             return await draft_one(kind, passages, model=model, settings=settings,
                                    session_id=f"knowledge-eval:{kb.id}")
 
+    tasks = [asyncio.ensure_future(one(kind, passages)) for kind, passages in jobs]
+    late: set[asyncio.Future] = set()
+    if tasks and deadline is not None:
+        _, late = await asyncio.wait(tasks, timeout=max(0.0, deadline - time.monotonic()))
+        for task in late:
+            task.cancel()
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
     drafts = []
-    for made, why in await asyncio.gather(*(one(kind, passages) for kind, passages in jobs)):
+    for task, outcome in zip(tasks, outcomes):
+        if task in late:
+            made, why = None, "timed_out"
+        elif isinstance(outcome, BaseException):
+            raise outcome  # as `gather` raised before: `draft_one` keeps its own failures
+        else:
+            made, why = outcome
         if made is None:
             dropped[why] = dropped.get(why, 0) + 1
         else:

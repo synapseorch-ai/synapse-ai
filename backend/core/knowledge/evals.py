@@ -54,6 +54,12 @@ class EvalBusy(KnowledgeError):
     code = "eval_busy"
 
 
+class EvalUnavailable(KnowledgeError):
+    """A run was recorded but whatever drives runs could not take it (a 503; cloud's worker queue, V1c)."""
+
+    code = "eval_unavailable"
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -225,7 +231,10 @@ async def delete_set(kb_id: str, set_id: str) -> None:
     from core.store import session
     from core.store.models import CollectionDB, KnowledgeEvalRunDB
 
+    from core.knowledge.evals_runs import reap
+
     record, _ = await _record(kb_id, set_id)
+    await reap(set_id=set_id)  # a run its worker left does not hold the set
     async with session() as s:
         busy = (await s.execute(select(KnowledgeEvalRunDB.id).where(
             KnowledgeEvalRunDB.tenant_id == _tenant(), KnowledgeEvalRunDB.set_id == set_id,
