@@ -32,6 +32,7 @@ import json
 import re
 import time
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -124,8 +125,9 @@ def build_tools(kbs: list) -> list:
     ]
 
 
-def _choose(kb_arg: Any, bases: list) -> tuple[list, str | None]:
-    """The bases a `kb` argument names — an id or a name — or why it names none."""
+def choose_bases(kb_arg: Any, bases: list) -> tuple[list, str | None]:
+    """The bases a `kb` argument names — an id or a name — or why it names none. MCP's search names
+    them the same way (`core/mcp_server/knowledge.py`)."""
     wanted = "" if kb_arg is None else str(kb_arg).strip()
     if wanted in ("", "all", "*"):
         return list(bases), None
@@ -196,6 +198,46 @@ def _int(value: Any) -> int | None:
         return None
 
 
+@dataclass
+class Passages:
+    """A search's hits laid out for a model to read: the blocks shown, the hits listed instead, and
+    what each hit showed (None when it was listed), in rank order."""
+
+    blocks: list[str]
+    not_shown: list[str]
+    shown: list[str | None]
+
+
+def lay_out(hits: list, budget: int, *, cut_note: Callable[[str], str]) -> Passages:
+    """`hits` as a model reads them — each `[K#] where` then its sanitized text — in rank order within
+    `budget` tokens. A hit that does not fit is listed, never squeezed, bar the first, which is cut to
+    fit and ended with `cut_note(label)`. The agent tool and MCP's search share it."""
+    from core.knowledge.chunker import estimate_tokens
+
+    blocks: list[str] = []
+    not_shown: list[str] = []
+    shown_by_hit: list[str | None] = []
+    used = 0
+    for hit in hits:
+        where = _where(hit.citation, hit.metadata)
+        body = sanitize((f"{hit.context}\n" if hit.context else "") + hit.content)
+        block = f"{hit.label} {where}\n{body}"
+        cost = estimate_tokens(block)
+        shown: str | None = None
+        if not not_shown and used + cost <= budget:
+            shown = body
+        elif not blocks and not not_shown:
+            shown = _cut(body, max(1, budget - estimate_tokens(f"{hit.label} {where}")), cut_note(hit.label))
+            block = f"{hit.label} {where}\n{shown}"
+        if shown is not None:
+            blocks.append(block)
+            used += estimate_tokens(block)
+        else:
+            not_shown.append(f"{hit.label} {where}")
+        shown_by_hit.append(shown)
+    return Passages(blocks, not_shown, shown_by_hit)
+
+
 def _error(tool: str, turn: int, message: str) -> Result:
     return Result(f"\nSystem: {tool}: {message}\n", None, f"Error: {_one_line(message, 200)}")
 
@@ -206,14 +248,13 @@ async def _search(args: dict, *, bases: list, turn: KnowledgeTurn, origin: Any, 
                   transcript_turn: int) -> Result:
     from core.knowledge import search
     from core.knowledge.api_models import SearchRequest
-    from core.knowledge.chunker import estimate_tokens
     from core.knowledge.errors import FilterError
     from core.knowledge.filters import parse_filter, to_canonical
 
     query = str(args.get("query") or "").strip()[:2000]
     if not query:
         return _error(SEARCH_TOOL, transcript_turn, "Give a query: what to look for, in plain words.")
-    chosen, problem = _choose(args.get("kb"), bases)
+    chosen, problem = choose_bases(args.get("kb"), bases)
     if problem:
         return _error(SEARCH_TOOL, transcript_turn, problem)
     raw_filters = args.get("filters")
@@ -260,29 +301,13 @@ async def _search(args: dict, *, bases: list, turn: KnowledgeTurn, origin: Any, 
         return turn.last_search[1]
 
     budget = max(kb.retrieval.max_context_tokens for kb in chosen)
-    blocks: list[str] = []
-    not_shown: list[str] = []
-    used = 0
-    for hit in response.hits:
-        n = parse_label(hit.label)
-        where = _where(hit.citation, hit.metadata)
-        body = sanitize((f"{hit.context}\n" if hit.context else "") + hit.content)
-        block = f"{hit.label} {where}\n{body}"
-        cost = estimate_tokens(block)
-        shown: str | None = None
-        if not not_shown and used + cost <= budget:
-            shown = body
-        elif not blocks and not not_shown:
-            shown = _cut(body, max(1, budget - estimate_tokens(f"{hit.label} {where}")),
-                         f"[… cut at the context budget — {READ_TOOL} {hit.label} for the rest]")
-            block = f"{hit.label} {where}\n{shown}"
-        if shown is not None:
-            blocks.append(block)
-            used += estimate_tokens(block)
-        else:
-            not_shown.append(f"{hit.label} {where}")
-        turn.record(n, chunk_id=hit.chunk_id, kb_id=hit.kb_id, expansion=_expansion(by_id[hit.kb_id]),
-                    citation=hit.citation.model_dump(mode="json"), shown=shown)
+    laid = lay_out(response.hits, budget,
+                   cut_note=lambda label: f"[… cut at the context budget — {READ_TOOL} {label} for the rest]")
+    for hit, shown in zip(response.hits, laid.shown):
+        turn.record(parse_label(hit.label), chunk_id=hit.chunk_id, kb_id=hit.kb_id,
+                    expansion=_expansion(by_id[hit.kb_id]), citation=hit.citation.model_dump(mode="json"),
+                    shown=shown)
+    blocks, not_shown = laid.blocks, laid.not_shown
 
     count = len(response.hits)
     lines = [
