@@ -3929,6 +3929,63 @@ async def check_knowledge_settings(browser) -> str:
 
 
 @check
+async def check_knowledge_upload(browser) -> str:
+    """An upload into a knowledge base (D175) speaks every `UploadSession` shape: each part is PUT with exactly
+    its `headers` and its share of the bytes, its ETag is read from the answer's `ETag` header — an object store
+    answers a part with that and an empty body, which a JSON-only reader fails on — and complete gets the ETags
+    back as they came, quotes included."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    for pattern, handler in _SMOKE_KB_ROUTES:
+        await ctx.route(pattern, handler)
+    puts: list[tuple[str, dict, int]] = []
+    completed: list[dict] = []
+    session = {"upload_id": "kup_smoke", "part_size": 5, "expires_at": _NOW, "parts": [
+        {"part_number": n, "url": f"/smoke-parts/{n}", "method": "PUT", "headers": {"X-Smoke-Part": str(n)}}
+        for n in (1, 2)]}
+
+    async def put_part(route):
+        req = route.request
+        n = req.url.rsplit("/", 1)[-1]
+        puts.append((n, await req.all_headers(), len(req.post_data_buffer or b"")))
+        await route.fulfill(status=200, headers={"ETag": f'"etag-{n}"'}, body="")
+
+    async def complete(route):
+        completed.append(json.loads(route.request.post_data or "{}"))
+        await route.fulfill(status=202, content_type="application/json", body=json.dumps({"documents": []}))
+    await ctx.route("**/api/knowledge/bases/*/uploads", _answer(session, status=201, methods=("POST",)))
+    await ctx.route("**/smoke-parts/*", put_part)
+    await ctx.route("**/api/knowledge/uploads/*/complete", complete)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        await page.get_by_role("button", name="Upload files").wait_for(timeout=30_000)
+        await page.locator("input[type=file]").set_input_files(
+            {"name": "smoke.md", "mimeType": "text/markdown", "buffer": b"# Hi\nyo"})
+        for _ in range(50):
+            if completed:
+                break
+            await asyncio.sleep(0.2)
+        uploads = page.get_by_role("list", name="Uploads")
+        on_page = (await uploads.inner_text()).strip() if await uploads.count() else ""
+        if not completed:
+            raise AssertionError(f"the upload never completed; parts PUT: {puts}; on the page: {on_page!r}")
+        sizes = [size for _, _, size in puts]
+        if sizes != [5, 2]:
+            raise AssertionError(f"parts were PUT with {sizes} bytes, not [5, 2]")
+        for n, headers, _ in puts:
+            if headers.get("x-smoke-part") != n:
+                raise AssertionError(f"part {n} was PUT without its own headers: {headers}")
+            if "authorization" in headers:
+                raise AssertionError(f"part {n} was PUT with an Authorization header")
+        want = [{"part_number": 1, "etag": '"etag-1"'}, {"part_number": 2, "etag": '"etag-2"'}]
+        if completed[0].get("parts") != want:
+            raise AssertionError(f"complete was sent {completed[0]}, not the ETags as they came")
+        return "parts PUT with their own headers and sizes, ETags read from the header, complete sent them as they came"
+    finally:
+        await ctx.close()
+
+
+@check
 async def check_promptwriter(browser) -> str:
     """The AI Prompt Writer says why it wrote nothing (F183).
 

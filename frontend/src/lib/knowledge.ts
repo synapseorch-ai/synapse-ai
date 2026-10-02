@@ -648,19 +648,48 @@ export const knowledgeApi = {
     },
 };
 
+/** Where one part's bytes go (`api_models.UploadPart`). OSS serves the URL itself; cloud's is a presigned
+ *  object-store URL. `headers` are sent with the PUT exactly as given, and nothing else is. */
+export type UploadPart = { part_number: number; url: string; method?: 'PUT'; headers?: Record<string, string> };
+
+/** An upload in parts (`api_models.UploadSession`): every part is `part_size` bytes but the last. */
+export type UploadSession = { upload_id: string; part_size: number; parts: UploadPart[]; expires_at?: string };
+
+/** Fresh URLs for parts whose signature ran out (a part's PUT answered 403). Only a product whose part URLs
+ *  expire supplies one; without it a 403 fails the upload. */
+export type RefreshParts = (uploadId: string, partNumbers: number[]) => Promise<UploadPart[]>;
+
+function putPart(part: UploadPart, body: Blob): Promise<Response> {
+    return fetch(part.url, { method: part.method ?? 'PUT', headers: part.headers ?? {}, body });
+}
+
+/**
+ * The part's ETag, as complete wants it back: the `ETag` header, quotes and all —
+ * an object store answers a part with that header and an empty body — else the
+ * `etag` of OSS's JSON answer.
+ */
+async function partEtag(res: Response): Promise<string> {
+    const header = res.headers.get('ETag');
+    if (header) return header;
+    const body = await res.json().catch(() => null) as { etag?: unknown } | null;
+    if (typeof body?.etag === 'string' && body.etag) return body.etag;
+    throw new Error('The upload answered without the part\'s ETag.');
+}
+
 /**
  * Upload one file into a knowledge base, in parts. `folder` is inside the base
- * (its root by default). `onProgress` hears bytes sent after each part.
+ * (its root by default). `onProgress` hears bytes sent after each part. A part
+ * refused with 403 gets one fresh URL through `refreshParts`, when given.
  */
 export async function uploadToKnowledge(
     kbId: string,
     file: File,
-    { folder, onProgress }: { folder?: string; onProgress?: (sent: number, total: number) => void } = {},
+    { folder, onProgress, refreshParts }: {
+        folder?: string; onProgress?: (sent: number, total: number) => void; refreshParts?: RefreshParts;
+    } = {},
 ): Promise<KnowledgeDocument[]> {
     if (file.size === 0) throw new Error('The file is empty.');
-    const session = await call<{
-        upload_id: string; part_size: number; parts: { part_number: number; url: string }[];
-    }>(`/api/knowledge/bases/${kbId}/uploads`, json('POST', {
+    const session = await call<UploadSession>(`/api/knowledge/bases/${kbId}/uploads`, json('POST', {
         filename: file.name, size_bytes: file.size, mime: file.type || 'application/octet-stream',
         ...(folder ? { path: folder } : {}),
     }));
@@ -669,10 +698,14 @@ export async function uploadToKnowledge(
     for (const part of session.parts) {
         const start = (part.part_number - 1) * session.part_size;
         const blob = file.slice(start, start + session.part_size);
-        const res = await fetch(part.url, { method: 'PUT', body: blob });
+        let res = await putPart(part, blob);
+        if (res.status === 403 && refreshParts) {
+            const fresh = (await refreshParts(session.upload_id, [part.part_number]))
+                .find(p => p.part_number === part.part_number);
+            if (fresh) res = await putPart(fresh, blob);
+        }
         if (!res.ok) throw new Error(await errorText(res));
-        const { etag } = await res.json() as { etag: string };
-        done.push({ part_number: part.part_number, etag });
+        done.push({ part_number: part.part_number, etag: await partEtag(res) });
         sent += blob.size;
         onProgress?.(sent, file.size);
     }
@@ -693,6 +726,44 @@ export function useKnowledgeEnabled(): boolean | null {
         return () => { live = false; };
     }, []);
     return enabled;
+}
+
+/**
+ * Every folder `GET /api/vault/tree` holds, from either shape it comes in: a
+ * nested `{tree: [{type, path, children}]}` (OSS), in tree order, or a flat
+ * `{folders: [...], files: [{path}]}` (cloud), where a folder that only holds
+ * files is named by its files, sorted.
+ */
+export function vaultFolders(data: unknown): string[] {
+    const d = (data ?? {}) as {
+        tree?: { type?: string; path?: string; children?: unknown[] }[];
+        folders?: unknown[];
+        files?: { path?: unknown }[];
+    };
+    if (Array.isArray(d.tree)) {
+        const out: string[] = [];
+        const walk = (nodes: { type?: string; path?: string; children?: unknown[] }[]) => {
+            for (const n of nodes) {
+                if (n?.type !== 'folder' || typeof n.path !== 'string') continue;
+                out.push(n.path);
+                walk((n.children ?? []) as typeof nodes);
+            }
+        };
+        walk(d.tree);
+        return out;
+    }
+    const seen = new Set<string>();
+    const withParents = (path: string) => {
+        const parts = path.split('/').filter(Boolean);
+        for (let i = 1; i <= parts.length; i++) seen.add(parts.slice(0, i).join('/'));
+    };
+    for (const f of Array.isArray(d.folders) ? d.folders : []) if (typeof f === 'string') withParents(f);
+    for (const f of Array.isArray(d.files) ? d.files : []) {
+        if (typeof f?.path !== 'string') continue;
+        const cut = f.path.lastIndexOf('/');
+        if (cut > 0) withParents(f.path.slice(0, cut));
+    }
+    return [...seen].sort();
 }
 
 /** A path as shown inside its knowledge base: without the base's folder in front. */

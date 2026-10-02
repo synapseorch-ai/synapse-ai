@@ -5,10 +5,8 @@ import Link from 'next/link';
 import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, Save, Eye, EyeOff, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud, Upload, Library } from 'lucide-react';
 import { renderTextContent } from '@/lib/utils';
 import { Badge, ConfirmDialog, Modal, Spinner, Toast, useToast } from '@/components/ui';
-import {
-    ACCEPTED, REASONS, STATUS, WORKING, knowledgeApi, uploadToKnowledge, useKnowledgeEnabled,
-    type KnowledgeBase, type KnowledgeDocument,
-} from '@/lib/knowledge';
+import { DocBadge, useVaultKnowledge, vaultKnowledge, type VaultKnowledge } from '@/components/knowledge/VaultKnowledge';
+import { ACCEPTED, REASONS, uploadToKnowledge, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,65 +18,6 @@ interface VaultNode {
     type: 'file' | 'folder';
     ext?: string;
     children?: VaultNode[];
-}
-
-/**
- * What the tree needs to know about Knowledge (D157), when it is on: which
- * folders are knowledge bases, where each of their files stands, and how to
- * upload into one. Absent, the tree is the plain Vault it always was.
- */
-interface VaultKnowledge {
-    baseAt: (path: string) => KnowledgeBase | null;
-    baseHolding: (path: string) => KnowledgeBase | null;
-    /** A folder Knowledge fills itself — a base's fetched pages (`_web`) or records (`_records`): no
-     *  uploads or new files there (the backend refuses them, and the next crawl would overwrite them). */
-    managed: (path: string) => boolean;
-    docAt: (path: string) => KnowledgeDocument | null;
-    onUpload: (folderPath: string, kb: KnowledgeBase) => void;
-}
-
-function useVaultKnowledge(active: boolean, reloadKey: number) {
-    const [bases, setBases] = useState<KnowledgeBase[]>([]);
-    const [docs, setDocs] = useState<Record<string, KnowledgeDocument>>({});
-    const [tick, setTick] = useState(0);
-
-    useEffect(() => {
-        if (!active) return;
-        let live = true;
-        knowledgeApi.bases()
-            .then(async list => {
-                const all = await Promise.all(list.map(kb => knowledgeApi.documents(kb.id).catch(() => [])));
-                if (!live) return;
-                setBases(list);
-                setDocs(Object.fromEntries(all.flat().map(d => [d.path, d])));
-            })
-            .catch(() => { });
-        return () => { live = false; };
-    }, [active, reloadKey, tick]);
-
-    const working = active && Object.values(docs).some(d => WORKING.has(d.status));
-    useEffect(() => {
-        if (!working) return;
-        const timer = setInterval(() => setTick(t => t + 1), 3000);
-        return () => clearInterval(timer);
-    }, [working]);
-
-    return {
-        bases: active ? bases : [],
-        docs: active ? docs : {},
-        reload: () => setTick(t => t + 1),
-    };
-}
-
-/** A file's Knowledge status, beside its name — never inside the name's button, whose name tests find it by. */
-function DocBadge({ doc }: { doc: KnowledgeDocument }) {
-    const s = STATUS[doc.status];
-    return (
-        <span title={doc.status_reason ? `${s.label}: ${REASONS[doc.status_reason] ?? doc.status_reason}` : s.label}
-            className="shrink-0">
-            <Badge size="sm" tone={s.tone}>{s.label}</Badge>
-        </span>
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -524,17 +463,10 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
         }
     }, [storageSource]);
 
-    const knowledge: VaultKnowledge | undefined = knowledgeOn && kn.bases.length ? {
-        baseAt: path => kn.bases.find(b => b.folder === path) ?? null,
-        baseHolding: path => kn.bases.find(b => b.status === 'active'
-            && (path === b.folder || path.startsWith(`${b.folder}/`))) ?? null,
-        managed: path => kn.bases.some(b => ['_web', '_records'].some(dir => {
-            const root = `${b.folder}/${dir}`;
-            return path === root || path.startsWith(`${root}/`);
-        })),
-        docAt: path => kn.docs[path] ?? null,
-        onUpload: (folder, kb) => { setUploadTarget({ folder, kb }); uploadInput.current?.click(); },
-    } : undefined;
+    const knowledge: VaultKnowledge | undefined = vaultKnowledge(kn, (folder, kb) => {
+        setUploadTarget({ folder, kb });
+        uploadInput.current?.click();
+    });
 
     const uploadFiles = async (files: FileList) => {
         if (!uploadTarget) return;

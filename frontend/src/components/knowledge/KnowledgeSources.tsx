@@ -11,7 +11,7 @@
  */
 import Link from 'next/link';
 
-import type { KnowledgeCitation } from '@/types';
+import type { KnowledgeCitation } from '@/lib/knowledge';
 
 /** `[K3]` in an answer → a link to row 3 of its Sources, for the labels that resolved. */
 export function linkLabels(text: string, citations: KnowledgeCitation[] | undefined, anchor: string): string {

@@ -1,5 +1,6 @@
-import { KnowledgeScreen } from '@/components/settings/KnowledgeScreen';
+import { KnowledgeScreen } from '@/components/knowledge/KnowledgeScreen';
+import { OssKnowledgeHost } from '@/lib/knowledgeHost';
 
 export default function KnowledgePage() {
-    return <KnowledgeScreen />;
+    return <OssKnowledgeHost><KnowledgeScreen /></OssKnowledgeHost>;
 }

@@ -18,7 +18,7 @@ import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
-import { KnowledgeSources, linkLabels } from '@/components/KnowledgeSources';
+import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
 
 // ─── LLM Thought Collapsible ────────────────────────────────────────────────
 type ThoughtEntry =

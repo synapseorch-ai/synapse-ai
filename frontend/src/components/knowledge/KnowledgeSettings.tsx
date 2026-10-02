@@ -23,11 +23,12 @@ import {
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import {
-    INDEX_AFFECTING, KnowledgeApiError, LANGUAGES, PRESETS, RERANK_SUGGESTIONS, applyPreset, formatUsd as usd,
+    INDEX_AFFECTING, KnowledgeApiError, LANGUAGES, PRESETS, applyPreset, formatUsd as usd,
     knowledgeApi, matchingPreset,
     type BaseSettings, type CostPreview, type KnowledgeBase,
 } from '@/lib/knowledge';
-import { modelOptions, withUnreachable, type ProviderModels } from '@/lib/models';
+
+import { useKnowledgeHost, type KnowledgeWorkspace } from './host';
 
 const EDITED = ['language', 'visitor_access', 'budget_monthly_usd', 'chunking', 'embedding', 'rerank', 'fusion',
     'retrieval', 'enrichment'] as const satisfies readonly (keyof BaseSettings)[];
@@ -109,8 +110,6 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: 
     );
 }
 
-type Workspace = { embedding: string; keys: Record<string, boolean>; providers: Record<string, ProviderModels> };
-
 export function KnowledgeSettings({
     kb, documents, onClose, onSaved,
 }: {
@@ -122,7 +121,8 @@ export function KnowledgeSettings({
 }) {
     const [base, setBase] = useState(kb);
     const [draft, setDraft] = useState<BaseSettings>(() => pick(kb));
-    const [workspace, setWorkspace] = useState<Workspace | null>(null);
+    const host = useKnowledgeHost();
+    const [workspace, setWorkspace] = useState<KnowledgeWorkspace | null>(null);
     const [preview, setPreview] = useState<CostPreview | null>(null);
     const [previewError, setPreviewError] = useState('');
     const [saving, setSaving] = useState(false);
@@ -131,22 +131,9 @@ export function KnowledgeSettings({
 
     useEffect(() => {
         let live = true;
-        Promise.all([
-            fetch('/api/settings').then(r => r.json()).catch(() => ({})),
-            fetch('/api/models').then(r => r.json()).catch(() => ({})),
-        ]).then(([settings, models]) => {
-            if (!live) return;
-            const keys: Record<string, boolean> = {};
-            for (const k of ['cohere_key', 'voyage_key', 'jina_key', 'model_gateway_key']) keys[k] = !!settings?.[`${k}_set`];
-            keys.knowledge_rerank_base_url = !!settings?.knowledge_rerank_base_url;
-            setWorkspace({
-                embedding: String(settings?.knowledge_embedding_model || settings?.embedding_model || ''),
-                keys,
-                providers: models?.providers ?? {},
-            });
-        });
+        host.loadWorkspace().then(w => { if (live) setWorkspace(w); });
         return () => { live = false; };
-    }, []);
+    }, [host]);
 
     const saved = useMemo(() => pick(base), [base]);
     const changed = EDITED.filter(k => !same(draft[k], saved[k]));
@@ -209,11 +196,11 @@ export function KnowledgeSettings({
 
     const embeddingOptions: ComboboxOption[] = useMemo(() => {
         const defaultLabel = workspace?.embedding ? `Workspace default (${workspace.embedding})` : 'Workspace default (none set)';
-        const listed = withUnreachable(modelOptions(workspace?.providers ?? {}, 'embedding_models'), draft.embedding.model || undefined);
+        const listed = host.withUnreachable(workspace?.embeddingModels ?? [], draft.embedding.model || undefined);
         return [{ value: DEFAULT_MODEL, label: defaultLabel }, ...listed];
-    }, [workspace, draft.embedding.model]);
+    }, [host, workspace, draft.embedding.model]);
 
-    const rerankRoute = RERANK_SUGGESTIONS.find(r => (draft.rerank.model ?? '').startsWith(r.model.split('.')[0] + '.'));
+    const rerankRoute = host.rerankChoices.find(r => (draft.rerank.model ?? '').startsWith(r.model.split('.')[0] + '.'));
     const rerankKeyMissing = !!rerankRoute?.key && workspace !== null && !workspace.keys[rerankRoute.key];
 
     const presetOptions: SelectOption<string>[] = [
@@ -284,7 +271,7 @@ export function KnowledgeSettings({
                             label="Rerank model"
                             hint={rerankKeyMissing
                                 ? <>Needs {rerankRoute?.provider}: add it on <Link href="/settings/models" className="underline">Settings → Models</Link>.</>
-                                : 'Optional. Named with its provider, e.g. cohere.rerank-v3.5.'}
+                                : `Optional. Named with its provider, e.g. ${host.rerankChoices[0]?.model ?? 'cohere.rerank-v3.5'}.`}
                         >
                             <Input
                                 value={draft.rerank.model ?? ''}
@@ -296,7 +283,7 @@ export function KnowledgeSettings({
                             />
                         </Field>
                         <datalist id="knowledge-rerank-models">
-                            {RERANK_SUGGESTIONS.map(r => <option key={r.model} value={r.model}>{r.provider}</option>)}
+                            {host.rerankChoices.map(r => <option key={r.model} value={r.model}>{r.provider}</option>)}
                         </datalist>
                         <Field label="With neighbouring passages">
                             <Select

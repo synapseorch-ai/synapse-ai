@@ -31,7 +31,8 @@ import {
     type EvalQuery, type EvalRun, type EvalRunRequest, type EvalRunSummary, type EvalScores, type EvalSet,
     type EvalSetSummary, type KnowledgeBase, type SearchTrace,
 } from '@/lib/knowledge';
-import { modelOptions, withUnreachable, type ProviderModels } from '@/lib/models';
+
+import { useKnowledgeHost, type KnowledgeWorkspace } from './host';
 
 type Notify = (message: string, tone?: 'success' | 'warning' | 'danger') => void;
 
@@ -54,20 +55,13 @@ const SNAP_STATUS: Record<string, string> = { active: 'Serving', building: 'Bein
 
 /** The workspace's models and the default a draft or a judge starts from. */
 function useWorkspaceModels() {
-    const [state, setState] = useState<{ providers: Record<string, ProviderModels>; model: string; judge: string } | null>(null);
+    const { loadWorkspace } = useKnowledgeHost();
+    const [state, setState] = useState<KnowledgeWorkspace | null>(null);
     useEffect(() => {
         let live = true;
-        Promise.all([
-            fetch('/api/settings').then(r => r.json()).catch(() => ({})),
-            fetch('/api/models').then(r => r.json()).catch(() => ({})),
-        ]).then(([settings, models]) => {
-            if (live) {
-                const judge = String(settings?.judge_model || '');
-                setState({ providers: models?.providers ?? {}, model: String(settings?.model || ''), judge: judge === 'default' ? '' : judge });
-            }
-        });
+        loadWorkspace().then(w => { if (live) setState(w); });
         return () => { live = false; };
-    }, []);
+    }, [loadWorkspace]);
     return state;
 }
 
@@ -114,6 +108,7 @@ function useEstimate(kbId: string, body: Parameters<typeof knowledgeApi.eval.est
 // ── the section ───────────────────────────────────────────────────────────────
 
 export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) {
+    const { canEdit } = useKnowledgeHost();
     const [sets, setSets] = useState<EvalSetSummary[] | null>(null);
     const [setId, setSetId] = useState<string | null>(null);
     const [current, setCurrent] = useState<EvalSet | null>(null);
@@ -221,7 +216,7 @@ export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) 
             ) : sets.length === 0 ? (
                 <EmptyState
                     title="No question sets yet"
-                    action={<Button onClick={newSet} disabled={busy}><ListPlus className="size-4" aria-hidden />New question set</Button>}
+                    action={canEdit && <Button onClick={newSet} disabled={busy}><ListPlus className="size-4" aria-hidden />New question set</Button>}
                 >
                     Draft questions from this knowledge base&apos;s own passages, or keep real searches with the
                     passages that answer them. Then see how often each kind of search finds the answer.
@@ -234,7 +229,7 @@ export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) 
                                 options={sets.map(s => ({ value: s.id, label: `${s.name} (${s.case_count})` }))} aria-label="Question set" />
                         )}
                         {sets.length === 1 && <Label>{current?.name ?? sets[0].name}</Label>}
-                        <div className="ml-auto flex flex-wrap gap-2">
+                        {canEdit && <div className="ml-auto flex flex-wrap gap-2">
                             <Button size="sm" variant="secondary" onClick={() => setDialog('draft')} disabled={!current}>
                                 <Sparkles className="size-4" aria-hidden />Draft questions
                             </Button>
@@ -248,7 +243,7 @@ export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) 
                                 <ListPlus className="size-4" aria-hidden />New set
                             </Button>
                             <IconButton label={`Delete ${current?.name ?? 'question set'}`} onClick={() => setDialog('delete')} disabled={!current} icon={Trash2} />
-                        </div>
+                        </div>}
                     </div>
 
                     {suggestions.length > 0 && current && (
@@ -266,17 +261,17 @@ export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) 
 
                     {current && (
                         <Cases kb={kb} cases={current.cases} busy={busy}
-                            onEdit={setEditing}
-                            onRemove={c => save(current.cases.filter(x => x.id !== c.id))} />
+                            onEdit={canEdit ? setEditing : undefined}
+                            onRemove={canEdit ? c => save(current.cases.filter(x => x.id !== c.id)) : undefined} />
                     )}
 
                     {runs.length > 0 && (
                         <Results kb={kb} runs={runs} run={run} runId={runId} onPick={setRunId} notify={notify}
-                            onCancel={async () => {
+                            onCancel={canEdit ? async () => {
                                 if (!run) return;
                                 try { setRun({ ...run, ...(await knowledgeApi.eval.cancelRun(kb.id, run.id)) }); }
                                 catch (e) { notify(message(e), 'danger'); }
-                            }} />
+                            } : undefined} />
                     )}
                 </div>
             )}
@@ -346,7 +341,9 @@ function Evidence({ kb, kase }: { kb: KnowledgeBase; kase: Pick<EvalCase, 'evide
 }
 
 function Cases({ kb, cases, busy, onEdit, onRemove }: {
-    kb: KnowledgeBase; cases: EvalCase[]; busy: boolean; onEdit: (c: EvalCase) => void; onRemove: (c: EvalCase) => void;
+    kb: KnowledgeBase; cases: EvalCase[]; busy: boolean;
+    /** Both absent for someone who may not change the set: no actions column. */
+    onEdit?: (c: EvalCase) => void; onRemove?: (c: EvalCase) => void;
 }) {
     if (!cases.length) return <Muted>No questions in this set yet. Draft some, or add a recent search.</Muted>;
     return (
@@ -355,7 +352,7 @@ function Cases({ kb, cases, busy, onEdit, onRemove }: {
                 <TR hover={false}>
                     <TH width="full">Question, and where its answer is</TH>
                     <TH width="min">Kind</TH>
-                    <TH width="min"><span className="sr-only">Actions</span></TH>
+                    {onEdit && onRemove && <TH width="min"><span className="sr-only">Actions</span></TH>}
                 </TR>
             </THead>
             <TBody>
@@ -373,12 +370,14 @@ function Cases({ kb, cases, busy, onEdit, onRemove }: {
                                 <Muted className="block text-xs">{pct(c.overlap)} of its words in the passage</Muted>
                             )}
                         </TD>
-                        <TD nowrap>
-                            <div className="flex gap-1">
-                                <IconButton label={`Edit “${c.question.slice(0, 40)}”`} onClick={() => onEdit(c)} disabled={busy} icon={Pencil} />
-                                <IconButton label={`Remove “${c.question.slice(0, 40)}”`} onClick={() => onRemove(c)} disabled={busy} icon={Trash2} />
-                            </div>
-                        </TD>
+                        {onEdit && onRemove && (
+                            <TD nowrap>
+                                <div className="flex gap-1">
+                                    <IconButton label={`Edit “${c.question.slice(0, 40)}”`} onClick={() => onEdit(c)} disabled={busy} icon={Pencil} />
+                                    <IconButton label={`Remove “${c.question.slice(0, 40)}”`} onClick={() => onRemove(c)} disabled={busy} icon={Trash2} />
+                                </div>
+                            </TD>
+                        )}
                     </TR>
                 ))}
             </TBody>
@@ -456,6 +455,7 @@ function DraftDialog({ kb, setId, onClose, onDrafted }: {
     kb: KnowledgeBase; setId: string; onClose: () => void;
     onDrafted: (drafts: EvalDraft[], dropped: Record<string, number>) => void;
 }) {
+    const { withUnreachable } = useKnowledgeHost();
     const models = useWorkspaceModels();
     const [model, setModel] = useState('');
     const [direct, setDirect] = useState(4);
@@ -469,7 +469,7 @@ function DraftDialog({ kb, setId, onClose, onDrafted }: {
         ? { drafts: { model: chosen, direct, paraphrase, multi_hop: multiHop, set_id: setId } } : null;
     const priced = useEstimate(kb.id, body);
     const options: ComboboxOption[] = useMemo(
-        () => withUnreachable(modelOptions(models?.providers ?? {}), chosen || undefined), [models, chosen]);
+        () => withUnreachable(models?.chatModels ?? [], chosen || undefined), [withUnreachable, models, chosen]);
 
     const draft = async () => {
         if (!body) return;
@@ -597,6 +597,7 @@ function RunDialog({ kb, set, previous, onClose, onStarted }: {
     kb: KnowledgeBase; set: EvalSet; previous: EvalRunSummary[]; onClose: () => void;
     onStarted: (r: EvalRunSummary) => void;
 }) {
+    const { withUnreachable } = useKnowledgeHost();
     const models = useWorkspaceModels();
     const choices = useMemo<SnapChoice[]>(() => {
         const out: SnapChoice[] = [];
@@ -621,7 +622,7 @@ function RunDialog({ kb, set, previous, onClose, onStarted }: {
     const [judgeModel, setJudgeModel] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
-    const options: ComboboxOption[] = useMemo(() => modelOptions(models?.providers ?? {}), [models]);
+    const options: ComboboxOption[] = useMemo(() => models?.chatModels ?? [], [models]);
     const answerer = answerModel || models?.model || '';
     const body: EvalRunRequest = {
         set_id: set.id, snapshot_ids: snaps, rerank: rerank === 'off' ? false : null,
@@ -712,7 +713,7 @@ const COLUMNS: { key: string; label: string; get: (s: EvalScores) => number | un
 
 function Results({ kb, runs, run, runId, onPick, onCancel, notify }: {
     kb: KnowledgeBase; runs: EvalRunSummary[]; run: EvalRun | null; runId: string | null;
-    onPick: (id: string) => void; onCancel: () => void; notify: Notify;
+    onPick: (id: string) => void; onCancel?: () => void; notify: Notify;
 }) {
     const [kind, setKind] = useState<'all' | EvalCaseKind>('all');
     const [custom, setCustom] = useState<EvalConfigResult[]>([]);
@@ -778,7 +779,7 @@ function Results({ kb, runs, run, runId, onPick, onCancel, notify }: {
                         {ACTIVE.has(run.status) ? (
                             <>
                                 <Muted>{run.done_count} of {count(run.case_count, 'question')}</Muted>
-                                {run.status !== 'cancelling' && (
+                                {run.status !== 'cancelling' && onCancel && (
                                     <Button size="sm" variant="ghost" onClick={onCancel}><Square className="size-3.5" aria-hidden />Stop</Button>
                                 )}
                             </>

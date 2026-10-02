@@ -22,6 +22,9 @@
  *
  * Evaluate (`KnowledgeEval`, V1) tests the base on its own documents: question sets, runs scored with no judge,
  * snapshots side by side, and an optional grounded judge.
+ *
+ * This directory is shared with the cloud app byte for byte; what differs between the products (the workspace's
+ * models, web sources and Evaluate being served, expiring part URLs) comes from `./host` (D175).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, FolderOpen, Globe, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, Upload } from 'lucide-react';
@@ -32,27 +35,18 @@ import {
     type SelectOption,
 } from '@/components/ui';
 import { RetrievalTrace } from '@/components/RetrievalTrace';
-import { Evaluate } from '@/components/settings/KnowledgeEval';
-import { KnowledgeSettings } from '@/components/settings/KnowledgeSettings';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
 import {
     ACCEPTED, BUILD_PAUSED, CRAWLING, DEGRADED, PRESETS, REASONS, RESTING, STATUS, WORKING, formatBytes, formatUsd, inBase,
-    knowledgeApi, uploadToKnowledge, useKnowledgeEnabled,
+    knowledgeApi, uploadToKnowledge, useKnowledgeEnabled, vaultFolders,
     type CostGroup, type CostGroupBy, type DocStatus, type KnowledgeBase, type KnowledgeDocument,
     type KnowledgeDocumentDetail, type SearchResult, type WebCrawlState, type WebSourceKind,
 } from '@/lib/knowledge';
 
-type VaultNode = { name: string; path: string; type: 'file' | 'folder'; children?: VaultNode[] };
-
-function folders(nodes: VaultNode[], out: string[] = []): string[] {
-    for (const n of nodes) {
-        if (n.type !== 'folder') continue;
-        out.push(n.path);
-        folders(n.children ?? [], out);
-    }
-    return out;
-}
+import { useKnowledgeHost } from './host';
+import { Evaluate } from './KnowledgeEval';
+import { KnowledgeSettings } from './KnowledgeSettings';
 
 function when(iso: string | null | undefined): string {
     return iso ? new Date(iso).toLocaleString() : '—';
@@ -101,6 +95,7 @@ function summary(kb: KnowledgeBase): string {
 
 export function KnowledgeScreen() {
     const enabled = useKnowledgeEnabled();
+    const { canEdit } = useKnowledgeHost();
     const [bases, setBases] = useState<KnowledgeBase[] | null>(null);
     const [selected, setSelected] = useState<string | null>(null);
     const [creating, setCreating] = useState(false);
@@ -159,7 +154,7 @@ export function KnowledgeScreen() {
             title="Knowledge"
             description="Vault folders made searchable. Every file in a knowledge base's folder is read and indexed."
             width="wide"
-            actions={<Button onClick={() => setCreating(true)}><Plus className="size-4" aria-hidden />New knowledge base</Button>}
+            actions={canEdit && <Button onClick={() => setCreating(true)}><Plus className="size-4" aria-hidden />New knowledge base</Button>}
         >
             {error && <ErrorNote className="mb-4">{error}</ErrorNote>}
             {bases === null ? (
@@ -167,7 +162,7 @@ export function KnowledgeScreen() {
             ) : bases.length === 0 ? (
                 <EmptyState
                     title="No knowledge bases yet"
-                    action={<Button onClick={() => setCreating(true)}>New knowledge base</Button>}
+                    action={canEdit && <Button onClick={() => setCreating(true)}>New knowledge base</Button>}
                 >
                     A knowledge base is a Vault folder. Pick one, or name a new one, and everything in it is indexed.
                 </EmptyState>
@@ -242,7 +237,7 @@ function NewBaseDialog({
         setName(''); setFolder(''); setDescription(''); setPreset('balanced'); setError('');
         fetch('/api/vault/tree')
             .then(r => r.json())
-            .then(data => setKnown(folders(data?.tree ?? []).filter(p => !/^(tool_outputs|playwright|compaction_archives)(\/|$)/.test(p))))
+            .then(data => setKnown(vaultFolders(data).filter(p => !/^(tool_outputs|playwright|compaction_archives)(\/|$)/.test(p))))
             .catch(() => setKnown([]));
     }, [open]);
 
@@ -318,6 +313,7 @@ function BaseDetail({
     onDelete: () => void;
     notify: (message: string, tone?: 'success' | 'warning' | 'danger') => void;
 }) {
+    const host = useKnowledgeHost();
     const [docs, setDocs] = useState<KnowledgeDocument[] | null>(null);
     const [crawls, setCrawls] = useState<WebCrawlState[]>([]);
     const [addingWeb, setAddingWeb] = useState(false);
@@ -339,11 +335,13 @@ function BaseDetail({
         knowledgeApi.documents(kb.id)
             .then(list => { if (live) setDocs(list); })
             .catch(e => notify(e instanceof Error ? e.message : String(e), 'danger'));
-        knowledgeApi.crawls(kb.id)
-            .then(list => { if (live) setCrawls(list); })
-            .catch(() => { if (live) setCrawls([]); });
+        if (host.webSources) {
+            knowledgeApi.crawls(kb.id)
+                .then(list => { if (live) setCrawls(list); })
+                .catch(() => { if (live) setCrawls([]); });
+        }
         return () => { live = false; };
-    }, [kb.id, tick, notify]);
+    }, [kb.id, tick, notify, host.webSources]);
 
     const build = kb.state.build ?? null;
     const rebuilding = build?.status === 'building' && !build.paused_reason;
@@ -369,6 +367,7 @@ function BaseDetail({
             try {
                 await uploadToKnowledge(kb.id, file, {
                     onProgress: (sent, total) => setUploads(u => u.map(x => (x.name === file.name ? { ...x, sent, total } : x))),
+                    refreshParts: host.refreshParts,
                 });
                 setUploads(u => u.filter(x => x.name !== file.name));
             } catch (e) {
@@ -436,46 +435,54 @@ function BaseDetail({
                     </p>
                     {kb.description && <p className="mt-1 text-sm text-text-muted">{kb.description}</p>}
                 </div>
-                <div className="flex flex-wrap gap-2">
-                    <Button variant="secondary" onClick={() => input.current?.click()}>
-                        <Upload className="size-4" aria-hidden />Upload files
-                    </Button>
-                    <Button variant="secondary" onClick={() => setAddingWeb(true)} disabled={kb.status !== 'active'}>
-                        <Globe className="size-4" aria-hidden />Add web pages
-                    </Button>
-                    <Button variant="secondary" onClick={() => setEditing(true)}>
-                        <SlidersHorizontal className="size-4" aria-hidden />Settings
-                    </Button>
-                    <Button variant="ghost" onClick={onDelete}>
-                        <Trash2 className="size-4" aria-hidden />Delete
-                    </Button>
-                </div>
-            </div>
-
-            {build && <RebuildLine build={build} onRetry={retryRebuild} />}
-
-            <input
-                ref={input}
-                type="file"
-                multiple
-                accept={ACCEPTED.join(',')}
-                className="hidden"
-                aria-hidden
-                tabIndex={-1}
-                onChange={e => { if (e.target.files) send(e.target.files); e.target.value = ''; }}
-            />
-            <div
-                onDragOver={e => { e.preventDefault(); setDragging(true); }}
-                onDragLeave={() => setDragging(false)}
-                onDrop={e => { e.preventDefault(); setDragging(false); send(e.dataTransfer.files); }}
-                className={cn(
-                    'rounded-lg border border-dashed px-4 py-3 text-sm text-text-muted transition-colors',
-                    dragging ? 'border-accent bg-accent-subtle/30' : 'border-border',
+                {host.canEdit && (
+                    <div className="flex flex-wrap gap-2">
+                        <Button variant="secondary" onClick={() => input.current?.click()}>
+                            <Upload className="size-4" aria-hidden />Upload files
+                        </Button>
+                        {host.webSources && (
+                            <Button variant="secondary" onClick={() => setAddingWeb(true)} disabled={kb.status !== 'active'}>
+                                <Globe className="size-4" aria-hidden />Add web pages
+                            </Button>
+                        )}
+                        <Button variant="secondary" onClick={() => setEditing(true)}>
+                            <SlidersHorizontal className="size-4" aria-hidden />Settings
+                        </Button>
+                        <Button variant="ghost" onClick={onDelete}>
+                            <Trash2 className="size-4" aria-hidden />Delete
+                        </Button>
+                    </div>
                 )}
-            >
-                Drop files here to add them to <span className="font-mono">{kb.folder}</span>. Documents, spreadsheets,
-                slides, email, web pages and code are read; scanned pages and images are read once OCR is configured.
             </div>
+
+            {build && <RebuildLine build={build} onRetry={host.canEdit ? retryRebuild : undefined} />}
+
+            {host.canEdit && (
+                <>
+                    <input
+                        ref={input}
+                        type="file"
+                        multiple
+                        accept={ACCEPTED.join(',')}
+                        className="hidden"
+                        aria-hidden
+                        tabIndex={-1}
+                        onChange={e => { if (e.target.files) send(e.target.files); e.target.value = ''; }}
+                    />
+                    <div
+                        onDragOver={e => { e.preventDefault(); setDragging(true); }}
+                        onDragLeave={() => setDragging(false)}
+                        onDrop={e => { e.preventDefault(); setDragging(false); send(e.dataTransfer.files); }}
+                        className={cn(
+                            'rounded-lg border border-dashed px-4 py-3 text-sm text-text-muted transition-colors',
+                            dragging ? 'border-accent bg-accent-subtle/30' : 'border-border',
+                        )}
+                    >
+                        Drop files here to add them to <span className="font-mono">{kb.folder}</span>. Documents, spreadsheets,
+                        slides, email, web pages and code are read; scanned pages and images are read once OCR is configured.
+                    </div>
+                </>
+            )}
             {uploads.length > 0 && (
                 <ul className="space-y-1" aria-label="Uploads">
                     {uploads.map(u => (
@@ -495,13 +502,13 @@ function BaseDetail({
                 </ul>
             )}
 
-            {kb.web.sources.length > 0 && (
+            {host.webSources && kb.web.sources.length > 0 && (
                 <WebSources kb={kb} crawls={crawls} notify={notify} onChanged={() => { refresh(); onChanged(); }} />
             )}
 
             <TestSearch kb={kb} />
             <Costs kb={kb} docs={docs} />
-            <Evaluate kb={kb} notify={notify} />
+            {host.evaluate && <Evaluate kb={kb} notify={notify} />}
 
             <div className="flex items-center justify-between gap-3">
                 <Label>{docs ? count(shown.length, 'document') : 'Documents'}</Label>
@@ -512,7 +519,7 @@ function BaseDetail({
                 <div className="flex justify-center py-8"><Spinner /></div>
             ) : shown.length === 0 ? (
                 <EmptyState title={docs.length ? 'No documents with this status' : 'No documents yet'}>
-                    {docs.length ? null : 'Upload files, or add them to the folder in the Vault.'}
+                    {docs.length || !host.canEdit ? null : 'Upload files, or add them to the folder in the Vault.'}
                 </EmptyState>
             ) : (
                 <Table density="compact" minWidth="36rem">
@@ -522,7 +529,7 @@ function BaseDetail({
                             <TH width="min">Status</TH>
                             <TH width="min" align="right">Chunks</TH>
                             <TH width="min">Updated</TH>
-                            <TH width="min"><span className="sr-only">Actions</span></TH>
+                            {host.canEdit && <TH width="min"><span className="sr-only">Actions</span></TH>}
                         </TR>
                     </THead>
                     <TBody>
@@ -547,14 +554,16 @@ function BaseDetail({
                                 <TD nowrap><StatusBadge status={d.status} /></TD>
                                 <TD align="right" nowrap>{d.chunks ?? '—'}</TD>
                                 <TD nowrap><Muted>{when(d.updated_at)}</Muted></TD>
-                                <TD nowrap>
-                                    <TableActions>
-                                        <IconButton size="sm" label={`Retry ${inBase(d.path, kb.folder)}`} icon={RotateCcw}
-                                            disabled={!RESTING.has(d.status)} onClick={() => retry(d)} />
-                                        <IconButton size="sm" tone="danger" label={`Delete ${inBase(d.path, kb.folder)}`}
-                                            icon={Trash2} disabled={d.status === 'deleting'} onClick={() => setRemoving(d)} />
-                                    </TableActions>
-                                </TD>
+                                {host.canEdit && (
+                                    <TD nowrap>
+                                        <TableActions>
+                                            <IconButton size="sm" label={`Retry ${inBase(d.path, kb.folder)}`} icon={RotateCcw}
+                                                disabled={!RESTING.has(d.status)} onClick={() => retry(d)} />
+                                            <IconButton size="sm" tone="danger" label={`Delete ${inBase(d.path, kb.folder)}`}
+                                                icon={Trash2} disabled={d.status === 'deleting'} onClick={() => setRemoving(d)} />
+                                        </TableActions>
+                                    </TD>
+                                )}
                             </TR>
                         ))}
                     </TBody>
@@ -566,7 +575,7 @@ function BaseDetail({
                 open={!!open}
                 folder={kb.folder}
                 onClose={() => setOpen(null)}
-                onRetry={d => retry(d)}
+                onRetry={host.canEdit ? d => retry(d) : undefined}
             />
             <ConfirmDialog
                 open={!!removing}
@@ -742,6 +751,7 @@ function WebSources({
     notify: (message: string, tone?: 'success' | 'warning' | 'danger') => void;
     onChanged: () => void;
 }) {
+    const { canEdit } = useKnowledgeHost();
     const [removing, setRemoving] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const byId = new Map(crawls.map(c => [c.source_id, c]));
@@ -798,12 +808,14 @@ function WebSources({
                                     {c ? crawlLine(c) : 'Not fetched yet'}
                                 </p>
                             </div>
-                            <TableActions>
-                                <IconButton size="sm" label={`Fetch ${shortUrl(s.url)} again now`} icon={RotateCcw}
-                                    disabled={!!c && CRAWLING.has(c.status)} onClick={() => again(s.url, s.kind)} />
-                                <IconButton size="sm" tone="danger" label={`Remove ${shortUrl(s.url)}`} icon={Trash2}
-                                    onClick={() => setRemoving(s.id)} />
-                            </TableActions>
+                            {canEdit && (
+                                <TableActions>
+                                    <IconButton size="sm" label={`Fetch ${shortUrl(s.url)} again now`} icon={RotateCcw}
+                                        disabled={!!c && CRAWLING.has(c.status)} onClick={() => again(s.url, s.kind)} />
+                                    <IconButton size="sm" tone="danger" label={`Remove ${shortUrl(s.url)}`} icon={Trash2}
+                                        onClick={() => setRemoving(s.id)} />
+                                </TableActions>
+                            )}
                         </li>
                     );
                 })}
@@ -822,7 +834,7 @@ function WebSources({
 }
 
 /** A rebuild of the index after a change to how it is built: how far it has got, why it waits, or why it failed. */
-function RebuildLine({ build, onRetry }: { build: NonNullable<KnowledgeBase['state']['build']>; onRetry: () => void }) {
+function RebuildLine({ build, onRetry }: { build: NonNullable<KnowledgeBase['state']['build']>; onRetry?: () => void }) {
     if (build.status === 'failed') {
         return (
             <div role="status" className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-danger/40 px-3 py-2 text-sm">
@@ -830,9 +842,11 @@ function RebuildLine({ build, onRetry }: { build: NonNullable<KnowledgeBase['sta
                     The rebuild failed; the current index still answers.
                     {build.error && <span className="mt-0.5 block break-words text-xs text-text-muted">{build.error}</span>}
                 </p>
-                <Button size="sm" variant="secondary" onClick={onRetry}>
-                    <RotateCcw className="size-4" aria-hidden />Retry rebuild
-                </Button>
+                {onRetry && (
+                    <Button size="sm" variant="secondary" onClick={onRetry}>
+                        <RotateCcw className="size-4" aria-hidden />Retry rebuild
+                    </Button>
+                )}
             </div>
         );
     }
@@ -1048,7 +1062,8 @@ function ReportDrawer({
     open: boolean;
     folder: string;
     onClose: () => void;
-    onRetry: (doc: KnowledgeDocument) => void;
+    /** Absent for someone who may not retry: the drawer only reports. */
+    onRetry?: (doc: KnowledgeDocument) => void;
 }) {
     const report = doc?.report ?? null;
     const canRetry = !!doc && RESTING.has(doc.status) && (report?.retry.allowed ?? true);
@@ -1061,9 +1076,11 @@ function ReportDrawer({
             footer={doc && (
                 <>
                     <Button variant="secondary" onClick={onClose}>Close</Button>
-                    <Button onClick={() => onRetry(doc)} disabled={!canRetry}>
-                        <RotateCcw className="size-4" aria-hidden />Retry
-                    </Button>
+                    {onRetry && (
+                        <Button onClick={() => onRetry(doc)} disabled={!canRetry}>
+                            <RotateCcw className="size-4" aria-hidden />Retry
+                        </Button>
+                    )}
                 </>
             )}
         >
