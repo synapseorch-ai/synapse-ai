@@ -203,30 +203,41 @@ async def list_costs(kb_id: str, group_by: str = Query("day"), since: str | None
 
 # ── uploads ────────────────────────────────────────────────────────────────────
 
-@router.post("/api/knowledge/bases/{kb_id}/uploads", response_model=UploadSession, status_code=201)
-@_errors
-async def start_upload(kb_id: str, body: UploadInit) -> UploadSession:
-    """Open an upload of one file. PUT each part to its URL, then complete."""
+async def open_upload(kb_id: str, body: UploadInit, *, part_url: Callable[[str, int], str],
+                      token_header: str | None = None) -> UploadSession:
+    """An upload session into an active base; the public API's start opens its own the same way."""
     from core.knowledge import bases, ingest
 
     kb = await bases.require_base(kb_id)
     if kb.status != "active":
         raise HTTPException(status_code=409, detail="This knowledge base is disabled.")
-    return await ingest.start_upload(kb, body,
-                                     part_url=lambda upload_id, n: f"/api/knowledge/uploads/{upload_id}/parts/{n}")
+    return await ingest.start_upload(kb, body, part_url=part_url, token_header=token_header)
+
+
+async def store_part(upload_id: str, part_number: int, request: Request, *, token: str | None = None) -> Response:
+    """Store one part from the request body and answer with its ETag, as S3 does (header and body)."""
+    import json
+
+    from core.knowledge import ingest
+
+    etag = await ingest.put_part(upload_id, part_number, request.stream(), token=token)
+    return Response(content=json.dumps({"part_number": part_number, "etag": etag}), media_type="application/json",
+                    headers={"ETag": f'"{etag}"'})
+
+
+@router.post("/api/knowledge/bases/{kb_id}/uploads", response_model=UploadSession, status_code=201)
+@_errors
+async def start_upload(kb_id: str, body: UploadInit) -> UploadSession:
+    """Open an upload of one file. PUT each part to its URL, then complete."""
+    return await open_upload(kb_id, body,
+                             part_url=lambda upload_id, n: f"/api/knowledge/uploads/{upload_id}/parts/{n}")
 
 
 @router.put("/api/knowledge/uploads/{upload_id}/parts/{part_number}", status_code=200)
 @_errors
 async def put_upload_part(upload_id: str, part_number: int, request: Request) -> Response:
     """One part's bytes, as the request body. Answers with the part's ETag, which complete names."""
-    import json
-
-    from core.knowledge import ingest
-
-    etag = await ingest.put_part(upload_id, part_number, request.stream())
-    return Response(content=json.dumps({"part_number": part_number, "etag": etag}), media_type="application/json",
-                    headers={"ETag": f'"{etag}"'})
+    return await store_part(upload_id, part_number, request)
 
 
 @router.post("/api/knowledge/uploads/{upload_id}/complete", response_model=IngestAccepted, status_code=202)

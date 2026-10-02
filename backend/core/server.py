@@ -63,6 +63,7 @@ from core.routes.skills import router as skills_router
 from core.routes.widget import router as widget_router, WidgetUpdated, widget_updated_response
 from core.routes.agent_memory import router as agent_memory_router
 from core.routes.api_v1 import router as api_v1_router
+from core.routes.api_v1_knowledge import router as api_v1_knowledge_router
 from core.routes.api_v2 import router as api_v2_router
 from core.routes.scale import router as scale_router
 from core.routes.notifications import router as notifications_router
@@ -1039,6 +1040,7 @@ app.include_router(widget_router)
 app.add_exception_handler(WidgetUpdated, widget_updated_response)
 app.include_router(agent_memory_router)
 app.include_router(api_v1_router, prefix="/api/v1")
+app.include_router(api_v1_knowledge_router)  # paths carry /api/v1 (Knowledge, D176)
 app.include_router(api_v2_router, prefix="/api/v2")
 app.include_router(scale_router, prefix="/api")
 app.include_router(notifications_router)

@@ -21,6 +21,10 @@ Endpoints:
   GET/POST /schedules, GET/PATCH/DELETE /schedules/{id}, POST /schedules/{id}/run  (D126)
   GET  /agents, /agents/{agent_id}                  — Discovery
   GET  /orchestrations, /orchestrations/{orch_id}   — Discovery
+  /knowledge/…  — knowledge bases, uploads, records, web pages, documents, search, traces, costs
+                  (D176; `core/routes/api_v1_knowledge.py`, the frozen table's v1 rows)
+
+A run's stream carries its Knowledge steps' `knowledge_retrieve` / `knowledge_ingest` events like any other.
 """
 import asyncio
 import json
