@@ -15,7 +15,7 @@
  * answer drawn from the passages, with a judge from another model family (paid,
  * priced first). After a settings change the judge-free part re-runs by itself.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ClipboardCheck, ListPlus, Pencil, Play, Search, Sparkles, Square, Trash2 } from 'lucide-react';
 
 import {
@@ -152,7 +152,8 @@ export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) 
 
     useEffect(() => { void loadSet(); }, [loadSet]);
 
-    const active = run && ACTIVE.has(run.status);
+    const active = !!run && run.id === runId && ACTIVE.has(run.status);
+    const wasActive = useRef(false);
     useEffect(() => {
         if (!runId) { setRun(null); return; }
         let live = true;
@@ -160,7 +161,12 @@ export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) 
             .then(r => {
                 if (!live) return;
                 setRun(r);
-                if (!ACTIVE.has(r.status)) void loadSet();
+                setRuns(prev => prev.map(x => (x.id === r.id ? r : x)));
+                if (wasActive.current && !ACTIVE.has(r.status)) {  // it just finished: the set's last run moved
+                    void loadSet();
+                    void loadSets(setId ?? undefined);
+                }
+                wasActive.current = ACTIVE.has(r.status);
             })
             .catch(e => { if (live) setError(message(e)); });
         void load();
@@ -223,7 +229,7 @@ export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) 
                 <div className="space-y-4">
                     <div className="flex flex-wrap items-center gap-2">
                         {sets.length > 1 && (
-                            <Select size="sm" value={setId ?? ''} onChange={v => { setSetId(v); setSuggestions([]); setRunId(null); }}
+                            <Select size="sm" className="w-auto max-w-xs" value={setId ?? ''} onChange={v => { setSetId(v); setSuggestions([]); setRunId(null); }}
                                 options={sets.map(s => ({ value: s.id, label: `${s.name} (${s.case_count})` }))} aria-label="Question set" />
                         )}
                         {sets.length === 1 && <Label>{current?.name ?? sets[0].name}</Label>}
@@ -290,7 +296,7 @@ export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) 
             )}
             {current && dialog === 'run' && (
                 <RunDialog kb={kb} set={current} previous={runs} onClose={() => setDialog(null)}
-                    onStarted={r => { setRuns(prev => [r, ...prev]); setRunId(r.id); setRun(null); }} />
+                    onStarted={r => { wasActive.current = true; setRuns(prev => [r, ...prev]); setRunId(r.id); setRun(null); }} />
             )}
             {editing && current && (
                 <EditCase kase={editing} onClose={() => setEditing(null)}
@@ -756,10 +762,10 @@ function Results({ kb, runs, run, runId, onPick, onCancel, notify }: {
         <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
                 <Label>Results</Label>
-                <Select size="sm" value={runId ?? ''} onChange={onPick} aria-label="Run"
+                <Select size="sm" className="w-auto max-w-sm" value={runId ?? ''} onChange={onPick} aria-label="Run"
                     options={runs.map(r => ({ value: r.id, label: `${when(r.created_at)} · ${RUN_STATUS[r.status] ?? r.status}${r.started_by === 'settings' ? ' · after a settings change' : ''}` }))} />
                 {run && run.results.length > 0 && (
-                    <Select size="sm" value={kind} onChange={setKind} options={KIND_FILTER} aria-label="Questions to score" />
+                    <Select size="sm" className="w-auto" value={kind} onChange={setKind} options={KIND_FILTER} aria-label="Questions to score" />
                 )}
             </div>
             {!run ? <div className="flex justify-center py-4"><Spinner /></div> : (
@@ -789,7 +795,7 @@ function Results({ kb, runs, run, runId, onPick, onCancel, notify }: {
                         <ul className="space-y-0.5 text-xs text-text-muted">{run.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
                     )}
                     {rows.length > 0 && (
-                        <Table density="compact" minWidth="40rem">
+                        <Table density="compact" minWidth="36rem">
                             <THead>
                                 <TR hover={false}>
                                     <TH width="full">Search</TH>
@@ -802,12 +808,7 @@ function Results({ kb, runs, run, runId, onPick, onCancel, notify }: {
                                     const s = scoresOf(r);
                                     return (
                                         <TR key={r.key}>
-                                            <TD>
-                                                <div className="text-sm text-text">{r.label}</div>
-                                                {r.config === 'served' && r.agent_sees != null && (
-                                                    <Muted className="text-xs">An agent gets the top {r.agent_sees}; ranks past that are this test&apos;s own view.</Muted>
-                                                )}
-                                            </TD>
+                                            <TD><span className="text-sm text-text">{r.label}</span></TD>
                                             {several && <TD nowrap><span className="font-mono text-xs" translate="no">{shortSnap(r.snapshot_id)}</span></TD>}
                                             {!r.available || !s ? (
                                                 <TD align="right" nowrap><Muted className="text-xs">{r.reason ?? 'No questions of this kind'}</Muted></TD>
@@ -825,6 +826,14 @@ function Results({ kb, runs, run, runId, onPick, onCancel, notify }: {
                             </TBody>
                         </Table>
                     )}
+                    {(() => {
+                        const sees = rows.find(r => r.config === 'served')?.agent_sees;
+                        return sees != null && sees < 10 ? (
+                            <Muted className="block text-xs">
+                                As served, an agent gets the top {sees}: hits further down are this test&apos;s own view.
+                            </Muted>
+                        ) : null;
+                    })()}
                     {run.judge && <JudgeLine judge={run.judge} />}
                     {run.status === 'completed' || run.status === 'cancelled' ? (
                         <div className="flex flex-wrap items-end gap-2">
