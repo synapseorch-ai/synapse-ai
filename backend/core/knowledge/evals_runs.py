@@ -269,6 +269,21 @@ async def _update(run_id: str, **values: Any) -> None:
             updated_at=_now(), **values))
 
 
+async def _move(run_id: str, from_statuses: Sequence[str], **values: Any) -> bool:
+    """Change the run only while its status is one of `from_statuses`: a compare-and-set, so a cancel and the
+    run's own start cannot overwrite each other."""
+    from sqlalchemy import update
+
+    from core.store import session
+    from core.store.models import KnowledgeEvalRunDB as R
+
+    async with session() as s:
+        result = await s.execute(update(R).where(
+            R.tenant_id == _tenant(), R.id == run_id, R.status.in_(list(from_statuses))).values(
+            updated_at=_now(), **values))
+    return result.rowcount == 1
+
+
 async def _status(run_id: str) -> str | None:
     from sqlalchemy import select
 
@@ -317,12 +332,12 @@ async def run(kb_id: str, run_id: str) -> None:
 
     async with session() as s:
         row = await s.get(R, run_id)
-    if row is not None and row.status == "cancelling":  # cancelled before it began
-        await _update(run_id, status="cancelled", finished_at=_now())
+    if row is None:
         return
-    if row is None or row.status != "queued":
+    if not await _move(run_id, ("queued",), status="running", started_at=_now()):
+        # Not queued any more: a cancel that came first ends it here (and nothing else is ours to do).
+        await _move(run_id, ("cancelling",), status="cancelled", finished_at=_now())
         return
-    await _update(run_id, status="running", started_at=_now())
     try:
         kb = await bases.require_base(kb_id)
         cases = await evals.cases_of(kb_id, row.set_id)
@@ -562,12 +577,11 @@ async def cancel(kb_id: str, run_id: str) -> EvalRunSummary:
     from core.store import session
     from core.store.models import KnowledgeEvalRunDB as R
 
-    row = await _row(kb_id, run_id)
-    if row.status in ("queued", "running"):
-        if run_id in _tasks:
-            await _update(run_id, status="cancelling")
-        else:
-            await _update(run_id, status="cancelled", finished_at=_now())
+    await _row(kb_id, run_id)
+    if run_id in _tasks:  # its task stops before its next question, or at its start
+        await _move(run_id, ("queued", "running"), status="cancelling")
+    else:  # nothing here is driving it
+        await _move(run_id, ("queued", "running"), status="cancelled", finished_at=_now())
     async with session() as s:
         return evals.run_summary(await s.get(R, run_id))
 

@@ -194,6 +194,26 @@ class TestControl:
         await finished()
         assert (await RUNS.get_run(kb.id, started.id)).status == "cancelled"
 
+    async def test_a_cancel_between_a_runs_read_and_its_start_is_kept(self, jobs, monkeypatch):
+        """Found on Postgres: the run read its row as queued, a cancel landed, then the run wrote "running" over
+        it and completed. Its start is a compare-and-set now."""
+        kb = await policies(jobs)
+        made = await question_set(kb)
+        real = RUNS._move
+
+        async def cancel_first(run_id, from_statuses, **values):
+            if values.get("status") == "running":
+                async with session() as s:
+                    await s.execute(update(KnowledgeEvalRunDB).where(KnowledgeEvalRunDB.id == run_id)
+                                    .values(status="cancelling"))
+            return await real(run_id, from_statuses, **values)
+
+        monkeypatch.setattr(RUNS, "_move", cancel_first)
+        started = await RUNS.start(kb, EvalRunRequest(set_id=made.id))
+        await finished()
+        run = await RUNS.get_run(kb.id, started.id)
+        assert run.status == "cancelled" and run.done_count == 0
+
     async def test_one_run_of_a_set_at_a_time(self, jobs):
         kb = await policies(jobs)
         made = await question_set(kb)
