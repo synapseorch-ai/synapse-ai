@@ -50,6 +50,7 @@ const pct = (n: number | undefined) => (n == null ? '—' : `${Math.round(n * 10
 const dec = (n: number | undefined) => (n == null ? '—' : n.toFixed(2));
 const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString() : '—');
 const shortSnap = (id: string) => `…${id.slice(-6)}`;
+const SNAP_STATUS: Record<string, string> = { active: 'Serving', building: 'Being built', retired: 'Replaced' };
 
 /** The workspace's models and the default a draft or a judge starts from. */
 function useWorkspaceModels() {
@@ -809,7 +810,15 @@ function Results({ kb, runs, run, runId, onPick, onCancel, notify }: {
                                     return (
                                         <TR key={r.key}>
                                             <TD><span className="text-sm text-text">{r.label}</span></TD>
-                                            {several && <TD nowrap><span className="font-mono text-xs" translate="no">{shortSnap(r.snapshot_id)}</span></TD>}
+                                            {several && (() => {
+                                                const snap = run.snapshots.find(x => x.snapshot_id === r.snapshot_id);
+                                                return (
+                                                    <TD nowrap>
+                                                        <span className="text-xs text-text" title={r.snapshot_id}>{SNAP_STATUS[snap?.status ?? ''] ?? snap?.status}</span>
+                                                        {snap?.chunker_version && <span className="block font-mono text-xs text-text-muted" translate="no">{snap.chunker_version}</span>}
+                                                    </TD>
+                                                );
+                                            })()}
                                             {!r.available || !s ? (
                                                 <TD align="right" nowrap><Muted className="text-xs">{r.reason ?? 'No questions of this kind'}</Muted></TD>
                                             ) : COLUMNS.map(c => {
