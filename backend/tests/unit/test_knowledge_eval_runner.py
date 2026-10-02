@@ -353,7 +353,33 @@ class TestReRuns:
         assert statuses[first] == "queued" and len(statuses) == 2 and runner.later == []
 
 
+class TestAWorkerGivingUp:
+    async def test_a_run_given_up_is_interrupted_and_a_finished_one_is_left(self, jobs, runner):
+        kb = await policies(jobs)
+        made = await question_set(kb)
+        started = await RUNS.start(kb, EvalRunRequest(set_id=made.id))
+        assert await RUNS.abandon(started.id)
+        run = await RUNS.get_run(kb.id, started.id)
+        assert (run.status, run.error) == ("interrupted", "The server stopped during the run.")
+        await runner.drive()  # the job delivered late does nothing
+        assert (await RUNS.get_run(kb.id, started.id)).status == "interrupted"
+        await left(made, "completed", 0, run_id="krun_" + "2" * 32)
+        assert not await RUNS.abandon("krun_" + "2" * 32)
+
+
 class TestCost:
+    async def test_a_finished_run_is_costed_again_and_one_under_way_is_not(self, jobs, runner):
+        kb = await policies(jobs)
+        made = await question_set(kb)
+        started = await RUNS.start(kb, EvalRunRequest(set_id=made.id))
+        assert await RUNS.recost(started.id) is None  # still queued
+        await runner.drive()
+        first = (await RUNS.get_run(kb.id, started.id)).cost_usd or 0.0
+        runner.platform = 0.004  # a call the platform settled after the run read its cost
+        assert await RUNS.recost(started.id) == pytest.approx(first + 0.004)
+        assert (await RUNS.get_run(kb.id, started.id)).cost_usd == pytest.approx(first + 0.004)
+        assert await RUNS.recost("krun_" + "0" * 32) is None
+
     async def test_the_platforms_settle_replaces_its_rows_and_bring_your_own_keeps_its_estimates(
             self, jobs, runner):
         kb = await policies(jobs)

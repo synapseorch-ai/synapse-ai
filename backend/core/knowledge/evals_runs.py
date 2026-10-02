@@ -738,6 +738,31 @@ async def compare(kb_id: str, run_id: str, body: EvalCompareRequest) -> list[Eva
         for snap in snaps]
 
 
+async def abandon(run_id: str) -> bool:
+    """A driver giving a run up (cloud: a worker job delivered again after its first delivery was cut off):
+    `interrupted`, unless it already ended. Whether it was still under way."""
+    from core.knowledge.api_models import EVAL_ACTIVE_STATUSES
+
+    return await _move(run_id, EVAL_ACTIVE_STATUSES, status="interrupted", error=_STOPPED, finished_at=_now())
+
+
+async def recost(run_id: str) -> float | None:
+    """A finished run's cost read again — a platform can settle a call after the run read its cost (one its
+    client gave up waiting for). The cost, or None when the run is gone or still under way."""
+    from core.knowledge.api_models import EVAL_ACTIVE_STATUSES
+    from core.store import session
+    from core.store.models import KnowledgeEvalRunDB as R
+
+    async with session() as s:
+        row = await s.get(R, run_id)
+    if row is None or row.tenant_id != _tenant() or row.status in EVAL_ACTIVE_STATUSES:
+        return None
+    cost = await spent(run_id)
+    if cost != row.cost_usd:
+        await _update(run_id, cost_usd=cost)
+    return cost
+
+
 async def mark_interrupted() -> int:
     """At startup: every run this process's predecessor left under way was interrupted. Not with a runner: other
     workers may be driving them (they are reaped when stale instead)."""
