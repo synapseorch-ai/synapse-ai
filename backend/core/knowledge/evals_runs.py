@@ -18,8 +18,9 @@ every document: with fewer documents competing its scores read high.
 **Money.** Before a run starts its searches are priced (query embeddings and
 reranks) and checked against the base's monthly budget; eval searches count
 toward it, as every search does. A search that finds the base at its budget
-(`budget_paused`) stops the run. The run's cost is what `usage_logs` holds for
-its session.
+(`budget_paused`) stops the run. The run's cost is its session's: searches from
+the knowledge cost ledger (a settled charge where there is one, CCR-7), chat
+calls from `usage_logs` (`spent`).
 
 **Cancel** sets `cancelling`; the run stops before its next question and keeps
 what it scored. A run left `running` by a process that stopped is
@@ -470,17 +471,30 @@ async def score(kb: KnowledgeBase, config: dict, results: dict) -> dict[str, Any
 
 
 async def spent(run_id: str) -> float:
-    """What the run has cost: every `usage_logs` row of its session (searches through the ledger, chat calls
-    through the chat path)."""
-    from sqlalchemy import func, select
+    """What the run has cost, every row of its session counted once:
 
+    * its searches from the knowledge cost ledger — what a wallet settled where it did, else the estimate. Not
+      from their `usage_logs` mirror, which reads 0 for a platform cost (CCR-7: a platform cost is its settle);
+    * its chat calls (drafts, answers, verdicts) from `usage_logs`. A platform chat call estimates 0 there too:
+      cloud adds what its gateway settled (V1c).
+    """
+    from sqlalchemy import or_, select
+
+    from core.knowledge.ledger import USAGE_EVENT_TYPE
     from core.store import session
-    from core.store.models import UsageLogDB
+    from core.store.models import KnowledgeCostDB as K
+    from core.store.models import UsageLogDB as U
 
+    own = session_of(run_id)
     async with session() as s:
-        total = (await s.execute(select(func.coalesce(func.sum(UsageLogDB.estimated_cost), 0.0)).where(
-            UsageLogDB.tenant_id == _tenant(), UsageLogDB.session_id == session_of(run_id)))).scalar_one()
-    return round(float(total or 0.0), 8)
+        searches = (await s.execute(select(K.est_usd, K.charged_microusd).where(
+            K.tenant_id == _tenant(), K.session_id == own))).all()
+        chat = (await s.execute(select(U.estimated_cost).where(
+            U.tenant_id == _tenant(), U.session_id == own,
+            or_(U.event_type.is_(None), U.event_type != USAGE_EVENT_TYPE)))).scalars().all()
+    total = sum(charged / 1_000_000 if charged is not None else float(est or 0.0) for est, charged in searches)
+    total += sum(float(cost or 0.0) for cost in chat)
+    return round(total, 8)
 
 
 # ── reading, cancelling, comparing ────────────────────────────────────────────

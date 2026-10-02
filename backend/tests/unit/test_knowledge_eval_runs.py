@@ -259,6 +259,27 @@ class TestMoney:
             s.add(UsageLogDB(session_id="knowledge-eval:krun_other", estimated_cost=9.0, source="evals"))
         assert await RUNS.spent(run.id) == pytest.approx(0.25 + (run.cost_usd or 0.0))
 
+    async def test_a_platform_search_costs_what_the_wallet_settled_once(self, jobs):
+        """CCR-7: a platform search cost's usage_logs mirror reads 0; the run reads its search costs from the
+        knowledge ledger (the settled charge, else the estimate), and only its chat calls from usage_logs."""
+        from core.store.models import KnowledgeCostDB
+
+        kb = await policies(jobs)
+        made = await question_set(kb)
+        run = await run_set(kb, made)
+        before = await RUNS.spent(run.id)
+        own = f"knowledge-eval:{run.id}"
+        async with session() as s:
+            s.add(KnowledgeCostDB(kb_id=kb.id, session_id=own, stage="rerank", cost_source="platform",
+                                  model="synapse.cohere-rerank-3-5", unit="search_units", units=1, est_usd=0.002,
+                                  charged_microusd=2100))
+            s.add(UsageLogDB(session_id=own, estimated_cost=0.0, event_type="knowledge", source="evals"))  # its mirror
+            s.add(KnowledgeCostDB(kb_id=kb.id, session_id=own, stage="embed", cost_source="byok", model="fake",
+                                  unit="tokens", est_usd=0.0001))
+            s.add(UsageLogDB(session_id=own, estimated_cost=0.0001, event_type="knowledge", source="evals"))
+            s.add(UsageLogDB(session_id=own, estimated_cost=0.03, source="evals"))  # a judge's call
+        assert await RUNS.spent(run.id) == pytest.approx(before + 0.0021 + 0.0001 + 0.03)
+
     async def test_an_estimate_names_what_counts_toward_the_budget(self, jobs):
         kb = await policies(jobs)
         made = await question_set(kb)
