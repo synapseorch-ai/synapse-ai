@@ -17,6 +17,11 @@ Three kinds of builder tool are not served:
 `list_recent_runs` and `get_run_summary` are left out because the run tools in
 `runs.py` answer the same questions with more.
 
+`list_knowledge_bases` is served **only while Knowledge is on** (R1c, D173): a client
+writing a Retrieve or Ingest step needs the bases' ids, and while Knowledge is off the
+tool does not exist anywhere else either (`builder_tool_offered`). The listing is
+decided per call, inside the caller's binding, so cloud answers per organisation.
+
 MCP clients treat a tool as destructive unless it says otherwise, so every tool
 here says so explicitly. The overwriters are marked destructive — they replace
 what is there — and clients such as Claude Code ask before calling them.
@@ -43,6 +48,7 @@ READ_TOOLS: tuple[str, ...] = (
     "list_schedules",
     "list_repos",
     "list_db_configs",
+    "list_knowledge_bases",
 )
 
 #: Tools that add or edit.
@@ -112,8 +118,11 @@ def scope_of(name: str) -> str | None:
 
 
 def builder_tools() -> list[types.Tool]:
-    """The served builder tools as MCP tools, in the allowlist's order."""
-    from core.builder_tools import BUILDER_TOOL_SCHEMAS
+    """The served builder tools that exist here right now, as MCP tools, in the allowlist's order.
+
+    A tool `builder_tool_offered` holds back (Knowledge's while it is off) is left out of the listing; a
+    call to it still reaches its handler, which refuses."""
+    from core.builder_tools import BUILDER_TOOL_SCHEMAS, builder_tool_offered
 
     by_name = {s["function"]["name"]: s["function"] for s in BUILDER_TOOL_SCHEMAS}
     missing = [n for n in READ_TOOLS + BUILD_TOOLS if n not in by_name]
@@ -122,6 +131,8 @@ def builder_tools() -> list[types.Tool]:
         raise RuntimeError(f"MCP catalog names builder tools that do not exist: {missing}")
     tools = []
     for name in READ_TOOLS + BUILD_TOOLS:
+        if not builder_tool_offered(name):
+            continue
         fn = by_name[name]
         tools.append(types.Tool(
             name=name,

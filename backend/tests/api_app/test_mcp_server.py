@@ -147,6 +147,34 @@ class TestTheToolList:
         assert "run_mine" in names and "run_ai_builder" not in names
 
 
+class TestKnowledgeBasesOverMcp:
+    """`list_knowledge_bases` over the protocol (R1c, D173): listed and answering while Knowledge is on, absent
+    from the listing while it is off — and a client that calls it anyway gets an error result."""
+
+    async def test_listed_and_answering_while_on(self, mcp_app, api_key):
+        from _fakes.knowledge_corpus import CONTRACTS, save_bases
+        from _fakes.knowledge_env import enable_knowledge
+
+        await enable_knowledge()
+        await save_bases(CONTRACTS)
+        async with mcp_session(mcp_app, api_key) as s:
+            tools = {t.name: t for t in (await s.list_tools()).tools}
+            result = await s.call_tool("list_knowledge_bases", {})
+        assert tools["list_knowledge_bases"].annotations.readOnlyHint is True
+        assert not result.isError, result.content[0].text
+        assert [(b["id"], b["name"], b["folder"]) for b in _body(result)] == [(CONTRACTS.id, "Contracts", "contracts")]
+
+    async def test_absent_and_refused_while_off(self, mcp_app, api_key):
+        from _fakes.knowledge_corpus import CONTRACTS, save_bases
+
+        await save_bases(CONTRACTS)
+        async with mcp_session(mcp_app, api_key) as s:
+            names = {t.name for t in (await s.list_tools()).tools}
+            result = await s.call_tool("list_knowledge_bases", {})
+        assert "list_knowledge_bases" not in names and "list_agents" in names
+        assert result.isError and "Knowledge is switched off" in result.content[0].text
+
+
 class TestBuilderTools:
     async def test_create_then_read_an_agent(self, mcp_app, api_key):
         async with mcp_session(mcp_app, api_key) as s:

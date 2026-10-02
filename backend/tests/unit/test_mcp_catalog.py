@@ -7,8 +7,21 @@ from __future__ import annotations
 
 import pytest
 
-from core.builder_tools import BUILDER_TOOL_NAMES
+from _fakes.knowledge_env import enable_knowledge, use_saved_settings
+from core.builder_tools import BUILDER_TOOL_NAMES, KNOWLEDGE_BUILDER_TOOLS
 from core.mcp_server import catalog, runs, workflows
+
+
+@pytest.fixture
+async def on(monkeypatch):
+    """Knowledge on, so every allowlisted tool is listed."""
+    use_saved_settings(monkeypatch)
+    await enable_knowledge()
+
+
+@pytest.fixture
+def off(monkeypatch):
+    use_saved_settings(monkeypatch)  # the shipped default
 
 
 class TestTheAllowlist:
@@ -17,7 +30,7 @@ class TestTheAllowlist:
             "list_agents", "get_agent", "list_orchestrations", "get_orchestration",
             "validate_orchestration", "list_tool_servers", "list_server_tools", "list_all_tools",
             "get_tools_detail", "list_custom_tools", "list_skills", "get_skill", "list_schedules",
-            "list_repos", "list_db_configs",
+            "list_repos", "list_db_configs", "list_knowledge_bases",
             "create_agent", "create_agents", "update_agent", "create_orchestration",
             "create_orchestration_skeleton", "add_steps", "add_single_step", "add_multiple_steps",
             "update_step", "remove_step", "update_orchestration", "set_orchestration_meta",
@@ -34,14 +47,20 @@ class TestTheAllowlist:
         assert name not in catalog.SERVED_BUILDER_TOOLS  # …not an MCP one
         assert name not in {t.name for t in catalog.builder_tools()}
 
-    def test_every_served_name_is_a_real_builder_tool(self):
+    def test_every_served_name_is_a_real_builder_tool(self, on):
         assert catalog.SERVED_BUILDER_TOOLS <= BUILDER_TOOL_NAMES
         assert [t.name for t in catalog.builder_tools()] == list(catalog.READ_TOOLS + catalog.BUILD_TOOLS)
+
+    def test_while_knowledge_is_off_the_rest_are_listed_in_order(self, off):
+        assert [t.name for t in catalog.builder_tools()] == [
+            n for n in catalog.READ_TOOLS + catalog.BUILD_TOOLS if n not in KNOWLEDGE_BUILDER_TOOLS
+        ]
 
     def test_run_tools_do_not_shadow_builder_tools(self):
         assert not (runs.RUN_TOOL_NAMES & BUILDER_TOOL_NAMES)
 
 
+@pytest.mark.usefixtures("on")
 class TestAnnotations:
     """MCP clients assume a tool is destructive unless it says it is not."""
 
@@ -68,6 +87,7 @@ class TestAnnotations:
 
 
 
+@pytest.mark.usefixtures("on")
 class TestScopes:
     """What a caller must have been granted to see and call each tool (D127).
 
@@ -106,6 +126,22 @@ class TestScopes:
         for name, mark in marks.items():
             if catalog.scope_of(name) == "read":
                 assert mark.readOnlyHint, name
+
+class TestKnowledgeBases:
+    """`list_knowledge_bases` is served only while Knowledge is on (R1c, D173): a client writing a Retrieve or
+    Ingest step needs the bases' ids, and while Knowledge is off the tool exists nowhere."""
+
+    def test_it_is_listed_while_knowledge_is_on(self, on):
+        tool = {t.name: t for t in catalog.builder_tools()}["list_knowledge_bases"]
+        assert tool.annotations.readOnlyHint and not tool.annotations.destructiveHint
+        assert catalog.scope_of("list_knowledge_bases") == "read"
+
+    def test_it_is_not_listed_while_knowledge_is_off(self, off):
+        assert "list_knowledge_bases" not in {t.name for t in catalog.builder_tools()}
+
+    def test_every_knowledge_builder_tool_is_served(self):
+        assert KNOWLEDGE_BUILDER_TOOLS <= catalog.SERVED_BUILDER_TOOLS
+
 
 def _orch(oid, name, **extra):
     return {"id": oid, "name": name, "description": extra.pop("description", ""), "steps": [], **extra}
