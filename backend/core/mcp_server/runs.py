@@ -409,7 +409,12 @@ CHAT_STILL_GOING = "The agent is still working. Its reply will be in this conver
 
 
 def chat_result(events: list[dict], identity: dict) -> dict:
-    """A finished chat turn's events as the tool's answer. Every backend's turn ends here."""
+    """A finished chat turn's events as the tool's answer. Every backend's turn ends here.
+
+    The answer's `[K#]` labels come resolved, as v1's sync answer has them (D176)."""
+    cited = next((e for e in reversed(events) if e.get("type") == "knowledge_citations"), {})
+    identity = {**identity, "citations": cited.get("citations", []),
+                "unresolved_citations": cited.get("unresolved_citations", [])}
     for event in events:
         kind = event.get("type")
         if kind == "error":

@@ -307,6 +307,29 @@ class TestChat:
             result = await s.call_tool("chat_with_agent", {"message": "hi", "agent": "Nobody"})
         assert result.isError and "not found" in result.content[0].text
 
+    async def test_an_answer_s_labels_come_resolved(self, mcp_app, api_key, seed_agent, monkeypatch):
+        """D176, Naveen's call 3: as v1's sync answer, `citations` and `unresolved_citations`."""
+        import core.react_engine as re
+        from _fakes import engine_events as E
+
+        await seed_agent(id="agent_chat", name="Chatty")
+        citation = {"label": "[K1]", "kb_id": "kb_000000000001", "doc_id": "kdoc_1", "chunk_id": "kch_1",
+                    "path": "kb/acme.md", "source": "upload", "char_start": 0, "char_end": 9, "snapshot_id": "ks"}
+        monkeypatch.setattr(re, "run_react_loop", E.gen_from([
+            {"type": "knowledge_citations", "citations": [citation], "unresolved": ["[K4]"]},
+            E.final("Billed monthly [K1].")]))
+        async with mcp_session(mcp_app, api_key) as s:
+            reply = _body(await s.call_tool("chat_with_agent", {"message": "fees?", "agent": "Chatty"}))
+        assert (reply["status"], reply["response"]) == ("completed", "Billed monthly [K1].")
+        assert reply["citations"] == [citation] and reply["unresolved_citations"] == ["[K4]"]
+
+    async def test_an_answer_without_knowledge_cites_nothing(self, mcp_app, api_key, seed_agent, fake_llm):
+        await seed_agent(id="agent_chat", name="Chatty")
+        fake_llm.script(["Hello."])
+        async with mcp_session(mcp_app, api_key) as s:
+            reply = _body(await s.call_tool("chat_with_agent", {"message": "hi", "agent": "Chatty"}))
+        assert reply["citations"] == [] and reply["unresolved_citations"] == []
+
 
 class _RecordingRuns:
     """A run backend that executes nothing: where a deployment's fleet would be (cloud)."""

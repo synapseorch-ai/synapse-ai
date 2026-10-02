@@ -204,6 +204,32 @@ def _pause_of(event: dict) -> dict | None:
     return {"status": "paused", "prompt": event.get("prompt") or "", "run_id": event.get("run_id")}
 
 
+def _contract_fields(typed: type) -> frozenset[str]:
+    return frozenset(typed.__required_keys__ | typed.__optional_keys__)
+
+
+def _knowledge_frame(event: dict) -> dict | None:
+    """A Knowledge event as v1 sends it (D176), or None.
+
+    Only the turn's own: a delegate's labels are its own turn's, not the answer's. Only the contract's
+    fields (`core.knowledge.events`): ids, labels, counts, a path, a short query — the passages
+    themselves stay in the workspace, bar each citation's short snippet. The citations' `unresolved`
+    is `unresolved_citations`, the name the sync answer gives it."""
+    from core.knowledge import events as kn
+
+    if event.get("delegate_from"):
+        return None
+    kind = event.get("type")
+    if kind == kn.KNOWLEDGE_CITATIONS:
+        return {"type": kind, "citations": event.get("citations") or [],
+                "unresolved_citations": event.get("unresolved") or []}
+    typed = {kn.KNOWLEDGE_SEARCH: kn.KnowledgeSearchEvent, kn.KNOWLEDGE_READ: kn.KnowledgeReadEvent}[kind]
+    return {k: v for k, v in event.items() if k in _contract_fields(typed)}
+
+
+_KNOWLEDGE_FRAMES = ("knowledge_search", "knowledge_read", "knowledge_citations")
+
+
 def _format_sse_event(event: dict) -> str:
     """Format an event dict as an SSE data line."""
     return f"data: {json.dumps(event, default=str)}\n\n"
@@ -274,6 +300,11 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
 
             elif etype == "llm_thought":
                 yield {"type": "llm_thought", "thought": event["thought"], "turn": event.get("turn", 1)}
+
+            elif etype in _KNOWLEDGE_FRAMES:
+                frame = _knowledge_frame(event)
+                if frame is not None:
+                    yield frame
 
             elif etype == "final" and event.get("orch_step_id"):
                 # An orchestrator agent's step finishing, not the turn: it used
@@ -387,6 +418,8 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
     # Waiting is not owning: this request going away leaves the turn running.
     await turn.wait()
 
+    # The answer's `[K#]` labels resolved (D176): the turn's own, sent just before its answer.
+    cited = next((e.event for e in reversed(turn.entries) if e.event.get("type") == "knowledge_citations"), {})
     identity = {
         "agent_id": agent["id"],
         "agent_name": agent["name"],
@@ -398,6 +431,8 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
              "reason": e.event.get("reason")}
             for e in turn.entries if e.event.get("type") == "tool_result" and e.event.get("refused")
         ],
+        "citations": cited.get("citations", []),
+        "unresolved_citations": cited.get("unresolved_citations", []),
     }
     for entry in turn.entries:
         event = entry.event
