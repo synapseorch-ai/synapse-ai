@@ -288,6 +288,19 @@ async def _get_conversation_history(session_id: str, agent_id: str | None = None
     return _turns(row["messages"]) if row else []
 
 
+def citation_fields(citations: dict | None) -> dict:
+    """What a saved answer keeps of its `knowledge_citations` event: `citations`, and
+    `unresolved_citations` when the answer used labels no search produced. Nothing
+    when the event cited nothing. One rule for the in-process save and the fleet's
+    chat job, which rewrites the turn itself (F333)."""
+    if not citations or not (citations.get("citations") or citations.get("unresolved")):
+        return {}
+    kept: dict = {"citations": list(citations.get("citations") or [])}
+    if citations.get("unresolved"):
+        kept["unresolved_citations"] = list(citations["unresolved"])
+    return kept
+
+
 async def _save_conversation_turn(
     session_id: str,
     agent_id: str | None,
@@ -320,10 +333,7 @@ async def _save_conversation_turn(
     for key, items in (("reasoning", reasoning), ("thoughts", thoughts)):
         if kept := panel_text(items):
             answer[key] = kept
-    if citations and (citations.get("citations") or citations.get("unresolved")):
-        answer["citations"] = list(citations.get("citations") or [])
-        if citations.get("unresolved"):
-            answer["unresolved_citations"] = list(citations["unresolved"])
+    answer.update(citation_fields(citations))
     await store.append_turn(
         session_id,
         _agent(agent_id),

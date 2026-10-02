@@ -654,6 +654,8 @@ async def run_agent_chat_job(
     # What the turn thought, from its events (U60): out here so a failed turn
     # keeps it too.
     thinking_events: list[dict] = []
+    # The answer's Sources: the root turn's `knowledge_citations` (F333).
+    turn_citations: dict | None = None
 
     try:
         # Everything that makes this turn *visible* happens before the pool is
@@ -742,7 +744,7 @@ async def run_agent_chat_job(
         async def _consume():
             """Drive the loop. Separated so the cancel watcher has a task to
             cancel that is not the whole job."""
-            nonlocal response_text, total_cost, latest_progress, paused_on, workflow_waiting
+            nonlocal response_text, total_cost, latest_progress, paused_on, workflow_waiting, turn_citations
             async for event in _visitor_turn(visitor, run_react_loop(
                 chat_request, server_module,
                 progress_events=True, resume_state=resume_state,
@@ -761,6 +763,11 @@ async def run_agent_chat_job(
                     events_since_progress.append(event)
                 elif etype in ("llm_reasoning", "llm_thought"):
                     thinking_events.append(event)
+                elif (etype == "knowledge_citations" and not event.get("delegate_from")
+                      and not event.get("orch_step_id")):
+                    # The root turn's Sources; a delegate's or a step's labels
+                    # are another turn's (F333).
+                    turn_citations = event
 
                 await publisher.publish(event)
 
@@ -849,7 +856,7 @@ async def run_agent_chat_job(
         # With what the question carried (F245) and what the turn's tools did
         # (F242), as the in-process path saves them: a bare pair left the next
         # turn blind to both.
-        from core.session import image_notes, thinking_from_events, turn_calls, tools_from_calls
+        from core.session import citation_fields, image_notes, thinking_from_events, turn_calls, tools_from_calls
         question = {"role": "user", "content": message}
         if images:
             question["images"] = image_notes(images)
@@ -863,6 +870,10 @@ async def run_agent_chat_job(
             answer_entry["reasoning"] = reasoning
         if thoughts:
             answer_entry["thoughts"] = thoughts
+        # Its Sources, as the in-process save keeps them — never for a visitor:
+        # they name the owner's files (F333).
+        if visitor is None:
+            answer_entry.update(citation_fields(turn_citations))
         history.append(answer_entry)
         recorded = True
         await _upsert_chat_session(session_factory, session_id, agent_id,
