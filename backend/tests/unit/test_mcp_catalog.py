@@ -9,7 +9,7 @@ import pytest
 
 from _fakes.knowledge_env import enable_knowledge, use_saved_settings
 from core.builder_tools import BUILDER_TOOL_NAMES, KNOWLEDGE_BUILDER_TOOLS
-from core.mcp_server import catalog, runs, workflows
+from core.mcp_server import catalog, runs, server, workflows
 
 
 @pytest.fixture
@@ -65,7 +65,7 @@ class TestAnnotations:
     """MCP clients assume a tool is destructive unless it says it is not."""
 
     def test_every_tool_states_both_hints(self):
-        for tool in catalog.builder_tools() + list(runs.RUN_TOOLS):
+        for tool in server._fixed_tools():
             assert tool.annotations is not None, tool.name
             assert tool.annotations.readOnlyHint is not None, tool.name
             assert tool.annotations.destructiveHint is not None, tool.name
@@ -96,7 +96,7 @@ class TestScopes:
     """
 
     def test_every_served_tool_has_one_scope(self):
-        for tool in catalog.builder_tools() + list(runs.RUN_TOOLS):
+        for tool in server._fixed_tools():
             assert catalog.scope_of(tool.name) in catalog.SCOPES, tool.name
 
     def test_reading_is_read(self):
@@ -122,7 +122,8 @@ class TestScopes:
 
     def test_a_read_scope_only_reads(self):
         """A token granted `read` alone must see nothing that changes anything."""
-        marks = {t.name: t.annotations for t in catalog.builder_tools() + list(runs.RUN_TOOLS)}
+        marks = {t.name: t.annotations for t in server._fixed_tools()}
+        assert "search_knowledge" in marks
         for name, mark in marks.items():
             if catalog.scope_of(name) == "read":
                 assert mark.readOnlyHint, name
@@ -141,6 +142,41 @@ class TestKnowledgeBases:
 
     def test_every_knowledge_builder_tool_is_served(self):
         assert KNOWLEDGE_BUILDER_TOOLS <= catalog.SERVED_BUILDER_TOOLS
+
+
+class TestKnowledgeSearch:
+    """`search_knowledge` over MCP (P1a, D176): a read, listed only while Knowledge is on, with the agent
+    tool's flat schema. Not a builder tool, so it is not on the builder allowlist."""
+
+    def test_it_is_listed_while_knowledge_is_on(self, on):
+        from core.knowledge.agent_contract import SEARCH_SCHEMA
+
+        tool = {t.name: t for t in server._fixed_tools()}["search_knowledge"]
+        assert tool.inputSchema == SEARCH_SCHEMA
+        marks = tool.annotations
+        assert marks.readOnlyHint and marks.destructiveHint is False and marks.openWorldHint is False
+        assert "read_knowledge" not in tool.description
+
+    def test_it_is_not_listed_while_knowledge_is_off(self, off):
+        assert "search_knowledge" not in {t.name for t in server._fixed_tools()}
+
+    def test_it_is_a_read_and_reserved(self):
+        assert catalog.scope_of("search_knowledge") == "read"
+        assert "search_knowledge" in server._reserved()
+        assert "search_knowledge" not in catalog.SERVED_BUILDER_TOOLS
+        assert "read_knowledge" not in server._reserved() and catalog.scope_of("read_knowledge") is None
+
+    def test_the_calling_key_is_named_whatever_the_host(self):
+        import uuid
+        from types import SimpleNamespace
+
+        from core.mcp_server.knowledge import key_id
+
+        key = uuid.uuid4()
+        assert key_id({"id": "key_1"}) == "key_1"  # OSS: the key's record
+        assert key_id(SimpleNamespace(api_key_id=key)) == str(key)  # cloud: its principal
+        assert key_id(SimpleNamespace(api_key_id=None)) is None  # an OAuth grant
+        assert key_id(None) is None
 
 
 def _orch(oid, name, **extra):

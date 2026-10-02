@@ -175,6 +175,114 @@ class TestKnowledgeBasesOverMcp:
         assert result.isError and "Knowledge is switched off" in result.content[0].text
 
 
+class TestKnowledgeSearchOverMcp:
+    """`search_knowledge` over the protocol (P1a, D176): the workspace's bases searched as an agent searches its
+    own, the passages between the same markers, traced as MCP's and naming the key; refusals are error results."""
+
+    @pytest_asyncio.fixture
+    async def corpus_on(self):
+        from _fakes.knowledge_corpus import corpus
+        from _fakes.knowledge_env import enable_knowledge
+
+        await enable_knowledge()
+        await corpus()
+
+    async def test_a_search_reads_as_the_agent_tool_s(self, mcp_app, api_key, corpus_on):
+        from sqlalchemy import select
+
+        from core.knowledge.tools import UNTRUSTED
+        from core.store import session
+        from core.store.models import KnowledgeQueryDB
+
+        async with mcp_session(mcp_app, api_key) as s:
+            tools = {t.name: t for t in (await s.list_tools()).tools}
+            result = await s.call_tool("search_knowledge", {"query": "hosting monthly fee", "kb": "Contracts"})
+        assert tools["search_knowledge"].annotations.readOnlyHint is True
+        assert not result.isError, result.content[0].text
+        text = result.content[0].text
+        assert text.startswith("search_knowledge: ") and "from Contracts." in text
+        assert UNTRUSTED in text and "<<KNOWLEDGE RESULTS>>" in text and "<<END KNOWLEDGE RESULTS>>" in text
+        assert "[K1] contracts/acme.pdf" in text and "Hosting" in text
+        assert "read_knowledge" not in text and "[Turn" not in text
+        async with session() as db:
+            row = (await db.execute(select(KnowledgeQueryDB))).scalars().one()
+        assert (row.surface, row.api_key_id) == ("mcp", api_key["record"]["id"])
+
+    async def test_a_filter_is_a_json_string_and_narrows(self, mcp_app, api_key, corpus_on):
+        async with mcp_session(mcp_app, api_key) as s:
+            narrowed = await s.call_tool("search_knowledge", {
+                "query": "renewal invoice revenue", "filters": json.dumps({"doc_type": "email"})})
+            bad = await s.call_tool("search_knowledge", {"query": "fees", "filters": '{"$where": "1"}'})
+            broken = await s.call_tool("search_knowledge", {"query": "fees", "filters": "{not json"})
+        assert not narrowed.isError, narrowed.content[0].text
+        assert "contracts/mail/renewal.eml" in narrowed.content[0].text
+        assert "contracts/acme.pdf" not in narrowed.content[0].text
+        assert bad.isError and "filter is not valid" in bad.content[0].text
+        assert broken.isError and "filter is not valid" in broken.content[0].text
+
+    async def test_what_it_refuses(self, mcp_app, api_key, corpus_on):
+        async with mcp_session(mcp_app, api_key) as s:
+            nameless = await s.call_tool("search_knowledge", {"query": "  "})
+            unknown = await s.call_tool("search_knowledge", {"query": "fees", "kb": "Invoices"})
+        assert nameless.isError and "Give a query" in _body(nameless)["error"]
+        assert unknown.isError and 'no knowledge base "Invoices"' in _body(unknown)["error"]
+        assert "Contracts (kb_00000000000a)" in _body(unknown)["error"]
+
+    async def test_a_workspace_without_bases_says_so(self, mcp_app, api_key):
+        from _fakes.knowledge_env import enable_knowledge
+
+        await enable_knowledge()
+        async with mcp_session(mcp_app, api_key) as s:
+            result = await s.call_tool("search_knowledge", {"query": "fees"})
+        assert result.isError and "no knowledge bases yet" in result.content[0].text
+
+    async def test_more_than_ten_bases_need_a_name(self, mcp_app, api_key):
+        from _fakes.knowledge_corpus import save_bases
+        from _fakes.knowledge_env import enable_knowledge
+        from core.knowledge.kb_settings import KnowledgeBase
+
+        await enable_knowledge()
+        await save_bases(*[KnowledgeBase(id=f"kb_{n:012x}", name=f"Base {n:02d}", folder=f"b{n}") for n in range(11)])
+        async with mcp_session(mcp_app, api_key) as s:
+            result = await s.call_tool("search_knowledge", {"query": "fees"})
+        text = result.content[0].text
+        assert result.isError and "11 knowledge bases" in text and "at most 10" in text
+        assert "Base 00 (kb_000000000000)" in text and "Base 10" not in text
+
+    async def test_absent_and_refused_while_off(self, mcp_app, api_key):
+        from _fakes.knowledge_corpus import corpus
+
+        await corpus()
+        async with mcp_session(mcp_app, api_key) as s:
+            names = {t.name for t in (await s.list_tools()).tools}
+            result = await s.call_tool("search_knowledge", {"query": "fees"})
+        assert "search_knowledge" not in names and "list_agents" in names
+        assert result.isError and "Knowledge is switched off" in result.content[0].text
+
+    async def test_a_host_searches_where_it_can(self, mcp_app, api_key, corpus_on):
+        """Cloud's MCP service cannot embed: it installs a searcher that runs the search on its fleet (P1b)."""
+        from core.knowledge.api_models import SearchResponse
+        from core.mcp_server import knowledge
+
+        seen = []
+
+        async def searcher(request, origin):
+            seen.append((request, origin))
+            return SearchResponse(query_id="kq_" + "0" * 32, hits=[])
+
+        knowledge.set_knowledge_searcher(searcher)
+        try:
+            async with mcp_session(mcp_app, api_key) as s:
+                result = await s.call_tool("search_knowledge", {"query": "fees", "kb": "Reports", "top_k": 99})
+        finally:
+            knowledge.set_knowledge_searcher(None)
+        assert not result.isError and "found nothing" in result.content[0].text
+        ((request, origin),) = seen
+        assert request.kb_ids == ["kb_00000000000b"] and request.top_k == 20 and request.query == "fees"
+        assert (origin.surface, origin.api_key_id) == ("mcp", api_key["record"]["id"])
+        assert knowledge.get_knowledge_searcher() is knowledge.search_in_process
+
+
 class TestBuilderTools:
     async def test_create_then_read_an_agent(self, mcp_app, api_key):
         async with mcp_session(mcp_app, api_key) as s:

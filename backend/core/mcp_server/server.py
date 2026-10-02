@@ -21,7 +21,8 @@ Four hooks make it reusable by an embedder (cloud's hosted endpoint):
   refused by name. Everything is granted by default; cloud's OAuth tokens carry
   scopes (D127).
 
-Where a run tool's run executes is `runs.set_run_backend`'s.
+Where a run tool's run executes is `runs.set_run_backend`'s, and where a knowledge
+search runs `knowledge.set_knowledge_searcher`'s.
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ from mcp import types
 from mcp.server.lowlevel import Server
 
 from core.log import get_logger
-from core.mcp_server import catalog, runs, workflows
+from core.mcp_server import catalog, knowledge, runs, workflows
 
 _log = get_logger(__name__)
 
@@ -132,14 +133,15 @@ def _error(message: str) -> types.CallToolResult:
 
 
 def _fixed_tools() -> list[types.Tool]:
-    return catalog.builder_tools() + list(runs.RUN_TOOLS)
+    return catalog.builder_tools() + list(runs.RUN_TOOLS) + knowledge.tools()
 
 
 def _reserved() -> set[str]:
-    return set(catalog.SERVED_BUILDER_TOOLS) | set(runs.RUN_TOOL_NAMES)
+    return set(catalog.SERVED_BUILDER_TOOLS) | set(runs.RUN_TOOL_NAMES) | set(catalog.KNOWLEDGE_TOOLS)
 
 
-async def _call(name: str, args: dict, server_module: ServerModule = this_process) -> types.CallToolResult:
+async def _call(name: str, args: dict, server_module: ServerModule = this_process,
+                principal: Any = None) -> types.CallToolResult:
     if name in catalog.SERVED_BUILDER_TOOLS:
         from core.builder_tools import execute_builder_tool_with_events
 
@@ -153,6 +155,9 @@ async def _call(name: str, args: dict, server_module: ServerModule = this_proces
 
     if name in runs.RUN_TOOL_NAMES:
         return _json_result(await runs.call_run_tool(name, args))
+
+    if name == knowledge.NAME:
+        return _text_result(await knowledge.search_tool(args, principal))
 
     if name.startswith(workflows.PREFIX):
         orch = (await workflows.workflow_map(_reserved())).get(name)
@@ -205,7 +210,7 @@ def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_set
             )
         async with bind(principal):
             try:
-                return await _call(tool_name, arguments or {}, server_module)
+                return await _call(tool_name, arguments or {}, server_module, principal)
             except runs.ToolRefusal as exc:
                 return _error(str(exc))
             except KeyError as exc:

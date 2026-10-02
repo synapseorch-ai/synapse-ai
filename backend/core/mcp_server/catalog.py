@@ -21,6 +21,7 @@ Three kinds of builder tool are not served:
 writing a Retrieve or Ingest step needs the bases' ids, and while Knowledge is off the
 tool does not exist anywhere else either (`builder_tool_offered`). The listing is
 decided per call, inside the caller's binding, so cloud answers per organisation.
+`search_knowledge` (`knowledge.py`, D176) is not a builder tool but is served the same way.
 
 MCP clients treat a tool as destructive unless it says otherwise, so every tool
 here says so explicitly. The overwriters are marked destructive — they replace
@@ -93,9 +94,12 @@ SCOPES: tuple[str, ...] = ("read", "run", "build")
 #: The run tools that only read a run.
 READING_RUN_TOOLS: frozenset[str] = frozenset({"get_run", "list_runs"})
 
+#: Knowledge's search (`knowledge.py`, D176): a read that is not a builder tool.
+KNOWLEDGE_TOOLS: frozenset[str] = frozenset({"search_knowledge"})
+
 
 def annotations_for(name: str) -> types.ToolAnnotations:
-    if name in READ_TOOLS:
+    if name in READ_TOOLS or name in KNOWLEDGE_TOOLS:
         return types.ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
     return types.ToolAnnotations(
         readOnlyHint=False,
@@ -108,7 +112,7 @@ def scope_of(name: str) -> str | None:
     """The scope a served tool needs; None for a name that is not served."""
     from core.mcp_server import runs, workflows
 
-    if name in READ_TOOLS or name in READING_RUN_TOOLS:
+    if name in READ_TOOLS or name in READING_RUN_TOOLS or name in KNOWLEDGE_TOOLS:
         return "read"
     if name in BUILD_TOOLS:
         return "build"
