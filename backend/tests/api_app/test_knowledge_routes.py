@@ -228,6 +228,35 @@ class TestUploads:
         resp = await on.post(f"/api/knowledge/bases/{kb['id']}/uploads", json=body)
         assert resp.status_code == status, resp.text
 
+    async def test_a_session_opened_with_a_token_header_takes_parts_only_with_it(self, on, jobs):
+        """CCR-8: v1's parts carry their authority in `parts[i].headers`; the internal route passes no
+        token and checks none."""
+        from core.knowledge import bases, ingest
+        from core.knowledge.api_models import UploadInit
+        from core.knowledge.ingest import NotFound
+
+        kb = await bases.require_base((await _kb(on))["id"])
+        session = await ingest.start_upload(kb, UploadInit(filename="a.md", size_bytes=2, mime="text/markdown"),
+                                            part_url=lambda u, n: f"/v1/{u}/{n}", token_header="X-Token")
+        (part,) = session.parts
+        token = part.headers["X-Token"]
+        assert len(token) >= 40 and set(part.headers) == {"X-Token"}
+
+        async def body():
+            yield b"hi"
+
+        for wrong in ("", "nope", token[:-1], "é" * len(token)):
+            with pytest.raises(NotFound):
+                await ingest.put_part(session.upload_id, 1, body(), token=wrong)
+        assert await ingest.put_part(session.upload_id, 1, body(), token=token) == hashlib.md5(b"hi").hexdigest()
+        assert await ingest.put_part(session.upload_id, 1, body()) == hashlib.md5(b"hi").hexdigest()
+
+        plain = await ingest.start_upload(kb, UploadInit(filename="b.md", size_bytes=2, mime="text/markdown"),
+                                          part_url=lambda u, n: f"/api/{u}/{n}")
+        assert plain.parts[0].headers == {}
+        with pytest.raises(NotFound):  # a session minted without a token is never v1's
+            await ingest.put_part(plain.upload_id, 1, body(), token=token)
+
     async def test_an_unknown_or_expired_upload_is_a_404(self, on, jobs):
         from core.knowledge import ingest
 

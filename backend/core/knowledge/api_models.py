@@ -809,8 +809,9 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("POST", "/knowledge/bases/{kb_id}/cost-preview", CostPreviewRequest, CostPreview, 200, _BOTH,
               None, "read"),
     RouteSpec("POST", "/knowledge/bases/{kb_id}/uploads", UploadInit, UploadSession, 201, _BOTH, "starts", "run"),
-    RouteSpec("PUT", "/knowledge/uploads/{upload_id}/parts/{part_number}", None, None, 200, _INTERNAL, None,
-              "run"),  # OSS only: the part URL an OSS UploadSession hands out
+    # OSS only: the part URL an OSS UploadSession hands out. On v1 it is authorised by the session's own
+    # token in `parts[i].headers`, not by the key (CCR-8); cloud's parts are presigned S3 URLs.
+    RouteSpec("PUT", "/knowledge/uploads/{upload_id}/parts/{part_number}", None, None, 200, _BOTH, None, "run"),
     RouteSpec("POST", "/knowledge/uploads/{upload_id}/complete", UploadComplete, IngestAccepted, 202, _BOTH,
               "starts", "run"),
     RouteSpec("POST", "/knowledge/bases/{kb_id}/urls", UrlIngestRequest, CrawlAccepted, 202, _BOTH, "starts",

@@ -96,6 +96,14 @@ class TestApiModels:
             M.UrlIngestRequest(urls=["file:///etc/passwd"])
         M.UrlIngestRequest(urls=["https://example.com/"])
 
+    def test_an_oss_upload_part_is_on_v1_too(self):
+        """CCR-8 (P1a, D176): an OSS upload session's part URL has to work for a key caller; cloud's parts
+        are presigned S3 URLs and stay unmounted there."""
+        routes = {(r.method, r.path): r for r in M.ROUTES}
+        part = routes[("PUT", "/knowledge/uploads/{upload_id}/parts/{part_number}")]
+        assert part.surfaces == frozenset({"internal", "v1"})
+        assert (part.request, part.response, part.status, part.bucket, part.scope) == (None, None, 200, None, "run")
+
     def test_a_bases_crawls_are_internal_and_read_only(self):
         """CCR-4 (S1): the screen's view of each web source; the public API decides later (P1)."""
         routes = {(r.method, r.path): r for r in M.ROUTES}

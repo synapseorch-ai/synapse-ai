@@ -9,7 +9,9 @@ half-finished upload is never a Vault file and never counts toward a plan's
 storage. Completing streams the parts, in order and each checked against its
 ETag, into the Vault file in one all-or-nothing write, then queues the
 document. A session expires after `SESSION_TTL`; the reconcile timer sweeps
-what is left.
+what is left. A session opened through the public API (`/api/v1`) carries its
+own token in each part's `headers` and its parts need it (CCR-8): a part PUT
+there carries no key, as cloud's presigned PUTs carry none.
 
 **Records** become `<folder>/_records/<id>.json`; the same id replaces the
 file, and unchanged content queues nothing.
@@ -21,8 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import math
+import secrets
 import unicodedata
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -135,9 +139,12 @@ async def _manifest(upload_id: str) -> dict[str, Any]:
     return manifest
 
 
-async def start_upload(kb: KnowledgeBase, body: UploadInit, *,
-                       part_url: Callable[[str, int], str]) -> UploadSession:
-    """Open an upload session for one file into `kb`."""
+async def start_upload(kb: KnowledgeBase, body: UploadInit, *, part_url: Callable[[str, int], str],
+                       token_header: str | None = None) -> UploadSession:
+    """Open an upload session for one file into `kb`.
+
+    With `token_header`, the session mints a token, keeps it in its manifest and names it in each part's
+    `headers`; `put_part` then takes a part only with it."""
     from core.knowledge.api_models import UploadPart, UploadSession
     from core.knowledge.config import knowledge_settings
     from core.knowledge.parse import ACCEPTED_EXTENSIONS, extension
@@ -156,14 +163,27 @@ async def start_upload(kb: KnowledgeBase, body: UploadInit, *,
     manifest = {"upload_id": upload_id, "kb_id": kb.id, "path": path, "size_bytes": body.size_bytes,
                 "mime": body.mime, "metadata": body.metadata, "part_size": PART_SIZE, "parts": parts,
                 "created_at": _now().isoformat(), "expires_at": expires.isoformat()}
+    headers: dict[str, str] = {}
+    if token_header:
+        manifest["part_token"] = secrets.token_urlsafe(32)
+        headers = {token_header: manifest["part_token"]}
     await asyncio.to_thread(_store().put, _manifest_key(upload_id), json.dumps(manifest))
     return UploadSession(upload_id=upload_id, part_size=PART_SIZE, expires_at=expires.isoformat(),
-                         parts=[UploadPart(part_number=n, url=part_url(upload_id, n)) for n in range(1, parts + 1)])
+                         parts=[UploadPart(part_number=n, url=part_url(upload_id, n), headers=dict(headers))
+                                for n in range(1, parts + 1)])
 
 
-async def put_part(upload_id: str, part_number: int, body: AsyncIterator[bytes]) -> str:
-    """Store one part; returns its ETag (the part's MD5, as S3's)."""
+async def put_part(upload_id: str, part_number: int, body: AsyncIterator[bytes], *,
+                   token: str | None = None) -> str:
+    """Store one part; returns its ETag (the part's MD5, as S3's).
+
+    `token` is what the public route was sent (`""` when nothing was): it must be the session's own.
+    None is the internal route, behind the app's own gate, which checks none."""
     manifest = await _manifest(upload_id)
+    if token is not None:
+        expected = manifest.get("part_token")
+        if not expected or not hmac.compare_digest(token.encode(), expected.encode()):
+            raise NotFound("No such upload, or it finished or expired.")  # the same answer as an unknown one
     if not 1 <= part_number <= manifest["parts"]:
         raise UploadError(f"This upload has parts 1 to {manifest['parts']}.", status=404)
     buf = bytearray()
