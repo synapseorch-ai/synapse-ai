@@ -88,6 +88,10 @@ _FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("microsoft", ("phi",)),
 )
 _CLI = {"anthropic_cli": "anthropic", "gemini_cli": "google", "codex_cli": "openai"}
+#: A family as people write its maker's name.
+FAMILY_NAMES = {"anthropic": "Anthropic", "openai": "OpenAI", "google": "Google", "amazon": "Amazon", "meta": "Meta",
+                "mistral": "Mistral", "deepseek": "DeepSeek", "xai": "xAI", "alibaba": "Qwen", "cohere": "Cohere",
+                "microsoft": "Microsoft"}
 
 
 def family_of(model: str) -> str | None:
@@ -114,7 +118,7 @@ def check_families(judge: EvalJudgeRequest) -> str | None:
     answer, verdict = family_of(judge.answer_model), family_of(judge.judge_model)
     if answer is not None and answer == verdict:
         raise ValueError(f"The judge ({judge.judge_model}) and the answer model ({judge.answer_model}) are both "
-                         f"{answer.title()} models. Pick a judge from another family: a model grades its own "
+                         f"{FAMILY_NAMES.get(answer, answer)} models. Pick a judge from another family: a model grades its own "
                          "family's answers too kindly.")
     if answer is None or verdict is None:
         unknown = judge.answer_model if answer is None else judge.judge_model

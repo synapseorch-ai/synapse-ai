@@ -176,6 +176,7 @@ async def estimate(kb: KnowledgeBase, body: EvalRunRequest, settings: Mapping[st
     if body.judge is not None:
         from core.knowledge import evals_judge
 
+        evals_judge.check_families(body.judge)  # refused here too, so the screen says so before Run
         lines.extend(await evals_judge.estimate(kb, questions, body.judge))
     unpriced = sorted({line.model for line in lines if line.est_usd is None})
     remaining = None

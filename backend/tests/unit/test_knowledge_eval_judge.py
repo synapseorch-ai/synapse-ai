@@ -171,9 +171,12 @@ class TestAJudgedRun:
         with pytest.raises(ValueError, match="another family"):
             await RUNS.start(kb, EvalRunRequest(set_id=made.id, judge=EvalJudgeRequest(
                 answer_model="gpt-4o", judge_model="oaic.gpt-4o-mini")))
-        resp = await client.post(f"/api/knowledge/bases/{kb.id}/eval/runs", json={
-            "set_id": made.id, "judge": {"answer_model": "gpt-4o", "judge_model": "o3-mini"}})
-        assert resp.status_code == 422 and "another family" in resp.json()["detail"]
+        same = {"answer_model": "gpt-4o", "judge_model": "o3-mini"}
+        resp = await client.post(f"/api/knowledge/bases/{kb.id}/eval/runs", json={"set_id": made.id, "judge": same})
+        assert resp.status_code == 422 and "both OpenAI models" in resp.json()["detail"]
+        priced = await client.post(f"/api/knowledge/bases/{kb.id}/eval/estimate",
+                                   json={"run": {"set_id": made.id, "judge": same}})
+        assert priced.status_code == 422 and "another family" in priced.json()["detail"]  # said before Run
         assert RUNS.tasks() == {}
 
     async def test_answers_and_verdicts_are_priced_but_never_against_the_budget(self, jobs, monkeypatch):
