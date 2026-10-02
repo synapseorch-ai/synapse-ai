@@ -36,7 +36,7 @@ class Runner:
     """A worker queue that records what it was handed; `drive` is the worker."""
 
     def __init__(self):
-        self.admitted: list[tuple[str, str]] = []
+        self.admitted: list[tuple[str, str, str]] = []
         self.started: list[tuple[str, str]] = []
         self.switched: list[str] = []
         self.later: list[tuple[str, str]] = []
@@ -45,8 +45,8 @@ class Runner:
         self.down = False
         self.platform = 0.0
 
-    async def admit(self, kb_id, started_by):
-        self.admitted.append((kb_id, started_by))
+    async def admit(self, kb_id, set_id, started_by):
+        self.admitted.append((kb_id, set_id, started_by))
         if self.busy:
             raise EvalBusy("Your plan runs 1 evaluation at a time.")
 
@@ -129,7 +129,7 @@ class TestHandedToTheRunner:
         made = await question_set(kb)
         started = await RUNS.start(kb, EvalRunRequest(set_id=made.id))
         assert started.status == "queued" and RUNS.tasks() == {}
-        assert runner.admitted == [(kb.id, "person")] and runner.started == [(kb.id, started.id)]
+        assert runner.admitted == [(kb.id, made.id, "person")] and runner.started == [(kb.id, started.id)]
         await runner.drive()
         run = await RUNS.get_run(kb.id, started.id)
         assert (run.status, run.done_count, len(run.cases)) == ("completed", 3, 3)

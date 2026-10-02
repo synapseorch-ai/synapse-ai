@@ -85,8 +85,9 @@ class EvalRunner(Protocol):
     """Where runs are driven when not in this process — cloud's worker jobs (V1c). None of these raises except
     where said."""
 
-    async def admit(self, kb_id: str, started_by: str) -> None:
-        """Before a run is recorded: raise `EvalBusy` when the deployment's limit on runs under way is reached."""
+    async def admit(self, kb_id: str, set_id: str, started_by: str) -> None:
+        """Before a run of `set_id` is recorded: raise `EvalBusy` when the deployment's limit on runs under way
+        is reached (a set's own run under way is the engine's to say: the active-run index)."""
 
     async def start(self, kb_id: str, run_id: str) -> None:
         """Drive `run(kb_id, run_id)` elsewhere. Raising leaves the run `failed`."""
@@ -285,7 +286,7 @@ async def start(kb: KnowledgeBase, body: EvalRunRequest, *, started_by: str = "p
             raise ValueError(f"{exc} Raise the budget, or run fewer questions.") from None
         row.status, row.error, row.finished_at = "skipped", str(exc), _now()
     if row.status == "queued" and _runner is not None:
-        await _runner.admit(kb.id, started_by)
+        await _runner.admit(kb.id, body.set_id, started_by)
     await reap(set_id=body.set_id)  # a run its worker left must not hold the set
     try:
         async with session() as s:
