@@ -222,6 +222,17 @@ class TestEvents:
     def test_webhooks_name_lifecycle_events(self):
         assert set(E.WEBHOOK_EVENTS.values()) <= set(E.LIFECYCLE_TYPES)
 
+    def test_a_webhook_is_named_by_its_lifecycle_type(self):
+        """CCR-9 (P1a, D176): cloud's webhook endpoints are generic, so Knowledge's events carry
+        their family — a customer subscribes to `knowledge.document.indexed`, never a bare
+        `document.indexed` another family could also mean."""
+        assert E.WEBHOOK_EVENTS == {
+            "knowledge.document.indexed": "knowledge.document.indexed",
+            "knowledge.document.partial": "knowledge.document.partial",
+            "knowledge.document.failed": "knowledge.document.failed",
+            "knowledge.base.reindexed": "knowledge.base.reindexed",
+        }
+
     async def test_emit_reaches_observers_and_never_raises(self):
         seen = []
 

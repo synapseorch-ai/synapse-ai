@@ -143,10 +143,10 @@
    "knowledge_ingest"
   ],
   "webhooks": {
-   "base.reindexed": "knowledge.base.reindexed",
-   "document.failed": "knowledge.document.failed",
-   "document.indexed": "knowledge.document.indexed",
-   "document.partial": "knowledge.document.partial"
+   "knowledge.base.reindexed": "knowledge.base.reindexed",
+   "knowledge.document.failed": "knowledge.document.failed",
+   "knowledge.document.indexed": "knowledge.document.indexed",
+   "knowledge.document.partial": "knowledge.document.partial"
   }
  },
  "filters": {

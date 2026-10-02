@@ -117,12 +117,13 @@ LIFECYCLE_TYPES: tuple[str, ...] = (
     "knowledge.snapshot.failed",
 )
 
-#: What customers can subscribe to (P1's public webhooks): public name → lifecycle type.
+#: What customers can subscribe to (P1's public webhooks): public name → lifecycle type. The public
+#: name is the lifecycle type itself (CCR-9): a webhook endpoint is not Knowledge's alone.
 WEBHOOK_EVENTS: dict[str, str] = {
-    "document.indexed": "knowledge.document.indexed",
-    "document.partial": "knowledge.document.partial",
-    "document.failed": "knowledge.document.failed",
-    "base.reindexed": "knowledge.base.reindexed",
+    "knowledge.document.indexed": "knowledge.document.indexed",
+    "knowledge.document.partial": "knowledge.document.partial",
+    "knowledge.document.failed": "knowledge.document.failed",
+    "knowledge.base.reindexed": "knowledge.base.reindexed",
 }
 
 
