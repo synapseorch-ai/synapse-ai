@@ -19,9 +19,10 @@ from core.storage import get_blob_store
 
 pytestmark = pytest.mark.usefixtures("knowledge_store")
 
-#: Internal routes other lanes mount; each lane removes its own as it lands.
+#: Internal routes other lanes mount; each lane removes its own as it lands. Replay has frozen models and
+#: no code: listed for after release (F339, D176).
 NOT_A1S = {
-    ("POST", "/knowledge/queries/{query_id}/replay"): "P1",
+    ("POST", "/knowledge/queries/{query_id}/replay"): "after release (F339)",
 }
 
 

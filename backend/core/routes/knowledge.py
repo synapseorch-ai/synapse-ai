@@ -4,8 +4,9 @@ question sets, drafts, runs (V1, D168).
 
 Paths are `/api` + the frozen route table (`core.knowledge.api_models.ROUTES`),
 with its bodies and status codes; a test holds the two equal. The cost preview
-and a base's costs are B2b's (D167). Replay is another lane's route and is not
-mounted here.
+and a base's costs are B2b's (D167). Replay is frozen but not built (F339: listed
+for after release), so it is not mounted. The public API serves the table's v1
+rows on these same handlers (`api_v1_knowledge.py`, D176).
 
 Knowledge is off until its release: while `knowledge_enabled` is false every
 route here answers 404, as if it did not exist.
