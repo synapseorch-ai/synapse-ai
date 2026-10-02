@@ -1,4 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import type { KnowledgeCitation } from '@/lib/knowledge';
+
+// Defined beside the Knowledge client so `lib/knowledge.ts` imports nothing from here and syncs to the
+// cloud unchanged (R1c, D173); re-exported so `@/types` stays the one place app code reads it from.
+export type { KnowledgeCitation };
+
 export interface Email {
     id: string;
     sender: string;
@@ -70,28 +76,6 @@ export interface Message {
     // B1b), and the labels it used that no search in its turn produced.
     citations?: KnowledgeCitation[];
     unresolvedCitations?: string[];
-}
-
-/** A `[K#]` label resolved to where the words are (`core.knowledge.api_models.Citation`). */
-export interface KnowledgeCitation {
-    label: string;
-    kb_id: string;
-    doc_id: string;
-    chunk_id: string;
-    path: string;
-    source: string;
-    source_url?: string | null;
-    title?: string | null;
-    page_start?: number | null;
-    page_end?: number | null;
-    char_start: number;
-    char_end: number;
-    heading_path: string[];
-    snippet: string;
-    indexed_at?: string | null;
-    snapshot_id: string;
-    /** Whether the words the answer quoted for this label are in its passage. */
-    quote_check?: { quote: string; matched: boolean; method: 'exact' | 'normalized' } | null;
 }
 
 export interface SystemStatus {

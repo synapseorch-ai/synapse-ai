@@ -12,7 +12,28 @@
 import { useEffect, useState } from 'react';
 
 import type { BadgeTone } from '@/components/ui';
-import type { KnowledgeCitation } from '@/types';
+
+/** A `[K#]` label resolved to where the words are (`core.knowledge.api_models.Citation`). */
+export interface KnowledgeCitation {
+    label: string;
+    kb_id: string;
+    doc_id: string;
+    chunk_id: string;
+    path: string;
+    source: string;
+    source_url?: string | null;
+    title?: string | null;
+    page_start?: number | null;
+    page_end?: number | null;
+    char_start: number;
+    char_end: number;
+    heading_path: string[];
+    snippet: string;
+    indexed_at?: string | null;
+    snapshot_id: string;
+    /** Whether the words the answer quoted for this label are in its passage. */
+    quote_check?: { quote: string; matched: boolean; method: 'exact' | 'normalized' } | null;
+}
 
 export type DocStatus =
     | 'queued' | 'parsing' | 'indexing' | 'indexed' | 'partial' | 'failed' | 'skipped' | 'paused' | 'blocked'
