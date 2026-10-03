@@ -1455,13 +1455,44 @@ async def run_agent_step(
     # (F286): the delegate's own resume state, handed to it when the lead
     # replays that `delegate_to_agent` call. Used once.
     _delegate_resume = (resume_state or {}).get("delegate") or None
-    # The last turn-boundary snapshot this loop has — seeded from the one it
-    # resumed from — so a delegate that asks in the middle of a turn can park
-    # the lead where it stands (F286).
-    _last_progress: dict | None = (
-        {k: v for k, v in resume_state.items() if k not in ("pending_call", "delegate", "delegate_pending")}
-        if resume_state and resume_state.get("context_text") else None
-    )
+
+    def _snapshot(next_turn: int) -> dict:
+        """Everything needed to carry this loop on after a pause or a process
+        death: taken at each turn boundary and at each gate (F312, F319).
+
+        A gate takes its own rather than parking the last boundary's: asked in a
+        turn's first step there was none, so the turn's thinking was lost and an
+        answer started the task over. The approvals are the live set, so one a
+        replay has spent is never parked again."""
+        snap = {
+            "turn": next_turn,
+            "context_text": current_context_text[-200_000:],
+            "approved_calls": sorted(_approved_calls),
+            "denied_calls": sorted(_denied_calls),
+            "denied_reasons": dict(_denied_reasons),
+            "has_compacted": _last_compact_turn is not None,   # older readers
+            "last_compact_turn": _last_compact_turn,
+            "browser_actions": browser_action_history[-50:],
+            "tools_used": [s[:500] for s in tools_used_summary[-20:]],
+            "memory_tainted": _memory_tainted,
+            # The turn's calls so far, for a resume and for whoever saves
+            # the turn from outside it (a stop, the fleet's chat job).
+            "calls": [{**c, "result": str(c.get("result") or "")[:2_000]}
+                      for c in _turn_calls[-20:]],
+        }
+        if not _workflow_step:
+            # A chat turn's panels, for a pause's resume to save them
+            # (U60). A workflow step saves no turn, so its checkpoints
+            # stay as they were.
+            snap["reasoning"] = panel_text(_turn_reasoning)
+            snap["thoughts"] = panel_text(_turn_thoughts)
+        kn_state = _kturn.to_state()
+        if kn_state:
+            # The turn's [K#] labels (a delegate's included), so a resumed answer
+            # still cites them. Absent for a turn that searched nothing.
+            snap["knowledge"] = kn_state
+        return snap
+
     _replay_call: dict | None = None
     if _pending_call:
         if _pending_call.get("approved"):
@@ -1764,6 +1795,7 @@ async def run_agent_step(
             }
 
             # Ask LLM
+            _replaying = _replay_call is not None
             if _replay_call is not None:
                 # An action a person already approved, put back as this turn's
                 # output. No LLM call: the model made this choice before the
@@ -1898,7 +1930,9 @@ async def run_agent_step(
                     "turn": turn + 1,
                 }
 
-            if action_text.strip():
+            # A replayed call is the model's action from before the pause, which a
+            # chat turn's gate snapshot already carries: said once, not twice.
+            if action_text.strip() and not (_replaying and not _workflow_step):
                 _turn_thoughts.append(action_text)
                 yield {"type": "llm_thought", "thought": action_text, "turn": turn + 1}
 
@@ -2172,6 +2206,8 @@ async def run_agent_step(
                             continue
                         else:
                             _log.warning("⏸ 'remember' after read content needs approval")
+                            if progress_events:
+                                yield {"type": "_step_progress", **_snapshot(turn)}
                             yield {
                                 "type": "human_input_required",
                                 "kind": "tool_approval",
@@ -2347,6 +2383,10 @@ async def run_agent_step(
                     # is resumed at this same step with the answer; the call
                     # has not run, and nothing after it in this turn has either.
                     _log.warning(f"⏸ '{tool_name}' needs approval ({_category})")
+                    if progress_events:
+                        # Parked as it stands, this unfinished turn included: an
+                        # answer replays the call at this same turn (F312, F319).
+                        yield {"type": "_step_progress", **_snapshot(turn)}
                     yield {
                         "type": "human_input_required",
                         "kind": "tool_approval",
@@ -2503,9 +2543,7 @@ async def run_agent_step(
                                 # lead replayed it as its own (blocked, or run under
                                 # the lead's identity and policy).
                                 if progress_events and _chat_approval.approvals_answerable():
-                                    _kn_state = _kturn.to_state()  # the labels now, the delegate's included
-                                    yield {"type": "_step_progress", **(_last_progress or {"turn": turn}),
-                                           **({"knowledge": _kn_state} if _kn_state else {}),
+                                    yield {"type": "_step_progress", **_snapshot(turn),
                                            "delegate_pending": {
                                                **_call_args,
                                                "progress": _delegate_progress or {},
@@ -2858,34 +2896,7 @@ async def run_agent_step(
                 # Turn-boundary snapshot for mid-node crash recovery: everything
                 # needed to continue this loop after a process death. Consumed
                 # (persisted + swallowed) by AgentStepExecutor — never reaches SSE.
-                _last_progress = {
-                    "turn": turn + 1,
-                    "context_text": current_context_text[-200_000:],
-                    "approved_calls": sorted(_approved_calls),
-                    "denied_calls": sorted(_denied_calls),
-                    "denied_reasons": dict(_denied_reasons),
-                    "has_compacted": _last_compact_turn is not None,   # older readers
-                    "last_compact_turn": _last_compact_turn,
-                    "browser_actions": browser_action_history[-50:],
-                    "tools_used": [s[:500] for s in tools_used_summary[-20:]],
-                    "memory_tainted": _memory_tainted,
-                    # The turn's calls so far, for a resume and for whoever saves
-                    # the turn from outside it (a stop, the fleet's chat job).
-                    "calls": [{**c, "result": str(c.get("result") or "")[:2_000]}
-                              for c in _turn_calls[-20:]],
-                }
-                if not _workflow_step:
-                    # A chat turn's panels, for a pause's resume to save them
-                    # (U60). A workflow step saves no turn, so its checkpoints
-                    # stay as they were.
-                    _last_progress["reasoning"] = panel_text(_turn_reasoning)
-                    _last_progress["thoughts"] = panel_text(_turn_thoughts)
-                _kn_state = _kturn.to_state()
-                if _kn_state:
-                    # The turn's [K#] labels, so a resumed answer still cites
-                    # them. Absent for a turn that searched nothing.
-                    _last_progress["knowledge"] = _kn_state
-                yield {"type": "_step_progress", **_last_progress}
+                yield {"type": "_step_progress", **_snapshot(turn + 1)}
         else:
             _ran_out = True
 
