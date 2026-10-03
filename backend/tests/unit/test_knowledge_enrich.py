@@ -59,6 +59,7 @@ class Writer:
         self.usage = usage
         self.running = 0
         self.most = 0
+        self.peaks: list[int] = []
 
     @staticmethod
     def passage(prompt: str) -> str:
@@ -68,14 +69,16 @@ class Writer:
         passage = self.passage(prompt)
         self.calls.append({"model": model, "system": system, "prompt": prompt, "passage": passage,
                            "attribution": attribution})
+        n = len(self.calls)  # this call's own number, before any other call is appended
         self.running += 1
         self.most = max(self.most, self.running)
+        self.peaks.append(self.running)
         self.events.append(("start", passage[:40]))
         try:
             if self.delay:
                 await asyncio.sleep(self.delay)
             if self.answer is not None:
-                out = self.answer(passage, len(self.calls))
+                out = self.answer(passage, n)
                 if isinstance(out, BaseException):
                     raise out
                 if isinstance(out, LLMResult):
@@ -698,3 +701,71 @@ async def test_a_long_rebuild_keeps_its_lease(jobs, monkeypatch):
     await jobs.drain(run_ingest_job)
     building_beats = len(beats)
     assert building_beats > 4, "beaten while the contexts were written, not only after each document"
+
+
+
+# ── a provider's rate limit is paced, not failed (F356) ────────────────────────
+
+@pytest.fixture
+def quick_pacing(monkeypatch):
+    monkeypatch.setattr(enrich, "RATE_WAIT_S", 0.0, raising=False)
+    monkeypatch.setattr(enrich, "RATE_WAIT_MAX_S", 0.0, raising=False)
+
+
+async def test_a_rate_limit_slows_the_document_to_one_call_at_a_time_and_it_finishes(jobs, monkeypatch, quick_pacing):
+    """F356, measured on a tier-1 OpenAI key: 4 calls at once of ~13.5k tokens each drew 429s past the provider's own
+    retries and failed the rebuild. Now the document goes one call at a time, waits each limit out, and finishes."""
+    limited: list[int] = []
+
+    def answer(passage, n):
+        if n in (3, 4, 6):  # three calls refused, past the provider's retries
+            limited.append(n)
+            return LLMError("HTTP 429: Rate limit reached for gpt-4.1-nano on tokens per min (TPM)")
+        return f"Zebracontext {n}"
+
+    writer = Writer(answer=answer, delay=0.01)
+    monkeypatch.setattr(enrich, "_ask", writer)
+    kb = await _base()
+    row = await _ingest(jobs, kb, text=_long_text(6))  # one window, many passages
+    assert (row.status, row.status_reason) == ("indexed", None), row.error
+    chunks = await _chunks(kb.id)
+    assert all("Zebracontext" in c.context for c in chunks), "every passage got its context after all"
+    detail = _enrich_stage(row)["detail"]
+    assert detail["rate_limited"]["waits"] == 3 and detail["fallback"] == 0
+    # Calls already in flight when a limit arrives finish as they started; everything after them is one at a time.
+    settled = writer.peaks[limited[-1] + enrich.CONCURRENCY:]
+    assert settled and max(settled) == 1, writer.peaks
+    assert max(writer.peaks[:limited[0]]) > 1, "before any limit, several at once"
+    assert sum(c.units for c in await _costs()) == len(chunks), "refused calls cost nothing; each answer once"
+
+
+async def test_a_rate_limit_that_never_lifts_fails_the_document_retryably(jobs, monkeypatch, quick_pacing):
+    monkeypatch.setattr(enrich, "NO_PROGRESS_S", 0.05, raising=False)
+    writer = Writer(answer=lambda passage, n: LLMError("HTTP 429: Too Many Requests"), delay=0.005)
+    monkeypatch.setattr(enrich, "_ask", writer)
+    kb = await _base()
+    row = await _ingest(jobs, kb)
+    assert (row.status, row.status_reason) == ("failed", "enrich_failed"), "nothing answered for the deadline"
+    assert len(writer.calls) > 1, "it waited and asked again before giving up"
+
+
+async def test_bedrock_throttling_is_paced_like_any_rate_limit(jobs, monkeypatch, quick_pacing):
+    """Bedrock's throttling reaches the engine with no HTTP status (a `model_error`): its words say what it is."""
+    def answer(passage, n):
+        if n == 2:
+            return LLMError("Bedrock LLM Error: failed after 5 attempts. Last error: An error occurred "
+                            "(ThrottlingException) when calling the Converse operation: Too many requests")
+        return "Zebracontext."
+
+    monkeypatch.setattr(enrich, "_ask", Writer(answer=answer))
+    kb = await _base()
+    row = await _ingest(jobs, kb)
+    assert row.status == "indexed" and _enrich_stage(row)["detail"]["rate_limited"]["waits"] == 1
+
+
+def test_an_exhausted_quota_or_a_refused_key_is_never_paced():
+    assert enrich._rate_limited(LLMError("HTTP 429: Rate limit reached"))
+    assert enrich._rate_limited(LLMError("Bedrock refused: (ThrottlingException) slow down"))
+    assert not enrich._rate_limited(LLMError("HTTP 429: You exceeded your current quota: insufficient_quota"))
+    assert not enrich._rate_limited(LLMError("HTTP 401: invalid api key"))
+    assert not enrich._rate_limited(LLMError("HTTP 503: overloaded"))

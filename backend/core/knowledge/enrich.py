@@ -32,6 +32,9 @@ so it is a blue/green rebuild behind the cost preview.
   - an empty wallet (a 402 from our gateway) is `WalletExhausted` and a spent budget `BudgetExceeded`: both pause.
 
   What was spent before a failure is recorded, and the contexts written so far are kept (`enrich_cache`).
+* **A provider's rate limit is paced, not failed** (F356): once one outlasts the provider's own retries, the document's
+  calls go one at a time and each limit is waited out (`_Pacer`); the document fails only after ten minutes with
+  nothing answered. Any provider: a `rate_limited` failure, or one that says it was throttled.
 * **A long document keeps its lease:** the job or the rebuild step that indexes it sets a heartbeat (`beating`),
   called while the calls run, so reconcile never takes a long enrichment for a stuck one.
 
@@ -82,6 +85,14 @@ MAX_OUTPUT_TOKENS = 150
 MAX_CONTEXT_CHARS = 600
 #: Calls at once for one document, after a window's first.
 CONCURRENCY = max(1, int(os.environ.get("SYNAPSE_KNOWLEDGE_CONTEXT_CONCURRENCY", "4") or 4))
+#: A provider's rate limit that outlasts its own retries (F356; Naveen: pace, don't fail): the document's calls go one at
+#: a time, each limit waits `RATE_WAIT_S` (doubling to `RATE_WAIT_MAX_S`) and the passage is asked again; the document
+#: fails only after `NO_PROGRESS_S` with nothing answered.
+RATE_WAIT_S = 15.0
+RATE_WAIT_MAX_S = 60.0
+NO_PROGRESS_S = 600.0
+#: A rate limit said in words, for a provider whose failure carries no status (Bedrock's `ThrottlingException`).
+_THROTTLED = re.compile(r"throttl|too ?many ?requests|rate.?limit|servicequotaexceeded", re.IGNORECASE)
 
 #: Where a cache point holds. Explicit: the engine marks the system prompt (`core.cache.prompt_cache`), honoured
 #: above the model's minimum — Haiku 4.5's 4,096 tokens is the highest. Automatic: the provider caches a repeated
@@ -438,25 +449,79 @@ async def _ask(model: str, system: str, prompt: str, settings: Mapping[str, Any]
         reasoning_effort="off", max_output_tokens=MAX_OUTPUT_TOKENS)
 
 
+def _rate_limited(exc: BaseException) -> bool:
+    """A provider saying "too many, slow down" — never an exhausted credit or a refused key."""
+    from core.llm_providers import MODEL_ERROR, PROVIDER_UNAVAILABLE, RATE_LIMITED
+
+    code = getattr(exc, "code", None)
+    if code == RATE_LIMITED:
+        return True
+    return code in (MODEL_ERROR, PROVIDER_UNAVAILABLE) and bool(_THROTTLED.search(str(exc)))
+
+
+class _Pacer:
+    """One document's calls: `CONCURRENCY` at a time until a rate limit outlasts the provider's own retries, then one
+    at a time, each limit waited out, until nothing has been answered for `NO_PROGRESS_S` (F356)."""
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Semaphore(CONCURRENCY)
+        self.serial = asyncio.Lock()
+        self.limited = False
+        self.waits = 0
+        self.waited_s = 0.0
+        self._wait = RATE_WAIT_S
+        self._answered = time.monotonic()
+
+    async def call(self, fn: Callable[[], Awaitable[Any]]) -> Any:
+        """`fn()`, one at a time once the document has been rate limited."""
+        if self.limited:
+            async with self.serial:
+                return await fn()
+        return await fn()
+
+    def answered(self) -> None:
+        self._answered = time.monotonic()
+        self._wait = RATE_WAIT_S
+
+    async def rate_limited(self) -> bool:
+        """Wait out a rate limit; False (give up) once nothing has been answered for `NO_PROGRESS_S`."""
+        if time.monotonic() - self._answered >= NO_PROGRESS_S:
+            return False
+        self.limited = True
+        wait, self._wait = self._wait, min(self._wait * 2, RATE_WAIT_MAX_S)
+        self.waits += 1
+        self.waited_s += wait
+        await asyncio.sleep(wait)
+        return True
+
+
 async def _context(model: str, system: str, chunk: Chunk, settings: Mapping[str, Any], attribution: Attribution,
-                   tally: _Tally, *, platform: bool) -> str | None:
-    """One passage's context, or None when two answers were unusable. Raises the document's error."""
+                   tally: _Tally, pacer: _Pacer, *, platform: bool) -> str | None:
+    """One passage's context, or None when two answers were unusable. A rate limit is waited out and the same
+    question asked again (it spends neither try). Raises the document's error."""
     from core.llm_providers import EmptyAnswer, LLMError
 
     prompt = user_prompt(chunk)
-    for _ in range(2):
+    tries = 0
+    while tries < 2:
         started = time.monotonic()
         try:
-            result = await _ask(model, system, prompt, settings, attribution)
+            result = await pacer.call(lambda: _ask(model, system, prompt, settings, attribution))
         except EmptyAnswer as empty:  # billed, and nothing usable: empty, blocked, all reasoning
+            pacer.answered()
             spent = tuple(getattr(empty, "usage", None) or (0, 0, 0, 0))
             tally.add(int(spent[0]), int(spent[1]), int(spent[2]), int(spent[3]), None,
                       int((time.monotonic() - started) * 1000))
+            tries += 1
             continue
         except LLMError as exc:
+            if _rate_limited(exc) and await pacer.rate_limited():
+                continue
             raise _hard(exc, model, platform=platform) from exc
+        pacer.answered()
         tally.add(result.input_tokens, result.output_tokens, result.cache_read_tokens, result.cache_write_tokens,
                   getattr(result, "charged_microusd", None), int((time.monotonic() - started) * 1000))
+        tries += 1
         if result.stop_reason == "max_tokens":
             continue
         text = clean(result.text)
@@ -494,17 +559,16 @@ async def _record(tally: _Tally, *, model: str, attribution: Attribution, window
 
 async def _run_window(model: str, window: Window, todo: list[tuple[Chunk, str]], system: str,
                       settings: Mapping[str, Any], attribution: Attribution, tally: _Tally,
-                      written: dict[str, str], *, platform: bool) -> int:
+                      written: dict[str, str], pacer: _Pacer, *, platform: bool) -> int:
     """Ask every passage of `todo` against `window`: the first alone, the rest `CONCURRENCY` at a time. Fills
     `written` (cache key → context); answers how many fell back. On the first hard failure the rest are cancelled
     and it is raised."""
-    gate = asyncio.Semaphore(CONCURRENCY)
     fallback = 0
 
     async def one(chunk: Chunk, key: str) -> None:
         nonlocal fallback
-        async with gate:
-            text = await _context(model, system, chunk, settings, attribution, tally, platform=platform)
+        async with pacer.gate:
+            text = await _context(model, system, chunk, settings, attribution, tally, pacer, platform=platform)
         if text is None:
             fallback += 1
         else:
@@ -562,6 +626,7 @@ async def contextualize(ctx: IndexContext, chunks: Sequence[Chunk], *, model: st
     windows = plan(ctx.parsed, chunks)
     hits = calls = fallback = 0
     keys: dict[str, str] = {}
+    pacer = _Pacer()
 
     async with _beating(_HEARTBEAT.get()):
         for window, members in windows:
@@ -581,7 +646,7 @@ async def contextualize(ctx: IndexContext, chunks: Sequence[Chunk], *, model: st
             tally = _Tally()
             try:
                 fallback += await _run_window(model, window, todo, system_prompt(window, title), settings,
-                                              attribution, tally, written, platform=platform)
+                                              attribution, tally, written, pacer, platform=platform)
             finally:
                 calls += tally.calls
                 usage = await _record(tally, model=model, attribution=attribution, window=window,
@@ -593,6 +658,8 @@ async def contextualize(ctx: IndexContext, chunks: Sequence[Chunk], *, model: st
     out.sentences = {cid: written[key] for cid, key in keys.items() if key in written}
     out.detail.update(windows=len(windows), whole=all(not w.excerpt for w, _ in windows), calls=calls,
                       from_cache=hits, written=len(out.sentences) - hits, fallback=fallback)
+    if pacer.waits:  # paced by the provider's rate limit (F356): how often, and how long it waited
+        out.detail["rate_limited"] = {"waits": pacer.waits, "waited_s": round(pacer.waited_s, 1)}
     if fallback:
         out.status = "partial"
         out.warnings.append(ParseWarning(
