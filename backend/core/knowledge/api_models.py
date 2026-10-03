@@ -289,9 +289,10 @@ class CrawlCounts(_Response):
 
 
 class WebCrawlState(_Response):
-    """A web source and its latest crawl (CCR-4, S1). `capped` means the crawl stopped at its page cap,
-    so it deleted nothing; `interrupted` means the server stopped mid-crawl, and the next pass runs it
-    again."""
+    """A web source and its latest crawl (CCR-4, S1). `capped` means the crawl stopped at a limit — its
+    page cap, the crawl's time limit, or the vault's storage — so it deleted nothing; `last_error` names
+    the limit unless it was the page cap (CCR-11, S1c). `interrupted` means the server stopped mid-crawl,
+    and the next pass runs it again."""
 
     source_id: str
     url: str

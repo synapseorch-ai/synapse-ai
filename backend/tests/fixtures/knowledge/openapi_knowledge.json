@@ -13329,7 +13329,7 @@
     "type": "object"
    }
   },
-  "description": "A web source and its latest crawl (CCR-4, S1). `capped` means the crawl stopped at its page cap,\nso it deleted nothing; `interrupted` means the server stopped mid-crawl, and the next pass runs it\nagain.",
+  "description": "A web source and its latest crawl (CCR-4, S1). `capped` means the crawl stopped at a limit — its\npage cap, the crawl's time limit, or the vault's storage — so it deleted nothing; `last_error` names\nthe limit unless it was the page cap (CCR-11, S1c). `interrupted` means the server stopped mid-crawl,\nand the next pass runs it again.",
   "properties": {
    "counts": {
     "$ref": "#/$defs/CrawlCounts"
