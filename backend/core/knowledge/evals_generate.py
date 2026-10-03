@@ -397,13 +397,11 @@ async def draft(kb: KnowledgeBase, body: EvalDraftRequest, settings: Mapping[str
 # ── what drafting costs ───────────────────────────────────────────────────────
 
 async def chat_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    """What `model` charges for the tokens, by the rate card; None when the card does not price it."""
-    from core import usage_tracker
+    """What `model` charges for the tokens (`costs.chat_usd`: the deployment's rate for a platform model, else the
+    rate card); None when nothing prices it."""
+    from core.knowledge import costs
 
-    await usage_tracker._ensure_pricing()
-    if usage_tracker._resolve_pricing_entry(model) is None:
-        return None
-    return usage_tracker.calculate_cost(model, input_tokens, output_tokens)
+    return await costs.chat_usd(model, input_tokens, output_tokens)
 
 
 async def estimate_drafts(kb: KnowledgeBase, body: EvalDraftRequest, settings: Mapping[str, Any]) -> EvalEstimate:

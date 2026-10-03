@@ -58,8 +58,17 @@ def cost_source(provider_id: str) -> CostSource:
 
 
 async def usd_per_mtok(model: str, profile: profiles.EmbeddingProfile) -> float | None:
-    """The rate an estimate uses: the operator's (`model_pricing`, by the id or its bare name), else the
-    profile's, else None (unpriced)."""
+    """The rate an estimate uses: for a model our gateway serves, the deployment's (`costs.platform_rate`: what
+    the gateway will charge, the plan's markup included — F334); else the operator's (`model_pricing`, by the id or
+    its bare name), else the profile's, else None (unpriced)."""
+    from core.providers.registry import provider_for
+
+    if cost_source(provider_for(model).id) == "platform":
+        from core.knowledge.costs import platform_rate
+
+        rate = await platform_rate(model)
+        if rate is not None:
+            return rate.input_per_mtok
     try:
         from core import usage_tracker
 

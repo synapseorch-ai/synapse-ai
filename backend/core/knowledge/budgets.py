@@ -5,9 +5,11 @@ and the resume (B2b, D167).
 decides what happens around it:
 
 * **Before embedding**, the pipeline and the re-embed backfill pass the call's estimate:
-  `embed_estimate_usd` — the texts' tokens at the model's rate (the operator's `model_pricing` entry,
-  else the model's profile). A model on the customer's own machine is $0, and an unpriced model is
-  estimated at $0: a budget never blocks what it cannot price. OCR passes its own estimate (A2).
+  `embed_estimate_usd` — the texts' tokens at the model's rate (for a model our gateway serves, what the
+  deployment charges — `costs.platform_rate`, F334; else the operator's `model_pricing` entry, else the
+  model's profile). A model on the customer's own machine is $0, and an unpriced model is estimated at
+  $0: a budget never blocks what it cannot price. OCR passes its own estimate (A2), at
+  `costs.ocr_usd_per_page`.
 * **A pause is never a loop.** A document that meets the cap rests `paused` / `budget_cap`
   (`jobs.failure_status`); it is queued again only when the cap is raised or cleared (the PATCH calls
   `resume`) or when a new month begins (`tend`, at the end of each reconcile pass: OSS's loop, cloud's

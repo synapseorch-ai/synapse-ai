@@ -148,8 +148,11 @@ class ProviderReranker:
             raise RerankError(f"{route.label} answered the rerank in a shape Synapse does not read.",
                               retryable=False)
         ranking.sort(key=lambda p: (-p[1], p[0]))
+        from core.knowledge.costs import rerank_usd_per_search
+
+        rate = await rerank_usd_per_search(spec.model)  # the deployment's, for a platform reranker (F334)
         return RerankResult(ranking=ranking[:top_n], model=spec.model,
-                            usage=_usage(route, spec.model, name, data, latency_ms))
+                            usage=_usage(route, spec.model, name, data, latency_ms, rate))
 
 
 def _refusal(route: RerankRoute, status: int, data: Any, text: str) -> Exception:
@@ -186,7 +189,8 @@ def _ranking(data: Any, count: int) -> list[tuple[int, float]] | None:
     return out
 
 
-def _usage(route: RerankRoute, model: str, name: str, data: Any, latency_ms: int) -> Usage:
+def _usage(route: RerankRoute, model: str, name: str, data: Any, latency_ms: int,
+           usd_per_search: float | None = None) -> Usage:
     usage = (data.get("usage") or {}) if isinstance(data, dict) else {}
     meta = ((data.get("meta") or {}).get("billed_units") or {}) if isinstance(data, dict) else {}
     charged = usage.get("charged_microusd") if route.provider == "model_gateway" else None
@@ -202,7 +206,7 @@ def _usage(route: RerankRoute, model: str, name: str, data: Any, latency_ms: int
     if source == "local":
         return Usage(stage="rerank", cost_source="local", model=model, provider=route.provider, units=units,
                      unit="search_units", latency_ms=latency_ms)
-    rate = route.usd_per_search
+    rate = usd_per_search if usd_per_search is not None else route.usd_per_search
     return Usage(stage="rerank", cost_source=source, model=model, provider=route.provider, units=units,
                  unit="search_units", est_usd=units * (rate or 0.0), charged_microusd=charged,
                  priced=rate is not None, latency_ms=latency_ms)

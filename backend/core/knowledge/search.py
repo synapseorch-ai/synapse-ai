@@ -410,14 +410,14 @@ async def search(req: SearchRequest, *, origin: Origin, label_start: int = 1,
 
     # A knowledge base at its monthly budget searches by keyword only ($0), and pays for no rerank (B2b, D167 #3).
     from core.knowledge.budgets import capped as _capped
-    from core.knowledge.rerankers import route_for
+    from core.knowledge.costs import rerank_usd_per_search
 
     over: set[str] = set()
     if vector_groups or rerank_on:  # nothing else in a search costs money
-        route = route_for(rerank_model or "") if rerank_on else None
+        rerank_usd = (await rerank_usd_per_search(rerank_model or "") or 0.0) if rerank_on else 0.0
         over = await _capped(kbs, query=req.query, models={
             kb.id: (info.get(snapshot_of.get(kb.id) or "") or {}).get("embed_model") for kb in kbs},
-            rerank_usd=float(getattr(route, "usd_per_search", None) or 0.0))
+            rerank_usd=float(rerank_usd))
     if over:
         _note(degraded, "budget_paused", "monthly budget reached: " + ", ".join(by_id[k].name for k in sorted(over)))
         vector_groups = {key: kept for key, scopes in vector_groups.items()

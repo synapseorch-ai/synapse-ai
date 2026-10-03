@@ -307,6 +307,29 @@ class TestMoney:
         assert [line.part for line in est.lines] == ["search"] and est.lines[0].counts_toward_budget
         assert est.lines[0].calls == 3
 
+    async def test_a_platform_rerank_is_estimated_at_what_the_deployment_charges(self, jobs):
+        """F334 (W1, D179): the run's rerank line at the deployment's rate, not the route's $0.002 list price."""
+        from core.knowledge import costs
+        from core.knowledge.costs import Rate
+        from core.knowledge.kb_settings import Rerank
+
+        kb = await policies(jobs)
+        made = await question_set(kb)
+        kb = kb.model_copy(update={"rerank": Rerank(enabled=True, model="synapse.cohere-rerank-3-5")})
+
+        def rerank_line(est):
+            return next(line for line in est.lines if line.model == "synapse.cohere-rerank-3-5")
+
+        listed = rerank_line(await RUNS.estimate(kb, EvalRunRequest(set_id=made.id)))
+        assert listed.est_usd == pytest.approx(0.002 * listed.calls) and listed.calls == 3
+
+        async def pricer(model):
+            return Rate(per_unit=0.0025, unit="search_units") if model == "synapse.cohere-rerank-3-5" else None
+
+        costs.set_platform_pricer(pricer)
+        charged = rerank_line(await RUNS.estimate(kb, EvalRunRequest(set_id=made.id)))
+        assert charged.est_usd == pytest.approx(0.0025 * 3) and charged.counts_toward_budget
+
 
 class TestRoutes:
     async def test_a_run_through_the_api(self, jobs, client):

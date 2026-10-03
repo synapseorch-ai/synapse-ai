@@ -18,6 +18,15 @@ document (`snapshots`). It is an estimate and says what it priced:
 
 Parsing is local in OSS and has no rate. `budget_remaining_usd` is the draft's cap less this month's spend.
 
+**What a deployment charges** (F334, W1, D179). A model our metering gateway serves (`synapse.*`, cost source
+`platform`) is charged at the deployment's rate, not the list price a profile or a route carries: cloud's gateway
+charges the platform rate × the plan's markup. A deployment says so with `set_platform_pricer` (cloud installs one
+that reads its catalogue and the org's plan; OSS installs none), and every quote of a platform cost asks
+`platform_rate` first: the preview's lines, the budget checks before embedding and OCR, search's cap check, the
+eval estimates, and the embedder's own `Usage.est_usd`. `ocr_usd_per_page`, `rerank_usd_per_search` and
+`chat_usd` are those quotes; anything that prices a Knowledge cost calls them rather than a rate of its own. With
+no pricer, or a model it does not price, every quote is the list price it was.
+
 **The spend** (`GET /knowledge/bases/{kb_id}/costs`) groups `knowledge_costs` by day (UTC), stage,
 document (`"search"` for what searches spent) or model, from the month's start unless told otherwise.
 
@@ -26,7 +35,8 @@ Imports are function-local, as in the rest of the package.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +60,100 @@ SEARCH_KEY = "search"
 def _tenant() -> str:
     from core.tenancy import get_tenant
     return get_tenant()
+
+
+# ── what a deployment charges (F334) ───────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Rate:
+    """What a deployment charges for one model, in USD: per 1M input and output tokens, or per `unit` (a search
+    unit, a page)."""
+
+    input_per_mtok: float = 0.0
+    output_per_mtok: float = 0.0
+    per_unit: float | None = None
+    unit: str | None = None
+
+
+#: `model` → what the deployment charges for it, or None when it does not price it.
+PlatformPricer = Callable[[str], Awaitable["Rate | None"]]
+
+_pricer: PlatformPricer | None = None
+
+
+def set_platform_pricer(pricer: PlatformPricer | None) -> None:
+    """Install what prices a platform model (cloud: its catalogue × the org's plan). None removes it."""
+    global _pricer
+    _pricer = pricer
+
+
+async def platform_rate(model: str) -> Rate | None:
+    """What the deployment charges for `model`, or None: no pricer (OSS), a model it does not price, or a pricer
+    that failed (logged). A price never fails the work it quotes. Callers ask only for a platform cost."""
+    if _pricer is None or not model:
+        return None
+    try:
+        return await _pricer(model)
+    except Exception as exc:  # noqa: BLE001 — the list price stands
+        from core.log import get_logger
+
+        get_logger(__name__).warning(f"knowledge: no deployment rate for {model}: {exc}")
+        return None
+
+
+def _is_platform_model(model: str) -> bool:
+    from core.knowledge.embedders import PLATFORM_PROVIDERS
+    from core.providers.registry import provider_for
+
+    return bool(model) and provider_for(model).id in PLATFORM_PROVIDERS
+
+
+async def ocr_usd_per_page(provider: Any) -> float:
+    """What one page read by `provider` costs: the deployment's rate for a platform engine, else the provider's
+    `price_per_page_usd` (0 when it has none)."""
+    if provider is None:
+        return 0.0
+    if str(getattr(provider, "cost_source", "") or "") == "platform":
+        rate = await platform_rate(str(getattr(provider, "engine", "") or ""))
+        if rate is not None and rate.per_unit is not None:
+            return rate.per_unit
+    return float(getattr(provider, "price_per_page_usd", 0.0) or 0.0)
+
+
+async def rerank_usd_per_search(model: str) -> float | None:
+    """What one search unit of `model` costs: the deployment's rate for a platform reranker, else its route's;
+    None for a model no route prices (or prices by the token)."""
+    from core.knowledge.rerankers import route_for
+
+    route = route_for(model or "")
+    if route is None:
+        return None
+    if route.cost_source == "platform":
+        rate = await platform_rate(model)
+        if rate is not None and rate.per_unit is not None:
+            return rate.per_unit
+    return route.usd_per_search
+
+
+async def chat_usd(model: str, input_tokens: int, output_tokens: int, *, cache_read: int = 0,
+                   cache_write: int = 0) -> float | None:
+    """What `model` charges for a chat call's tokens, or None when nothing prices it.
+
+    A platform model at the deployment's rate, its cache reads and writes at the input rate (our gateway settles
+    input and output tokens only); any other by the rate card (`usage_tracker`), `input_tokens` being the
+    uncached ones."""
+    if _is_platform_model(model):
+        rate = await platform_rate(model)
+        if rate is not None:
+            billed_in = input_tokens + cache_read + cache_write
+            return round((billed_in * rate.input_per_mtok + output_tokens * rate.output_per_mtok) / 1_000_000, 8)
+    from core import usage_tracker
+
+    await usage_tracker._ensure_pricing()
+    if usage_tracker._resolve_pricing_entry(model) is None:
+        return None
+    return usage_tracker.calculate_cost(model, input_tokens, output_tokens, cache_read_tokens=cache_read,
+                                        cache_write_tokens=cache_write)
 
 
 def _aware(at: datetime) -> datetime:
@@ -190,7 +294,7 @@ async def preview(kb: KnowledgeBase, overrides: Mapping[str, Any] | None = None,
         unread_pages += max(0, int(quality.get("no_text_layer") or 0) - int(quality.get("ocr_applied") or 0))
 
     provider = get_ocr_provider()
-    price = float(getattr(provider, "price_per_page_usd", 0.0) or 0.0) if provider is not None else 0.0
+    price = await ocr_usd_per_page(provider)
     if provider is not None and unread_pages:
         stages.append(StageEstimate(stage="ocr", model=str(getattr(provider, "engine", "") or "ocr"),
                                     units=float(unread_pages), unit="pages", est_usd=round(unread_pages * price, 8),
@@ -207,18 +311,14 @@ async def preview(kb: KnowledgeBase, overrides: Mapping[str, Any] | None = None,
     if target.enrichment.mode == "contextual" and per_doc:
         chat = target.enrichment.contextual_model or str(cfg.get("model") or "")
         if chat:
-            from core.usage_tracker import _ensure_pricing, calculate_cost
-
-            await _ensure_pricing()  # calculate_cost reads the rate card loaded here
             calls = sum(n for n, _, _ in per_doc)
             usd = 0.0
             for n, content, _ in per_doc:
                 if not n:
                     continue
                 each = content / n
-                usd += calculate_cost(chat, input_tokens=round(n * (each + CONTEXT_PROMPT_TOKENS)),
-                                      output_tokens=n * CONTEXT_OUTPUT_TOKENS,
-                                      cache_write_tokens=content, cache_read_tokens=content * (n - 1))
+                usd += await chat_usd(chat, round(n * (each + CONTEXT_PROMPT_TOKENS)), n * CONTEXT_OUTPUT_TOKENS,
+                                      cache_write=content, cache_read=content * (n - 1)) or 0.0
             stages.append(StageEstimate(stage="enrich", model=chat, units=float(calls), unit="requests",
                                         est_usd=round(usd, 8),
                                         cost_source=embedders.cost_source(provider_for(chat).id)))

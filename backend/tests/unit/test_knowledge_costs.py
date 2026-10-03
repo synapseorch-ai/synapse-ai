@@ -162,6 +162,58 @@ class TestThePreview:
             assert (await s.execute(select(KnowledgeCostDB))).all() == []
 
 
+class TestTheDeploymentsRate:
+    """F334 (W1, D179): a model our gateway serves is quoted at what the deployment charges (cloud: its catalogue ×
+    the org's plan), never at the list price the gateway marks up."""
+
+    @pytest.fixture(autouse=True)
+    def _pricer(self):
+        from core.knowledge.costs import Rate
+
+        rates = {"synapse.titan-embed-v2": Rate(input_per_mtok=0.025),
+                 "synapse.nova-micro": Rate(input_per_mtok=0.04375, output_per_mtok=0.175),
+                 "textract-detect-text-v1": Rate(per_unit=0.001875, unit="pages")}
+
+        async def pricer(model):
+            return rates.get(model)
+
+        costs.set_platform_pricer(pricer)
+        yield
+        costs.set_platform_pricer(None)
+
+    async def test_a_platform_embedding_model_is_previewed_at_the_charge(self, jobs):
+        kb = await _indexed(jobs)
+        embed = _stage(await costs.preview(kb, {"embedding": {"model": "synapse.titan-embed-v2"}}), "embed")
+        assert embed.cost_source == "platform" and embed.units > 0
+        assert embed.est_usd == pytest.approx(embed.units * 0.025 / 1_000_000), "list × 1.25, not the $0.02 list"
+        costs.set_platform_pricer(None)
+        listed = _stage(await costs.preview(kb, {"embedding": {"model": "synapse.titan-embed-v2"}}), "embed")
+        assert listed.est_usd == pytest.approx(listed.units * 0.02 / 1_000_000), "no pricer: the list price"
+
+    async def test_a_platform_ocr_page_is_previewed_at_the_charge(self, jobs):
+        kb = await _indexed(jobs)
+        first = sorted(r.id for r in await documents.list_for(kb.id))[0]
+        report = dict((await documents.get(first)).report)
+        report["pages"] = {**report.get("pages", {}), "total": 5, "no_text_layer": 3, "ocr_applied": 1}
+        async with session() as s:
+            await s.execute(update(KnowledgeDocumentDB).where(KnowledgeDocumentDB.id == first)
+                            .values(report=report, pages=5))
+        ocr = FakeOcr({}, engine="textract-detect-text-v1")
+        ocr.price_per_page_usd, ocr.cost_source = 0.0015, "platform"
+        seams.set_ocr_provider(ocr)
+        stage = _stage(await costs.preview(kb, None), "ocr")
+        assert (stage.units, stage.cost_source) == (2, "platform")
+        assert stage.est_usd == pytest.approx(2 * 0.001875)
+
+    async def test_contextual_retrieval_on_a_platform_model_is_priced_not_free(self, jobs):
+        kb = await _indexed(jobs)
+        draft = {"enrichment": {"mode": "contextual", "contextual_model": "synapse.nova-micro"}}
+        enrich = _stage(await costs.preview(kb, draft), "enrich")
+        assert enrich.cost_source == "platform" and enrich.est_usd > 0
+        costs.set_platform_pricer(None)
+        assert _stage(await costs.preview(kb, draft), "enrich").est_usd == 0.0, "no rate card prices it"
+
+
 # ── the settings check ─────────────────────────────────────────────────────────
 
 class TestTheSettingsCheck:

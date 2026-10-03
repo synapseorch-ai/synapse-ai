@@ -7,10 +7,10 @@ the text into the document (`tree.merge_ocr`), and writes one cost row per
 call. KB0 measured OCR at about 9× the parse time for the same text, which is
 why a page with a text layer is never sent.
 
-* **The budget is checked before any page is sent** (`ledger.check_budget`;
-  B2b supplies the estimate through `price_per_page_usd` until the cost
-  preview exists). A spent budget or an empty wallet raises, and the job
-  pauses the document — nothing retries in a loop.
+* **The budget is checked before any page is sent** (`ledger.check_budget`,
+  each page at `costs.ocr_usd_per_page`: the deployment's rate for a platform
+  engine, else the provider's `price_per_page_usd`). A spent budget or an empty
+  wallet raises, and the job pauses the document — nothing retries in a loop.
 * **A failed batch is reported, never silent:** its pages stay unread, an
   `ocr_failed` warning counts them, and the document ends `partial`. Two
   failures in a row stop the rest (the provider is down), also reported.
@@ -64,7 +64,9 @@ async def read_scanned_pages(parsed: ParsedDocument, out: ChildOutcome, provider
     pages = [n for n in out.rendered if n in unread]
     started, clock = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), time.monotonic()
     if kb is not None:
-        price = float(getattr(provider, "price_per_page_usd", 0.0) or 0.0)
+        from core.knowledge.costs import ocr_usd_per_page
+
+        price = await ocr_usd_per_page(provider)
         await ledger.check_budget(kb, price * len(pages))  # BudgetExceeded: the job pauses the document
     attribution = attribution or Attr(kb_id=kb.id if kb else "", source="knowledge")
     if settings is None:

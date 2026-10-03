@@ -204,8 +204,8 @@ async def estimate(kb: KnowledgeBase, body: EvalRunRequest, settings: Mapping[st
     from core.knowledge import evals
     from core.knowledge.api_models import EvalCostLine, EvalEstimate
     from core.knowledge.budgets import embed_estimate_usd
+    from core.knowledge.costs import rerank_usd_per_search
     from core.knowledge.ledger import kb_month_spend
-    from core.knowledge.rerankers import route_for
 
     cases = await evals.cases_of(kb.id, body.set_id)
     questions = [c["question"] for c in cases]
@@ -219,8 +219,7 @@ async def estimate(kb: KnowledgeBase, body: EvalRunRequest, settings: Mapping[st
                                   counts_toward_budget=True))
     on, model = rerank_plan(kb, body.rerank, settings)
     if on and questions:
-        route = route_for(model or "")
-        rate = getattr(route, "usd_per_search", None)
+        rate = await rerank_usd_per_search(model or "")
         lines.append(EvalCostLine(part="search", model=model or "", calls=len(questions) * len(snaps),
                                   est_usd=None if rate is None else rate * len(questions) * len(snaps),
                                   counts_toward_budget=True))

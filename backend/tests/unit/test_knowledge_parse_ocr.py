@@ -159,6 +159,27 @@ class TestThroughTheJob:
         _, report, row = await _ingest("kb/scan.pdf", SCANNED, monkeypatch, budget_monthly_usd=0.001)
         assert (row.status, row.status_reason) == ("paused", "budget_cap") and provider.calls == []
 
+    async def test_the_budget_is_checked_at_what_the_deployment_charges_a_page(self, monkeypatch):
+        """F334 (W1, D179): two pages fit a $0.0032 cap at the $0.0015 list price, not at the $0.001875 charged."""
+        from core.knowledge import costs
+        from core.knowledge.costs import Rate
+
+        provider = _provider({2: "a", 3: "b"})
+        provider.engine, provider.cost_source = "textract-detect-text-v1", "platform"
+
+        async def pricer(model):
+            return Rate(per_unit=0.001875, unit="pages") if model == "textract-detect-text-v1" else None
+
+        costs.set_platform_pricer(pricer)
+        _, _, row = await _ingest("kb/scan.pdf", SCANNED, monkeypatch, budget_monthly_usd=0.0032)
+        assert (row.status, row.status_reason) == ("paused", "budget_cap") and provider.calls == []
+
+    async def test_at_its_list_price_the_same_scan_fits_the_same_cap(self, monkeypatch):
+        provider = _provider({2: "a", 3: "b"})
+        provider.engine, provider.cost_source = "textract-detect-text-v1", "platform"
+        _, _, row = await _ingest("kb/scan.pdf", SCANNED, monkeypatch, budget_monthly_usd=0.0032)
+        assert row.status == "indexed" and provider.calls == [[2, 3]]
+
     async def test_an_empty_wallet_pauses_and_what_was_read_is_still_recorded(self, monkeypatch):
         provider = _provider({2: "a", 3: "b"}, per_call=1, fail_on_call=2, error=WalletExhausted("402"))
         _, report, row = await _ingest("kb/scan.pdf", SCANNED, monkeypatch)

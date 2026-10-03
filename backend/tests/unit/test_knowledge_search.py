@@ -545,6 +545,37 @@ async def test_a_base_at_its_cap_pays_for_no_rerank():
     assert reranker.calls == [] and response.trace.rerank is None and "budget_paused" in response.degraded
 
 
+async def _platform_rerank_near_its_cap() -> FakeReranker:
+    """A base reranking on our gateway with $0.0022 left under its cap: room for a $0.002 search unit at list,
+    none at the $0.0025 the deployment charges."""
+    await _embedded_corpus(budget_monthly_usd=0.01, rerank={"enabled": True, "model": "synapse.cohere-rerank-3-5"})
+    await _spent(CONTRACTS.id, 0.0078)
+    reranker = FakeReranker()
+    seams.set_reranker(reranker)
+    return reranker
+
+
+async def test_a_platform_rerank_is_capped_at_what_the_deployment_charges():
+    """F334 (W1, D179): the cap check prices the rerank at the deployment's rate, not the route's list price."""
+    from core.knowledge import costs
+    from core.knowledge.costs import Rate
+
+    reranker = await _platform_rerank_near_its_cap()
+
+    async def pricer(model):
+        return Rate(per_unit=0.0025, unit="search_units") if model == "synapse.cohere-rerank-3-5" else None
+
+    costs.set_platform_pricer(pricer)
+    response = await _search(query=QUERY, include_trace=True)
+    assert reranker.calls == [] and "budget_paused" in response.degraded
+
+
+async def test_at_its_list_price_the_same_rerank_fits_under_the_cap():
+    reranker = await _platform_rerank_near_its_cap()
+    response = await _search(query=QUERY, include_trace=True)
+    assert len(reranker.calls) == 1 and response.degraded == []
+
+
 async def test_only_the_base_at_its_cap_loses_its_vector_leg():
     embedder = await _embedded_corpus(budget_monthly_usd=0.01)
     await _spent(CONTRACTS.id, 0.02)
