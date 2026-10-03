@@ -5773,7 +5773,9 @@ async def _kb_settings_contextual(page):
     await page.get_by_role("combobox", name="Context for each passage", exact=True).click()
     await page.get_by_role("option", name="Contextual Retrieval: a model writes it").click()
     await page.get_by_role("button", name="Context model", exact=True).wait_for(timeout=10_000)
-    await page.get_by_text("Writing contexts").wait_for(timeout=10_000)
+    # The drawer's price line ("Writing contexts: …"), not a working document's stage ("Writing contexts · …", PG1)
+    await page.get_by_role("dialog", name=re.compile("^Settings for")).get_by_text("Writing contexts:").wait_for(
+        timeout=10_000)
 
 
 async def _kb_eval(page):
@@ -5808,7 +5810,7 @@ LIGHT_STATES = (
      lambda p: p.get_by_text(re.compile(r"^Retrieve · Find clauses")).first.click(), "ksnap_smoke"),
     ("knowledge settings", "/knowledge", [], _SMOKE_KB_ROUTES, _kb_settings_rebuild, "Saving rebuilds the index"),
     ("knowledge contextual retrieval", "/knowledge", [], _SMOKE_KB_CONTEXTUAL_ROUTES, _kb_settings_contextual,
-     "Writing contexts"),
+     "Writing contexts:"),
     ("knowledge rebuilding", "/knowledge", [],
      _SMOKE_KB_ROUTES + [("**/api/knowledge/bases", _answer([_SMOKE_KB_REBUILDING]))], None,
      "Rebuilding the index: 1 of 2 documents"),
