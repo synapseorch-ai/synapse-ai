@@ -19,9 +19,11 @@ index is given them, and only then are older versions' chunks removed — from
 the index and from the rows.
 
 **Enrichment** is the deterministic prefix (D153 #3): the document's title, date
-and section, versioned `snapshots.ENRICHMENT_VERSION`. A KB that opted into
-Contextual Retrieval still gets the prefix and the stage says so, until that
-mode is built.
+and section, versioned `snapshots.ENRICHMENT_VERSION`. A snapshot built with
+Contextual Retrieval (CR1, D180) also gives each chunk a sentence a model wrote
+about where the passage sits in its document (`enrich.contextualize`), between
+the prefix and the chunker's own context; a passage the model gave nothing
+usable for keeps the prefix alone, and the stage says how many.
 
 **Embedding** uses the snapshot's own model once it has recorded one, else the
 knowledge base's, else the deployment's (`embedders.snapshot_spec`, D163 #3), so
@@ -45,6 +47,7 @@ from sqlalchemy.exc import IntegrityError
 from core.knowledge.chunker import chunk_document, chunker_version
 from core.knowledge.chunks import Chunk
 from core.knowledge.embedders import profile_version, snapshot_spec
+from core.knowledge.enrich import Enriched, built_with, contextualize
 from core.knowledge.errors import EmbedderUnavailable, KnowledgeIndexError
 from core.knowledge.filters import BUILTINS
 from core.knowledge.ledger import CostRow, check_budget, record_costs
@@ -100,6 +103,12 @@ def enrich_prefix(title: str | None, doc_date: str | None, heading_path: Sequenc
     if heading_path:
         parts.append("Section: " + " › ".join(heading_path))
     return " · ".join(parts)
+
+
+def compose_context(prefix: str, sentence: str | None, own: str) -> str:
+    """A chunk's searched context: the prefix, the model's sentence (Contextual Retrieval), the chunker's own
+    (a split table's header) — whichever are there, in that order."""
+    return " · ".join(part for part in (prefix, sentence, own) if part)
 
 
 def _title(ctx: IndexContext) -> str:
@@ -224,14 +233,29 @@ async def index_document(ctx: IndexContext) -> IndexOutcome:
 
     stage = _Stage("enrich")
     title, doc_date = _title(ctx), _doc_date(ctx)
+    warnings = list(result.warnings)
+    enriched: Enriched | None = None
+    mode, model = ("prefix", "")
+    if kb.enrichment.mode == "contextual":
+        mode, model = await built_with(kb, ctx.snapshot_id, ctx.settings)
+    if mode == "contextual":
+        enriched = await contextualize(ctx, chunks, model=model, title=title)
+        warnings.extend(enriched.warnings)
+    sentences = enriched.sentences if enriched is not None else {}
     for c in chunks:
-        prefix = enrich_prefix(title, doc_date, c.heading_path)
-        c.context = f"{prefix} · {c.context}" if prefix and c.context else (prefix or c.context)
-    detail: dict[str, Any] = {"mode": "prefix", "version": ENRICHMENT_VERSION}
-    if kb.enrichment.mode != "prefix":
-        detail["requested"] = kb.enrichment.mode
-        detail["note"] = "contextual enrichment is not built yet; the deterministic prefix was used"
-    stages.append(stage.report(**detail))
+        c.context = compose_context(enrich_prefix(title, doc_date, c.heading_path), sentences.get(c.id), c.context)
+    if enriched is not None:
+        stages.append(stage.report(enriched.status, **enriched.detail))
+    else:
+        detail: dict[str, Any] = {"mode": "prefix", "version": ENRICHMENT_VERSION}
+        if kb.enrichment.mode != "prefix":  # a snapshot made with the prefix before Contextual Retrieval was built
+            detail["requested"] = kb.enrichment.mode
+            detail["note"] = "this index was made with the deterministic prefix; a rebuild uses Contextual Retrieval"
+        if kb.enrichment.extract_metadata:
+            detail["extract_metadata"] = "not built yet"
+        stages.append(stage.report(**detail))
+    # Contextual Retrieval's calls are recorded by `contextualize` as they finish; they join the outcome's cost here.
+    enrich_usage: list[Usage] = list(enriched.usage) if enriched is not None else []
 
     stage = _Stage("embed")
     embedded: dict[str, list[float]] = {}
@@ -299,4 +323,4 @@ async def index_document(ctx: IndexContext) -> IndexOutcome:
     reason = partial_reason(ctx.parsed)
     return IndexOutcome(status="partial" if reason else "indexed", chunks=len(chunks),
                         tokens=sum(c.tokens for c in chunks), status_reason=reason, stages=stages,
-                        usage=usage, warnings=result.warnings)
+                        usage=[*enrich_usage, *usage], warnings=warnings)

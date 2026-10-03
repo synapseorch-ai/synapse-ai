@@ -221,10 +221,10 @@ async def transition(doc_id: str, target: str, *, reason: str | None = None, err
     return row
 
 
-async def heartbeat(doc_id: str) -> bool:
-    """A document still parsing: move its `started_at` to now, so reconcile (`sync.STUCK_AFTER`)
-    does not take a long parse for a stuck one. Only while it is `parsing`: a tombstone keeps its age.
-    Whether the row was still parsing."""
+async def heartbeat(doc_id: str, *, status: str = "parsing") -> bool:
+    """A document still at work: move its `started_at` to now, so reconcile (`sync.STUCK_AFTER`)
+    does not take a long parse — or a long Contextual Retrieval, `status="indexing"` — for a stuck one.
+    Only while it is in `status`: a tombstone keeps its age. Whether the row was still in it."""
     from sqlalchemy import update
 
     from core.store import session
@@ -233,7 +233,7 @@ async def heartbeat(doc_id: str) -> bool:
 
     async with session() as s:
         result = await s.execute(
-            update(D).where(D.tenant_id == get_tenant(), D.id == doc_id, D.status == "parsing")
+            update(D).where(D.tenant_id == get_tenant(), D.id == doc_id, D.status == status)
             .values(started_at=_now()).execution_options(synchronize_session=False))
     return bool(result.rowcount)
 

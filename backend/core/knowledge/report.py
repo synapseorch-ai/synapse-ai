@@ -31,6 +31,8 @@ _HINTS: dict[str, str] = {
                     "again; the next crawl does too.",
     "internal": "Something inside Synapse failed. Retrying may help; the error says what.",
     "embed_failed": "The embedding model failed. Retrying usually helps.",
+    "enrich_failed": ("The model writing Contextual Retrieval's contexts failed. Retrying usually helps; contexts "
+                      "already written are kept. Check its key if it says one is missing."),
     "embedding_invalid": "The embedding model answered with vectors that cannot be stored. Check the model.",
     "index_failed": "Writing the search index failed. Retrying usually helps.",
     "parser_timeout": "Reading the file took too long. Retry when the machine is less busy, or split the file.",

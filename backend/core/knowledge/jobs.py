@@ -208,6 +208,7 @@ async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> In
 
     from core.config import load_settings
     from core.knowledge import documents
+    from core.knowledge.enrich import beating
     from core.knowledge.pipeline_contract import IndexContext, resolve_index_entrypoint
     from core.knowledge.report import error_info
     from core.knowledge.status import REASONS, ChunksReport, CostReport, StageReport
@@ -225,7 +226,9 @@ async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> In
             snapshot_id=snapshot_id, settings=load_settings(), metadata=metadata,
             attribution=Attribution(kb_id=kb.id, doc_id=row.id, snapshot_id=snapshot_id, source="knowledge",
                                     session_id=Attribution.ingestion_session(kb.id)))
-        outcome = await entry(ctx)
+        # Contextual Retrieval can take a while on a long document: keep it from looking stuck to reconcile.
+        with beating(lambda: documents.heartbeat(row.id, status="indexing")):
+            outcome = await entry(ctx)
     except Exception as exc:  # noqa: BLE001 — every failure ends the document somewhere, with its reason
         builder.add(StageReport(stage="index", status="failed", error=error_info(exc)))
         status, reason = failure_status(exc)
@@ -269,7 +272,7 @@ def failure_status(exc: Exception) -> tuple[str, str]:
     `internal`, with the message saying what.
     """
     from core.knowledge.errors import (
-        BudgetExceeded, EmbeddingError, EmbeddingInvalid, KnowledgeIndexError, WalletExhausted,
+        BudgetExceeded, EmbeddingError, EmbeddingInvalid, EnrichmentError, KnowledgeIndexError, WalletExhausted,
     )
 
     if isinstance(exc, WalletExhausted):
@@ -282,6 +285,8 @@ def failure_status(exc: Exception) -> tuple[str, str]:
         return "failed", "embed_failed"
     if isinstance(exc, KnowledgeIndexError):
         return "failed", "index_failed"
+    if isinstance(exc, EnrichmentError):
+        return "failed", "enrich_failed"
     return "failed", "internal"
 
 

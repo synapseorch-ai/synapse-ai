@@ -68,6 +68,8 @@ LANE_MODULES = {
     "budgets.py", "costs.py", "presets.py",
     # V1 — test a knowledge base: sets and searches, scores, drafts, runs, the grounded judge
     "evals.py", "evals_metrics.py", "evals_generate.py", "evals_runs.py", "evals_judge.py", "evals_auto.py",
+    # CR1 — Contextual Retrieval: the context calls and their cache
+    "enrich.py", "enrich_cache.py",
 }
 FROZEN_HEADER = "# FROZEN CONTRACT (KB0, D153)"
 

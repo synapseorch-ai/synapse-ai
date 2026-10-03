@@ -144,14 +144,19 @@ def index_settings(kb: KnowledgeBase) -> dict[str, Any]:
 
 
 def _snapshot(kb: KnowledgeBase, *, status: str, now: datetime, **stats: Any) -> KnowledgeSnapshotDB:
+    from core.knowledge import enrich
     from core.knowledge.seams import get_knowledge_index
 
+    # The enrichment it is built with, and for Contextual Retrieval the model, recorded now: every document indexed
+    # into it later writes its contexts with that model, whatever the defaults become (CR1, D180).
+    contextual = kb.enrichment.mode == "contextual"
     return KnowledgeSnapshotDB(
         id=new_id(SNAPSHOT_PREFIX), tenant_id=_tenant(), kb_id=kb.id, status=status,
         signature=index_signature(kb), chunker_version=chunker_version(kb.chunking.mode),
-        chunker_settings_hash=_chunking_hash(kb), enrichment_mode="prefix", enrichment_version=ENRICHMENT_VERSION,
+        chunker_settings_hash=_chunking_hash(kb), enrichment_mode=kb.enrichment.mode,
+        enrichment_version=enrich.CONTEXTUAL_VERSION if contextual else ENRICHMENT_VERSION,
         index_kind=get_knowledge_index().capabilities.name,
-        stats={"language": kb.language, "settings": index_settings(kb), **stats},
+        stats={"language": kb.language, "settings": index_settings(kb), **enrich.snapshot_record(kb), **stats},
         created_at=now, activated_at=now if status == "active" else None,
     )
 
@@ -470,6 +475,7 @@ async def _build_document(kb: KnowledgeBase, snapshot: KnowledgeSnapshotDB, row:
     (deleted, or its file changed: ingestion has it). Raises `_Pause` or `_Fail`."""
     from core.config import load_settings
     from core.knowledge.embedders import snapshot_spec
+    from core.knowledge.enrich import beating
     from core.knowledge.errors import (
         BudgetExceeded, EmbedderUnavailable, KnowledgeError, WalletExhausted,
     )
@@ -503,10 +509,11 @@ async def _build_document(kb: KnowledgeBase, snapshot: KnowledgeSnapshotDB, row:
                 mime=row.mime or "", url=row.source_url,
                 modified_at=row.source_modified_at.isoformat() if row.source_modified_at else None,
                 kb=built_kb, attribution=attribution, heartbeat=heartbeat)).parsed
-            outcome = await resolve_index_entrypoint()(IndexContext(
-                kb=built_kb, doc_id=row.id, doc_version=row.version or 1, sha256=parsed.source.sha256,
-                path=row.path, source=row.source, parsed=parsed, snapshot_id=snapshot.id, attribution=attribution,
-                settings=settings, metadata=dict(row.meta or {})))
+            with beating(heartbeat):  # Contextual Retrieval on a long document keeps the step's lease
+                outcome = await resolve_index_entrypoint()(IndexContext(
+                    kb=built_kb, doc_id=row.id, doc_version=row.version or 1, sha256=parsed.source.sha256,
+                    path=row.path, source=row.source, parsed=parsed, snapshot_id=snapshot.id,
+                    attribution=attribution, settings=settings, metadata=dict(row.meta or {})))
         except BudgetExceeded as exc:
             raise _Pause(PAUSE_BUDGET, str(exc)) from exc
         except WalletExhausted as exc:

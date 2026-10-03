@@ -230,12 +230,24 @@ async def test_metadata_reaches_every_chunk_and_attachments_are_marked():
     assert "Section: invoice.txt" in attachment.context
 
 
-async def test_contextual_enrichment_is_reported_as_not_built():
-    kb = KB.model_copy(update={"enrichment": Enrichment(mode="contextual")})
+async def test_contextual_enrichment_runs(monkeypatch):
+    """Restated for CR1 (D180): Contextual Retrieval was accepted and never run (F328); now the stage runs it and the
+    written context is searched. `test_knowledge_enrich.py` holds the rest; an index made with the prefix before
+    CR1 keeps it (`test_a_snapshot_made_before_contextual_was_built_keeps_the_prefix`)."""
+    from core.knowledge import enrich
+    from core.llm_providers import LLMResult
+
+    async def writer(model, system, prompt, settings, attribution):
+        return LLMResult("A record about the hosting contract.", 30, 8)
+
+    monkeypatch.setattr(enrich, "_ask", writer)
+    kb = KB.model_copy(update={"enrichment": Enrichment(mode="contextual", contextual_model="ollama.writer")})
     await _document()
     outcome = await index_document(await _ctx(_parsed("record"), kb=kb))
-    enrich = next(s for s in outcome.stages if s.stage == "enrich")
-    assert enrich.detail["requested"] == "contextual" and enrich.detail["mode"] == "prefix"
+    stage = next(s for s in outcome.stages if s.stage == "enrich")
+    assert stage.status == "ok" and stage.detail["mode"] == "contextual" and "requested" not in stage.detail
+    assert stage.detail["model"] == "ollama.writer" and stage.detail["written"] == outcome.chunks
+    assert all("A record about the hosting contract." in r.context for r in await _rows())
 
 
 async def test_the_kb_chunking_settings_apply():
