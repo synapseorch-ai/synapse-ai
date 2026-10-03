@@ -115,15 +115,36 @@ async def require_base(kb_id: str) -> KnowledgeBase:
 
 # ── writes ─────────────────────────────────────────────────────────────────────
 
+def _refuse_shared_sources(sources: list[Any], others: list[KnowledgeBase], *, had: set[str]) -> None:
+    """F354: a web source's crawl state is one row per id in the workspace (`web._state_name`), so a source added
+    under an id another base holds — or one id named twice — would share it: one base's crawl would take over the
+    other's row, and removing the source from either would delete the other's pages. `…/urls` mints every new id; an
+    edit may re-send its own base's (`had`). A `ValueError`: a 422 with these words."""
+    held = {source.id: kb for kb in others for source in kb.web.sources}
+    seen: set[str] = set()
+    for source in sources:
+        if source.id in seen:
+            raise ValueError(f"Web source {source.id} is named twice: each source needs its own id.")
+        seen.add(source.id)
+        owner = held.get(source.id)
+        if owner is not None and source.id not in had:
+            raise ValueError(f"Web source {source.id} belongs to knowledge base {owner.name!r} ({owner.id}): each "
+                             f"source needs its own id. Add web pages with POST …/bases/{{kb_id}}/urls, which "
+                             f"names each source.")
+
+
 async def create_base(body: KnowledgeBaseCreate) -> KnowledgeBase:
     """A new knowledge base on `body.folder`. Raises `KnowledgePathError` for a folder that
-    is not allowed or overlaps another base's."""
+    is not allowed or overlaps another base's, and `ValueError` for a web source id another
+    base holds or named twice (F354)."""
     from core.store import session
     from core.store.models import CollectionDB
     from core.tenancy import get_tenant
 
     async with _lock():
-        folder = validate_folder(body.folder, await list_bases())
+        existing = await list_bases()
+        folder = validate_folder(body.folder, existing)
+        _refuse_shared_sources(body.web.sources, existing, had=set())
         now = _now()
         kb = KnowledgeBase.model_validate({**body.model_dump(), "id": new_kb_id(), "folder": folder,
                                            "revision": 1, "created_at": _iso(now), "updated_at": _iso(now)})
@@ -153,9 +174,12 @@ async def update_base(kb_id: str, patch: KnowledgeBaseUpdate) -> tuple[Knowledge
                   if v is not None and k not in ("revision", "clear_budget")}
         if patch.clear_budget:
             fields["budget_monthly_usd"] = None
-        if "folder" in fields:
+        if "folder" in fields or "web" in fields:
             others = [kb for kb in await list_bases() if kb.id != kb_id]
-            fields["folder"] = validate_folder(fields["folder"], others, self_id=kb_id)
+            if "folder" in fields:
+                fields["folder"] = validate_folder(fields["folder"], others, self_id=kb_id)
+            if patch.web is not None:  # F354: only an added id is checked against the others
+                _refuse_shared_sources(patch.web.sources, others, had={s.id for s in before.web.sources})
         now = _now()
         after = KnowledgeBase.model_validate({**before.model_dump(), **fields, "revision": before.revision + 1,
                                               "updated_at": _iso(now)})

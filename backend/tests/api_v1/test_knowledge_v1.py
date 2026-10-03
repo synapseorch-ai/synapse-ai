@@ -162,6 +162,16 @@ class TestBasesRecordsDocuments:
         assert gone.status_code == 202 and gone.json() == {"status": "deleting"}
         assert (await on.delete(f"{V1}/knowledge/bases/{kb['id']}", headers=h)).status_code == 202
 
+    async def test_a_web_source_id_another_base_holds_is_a_422(self, on, api_key):
+        """F354 on v1: the same check as the app's, since v1 serves the app's own handlers."""
+        h = api_key["headers"]
+        source = {"id": "kws_00000000f354", "url": "https://example.test/docs", "kind": "page"}
+        a = await _kb(on, h, folder="a", web={"sources": [source]})
+        resp = await on.post(f"{V1}/knowledge/bases", headers=h,
+                             json={"name": "B", "folder": "b", "web": {"sources": [source]}})
+        assert resp.status_code == 422 and source["id"] in resp.json()["detail"], resp.text
+        assert [b["id"] for b in (await on.get(f"{V1}/knowledge/bases", headers=h)).json()] == [a["id"]]
+
     async def test_an_unknown_base_or_document_is_a_404(self, on, api_key):
         h = api_key["headers"]
         assert (await on.get(f"{V1}/knowledge/bases/kb_000000000000", headers=h)).status_code == 404

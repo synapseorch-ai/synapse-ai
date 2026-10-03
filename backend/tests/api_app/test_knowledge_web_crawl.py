@@ -389,6 +389,56 @@ class TestSources:
         assert row.meta == {"team": "legal"} and indexer.contexts[-1].metadata == {"team": "legal"}
 
 
+class TestSourceIds:
+    """F354: a source's crawl state is one row per id in the workspace, so a create or an edit that names another
+    base's source id — or one id twice — is refused before anything is saved. `…/urls` mints every new id."""
+
+    async def _held(self, on, site, jobs) -> tuple[dict, str]:
+        a = await _kb(on, folder="a")
+        await add(on, a["id"], f"{site}/docs/a", kind="page")
+        await drain(jobs)
+        [source] = (await on.get(f"/api/knowledge/bases/{a['id']}")).json()["web"]["sources"]
+        return a, source["id"]
+
+    async def test_a_create_naming_another_bases_source_is_422(self, on, site, jobs, indexer):
+        a, held = await self._held(on, site, jobs)
+        resp = await on.post("/api/knowledge/bases", json={"name": "B", "folder": "b", "web": {"sources": [
+            {"id": held, "url": f"{site}/docs/b", "kind": "page"}]}})
+        assert resp.status_code == 422 and held in resp.json()["detail"], resp.text
+        assert [b["id"] for b in (await on.get("/api/knowledge/bases")).json()] == [a["id"]]
+        assert (await web.load_state(held))["kb_id"] == a["id"]
+
+    async def test_an_edit_adding_another_bases_source_is_422_and_saves_nothing(self, on, site, jobs, indexer):
+        a, held = await self._held(on, site, jobs)
+        b = await _kb(on, folder="b")
+        resp = await on.patch(f"/api/knowledge/bases/{b['id']}", json={"revision": b["revision"], "web": {
+            "sources": [{"id": held, "url": f"{site}/docs/b", "kind": "page"}]}})
+        assert resp.status_code == 422 and held in resp.json()["detail"], resp.text
+        after = (await on.get(f"/api/knowledge/bases/{b['id']}")).json()
+        assert (after["revision"], after["web"]["sources"]) == (b["revision"], [])
+        assert (await web.load_state(held))["kb_id"] == a["id"]
+        assert await crawls(on, b["id"]) == []
+
+    async def test_one_id_twice_is_422_on_a_create_and_an_edit(self, on, site, jobs):
+        twice = [{"id": "kws_0000000000aa", "url": f"{site}/docs/a", "kind": "page"},
+                 {"id": "kws_0000000000aa", "url": f"{site}/docs/b", "kind": "page"}]
+        resp = await on.post("/api/knowledge/bases", json={"name": "B", "folder": "b", "web": {"sources": twice}})
+        assert resp.status_code == 422 and "kws_0000000000aa" in resp.json()["detail"], resp.text
+        b = await _kb(on, folder="b")
+        resp = await on.patch(f"/api/knowledge/bases/{b['id']}", json={"revision": b["revision"],
+                                                                         "web": {"sources": twice}})
+        assert resp.status_code == 422, resp.text
+        assert (await on.get(f"/api/knowledge/bases/{b['id']}")).json()["revision"] == b["revision"]
+
+    async def test_an_edit_that_re_sends_its_own_sources_saves(self, on, site, jobs, indexer):
+        a, held = await self._held(on, site, jobs)
+        base = (await on.get(f"/api/knowledge/bases/{a['id']}")).json()
+        resp = await on.patch(f"/api/knowledge/bases/{a['id']}", json={
+            "revision": base["revision"], "description": "Pages", "web": base["web"]})
+        assert resp.status_code == 200, resp.text
+        assert [s["id"] for s in resp.json()["web"]["sources"]] == [held]
+
+
 class TestTheRoute:
     async def test_bad_urls_and_too_many_sources_are_422(self, on, site, jobs):
         kb = await _kb(on)
