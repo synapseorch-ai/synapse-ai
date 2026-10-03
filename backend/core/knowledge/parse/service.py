@@ -13,6 +13,8 @@ Around `parse_bytes` it adds what one document's parse needs in a server:
    is set (`ocr.py`).
 4. **A heartbeat** while it works, so reconcile never takes a long parse for a
    stuck one.
+5. **Progress** for a screen (PG1): the stage, and a paged reader's pages as
+   the parsing process reads them (`runner.py`).
 
 It raises what the reader raised (`UnsupportedFormat`, a `ParseRefused`), and
 `BudgetExceeded` / `WalletExhausted` from OCR, for the job to turn into a status.
@@ -70,6 +72,7 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
                          url: str | None = None, modified_at: str | None = None,
                          kb: KnowledgeBase | None = None, attribution: Attribution | None = None,
                          heartbeat: Callable[[], Awaitable[Any]] | None = None) -> ParseResult:
+    from core.knowledge import progress
     from core.knowledge.config import knowledge_settings
     from core.knowledge.parse import UnsupportedFormat, formats, parse_bytes
     from core.knowledge.parse.runner import run_parse
@@ -81,7 +84,10 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
         raise UnsupportedFormat(formats.missing_capability_message(fmt))
     settings = knowledge_settings()
     common = dict(path=path, source=source, sha256=sha256, mime=mime, url=url, modified_at=modified_at)
+    tracker = progress.current()
     if fmt.text and len(data) <= limits.IN_PROCESS_MAX_BYTES:
+        if tracker is not None:
+            tracker.stage("parse")  # one pass: nothing to count
         parsed = await asyncio.to_thread(parse_bytes, data, **common)
         return ParseResult(parsed=parsed, detail={"runner": "thread"})
 
@@ -99,6 +105,8 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
                                                        source=source, url=url, modified_at=modified_at))
         if hit is not None:
             return ParseResult(parsed=hit, detail={"runner": "cache"})
+    if tracker is not None:
+        tracker.stage("parse")  # counted once a paged reader tells its pages
     job = {**common, "max_pages": settings.max_file_pages, "ocr": provider is not None, "docling": docling}
     if docling:
         from core.knowledge.parse.docling_adapter import artifacts_path

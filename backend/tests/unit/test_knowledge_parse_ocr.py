@@ -295,3 +295,46 @@ class TestAPageIsPaidForOnce:
         await _parse()
         stats = get_blob_store().list_stats(cache.PREFIX + "/")
         assert not [s for s in stats if s.key.endswith(".pages.json")], "never an empty object"
+
+
+class TestProgress:
+    """PG1 (F357): a screen follows OCR page by page — a failed batch is handled too, so the count reaches the
+    end; pages kept from an earlier attempt are done before anything is sent."""
+
+    async def test_ocr_counts_the_pages_it_handles(self):
+        from core.knowledge import progress
+
+        provider = _provider({2: "Scanned two.", 3: "Scanned three."}, per_call=1, fail_on_call=1,
+                             error=RuntimeError("the provider fell over"))
+        seen = []
+        async with progress.tracking("kb_1", "kdoc_1") as tracker:
+            real = tracker.advance
+
+            def watching(**kw):
+                real(**kw)
+                seen.append((tracker.stage_name, tracker.done, tracker.total, tracker.unit))
+
+            tracker.advance = watching
+            await _parse()
+        assert provider.calls == [[2], [3]]
+        assert seen == [("ocr", 1, 2, "pages"), ("ocr", 2, 2, "pages")]
+
+    async def test_pages_kept_from_an_earlier_attempt_are_done_already(self):
+        from core.knowledge import progress
+
+        _provider({2: "Scanned two.", 3: "Scanned three."}, per_call=1, fail_on_call=2,
+                  error=RuntimeError("the provider fell over"))
+        await _parse()  # page 2 read and kept, page 3 failed
+        provider = _provider({2: "Scanned two.", 3: "Scanned three."}, per_call=1)
+        async with progress.tracking("kb_1", "kdoc_1") as tracker:
+            started = []
+            real = tracker.stage
+
+            def watching(name, **kw):
+                started.append((name, kw))
+                real(name, **kw)
+
+            tracker.stage = watching
+            await _parse()
+        assert provider.calls == [[3]]
+        assert ("ocr", {"total": 2, "unit": "pages", "done": 1}) in started

@@ -8,6 +8,9 @@ this module with an allowlisted environment. It answers with exactly one of:
 * nothing, because it was killed or crashed — then `partial.json`, the last
   checkpoint a paged reader saved, is what was read before the cut.
 
+While it reads, a paged reader's count goes to `progress.json` (`{"done", "total"}`,
+at most every `PROGRESS_S`), which the parent reads for a screen (PG1).
+
 Pages without a text layer are rendered to `pages/<n>.png` when the job asks
 for OCR. The parent reads them; this process never calls a seam (none is
 registered here, and it holds no credentials to call one with).
@@ -22,6 +25,8 @@ from pathlib import Path
 
 #: A paged reader's progress is saved at most this often.
 CHECKPOINT_S = 10.0
+#: Its page count is told at most this often.
+PROGRESS_S = 1.0
 
 
 def main(workdir: str) -> int:
@@ -35,6 +40,7 @@ def main(workdir: str) -> int:
     data = (root / "input.bin").read_bytes()
     pages_dir = root / "pages"
     last = [0.0]
+    told = [0.0]
 
     def render(page: int, png: bytes) -> None:
         pages_dir.mkdir(exist_ok=True)
@@ -47,12 +53,23 @@ def main(workdir: str) -> int:
         last[0] = now
         _write(root / "partial.json", build().model_dump_json())
 
+    def report(done: int, total: int) -> None:
+        now = time.monotonic()
+        if now - told[0] < PROGRESS_S and done < total:
+            return
+        told[0] = now
+        try:
+            _write(root / "progress.json", json.dumps({"done": int(done), "total": int(total)}))
+        except OSError:  # the parent has it open (Windows' replace refuses then): the next count gets through
+            pass
+
     try:
         parsed = parse_bytes(
             data, path=job["path"], source=job["source"], sha256=job["sha256"], mime=job["mime"],
             url=job.get("url"), fetched_at=job.get("fetched_at"), etag=job.get("etag"),
             modified_at=job.get("modified_at"), max_pages=job.get("max_pages"), ocr=bool(job.get("ocr")),
-            docling=bool(job.get("docling")), render=render if job.get("ocr") else None, checkpoint=checkpoint)
+            docling=bool(job.get("docling")), render=render if job.get("ocr") else None, checkpoint=checkpoint,
+            report=report)
     except UnsupportedFormat as exc:
         _write(root / "error.json", json.dumps({"kind": "unsupported", "message": str(exc)}))
         return 0

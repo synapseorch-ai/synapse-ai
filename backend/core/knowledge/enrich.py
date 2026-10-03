@@ -55,6 +55,8 @@ from typing import TYPE_CHECKING, Any
 
 from core.knowledge.chunker import ATTACHMENT_KEY, estimate_tokens
 from core.knowledge.errors import EnrichmentError, KnowledgeError, WalletExhausted
+from core.knowledge.pacing import NO_PROGRESS_S, RATE_WAIT_MAX_S, RATE_WAIT_S
+from core.knowledge.pacing import THROTTLED as _THROTTLED  # noqa: F401 — kept under its old name
 from core.knowledge.parsed import ParseWarning
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -87,12 +89,8 @@ MAX_CONTEXT_CHARS = 600
 CONCURRENCY = max(1, int(os.environ.get("SYNAPSE_KNOWLEDGE_CONTEXT_CONCURRENCY", "4") or 4))
 #: A provider's rate limit that outlasts its own retries (F356; Naveen: pace, don't fail): the document's calls go one at
 #: a time, each limit waits `RATE_WAIT_S` (doubling to `RATE_WAIT_MAX_S`) and the passage is asked again; the document
-#: fails only after `NO_PROGRESS_S` with nothing answered.
-RATE_WAIT_S = 15.0
-RATE_WAIT_MAX_S = 60.0
-NO_PROGRESS_S = 600.0
-#: A rate limit said in words, for a provider whose failure carries no status (Bedrock's `ThrottlingException`).
-_THROTTLED = re.compile(r"throttl|too ?many ?requests|rate.?limit|servicequotaexceeded", re.IGNORECASE)
+#: fails only after `NO_PROGRESS_S` with nothing answered. The values and the test for a limit are `pacing`'s, shared
+#: with embedding (PG1), imported above: this module reads them as its own names.
 
 #: Where a cache point holds. Explicit: the engine marks the system prompt (`core.cache.prompt_cache`), honoured
 #: above the model's minimum — Haiku 4.5's 4,096 tokens is the highest. Automatic: the provider caches a repeated
@@ -450,20 +448,18 @@ async def _ask(model: str, system: str, prompt: str, settings: Mapping[str, Any]
 
 
 def _rate_limited(exc: BaseException) -> bool:
-    """A provider saying "too many, slow down" — never an exhausted credit or a refused key."""
-    from core.llm_providers import MODEL_ERROR, PROVIDER_UNAVAILABLE, RATE_LIMITED
+    """A provider saying "too many, slow down" — never an exhausted credit or a refused key (`pacing`)."""
+    from core.knowledge.pacing import rate_limited
 
-    code = getattr(exc, "code", None)
-    if code == RATE_LIMITED:
-        return True
-    return code in (MODEL_ERROR, PROVIDER_UNAVAILABLE) and bool(_THROTTLED.search(str(exc)))
+    return rate_limited(exc)
 
 
 class _Pacer:
     """One document's calls: `CONCURRENCY` at a time until a rate limit outlasts the provider's own retries, then one
     at a time, each limit waited out, until nothing has been answered for `NO_PROGRESS_S` (F356)."""
 
-    def __init__(self) -> None:
+    def __init__(self, model: str = "") -> None:
+        self.model = model
         self.gate = asyncio.Semaphore(CONCURRENCY)
         self.serial = asyncio.Lock()
         self.limited = False
@@ -491,7 +487,9 @@ class _Pacer:
         wait, self._wait = self._wait, min(self._wait * 2, RATE_WAIT_MAX_S)
         self.waits += 1
         self.waited_s += wait
-        await asyncio.sleep(wait)
+        from core.knowledge.pacing import wait_out
+
+        await wait_out(wait, model=self.model)  # a screen says whose limit, and until when (PG1)
         return True
 
 
@@ -563,6 +561,8 @@ async def _run_window(model: str, window: Window, todo: list[tuple[Chunk, str]],
     """Ask every passage of `todo` against `window`: the first alone, the rest `CONCURRENCY` at a time. Fills
     `written` (cache key → context); answers how many fell back. On the first hard failure the rest are cancelled
     and it is raised."""
+    from core.knowledge import progress
+
     fallback = 0
 
     async def one(chunk: Chunk, key: str) -> None:
@@ -573,6 +573,9 @@ async def _run_window(model: str, window: Window, todo: list[tuple[Chunk, str]],
             fallback += 1
         else:
             written[key] = text
+        tracker = progress.current()
+        if tracker is not None:
+            tracker.advance(by=1)
 
     await one(*todo[0])  # alone: the provider's cache is written before the others read it
     tasks = [asyncio.ensure_future(one(c, k)) for c, k in todo[1:]]
@@ -601,7 +604,7 @@ def _telling(exc: BaseException) -> int:
 async def contextualize(ctx: IndexContext, chunks: Sequence[Chunk], *, model: str, title: str | None) -> Enriched:
     """Write a context for each of `chunks` (see the module docstring). Raises `EnrichmentError`,
     `WalletExhausted` or `BudgetExceeded` — having recorded what was spent and kept what was written."""
-    from core.knowledge import enrich_cache
+    from core.knowledge import enrich_cache, progress
     from core.knowledge.embedders import cost_source
     from core.knowledge.ledger import check_budget
     from core.knowledge.parse.service import _beating
@@ -626,7 +629,12 @@ async def contextualize(ctx: IndexContext, chunks: Sequence[Chunk], *, model: st
     windows = plan(ctx.parsed, chunks)
     hits = calls = fallback = 0
     keys: dict[str, str] = {}
-    pacer = _Pacer()
+    pacer = _Pacer(model)
+    tracker = progress.current()
+    if tracker is not None:  # passages whose context is kept are done already; the pace counts from there
+        kept = sum(1 for window, members in windows for chunk in members
+                   if enrich_cache.entry_key(window.id, chunk.content) in cached)
+        tracker.stage("enrich", total=len(chunks), unit="passages", done=kept)
 
     async with _beating(_HEARTBEAT.get()):
         for window, members in windows:

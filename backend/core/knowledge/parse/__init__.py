@@ -92,13 +92,14 @@ def parse_bytes(data: bytes, *, path: str, source: str, sha256: str, mime: str,
                 url: str | None = None, fetched_at: str | None = None, etag: str | None = None,
                 modified_at: str | None = None, max_pages: int | None = None, ocr: bool = False,
                 depth: int = 0, docling: bool = False, render: Callable[[int, bytes], None] | None = None,
-                checkpoint: Callable[[Callable[[], ParsedDocument]], None] | None = None) -> ParsedDocument:
+                checkpoint: Callable[[Callable[[], ParsedDocument]], None] | None = None,
+                report: Callable[[int, int], None] | None = None) -> ParsedDocument:
     """`data` (the file at Vault path `path`) as a `ParsedDocument`.
 
     Raises `UnsupportedFormat`, or a `limits.ParseRefused` (encrypted, over the
-    page cap, a zip that expands too far). `max_pages`, `ocr`, `render` and
-    `checkpoint` are the subprocess's (`formats.ReadContext`); `depth` counts
-    email attachments.
+    page cap, a zip that expands too far). `max_pages`, `ocr`, `render`,
+    `checkpoint` and `report` are the subprocess's (`formats.ReadContext`);
+    `depth` counts email attachments.
     """
     from core.knowledge.parse.formats import ReadContext, load_reader, missing_capability_message, resolve
 
@@ -110,7 +111,7 @@ def parse_bytes(data: bytes, *, path: str, source: str, sha256: str, mime: str,
     info = SourceInfo(path=path, sha256=sha256, size_bytes=len(data), mime=mime, source=source,  # type: ignore[arg-type]
                       url=url, fetched_at=fetched_at, etag=etag, modified_at=modified_at)
     ctx = ReadContext(path=path, source=info, max_pages=max_pages, ocr=ocr, depth=depth, docling=docling,
-                      render=render, checkpoint=checkpoint)
+                      render=render, checkpoint=checkpoint, report=report)
     return load_reader(fmt)(data, ctx)
 
 

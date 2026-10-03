@@ -150,6 +150,7 @@ def _read_basic(data: bytes, ctx: ReadContext, document: Any, total: int) -> Par
                 page.close()
             if ctx.ocr and ctx.render is not None and pages[-1].no_text_layer:
                 ctx.render(number, render_png(document, number))
+            ctx.report_pages(number, total)
             if number < total:
                 ctx.save_progress(lambda: assemble(pages, ctx, meta, total=total))
     return assemble(pages, ctx, meta, total=total)

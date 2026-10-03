@@ -53,10 +53,13 @@ async def run_ingest_job(job: IngestJob) -> IngestionReport | None:
 
 
 async def _run(job: IngestJob) -> IngestionReport | None:
-    from core.knowledge import bases, dispatch, documents
+    from core.knowledge import bases, dispatch, documents, progress
     from core.knowledge.config import knowledge_enabled
     from core.log import get_logger
 
+    # A job the in-process dispatcher spawned from inside another's work starts with a copy of that work's
+    # context: it must never report into the other's progress (PG1).
+    progress.detach()
     dispatch.started(job)
     if not knowledge_enabled():
         get_logger(__name__).info(f"knowledge is off; job {job.dedup_key()} left for reconcile")
@@ -99,14 +102,7 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
     from datetime import datetime, timezone
 
     from core.knowledge import documents
-    from core.knowledge.config import knowledge_settings
-    from core.knowledge.errors import BudgetExceeded, WalletExhausted
-    from core.knowledge.parse import UnsupportedFormat
-    from core.knowledge.parse.limits import ParseRefused
-    from core.knowledge.parse.service import parse_document
-    from core.knowledge.report import ReportBuilder, retry_hint
-    from core.knowledge.status import ErrorInfo, PagesReport
-    from core.knowledge.types import Attribution
+    from core.knowledge.report import ReportBuilder
     from core.storage import get_blob_store
 
     if row.status != "queued":
@@ -132,6 +128,25 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
                                          sha256=sha, size_bytes=len(data))
     if parsing is None:
         return None
+    from core.knowledge import progress
+
+    # From here the document is at work: a screen follows it stage by stage (PG1, F357).
+    async with progress.tracking(kb.id, row.id, doc_id=row.id):
+        return await _parse_and_index(kb, row, parsing, data, sha, builder)
+
+
+async def _parse_and_index(kb: KnowledgeBase, row: KnowledgeDocumentDB, parsing: KnowledgeDocumentDB, data: bytes,
+                           sha: str, builder) -> IngestionReport | None:
+    from core.knowledge import documents
+    from core.knowledge.config import knowledge_settings
+    from core.knowledge.errors import BudgetExceeded, WalletExhausted
+    from core.knowledge.parse import UnsupportedFormat
+    from core.knowledge.parse.limits import ParseRefused
+    from core.knowledge.parse.service import parse_document
+    from core.knowledge.report import retry_hint
+    from core.knowledge.status import ErrorInfo, PagesReport
+    from core.knowledge.types import Attribution
+
     settings = knowledge_settings()
 
     async def rest(status: str, reason: str | None, error: str | None = None, **fields) -> IngestionReport | None:
@@ -208,7 +223,7 @@ async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> In
 
     from core.config import load_settings
     from core.knowledge import documents
-    from core.knowledge.enrich import beating
+    from core.knowledge.parse.service import _beating
     from core.knowledge.pipeline_contract import IndexContext, resolve_index_entrypoint
     from core.knowledge.report import error_info
     from core.knowledge.status import REASONS, ChunksReport, CostReport, StageReport
@@ -226,8 +241,9 @@ async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> In
             snapshot_id=snapshot_id, settings=load_settings(), metadata=metadata,
             attribution=Attribution(kb_id=kb.id, doc_id=row.id, snapshot_id=snapshot_id, source="knowledge",
                                     session_id=Attribution.ingestion_session(kb.id)))
-        # Contextual Retrieval can take a while on a long document: keep it from looking stuck to reconcile.
-        with beating(lambda: documents.heartbeat(row.id, status="indexing")):
+        # Indexing can take a while — Contextual Retrieval on a long document, a provider's rate limit waited out,
+        # a large write: the whole call keeps the document from looking stuck to reconcile (PG1).
+        async with _beating(lambda: documents.heartbeat(row.id, status="indexing")):
             outcome = await entry(ctx)
     except Exception as exc:  # noqa: BLE001 — every failure ends the document somewhere, with its reason
         builder.add(StageReport(stage="index", status="failed", error=error_info(exc)))
@@ -370,6 +386,9 @@ async def delete_document(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> bool:
         return False
     if not await documents.delete_row(row):
         return False
+    from core.knowledge import progress
+
+    await progress.forget([progress.key(kb.id, row.id)])  # a row a run that died left behind (PG1)
     await _forget_parse(row.sha256)
     if await _exists(row.path):  # written again while it was being deleted
         fresh, queued = await documents.upsert_for_path(kb, row.path, source="vault", sha256=None, size=None)
@@ -397,6 +416,9 @@ async def drop_base(kb_id: str) -> None:
         pass
     contents = {row.sha256 for row in await documents.list_for(kb_id)}
     await documents.delete_all_rows(kb_id)
+    from core.knowledge import progress
+
+    await progress.forget_base(kb_id)
     for sha in contents:
         await _forget_parse(sha)
     await bases.delete_base_record(kb_id)

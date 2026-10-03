@@ -769,3 +769,54 @@ def test_an_exhausted_quota_or_a_refused_key_is_never_paced():
     assert not enrich._rate_limited(LLMError("HTTP 429: You exceeded your current quota: insufficient_quota"))
     assert not enrich._rate_limited(LLMError("HTTP 401: invalid api key"))
     assert not enrich._rate_limited(LLMError("HTTP 503: overloaded"))
+
+
+# ── progress you can see (PG1, F357) ───────────────────────────────────────────
+
+@pytest.fixture
+def told(monkeypatch):
+    """What the document's progress was told: each stage begun, each count in the contexts stage, each wait."""
+    from core.knowledge import progress
+
+    got = {"stages": [], "counts": [], "waits": []}
+    stage, advance, waiting = progress.Tracker.stage, progress.Tracker.advance, progress.Tracker.waiting
+
+    def on_stage(self, name, **kw):
+        got["stages"].append((name, kw.get("total"), kw.get("unit"), kw.get("done")))
+        stage(self, name, **kw)
+
+    def on_advance(self, **kw):
+        advance(self, **kw)
+        if self.stage_name == "enrich":
+            got["counts"].append(self.done)
+
+    def on_wait(self, **kw):
+        got["waits"].append(kw)
+        return waiting(self, **kw)
+
+    monkeypatch.setattr(progress.Tracker, "stage", on_stage)
+    monkeypatch.setattr(progress.Tracker, "advance", on_advance)
+    monkeypatch.setattr(progress.Tracker, "waiting", on_wait)
+    return got
+
+
+async def test_writing_contexts_counts_each_passage_and_those_kept_are_done_already(jobs, writer, told):
+    kb = await _base()
+    row = await _ingest(jobs, kb)
+    (contexts,) = [s for s in told["stages"] if s[0] == "enrich"]
+    assert contexts == ("enrich", row.chunks, "passages", 0)
+    assert told["counts"] == list(range(1, row.chunks + 1)), "one per passage answered"
+    told["stages"].clear(), told["counts"].clear()
+    calls = len(writer.calls)
+    await _ingest(jobs, kb, name="copy.md")  # the same content: every context is kept
+    (contexts,) = [s for s in told["stages"] if s[0] == "enrich"]
+    assert contexts == ("enrich", row.chunks, "passages", row.chunks) and len(writer.calls) == calls
+
+
+async def test_a_rate_limit_waited_out_is_told_with_the_provider_s_own_name(jobs, monkeypatch, quick_pacing, told):
+    writer = Writer(answer=lambda passage, n: LLMError("HTTP 429: Rate limit reached") if n == 2 else f"Ctx {n}")
+    monkeypatch.setattr(enrich, "_ask", writer)
+    kb = await _base()
+    row = await _ingest(jobs, kb)
+    assert row.status == "indexed"
+    assert [(w["provider"], w["provider_id"]) for w in told["waits"]] == [("OpenAI", "openai")]

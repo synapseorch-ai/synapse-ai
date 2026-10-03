@@ -30,10 +30,17 @@ knowledge base's, else the deployment's (`embedders.snapshot_spec`, D163 #3), so
 one snapshot never holds two models' vectors. With no model configured, or a key
 or server address the model needs not saved (`EmbedderUnavailable`), the stage is
 skipped with that reason and the chunks are searchable by keyword only, until
-`backfill.embed_missing` embeds them on a later reconcile.
+`backfill.embed_missing` embeds them on a later reconcile. A provider's rate limit
+is waited out, not failed (`pacing.paced`, PG1). When embedding stops part-way —
+an empty wallet, a limit outlasting its wait, a cancel — the passages answered so
+far are kept (`embed_cache`) and the next attempt sends only the rest (F345).
+
+**Progress** (PG1, F357): the contexts, embedding and indexing stages are told to
+the document's tracker (`progress.current()`), passages counted as they are answered.
 """
 from __future__ import annotations
 
+import asyncio
 import posixpath
 import time
 from collections.abc import Sequence
@@ -44,6 +51,7 @@ from typing import Any
 from sqlalchemy import delete, insert, select
 from sqlalchemy.exc import IntegrityError
 
+from core.knowledge import embed_cache, pacing, progress
 from core.knowledge.chunker import chunk_document, chunker_version
 from core.knowledge.chunks import Chunk
 from core.knowledge.embedders import profile_version, snapshot_spec
@@ -198,6 +206,16 @@ async def _write_rows(ctx: IndexContext, rows: list[dict]) -> list[str]:
     return older
 
 
+async def _keep_answered(ctx: IndexContext, sig: str | None, model: str, texts: dict[str, str],
+                         embedded: dict[str, list[float]], usage: list[Usage], attribution) -> None:
+    """What a stopped embed stage paid for: its cost rows (F329) and its vectors, for the next attempt (F345)."""
+    if usage:
+        await record_costs([CostRow(u, attribution) for u in usage])
+    if sig is not None and embedded:
+        await embed_cache.save(ctx.sha256, sig, {embed_cache.entry_key(texts[cid]): v for cid, v in embedded.items()
+                                                 if cid in texts}, model=model)
+
+
 async def _drop_rows(chunk_ids: list[str]) -> None:
     from core.store import session
 
@@ -261,6 +279,9 @@ async def index_document(ctx: IndexContext) -> IndexOutcome:
     embedded: dict[str, list[float]] = {}
     usage: list[Usage] = []
     settings = dict(ctx.settings)
+    tracker = progress.current()
+    kept_sig: str | None = None
+    kept: dict[str, list[float]] = {}
     try:
         embedder = get_knowledge_embedder()
         spec = await snapshot_spec(kb, ctx.snapshot_id, settings)
@@ -269,39 +290,63 @@ async def index_document(ctx: IndexContext) -> IndexOutcome:
     else:
         from core.knowledge.budgets import embed_estimate_usd
 
-        await check_budget(kb, await embed_estimate_usd(spec.model, [c.search_text() for c in chunks]))
+        texts = {c.id: c.search_text() for c in chunks}
+        # Passages answered by an attempt that stopped part-way — a 402, a limit outlasting its wait, a cancel —
+        # are not bought again (F345).
+        kept_sig = embed_cache.signature(spec.model, spec.dims, profile_version(spec.model))
+        kept = await embed_cache.load(ctx.sha256, kept_sig)
+        for c in chunks:
+            found = kept.get(embed_cache.entry_key(texts[c.id]))
+            if found is not None and (not spec.dims or len(found) == spec.dims):
+                embedded[c.id] = found
+        todo = [c for c in chunks if c.id not in embedded]
+        cached = len(chunks) - len(todo)
+        if tracker is not None:
+            tracker.stage("embed", total=len(chunks), unit="passages", done=cached)
+        await check_budget(kb, await embed_estimate_usd(spec.model, [texts[c.id] for c in todo]))
         attribution = replace(ctx.attribution, snapshot_id=ctx.snapshot_id)
-        model, dims, batches = spec.model, spec.dims, 0
+        model, batches = spec.model, 0
+        dims = spec.dims or (len(next(iter(embedded.values()))) if embedded else None)
         step = max(1, embedder.max_batch)
         unavailable: EmbedderUnavailable | None = None
+        batch: list[Chunk] = []
         try:
-            for i in range(0, len(chunks), step):
-                batch = chunks[i:i + step]
-                answer = await embedder.embed([c.search_text() for c in batch], kind="document", spec=spec,
-                                              settings=settings, attribution=attribution)
-                for c, vector in zip(batch, answer.vectors):
-                    embedded[c.id] = vector
-                usage.append(answer.usage)
-                model, dims, batches = answer.model, answer.dims, batches + 1
+            with pacing.paced():  # a provider's rate limit is waited out, slice by slice (PG1)
+                for i in range(0, len(todo), step):
+                    batch = todo[i:i + step]
+                    answer = await embedder.embed([texts[c.id] for c in batch], kind="document", spec=spec,
+                                                  settings=settings, attribution=attribution)
+                    for c, vector in zip(batch, answer.vectors):
+                        embedded[c.id] = vector
+                    usage.append(answer.usage)
+                    model, dims, batches = answer.model, answer.dims, batches + 1
+                    if tracker is not None:
+                        tracker.advance(done=cached + i + len(batch))
         except EmbedderUnavailable as exc:  # a key or a server address the model needs is not saved
             unavailable = exc
-        except Exception:
+        except BaseException as exc:
             # The batches already embedded were billed by their provider (settled by our gateway): their cost is
-            # recorded before the error goes up, though nothing is indexed (F329).
-            if usage:
-                await record_costs([CostRow(u, attribution) for u in usage])
+            # recorded before the error goes up, though nothing is indexed (F329) — and their vectors, with what
+            # the failing call answered first, are kept for the next attempt (F345). Shielded: a cancelled or
+            # timed-out job keeps them too.
+            for c, vector in zip(batch, getattr(exc, "answered_vectors", None) or ()):
+                embedded.setdefault(c.id, vector)
+            await asyncio.shield(_keep_answered(ctx, kept_sig, spec.model, texts, embedded, usage, attribution))
             raise
         if embedded and model and dims:
             await record_embedding(ctx.snapshot_id, model, dims, profile_version=profile_version(model))
+        extra = {"cached": cached} if cached else {}
         if unavailable is not None and not embedded:
             stages.append(stage.report("skipped", reason=unavailable.code))
         elif unavailable is not None:
             stages.append(stage.report(model=model, dims=dims, batches=batches, vectors=len(embedded),
-                                       reason=unavailable.code))
+                                       reason=unavailable.code, **extra))
         else:
-            stages.append(stage.report(model=model, dims=dims, batches=batches, vectors=len(embedded)))
+            stages.append(stage.report(model=model, dims=dims, batches=batches, vectors=len(embedded), **extra))
 
     stage = _Stage("index")
+    if tracker is not None:
+        tracker.stage("index")
     index = get_knowledge_index()
     indexed_at = datetime.now(timezone.utc)
     rows = [_row(ctx, c, title, doc_date, indexed_at) for c in chunks]
@@ -315,6 +360,8 @@ async def index_document(ctx: IndexContext) -> IndexOutcome:
         await index.delete_chunks(Scope(kb.id, ctx.snapshot_id), older)
         await _drop_rows(older)
     stages.append(stage.report(index=index.capabilities.name, chunks=len(rows), replaced=len(older)))
+    if kept and kept_sig is not None:  # the rows hold them now
+        await embed_cache.drop(ctx.sha256, kept_sig)
 
     if usage:
         attribution = replace(ctx.attribution, snapshot_id=ctx.snapshot_id)

@@ -265,6 +265,9 @@ class ReadContext:
     pages that have no text layer to PNG through `render`, for the OCR seam.
     `checkpoint`: a paged reader calls it with a function building what it has
     read so far, so a parse cut by a timeout still indexes those pages.
+    `report`: a paged reader calls it with the pages read and the pages there
+    are, so a screen can follow a long parse (PG1); None outside the parsing
+    process, and inside an email's attachments.
     `depth`: how deep inside email attachments this file sits.
     """
 
@@ -276,11 +279,20 @@ class ReadContext:
     docling: bool = False
     render: Callable[[int, bytes], None] | None = None
     checkpoint: Callable[[Callable[[], ParsedDocument]], None] | None = None
+    report: Callable[[int, int], None] | None = None
     notes: dict = field(default_factory=dict)
 
     def save_progress(self, build: Callable[[], ParsedDocument]) -> None:
         if self.checkpoint is not None:
             self.checkpoint(build)
+
+    def report_pages(self, done: int, total: int) -> None:
+        """Pages read so far, of `total`. Never raises: a count that cannot be told never stops a parse."""
+        if self.report is not None:
+            try:
+                self.report(done, total)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def load_reader(fmt: Format) -> Callable[[bytes, ReadContext], ParsedDocument]:

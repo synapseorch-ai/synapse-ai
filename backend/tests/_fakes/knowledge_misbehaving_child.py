@@ -2,7 +2,8 @@
 
 `job.json`'s `fake` field says how: `sleep` (save progress, then hang), `allocate`
 (grow without bound), `crash` (save progress, then die), `crash_early` (die
-with nothing saved), `env` (answer a document listing the environment it got).
+with nothing saved), `env` (answer a document listing the environment it got),
+`count` (tell 1 of 4 pages read, then a torn count, then 3 of 4, then answer).
 Run by path, so it imports only what the real child's PYTHONPATH reaches.
 """
 from __future__ import annotations
@@ -45,6 +46,14 @@ def main(workdir: str) -> None:
         os._exit(3)
     elif fake == "env":
         (root / "result.json").write_text(_doc(" ".join(sorted(os.environ)), cut=False))
+    elif fake == "count":
+        (root / "progress.json").write_text(json.dumps({"done": 1, "total": 4}))
+        time.sleep(1.3)
+        (root / "progress.json").write_text('{"done": 3, "tot')  # torn: a reader never takes it for a count
+        time.sleep(1.3)
+        (root / "progress.json").write_text(json.dumps({"done": 3, "total": 4}))
+        time.sleep(1.3)
+        (root / "result.json").write_text(_doc("Four pages were read.", cut=False))
 
 
 if __name__ == "__main__":

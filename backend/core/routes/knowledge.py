@@ -318,20 +318,22 @@ async def list_crawls(kb_id: str) -> list[WebCrawlState]:
 @_errors
 async def list_documents(kb_id: str, after: str | None = None, limit: int = Query(100, ge=1, le=1000),
                          status: str | None = None, path_prefix: str | None = None) -> list[DocumentOut]:
-    """A base's documents by id, paged with `after` (the last id seen)."""
-    from core.knowledge import bases, documents
+    """A base's documents by id, paged with `after` (the last id seen); a working one says how far it has got."""
+    from core.knowledge import bases, documents, progress
 
     await bases.require_base(kb_id)
     rows = await documents.list_for(kb_id, after=after, limit=limit, status=status, path_prefix=path_prefix)
-    return [documents.to_out(r) for r in rows]
+    return await progress.attach([documents.to_out(r) for r in rows])
 
 
 @router.get("/api/knowledge/documents/{doc_id}", response_model=DocumentDetail)
 async def get_document(doc_id: str) -> DocumentDetail:
-    """A document with its ingestion report — what happened to it, stage by stage."""
-    from core.knowledge import documents
+    """A document with its ingestion report — what happened to it, stage by stage — and, while it works, how far
+    it has got."""
+    from core.knowledge import documents, progress
 
-    return documents.to_detail(await _document(doc_id))
+    (detail,) = await progress.attach([documents.to_detail(await _document(doc_id))])
+    return detail
 
 
 @router.post("/api/knowledge/documents/{doc_id}/retry", response_model=DocumentOut, status_code=202)

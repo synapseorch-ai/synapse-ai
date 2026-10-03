@@ -132,6 +132,7 @@ def read_pdf_docling(data: bytes, ctx: ReadContext, document: Any) -> ParsedDocu
                     ctx.render(number, basic.render_png(document, number))
             del result
             gc.collect()
+            ctx.report_pages(end, total)
             if end < total:
                 ctx.save_progress(lambda end=end: state.snapshot(end))
     return state.finish()

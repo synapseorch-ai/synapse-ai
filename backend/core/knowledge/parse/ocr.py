@@ -61,7 +61,7 @@ async def read_scanned_pages(parsed: ParsedDocument, out: ChildOutcome, provider
                              sha256: str | None = None) -> tuple[ParsedDocument, list[Usage], StageReport]:
     """`parsed` with the rendered pages read by `provider`; the calls' usage; the report's `ocr` stage. With the
     file's `sha256`, pages read by an earlier attempt are not sent again, and each batch's are kept."""
-    from core.knowledge import ledger
+    from core.knowledge import ledger, progress
     from core.knowledge.errors import OcrError
     from core.knowledge.parse import cache
     from core.knowledge.status import ErrorInfo, StageReport
@@ -87,6 +87,9 @@ async def read_scanned_pages(parsed: ParsedDocument, out: ChildOutcome, provider
 
     size = max(1, int(getattr(provider, "max_pages_per_call", 1) or 1))
     deadline = clock + limits.ocr_timeout_s()
+    tracker = progress.current()
+    if tracker is not None and (pages or kept):  # pages kept from an earlier attempt are done already
+        tracker.stage("ocr", total=len(kept) + len(pages), unit="pages", done=len(kept))
     texts: dict[int, tuple[str, float | None]] = dict(kept)
     usage: list[Usage] = []
     failed: list[int] = []
@@ -99,6 +102,8 @@ async def read_scanned_pages(parsed: ParsedDocument, out: ChildOutcome, provider
             remaining = deadline - time.monotonic()
             if streak >= MAX_FAILED_BATCHES or remaining <= 0:
                 failed.extend(batch)
+                if tracker is not None:  # handled, unread: the count still reaches the end
+                    tracker.advance(by=len(batch))
                 continue
             images = []
             for number in batch:
@@ -114,8 +119,12 @@ async def read_scanned_pages(parsed: ParsedDocument, out: ChildOutcome, provider
                 failed.extend(batch)
                 errors.append(f"{type(exc).__name__}: {exc}"[:300])
                 streak += 1
+                if tracker is not None:
+                    tracker.advance(by=len(batch))
                 continue
             streak = 0
+            if tracker is not None:
+                tracker.advance(by=len(batch))
             engine = result.engine or engine
             usage.append(result.usage)
             answered = {p.page: p for p in result.pages}

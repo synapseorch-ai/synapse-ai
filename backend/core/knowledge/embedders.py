@@ -19,18 +19,24 @@ chunks stay searchable by keyword until a backfill embeds them (`backfill.py`). 
 `WalletExhausted` (the document pauses). Everything else is `EmbeddingError`, retryable when the provider's
 failure is (a rate limit, an outage). When a call fails, what it already cost is recorded in the cost ledger before
 the error is raised, because no `Usage` will carry it: the slices answered before the failing one (their tokens and
-our gateway's charges) and whatever the failing slice itself was charged (F329).
+our gateway's charges) and whatever the failing slice itself was charged (F329). The error carries the vectors those
+slices answered (`answered_vectors`), which indexing keeps across a pause so they are not bought twice (F345).
+
+**A rate limit is waited out** (PG1) for a document's texts while the indexing pipeline asks for it
+(`pacing.paced`): the slice waits, is halved and is sent again, and the call fails only after ten minutes with nothing
+answered. Each answered slice is counted on the document's progress.
 
 `llm_providers` is imported inside the functions: cloud's API process imports the seams, and it has no provider
 SDKs to load.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from core.knowledge import profiles
+from core.knowledge import pacing, profiles, progress
 from core.knowledge.errors import EmbedderUnavailable, EmbeddingError, KnowledgeError, WalletExhausted
 from core.knowledge.types import Attribution, CostSource, EmbeddingSpec, EmbedKind, EmbedResult, Usage
 from core.log import get_logger
@@ -173,19 +179,53 @@ class ProviderEmbedder:
         charged: int | None = None
         request_id: str | None = None
         step = max(1, profile.max_batch)
-        for i in range(0, len(prepared), step):
-            batch = prepared[i:i + step]
+        # A document's slices, while the indexing pipeline asks (PG1): a rate limit is waited out and the slice
+        # sent again, halved each time so a provider that answers part of a slice before its limit (our gateway
+        # settles what it embedded; Titan answers text by text) has less to answer again; each answered slice
+        # is counted on the document's progress. A search's question is never kept waiting.
+        waiter = pacing.Waiter(model) if kind == "document" and pacing.is_paced() else None
+        tracker = progress.current() if waiter is not None else None
+        i, size = 0, step
+        while i < len(prepared):
+            batch = prepared[i:i + size]
             try:
                 answer = await llm.embed_batch_ex(batch, model, call_settings, input_type=input_type, dims=dims)
             except llm.EmbeddingFailed as exc:
+                if waiter is not None and pacing.rate_limited(exc):
+                    # What this slice was charged before its limit is recorded now, alone: what the slices
+                    # before it cost is in the call's answer, or recorded once if the call fails in the end.
+                    await _record_failed_charge(exc, model=model, provider=provider.id, attribution=attribution,
+                                                profile=profile)
+                    if await waiter.wait():
+                        size = max(1, len(batch) // 2)
+                        continue
+                    exc.charged_microusd = None  # recorded above
                 await _record_failed_charge(exc, model=model, provider=provider.id, attribution=attribution,
                                             tokens=tokens, charged=charged, profile=profile)
-                raise _knowledge_error(exc, model) from exc
+                error = _knowledge_error(exc, model)
+                # The texts answered before the failure, in order: indexing keeps them across a pause (F345).
+                error.answered_vectors = list(vectors)  # type: ignore[attr-defined]
+                raise error from exc
+            except BaseException as exc:
+                # Cancelled (a job's time limit) or broken mid-call: the slices answered were paid for all the same
+                # — their cost recorded, shielded from the cancel (F329), their vectors kept by indexing (F345).
+                if vectors:
+                    await asyncio.shield(_record_failed_charge(exc, model=model, provider=provider.id,
+                                                               attribution=attribution, tokens=tokens,
+                                                               charged=charged, profile=profile))
+                exc.answered_vectors = list(vectors)  # type: ignore[attr-defined]
+                raise
             vectors.extend(answer.vectors)
             tokens += answer.input_tokens or profiles.estimate_tokens(batch)
             if answer.charged_microusd is not None:
                 charged = (charged or 0) + answer.charged_microusd
             request_id = request_id or answer.request_id
+            i += len(batch)
+            if waiter is not None:
+                waiter.answered()
+                size = step
+            if tracker is not None:
+                tracker.advance(by=len(batch))
 
         source = cost_source(provider.id)
         if source == "local":

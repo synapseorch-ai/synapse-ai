@@ -360,6 +360,33 @@ class TestRecords:
 
 
 class TestDocuments:
+    async def test_a_working_document_says_how_far_it_has_got(self, on, jobs):
+        """CCR-12 (PG1): the list and the detail carry a working document's progress, and only a working one's."""
+        from datetime import datetime, timezone
+
+        from core.knowledge import progress
+
+        kb = await _kb(on)
+        await on.post(f"/api/knowledge/bases/{kb['id']}/records", json={"records": [{"id": "r1", "text": "x"},
+                                                                                   {"id": "r2", "text": "y"}]})
+        first, second = (await on.get(f"/api/knowledge/bases/{kb['id']}/documents")).json()
+        await documents.transition(first["id"], "parsing", previous="queued")
+        now = datetime.now(timezone.utc).isoformat()
+        for doc in (first, second):  # the queued one's row is never shown
+            await progress._write(progress.key(kb["id"], doc["id"]), {
+                "doc_id": doc["id"], "stage": "enrich", "done": 12, "total": 357, "unit": "passages", "eta_s": 480,
+                "waiting": {"reason": "rate_limited", "provider": "OpenAI", "provider_id": "openai", "until": now},
+                "passages": 12, "at": now})
+        listed = {d["id"]: d for d in (await on.get(f"/api/knowledge/bases/{kb['id']}/documents")).json()}
+        assert listed[second["id"]]["progress"] is None
+        shown = listed[first["id"]]["progress"]
+        assert {k: shown[k] for k in ("stage", "done", "total", "unit", "eta_s")} == {
+            "stage": "enrich", "done": 12, "total": 357, "unit": "passages", "eta_s": 480}
+        assert shown["waiting"] == {"reason": "rate_limited", "provider": "OpenAI", "provider_id": "openai",
+                                    "until": now} and shown["updated_at"] == now
+        detail = (await on.get(f"/api/knowledge/documents/{first['id']}")).json()
+        assert detail["progress"] == shown
+
     async def test_list_detail_retry_delete(self, on, jobs, monkeypatch):
         from core.knowledge.jobs import run_ingest_job
 

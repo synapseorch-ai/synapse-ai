@@ -20,6 +20,11 @@ So every format except a small text file parses in a fresh subprocess
 The child's directory lives until the caller is done with it: OCR reads the
 rendered pages from it (`ChildOutcome.page_png`), so a 2,000-page scan is
 never held in memory at once.
+
+**A long parse can be followed** (PG1): a paged reader's count, which the child
+writes to `progress.json`, is read about every second and handed to the
+document's progress tracker — in memory only, so the polling that enforces the
+limits is never held up by a write.
 """
 from __future__ import annotations
 
@@ -40,6 +45,8 @@ from core.knowledge.parse.limits import ParseRefused, ParserFailed
 from core.knowledge.parsed import ParsedDocument, ParseWarning
 
 POLL_S = 0.2
+#: How often the child's page count is read.
+PROGRESS_POLL_S = 1.0
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
 
 #: Environment variables the parsing process keeps; everything else is dropped.
@@ -110,6 +117,7 @@ async def _run(workdir: Path, *, timeout_s: float, memory_mb: int, command: list
     except psutil.Error:
         ps = None
     peak, killed = 0, None
+    pages = _PagesRead(workdir)
     try:
         while True:
             try:
@@ -117,6 +125,7 @@ async def _run(workdir: Path, *, timeout_s: float, memory_mb: int, command: list
                 break
             except asyncio.TimeoutError:
                 pass
+            pages.tell()
             rss = _tree_rss(ps)
             peak = max(peak, rss)
             if rss > memory_mb * 1024 * 1024:
@@ -156,6 +165,45 @@ async def _run(workdir: Path, *, timeout_s: float, memory_mb: int, command: list
         return ChildOutcome(parsed=parsed, workdir=workdir, peak_rss_mb=peak_mb, duration_ms=duration_ms,
                             cut=cause, rendered=_rendered(workdir))
     raise ParserFailed(message, reason=cause)
+
+
+class _PagesRead:
+    """The child's page count, read at most every `PROGRESS_POLL_S` and told to the work's progress tracker."""
+
+    def __init__(self, workdir: Path):
+        from core.knowledge import progress
+
+        self._file = workdir / "progress.json"
+        self._tracker = progress.current()
+        self._at = 0.0
+        self._told: tuple[int, int] | None = None
+
+    def tell(self) -> None:
+        if self._tracker is None or time.monotonic() - self._at < PROGRESS_POLL_S:
+            return
+        self._at = time.monotonic()
+        counted = read_pages(self._file)
+        if counted is None or counted == self._told:
+            return
+        done, total = counted
+        if self._told is None or self._tracker.stage_name != "parse":
+            self._tracker.stage("parse", total=total, unit="pages", done=done)  # the pace counts from the first
+        else:
+            self._tracker.advance(done=done)
+        self._told = counted
+
+
+def read_pages(file: Path) -> tuple[int, int] | None:
+    """(pages read, pages there are) from the child's `progress.json`, or None: absent, being replaced, torn,
+    or not a count."""
+    try:
+        data = json.loads(file.read_text("utf-8"))
+        done, total = int(data["done"]), int(data["total"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if total <= 0 or not 0 <= done <= total:
+        return None
+    return done, total
 
 
 def _rendered(workdir: Path) -> list[int]:
