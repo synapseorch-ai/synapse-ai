@@ -179,9 +179,12 @@ DEPTH_INTERVAL = 30
 def watch_depth(redis, queue_name: str, interval: int = DEPTH_INTERVAL):
     """Read the queue's depth every `interval` seconds for `synapse.queue.depth`.
 
-    Started by a worker's startup; returns the task (None when metrics are off),
-    which `stop_watching` cancels. Its Redis read has no parent span, so it is
-    never traced.
+    The depth is the jobs due now — waiting or running — never one deferred to
+    later: arq keeps a deferred job in the queue at its due time, and armed
+    passes days ahead are not work waiting (F351). Started by a worker's
+    startup; returns the task (None when metrics are off), which
+    `stop_watching` cancels. Its Redis read has no parent span, so it is never
+    traced.
     """
     if not state.metering or redis is None:
         return None
@@ -190,7 +193,8 @@ def watch_depth(redis, queue_name: str, interval: int = DEPTH_INTERVAL):
     async def loop():
         while True:
             try:
-                metrics.set_queue_depth(queue_name, await redis.zcard(queue_name))
+                due = await redis.zcount(queue_name, "-inf", int(time.time() * 1000))
+                metrics.set_queue_depth(queue_name, due)
             except asyncio.CancelledError:
                 raise
             except Exception:
