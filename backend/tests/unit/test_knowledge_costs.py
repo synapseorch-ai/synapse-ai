@@ -115,11 +115,17 @@ class TestThePreview:
         enrich = _stage(preview, "enrich")
         assert enrich.unit == "requests" and enrich.units == n and enrich.model == "claude-haiku-4-5"
         assert enrich.cost_source == "byok" and enrich.est_usd > 0
-        async with session() as s:  # each call re-reading its whole document at the full input rate
+        async with session() as s:
             per_doc = (await s.execute(select(func.count(), func.sum(KnowledgeChunkDB.tokens)).where(
                 KnowledgeChunkDB.kb_id == kb.id).group_by(KnowledgeChunkDB.doc_id))).all()
-        uncached = sum(k * (t + t / k + 100) * 1.0 + k * 75 * 5.0 for k, t in per_doc) / 1_000_000
-        assert enrich.est_usd < uncached, "the document is read from the cache after the first call"
+        # Priced as enrichment will ask (CR1, D180). These documents are under Haiku's cache minimum (4,096
+        # tokens), where a cache marker is ignored, so each call reads its document in full; the cache read is
+        # proven on a document over it in test_knowledge_enrich (an estimate reads the cache only where it holds).
+        from core.knowledge import enrich as contextual
+
+        assert all(int(t) < contextual.EXPLICIT_CACHE_MIN_TOKENS for _, t in per_doc)
+        assert enrich.est_usd == pytest.approx(await contextual.estimate_usd(
+            "claude-haiku-4-5", [(int(k), int(t)) for k, t in per_doc]), rel=1e-6)
 
     async def test_pages_no_ocr_has_read_are_priced_at_the_providers_rate(self, jobs):
         kb = await _indexed(jobs)

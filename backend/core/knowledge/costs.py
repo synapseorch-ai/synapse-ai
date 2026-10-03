@@ -12,9 +12,10 @@ document (`snapshots`). It is an estimate and says what it priced:
 * `embed` — the chunks' tokens (their text and their context prefix), measured from the serving snapshot
   and re-estimated when the draft changes chunking, at the rate of the model a rebuild would use (the
   draft's, else the deployment's). No model: keyword only, no stage.
-* `enrich` — only when the draft asks for Contextual Retrieval (not built yet, D167 #1, but priced so the
-  choice can be weighed): one chat call per chunk with its document cached, on the contextual model or the
-  workspace's chat model, priced by `usage_tracker.calculate_cost` with cache reads and writes.
+* `enrich` — only when the draft asks for Contextual Retrieval (CR1, D180): one chat call per chunk, on the
+  model a rebuild would use, priced by `enrich.estimate_usd` — each document whole, or a long one in windows,
+  as the calls will see it, with a cache read only where a cache point holds. The embedding tokens then count
+  the contexts too.
 
 Parsing is local in OSS and has no rate. `budget_remaining_usd` is the draft's cap less this month's spend.
 
@@ -42,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.knowledge.api_models import CostGroup, CostPreview
-    from core.knowledge.kb_settings import Embedding, KnowledgeBase, Rerank
+    from core.knowledge.kb_settings import Embedding, Enrichment, KnowledgeBase, Rerank
 
 #: Settings a draft may change for a preview: what the settings screen edits.
 EDITABLE: frozenset[str] = frozenset({
@@ -51,9 +52,6 @@ EDITABLE: frozenset[str] = frozenset({
 })
 GROUPS: tuple[str, ...] = ("day", "stage", "document", "model")
 MAX_GROUPS = 1000
-#: Contextual Retrieval, per chunk: the instruction around the document and chunk, and the context written.
-CONTEXT_PROMPT_TOKENS = 100
-CONTEXT_OUTPUT_TOKENS = 75
 SEARCH_KEY = "search"
 
 
@@ -163,10 +161,11 @@ def _aware(at: datetime) -> datetime:
 # ── the settings check ─────────────────────────────────────────────────────────
 
 def check_settings(*, embedding: Embedding | None = None, rerank: Rerank | None = None,
-                   settings: Mapping[str, Any] | None = None) -> None:
-    """Raise `ValueError` (a 422) for a width the embedding model cannot answer, or a rerank model Synapse
-    cannot call — before anything is saved or indexed. Only the blocks given are checked."""
-    from core.knowledge import profiles, rerankers
+                   settings: Mapping[str, Any] | None = None, enrichment: Enrichment | None = None) -> None:
+    """Raise `ValueError` (a 422) for a width the embedding model cannot answer, a rerank model Synapse
+    cannot call, or Contextual Retrieval with no model that can write contexts — before anything is saved or
+    indexed. Only the blocks given are checked."""
+    from core.knowledge import enrich, profiles, rerankers
     from core.knowledge.config import knowledge_settings
     from core.knowledge.errors import EmbeddingError
 
@@ -182,6 +181,7 @@ def check_settings(*, embedding: Embedding | None = None, rerank: Rerank | None 
         prefixes = ", ".join(route.prefix for route in rerankers.ROUTES)
         raise ValueError(f"{rerank.model!r} is not a rerank model Synapse can call: name it with its provider "
                          f"({prefixes}).")
+    enrich.check_settings(enrichment, settings)
 
 
 def draft(kb: KnowledgeBase, overrides: Mapping[str, Any] | None) -> KnowledgeBase:
@@ -252,7 +252,7 @@ async def preview(kb: KnowledgeBase, overrides: Mapping[str, Any] | None = None,
     from sqlalchemy import select
 
     from core.config import load_settings
-    from core.knowledge import budgets, embedders
+    from core.knowledge import budgets, enrich
     from core.knowledge.api_models import CostPreview, StageEstimate
     from core.knowledge.config import knowledge_settings
     from core.knowledge.kb_settings import Chunking
@@ -260,22 +260,24 @@ async def preview(kb: KnowledgeBase, overrides: Mapping[str, Any] | None = None,
     from core.knowledge.profiles import CHARS_PER_TOKEN
     from core.knowledge.seams import get_ocr_provider
     from core.knowledge.snapshots import active_snapshots
-    from core.providers.registry import provider_for
     from core.store import session
     from core.store.models import KnowledgeSnapshotDB
 
     target = draft(kb, overrides)
     cfg = dict(settings if settings is not None else load_settings())
-    check_settings(embedding=target.embedding, rerank=target.rerank, settings=cfg)
+    check_settings(embedding=target.embedding, rerank=target.rerank, settings=cfg, enrichment=target.enrichment)
 
     docs = await _served(kb.id)
     active = (await active_snapshots([kb.id])).get(kb.id)
     measured = await _chunk_totals(kb.id, active)
     current = kb.chunking
+    serving_contextual = False
     if active is not None:
         async with session() as s:
-            stats = (await s.execute(select(KnowledgeSnapshotDB.stats).where(
-                KnowledgeSnapshotDB.tenant_id == _tenant(), KnowledgeSnapshotDB.id == active))).scalar_one_or_none()
+            stats, serving_mode = (await s.execute(select(
+                KnowledgeSnapshotDB.stats, KnowledgeSnapshotDB.enrichment_mode).where(
+                KnowledgeSnapshotDB.tenant_id == _tenant(), KnowledgeSnapshotDB.id == active))).first() or (None, None)
+        serving_contextual = serving_mode == "contextual"
         recorded = ((stats or {}).get("settings") or {}).get("chunking") if isinstance(stats, dict) else None
         if recorded:
             current = Chunking.model_validate(recorded)
@@ -304,24 +306,18 @@ async def preview(kb: KnowledgeBase, overrides: Mapping[str, Any] | None = None,
     model = target.embedding.model or knowledge_settings(cfg).embedding_model
     if model and per_doc:
         tokens = sum(content + prefix for _, content, prefix in per_doc)
+        # The measured prefixes hold the serving index's contexts: a draft that adds Contextual Retrieval adds a
+        # written context to every chunk, one that drops it takes them away (CR1, D180).
+        contexts = enrich.CONTEXT_OUTPUT_TOKENS * sum(n for n, _, _ in per_doc)
+        if (target.enrichment.mode == "contextual") != serving_contextual:
+            tokens = max(0, tokens + (contexts if not serving_contextual else -contexts))
         rate, source = await budgets.embed_rate(model)
         stages.append(StageEstimate(stage="embed", model=model, units=float(tokens), unit="tokens",
                                     est_usd=round(tokens * (rate or 0.0) / 1_000_000, 8), cost_source=source))
 
-    if target.enrichment.mode == "contextual" and per_doc:
-        chat = target.enrichment.contextual_model or str(cfg.get("model") or "")
-        if chat:
-            calls = sum(n for n, _, _ in per_doc)
-            usd = 0.0
-            for n, content, _ in per_doc:
-                if not n:
-                    continue
-                each = content / n
-                usd += await chat_usd(chat, round(n * (each + CONTEXT_PROMPT_TOKENS)), n * CONTEXT_OUTPUT_TOKENS,
-                                      cache_write=content, cache_read=content * (n - 1)) or 0.0
-            stages.append(StageEstimate(stage="enrich", model=chat, units=float(calls), unit="requests",
-                                        est_usd=round(usd, 8),
-                                        cost_source=embedders.cost_source(provider_for(chat).id)))
+    contextual = await enrich.preview_stage(target.enrichment, per_doc, cfg)
+    if contextual is not None:
+        stages.append(contextual)
 
     remaining = None
     if target.budget_monthly_usd is not None:

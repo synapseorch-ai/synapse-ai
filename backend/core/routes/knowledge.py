@@ -109,7 +109,8 @@ async def create_knowledge_base(body: KnowledgeBaseCreate) -> KnowledgeBaseOut:
     in it is queued."""
     from core.knowledge import bases, costs, dispatch, sync
 
-    costs.check_settings(embedding=body.embedding, rerank=body.rerank)  # 422 before anything is saved
+    costs.check_settings(embedding=body.embedding, rerank=body.rerank,
+                         enrichment=body.enrichment)  # 422 before anything is saved
     kb = await bases.create_base(body)
     await sync.ensure_folder(kb)
     await dispatch.enqueue(kb.id, "reindex", "reconcile")
@@ -134,7 +135,8 @@ async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> Knowle
     budget resumes what it paused."""
     from core.knowledge import bases, budgets, costs, dispatch, snapshots, sync
 
-    costs.check_settings(embedding=body.embedding, rerank=body.rerank)  # only the blocks the edit sends
+    costs.check_settings(embedding=body.embedding, rerank=body.rerank,
+                         enrichment=body.enrichment)  # only the blocks the edit sends
     before, after = await bases.update_base(kb_id, body)
     if after.folder != before.folder:
         await sync.rehome(before, after)
