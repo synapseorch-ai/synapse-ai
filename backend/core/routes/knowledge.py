@@ -252,6 +252,16 @@ async def complete_upload(upload_id: str, body: UploadComplete) -> IngestAccepte
     return IngestAccepted(documents=[documents.to_out(r) for r in rows])
 
 
+@router.delete("/api/knowledge/uploads/{upload_id}", status_code=204, response_model=None)
+@_errors
+async def cancel_upload(upload_id: str) -> Response:
+    """Give up an upload that will not be completed: its parts go (F341, CCR-12)."""
+    from core.knowledge import ingest
+
+    await ingest.cancel_upload(upload_id)
+    return Response(status_code=204)
+
+
 # ── records ────────────────────────────────────────────────────────────────────
 
 @router.post("/api/knowledge/bases/{kb_id}/records", response_model=IngestAccepted, status_code=202)

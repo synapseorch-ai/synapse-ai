@@ -114,10 +114,42 @@ class KnowledgeBaseUpdate(_Request):
     web: Web | None = None
 
 
+class ProgressWait(_Response):
+    """Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by
+    itself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the
+    current wait ends."""
+
+    reason: Literal["rate_limited"]
+    provider: str
+    provider_id: str
+    until: str | None = None
+
+
+class DocumentProgress(_Response):
+    """How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit
+    — pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the
+    stage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows
+    work going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is
+    a pace to estimate from; `waiting` is set while a provider's rate limit is waited out."""
+
+    stage: Literal["parse", "ocr", "enrich", "embed", "index"]
+    done: int | None = None
+    total: int | None = None
+    unit: Literal["pages", "passages"] | None = None
+    eta_s: int | None = None
+    waiting: ProgressWait | None = None
+    updated_at: str | None = None
+
+
 class SnapshotBuild(_Response):
     """A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a
     change to how the index is built. `failed` means the serving snapshot was kept; a rebuild
-    that is waiting for budget or wallet is still `building`, with `paused_reason`."""
+    that is waiting for budget or wallet is still `building`, with `paused_reason`.
+
+    CCR-12 (PG1): its passages built so far and the passages it will hold (an estimate until every
+    document is built: a document not yet rebuilt counts what it holds now), the stage of the document
+    being built, an estimate of the time left from the rebuild's own pace, and `waiting` while that
+    document waits out a provider's rate limit."""
 
     snapshot_id: str
     status: Literal["building", "failed"]
@@ -127,6 +159,11 @@ class SnapshotBuild(_Response):
     started_at: str | None = None
     paused_reason: str | None = None
     error: str | None = None
+    passages_done: int | None = None
+    passages_total: int | None = None
+    stage: Literal["parse", "ocr", "enrich", "embed", "index"] | None = None
+    eta_s: int | None = None
+    waiting: ProgressWait | None = None
 
 
 class KnowledgeBaseState(_Response):
@@ -194,6 +231,8 @@ class DocumentOut(_Response):
     created_at: str | None = None
     updated_at: str | None = None
     indexed_at: str | None = None
+    # CCR-12 (PG1): how far it has got, while it is `parsing` or `indexing`.
+    progress: DocumentProgress | None = None
 
 
 class DocumentDetail(DocumentOut):
@@ -815,6 +854,8 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("PUT", "/knowledge/uploads/{upload_id}/parts/{part_number}", None, None, 200, _BOTH, None, "run"),
     RouteSpec("POST", "/knowledge/uploads/{upload_id}/complete", UploadComplete, IngestAccepted, 202, _BOTH,
               "starts", "run"),
+    # CCR-12 (PG1, F341): an upload given up — its parts go, and it no longer counts as open.
+    RouteSpec("DELETE", "/knowledge/uploads/{upload_id}", None, None, 204, _BOTH, None, "run"),
     RouteSpec("POST", "/knowledge/bases/{kb_id}/urls", UrlIngestRequest, CrawlAccepted, 202, _BOTH, "starts",
               "run"),
     RouteSpec("GET", "/knowledge/bases/{kb_id}/crawls", None, list[WebCrawlState], 200, _INTERNAL, None,

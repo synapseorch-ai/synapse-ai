@@ -236,6 +236,13 @@ async def complete_upload(upload_id: str, body: UploadComplete) -> list[Knowledg
         metadata=manifest["metadata"])
 
 
+async def cancel_upload(upload_id: str) -> None:
+    """Give up an upload: its parts and its manifest go (F341, CCR-12). `NotFound` for one that is unknown,
+    finished, expired or already cancelled — the same answer as for a part or a complete."""
+    await _manifest(upload_id)
+    await _discard(upload_id)
+
+
 async def _discard(upload_id: str) -> None:
     def remove() -> None:
         store = _store()

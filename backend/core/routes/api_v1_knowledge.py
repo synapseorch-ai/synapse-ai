@@ -69,6 +69,11 @@ _DOCS: dict[tuple[str, str], tuple[str, str]] = {
         "Complete an upload",
         "Assembles the parts, each checked against its ETag, into the Vault file and queues its document "
         "(202). Read its status with `GET /api/v1/knowledge/documents/{doc_id}`."),
+    ("DELETE", "/knowledge/uploads/{upload_id}"): (
+        "Cancel an upload",
+        "Gives up an upload that will not be completed — a part that failed, a complete that was refused: "
+        "its parts are deleted and it no longer counts as open (204). An unknown, finished or expired upload "
+        "is a 404."),
     ("POST", "/knowledge/bases/{kb_id}/urls"): (
         "Add web pages",
         "A page, a sitemap's pages, or a site crawled from a URL, fetched into the base (`_web/<host>/…`) "

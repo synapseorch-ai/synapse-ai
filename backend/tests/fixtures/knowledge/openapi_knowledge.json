@@ -568,6 +568,102 @@
     "title": "CostReport",
     "type": "object"
    },
+   "DocumentProgress": {
+    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+    "properties": {
+     "done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Done"
+     },
+     "eta_s": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Eta S"
+     },
+     "stage": {
+      "enum": [
+       "parse",
+       "ocr",
+       "enrich",
+       "embed",
+       "index"
+      ],
+      "title": "Stage",
+      "type": "string"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Total"
+     },
+     "unit": {
+      "anyOf": [
+       {
+        "enum": [
+         "pages",
+         "passages"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Unit"
+     },
+     "updated_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Updated At"
+     },
+     "waiting": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/ProgressWait"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "stage"
+    ],
+    "title": "DocumentProgress",
+    "type": "object"
+   },
    "ErrorInfo": {
     "additionalProperties": false,
     "properties": {
@@ -874,6 +970,43 @@
     "title": "ParserInfo",
     "type": "object"
    },
+   "ProgressWait": {
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "properties": {
+     "provider": {
+      "title": "Provider",
+      "type": "string"
+     },
+     "provider_id": {
+      "title": "Provider Id",
+      "type": "string"
+     },
+     "reason": {
+      "const": "rate_limited",
+      "title": "Reason",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Until"
+     }
+    },
+    "required": [
+     "reason",
+     "provider",
+     "provider_id"
+    ],
+    "title": "ProgressWait",
+    "type": "object"
+   },
    "RetryHint": {
     "additionalProperties": false,
     "properties": {
@@ -1069,6 +1202,17 @@
     "title": "Path",
     "type": "string"
    },
+   "progress": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/DocumentProgress"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
    "report": {
     "anyOf": [
      {
@@ -1207,6 +1351,141 @@
   "type": "object"
  },
  "DocumentOut": {
+  "$defs": {
+   "DocumentProgress": {
+    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+    "properties": {
+     "done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Done"
+     },
+     "eta_s": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Eta S"
+     },
+     "stage": {
+      "enum": [
+       "parse",
+       "ocr",
+       "enrich",
+       "embed",
+       "index"
+      ],
+      "title": "Stage",
+      "type": "string"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Total"
+     },
+     "unit": {
+      "anyOf": [
+       {
+        "enum": [
+         "pages",
+         "passages"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Unit"
+     },
+     "updated_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Updated At"
+     },
+     "waiting": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/ProgressWait"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "stage"
+    ],
+    "title": "DocumentProgress",
+    "type": "object"
+   },
+   "ProgressWait": {
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "properties": {
+     "provider": {
+      "title": "Provider",
+      "type": "string"
+     },
+     "provider_id": {
+      "title": "Provider Id",
+      "type": "string"
+     },
+     "reason": {
+      "const": "rate_limited",
+      "title": "Reason",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Until"
+     }
+    },
+    "required": [
+     "reason",
+     "provider",
+     "provider_id"
+    ],
+    "title": "ProgressWait",
+    "type": "object"
+   }
+  },
   "properties": {
    "chunks": {
     "anyOf": [
@@ -1308,6 +1587,17 @@
    "path": {
     "title": "Path",
     "type": "string"
+   },
+   "progress": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/DocumentProgress"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
    },
    "sha256": {
     "anyOf": [
@@ -1433,6 +1723,141 @@
    "status"
   ],
   "title": "DocumentOut",
+  "type": "object"
+ },
+ "DocumentProgress": {
+  "$defs": {
+   "ProgressWait": {
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "properties": {
+     "provider": {
+      "title": "Provider",
+      "type": "string"
+     },
+     "provider_id": {
+      "title": "Provider Id",
+      "type": "string"
+     },
+     "reason": {
+      "const": "rate_limited",
+      "title": "Reason",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Until"
+     }
+    },
+    "required": [
+     "reason",
+     "provider",
+     "provider_id"
+    ],
+    "title": "ProgressWait",
+    "type": "object"
+   }
+  },
+  "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+  "properties": {
+   "done": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Done"
+   },
+   "eta_s": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Eta S"
+   },
+   "stage": {
+    "enum": [
+     "parse",
+     "ocr",
+     "enrich",
+     "embed",
+     "index"
+    ],
+    "title": "Stage",
+    "type": "string"
+   },
+   "total": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Total"
+   },
+   "unit": {
+    "anyOf": [
+     {
+      "enum": [
+       "pages",
+       "passages"
+      ],
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Unit"
+   },
+   "updated_at": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Updated At"
+   },
+   "waiting": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/ProgressWait"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "stage"
+  ],
+  "title": "DocumentProgress",
   "type": "object"
  },
  "Embedding": {
@@ -6512,6 +6937,17 @@
       "title": "Path",
       "type": "string"
      },
+     "progress": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/DocumentProgress"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
      "sha256": {
       "anyOf": [
        {
@@ -6636,6 +7072,139 @@
      "status"
     ],
     "title": "DocumentOut",
+    "type": "object"
+   },
+   "DocumentProgress": {
+    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+    "properties": {
+     "done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Done"
+     },
+     "eta_s": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Eta S"
+     },
+     "stage": {
+      "enum": [
+       "parse",
+       "ocr",
+       "enrich",
+       "embed",
+       "index"
+      ],
+      "title": "Stage",
+      "type": "string"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Total"
+     },
+     "unit": {
+      "anyOf": [
+       {
+        "enum": [
+         "pages",
+         "passages"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Unit"
+     },
+     "updated_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Updated At"
+     },
+     "waiting": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/ProgressWait"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "stage"
+    ],
+    "title": "DocumentProgress",
+    "type": "object"
+   },
+   "ProgressWait": {
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "properties": {
+     "provider": {
+      "title": "Provider",
+      "type": "string"
+     },
+     "provider_id": {
+      "title": "Provider Id",
+      "type": "string"
+     },
+     "reason": {
+      "const": "rate_limited",
+      "title": "Reason",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Until"
+     }
+    },
+    "required": [
+     "reason",
+     "provider",
+     "provider_id"
+    ],
+    "title": "ProgressWait",
     "type": "object"
    }
   },
@@ -6810,6 +7379,17 @@
       "title": "Path",
       "type": "string"
      },
+     "progress": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/DocumentProgress"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
      "sha256": {
       "anyOf": [
        {
@@ -6934,6 +7514,139 @@
      "status"
     ],
     "title": "DocumentOut",
+    "type": "object"
+   },
+   "DocumentProgress": {
+    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+    "properties": {
+     "done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Done"
+     },
+     "eta_s": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Eta S"
+     },
+     "stage": {
+      "enum": [
+       "parse",
+       "ocr",
+       "enrich",
+       "embed",
+       "index"
+      ],
+      "title": "Stage",
+      "type": "string"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Total"
+     },
+     "unit": {
+      "anyOf": [
+       {
+        "enum": [
+         "pages",
+         "passages"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Unit"
+     },
+     "updated_at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Updated At"
+     },
+     "waiting": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/ProgressWait"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     }
+    },
+    "required": [
+     "stage"
+    ],
+    "title": "DocumentProgress",
+    "type": "object"
+   },
+   "ProgressWait": {
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "properties": {
+     "provider": {
+      "title": "Provider",
+      "type": "string"
+     },
+     "provider_id": {
+      "title": "Provider Id",
+      "type": "string"
+     },
+     "reason": {
+      "const": "rate_limited",
+      "title": "Reason",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Until"
+     }
+    },
+    "required": [
+     "reason",
+     "provider",
+     "provider_id"
+    ],
+    "title": "ProgressWait",
     "type": "object"
    }
   },
@@ -8465,6 +9178,43 @@
     "title": "KnowledgeBaseState",
     "type": "object"
    },
+   "ProgressWait": {
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "properties": {
+     "provider": {
+      "title": "Provider",
+      "type": "string"
+     },
+     "provider_id": {
+      "title": "Provider Id",
+      "type": "string"
+     },
+     "reason": {
+      "const": "rate_limited",
+      "title": "Reason",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Until"
+     }
+    },
+    "required": [
+     "reason",
+     "provider",
+     "provider_id"
+    ],
+    "title": "ProgressWait",
+    "type": "object"
+   },
    "Rerank": {
     "additionalProperties": false,
     "description": "None means the deployment's default: on in cloud, off in OSS unless configured.",
@@ -8562,7 +9312,7 @@
     "type": "object"
    },
    "SnapshotBuild": {
-    "description": "A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a\nchange to how the index is built. `failed` means the serving snapshot was kept; a rebuild\nthat is waiting for budget or wallet is still `building`, with `paused_reason`.",
+    "description": "A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a\nchange to how the index is built. `failed` means the serving snapshot was kept; a rebuild\nthat is waiting for budget or wallet is still `building`, with `paused_reason`.\n\nCCR-12 (PG1): its passages built so far and the passages it will hold (an estimate until every\ndocument is built: a document not yet rebuilt counts what it holds now), the stage of the document\nbeing built, an estimate of the time left from the rebuild's own pace, and `waiting` while that\ndocument waits out a provider's rate limit.",
     "properties": {
      "docs_done": {
       "default": 0,
@@ -8591,6 +9341,42 @@
       "default": null,
       "title": "Error"
      },
+     "eta_s": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Eta S"
+     },
+     "passages_done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Passages Done"
+     },
+     "passages_total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Passages Total"
+     },
      "paused_reason": {
       "anyOf": [
        {
@@ -8606,6 +9392,25 @@
      "snapshot_id": {
       "title": "Snapshot Id",
       "type": "string"
+     },
+     "stage": {
+      "anyOf": [
+       {
+        "enum": [
+         "parse",
+         "ocr",
+         "enrich",
+         "embed",
+         "index"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Stage"
      },
      "started_at": {
       "anyOf": [
@@ -8626,6 +9431,17 @@
       ],
       "title": "Status",
       "type": "string"
+     },
+     "waiting": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/ProgressWait"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
      }
     },
     "required": [
@@ -8835,8 +9651,45 @@
  },
  "KnowledgeBaseState": {
   "$defs": {
+   "ProgressWait": {
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "properties": {
+     "provider": {
+      "title": "Provider",
+      "type": "string"
+     },
+     "provider_id": {
+      "title": "Provider Id",
+      "type": "string"
+     },
+     "reason": {
+      "const": "rate_limited",
+      "title": "Reason",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Until"
+     }
+    },
+    "required": [
+     "reason",
+     "provider",
+     "provider_id"
+    ],
+    "title": "ProgressWait",
+    "type": "object"
+   },
    "SnapshotBuild": {
-    "description": "A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a\nchange to how the index is built. `failed` means the serving snapshot was kept; a rebuild\nthat is waiting for budget or wallet is still `building`, with `paused_reason`.",
+    "description": "A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a\nchange to how the index is built. `failed` means the serving snapshot was kept; a rebuild\nthat is waiting for budget or wallet is still `building`, with `paused_reason`.\n\nCCR-12 (PG1): its passages built so far and the passages it will hold (an estimate until every\ndocument is built: a document not yet rebuilt counts what it holds now), the stage of the document\nbeing built, an estimate of the time left from the rebuild's own pace, and `waiting` while that\ndocument waits out a provider's rate limit.",
     "properties": {
      "docs_done": {
       "default": 0,
@@ -8865,6 +9718,42 @@
       "default": null,
       "title": "Error"
      },
+     "eta_s": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Eta S"
+     },
+     "passages_done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Passages Done"
+     },
+     "passages_total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Passages Total"
+     },
      "paused_reason": {
       "anyOf": [
        {
@@ -8880,6 +9769,25 @@
      "snapshot_id": {
       "title": "Snapshot Id",
       "type": "string"
+     },
+     "stage": {
+      "anyOf": [
+       {
+        "enum": [
+         "parse",
+         "ocr",
+         "enrich",
+         "embed",
+         "index"
+        ],
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Stage"
      },
      "started_at": {
       "anyOf": [
@@ -8900,6 +9808,17 @@
       ],
       "title": "Status",
       "type": "string"
+     },
+     "waiting": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/ProgressWait"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
      }
     },
     "required": [
@@ -9496,6 +10415,43 @@
    "revision"
   ],
   "title": "KnowledgeBaseUpdate",
+  "type": "object"
+ },
+ "ProgressWait": {
+  "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+  "properties": {
+   "provider": {
+    "title": "Provider",
+    "type": "string"
+   },
+   "provider_id": {
+    "title": "Provider Id",
+    "type": "string"
+   },
+   "reason": {
+    "const": "rate_limited",
+    "title": "Reason",
+    "type": "string"
+   },
+   "until": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Until"
+   }
+  },
+  "required": [
+   "reason",
+   "provider",
+   "provider_id"
+  ],
+  "title": "ProgressWait",
   "type": "object"
  },
  "QuoteCheck": {
@@ -11852,7 +12808,46 @@
   "type": "object"
  },
  "SnapshotBuild": {
-  "description": "A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a\nchange to how the index is built. `failed` means the serving snapshot was kept; a rebuild\nthat is waiting for budget or wallet is still `building`, with `paused_reason`.",
+  "$defs": {
+   "ProgressWait": {
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "properties": {
+     "provider": {
+      "title": "Provider",
+      "type": "string"
+     },
+     "provider_id": {
+      "title": "Provider Id",
+      "type": "string"
+     },
+     "reason": {
+      "const": "rate_limited",
+      "title": "Reason",
+      "type": "string"
+     },
+     "until": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Until"
+     }
+    },
+    "required": [
+     "reason",
+     "provider",
+     "provider_id"
+    ],
+    "title": "ProgressWait",
+    "type": "object"
+   }
+  },
+  "description": "A blue/green rebuild (CCR-5, B2b): a new snapshot built beside the serving one after a\nchange to how the index is built. `failed` means the serving snapshot was kept; a rebuild\nthat is waiting for budget or wallet is still `building`, with `paused_reason`.\n\nCCR-12 (PG1): its passages built so far and the passages it will hold (an estimate until every\ndocument is built: a document not yet rebuilt counts what it holds now), the stage of the document\nbeing built, an estimate of the time left from the rebuild's own pace, and `waiting` while that\ndocument waits out a provider's rate limit.",
   "properties": {
    "docs_done": {
     "default": 0,
@@ -11881,6 +12876,42 @@
     "default": null,
     "title": "Error"
    },
+   "eta_s": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Eta S"
+   },
+   "passages_done": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Passages Done"
+   },
+   "passages_total": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Passages Total"
+   },
    "paused_reason": {
     "anyOf": [
      {
@@ -11896,6 +12927,25 @@
    "snapshot_id": {
     "title": "Snapshot Id",
     "type": "string"
+   },
+   "stage": {
+    "anyOf": [
+     {
+      "enum": [
+       "parse",
+       "ocr",
+       "enrich",
+       "embed",
+       "index"
+      ],
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null,
+    "title": "Stage"
    },
    "started_at": {
     "anyOf": [
@@ -11916,6 +12966,17 @@
     ],
     "title": "Status",
     "type": "string"
+   },
+   "waiting": {
+    "anyOf": [
+     {
+      "$ref": "#/$defs/ProgressWait"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
    }
   },
   "required": [

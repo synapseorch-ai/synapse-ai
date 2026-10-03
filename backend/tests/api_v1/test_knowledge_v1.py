@@ -246,6 +246,21 @@ class TestUploads:
         assert doc["sha256"] == hashlib.sha256(data).hexdigest()
         assert get_blob_store().get_bytes("vault/kb/notes.md") == data
 
+    async def test_an_upload_given_up_is_cancelled_with_the_key(self, on, jobs, api_key):
+        """F341 (CCR-12): a client that cannot finish an upload cancels it, with its key as for any call that
+        is not a part's PUT; the parts go at once."""
+        h = api_key["headers"]
+        kb = await _kb(on, h)
+        session = (await on.post(f"{V1}/knowledge/bases/{kb['id']}/uploads", headers=h, json={
+            "filename": "a.md", "size_bytes": 2, "mime": "text/markdown"})).json()
+        await _put_parts(on, session, b"hi")
+        cancel = f"{V1}/knowledge/uploads/{session['upload_id']}"
+        assert (await on.delete(cancel)).status_code == 401  # no key
+        assert (await on.delete(cancel, headers=session["parts"][0]["headers"])).status_code == 401  # a part's token is not a key
+        assert (await on.delete(cancel, headers=h)).status_code == 204
+        assert get_blob_store().list(f"knowledge/uploads/{session['upload_id']}/") == []
+        assert (await on.delete(cancel, headers=h)).status_code == 404
+
     async def test_a_part_without_its_token_is_a_404(self, on, jobs, api_key):
         h = api_key["headers"]
         kb = await _kb(on, h)

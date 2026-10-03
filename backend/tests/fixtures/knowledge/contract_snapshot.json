@@ -1188,6 +1188,19 @@
    "run"
   ],
   [
+   "DELETE",
+   "/knowledge/uploads/{upload_id}",
+   null,
+   null,
+   204,
+   [
+    "internal",
+    "v1"
+   ],
+   null,
+   "run"
+  ],
+  [
    "POST",
    "/knowledge/bases/{kb_id}/urls",
    "UrlIngestRequest",

@@ -287,6 +287,35 @@ class TestUploads:
         assert await ingest.sweep_expired_uploads() == 1
         assert get_blob_store().list(f"knowledge/uploads/{init['upload_id']}/") == []
 
+    async def test_a_cancelled_upload_leaves_nothing_behind(self, on, jobs, monkeypatch):
+        """F341 (CCR-12): an upload the uploader gives up — a part failed, the complete was refused — is
+        cancelled, and its parts go then, not a day later; it can be neither completed nor cancelled again."""
+        from core.knowledge import ingest
+
+        monkeypatch.setattr(ingest, "PART_SIZE", 4)
+        kb = await _kb(on)
+        session, parts = await _upload(on, kb["id"], "a.md", b"abcdefg")
+        upload = session["upload_id"]
+        assert len(get_blob_store().list(f"knowledge/uploads/{upload}/")) == 3  # the manifest and two parts
+        resp = await on.delete(f"/api/knowledge/uploads/{upload}")
+        assert resp.status_code == 204 and resp.content == b""
+        assert get_blob_store().list(f"knowledge/uploads/{upload}/") == []
+        assert (await on.post(f"/api/knowledge/uploads/{upload}/complete", json={"parts": parts})).status_code == 404
+        assert (await on.delete(f"/api/knowledge/uploads/{upload}")).status_code == 404
+        assert get_blob_store().get_bytes("vault/kb/a.md") is None
+        assert (await on.delete("/api/knowledge/uploads/kup_nope")).status_code == 404
+        assert (await on.delete("/api/knowledge/uploads/not-an-upload")).status_code == 404
+
+    async def test_a_cancel_after_a_complete_finds_nothing(self, on, jobs):
+        """A complete that succeeded is never undone by a cancel that follows it (the uploader cancels only
+        on a refusal, but a late or repeated cancel must still be harmless)."""
+        kb = await _kb(on)
+        session, parts = await _upload(on, kb["id"], "a.md", b"hello")
+        assert (await on.post(f"/api/knowledge/uploads/{session['upload_id']}/complete",
+                              json={"parts": parts})).status_code == 202
+        assert (await on.delete(f"/api/knowledge/uploads/{session['upload_id']}")).status_code == 404
+        assert get_blob_store().get_bytes("vault/kb/a.md") == b"hello"
+
 
 class TestRecords:
     async def test_records_are_files_and_the_same_one_twice_is_one_job(self, on, jobs):
