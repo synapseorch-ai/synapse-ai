@@ -47,7 +47,7 @@ REASONS: dict[str, tuple[str, ...]] = {
     "paused": ("budget_cap", "wallet_402"),
     "blocked": ("egress_blocked", "robots_disallowed"),
     "failed": ("parser_timeout", "parser_memory", "parser_crashed", "encrypted", "embed_failed",
-               "embedding_invalid", "index_failed", "fetch_failed", "ocr_failed", "internal"),
+               "embedding_invalid", "index_failed", "fetch_failed", "ocr_failed", "enrich_failed", "internal"),
     "partial": ("truncated_pages", "truncated_size", "no_text_layer", "ocr_failed", "attachment_skipped"),
 }
 

@@ -36,6 +36,9 @@ DEFAULTS: dict[str, Any] = {
     # CCR-3 (B2a, D163): a bring-your-own TEI/Infinity reranker's address and key.
     "knowledge_rerank_base_url": "",
     "knowledge_rerank_key": "",
+    # CCR-10 (CR1, D180): the model that writes Contextual Retrieval's contexts when a base names
+    # none. Blank means the workspace's chat model; cloud's overlay sets its platform default.
+    "knowledge_contextual_model": "",
 }
 
 
@@ -56,6 +59,7 @@ class KnowledgeSettings:
     snapshot_grace_days: int
     rerank_base_url: str = ""  # CCR-3
     rerank_key: str = ""  # CCR-3
+    contextual_model: str = ""  # CCR-10
 
 
 def _get(settings: Mapping[str, Any], key: str) -> Any:
@@ -89,6 +93,7 @@ def knowledge_settings(settings: Mapping[str, Any] | None = None) -> KnowledgeSe
         snapshot_grace_days=int(_get(settings, "knowledge_snapshot_grace_days")),
         rerank_base_url=str(_get(settings, "knowledge_rerank_base_url") or ""),
         rerank_key=str(_get(settings, "knowledge_rerank_key") or ""),
+        contextual_model=str(_get(settings, "knowledge_contextual_model") or ""),
     )
 
 

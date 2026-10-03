@@ -1047,6 +1047,7 @@
    "index_failed",
    "fetch_failed",
    "ocr_failed",
+   "enrich_failed",
    "internal"
   ],
   "partial": [
@@ -1567,6 +1568,7 @@
  },
  "settings": {
   "knowledge_api_search_per_min": 120,
+  "knowledge_contextual_model": "",
   "knowledge_crawl_max_depth": 3,
   "knowledge_crawl_max_pages": 500,
   "knowledge_crawl_rps_per_host": 1.0,
@@ -3608,6 +3610,7 @@
   "sheet_truncated",
   "garbled_text",
   "legacy_converted",
-  "empty_document"
+  "empty_document",
+  "enrich_fallback"
  ]
 }

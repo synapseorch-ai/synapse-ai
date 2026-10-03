@@ -118,6 +118,14 @@ class WalletExhausted(KnowledgeError):
         self.available_microusd = available_microusd
 
 
+class EnrichmentError(KnowledgeError):
+    """The model writing Contextual Retrieval's contexts still failed after the provider's own retries
+    (CCR-10). The document fails and may be retried; contexts already written are kept."""
+
+    code = "enrich_failed"
+    retryable = True
+
+
 class EgressBlocked(KnowledgeError):
     """A fetch was refused by the egress guard or the egress proxy (a 407). Not retried."""
 

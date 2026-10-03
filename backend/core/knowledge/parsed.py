@@ -32,7 +32,7 @@ WarningCode = Literal[
     "truncated_size", "encrypted", "unsupported_format", "parser_timeout", "parser_memory",
     "parser_crashed", "hidden_text_removed", "zero_width_removed", "html_comments_removed",
     "attachment_skipped", "attachment_depth", "table_too_large", "sheet_truncated", "garbled_text",
-    "legacy_converted", "empty_document",
+    "legacy_converted", "empty_document", "enrich_fallback",
 ]
 WARNING_CODES: tuple[str, ...] = WarningCode.__args__  # type: ignore[attr-defined]
 
