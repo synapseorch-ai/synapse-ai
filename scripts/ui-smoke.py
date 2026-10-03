@@ -3983,34 +3983,57 @@ async def check_knowledge_upload(browser) -> str:
     """An upload into a knowledge base (D175) speaks every `UploadSession` shape: each part is PUT with exactly
     its `headers` and its share of the bytes, its ETag is read from the answer's `ETag` header — an object store
     answers a part with that and an empty body, which a JSON-only reader fails on — and complete gets the ETags
-    back as they came, quotes included."""
+    back as they came, quotes included. While a part is on its way the upload has a named bar (PG1). An upload
+    whose part fails is cancelled — a DELETE of its session, never a complete (F341)."""
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     for pattern, handler in _SMOKE_KB_ROUTES:
         await ctx.route(pattern, handler)
     puts: list[tuple[str, dict, int]] = []
     completed: list[dict] = []
-    session = {"upload_id": "kup_smoke", "part_size": 5, "expires_at": _NOW, "parts": [
-        {"part_number": n, "url": f"/smoke-parts/{n}", "method": "PUT", "headers": {"X-Smoke-Part": str(n)}}
-        for n in (1, 2)]}
+    cancelled: list[str] = []
+    sessions = [{"upload_id": upload, "part_size": 5, "expires_at": _NOW, "parts": [
+        {"part_number": n, "url": f"/smoke-parts/{upload}/{n}", "method": "PUT", "headers": {"X-Smoke-Part": str(n)}}
+        for n in (1, 2)]} for upload in ("kup_smoke", "kup_broken")]
+
+    async def start(route):
+        if route.request.method != "POST":
+            await route.fallback()
+            return
+        await route.fulfill(status=201, content_type="application/json", body=json.dumps(sessions.pop(0)))
 
     async def put_part(route):
         req = route.request
-        n = req.url.rsplit("/", 1)[-1]
+        upload, n = req.url.rsplit("/", 2)[-2:]
+        if upload == "kup_broken" and n == "2":
+            await route.fulfill(status=500, content_type="application/json", body=json.dumps({"detail": "disk full"}))
+            return
         puts.append((n, await req.all_headers(), len(req.post_data_buffer or b"")))
+        if n == "2":
+            await asyncio.sleep(1.5)  # a slow last part: the bar is on the page meanwhile
         await route.fulfill(status=200, headers={"ETag": f'"etag-{n}"'}, body="")
 
     async def complete(route):
         completed.append(json.loads(route.request.post_data or "{}"))
         await route.fulfill(status=202, content_type="application/json", body=json.dumps({"documents": []}))
-    await ctx.route("**/api/knowledge/bases/*/uploads", _answer(session, status=201, methods=("POST",)))
-    await ctx.route("**/smoke-parts/*", put_part)
+
+    async def cancel(route):
+        if route.request.method != "DELETE":
+            await route.fallback()
+            return
+        cancelled.append(route.request.url.rsplit("/", 1)[-1])
+        await route.fulfill(status=204, body="")
+    await ctx.route("**/api/knowledge/bases/*/uploads", start)
+    await ctx.route("**/smoke-parts/*/*", put_part)
     await ctx.route("**/api/knowledge/uploads/*/complete", complete)
+    await ctx.route(re.compile(r".*/api/knowledge/uploads/[^/]+$"), cancel)
     page = await ctx.new_page()
     try:
         await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
         await page.get_by_role("button", name="Upload files").wait_for(timeout=30_000)
         await page.locator("input[type=file]").set_input_files(
             {"name": "smoke.md", "mimeType": "text/markdown", "buffer": b"# Hi\nyo"})
+        bar = page.get_by_role("list", name="Uploads").get_by_role("progressbar", name="Uploading smoke.md")
+        await bar.wait_for(timeout=10_000)
         for _ in range(50):
             if completed:
                 break
@@ -4030,7 +4053,18 @@ async def check_knowledge_upload(browser) -> str:
         want = [{"part_number": 1, "etag": '"etag-1"'}, {"part_number": 2, "etag": '"etag-2"'}]
         if completed[0].get("parts") != want:
             raise AssertionError(f"complete was sent {completed[0]}, not the ETags as they came")
-        return "parts PUT with their own headers and sizes, ETags read from the header, complete sent them as they came"
+        await page.locator("input[type=file]").set_input_files(
+            {"name": "broken.md", "mimeType": "text/markdown", "buffer": b"# Oh\nno"})
+        await page.get_by_role("list", name="Uploads").get_by_text("disk full").wait_for(timeout=10_000)
+        for _ in range(25):
+            if cancelled:
+                break
+            await asyncio.sleep(0.2)
+        if cancelled != ["kup_broken"] or len(completed) != 1:
+            raise AssertionError(f"a failed part cancelled {cancelled} and completed {len(completed)} upload(s); "
+                                 "wanted kup_broken cancelled and nothing more completed")
+        return ("parts PUT with their own headers and sizes, ETags read from the header, complete sent them as they "
+                "came; a named bar while a part was on its way; a failed part cancelled its upload")
     finally:
         await ctx.close()
 
@@ -5566,7 +5600,9 @@ _SMOKE_EVAL_ESTIMATE = {"lines": [{"part": "drafts", "model": "gpt-4o-mini", "ca
 _SMOKE_KB_REBUILDING = {**_SMOKE_KB, "state": {
     **_SMOKE_KB["state"], "building_snapshot": "ksnap_smoke2",
     "build": {"snapshot_id": "ksnap_smoke2", "status": "building", "docs_total": 2, "docs_done": 1,
-              "docs_failed": 0, "started_at": _NOW, "paused_reason": None, "error": None}}}
+              "docs_failed": 0, "started_at": _NOW, "paused_reason": None, "error": None,
+              # CCR-12 (PG1): its passages, the stage of the document being built, the time left
+              "passages_done": 120, "passages_total": 357, "stage": "embed", "eta_s": 480, "waiting": None}}}
 _SMOKE_KB_DOCS = [
     {"id": f"kdoc_smoke{i:02d}", "kb_id": _SMOKE_KB["id"], "path": f"smoke_kb/{s}.md", "source": "upload",
      "source_url": None, "status": s, "status_reason": r, "error": "The model is down." if s == "failed" else None,
@@ -5581,6 +5617,10 @@ _SMOKE_KB_DOCS = [
      "status_reason": None, "error": None, "version": 1, "sha256": "f" * 64, "size_bytes": 900,
      "mime": "text/markdown", "title": "Install", "doc_date": None, "metadata": {}, "pages": None, "chunks": 2,
      "tokens": 60, "created_at": _NOW, "updated_at": _NOW, "indexed_at": _NOW}]
+#: The working document's progress (CCR-12, PG1): contexts being written, a rate limit waited out.
+_SMOKE_KB_DOCS[6]["progress"] = {
+    "stage": "enrich", "done": 12, "total": 357, "unit": "passages", "eta_s": 480, "updated_at": _NOW,
+    "waiting": {"reason": "rate_limited", "provider": "OpenAI", "provider_id": "openai", "until": _NOW}}
 #: The base's one web source and its latest crawl (S1, CCR-4): stopped at its page cap.
 _SMOKE_KB_CRAWLS = [{
     "source_id": "kws_00000smoke1", "url": "https://docs.example.com/guide/", "kind": "site", "status": "capped",
@@ -5772,6 +5812,13 @@ LIGHT_STATES = (
     ("knowledge rebuilding", "/knowledge", [],
      _SMOKE_KB_ROUTES + [("**/api/knowledge/bases", _answer([_SMOKE_KB_REBUILDING]))], None,
      "Rebuilding the index: 1 of 2 documents"),
+    ("knowledge rebuild passages", "/knowledge", [],
+     _SMOKE_KB_ROUTES + [("**/api/knowledge/bases", _answer([_SMOKE_KB_REBUILDING]))], None,
+     "120 of 357 passages · now embedding · about 8 min left"),
+    ("knowledge working document", "/knowledge", [], _SMOKE_KB_ROUTES, None,
+     "Writing contexts · 12 of 357 passages"),
+    ("knowledge rate limit waited out", "/knowledge", [], _SMOKE_KB_ROUTES, None,
+     "Waiting for OpenAI's rate limit; it carries on by itself."),
     ("knowledge costs", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name=re.compile("^Costs")).click(), "Reranking"),
     ("knowledge report", "/knowledge", [], _SMOKE_KB_ROUTES,

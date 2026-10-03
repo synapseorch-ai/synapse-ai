@@ -20,6 +20,11 @@
  * its index is built rebuilds it beside the serving one; the line under the
  * header follows that rebuild, and the Costs section says what the base has spent.
  *
+ * Progress (PG1, F357): an upload shows its bytes and the time left from the rate
+ * it is sending at; a working document its stage, a bar and the time left; a
+ * rebuild its passages; and each says when it waits out a provider's rate limit.
+ * No estimate is shown before there is a pace to estimate from.
+ *
  * Evaluate (`KnowledgeEval`, V1) tests the base on its own documents: question sets, runs scored with no judge,
  * snapshots side by side, and an optional grounded judge.
  *
@@ -38,13 +43,15 @@ import { RetrievalTrace } from '@/components/RetrievalTrace';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
 import {
-    ACCEPTED, BUILD_PAUSED, CRAWLING, DEGRADED, PRESETS, REASONS, RESTING, STATUS, WORKING, formatBytes, formatUsd, inBase,
-    knowledgeApi, uploadToKnowledge, useKnowledgeEnabled, vaultFolders,
-    type CostGroup, type CostGroupBy, type DocStatus, type KnowledgeBase, type KnowledgeDocument,
+    ACCEPTED, BUILD_PAUSED, CRAWLING, DEGRADED, PRESETS, PROGRESS_STAGE, REASONS, RESTING, STATUS, WORKING, formatBytes,
+    formatUsd, inBase, knowledgeApi, progressCount, timeLeft, uploadToKnowledge, useKnowledgeEnabled, vaultFolders,
+    waitNote,
+    type CostGroup, type CostGroupBy, type DocStatus, type DocumentProgress, type KnowledgeBase, type KnowledgeDocument,
     type KnowledgeDocumentDetail, type SearchResult, type WebCrawlState, type WebSourceKind,
 } from '@/lib/knowledge';
 
 import { useKnowledgeHost } from './host';
+import { ProgressBar } from './Progress';
 import { Evaluate } from './KnowledgeEval';
 import { KnowledgeSettings } from './KnowledgeSettings';
 
@@ -303,7 +310,39 @@ function NewBaseDialog({
     );
 }
 
-type Uploading = { name: string; sent: number; total: number; error?: string };
+/** An upload under way: `samples` are (when, bytes sent) over the last few seconds, for its rate. */
+type Uploading = { id: number; name: string; sent: number; total: number; started: number; samples: [number, number][];
+    error?: string };
+
+/** How long an upload's rate is measured over, how long before it is trusted, and how often a row is redrawn. */
+const RATE_WINDOW_MS = 5000;
+const RATE_AFTER_MS = 2000;
+const REDRAW_MS = 250;
+
+/** "3.1 MB of 12 MB · about 2 min left", or "Finishing…" once every byte is sent and the upload is completed. */
+function uploadLine(u: Uploading): string {
+    if (u.sent >= u.total) return 'Finishing…';
+    const sent = `${formatBytes(u.sent)} of ${formatBytes(u.total)}`;
+    const first = u.samples[0], last = u.samples[u.samples.length - 1];
+    if (!first || !last || last[0] - u.started < RATE_AFTER_MS || last[0] <= first[0]) return sent;
+    const rate = (last[1] - first[1]) / ((last[0] - first[0]) / 1000);
+    const left = rate > 0 ? timeLeft((u.total - u.sent) / rate) : null;
+    return left ? `${sent} · ${left}` : sent;
+}
+
+/** A working document's stage, its bar, how far it has got, the time left, and a rate limit's wait. */
+function DocProgress({ progress, name }: { progress: DocumentProgress; name: string }) {
+    const stage = PROGRESS_STAGE[progress.stage] ?? progress.stage;
+    const wait = waitNote(progress.waiting);
+    const line = [stage, progressCount(progress), wait ? null : timeLeft(progress.eta_s)].filter(Boolean).join(' · ');
+    return (
+        <span className="mt-1 block space-y-1">
+            <ProgressBar value={progress.done} max={progress.total} label={`${stage}: ${name}`} className="max-w-xs" />
+            <span className="block truncate text-xs text-text-muted">{line}</span>
+            {wait && <span className="block text-xs text-warning">{wait}</span>}
+        </span>
+    );
+}
 
 function BaseDetail({
     kb, onChanged, onDelete, notify,
@@ -324,6 +363,7 @@ function BaseDetail({
     const detail = fetched && fetched.id === open ? fetched : null;
     const [removing, setRemoving] = useState<KnowledgeDocument | null>(null);
     const [uploads, setUploads] = useState<Uploading[]>([]);
+    const uploadIds = useRef(0);
     const [dragging, setDragging] = useState(false);
     const [editing, setEditing] = useState(false);
     const input = useRef<HTMLInputElement>(null);
@@ -345,7 +385,7 @@ function BaseDetail({
 
     const build = kb.state.build ?? null;
     const rebuilding = build?.status === 'building' && !build.paused_reason;
-    const working = !!docs?.some(d => WORKING.has(d.status)) || uploads.some(u => !u.error && u.sent < u.total)
+    const working = !!docs?.some(d => WORKING.has(d.status)) || uploads.some(u => !u.error)
         || crawls.some(c => CRAWLING.has(c.status)) || rebuilding;
     useEffect(() => {
         const timer = setInterval(() => { refresh(); onChanged(); }, working ? 2000 : 10000);
@@ -360,19 +400,30 @@ function BaseDetail({
     }, [open, docs]);
 
     const send = async (files: FileList | File[]) => {
-        const list = [...files];
+        const list = [...files].map(file => ({ file, id: ++uploadIds.current }));
         if (!list.length) return;
-        setUploads(u => [...u, ...list.map(f => ({ name: f.name, sent: 0, total: f.size }))]);
-        for (const file of list) {
+        const now = Date.now();
+        setUploads(u => [...u, ...list.map(({ file, id }) => ({
+            id, name: file.name, sent: 0, total: file.size, started: now, samples: [] as [number, number][],
+        }))]);
+        for (const { file, id } of list) {
+            let drawn = 0;
+            const heard = (sent: number, total: number) => {
+                const at = Date.now();
+                if (at - drawn < REDRAW_MS && sent < total) return;  // a part's bytes arrive many times a second
+                drawn = at;
+                setUploads(u => u.map(x => x.id !== id ? x : {
+                    ...x, sent, total,
+                    started: x.samples.length ? x.started : at,  // the clock starts with the first byte, not the queue
+                    samples: [...x.samples.filter(([t]) => at - t <= RATE_WINDOW_MS), [at, sent] as [number, number]],
+                }));
+            };
             try {
-                await uploadToKnowledge(kb.id, file, {
-                    onProgress: (sent, total) => setUploads(u => u.map(x => (x.name === file.name ? { ...x, sent, total } : x))),
-                    refreshParts: host.refreshParts,
-                });
-                setUploads(u => u.filter(x => x.name !== file.name));
+                await uploadToKnowledge(kb.id, file, { onProgress: heard, refreshParts: host.refreshParts });
+                setUploads(u => u.filter(x => x.id !== id));
             } catch (e) {
                 const message = e instanceof Error ? e.message : String(e);
-                setUploads(u => u.map(x => (x.name === file.name ? { ...x, error: message } : x)));
+                setUploads(u => u.map(x => (x.id === id ? { ...x, error: message } : x)));
             }
         }
         refresh();
@@ -484,19 +535,22 @@ function BaseDetail({
                 </>
             )}
             {uploads.length > 0 && (
-                <ul className="space-y-1" aria-label="Uploads">
+                <ul className="space-y-2" aria-label="Uploads">
                     {uploads.map(u => (
-                        <li key={u.name} className="flex items-center gap-2 text-sm">
-                            <span className="min-w-0 flex-1 truncate">{u.name}</span>
-                            {u.error ? (
-                                <>
-                                    <span className="text-danger">{u.error}</span>
-                                    <IconButton size="sm" label={`Dismiss ${u.name}`} icon={Trash2}
-                                        onClick={() => setUploads(x => x.filter(y => y.name !== u.name))} />
-                                </>
-                            ) : (
-                                <Muted>{u.total ? Math.round((u.sent / u.total) * 100) : 0}%</Muted>
-                            )}
+                        <li key={u.id} className="space-y-1 text-sm">
+                            <div className="flex items-center gap-2">
+                                <span className="min-w-0 flex-1 truncate">{u.name}</span>
+                                {u.error ? (
+                                    <>
+                                        <span className="text-danger">{u.error}</span>
+                                        <IconButton size="sm" label={`Dismiss ${u.name}`} icon={Trash2}
+                                            onClick={() => setUploads(x => x.filter(y => y.id !== u.id))} />
+                                    </>
+                                ) : (
+                                    <Muted>{uploadLine(u)}</Muted>
+                                )}
+                            </div>
+                            {!u.error && <ProgressBar value={u.sent} max={u.total} label={`Uploading ${u.name}`} />}
                         </li>
                     ))}
                 </ul>
@@ -549,6 +603,9 @@ function BaseDetail({
                                         <span className="block truncate text-xs text-text-faint">
                                             {REASONS[d.status_reason] ?? d.status_reason}
                                         </span>
+                                    )}
+                                    {d.progress && WORKING.has(d.status) && (
+                                        <DocProgress progress={d.progress} name={inBase(d.path, kb.folder)} />
                                     )}
                                 </TD>
                                 <TD nowrap><StatusBadge status={d.status} /></TD>
@@ -852,7 +909,13 @@ function RebuildLine({ build, onRetry }: { build: NonNullable<KnowledgeBase['sta
             </div>
         );
     }
-    const share = build.docs_total ? Math.min(100, Math.round((build.docs_done / build.docs_total) * 100)) : 0;
+    // Passages when the rebuild counts them (CCR-12), else documents: the bar moves within a long document too.
+    const passages = build.passages_total ? { done: build.passages_done ?? 0, total: build.passages_total } : null;
+    const wait = waitNote(build.waiting);
+    const left = wait ? null : timeLeft(build.eta_s);
+    const stage = build.stage ? PROGRESS_STAGE[build.stage] : null;
+    const counted = [passages ? progressCount({ ...passages, unit: 'passages' }) : null, stage ? `now ${stage.toLowerCase()}` : null,
+        left].filter(Boolean).join(' · ');
     return (
         <div role="status" className="rounded-md border border-border px-3 py-2 text-sm">
             <p className="text-text">
@@ -861,9 +924,16 @@ function RebuildLine({ build, onRetry }: { build: NonNullable<KnowledgeBase['sta
                     : `Rebuilding the index: ${build.docs_done} of ${count(build.docs_total, 'document')}. The current index answers meanwhile.`}
             </p>
             {!build.paused_reason && (
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-2" aria-hidden>
-                    <div className="h-full bg-accent transition-[width]" style={{ width: `${share}%` }} />
-                </div>
+                <>
+                    <ProgressBar
+                        value={passages ? passages.done : build.docs_done}
+                        max={passages ? passages.total : build.docs_total}
+                        label="Rebuilding the index"
+                        className="mt-2"
+                    />
+                    {counted && <p className="mt-1 text-xs text-text-muted">{counted}</p>}
+                    {wait && <p className="mt-1 text-xs text-warning">{wait}</p>}
+                </>
             )}
         </div>
     );

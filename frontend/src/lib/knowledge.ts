@@ -39,8 +39,27 @@ export type DocStatus =
     | 'queued' | 'parsing' | 'indexing' | 'indexed' | 'partial' | 'failed' | 'skipped' | 'paused' | 'blocked'
     | 'deleting';
 
+/** The stages a working document passes, as `DocumentProgress.stage` names them (CCR-12). */
+export type ProgressStage = 'parse' | 'ocr' | 'enrich' | 'embed' | 'index';
+
+/** A provider's rate limit being waited out (`api_models.ProgressWait`, CCR-12): the work goes on by itself. */
+export type ProgressWait = { reason: 'rate_limited'; provider: string; provider_id: string; until: string | null };
+
+/** How far a working document has got (`api_models.DocumentProgress`, CCR-12). No `total`: a stage that cannot
+ *  count (a reader that takes the file in one pass, the index's one write). `eta_s` only once there is a pace. */
+export type DocumentProgress = {
+    stage: ProgressStage;
+    done: number | null;
+    total: number | null;
+    unit: 'pages' | 'passages' | null;
+    eta_s: number | null;
+    waiting: ProgressWait | null;
+    updated_at: string | null;
+};
+
 /** A rebuild of the index after a change to how it is built (`api_models.SnapshotBuild`, CCR-5): the
- *  serving index answers until the new one holds every document. */
+ *  serving index answers until the new one holds every document. CCR-12: its passages, the stage of the
+ *  document being built, the time left and a rate limit's wait. */
 export type SnapshotBuild = {
     snapshot_id: string;
     status: 'building' | 'failed';
@@ -51,6 +70,11 @@ export type SnapshotBuild = {
     /** Waiting for budget (`budget_cap`), a wallet (`wallet_402`) or a key (`embedder_unavailable`). */
     paused_reason: string | null;
     error: string | null;
+    passages_done?: number | null;
+    passages_total?: number | null;
+    stage?: ProgressStage | null;
+    eta_s?: number | null;
+    waiting?: ProgressWait | null;
 };
 
 export type KnowledgeBaseState = {
@@ -158,6 +182,8 @@ export type KnowledgeDocument = {
     created_at: string | null;
     updated_at: string | null;
     indexed_at: string | null;
+    /** While it is being read or indexed: how far it has got (CCR-12). */
+    progress?: DocumentProgress | null;
 };
 
 export type StageReport = {
@@ -230,6 +256,40 @@ export const STATUS: Record<DocStatus, { label: string; tone: BadgeTone }> = {
     blocked: { label: 'Blocked', tone: 'danger' },
     deleting: { label: 'Deleting', tone: 'neutral' },
 };
+
+/** A working document's stage, as a person reads it. */
+export const PROGRESS_STAGE: Record<ProgressStage, string> = {
+    parse: 'Reading',
+    ocr: 'Reading scanned pages',
+    enrich: 'Writing contexts',
+    embed: 'Embedding',
+    index: 'Indexing',
+};
+
+/** Time left, rounded as people read it; null when there is no estimate yet (no pace to estimate from). */
+export function timeLeft(seconds: number | null | undefined): string | null {
+    if (seconds == null || !Number.isFinite(seconds)) return null;
+    if (seconds < 60) return 'less than a minute left';
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `about ${minutes} min left`;
+    const hours = Math.floor(minutes / 60), rest = minutes % 60;
+    return `about ${hours} h${rest ? ` ${rest} min` : ''} left`;
+}
+
+/** "12 of 357 passages", or null for a stage that cannot count. */
+export function progressCount(p: { done: number | null; total: number | null; unit?: string | null }): string | null {
+    if (p.done == null || p.total == null) return null;
+    const unit = p.unit === 'pages' ? (p.total === 1 ? 'page' : 'pages') : (p.total === 1 ? 'passage' : 'passages');
+    return `${p.done.toLocaleString()} of ${p.total.toLocaleString()} ${unit}`;
+}
+
+/** Whose rate limit the work is waiting out, and that it goes on by itself. Our gateway's own name is the
+ *  platform's. */
+export function waitNote(wait: ProgressWait | null | undefined): string | null {
+    if (!wait) return null;
+    const who = wait.provider_id === 'model_gateway' ? 'the platform' : wait.provider;
+    return `Waiting for ${who}'s rate limit; it carries on by itself.`;
+}
 
 /** Why a document is where it is, in a few words (the backend's `status_reason` codes). */
 export const REASONS: Record<string, string> = {
@@ -661,8 +721,25 @@ export type UploadSession = { upload_id: string; part_size: number; parts: Uploa
  *  expire supplies one; without it a 403 fails the upload. */
 export type RefreshParts = (uploadId: string, partNumbers: number[]) => Promise<UploadPart[]>;
 
-function putPart(part: UploadPart, body: Blob): Promise<Response> {
-    return fetch(part.url, { method: part.method ?? 'PUT', headers: part.headers ?? {}, body });
+/** A part's answer: its status, the `ETag` header and the body. */
+type PartAnswer = { status: number; etag: string | null; text: string };
+
+/**
+ * PUT one part, with exactly its own headers. XHR, not `fetch`: only XHR hears an upload's bytes as they go
+ * (`onSent`), and a part is up to 8 MiB. No credentials cross-origin (an object store's presigned URL takes
+ * none), as `fetch` sends none.
+ */
+function putPart(part: UploadPart, body: Blob, onSent?: (bytes: number) => void): Promise<PartAnswer> {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open(part.method ?? 'PUT', part.url);
+        for (const [name, value] of Object.entries(part.headers ?? {})) xhr.setRequestHeader(name, value);
+        if (onSent) xhr.upload.onprogress = e => onSent(e.loaded);
+        xhr.onload = () => resolve({ status: xhr.status, etag: xhr.getResponseHeader('ETag'), text: xhr.responseText });
+        xhr.onerror = () => reject(new Error('The upload was cut off; check the connection and try again.'));
+        xhr.onabort = () => reject(new Error('The upload was stopped.'));
+        xhr.send(body);
+    });
 }
 
 /**
@@ -670,18 +747,46 @@ function putPart(part: UploadPart, body: Blob): Promise<Response> {
  * an object store answers a part with that header and an empty body — else the
  * `etag` of OSS's JSON answer.
  */
-async function partEtag(res: Response): Promise<string> {
-    const header = res.headers.get('ETag');
-    if (header) return header;
-    const body = await res.json().catch(() => null) as { etag?: unknown } | null;
-    if (typeof body?.etag === 'string' && body.etag) return body.etag;
+function partEtag(res: PartAnswer): string {
+    if (res.etag) return res.etag;
+    try {
+        const body = JSON.parse(res.text) as { etag?: unknown } | null;
+        if (typeof body?.etag === 'string' && body.etag) return body.etag;
+    } catch {
+        /* not JSON */
+    }
     throw new Error('The upload answered without the part\'s ETag.');
+}
+
+/** A refused part's reason, as `errorText` reads an API's answer. */
+function partError(res: PartAnswer): string {
+    try {
+        const detail = (JSON.parse(res.text) as { detail?: unknown } | null)?.detail;
+        if (typeof detail === 'string' && detail) return detail;
+    } catch {
+        /* an object store answers in XML */
+    }
+    return `The upload of a part was refused (${res.status}).`;
+}
+
+/** Give up an upload: its parts go, and it no longer counts as open (F341, CCR-12). Best effort — an upload
+ *  not cancelled expires by itself — and it never hides the failure that led to it. */
+async function cancelUpload(uploadId: string): Promise<void> {
+    try {
+        await fetch(`/api/knowledge/uploads/${uploadId}`, { method: 'DELETE' });
+    } catch {
+        /* expires by itself */
+    }
 }
 
 /**
  * Upload one file into a knowledge base, in parts. `folder` is inside the base
- * (its root by default). `onProgress` hears bytes sent after each part. A part
- * refused with 403 gets one fresh URL through `refreshParts`, when given.
+ * (its root by default). `onProgress` hears the bytes sent so far as they go. A
+ * part refused with 403 gets one fresh URL through `refreshParts`, when given.
+ *
+ * An upload that cannot finish is cancelled (F341): when a part fails, and when
+ * the complete is refused — never after a complete that may have gone through
+ * (no answer), nor one refused for now (408, 429), which can be sent again.
  */
 export async function uploadToKnowledge(
     kbId: string,
@@ -696,23 +801,36 @@ export async function uploadToKnowledge(
         ...(folder ? { path: folder } : {}),
     }));
     const done: { part_number: number; etag: string }[] = [];
-    let sent = 0;
-    for (const part of session.parts) {
-        const start = (part.part_number - 1) * session.part_size;
-        const blob = file.slice(start, start + session.part_size);
-        let res = await putPart(part, blob);
-        if (res.status === 403 && refreshParts) {
-            const fresh = (await refreshParts(session.upload_id, [part.part_number]))
-                .find(p => p.part_number === part.part_number);
-            if (fresh) res = await putPart(fresh, blob);
+    try {
+        let sent = 0;
+        for (const part of session.parts) {
+            const start = (part.part_number - 1) * session.part_size;
+            const blob = file.slice(start, start + session.part_size);
+            const heard = (bytes: number) => onProgress?.(sent + Math.min(bytes, blob.size), file.size);
+            let res = await putPart(part, blob, heard);
+            if (res.status === 403 && refreshParts) {
+                const fresh = (await refreshParts(session.upload_id, [part.part_number]))
+                    .find(p => p.part_number === part.part_number);
+                if (fresh) res = await putPart(fresh, blob, heard);
+            }
+            if (res.status < 200 || res.status >= 300) throw new Error(partError(res));
+            done.push({ part_number: part.part_number, etag: partEtag(res) });
+            sent += blob.size;
+            onProgress?.(sent, file.size);
         }
-        if (!res.ok) throw new Error(await errorText(res));
-        done.push({ part_number: part.part_number, etag: await partEtag(res) });
-        sent += blob.size;
-        onProgress?.(sent, file.size);
+    } catch (e) {
+        await cancelUpload(session.upload_id);
+        throw e;
     }
-    const accepted = await call<{ documents: KnowledgeDocument[] }>(
-        `/api/knowledge/uploads/${session.upload_id}/complete`, json('POST', { parts: done }));
+    const res = await fetch(`/api/knowledge/uploads/${session.upload_id}/complete`, json('POST', { parts: done }));
+    if (!res.ok) {
+        const refused = new KnowledgeApiError(await errorText(res), res.status);
+        if (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429) {
+            await cancelUpload(session.upload_id);
+        }
+        throw refused;
+    }
+    const accepted = await res.json() as { documents: KnowledgeDocument[] };
     return accepted.documents;
 }
 
