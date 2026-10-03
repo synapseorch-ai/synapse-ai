@@ -336,11 +336,11 @@ function DocProgress({ progress, name }: { progress: DocumentProgress; name: str
     const wait = waitNote(progress.waiting);
     const line = [stage, progressCount(progress), wait ? null : timeLeft(progress.eta_s)].filter(Boolean).join(' · ');
     return (
-        <span className="mt-1 block space-y-1">
+        <div className="mt-1 space-y-1">
             <ProgressBar value={progress.done} max={progress.total} label={`${stage}: ${name}`} className="max-w-xs" />
             <span className="block truncate text-xs text-text-muted">{line}</span>
             {wait && <span className="block text-xs text-warning">{wait}</span>}
-        </span>
+        </div>
     );
 }
 
