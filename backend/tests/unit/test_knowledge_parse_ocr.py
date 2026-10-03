@@ -211,3 +211,87 @@ class TestReadAgainOnceOcrExists:
         assert row.status == "partial" and report.pages.ocr_failed == 2
         seams.set_ingest_dispatcher(RecordingDispatcher())
         assert (await sync.reconcile(kb)).supported == 0
+
+
+class TestAPageIsPaidForOnce:
+    """F344 (W1, D179): a page OCR has read is kept as its batch answers, by the file's content and the engine, so
+    a resume after an empty wallet or a retry after a failed batch sends only the pages never read."""
+
+    @staticmethod
+    async def _again(kb, row) -> None:
+        recorder = RecordingDispatcher()
+        seams.set_ingest_dispatcher(recorder)
+        from core.knowledge.ingest import retry_document
+
+        assert await retry_document(await documents.get(row.id)) is not None
+        await recorder.drain(run_ingest_job)
+
+    @staticmethod
+    async def _ocr_units() -> list[float]:
+        async with session() as s:
+            return [c.units for c in (await s.execute(select(KnowledgeCostDB).where(
+                KnowledgeCostDB.stage == "ocr").order_by(KnowledgeCostDB.id))).scalars()]
+
+    async def test_a_resume_after_an_empty_wallet_sends_only_the_pages_not_yet_read(self, monkeypatch):
+        provider = _provider({2: "a", 3: "b"}, per_call=1, fail_on_call=2, error=WalletExhausted("402"))
+        kb, _, row = await _ingest("kb/scan.pdf", SCANNED, monkeypatch)
+        assert (row.status, row.status_reason) == ("paused", "wallet_402") and provider.calls == [[2], [3]]
+        provider.fail_on_call = None
+        await self._again(kb, row)
+        assert provider.calls == [[2], [3], [3]], "page 2 was read (and paid for) once"
+        again = await documents.get(row.id)
+        assert again.status == "indexed" and again.report["pages"]["ocr_applied"] == 2
+        assert await self._ocr_units() == [1.0, 1.0]
+
+    async def test_a_retry_after_a_failed_batch_sends_only_the_failed_pages(self, monkeypatch):
+        provider = _provider({2: "a"}, per_call=1)  # page 3 has no text: its batch fails
+        kb, report, row = await _ingest("kb/scan.pdf", SCANNED, monkeypatch, real=True)
+        assert row.status == "partial" and report.pages.ocr_failed == 1 and provider.calls == [[2], [3]]
+        provider.inner.pages[3] = "b"
+        await self._again(kb, row)
+        assert provider.calls == [[2], [3], [3]]
+        again = await documents.get(row.id)
+        assert again.status == "indexed" and again.report["pages"]["ocr_applied"] == 2
+        assert await self._ocr_units() == [1.0, 1.0]
+
+    async def test_a_clean_parse_is_cached_and_its_pages_file_goes(self):
+        from core.knowledge.parse import cache
+        from core.knowledge.parse.ocr import engine_id
+
+        provider = _provider({2: "a", 3: "b"}, per_call=1, fail_on_call=2, error=WalletExhausted("402"))
+        sha = hashlib.sha256(SCANNED).hexdigest()
+        with pytest.raises(WalletExhausted):
+            await _parse()
+        assert await cache.get_pages(sha, engine_id(provider)) == {2: ("a", 0.99)}
+        provider.fail_on_call = None
+        result = await _parse()
+        assert provider.calls == [[2], [3], [3]] and result.parsed.stats.pages_ocr == 2
+        assert result.ocr_stage.detail == {"engine": "fake-ocr", "pages": 1, "read": 2, "failed": 0, "cached": 1}
+        assert await cache.get_pages(sha, engine_id(provider)) == {}, "the whole parse is kept now"
+        assert (await _parse()).detail == {"runner": "cache"} and provider.calls == [[2], [3], [3]]
+
+    async def test_another_engine_reads_every_page_again(self):
+        from core.knowledge.parse import cache
+
+        sha = hashlib.sha256(SCANNED).hexdigest()
+        await cache.put_pages(sha, "another-ocr", {2: ("old", 0.5)})
+        provider = _provider({2: "a", 3: "b"})
+        await _parse()
+        assert provider.calls == [[2, 3]]
+
+    async def test_forgetting_a_files_content_forgets_its_pages(self):
+        from core.knowledge.parse import cache
+
+        sha = hashlib.sha256(SCANNED).hexdigest()
+        await cache.put_pages(sha, "fake-ocr", {2: ("a", 0.99)})
+        assert await cache.forget_unreferenced(sha) == 1
+        assert await cache.get_pages(sha, "fake-ocr") == {}
+
+    async def test_nothing_read_writes_no_pages_file(self):
+        from core.knowledge.parse import cache
+        from core.storage import get_blob_store
+
+        _provider({}, per_call=1)  # every batch fails
+        await _parse()
+        stats = get_blob_store().list_stats(cache.PREFIX + "/")
+        assert not [s for s in stats if s.key.endswith(".pages.json")], "never an empty object"

@@ -117,9 +117,11 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
             from core.knowledge.parse.ocr import read_scanned_pages
 
             result.parsed, result.usage, result.ocr_stage = await read_scanned_pages(
-                out.parsed, out, provider, kb=kb, attribution=attribution)
+                out.parsed, out, provider, kb=kb, attribution=attribution, sha256=sha256)
         if sig is not None and cache.cacheable(result.parsed, cut=out.cut):
             await cache.put(sha256, sig, result.parsed)
+            if provider is not None and out.rendered:  # the whole parse is kept: its pages need not be (F344)
+                await cache.drop_pages(sha256, engine_id(provider))
         return result
 
 

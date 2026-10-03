@@ -15,6 +15,10 @@ why a page with a text layer is never sent.
   `ocr_failed` warning counts them, and the document ends `partial`. Two
   failures in a row stop the rest (the provider is down), also reported.
 * **The whole document's OCR has a deadline** (`limits.ocr_timeout_s`).
+* **A page is read once per file content** (F344, W1, D179): given the file's
+  sha256, each batch's pages are kept as it answers (`cache.put_pages`), and a
+  page kept from an earlier attempt — one an empty wallet or a failed batch
+  stopped — is merged without being sent. Only the pages sent are priced.
 """
 from __future__ import annotations
 
@@ -53,15 +57,23 @@ def png_size(png: bytes) -> tuple[int, int]:
 
 async def read_scanned_pages(parsed: ParsedDocument, out: ChildOutcome, provider: Any, *,
                              kb: KnowledgeBase | None, attribution: Attribution | None,
-                             settings: dict | None = None) -> tuple[ParsedDocument, list[Usage], StageReport]:
-    """`parsed` with the rendered pages read by `provider`; the calls' usage; the report's `ocr` stage."""
+                             settings: dict | None = None,
+                             sha256: str | None = None) -> tuple[ParsedDocument, list[Usage], StageReport]:
+    """`parsed` with the rendered pages read by `provider`; the calls' usage; the report's `ocr` stage. With the
+    file's `sha256`, pages read by an earlier attempt are not sent again, and each batch's are kept."""
     from core.knowledge import ledger
     from core.knowledge.errors import OcrError
+    from core.knowledge.parse import cache
     from core.knowledge.status import ErrorInfo, StageReport
     from core.knowledge.types import Attribution as Attr, PageImage
 
     unread = {p.number for p in parsed.pages if p.quality.no_text_layer and not p.quality.ocr_applied}
     pages = [n for n in out.rendered if n in unread]
+    kept: dict[int, tuple[str, float | None]] = {}
+    if sha256 and pages:
+        wanted = set(pages)
+        kept = {n: v for n, v in (await cache.get_pages(sha256, engine_id(provider))).items() if n in wanted}
+        pages = [n for n in pages if n not in kept]
     started, clock = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), time.monotonic()
     if kb is not None:
         from core.knowledge.costs import ocr_usd_per_page
@@ -75,7 +87,7 @@ async def read_scanned_pages(parsed: ParsedDocument, out: ChildOutcome, provider
 
     size = max(1, int(getattr(provider, "max_pages_per_call", 1) or 1))
     deadline = clock + limits.ocr_timeout_s()
-    texts: dict[int, tuple[str, float | None]] = {}
+    texts: dict[int, tuple[str, float | None]] = dict(kept)
     usage: list[Usage] = []
     failed: list[int] = []
     errors: list[str] = []
@@ -113,6 +125,8 @@ async def read_scanned_pages(parsed: ParsedDocument, out: ChildOutcome, provider
                     failed.append(number)
                 else:
                     texts[number] = (page.text, page.confidence)
+            if sha256 and any(number in answered for number in batch):  # paid for: kept before the next batch
+                await cache.put_pages(sha256, engine_id(provider), texts)
     finally:  # what was read is paid for, even when a later batch finds the wallet empty
         if usage:
             await ledger.record_costs([ledger.CostRow(usage=u, attribution=attribution) for u in usage])
@@ -126,8 +140,10 @@ async def read_scanned_pages(parsed: ParsedDocument, out: ChildOutcome, provider
         merged = merged.model_copy(update={"warnings": [*merged.warnings, warning]})
     read = merged.stats.pages_ocr - parsed.stats.pages_ocr
     status = "ok" if not failed else ("partial" if read else "failed")
+    detail = {"engine": engine, "pages": len(pages), "read": read, "failed": len(failed)}
+    if kept:
+        detail["cached"] = len(kept)
     stage = StageReport(stage="ocr", status=status, started_at=started,
-                        duration_ms=int((time.monotonic() - clock) * 1000),
-                        detail={"engine": engine, "pages": len(pages), "read": read, "failed": len(failed)},
+                        duration_ms=int((time.monotonic() - clock) * 1000), detail=detail,
                         error=ErrorInfo(code="ocr_failed", message=errors[-1], retryable=True) if errors else None)
     return merged, usage, stage

@@ -16,6 +16,12 @@ never parses a file again: `service.parse_document` looks here first.
 * **A deleted file's text does not linger:** the entry goes with the last
   document that had that content (`forget_unreferenced`), and `sweep` removes
   any whose content no document has any more (a file's older versions).
+* **Pages OCR has read are kept until the parse is** (F344, W1, D179):
+  `<sha256>.<page signature>.pages.json` holds each page's text as its batch
+  answers, so a resume after an empty wallet, or a retry after a failed batch,
+  sends only the pages never read — a page is paid for once. Its signature is
+  the OCR engine and the resolution pages are drawn at. It goes when the whole
+  parse is cached (`drop_pages`), and with its content, as every entry does.
 """
 from __future__ import annotations
 
@@ -49,6 +55,70 @@ def signature(fmt: Format, *, path: str, docling: bool, ocr_engine: str | None) 
 
 def key(sha256: str, sig: str) -> str:
     return f"{PREFIX}/{sha256[:2]}/{sha256}.{sig}.json"
+
+
+def page_signature(engine: str) -> str:
+    """What a page's OCR depends on besides the file's bytes: the engine that read it, and the resolution its
+    page was drawn at."""
+    from core.knowledge.parse.limits import OCR_DPI
+
+    return hashlib.sha256(f"ocr-pages|{engine}|dpi={OCR_DPI}".encode()).hexdigest()[:16]
+
+
+def pages_key(sha256: str, engine: str) -> str:
+    return f"{PREFIX}/{sha256[:2]}/{sha256}.{page_signature(engine)}.pages.json"
+
+
+async def get_pages(sha256: str, engine: str) -> dict[int, tuple[str, float | None]]:
+    """The pages `engine` has read of this content: page number → (text, confidence). Empty when none, or when
+    the entry cannot be read (it is dropped: the pages are read again)."""
+    import json
+
+    from core.log import get_logger
+    from core.storage import get_blob_store
+
+    store = get_blob_store()
+    data = await asyncio.to_thread(store.get_bytes, pages_key(sha256, engine))
+    if data is None:
+        return {}
+    try:
+        pages = json.loads(data)["pages"]
+        return {int(n): (str(p["text"]), None if p.get("confidence") is None else float(p["confidence"]))
+                for n, p in pages.items()}
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        get_logger(__name__).warning(f"OCR pages entry {sha256[:12]} unreadable, dropped: {exc}")
+        await asyncio.to_thread(store.delete, pages_key(sha256, engine))
+        return {}
+
+
+async def put_pages(sha256: str, engine: str, pages: dict[int, tuple[str, float | None]]) -> None:
+    """Keep the pages read so far (all of them: the entry is rewritten whole). Nothing read writes nothing — never
+    an empty object. Never raises: a page not kept only costs a later read."""
+    import json
+
+    from core.log import get_logger
+    from core.storage import get_blob_store
+
+    if not pages:
+        return
+    body = json.dumps({"engine": engine, "pages": {str(n): {"text": text, "confidence": conf}
+                                                   for n, (text, conf) in sorted(pages.items())}})
+    try:
+        await asyncio.to_thread(get_blob_store().put_bytes, pages_key(sha256, engine), body.encode(),
+                                content_type="application/json")
+    except Exception as exc:  # noqa: BLE001
+        get_logger(__name__).warning(f"OCR pages write for {sha256[:12]} failed: {exc}")
+
+
+async def drop_pages(sha256: str, engine: str) -> None:
+    """Forget the pages once the whole parse is kept. Never raises."""
+    from core.log import get_logger
+    from core.storage import get_blob_store
+
+    try:
+        await asyncio.to_thread(get_blob_store().delete, pages_key(sha256, engine))
+    except Exception as exc:  # noqa: BLE001
+        get_logger(__name__).warning(f"OCR pages delete for {sha256[:12]} failed: {exc}")
 
 
 async def get(sha256: str, sig: str, source: SourceInfo) -> ParsedDocument | None:
