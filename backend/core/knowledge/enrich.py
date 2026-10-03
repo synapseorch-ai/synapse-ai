@@ -20,8 +20,9 @@ so it is a blue/green rebuild behind the cost preview.
 * **Money:** before each window, the base's budget is checked with the window's estimate (`check_budget`); each
   window's calls are recorded as one `knowledge_costs` row (stage `enrich`) as soon as they finish, so the next
   window's check sees them. Their `usage_logs` rows are the chat path's own (`ledger.usage_logged_by`). A platform
-  call's row carries what our gateway charged (`LLMResult.charged_microusd`). Prices come from the rate card
-  (`_price`); estimates count a cache read only where a cache point holds (`estimate_usd`).
+  call's row carries what our gateway charged (`LLMResult.charged_microusd`). Prices come from
+  `costs.chat_usd` (`_price`: a platform model at the deployment's rate, F334); estimates count a cache read only
+  where a cache point holds (`estimate_usd`).
 * **Failures, by cause** (Naveen's call 1 in D180):
   - an answer that is empty, blocked, or cut off at the token limit is asked once more; a second such answer leaves
     that passage with the prefix alone, counted and warned (`enrich_fallback`), and never cached, so the next build
@@ -276,14 +277,11 @@ def clean(answer: str) -> str:
 
 async def _price(model: str, input_tokens: int, output_tokens: int, *, cache_read: int = 0,
                  cache_write: int = 0) -> float | None:
-    """USD for these tokens on `model`, or None when it is unpriced. `input_tokens` are the uncached ones."""
-    from core import usage_tracker
+    """USD for these tokens on `model`, or None when it is unpriced. `input_tokens` are the uncached ones.
+    Through `costs.chat_usd` (F334): a platform model at what the deployment charges, any other by the rate card."""
+    from core.knowledge.costs import chat_usd
 
-    await usage_tracker._ensure_pricing()
-    if usage_tracker._resolve_pricing_entry(model) is None:
-        return None
-    return usage_tracker.calculate_cost(model, input_tokens=input_tokens, output_tokens=output_tokens,
-                                        cache_read_tokens=cache_read, cache_write_tokens=cache_write)
+    return await chat_usd(model, input_tokens, output_tokens, cache_read=cache_read, cache_write=cache_write)
 
 
 def _caching(model: str) -> tuple[str | None, int]:

@@ -90,3 +90,21 @@ def test_a_prefix_base_and_a_chat_model_pass_the_check():
     costs.check_settings(enrichment=Enrichment(mode="prefix"), settings={})
     costs.check_settings(enrichment=Enrichment(mode="contextual", contextual_model=MODEL), settings={})
     costs.check_settings(enrichment=Enrichment(mode="contextual"), settings={"model": "claude-haiku-4-5"})
+
+
+async def test_a_platform_model_is_quoted_at_what_the_deployment_charges():
+    """F334's seam (W1): a `synapse.*` context model is priced at the deployment's rate (cloud: its catalogue × the
+    plan's markup), never the $0 of a model the rate card does not know."""
+    assert await enrich.estimate_usd("synapse.nova-lite", [(10, 2_000)]) is None, "no pricer: unpriced, as in OSS"
+
+    async def pricer(model):
+        return costs.Rate(input_per_mtok=0.075, output_per_mtok=0.30) if model == "synapse.nova-lite" else None
+
+    costs.set_platform_pricer(pricer)
+    try:
+        usd = await enrich.estimate_usd("synapse.nova-lite", [(10, 2_000)])
+        i, o, r, w = enrich.window_tokens("synapse.nova-lite", 2_000, [200] * 10)
+        assert (r, w) == (0, 0), "our gateway does not cache yet: every call pays the document"
+        assert usd == pytest.approx((i * 0.075 + o * 0.30) / 1_000_000)
+    finally:
+        costs.set_platform_pricer(None)
