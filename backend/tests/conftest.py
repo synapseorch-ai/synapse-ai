@@ -171,11 +171,13 @@ def _isolate_knowledge_seams():
     to their defaults around each test, so one test's fake never serves the next."""
     from core import vault_events
     from core.knowledge import costs, events, seams, web
+    from core.knowledge import fetch as knowledge_fetch
 
     seams.reset_all()
     costs.set_platform_pricer(None)
     web.set_crawl_runner(None)
     web.set_vault_room(None)
+    knowledge_fetch.set_proxy_required(False)
     vault_events.set_vault_observer(None)
     events.knowledge_observers.clear()
     yield
@@ -183,6 +185,7 @@ def _isolate_knowledge_seams():
     costs.set_platform_pricer(None)
     web.set_crawl_runner(None)
     web.set_vault_room(None)
+    knowledge_fetch.set_proxy_required(False)
     vault_events.set_vault_observer(None)
     events.knowledge_observers.clear()
 

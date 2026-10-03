@@ -1,10 +1,17 @@
 """A web source's HTTP side: who we say we are, what robots.txt allows, how fast, and what came back (S1, D165).
 
 **One client per crawl, httpx's defaults.** `trust_env` stays on and no
-`transport=` is passed, so cloud's knowledge task reaches the web through I1's
-egress proxy from its environment (an explicit transport would turn the
-environment's proxies off). Every hop — robots.txt and sitemaps included — goes
-through `core.safe_fetch.fetch`, which runs the egress guard on each address.
+`transport=` is passed, so the environment's proxies apply (an explicit
+transport would turn them off). Every hop — robots.txt and sitemaps included —
+goes through `core.safe_fetch.fetch`, which runs the egress guard on each address.
+
+**Cloud: through the egress proxy, or not at all** (S1c, D181; Naveen's call 3).
+`set_proxy_required(True)` makes every client take the environment's HTTP and
+HTTPS proxies *explicitly*, so `NO_PROXY` — which names the platform's own
+hosts (S3, the internal namespace, `localhost`) — never applies to a customer's
+URL; with either proxy missing, nothing is fetched and the crawl or document
+says so (`egress_refusal`). I1's Smokescreen then refuses, after resolving the
+name, any address that is not public: the in-process guard's second layer.
 
 **SynapseBot** (Naveen, D165): `USER_AGENT` on every request; robots.txt rules
 for `SynapseBot` apply, else those for `*`. robots.txt is read per host per
@@ -61,6 +68,39 @@ MAX_CRAWL_DELAY_S = 30.0
 REQUEST_TIMEOUT_S = 60.0
 
 HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+
+
+#: What a crawl or a fetched document says when this deployment requires a proxy and has none.
+NO_PROXY_MESSAGE = ("This deployment fetches web pages only through its egress proxy, and none is configured; "
+                    "nothing was fetched.")
+
+_proxy_required = False
+
+
+def set_proxy_required(required: bool) -> None:
+    """Cloud's knowledge worker: every web fetch goes through the environment's egress proxy, or none is made."""
+    global _proxy_required
+    _proxy_required = required
+
+
+def _environment_proxies() -> tuple[str, str] | None:
+    """The environment's (http, https) proxies — both, or None. Both cases of the names, as httpx reads them."""
+    import urllib.request
+
+    found = urllib.request.getproxies_environment()
+    http, https = found.get("http"), found.get("https")
+    return (http, https) if http and https else None
+
+
+def egress_refusal() -> str | None:
+    """Why no web page may be fetched here, or None: a proxy is required and the environment names none."""
+    if _proxy_required and _environment_proxies() is None:
+        return NO_PROXY_MESSAGE
+    return None
+
+
+class EgressUnavailable(Exception):
+    """A proxy is required and none is configured: nothing is fetched."""
 
 
 class RobotsDisallowed(Exception):
@@ -241,9 +281,20 @@ class Fetcher:
 
             from core.safe_fetch import CONNECT_TIMEOUT_SECONDS
 
-            # httpx's defaults: trust_env on, no transport= (I1: the proxy comes from the environment).
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(REQUEST_TIMEOUT_S, connect=CONNECT_TIMEOUT_SECONDS),
-                                             headers={"User-Agent": USER_AGENT})
+            timeout = httpx.Timeout(REQUEST_TIMEOUT_S, connect=CONNECT_TIMEOUT_SECONDS)
+            if _proxy_required:
+                proxies = _environment_proxies()
+                if proxies is None:
+                    raise EgressUnavailable(NO_PROXY_MESSAGE)
+                http_proxy, https_proxy = proxies
+                # The proxies passed explicitly, the environment's NO_PROXY ignored: it names the platform's own
+                # hosts, never a customer's.
+                self._client = httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}, trust_env=False,
+                                                 mounts={"http://": httpx.AsyncHTTPTransport(proxy=http_proxy),
+                                                         "https://": httpx.AsyncHTTPTransport(proxy=https_proxy)})
+            else:
+                # httpx's defaults: trust_env on, no transport= (the environment's proxies apply).
+                self._client = httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT})
         return self
 
     async def __aexit__(self, *exc) -> None:

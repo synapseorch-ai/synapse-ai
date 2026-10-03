@@ -923,3 +923,83 @@ class TestLimits:
         [again] = (await docs(kb["id"])).values()
         assert (again.status, again.status_reason, again.sha256) == ("failed", "fetch_failed", None)
         assert "The Starter plan includes 1 MB" in again.error and "_Capped" not in again.error
+
+
+class _Smokescreen(http.server.BaseHTTPRequestHandler):
+    """A proxy that refuses everything, as Smokescreen does an address it will not dial."""
+
+    seen: list[str] = []
+
+    def log_message(self, *args):
+        pass
+
+    def _refuse(self):
+        type(self).seen.append(f"{self.command} {self.path}")
+        body = b"Egress proxying is denied"
+        self.send_response(407, "Request Rejected by Proxy")
+        self.send_header("X-Smokescreen-Error", "Egress proxying is denied to host '127.0.0.1': Deny: Not Global Unicast")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = _refuse
+    do_CONNECT = _refuse
+
+
+@pytest.fixture
+def proxy(site, monkeypatch):
+    """The proxy's URL, set as the environment's proxy for both schemes, with NO_PROXY naming the site's host."""
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Smokescreen)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}"
+    _Smokescreen.seen = []
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.setenv(name, url)
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
+    monkeypatch.setenv("no_proxy", "localhost,127.0.0.1")
+    yield url
+    srv.shutdown()
+
+
+class TestTheEgressProxy:
+    """Cloud fetches web pages only through its egress proxy (S1c, D181; Naveen's call 3)."""
+
+    async def test_with_none_configured_a_crawl_fails_saying_so_and_fetches_nothing(self, on, site, jobs):
+        F.set_proxy_required(True)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [state] = await crawls(on, kb["id"])
+        assert state["status"] == "failed" and "egress proxy" in state["last_error"] and _Site.hits == []
+
+    async def test_both_schemes_must_be_configured(self, on, site, jobs, monkeypatch):
+        F.set_proxy_required(True)
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        assert F.egress_refusal() is not None
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+        assert F.egress_refusal() is None
+
+    async def test_a_required_proxy_is_used_even_for_a_host_no_proxy_names(self, on, site, jobs, indexer, proxy):
+        F.set_proxy_required(True)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/a", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        assert (row.status, row.status_reason, row.sha256) == ("blocked", "egress_blocked", None)
+        assert "Not Global Unicast" in row.error and _Site.hits == [] and _Smokescreen.seen
+
+    async def test_without_the_requirement_the_environment_decides_as_before(self, on, site, jobs, indexer, proxy):
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/a", kind="page")
+        await drain(jobs)
+        [row] = (await docs(kb["id"])).values()
+        assert row.status == "indexed" and _Smokescreen.seen == []  # OSS: NO_PROXY honoured, httpx's defaults
+
+    async def test_a_retry_with_none_configured_says_so(self, on, site, jobs, indexer):
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/private/x", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        F.set_proxy_required(True)
+        assert (await on.post(f"/api/knowledge/documents/{row.id}/retry")).status_code == 202
+        await drain(jobs)
+        [again] = (await docs(kb["id"])).values()
+        assert (again.status, again.status_reason) == ("failed", "fetch_failed") and "egress proxy" in again.error

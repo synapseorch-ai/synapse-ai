@@ -761,7 +761,7 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str, *, deadline: date
     (a worker's job limit; never sooner than `MIN_DEADLINE`) the crawl stops `capped`, saying so."""
     from core.knowledge import bases
     from core.knowledge.config import knowledge_enabled
-    from core.knowledge.fetch import Fetcher
+    from core.knowledge.fetch import Fetcher, egress_refusal
 
     kb = await bases.get_base(kb_id)
     source = next((s for s in kb.web.sources if s.id == source_id), None) if kb is not None else None
@@ -774,6 +774,13 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str, *, deadline: date
         state.update(status="cancelled", finished_at=_now().isoformat(),
                      last_error="The knowledge base is disabled, or Knowledge is off.")
         await save_state(source_id, state)
+        return state
+    refusal = egress_refusal()
+    if refusal is not None:  # cloud with no egress proxy: nothing leaves (Naveen's call 3, D181)
+        state.update(status="failed", finished_at=_now().isoformat(), last_error=refusal)
+        await save_state(source_id, state)
+        if _runner is not None:
+            await _drop_beat(source_id)
         return state
     beat = await load_beat(source_id)
     attempts = (int(beat.get("attempts") or 0) if beat.get("crawl_id") == crawl_id else 0) + 1
@@ -1248,7 +1255,7 @@ async def fetch_document(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> None:
     (and queued for indexing) or resting with why. The ingest job calls this (`jobs._ingest`), so it
     runs wherever jobs run: OSS's in-process dispatcher, cloud's worker."""
     from core.knowledge import documents
-    from core.knowledge.fetch import Fetcher
+    from core.knowledge.fetch import Fetcher, egress_refusal
     from core.knowledge.kb_settings import WebSource
 
     try:
@@ -1256,6 +1263,10 @@ async def fetch_document(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> None:
     except ValueError:
         await record_outcome(kb, row.path, row.source_url or "", "failed", "fetch_failed",
                              "The document has no address to fetch.", existing=row)
+        return
+    refusal = egress_refusal()
+    if refusal is not None:
+        await record_outcome(kb, row.path, url, "failed", "fetch_failed", refusal, existing=row)
         return
     rel = row.path[len(kb.folder) + 1:]
     owner = None
