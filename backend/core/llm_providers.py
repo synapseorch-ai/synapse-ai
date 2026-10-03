@@ -4074,6 +4074,11 @@ def _embedding_refusal(resp, provider: str, label: str) -> EmbeddingFailed:
     except Exception:  # noqa: BLE001 — a body that is not JSON
         detail = {}
     message = str(detail.get("message") or (resp.text or "")[:200] or "no message").strip()
+    # The provider's own code says what its words may not: OpenAI's out-of-credit 429 reads "You exceeded your current
+    # quota…" — the words of Gemini's per-minute limit — and only `insufficient_quota` tells them apart (F358).
+    code = next((str(v) for v in (detail.get("code"), detail.get("type")) if isinstance(v, str) and v), None)
+    if code and code not in message:
+        message = f"{message} ({code})"
 
     def _int(name: str) -> int | None:
         value = detail.get(name)

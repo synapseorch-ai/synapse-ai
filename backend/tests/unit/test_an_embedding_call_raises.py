@@ -109,6 +109,29 @@ async def test_an_openai_failure_raises_where_embed_batch_answered_zeros(monkeyp
     assert "nope" in str(caught.value)
 
 
+@pytest.mark.parametrize("body,code", [
+    # OpenAI's out-of-credit answer: its words read like Gemini's per-minute limit, its code does not (F358).
+    ({"error": {"message": "You exceeded your current quota, please check your plan and billing details. For "
+                           "more information on this error, read the docs.",
+                "type": "insufficient_quota", "param": None, "code": "insufficient_quota"}}, llm.QUOTA_EXHAUSTED),
+    ({"error": {"message": "Rate limit reached for text-embedding-3-small in organization org-x on tokens per min "
+                           "(TPM): Limit 1000000, Used 999000, Requested 4000. Please try again in 180ms.",
+                "type": "tokens", "param": None, "code": "rate_limit_exceeded"}}, llm.RATE_LIMITED),
+    # Our gateway's throttle (cloud's `model_throttled`): a limit that lifts.
+    ({"error": {"message": "The model is busy; try again shortly.", "type": "rate_limit_error",
+                "code": "model_throttled"}}, llm.RATE_LIMITED),
+])
+async def test_an_out_of_credit_429_is_never_read_as_a_rate_limit(monkeypatch, body, code):
+    """F358: an embedding refusal keeps the provider's own code, so a key out of credit is a quota — never
+    retried, never paced — while a limit that lifts stays one."""
+    install_httpx(monkeypatch, _Answer(body, status_code=429))
+    with pytest.raises(llm.EmbeddingFailed) as caught:
+        await llm.embed_batch_ex(["a"], "text-embedding-3-small", KEYS)
+    assert caught.value.status == 429 and caught.value.code == code
+    assert caught.value.retryable is (code == llm.RATE_LIMITED)
+    assert body["error"]["message"][:40] in str(caught.value)
+
+
 @pytest.mark.parametrize("vectors,why", [
     ([[0.0, 0.0]], "zero"),
     ([[]], "empty"),
