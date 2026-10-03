@@ -13,6 +13,14 @@ entry point — UI, API, scheduler — produces notifications with no extra
 wiring. Standalone-safe: a bounded in-memory ring with best-effort JSON
 persistence, no external dependencies.
 
+**One ring per tenant (F337).** The hub is a process singleton, and a
+multi-tenant embedder's worker serves every tenant from one process. With one
+ring per process, tenant A's eval regression joined the ring and the next
+persist inside tenant B's job wrote it to B's `notifications.json` — the blob
+store keys by whichever tenant is current. So each tenant has its own ring,
+loaded from and saved to its own blob, and its own subscribers. A single-tenant
+install has exactly one tenant, `default`, and behaves as it always did.
+
 Delivery surfaces:
 - `GET /api/notifications` + `/api/notifications/stream` (routes/notifications.py)
   for the in-app provider (toasts, badges, browser notifications).
@@ -29,23 +37,45 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from core.native_builder import BUILDER_RUN_PREFIX
+from core.tenancy import get_tenant
 
 #: Blob key. A 200-item ring already rewritten whole on every publish, so it
 #: maps onto put() directly — there is nothing append-shaped about it.
 NOTIFICATIONS_KEY = "notifications.json"
 CAPACITY = 200
+#: Tenants whose rings are held in memory at once. Dropping the least recently
+#: used one loses nothing — every change is saved as it happens — so this only
+#: bounds memory in a process that serves many tenants.
+MAX_TENANTS = 64
+
+
+class _Ring:
+    """One tenant's notifications and the id the next one gets."""
+
+    __slots__ = ("items", "next_id")
+
+    def __init__(self, items: list[dict]):
+        self.items = items
+        self.next_id = (items[-1]["id"] + 1) if items else 1
 
 
 class NotificationHub:
-    def __init__(self, capacity: int = CAPACITY, persist_path: str = NOTIFICATIONS_KEY):
+    def __init__(self, capacity: int = CAPACITY, persist_path: str = NOTIFICATIONS_KEY,
+                 max_tenants: int = MAX_TENANTS):
         self._capacity = capacity
         self._path = persist_path
-        self._items: list[dict] = self._load()
-        self._next_id = (self._items[-1]["id"] + 1) if self._items else 1
-        self._subs: set[asyncio.Queue] = set()
+        self._max_tenants = max_tenants
+        # tenant → its ring, loaded on first use under that tenant (F337).
+        # Nothing is read at construction: the hub is built at import, in
+        # whatever tenant the importing code happened to run as.
+        self._rings: OrderedDict[str, _Ring] = OrderedDict()
+        # tenant → live streams. Kept apart from the rings so dropping a ring
+        # from memory never drops someone's open stream.
+        self._subs: dict[str, set[asyncio.Queue]] = {}
         # run_id → orchestration display name (cached from orchestration_start)
         self._orch_names: dict[str, str] = {}
         # Runs whose terminal notification already fired — engine failure paths
@@ -53,15 +83,29 @@ class NotificationHub:
         self._terminal_notified: set[str] = set()
         self._server_module = None
 
+    def _ring(self) -> _Ring:
+        """The current tenant's ring, read from its own blob the first time."""
+        tenant = get_tenant()
+        ring = self._rings.get(tenant)
+        if ring is None:
+            ring = self._rings[tenant] = _Ring(self._load())
+            while len(self._rings) > self._max_tenants:
+                self._rings.popitem(last=False)
+        else:
+            self._rings.move_to_end(tenant)
+        return ring
+
+    def _streams(self) -> list[asyncio.Queue]:
+        return list(self._subs.get(get_tenant(), ()))
+
     # ── persistence ──────────────────────────────────────────────────────
     def reload(self):
-        """Read the ring again from the blob store.
+        """Forget the rings, so the next read comes from the blob store.
 
         The hub is built at import, before the server installs its blob store,
-        so what `__init__` read was the default directory's copy.
+        so anything read before then came from the default directory's copy.
         """
-        self._items = self._load()
-        self._next_id = (self._items[-1]["id"] + 1) if self._items else 1
+        self._rings.clear()
 
     def _load(self) -> list[dict]:
         try:
@@ -74,18 +118,21 @@ class NotificationHub:
         except Exception:
             return []
 
-    def _persist(self):
+    def _persist(self, ring: _Ring):
+        """Save `ring` — the current tenant's, so the blob store's tenant prefix
+        and the ring always agree."""
         try:
             from core.storage import get_blob_store
-            get_blob_store().put(self._path, json.dumps(self._items))
+            get_blob_store().put(self._path, json.dumps(ring.items))
         except Exception:
             pass  # best-effort — the ring keeps working in memory
 
     # ── core API ─────────────────────────────────────────────────────────
     def publish(self, kind: str, title: str, body: str = "",
                 run_id: str | None = None, data: dict | None = None) -> dict:
+        ring = self._ring()
         item = {
-            "id": self._next_id,
+            "id": ring.next_id,
             "ts": time.time(),
             "kind": kind,          # human_input | tool_approval | run_completed | run_failed
             "title": title[:200],
@@ -93,29 +140,33 @@ class NotificationHub:
             "run_id": run_id,
             "data": data or {},
         }
-        self._next_id += 1
-        self._items.append(item)
-        if len(self._items) > self._capacity:
-            self._items = self._items[-self._capacity:]
-        self._persist()
-        for queue in list(self._subs):
+        ring.next_id += 1
+        ring.items.append(item)
+        if len(ring.items) > self._capacity:
+            ring.items = ring.items[-self._capacity:]
+        self._persist(ring)
+        for queue in self._streams():
             queue.put_nowait(item)
         self._dispatch_messaging(item)
         return item
 
     def list(self, after_id: int = 0) -> list[dict]:
-        return [i for i in self._items if i["id"] > after_id]
+        return [i for i in self._ring().items if i["id"] > after_id]
 
     def last_id(self) -> int:
-        return self._next_id - 1
+        return self._ring().next_id - 1
 
     def subscribe(self) -> asyncio.Queue:
+        """A stream of the current tenant's notifications, and no one else's."""
         queue: asyncio.Queue = asyncio.Queue()
-        self._subs.add(queue)
+        self._subs.setdefault(get_tenant(), set()).add(queue)
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue):
-        self._subs.discard(queue)
+        for tenant, queues in list(self._subs.items()):
+            queues.discard(queue)
+            if not queues:
+                del self._subs[tenant]
 
     def configure(self, server_module):
         """Give the hub access to the messaging manager (server startup)."""
@@ -185,7 +236,7 @@ class NotificationHub:
         resolved=true) are re-pushed to live subscribers; clients upsert by id
         so the bell stops showing them as actionable."""
         self._resolve([
-            item for item in self._items
+            item for item in self._ring().items
             if item["run_id"] == run_id and item["kind"] == "human_input"
             and not item.get("resolved")
         ], how)
@@ -197,7 +248,7 @@ class NotificationHub:
         if not approval_id:
             return
         self._resolve([
-            item for item in self._items
+            item for item in self._ring().items
             if item["kind"] == "tool_approval" and not item.get("resolved")
             and (item.get("data") or {}).get("approval_id") == approval_id
         ], how)
@@ -208,8 +259,8 @@ class NotificationHub:
         for item in updated:
             item["resolved"] = True
             item["resolved_as"] = how
-        self._persist()
-        for queue in list(self._subs):
+        self._persist(self._ring())
+        for queue in self._streams():
             for item in updated:
                 queue.put_nowait(item)
 
@@ -239,7 +290,7 @@ class NotificationHub:
             # Only an *unresolved* item counts as already-notified: a run that
             # paused again at a later step deserves a fresh notification.
             notified_runs = {
-                i["run_id"] for i in self._items
+                i["run_id"] for i in self._ring().items
                 if i["kind"] == "human_input" and not i.get("resolved")
             }
             paused_waiting: set[str] = set()

@@ -274,3 +274,127 @@ class TestTheBuilderIsNotAnnounced:
         await hub.observe_run_event("run_x", {"type": "orchestration_complete",
                                               "status": "completed"})
         assert [i["kind"] for i in hub.list()] == ["run_completed"]
+
+
+class _Provider:
+    """Any resource provider opens `tenant_scope()`; these tests resolve nothing."""
+
+    async def resolve_agent(self, agent_id):
+        return None
+
+    async def resolve_orchestration(self, orch_id):
+        return None
+
+    async def resolve_custom_tools(self):
+        return []
+
+    async def resolve_mcp_servers(self):
+        return []
+
+
+@pytest.fixture
+def multi_tenant():
+    from core.scale.context import set_resource_provider
+
+    set_resource_provider(_Provider())
+    yield
+    set_resource_provider(None)
+
+
+def _titles(raw) -> list[str]:
+    import json
+
+    return [i["title"] for i in json.loads(raw or "[]")]
+
+
+class TestOneRingPerTenant:
+    """F337: the hub was one ring per process, persisted under whichever tenant
+    was current. A cloud worker serves every org, so org A's eval regression
+    joined the ring and the next persist inside org B's job wrote it to B's
+    `notifications.json`. Each tenant now has its own ring, saved under its own
+    prefix, and its own subscribers."""
+
+    def test_each_tenant_persists_only_its_own(self, multi_tenant):
+        from core.notifications import NOTIFICATIONS_KEY
+        from core.storage import get_blob_store
+        from core.tenancy import tenant_scope
+
+        hub = NotificationHub()
+        with tenant_scope("acme"):
+            hub.publish("eval_regression", "acme regressed")
+        with tenant_scope("globex"):
+            hub.publish("eval_regression", "globex regressed")
+
+        store = get_blob_store()
+        with tenant_scope("acme"):
+            assert _titles(store.get(NOTIFICATIONS_KEY)) == ["acme regressed"]
+        with tenant_scope("globex"):
+            assert _titles(store.get(NOTIFICATIONS_KEY)) == ["globex regressed"]
+
+    def test_each_tenant_lists_only_its_own(self, multi_tenant):
+        from core.tenancy import tenant_scope
+
+        hub = NotificationHub()
+        with tenant_scope("acme"):
+            hub.publish("run_completed", "acme done")
+        with tenant_scope("globex"):
+            hub.publish("run_completed", "globex done")
+            assert [i["title"] for i in hub.list()] == ["globex done"]
+            assert hub.last_id() == 1
+        with tenant_scope("acme"):
+            assert [i["title"] for i in hub.list()] == ["acme done"]
+
+    def test_a_new_process_loads_each_tenants_own_ring(self, multi_tenant):
+        """Constructed under one tenant (the import happens inside some org's
+        job) and then used under another: nothing of the first leaks."""
+        from core.tenancy import tenant_scope
+
+        first = NotificationHub()
+        with tenant_scope("acme"):
+            first.publish("run_completed", "acme done")
+            second = NotificationHub()
+        with tenant_scope("globex"):
+            assert second.list() == []
+            second.publish("run_completed", "globex done")
+        with tenant_scope("acme"):
+            assert [i["title"] for i in second.list()] == ["acme done"]
+
+    async def test_a_subscriber_hears_only_its_own_tenant(self, multi_tenant):
+        from core.tenancy import tenant_scope
+
+        hub = NotificationHub()
+        with tenant_scope("acme"):
+            queue = hub.subscribe()
+        with tenant_scope("globex"):
+            hub.publish("run_completed", "globex done")
+        assert queue.empty()
+        with tenant_scope("acme"):
+            hub.publish("run_completed", "acme done")
+        assert queue.get_nowait()["title"] == "acme done"
+
+    def test_resolving_reaches_only_the_current_tenant(self, multi_tenant):
+        from core.tenancy import tenant_scope
+
+        hub = NotificationHub()
+        with tenant_scope("acme"):
+            hub.publish("human_input", "acme asks", run_id="r1")
+        with tenant_scope("globex"):
+            hub.publish("human_input", "globex asks", run_id="r1")
+            hub._resolve_human_input("r1")
+            assert [i.get("resolved") for i in hub.list()] == [True]
+        with tenant_scope("acme"):
+            assert [i.get("resolved") for i in hub.list()] == [None]
+
+    def test_an_evicted_tenant_reloads_from_its_store(self, multi_tenant):
+        """The rings are bounded; dropping one loses nothing, because every
+        change was already saved."""
+        from core.tenancy import tenant_scope
+
+        hub = NotificationHub(max_tenants=2)
+        for tenant in ("acme", "globex", "initech"):
+            with tenant_scope(tenant):
+                hub.publish("run_completed", f"{tenant} done")
+        assert len(hub._rings) == 2
+        with tenant_scope("acme"):
+            assert [i["title"] for i in hub.list()] == ["acme done"]
+            assert hub.publish("run_completed", "acme again")["id"] == 2
