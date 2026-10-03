@@ -291,6 +291,11 @@ class LLMResult(NamedTuple):
     splicing it back into `text` is the point: the marker round-trip meant the
     loop had to find the thinking again in a string it had just built, and on a
     model that ignored the convention there was nothing to find.
+
+    `charged_microusd` is what our model gateway charged the wallet for this
+    call, as it reports in `usage.charged_microusd`; None from every other
+    endpoint. It is last, and readers take the first eight fields by name or by
+    slice, so nothing that unpacked eight is broken by it (CR1, D180).
     """
     text: str
     input_tokens: int = 0
@@ -300,6 +305,7 @@ class LLMResult(NamedTuple):
     stop_reason: str | None = None
     tool_calls: tuple = ()
     reasoning: str = ""
+    charged_microusd: int | None = None
 
 
 #: What a model failure was, as a caller can act on it (F275). Stable: the API
@@ -2443,6 +2449,9 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
     cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
     if cache_read:
         input_tokens = max(0, input_tokens - cache_read)
+    charged = usage.get("charged_microusd")
+    # Only our model gateway sends it; anything that is not a whole, non-negative count is not one.
+    charged = charged if type(charged) is int and charged >= 0 else None
     choice = data["choices"][0]
     msg = choice.get("message", {})
     stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
@@ -2454,7 +2463,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         empty.stop_reason = stop_reason
         raise
     return LLMResult(text, input_tokens, output_tokens, cache_read, cache_write,
-                     stop_reason, (), _reasoning)
+                     stop_reason, (), _reasoning, charged)
 
 
 async def call_model_gateway(model, messages, system, settings, tools=None, images=None, prompt_cache: bool = True,
@@ -3219,7 +3228,7 @@ async def _chat_bedrock(call: ChatCall, spec) -> LLMResult:
     from core import usage_tracker
 
     messages = call.messages()
-    text, input_tokens, output_tokens, cache_read, cache_write, stop_reason, tool_calls, reasoning = await call_bedrock(
+    text, input_tokens, output_tokens, cache_read, cache_write, stop_reason, tool_calls, reasoning = (await call_bedrock(
         call.model,
         messages,
         call.system,
@@ -3231,7 +3240,7 @@ async def _chat_bedrock(call: ChatCall, spec) -> LLMResult:
         prompt_cache=call.prompt_cache,
         reasoning=call.reasoning,
         max_tokens=call.max_out,
-    )
+    ))[:8]
     # Bedrock's invoke_model fallback path returns zero tokens; estimate from text.
     if input_tokens == 0 and output_tokens == 0:
         input_tokens = usage_tracker.estimate_tokens_from_text(
@@ -3616,8 +3625,10 @@ async def generate_response_ex(
     if spec is None:
         raise LLMError(f"Error: Unknown cloud model selected ({current_model}).")
     try:
+        _answer = await _providers.resolve(spec.chat)(call, spec)
         (result_text, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-         stop_reason, _tool_calls, _reasoning) = await _providers.resolve(spec.chat)(call, spec)
+         stop_reason, _tool_calls, _reasoning) = tuple(_answer)[:8]
+        _charged = getattr(_answer, "charged_microusd", None)
     except EmptyAnswer as empty:
         # The call was made and billed; only its answer was empty or blocked
         # (F133). Logged as any call is, then raised as the failure it is.
@@ -3726,7 +3737,7 @@ async def generate_response_ex(
 
     return LLMResult(result_text, input_tokens, output_tokens,
                      cache_read_tokens, cache_write_tokens, stop_reason, _tool_calls,
-                     _reasoning)
+                     _reasoning, _charged)
 
 
 async def generate_response(*args, **kwargs) -> str:
