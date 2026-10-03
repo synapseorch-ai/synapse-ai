@@ -159,20 +159,24 @@ class ChunkView:
         return fields
 
 
-async def load_chunks(chunk_ids: Sequence[str]) -> dict[str, ChunkView]:
-    """The current tenant's chunk rows by chunk id (absent ids are absent)."""
+async def load_chunks(chunk_ids: Sequence[str], *, live_only: bool = False) -> dict[str, ChunkView]:
+    """The current tenant's chunk rows by chunk id (absent ids are absent).
+
+    `live_only` leaves out the chunks of a document being deleted (F335): search reads its answers through it, so
+    an index that cannot see a document's status never makes one of them an answer."""
     from core.store import session
 
     if not chunk_ids:
         return {}
     out: dict[str, ChunkView] = {}
     ids = list(chunk_ids)
+    live = (_D.c.status != "deleting",) if live_only else ()
     async with session() as s:
         for i in range(0, len(ids), 500):
             rows = (await s.execute(
                 select(KnowledgeChunkDB, _D.c.source_url)
                 .join(_D, _D.c.id == _C.c.doc_id)
-                .where(_C.c.tenant_id == _tenant(), _C.c.chunk_id.in_(ids[i:i + 500])))).all()
+                .where(_C.c.tenant_id == _tenant(), _C.c.chunk_id.in_(ids[i:i + 500]), *live))).all()
             for chunk, source_url in rows:
                 out[chunk.chunk_id] = ChunkView(chunk, source_url)
     return out
@@ -503,13 +507,13 @@ async def search(req: SearchRequest, *, origin: Origin, label_start: int = 1,
         ranked = []
     timings["fuse"] = int((time.monotonic() - t_fuse) * 1000)
 
-    views = await load_chunks([c.chunk_id for c, _, _ in ranked])
+    views = await load_chunks([c.chunk_id for c, _, _ in ranked], live_only=True)
     candidates: list[tuple[Candidate, float, dict[str, int], ChunkView]] = []
     dropped_filter: list[str] = []
     post_filtered = any(code.code == "post_filtered" for code in degraded)
     for c, score, ranks in ranked:
         view = views.get(c.chunk_id)
-        if view is None:  # deleted between the index's answer and this read
+        if view is None:  # deleted between the index's answer and this read, or its document is being deleted
             continue
         if post_filtered:
             f = view.fields()

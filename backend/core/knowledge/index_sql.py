@@ -46,6 +46,14 @@ Scores are float64 over the float32 values, as the scan before this did, and
 ties break by chunk id. The filter and path prefix are one SQL query for the ids
 they allow, so a top-k is never padded with rows they exclude. numpy is
 imported inside the leg: cloud's API process imports this module and has none.
+
+**A document being deleted is in neither leg** (F335). Its chunks stay in the
+table until its delete job runs (and a document mid-index when its file was
+deleted writes them after the tombstone), so both legs leave out every chunk
+whose document is `deleting`: the keyword leg inside its query, the vector leg
+by a mask on each search — never on the kept matrix, whose fingerprint reads
+chunk rows only and does not see a document's status change. Only `deleting`:
+a document being indexed, or the old version during a re-index, is still found.
 """
 from __future__ import annotations
 
@@ -70,7 +78,7 @@ from core.knowledge.types import (
     VectorQuery,
 )
 from core.log import get_logger
-from core.store.models import KnowledgeChunkDB
+from core.store.models import KnowledgeChunkDB, KnowledgeDocumentDB
 
 _log = get_logger(__name__)
 
@@ -90,6 +98,7 @@ VECTOR_CACHE_BYTES = 256 * 1024 * 1024
 _SCAN_ROWS = 4096
 
 _T = KnowledgeChunkDB.__table__
+_D = KnowledgeDocumentDB.__table__
 _COLS = FilterColumns.for_table(_T)
 
 FTS_EN = "knowledge_chunks_fts_en"
@@ -194,17 +203,19 @@ def _cosines(block: _Block, want: Any, want_norm: float, rows: Any | None) -> An
 
 
 def _best(block: _Block, scope: Scope, want: Any, want_norm: float, limit: int,
-          allowed: set[str] | None) -> tuple[list[tuple[str, str, str, str, float]], int]:
+          allowed: set[str] | None, gone: set[str] | frozenset[str] = frozenset(),
+          ) -> tuple[list[tuple[str, str, str, str, float]], int]:
     """The block's `limit` best rows (with every row tied at the cut, for chunk id to decide), and how many it
-    scored."""
+    scored. `allowed` are the chunk ids a filter lets through (None: every one); `gone` the documents being
+    deleted, whose rows are never scored."""
     import numpy as np
 
-    if allowed is None:
+    if allowed is None and not gone:
         rows = None
         count = len(block.ids)
     else:
-        rows = np.nonzero(np.fromiter((cid in allowed for cid in block.ids), dtype=bool,
-                                      count=len(block.ids)))[0]
+        keep = ((allowed is None or cid in allowed) and doc not in gone for cid, doc in zip(block.ids, block.docs))
+        rows = np.nonzero(np.fromiter(keep, dtype=bool, count=len(block.ids)))[0]
         count = len(rows)
     if count == 0:
         return [], 0
@@ -313,6 +324,13 @@ class SqlKnowledgeIndex:
         if not scopes:
             return false()
         return or_(*[and_(_T.c.kb_id == s.kb_id, _T.c.snapshot_id == s.snapshot_id) for s in scopes])
+
+    @staticmethod
+    def _deleting(scopes: Sequence[Scope]):
+        """The ids of the scopes' documents being deleted (F335): `(tenant_id, kb_id, status)` is indexed."""
+        from core.tenancy import get_tenant
+        return select(_D.c.id).where(_D.c.tenant_id == get_tenant(),
+                                     _D.c.kb_id.in_(sorted({s.kb_id for s in scopes})), _D.c.status == "deleting")
 
     @staticmethod
     def _narrow(node, path_prefix: str | None) -> list:
@@ -445,6 +463,7 @@ class SqlKnowledgeIndex:
                 stmt = (select(_T.c.chunk_id, _T.c.doc_id, _T.c.kb_id, _T.c.snapshot_id, score)
                         .where(tsv.op("@@", is_comparison=True)(tsquery)))
             stmt = (stmt.where(self._tenant(), self._scopes(query.scopes),
+                               _T.c.doc_id.notin_(self._deleting(query.scopes)),
                                *self._narrow(query.filter, query.path_prefix))
                     .order_by(score.desc(), _T.c.chunk_id.asc()).limit(query.limit))
             rows = (await s.execute(stmt)).all()
@@ -463,6 +482,7 @@ class SqlKnowledgeIndex:
         scanned = 0
         async with self._session() as s:
             await self._ensure(s)
+            gone = set((await s.execute(self._deleting(query.scopes))).scalars())
             allowed = None
             narrow = self._narrow(query.filter, query.path_prefix)
             if narrow:
@@ -473,7 +493,7 @@ class SqlKnowledgeIndex:
                     if block.matrix.shape[1] != len(want):
                         raise IndexDimensionError(f"query has {len(want)} dimensions; snapshot {scope.snapshot_id} "
                                                   f"holds {block.matrix.shape[1]}")
-                    best, count = _best(block, scope, want, want_norm, query.limit, allowed)
+                    best, count = _best(block, scope, want, want_norm, query.limit, allowed, gone)
                     found.extend(best)
                     scanned += count
         found.sort(key=lambda p: (-p[4], p[0]))

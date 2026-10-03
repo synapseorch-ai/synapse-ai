@@ -358,3 +358,66 @@ def test_importing_the_index_does_not_import_numpy():
               f"print('numpy' in sys.modules)")
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
     assert result.stdout.strip() == "False", result.stderr[-1500:]
+
+
+# ── a document being deleted (F335) ────────────────────────────────────────────
+
+async def _tombstone(doc_id: str) -> None:
+    """What a Vault delete does to the document before its delete job runs: `deleting`, its chunks still there."""
+    from core.store import session
+
+    async with session() as s:
+        await s.execute(text("UPDATE knowledge_documents SET status = 'deleting' WHERE id = :id"), {"id": doc_id})
+
+
+async def test_a_document_being_deleted_is_in_neither_leg(harness, dialect):
+    entries = corpus.entries(corpus.SCOPE_A1)
+    await _prepare(entries)
+    index = SqlKnowledgeIndex()
+    await index.upsert(entries)
+    gone = entries[0].doc_id
+    theirs = {e.chunk_id for e in entries if e.doc_id == gone}
+    embedded = [e for e in entries if e.vector is not None]
+    target = next(e for e in embedded if e.doc_id == gone)
+    before = await index.search_vector(VectorQuery((corpus.SCOPE_A1,), target.vector, None, 50))
+    assert target.chunk_id in {c.chunk_id for c in before.candidates}  # and the matrix is kept from here on
+    await _tombstone(gone)
+
+    lexical = await index.search_lexical(LexicalQuery((corpus.SCOPE_A1,), _EVERY_CHUNK, "simple", None, 50))
+    assert {c.chunk_id for c in lexical.candidates} == {e.chunk_id for e in entries} - theirs
+    vector = await index.search_vector(VectorQuery((corpus.SCOPE_A1,), target.vector, None, 50))
+    assert gone not in {c.doc_id for c in vector.candidates}, "the kept matrix is masked, not trusted"
+    assert {c.chunk_id for c in vector.candidates} == {e.chunk_id for e in embedded} - theirs
+    assert vector.scanned == len([e for e in embedded if e.doc_id != gone])
+
+
+async def test_a_top_k_is_never_cut_short_by_a_document_being_deleted(harness, dialect):
+    entries = corpus.entries(corpus.SCOPE_A1)
+    await _prepare(entries)
+    index = SqlKnowledgeIndex()
+    await index.upsert(entries)
+    target = next(e for e in entries if e.vector is not None)
+    best = await index.search_lexical(LexicalQuery((corpus.SCOPE_A1,), _EVERY_CHUNK, "simple", None, 1))
+    await _tombstone(best.candidates[0].doc_id)
+    await _tombstone(target.doc_id)
+
+    lexical = await index.search_lexical(LexicalQuery((corpus.SCOPE_A1,), _EVERY_CHUNK, "simple", None, 3))
+    vector = await index.search_vector(VectorQuery((corpus.SCOPE_A1,), target.vector, None, 3))
+    for leg in (lexical, vector):
+        assert len(leg.candidates) == 3 and [c.rank for c in leg.candidates] == [1, 2, 3], leg.leg
+        assert not {c.doc_id for c in leg.candidates} & {best.candidates[0].doc_id, target.doc_id}, leg.leg
+
+
+async def test_a_filtered_vector_search_also_skips_a_document_being_deleted(harness, dialect):
+    entries = corpus.entries(corpus.SCOPE_A1)
+    await _prepare(entries)
+    index = SqlKnowledgeIndex()
+    await index.upsert(entries)
+    target = next(e for e in entries if e.vector is not None)
+    folder = str(target.fields["path"]).split("/")[0]  # allows the target's own rows: the filtered path's id query
+    await _tombstone(target.doc_id)
+    result = await index.search_vector(VectorQuery((corpus.SCOPE_A1,), target.vector, None, 50, path_prefix=folder))
+    assert result.filtered and result.candidates
+    assert target.doc_id not in {c.doc_id for c in result.candidates}
+    assert all(str(c.chunk_id) in {e.chunk_id for e in entries if e.doc_id != target.doc_id
+                                   and str(e.fields["path"]).startswith(folder + "/")} for c in result.candidates)
