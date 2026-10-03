@@ -388,6 +388,13 @@ async def upload_google_token(request: Request):
 
 @router.get("/api/config")
 async def get_config():
+    # Where Google sends a person back, for the setup guide: the backend's own
+    # port, which the UI no longer knows from its build (F309).
+    from core.routes.auth import REDIRECT_URI
+    return {**await _google_config(), "redirect_uri": REDIRECT_URI}
+
+
+async def _google_config() -> dict:
     from services import google as google_svc
 
     client_config = await google_svc.load_client_config()

@@ -109,6 +109,14 @@ class TestSettingsRoutes:
         assert resp.status_code == 200
         assert isinstance(resp.json(), dict)
 
+    async def test_config_says_where_google_sends_a_person_back(self, client, monkeypatch):
+        """The setup guide's redirect URI is the backend's own port, which the UI
+        no longer knows from its build (F309)."""
+        import core.routes.auth as auth
+        monkeypatch.setattr(auth, "REDIRECT_URI", "http://localhost:18765/auth/callback")
+        resp = await client.get("/api/config")
+        assert resp.json()["redirect_uri"] == "http://localhost:18765/auth/callback"
+
 
 class TestReposRoutes:
     async def test_repo_create_list_delete(self, client):

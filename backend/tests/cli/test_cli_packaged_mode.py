@@ -231,8 +231,9 @@ def test_a_backend_that_crashes_is_reported_with_its_log(start_env, monkeypatch,
     assert wizard_runs == []
 
 
-def test_the_backend_starts_where_the_bundled_ui_looks_for_it(start_env, monkeypatch, capsys, tmp_path):
-    """The bundled UI calls the backend port it was built with (F309)."""
+def test_the_backend_starts_on_the_port_asked_for_beside_a_bundled_ui(start_env, monkeypatch, capsys, tmp_path):
+    """The bundled UI reads the backend's address at run time (F309), so a
+    bundle built for 8765 no longer moves a backend asked to run elsewhere."""
     import json as _json
 
     bundle = tmp_path / "_frontend"
@@ -240,7 +241,6 @@ def test_the_backend_starts_where_the_bundled_ui_looks_for_it(start_env, monkeyp
     (bundle / ".next" / "required-server-files.json").write_text(_json.dumps(
         {"config": {"env": {"BACKEND_URL": "http://127.0.0.1:8765", "BACKEND_PORT": "8765"}}}))
     monkeypatch.setattr(cli, "_BUNDLED_FRONTEND", bundle)
-    assert cli._bundled_backend_port() == 8765
 
     started = []
 
@@ -253,13 +253,27 @@ def test_the_backend_starts_where_the_bundled_ui_looks_for_it(start_env, monkeyp
     with pytest.raises(SystemExit):
         cli._start_command(no_browser=True)   # start_env asks for 18765
 
-    assert started == [8765]
-    assert "reaches its backend on port 8765" in capsys.readouterr().err
+    assert started == [18765]
+    assert "reaches its backend on port" not in capsys.readouterr().err
 
 
-def test_no_bundle_no_pinning(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "_BUNDLED_FRONTEND", tmp_path / "absent")
-    assert cli._bundled_backend_port() is None
+def test_the_ui_is_started_with_the_backends_address(monkeypatch, tmp_path):
+    """What the bundled UI reads at run time: the port the backend runs on."""
+    bundle = tmp_path / "_frontend"
+    bundle.mkdir()
+    (bundle / "server.js").write_text("")
+    monkeypatch.setattr(cli, "_BUNDLED_FRONTEND", bundle)
+    monkeypatch.setattr(cli, "FRONTEND_DIR", tmp_path / "no-source")   # nothing to sync from
+    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
+    seen = {}
+
+    def popen(cmd, cwd, env, kwargs):
+        seen.update(env)
+
+    monkeypatch.setattr(cli, "_popen", popen)
+    cli.start_frontend(detach=True, port=13000, backend_port=18765)
+
+    assert seen["BACKEND_URL"] == "http://127.0.0.1:18765"
 
 
 # ── setup --apply, status --json, logs ───────────────────────────────────────

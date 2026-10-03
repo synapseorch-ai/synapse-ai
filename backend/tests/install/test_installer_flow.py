@@ -191,8 +191,8 @@ def test_the_installed_cli_runs_with_the_working_directory_off_sys_path(world, m
 
 
 def test_a_taken_backend_port_stops_before_anything_is_installed(world, monkeypatch):
-    """The UI is built to reach the backend on one port (F309): moving the
-    backend would leave every page failing, so the install says so instead."""
+    """The backend stays on one port (D186), so a taken one stops the install
+    with a reason instead."""
     import socket
 
     with socket.socket() as taken:

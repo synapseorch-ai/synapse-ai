@@ -28,6 +28,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { jwtVerify } from 'jose';
 
+import { BACKEND_URL } from '@/lib/backend';
+
 const AUTH_BYPASS_PREFIXES = [
     '/login',
     '/api/auth/',
@@ -108,7 +110,7 @@ async function verifyJwt(token: string, secret: string): Promise<boolean> {
  * which is not a thing to fall back to when the backend is slow.
  */
 async function frameAncestors(publicKey: string, internalToken: string): Promise<string> {
-    const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
+    const backendUrl = BACKEND_URL;
     try {
         const res = await fetch(
             `${backendUrl}/api/widget/${encodeURIComponent(publicKey)}/csp`,
@@ -218,7 +220,7 @@ export async function proxy(request: NextRequest) {
     // Cache miss: ask the backend whether login is required AND validate our
     // session. Forwarding the cookie lets the backend (the sole secret owner)
     // authenticate us even when the local fast-path above couldn't.
-    const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
+    const backendUrl = BACKEND_URL;
     let loginRequired = false;
     let authenticated = false;
     let answered = false;

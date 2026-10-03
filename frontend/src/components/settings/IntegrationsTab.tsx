@@ -10,6 +10,8 @@ interface CredInfo {
     is_connected?: boolean;
     user_email?: string | null;
     error?: string;
+    /** Where Google sends a person back: the backend's own address (F309). */
+    redirect_uri?: string;
 }
 
 interface IntegrationsTabProps {
@@ -278,7 +280,7 @@ export const IntegrationsTab = ({
                                         <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Google Cloud Console</a> &amp; create a Project.</li>
                                         <li>Enable <em>Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, People APIs</em> — <a href="https://console.cloud.google.com/flows/enableapi?apiid=gmail.googleapis.com,drive.googleapis.com,calendar-json.googleapis.com,docs.googleapis.com,sheets.googleapis.com,slides.googleapis.com,forms.googleapis.com,tasks.googleapis.com,people.googleapis.com" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">one-click enable APIs →</a></li>
                                         <li>Create OAuth Client ID — use this direct link: <a href="https://console.cloud.google.com/auth/clients/create" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">Create OAuth Client →</a> and choose <strong className="text-zinc-300">Web application</strong>.</li>
-                                        <li>Under <strong>Authorized redirect URIs</strong>, add <strong className="text-zinc-300">http://localhost:{process.env.NEXT_PUBLIC_BACKEND_PORT || '8765'}/auth/callback</strong></li>
+                                        <li>Under <strong>Authorized redirect URIs</strong>, add <strong className="text-zinc-300">{credInfo?.redirect_uri ?? 'http://localhost:8765/auth/callback'}</strong></li>
                                         <li>Download the JSON file, open it, copy all its content, and paste it below.</li>
                                     </ol>
                                 </div>

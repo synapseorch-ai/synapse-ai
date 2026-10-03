@@ -37,7 +37,9 @@ from .widgets import Asker, Cancelled
 
 PACKAGE = "synapse-orch-ai"
 PYTHON = "3.12"
-#: The port the released UI is built to reach its backend on (F309).
+#: The backend's port. The UI has read the backend's address at run time since
+#: F309, so this could move like the frontend's; it stays fixed by choice
+#: (D186), and a taken one still stops the install.
 BACKEND_PORT = 8765
 IS_WIN = sys.platform == "win32"
 RETRY = {
@@ -352,11 +354,10 @@ class Installer:
         return _tilde(self.s.backup)
 
     def _pick_ports(self) -> None:
-        """The frontend moves to a free port; the backend cannot move (F309).
+        """The frontend moves to a free port; the backend stays on BACKEND_PORT.
 
-        The released UI is built to reach its backend on BACKEND_PORT, so a
-        backend anywhere else leaves every page failing. When something else
-        holds that port, stop here, before anything is installed, and say so.
+        When something else holds that port, stop here, before anything is
+        installed, and say so (see BACKEND_PORT).
         """
         if self.existing.get("version") and not self.legacy.found:
             return   # a 2.x install keeps the ports it has in its settings

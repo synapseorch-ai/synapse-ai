@@ -1,5 +1,4 @@
 import type { NextConfig } from "next";
-import { URL } from "url";
 import path from "path";
 import fs from "fs";
 import { MOVED_TABS } from "./src/lib/moved-routes";
@@ -28,57 +27,22 @@ if (fs.existsSync(_rootEnv)) {
 }
 
 // ---------------------------------------------------------------------------
-// Resolve BACKEND_URL — single source of truth for all server-side routes.
-//
-// Priority:
-//   1. BACKEND_URL already in env  (explicit — use as-is)
-//   2. SYNAPSE_BACKEND_PORT in env (auto-build http://127.0.0.1:<port>)
-//   3. Hard default                (http://127.0.0.1:8765)
-//
-// This means a user only needs to set SYNAPSE_BACKEND_PORT once and
-// everything — rewrites, API routes, port display — picks it up correctly.
+// The backend's address is NOT resolved here (F309). Anything this file puts
+// in `env` or in a rewrite is fixed at build: a packaged UI then called the port
+// it was built for, whatever `synapse start` passed. Server code reads
+// `BACKEND_URL` (else `SYNAPSE_BACKEND_PORT`, else 8765) when it starts —
+// `src/lib/backend.ts` — and /api and /auth calls no route handler answers are
+// proxied there by the catch-alls (`src/lib/backendProxy.ts`).
 // ---------------------------------------------------------------------------
-const _backendPort = process.env.SYNAPSE_BACKEND_PORT || "8765";
-const _derivedUrl  = `http://127.0.0.1:${_backendPort}`;
-
-// If BACKEND_URL not set at all, use the derived value.
-if (!process.env.BACKEND_URL) {
-  process.env.BACKEND_URL = _derivedUrl;
-}
-
-const BACKEND_URL   = process.env.BACKEND_URL!;
-const _parsedBackend = new URL(BACKEND_URL);
-const BACKEND_PORT  = _parsedBackend.port || _backendPort;
-
-// Also resolve the frontend port for completeness (used by load-env.js, but
-// setting it here too keeps the config self-consistent).
 const _frontendPort = process.env.SYNAPSE_FRONTEND_PORT || "3000";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  experimental: {
-    // How long the `/api/:path*` rewrite below waits on a silent backend
-    // (F169). Next's default is 30 s, and this origin is the self-hosted API's
-    // documented base: a synchronous v1 chat or run, or an MCP tool waiting on
-    // a run (`wait_seconds` up to 120, a chat up to 600), answered 500 at 30 s
-    // while the backend carried on. An idle timeout, so streams were never cut
-    // (their ping lands every 10 s). Past the longest bounded wait, not unbounded:
-    // a backend that never answers still ends the request.
-    proxyTimeout: 610_000,
-  },
   env: {
-    // These are injected into every server-side page/route at runtime.
-    // Route handlers can read process.env.BACKEND_URL without their own fallback.
-    BACKEND_URL,
-    BACKEND_PORT,
-    // NOTE: SYNAPSE_INTERNAL_TOKEN and SYNAPSE_JWT_SECRET are intentionally NOT
-    // listed here. Keys in this block are inlined as literals at BUILD time, which
-    // would bake a fixed (or empty) secret into the distributed bundle. These
-    // secrets are generated per-install at runtime, so they must be read from the
-    // live process.env at request time instead. proxy.ts runs on the Node.js
-    // runtime (Next 16) and route handlers run on Node, so both read them at runtime.
-    // Expose backend port to client-side code (e.g., for UI instructions)
-    NEXT_PUBLIC_BACKEND_PORT: BACKEND_PORT,
+    // Inlined at BUILD time, so only what is fixed for a build belongs here. The
+    // backend's address and the per-install secrets (SYNAPSE_INTERNAL_TOKEN,
+    // SYNAPSE_JWT_SECRET) are read from the live process.env instead: proxy.ts
+    // and route handlers run on Node, and read them at request time.
     NEXT_PUBLIC_FRONTEND_PORT: _frontendPort,
   },
   async redirects() {
@@ -95,23 +59,6 @@ const nextConfig: NextConfig = {
         permanent: true,
       })),
     ];
-  },
-  async rewrites() {
-    return {
-      beforeFiles: [],
-      afterFiles: [],
-      // fallback runs only when no app router route.ts matches
-      fallback: [
-        {
-          source: "/auth/:path*",
-          destination: `${BACKEND_URL}/auth/:path*`,
-        },
-        {
-          source: "/api/:path*",
-          destination: `${BACKEND_URL}/api/:path*`,
-        },
-      ],
-    };
   },
 };
 
