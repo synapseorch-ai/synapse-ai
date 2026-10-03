@@ -41,6 +41,9 @@ export type KnowledgeWorkspace = {
     model: string;
     /** The workspace's judge model; '' when none is set. */
     judge: string;
+    /** What a base naming no Contextual Retrieval model writes contexts with: the deployment's default, else the
+     *  workspace's chat model ('' when neither). A host that leaves it out shows the workspace's chat model. */
+    contextual?: string;
     /** Whether each `RerankChoice.key` is set. */
     keys: Record<string, boolean>;
 };

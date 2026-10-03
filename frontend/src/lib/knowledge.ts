@@ -106,7 +106,8 @@ export type RetrievalSettings = {
     max_context_tokens: number;
 };
 
-/** "prefix" is free; "contextual" (Contextual Retrieval) is not built yet (D167 #1). Changing it rebuilds the index. */
+/** "prefix" is free; "contextual" (Contextual Retrieval, CR1) has a chat model write each passage's context while it
+ *  is indexed — `contextual_model`, or the workspace's default when null. Changing either rebuilds the index. */
 export type EnrichmentSettings = { mode: 'prefix' | 'contextual'; contextual_model: string | null; extract_metadata: boolean };
 
 export type KnowledgeBase = {
@@ -247,6 +248,7 @@ export const REASONS: Record<string, string> = {
     encrypted: 'Encrypted',
     embed_failed: 'Embedding failed',
     embedding_invalid: 'The embedding model gave unusable vectors',
+    enrich_failed: "The model writing passages' context failed",
     index_failed: 'Writing the index failed',
     fetch_failed: 'Could not be fetched',
     ocr_failed: 'Text recognition failed',

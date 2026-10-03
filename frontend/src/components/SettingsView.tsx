@@ -443,6 +443,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setKnowledgeModels({
                     ...KNOWLEDGE_MODEL_DEFAULTS,
                     knowledge_embedding_model: data.knowledge_embedding_model || '',
+                    knowledge_contextual_model: data.knowledge_contextual_model || '',
                     knowledge_rerank_model: data.knowledge_rerank_model || '',
                     knowledge_rerank_base_url: data.knowledge_rerank_base_url || '',
                 });

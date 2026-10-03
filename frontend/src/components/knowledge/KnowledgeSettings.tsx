@@ -200,6 +200,13 @@ export function KnowledgeSettings({
         return [{ value: DEFAULT_MODEL, label: defaultLabel }, ...listed];
     }, [host, workspace, draft.embedding.model]);
 
+    const contextualOptions: ComboboxOption[] = useMemo(() => {
+        const fallback = workspace?.contextual || workspace?.model || '';
+        const defaultLabel = fallback ? `Workspace default (${fallback})` : 'Workspace default (none set)';
+        const listed = host.withUnreachable(workspace?.chatModels ?? [], draft.enrichment.contextual_model || undefined);
+        return [{ value: DEFAULT_MODEL, label: defaultLabel }, ...listed];
+    }, [host, workspace, draft.enrichment.contextual_model]);
+
     const rerankRoute = host.rerankChoices.find(r => (draft.rerank.model ?? '').startsWith(r.model.split('.')[0] + '.'));
     const rerankKeyMissing = !!rerankRoute?.key && workspace !== null && !workspace.keys[rerankRoute.key];
 
@@ -374,17 +381,37 @@ export function KnowledgeSettings({
                                 </Field>
                             </>
                         )}
-                        <Field label="Context for each passage">
+                        <Field
+                            label="Context for each passage"
+                            hint={draft.enrichment.mode === 'contextual'
+                                ? 'A model writes a short context for every passage while it is indexed, so passages that lean on their document are found. Paid per passage: the price is below.'
+                                : undefined}
+                        >
                             <Select
                                 value={draft.enrichment.mode}
-                                onChange={v => setIn('enrichment', 'mode', v)}
+                                // Back to the saved mode restores the saved block, so a model picked and dropped rebuilds nothing.
+                                onChange={v => setDraft(d => ({
+                                    ...d,
+                                    enrichment: v === saved.enrichment.mode ? structuredClone(saved.enrichment) : { ...d.enrichment, mode: v },
+                                }))}
                                 options={[
                                     { value: 'prefix', label: 'Title, date and section (free)' },
-                                    { value: 'contextual', label: 'Contextual Retrieval — not available yet', disabled: true },
+                                    { value: 'contextual', label: 'Contextual Retrieval: a model writes it' },
                                 ]}
                                 aria-label="Context for each passage"
                             />
                         </Field>
+                        {draft.enrichment.mode === 'contextual' && (
+                            <Field label="Context model" hint="Writes the contexts. A small, inexpensive model is enough.">
+                                <Combobox
+                                    value={draft.enrichment.contextual_model || DEFAULT_MODEL}
+                                    onChange={v => setIn('enrichment', 'contextual_model', v === DEFAULT_MODEL ? null : v)}
+                                    options={contextualOptions}
+                                    searchPlaceholder="Search chat models…"
+                                    aria-label="Context model"
+                                />
+                            </Field>
+                        )}
                     </div>
                 </fieldset>
 
@@ -422,7 +449,7 @@ export function KnowledgeSettings({
                                     <ul className="mt-1.5 space-y-0.5 text-xs text-text-muted">
                                         {preview.stages.map(s => (
                                             <li key={s.stage}>
-                                                {s.stage === 'embed' ? 'Embedding' : s.stage === 'ocr' ? 'Reading scanned pages' : 'Context'}:{' '}
+                                                {s.stage === 'embed' ? 'Embedding' : s.stage === 'ocr' ? 'Reading scanned pages' : 'Writing contexts'}:{' '}
                                                 {Math.round(s.units).toLocaleString()} {s.unit} with <span className="font-mono">{s.model}</span> — {usd(s.est_usd)}
                                                 {s.cost_source === 'local' ? ' (on this machine)' : s.cost_source === 'byok' ? ' (your key)' : ''}
                                             </li>

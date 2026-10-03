@@ -742,7 +742,7 @@ export const ModelsTab = ({
             </div>
 
             <KnowledgeModels value={knowledgeModels} onChange={setKnowledgeModels} providers={providers}
-                embeddingModel={embeddingModel} />
+                embeddingModel={embeddingModel} chatModel={selectedModel} />
 
             <div className="pt-4 flex justify-end">
                 <button

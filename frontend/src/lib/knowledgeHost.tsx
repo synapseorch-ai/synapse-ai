@@ -33,6 +33,7 @@ async function loadWorkspace(): Promise<KnowledgeWorkspace> {
         chatModels: modelOptions(providers),
         model: String(settings?.model || ''),
         judge: judge === 'default' ? '' : judge,
+        contextual: String(settings?.knowledge_contextual_model || settings?.model || ''),
         keys,
     };
 }

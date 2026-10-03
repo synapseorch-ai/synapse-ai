@@ -3,8 +3,9 @@
 /*
  * Knowledge's workspace models and keys, on Settings → Models (B2b, D167 #4).
  *
- * The embedding model a knowledge base uses when it names none, the reranker a
- * search uses when a base names none, and the keys rerank providers need
+ * The embedding model a knowledge base uses when it names none, the model that
+ * writes Contextual Retrieval's contexts when a base names none (CR1, D180), the
+ * reranker a search uses when a base names none, and the keys rerank providers need
  * (Cohere, Voyage, Jina, or a rerank server of your own: TEI or Infinity).
  * Keys are never served back (F201): a saved one reads "Saved", a blank field
  * keeps it, and Remove clears it. Saved with the rest of the tab.
@@ -17,6 +18,7 @@ import { SavedSecret, secretPlaceholder, useSavedSecrets } from './SavedSecret';
 
 export type KnowledgeModelSettings = {
     knowledge_embedding_model: string;
+    knowledge_contextual_model: string;
     knowledge_rerank_model: string;
     cohere_key: string;
     voyage_key: string;
@@ -26,7 +28,8 @@ export type KnowledgeModelSettings = {
 };
 
 export const KNOWLEDGE_MODEL_DEFAULTS: KnowledgeModelSettings = {
-    knowledge_embedding_model: '', knowledge_rerank_model: '', cohere_key: '', voyage_key: '', jina_key: '',
+    knowledge_embedding_model: '', knowledge_contextual_model: '', knowledge_rerank_model: '', cohere_key: '',
+    voyage_key: '', jina_key: '',
     knowledge_rerank_base_url: '', knowledge_rerank_key: '',
 };
 
@@ -42,13 +45,15 @@ const KEYS: { name: (typeof KNOWLEDGE_SECRETS)[number]; label: string; placehold
 ];
 
 export function KnowledgeModels({
-    value, onChange, providers, embeddingModel,
+    value, onChange, providers, embeddingModel, chatModel,
 }: {
     value: KnowledgeModelSettings;
     onChange: (next: KnowledgeModelSettings) => void;
     providers: Record<string, ProviderModels>;
     /** The workspace's embedding model (code search), which Knowledge uses when it names none. */
     embeddingModel: string;
+    /** The workspace's chat model, which writes Contextual Retrieval's contexts when nothing else is named. */
+    chatModel: string;
 }) {
     const enabled = useKnowledgeEnabled();
     const { secrets } = useSavedSecrets();
@@ -58,6 +63,10 @@ export function KnowledgeModels({
     const embeddingOptions: ComboboxOption[] = [
         { value: SAME, label: embeddingModel ? `Same as the embedding model above (${embeddingModel})` : 'Same as the embedding model above (none set)' },
         ...withUnreachable(modelOptions(providers, 'embedding_models'), value.knowledge_embedding_model || undefined),
+    ];
+    const contextualOptions: ComboboxOption[] = [
+        { value: SAME, label: chatModel ? `Same as the default model above (${chatModel})` : 'Same as the default model above (none set)' },
+        ...withUnreachable(modelOptions(providers), value.knowledge_contextual_model || undefined),
     ];
 
     return (
@@ -78,6 +87,15 @@ export function KnowledgeModels({
                         options={embeddingOptions}
                         searchPlaceholder="Search embedding models…"
                         aria-label="Embedding model for knowledge"
+                    />
+                </Field>
+                <Field label="Contextual Retrieval model" hint="Writes each passage's context in bases that turn Contextual Retrieval on and name no model. A small, inexpensive model is enough.">
+                    <Combobox
+                        value={value.knowledge_contextual_model || SAME}
+                        onChange={v => set('knowledge_contextual_model', v === SAME ? '' : v)}
+                        options={contextualOptions}
+                        searchPlaceholder="Search chat models…"
+                        aria-label="Contextual Retrieval model"
                     />
                 </Field>
                 <Field label="Rerank model" hint="Optional. Named with its provider, e.g. cohere.rerank-v3.5. Empty: no rerank unless a base names one.">

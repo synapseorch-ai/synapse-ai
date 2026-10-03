@@ -3929,6 +3929,56 @@ async def check_knowledge_settings(browser) -> str:
 
 
 @check
+async def check_knowledge_contextual(browser) -> str:
+    """Contextual Retrieval in a knowledge base's settings (CR1, D180): choosing it shows a named Context model
+    picker that starts on the workspace's default, the rebuild is priced with a "Writing contexts" line before
+    anything is saved, a picked model reaches that price, and going back to the saved mode leaves nothing to save."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    priced = []
+    for pattern, handler in _SMOKE_KB_CONTEXTUAL_ROUTES:
+        await ctx.route(pattern, handler)
+
+    async def record_preview(route):
+        if route.request.method == "POST":
+            priced.append(json.loads(route.request.post_data or "{}"))
+        await route.fallback()
+    await ctx.route("**/api/knowledge/bases/*/cost-preview", record_preview)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        await page.get_by_role("button", name="Settings", exact=True).wait_for(timeout=30_000)
+        await _kb_settings_contextual(page)
+        dialog = page.get_by_role("dialog", name="Settings for Smoke contracts")
+        picker = dialog.get_by_role("button", name="Context model", exact=True)
+        if "Workspace default (gpt-4o-mini)" not in (await picker.inner_text()):
+            raise AssertionError(f"the Context model picker does not start on the workspace default: "
+                                 f"{await picker.inner_text()!r}")
+        def asked(body: dict) -> dict:
+            return (body.get("overrides") or {}).get("enrichment") or {}
+
+        if not priced or asked(priced[-1]).get("mode") != "contextual":
+            raise AssertionError(f"choosing Contextual Retrieval was not priced: {priced}")
+        await picker.click()
+        await page.get_by_role("option", name="gpt-4.1-nano", exact=True).click()
+        for _ in range(40):
+            if asked(priced[-1]).get("contextual_model") == "gpt-4.1-nano":
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise AssertionError(f"the picked model never reached the price: {asked(priced[-1])}")
+        await dialog.get_by_role("combobox", name="Context for each passage", exact=True).click()
+        await page.get_by_role("option", name="Title, date and section (free)").click()
+        if await dialog.get_by_role("button", name="Context model", exact=True).count():
+            raise AssertionError("the Context model picker stayed after going back to the free prefix")
+        if await dialog.get_by_role("button", name=re.compile("^Save")).is_enabled():
+            raise AssertionError("going back to the saved mode left a change to save (a rebuild for nothing)")
+        return ("Contextual Retrieval shows a named Context model picker on the workspace default, is priced before "
+                "Save, prices a picked model, and going back leaves nothing to save")
+    finally:
+        await ctx.close()
+
+
+@check
 async def check_knowledge_upload(browser) -> str:
     """An upload into a knowledge base (D175) speaks every `UploadSession` shape: each part is PUT with exactly
     its `headers` and its share of the bytes, its ETag is read from the answer's `ETag` header — an object store
@@ -5558,6 +5608,12 @@ _SMOKE_KB_COSTS = [{"key": "embed", "est_usd": 1.2, "charged_microusd": None, "i
 _SMOKE_KB_PREVIEW = {"docs": 2, "pages": 0, "total_est_usd": 0.0012, "budget_remaining_usd": 3.75, "stages": [
     {"stage": "embed", "model": "text-embedding-3-small", "units": 60000, "unit": "tokens", "est_usd": 0.0012,
      "cost_source": "byok"}]}
+_SMOKE_KB_PREVIEW_CONTEXTUAL = {"docs": 2, "pages": 0, "total_est_usd": 0.0102, "budget_remaining_usd": 3.75,
+                                "stages": [
+    {"stage": "embed", "model": "text-embedding-3-small", "units": 63000, "unit": "tokens", "est_usd": 0.00126,
+     "cost_source": "byok"},
+    {"stage": "enrich", "model": "gpt-4o-mini", "units": 40, "unit": "requests", "est_usd": 0.0089,
+     "cost_source": "byok"}]}
 _SMOKE_KB_ROUTES = [
     ("**/api/settings", _answer({"knowledge_enabled": True, "embedding_model": "text-embedding-3-small"})),
     ("**/api/models", _answer({"providers": {"openai": {"available": True, "models": [],
@@ -5580,6 +5636,14 @@ _SMOKE_KB_EVAL_ROUTES = _SMOKE_KB_ROUTES + [
     ("**/api/settings", _answer({"knowledge_enabled": True, "model": "gpt-4o-mini", "judge_model": ""})),
     ("**/api/models", _answer({"providers": {"openai": {"available": True, "models": ["gpt-4o-mini"],
                                                         "embedding_models": ["text-embedding-3-small"]}}})),
+]
+#: Contextual Retrieval's picker lists the workspace's chat models; its rebuild is priced with a context line.
+_SMOKE_KB_CONTEXTUAL_ROUTES = _SMOKE_KB_ROUTES + [
+    ("**/api/settings", _answer({"knowledge_enabled": True, "model": "gpt-4o-mini",
+                                 "embedding_model": "text-embedding-3-small"})),
+    ("**/api/models", _answer({"providers": {"openai": {"available": True, "models": ["gpt-4o-mini", "gpt-4.1-nano"],
+                                                        "embedding_models": ["text-embedding-3-small"]}}})),
+    ("**/api/knowledge/bases/*/cost-preview", _answer(_SMOKE_KB_PREVIEW_CONTEXTUAL, methods=("POST",))),
 ]
 
 
@@ -5663,6 +5727,15 @@ async def _kb_settings_rebuild(page):
     await page.get_by_role("option", name="One per page").click()
 
 
+async def _kb_settings_contextual(page):
+    """Open the base's settings and choose Contextual Retrieval: the Context model picker and its price show."""
+    await page.get_by_role("button", name="Settings", exact=True).click()
+    await page.get_by_role("combobox", name="Context for each passage", exact=True).click()
+    await page.get_by_role("option", name="Contextual Retrieval: a model writes it").click()
+    await page.get_by_role("button", name="Context model", exact=True).wait_for(timeout=10_000)
+    await page.get_by_text("Writing contexts").wait_for(timeout=10_000)
+
+
 async def _kb_eval(page):
     await page.get_by_role("button", name=re.compile("^Evaluate")).click()
     await page.get_by_text("Hit@5").first.wait_for(timeout=20_000)
@@ -5694,6 +5767,8 @@ LIGHT_STATES = (
     ("a Retrieve step's trace", "/orchestrations?run=run_smoke_kb", [], _SMOKE_KB_RUN_ROUTES,
      lambda p: p.get_by_text(re.compile(r"^Retrieve · Find clauses")).first.click(), "ksnap_smoke"),
     ("knowledge settings", "/knowledge", [], _SMOKE_KB_ROUTES, _kb_settings_rebuild, "Saving rebuilds the index"),
+    ("knowledge contextual retrieval", "/knowledge", [], _SMOKE_KB_CONTEXTUAL_ROUTES, _kb_settings_contextual,
+     "Writing contexts"),
     ("knowledge rebuilding", "/knowledge", [],
      _SMOKE_KB_ROUTES + [("**/api/knowledge/bases", _answer([_SMOKE_KB_REBUILDING]))], None,
      "Rebuilding the index: 1 of 2 documents"),
