@@ -89,7 +89,11 @@ class TestARebuild:
         assert state["active_snapshot"] == served and state["building_snapshot"]
         assert state["build"] == {"snapshot_id": state["building_snapshot"], "status": "building", "docs_total": 1,
                                   "docs_done": 0, "docs_failed": 0, "started_at": state["build"]["started_at"],
-                                  "paused_reason": None, "error": None}
+                                  "paused_reason": None, "error": None,
+                                  # CCR-12 (PG1): no passage built yet, of the one the base holds now; no document
+                                  # being built, so no stage, wait or estimate
+                                  "passages_done": 0, "passages_total": 1, "stage": None, "eta_s": None,
+                                  "waiting": None}
 
         await jobs.drain(run_ingest_job)
         after = (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["state"]
