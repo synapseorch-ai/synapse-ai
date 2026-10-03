@@ -738,7 +738,9 @@ function crawlLine(c: WebCrawlState): string {
     const changed = [n.written && `${n.written} new or changed`, n.deleted && `${n.deleted} removed`,
         n.blocked && `${n.blocked} disallowed`, n.failed && `${n.failed} failed`].filter(Boolean).join(', ');
     const head = `${count(c.pages, 'page')} · fetched ${when(c.finished_at)}`;
-    const tail = c.status === 'capped' ? ' · stopped at the page limit, so nothing was removed' : '';
+    // A crawl capped by its time or the vault says which (CCR-11); one capped by its page limit names none.
+    const tail = c.status !== 'capped' ? ''
+        : c.last_error ? ` — ${c.last_error}` : ' · stopped at the page limit, so nothing was removed';
     return `${head}${changed ? ` · ${changed}` : ''}${tail}`;
 }
 

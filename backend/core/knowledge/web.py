@@ -88,6 +88,8 @@ RUNNER_STALE = timedelta(minutes=10)
 HEARTBEAT_EVERY_S = 60.0
 #: A crawl started this many times without finishing fails, rather than being started again.
 MAX_ATTEMPTS = 3
+#: A crawl's time limit (`run_crawl(deadline=)`) is never sooner than this from its start.
+MIN_DEADLINE = timedelta(minutes=1)
 #: Crawls running at once in one process; more wait their turn.
 MAX_CONCURRENT_CRAWLS = 2
 #: How often OSS's reconcile loop looks for a re-crawl that is due.
@@ -412,6 +414,18 @@ def get_crawl_runner() -> CrawlRunner | None:
     return _runner
 
 
+#: A crawl's room in the vault: a factory called once per crawl (and per fetched document), whose checker
+#: is asked before each page is written with its growth in bytes and answers a refusal, or None to go on.
+VaultRoom = Callable[[], Callable[[int], Awaitable[str | None]]]
+_vault_room: VaultRoom | None = None
+
+
+def set_vault_room(factory: VaultRoom | None) -> None:
+    """Cloud: a crawl stops at the plan's `vault_mb` (S1c). None: no limit (OSS has none)."""
+    global _vault_room
+    _vault_room = factory
+
+
 async def _live(source_id: str, state: dict[str, Any]) -> bool:
     """Whether the source's crawl is waiting or running now. OSS: this process holds its task. With a
     runner: queued, or running with a heartbeat of its own younger than `RUNNER_STALE`."""
@@ -673,6 +687,11 @@ class _Stop(Exception):
     """The base went away, was disabled, or Knowledge was switched off: the crawl stops."""
 
 
+class _Capped(Exception):
+    """A limit other than the page cap — the crawl's time, the vault's storage — stopped the crawl:
+    `capped`, so it deletes nothing, with the limit named in `last_error` (CCR-11)."""
+
+
 @dataclass
 class _Crawl:
     kb: KnowledgeBase
@@ -695,6 +714,9 @@ class _Crawl:
     crawl_id: str | None = None  # None: `fetch_document`'s one page, which keeps no heartbeat
     attempts: int = 0
     beat_at: float = float("-inf")
+    deadline: datetime | None = None
+    room: Callable[[int], Awaitable[str | None]] | None = None
+    stop_reason: str | None = None  # why a crawl was capped short of its page cap
 
     def rel(self, path: str) -> str:
         return path[len(self.kb.folder) + 1:] if path.startswith(self.kb.folder + "/") else path
@@ -733,9 +755,10 @@ def _limits(kb: KnowledgeBase, state: dict[str, Any]) -> tuple[int, int, float, 
     return max(depth, 0), max(pages, 1), rps, doc_cap
 
 
-async def run_crawl(kb_id: str, source_id: str, crawl_id: str) -> dict[str, Any]:
+async def run_crawl(kb_id: str, source_id: str, crawl_id: str, *, deadline: datetime | None = None) -> dict[str, Any]:
     """Crawl one source and record what happened in its state. The entrypoint OSS runs in the
-    background and cloud's crawl job calls. Never raises for a crawl's own failures."""
+    background and cloud's crawl job calls. Never raises for a crawl's own failures. Past `deadline`
+    (a worker's job limit; never sooner than `MIN_DEADLINE`) the crawl stops `capped`, saying so."""
     from core.knowledge import bases
     from core.knowledge.config import knowledge_enabled
     from core.knowledge.fetch import Fetcher
@@ -765,7 +788,8 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str) -> dict[str, Any]
     async with Fetcher(rps=rps) as fetcher:
         c = _Crawl(kb=kb, source=source, fetcher=fetcher, metadata=dict(state.get("metadata") or {}),
                    doc_cap=doc_cap, by_url=by_url, by_path=by_path, crawl_id=crawl_id, attempts=attempts,
-                   beat_at=time.monotonic())
+                   beat_at=time.monotonic(), room=_vault_room() if _vault_room is not None else None,
+                   deadline=None if deadline is None else max(deadline, _now() + MIN_DEADLINE))
         try:
             if source.kind == "page":
                 c.named.add(source.url)
@@ -778,6 +802,9 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str) -> dict[str, Any]
         except _Stop as exc:
             status = "cancelled"
             c.note(str(exc))
+        except _Capped as exc:
+            c.capped = True
+            c.stop_reason = str(exc)
         except asyncio.CancelledError:
             if _runner is not None:  # its worker stopped (a deploy, a scale-in): the same crawl runs again
                 await asyncio.shield(_interrupted(c, state))
@@ -855,7 +882,9 @@ async def _finish(c: _Crawl, state: dict[str, Any], status: str, *, complete: bo
         except Exception as exc:  # noqa: BLE001 — what is not deleted now is deleted by the next crawl
             _log.warning(f"knowledge crawl of {c.source.id}: stale pages not deleted: {exc!r}")
             complete = False
-    state.update(status=status, finished_at=_now().isoformat(), counts=c.counts, last_error=c.last_error,
+    # A capped crawl names only the limit it stopped at (None: the page cap), never a page that failed on the way.
+    last_error = c.stop_reason if status == "capped" else c.last_error
+    state.update(status=status, finished_at=_now().isoformat(), counts=c.counts, last_error=last_error,
                  pages=sorted(c.reached if complete else previous | c.reached),
                  outcomes=sorted(c.outcomes if complete else previous_outcomes | c.outcomes))
     await save_state(c.source.id, state)
@@ -873,6 +902,8 @@ async def _check(c: _Crawl) -> None:
     from core.knowledge import bases
     from core.knowledge.config import knowledge_enabled
 
+    if c.deadline is not None and _now() >= c.deadline:
+        raise _Capped("Stopped at the crawl's time limit, so nothing was removed; the next crawl starts again.")
     await _beat(c)
     clock = time.monotonic()
     if clock - c.checked_at < 5.0:
@@ -1131,15 +1162,21 @@ async def _write(c: _Crawl, rel: str, url: str, data: bytes, validator: str | No
     from core.vault_events import VaultChange
 
     path = f"{c.kb.folder}/{rel}"
-    c.reached.add(rel)
     sha = hashlib.sha256(data).hexdigest()
     existing = c.by_path.get(path)
     if (existing is not None and existing.sha256 == sha and existing.status != "deleting"
             and (existing.meta or {}) == c.metadata and await _exists(path)):
+        c.reached.add(rel)
         c.counts["unchanged"] += 1
         if validator and existing.etag != validator:
             await documents.set_columns(existing.id, etag=validator)
         return
+    if c.room is not None:
+        held = (existing.size_bytes or 0) if existing is not None and existing.sha256 and existing.status != "deleting" else 0
+        refusal = await c.room(len(data) - held)
+        if refusal:
+            raise _Capped(f"Stopped because the vault is full, so nothing was removed: {refusal}")
+    c.reached.add(rel)
     store = get_blob_store()
     size, digest = await asyncio.to_thread(store.put_stream, f"vault/{path}", iter((data,)), content_type=mime)
     rows = await sync.on_vault_change(VaultChange(path=path, op="write", sha256=digest, size=size, source="fetch"),
@@ -1234,8 +1271,12 @@ async def fetch_document(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> None:
     try:
         async with Fetcher(rps=rps) as fetcher:
             c = _Crawl(kb=kb, source=source, fetcher=fetcher, metadata=metadata, doc_cap=doc_cap, by_url=by_url,
-                       by_path=by_path, named={url}, seen={url}, owned=owner is not None)
+                       by_path=by_path, named={url}, seen={url}, owned=owner is not None,
+                       room=_vault_room() if _vault_room is not None else None)
             await _page(c, url, links_needed=False)
+    except _Capped as exc:  # the vault is full: the page is not written, and the document says why
+        await record_outcome(kb, row.path, url, "failed", "fetch_failed", str(exc), metadata=metadata or None)
+        return
     except Exception as exc:  # noqa: BLE001 — the document must not stay queued
         _log.warning(f"knowledge fetch of {row.id} failed: {exc!r}")
         await record_outcome(kb, row.path, url, "failed", "fetch_failed", f"{type(exc).__name__}: {exc}",

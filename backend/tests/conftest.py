@@ -175,12 +175,14 @@ def _isolate_knowledge_seams():
     seams.reset_all()
     costs.set_platform_pricer(None)
     web.set_crawl_runner(None)
+    web.set_vault_room(None)
     vault_events.set_vault_observer(None)
     events.knowledge_observers.clear()
     yield
     seams.reset_all()
     costs.set_platform_pricer(None)
     web.set_crawl_runner(None)
+    web.set_vault_room(None)
     vault_events.set_vault_observer(None)
     events.knowledge_observers.clear()
 

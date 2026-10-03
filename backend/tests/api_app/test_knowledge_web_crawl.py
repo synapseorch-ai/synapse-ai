@@ -858,3 +858,68 @@ class TestStartDue:
         await crawled()
         assert (await crawls(on, kb["id"]))[0]["crawl_id"] != state["crawl_id"]
 
+
+
+class TestLimits:
+    """A crawl stopped by a limit other than its page cap is `capped`, deletes nothing, and says which (CCR-11)."""
+
+    async def test_a_crawl_past_its_time_limit_is_capped_names_it_and_deletes_nothing(
+            self, on, site, jobs, indexer, runner, monkeypatch):
+        from datetime import datetime, timezone
+
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        await runner.run()
+        await drain(jobs)
+        await add(on, kb["id"], f"{site}/docs/")
+        _Site.pages["/docs/"] = html("Docs home", "Welcome.")  # a complete crawl would delete a, b and the notes
+        monkeypatch.setattr(web, "MIN_DEADLINE", web.timedelta(0))
+        [state] = await runner.run(deadline=datetime.now(timezone.utc))
+        assert state["status"] == "capped" and "time limit" in state["last_error"]
+        assert state["counts"]["deleted"] == 0 and len(state["pages"]) == 4 and len(await docs(kb["id"])) == 4
+
+    async def test_a_full_vault_caps_the_crawl_names_the_plan_and_keeps_the_refused_page_out(
+            self, on, site, jobs, indexer, runner):
+        asked = []
+
+        def room():
+            async def check(growth):
+                asked.append(growth)
+                return "The Starter plan includes 1 MB of vault storage." if len(asked) > 1 else None
+            return check
+
+        web.set_vault_room(room)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [state] = await runner.run()
+        assert state["status"] == "capped" and "The Starter plan includes 1 MB" in state["last_error"]
+        h = host(site)
+        assert state["pages"] == [f"_web/{h}/docs/index.md"] and asked[0] > 0
+        assert set(await docs(kb["id"])) == {f"site/_web/{h}/docs/index.md"}
+        assert not get_blob_store().exists(f"vault/site/_web/{h}/docs/a.md")
+
+    async def test_a_page_capped_crawl_names_no_reason_after_a_failed_page(self, on, site, jobs, indexer):
+        _Site.pages["/docs/a"] = (503, {}, b"busy")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/", max_pages=2)
+        [state] = await crawls(on, kb["id"])
+        assert state["status"] == "capped" and state["counts"]["failed"] == 1
+        assert state["last_error"] is None  # the screen says "stopped at the page limit", not "…/docs/a answered 503"
+
+    async def test_a_retry_into_a_full_vault_fails_with_the_plans_words(self, on, site, jobs, indexer):
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/private/x", kind="page")
+        [row] = (await docs(kb["id"])).values()
+        _Site.pages["/robots.txt"] = (200, {}, b"User-agent: *\nDisallow:\n")
+
+        def room():
+            async def check(growth):
+                return "The Starter plan includes 1 MB of vault storage."
+            return check
+
+        web.set_vault_room(room)
+        assert (await on.post(f"/api/knowledge/documents/{row.id}/retry")).status_code == 202
+        await drain(jobs)
+        [again] = (await docs(kb["id"])).values()
+        assert (again.status, again.status_reason, again.sha256) == ("failed", "fetch_failed", None)
+        assert "The Starter plan includes 1 MB" in again.error and "_Capped" not in again.error
