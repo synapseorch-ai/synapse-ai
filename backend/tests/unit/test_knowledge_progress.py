@@ -291,9 +291,15 @@ async def test_a_working_document_says_its_stage_and_how_far_it_has_got(jobs, pr
     seen = []
 
     async def look(n, texts):
-        await asyncio.sleep(0.05)  # the row is written
-        (out,) = await progress.attach([documents.to_out(await documents.get(row.id))])
-        seen.append(out.progress)
+        async def read():
+            (out,) = await progress.attach([documents.to_out(await documents.get(row.id))])
+            return out.progress
+
+        async def caught_up():  # the row is written by its own task: wait for the slices answered so far
+            p = await read()
+            return p if p and p.stage == "embed" and p.done == 2 * (n - 1) else None
+
+        seen.append(await _until(caught_up) or await read())
 
     provider.during = look
     await jobs.drain(run_ingest_job)
@@ -566,8 +572,11 @@ class Watching:
         if attribution.snapshot_id and self.kb_id() is not None:
             kb = await bases.require_base(self.kb_id())
             if (await snapshots.build_states([kb])).get(kb.id) is not None:
-                await asyncio.sleep(0.03)  # the row is written
-                self.builds.append((await snapshots.build_states([kb]))[kb.id])
+                async def shown():  # the row is written by its own task: wait for this stage to reach it
+                    build = (await snapshots.build_states([kb]))[kb.id]
+                    return build if build.stage == "embed" else None
+
+                self.builds.append(await _until(shown) or (await snapshots.build_states([kb]))[kb.id])
         model = spec.model or MODEL
         usage = Usage(stage="embed", cost_source="byok", model=model, provider="fake", input_tokens=len(texts))
         return EmbedResult(vectors=[HashingEmbedder(dims=8).vector(t) for t in texts], model=model, dims=8,
