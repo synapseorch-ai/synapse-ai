@@ -108,8 +108,11 @@ class Tracker:
         self.unit: str | None = None
         self.done: int | None = None
         self.total: int | None = None
-        #: The most passages this document has reached in any stage (a rebuild counts with it).
+        #: The most passages this document has reached in any stage, and the most it is cut into now (a rebuild
+        #: counts with them); `held`: the passages a rebuild's document held before, in the serving index.
         self.passages = 0
+        self.doc_passages = 0
+        self.held: int | None = None
         self._base = 0
         self._t0 = clock()
         self._waits: dict[int, dict[str, Any]] = {}
@@ -131,6 +134,8 @@ class Tracker:
             return
         self.stage_name, self.unit, self.total = name, unit, total
         self.done = done if done is not None else (0 if total is not None else None)
+        if unit == "passages" and total is not None:
+            self.doc_passages = max(self.doc_passages, total)
         self._base = self.done or 0
         self._t0 = self._clock()
         self._waited = 0.0
@@ -153,14 +158,16 @@ class Tracker:
         self._note_passages()
         self.dirty = True
 
-    def document(self, doc_id: str) -> None:
-        """A rebuild moves on to `doc_id`: a new document's stages and passages."""
+    def document(self, doc_id: str, *, held: int | None = None) -> None:
+        """A rebuild moves on to `doc_id`, which held `held` passages in the serving index: a new document's stages
+        and passages."""
         if self.closed:
             return
         self.doc_id = doc_id
         self.stage_name = self.unit = None
         self.done = self.total = None
-        self.passages = 0
+        self.passages = self.doc_passages = 0
+        self.held = held
         self._waits.clear()
         self.urgent.set()
 
@@ -210,7 +217,7 @@ class Tracker:
         wait = max(self._waits.values(), key=lambda w: w["until"]) if self._waits else None
         return {"doc_id": self.doc_id, "stage": self.stage_name, "done": self.done, "total": self.total,
                 "unit": self.unit, "eta_s": self.eta_s(), "waiting": dict(wait) if wait else None,
-                "passages": self.passages, "at": _iso(_now())}
+                "passages": self.passages, "doc_passages": self.doc_passages, "held": self.held, "at": _iso(_now())}
 
 
 # ── the row ──────────────────────────────────────────────────────────────────

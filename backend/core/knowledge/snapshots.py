@@ -617,11 +617,14 @@ async def build_step(kb: KnowledgeBase, snapshot_id: str) -> str:
     batch = await _to_build(kb.id, snapshot.id, cursor, STEP_DOCS)
     done = int(snapshot.docs_done or 0)
     pace = _pace(stats, _now())
+    if pace != stats.get("pace") and not await _beat(snapshot, pace=dict(pace)):  # started again: said now, so the
+        await _drop(kb.id, snapshot.id)                                            # first document has an estimate
+        return "left"
     from core.knowledge import progress
 
     async with progress.tracking(kb.id, snapshot.id) as tracker:  # the document being built, for a screen (PG1)
         for row in batch:
-            tracker.document(row.id)
+            tracker.document(row.id, held=row.chunks or 0)
             try:
                 built = await _build_document(kb, snapshot, row)
             except _Pause as pause:
@@ -924,9 +927,13 @@ def _build_progress(stats: dict[str, Any], row: dict[str, Any] | None, now: date
     done = int(stats.get("passages_done") or 0)
     total = int(stats.get("passages_total") or 0)
     stage = waiting = None
-    # The document being built counts until its own beat has counted it (the cursor moves to it then).
+    # The document being built counts until its own beat has counted it (the cursor moves to it then) — with the
+    # passages it is cut into now in place of those it held, once its stage knows them: a new chunking can cut it
+    # into four times as many, and the bar must not fill before it is done.
     if row and row.get("doc_id") and row.get("doc_id") != stats.get("cursor") and not stats.get("paused_reason"):
         done += int(row.get("passages") or 0)
+        if row.get("doc_passages") and row.get("held") is not None:
+            total += int(row["doc_passages"]) - int(row["held"])
         stage = row.get("stage")
         waiting = progress.wait_of(row, now)
     total = max(total, done)

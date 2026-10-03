@@ -631,11 +631,24 @@ async def test_a_rebuild_counts_its_passages_and_says_where_it_is(jobs, monkeypa
     assert {b.stage for b in watcher.builds} == {"embed"}
     done = [b.passages_done for b in watcher.builds]
     assert done == sorted(done) and done[-1] > done[0], "monotone, and it moves within a document"
-    assert all(b.passages_done <= b.passages_total for b in watcher.builds)
+    # Measured in the browser: the new chunking cut a document into four times its passages, and the bar sat full
+    # ("400 of 400") while it went on. The document being built counts what it is cut into now, not what it held.
+    assert all(b.passages_done < b.passages_total for b in watcher.builds), [
+        (b.passages_done, b.passages_total) for b in watcher.builds]
     assert all(b.eta_s is None for b in watcher.builds if b.passages_done < 3), "no estimate before a pace"
-    assert any(b.eta_s is not None for b in watcher.builds), "then one"
+    assert any(b.eta_s is not None for b in watcher.builds if b.docs_done == 0), "an estimate in the first document"
     assert (await snapshots.build_states([await bases.require_base(kb.id)])).get(kb.id) is None, "switched"
+    assert watcher.builds[-1].passages_total == await _passages_in((await bases.require_base(kb.id)).id), (
+        "built, the last document's count was what the new index holds")
     assert await _rows() == []
+
+
+async def _passages_in(kb_id: str) -> int:
+    """The passages the base's serving snapshot holds."""
+    serving = await snapshots.serving_snapshot(await bases.require_base(kb_id))
+    async with session() as s:
+        return len((await s.execute(select(KnowledgeChunkDB.id).where(
+            KnowledgeChunkDB.kb_id == kb_id, KnowledgeChunkDB.snapshot_id == serving))).all())
 
 
 async def test_after_a_rebuild_each_document_reports_the_passages_the_new_index_holds(jobs):
