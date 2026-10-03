@@ -195,6 +195,28 @@ def test_an_estimate_waits_for_a_pace_and_counts_from_where_the_stage_began():
     assert tracker.eta_s() is None and tracker.value()["total"] is None, "a stage that cannot count"
 
 
+def test_time_spent_waiting_out_a_rate_limit_is_not_pace():
+    """Measured in the browser: 32 passages, then two waits (15 s, 30 s), read as "about 1 h 19 min left" for a
+    document that took two minutes more. While it waits the screen says so instead; the estimate is the work's pace."""
+    clock = [0.0]
+    tracker = progress.Tracker(clock=lambda: clock[0])
+    tracker.stage("embed", total=3251, unit="passages")
+    clock[0] += 3
+    tracker.advance(done=32)
+    first = tracker.waiting(provider_id="openai", provider="OpenAI", seconds=15)
+    second = tracker.waiting(provider_id="openai", provider="OpenAI", seconds=30)  # overlapping: counted once
+    clock[0] += 15
+    tracker.resumed(first)
+    clock[0] += 30
+    tracker.resumed(second)
+    clock[0] += 3
+    tracker.advance(done=96)
+    assert tracker.eta_s() == progress.round_eta((3251 - 96) * 6 / 96), "6 s of work for 96 passages, not 51 s"
+    tracker.waiting(provider_id="openai", provider="OpenAI", seconds=60)
+    clock[0] += 60  # still waiting: that time is not pace either
+    assert tracker.eta_s() == progress.round_eta((3251 - 96) * 6 / 96)
+
+
 def test_counts_never_go_back_or_past_the_end_and_a_closed_tracker_is_inert():
     tracker = progress.Tracker()
     tracker.stage("embed", total=10, unit="passages")

@@ -25,7 +25,8 @@ worker that died is never shown for a document that has since rested — and fro
 `STALE_AFTER_S`, the stage without an estimate or a wait.
 
 **The estimate** comes from this stage's own pace, counted from where the stage started (passages already cached
-are not pace), and only after `ETA_MIN_UNITS` units and `ETA_MIN_S` seconds; it is rounded (`round_eta`).
+are not pace) and leaving out the time spent waiting out a rate limit (the screen says it waits instead), only after
+`ETA_MIN_UNITS` units and `ETA_MIN_S` seconds of work; it is rounded (`round_eta`).
 
 Pure: stdlib, sqlalchemy and the store — cloud's API process imports it.
 """
@@ -112,6 +113,9 @@ class Tracker:
         self._base = 0
         self._t0 = clock()
         self._waits: dict[int, dict[str, Any]] = {}
+        #: Time this stage spent waiting out a rate limit (one wait or several at once): not the work's pace.
+        self._waited = 0.0
+        self._wait_began: float | None = None
         self._ids = itertools.count(1)
         self.closed = False
         #: A change a reader should see now (the stage, a wait); `dirty`: counts moved since the last write.
@@ -129,6 +133,8 @@ class Tracker:
         self.done = done if done is not None else (0 if total is not None else None)
         self._base = self.done or 0
         self._t0 = self._clock()
+        self._waited = 0.0
+        self._wait_began = self._t0 if self._waits else None
         self._note_passages()
         self.urgent.set()
 
@@ -164,6 +170,8 @@ class Tracker:
         token = next(self._ids)
         if self.closed:
             return token
+        if not self._waits:
+            self._wait_began = self._clock()
         self._waits[token] = {"reason": "rate_limited", "provider": provider, "provider_id": provider_id,
                               "until": _iso(_now() + timedelta(seconds=max(0.0, seconds)))}
         self.urgent.set()
@@ -173,6 +181,9 @@ class Tracker:
         if self.closed:
             return
         if self._waits.pop(token, None) is not None:
+            if not self._waits and self._wait_began is not None:
+                self._waited += self._clock() - self._wait_began
+                self._wait_began = None
             self.urgent.set()
 
     def close(self) -> None:
@@ -187,7 +198,9 @@ class Tracker:
     def eta_s(self) -> int | None:
         if self.total is None or self.done is None:
             return None
-        units, elapsed = self.done - self._base, self._clock() - self._t0
+        now = self._clock()
+        waited = self._waited + (now - self._wait_began if self._wait_began is not None else 0.0)
+        units, elapsed = self.done - self._base, now - self._t0 - waited
         if units < ETA_MIN_UNITS or elapsed < ETA_MIN_S:
             return None
         return round_eta((self.total - self.done) * elapsed / units)
