@@ -82,6 +82,49 @@ class TestCloudDispatch:
             await _llm_mod.call_model_gateway("synapse.nova-pro", [], "s", {"model_gateway_base_url": "http://gw"})
         assert "model wallet has 0 microUSD available" in str(err.value)
         assert str(err.value).startswith("Model gateway refused the call")
+        assert err.value.status == 402 and err.value.code == _llm_mod.QUOTA_EXHAUSTED
+
+    async def test_model_gateway_refusal_says_its_sentence_not_its_json(self, monkeypatch):
+        """F317: a model that cannot read images is refused in a sentence, which is
+        what a person reads — once, as a refusal, never retried."""
+        body = ('{"error":{"message":"model \'nova-micro\' cannot read images: choose a model that can, '
+                'or send text only.","type":"invalid_request_error","code":"images_unsupported"}}')
+
+        async def _refused(*a, **k):
+            raise _llm_mod.LLMError(f"V1-compatible LLM Error: failed after 1 attempt. Last error: HTTP 400: {body}")
+
+        monkeypatch.setattr(_llm_mod, "call_v1_compatible", _refused)
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _llm_mod.call_model_gateway("synapse.nova-micro", [], "s", {"model_gateway_base_url": "http://gw"})
+        assert str(err.value) == ("Model gateway refused the call: model 'nova-micro' cannot read images: "
+                                  "choose a model that can, or send text only.")
+        assert err.value.status == 400
+        assert err.value.code == _llm_mod.PROVIDER_REFUSED and not err.value.retryable
+
+    async def test_model_gateway_keeps_the_class_its_body_gave(self, monkeypatch):
+        """A refusal whose JSON, not its sentence, named the account: still quota."""
+        body = '{"error":{"message":"Request refused.","code":"insufficient_quota"}}'
+
+        async def _refused(*a, **k):
+            raise _llm_mod.LLMError(f"V1-compatible LLM Error: failed after 1 attempt. Last error: HTTP 429: {body}")
+
+        monkeypatch.setattr(_llm_mod, "call_v1_compatible", _refused)
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _llm_mod.call_model_gateway("synapse.nova-pro", [], "s", {"model_gateway_base_url": "http://gw"})
+        assert err.value.code == _llm_mod.QUOTA_EXHAUSTED and err.value.status == 429
+
+    async def test_model_gateway_5xx_is_left_as_it_was(self, monkeypatch):
+        """A failure of the backend behind the gateway is a provider's, and retried."""
+        message = ('V1-compatible LLM Error: failed after 5 attempts. Last error: HTTP 502: '
+                   '{"error":{"message":"the platform model backend refused the call."}}')
+
+        async def _failed(*a, **k):
+            raise _llm_mod.LLMError(message)
+
+        monkeypatch.setattr(_llm_mod, "call_v1_compatible", _failed)
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _llm_mod.call_model_gateway("synapse.nova-pro", [], "s", {"model_gateway_base_url": "http://gw"})
+        assert str(err.value) == message and err.value.retryable
 
     async def test_embed_routes_synapse_to_gateway(self, monkeypatch):
         seen = {}

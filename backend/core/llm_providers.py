@@ -2497,13 +2497,18 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
             max_tokens=max_tokens,
         )
     except LLMError as e:
-        if "HTTP 402" not in str(e):
+        # Any refusal the gateway made itself (a 4xx) says why in a sentence:
+        # the figures for a 402, the reason otherwise — a model that cannot read
+        # images, say (F317). Kept with its status and code, so the retry and
+        # the classification stay as they were; the gateway's JSON never reaches
+        # a person's chat.
+        if e.status is None or not 400 <= e.status < 500:
             raise
         detail = re.search(r'"message"\s*:\s*"([^"]+)"', str(e))
         if detail is None:
             raise
         raise LLMError(f"Model gateway refused the call: {detail.group(1)}",
-                       provider="gateway", status=402) from e
+                       provider="gateway", status=e.status, code=e.code) from e
 
 
 async def _bedrock_converse_direct(
