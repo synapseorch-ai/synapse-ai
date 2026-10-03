@@ -170,15 +170,17 @@ def _isolate_knowledge_seams():
     """Every Knowledge seam, the Vault observer and the lifecycle observers back
     to their defaults around each test, so one test's fake never serves the next."""
     from core import vault_events
-    from core.knowledge import costs, events, seams
+    from core.knowledge import costs, events, seams, web
 
     seams.reset_all()
     costs.set_platform_pricer(None)
+    web.set_crawl_runner(None)
     vault_events.set_vault_observer(None)
     events.knowledge_observers.clear()
     yield
     seams.reset_all()
     costs.set_platform_pricer(None)
+    web.set_crawl_runner(None)
     vault_events.set_vault_observer(None)
     events.knowledge_observers.clear()
 

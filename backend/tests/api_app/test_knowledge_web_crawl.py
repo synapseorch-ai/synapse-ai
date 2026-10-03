@@ -606,3 +606,255 @@ class TestRecrawls:
         with pytest.raises(asyncio.CancelledError):
             await sync.reconcile_forever(interval=0)
         assert calls == [{}]
+
+
+# ── S1c (D181): a crawl driven elsewhere — cloud's knowledge worker ─────────────
+
+class _Runner:
+    """What cloud's crawl job does, run here when a test says so."""
+
+    def __init__(self):
+        self.started: list[tuple[str, str, str]] = []
+        self.forgot: list[tuple[str, str, list[str]]] = []
+        self.fail = False
+
+    async def start(self, kb_id, source_id, crawl_id):
+        if self.fail:
+            raise RuntimeError("the queue is down")
+        self.started.append((kb_id, source_id, crawl_id))
+
+    async def forget(self, kb_id, source_id, paths):
+        self.forgot.append((kb_id, source_id, list(paths)))
+
+    async def run(self, **kw):
+        """Every crawl started so far, as the worker's job runs it."""
+        started, self.started = self.started, []
+        return [await web.run_crawl(kb_id, source_id, crawl_id, **kw) for kb_id, source_id, crawl_id in started]
+
+
+@pytest.fixture
+def runner():
+    fake = _Runner()
+    web.set_crawl_runner(fake)
+    yield fake
+    web.set_crawl_runner(None)
+
+
+class _Hold:
+    """Hold a crawl just before it fetches the page ending `suffix`. Always released on exit, so a
+    failing test never leaves a crawl waiting for the next test's `crawled()`."""
+
+    def __init__(self, monkeypatch, suffix: str):
+        self.reached, self.release = asyncio.Event(), asyncio.Event()
+        real = web._page
+
+        async def held(c, url, **kw):
+            if url.endswith(suffix):
+                self.reached.set()
+                await asyncio.wait_for(self.release.wait(), 30)
+            return await real(c, url, **kw)
+
+        monkeypatch.setattr(web, "_page", held)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        self.release.set()
+
+    async def wait(self):
+        await asyncio.wait_for(self.reached.wait(), 30)
+
+
+def _ago(**kw) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat()
+
+
+class TestARunner:
+    async def test_a_crawl_goes_to_the_runner_and_never_runs_here(self, on, site, jobs, indexer, runner):
+        kb = await _kb(on)
+        accepted = await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        assert (kb_id, crawl_id) == (kb["id"], accepted["crawl_id"]) and _Site.hits == []
+        assert not any(not t.done() for t in web._tasks.values())
+        [state] = await crawls(on, kb["id"])
+        assert state["status"] == "queued"  # waiting for its worker: live, not "interrupted"
+        [result] = await runner.run()
+        assert result["status"] == "done"
+        await drain(jobs)
+        assert len(await docs(kb["id"])) == 4
+
+    async def test_a_crawl_the_runner_cannot_queue_is_failed_and_says_so(self, on, site, jobs, runner):
+        runner.fail = True
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [state] = await crawls(on, kb["id"])
+        assert state["status"] == "failed" and "could not be queued" in state["last_error"]
+
+    async def test_fetching_again_while_one_waits_changes_nothing(self, on, site, jobs, runner):
+        kb = await _kb(on)
+        first = await add(on, kb["id"], f"{site}/docs/")
+        await add(on, kb["id"], f"{site}/docs/")
+        assert [c for _, _, c in runner.started] == [first["crawl_id"]]
+        [state] = await crawls(on, kb["id"])
+        assert (state["status"], state["crawl_id"]) == ("queued", first["crawl_id"])
+
+    async def test_a_running_crawl_is_live_while_its_own_heartbeat_is_fresh(self, on, site, jobs, runner):
+        kb = await _kb(on)
+        first = await add(on, kb["id"], f"{site}/docs/")
+        [(_, source_id, crawl_id)] = runner.started
+        state = await web.load_state(source_id)
+        await web.save_state(source_id, {**state, "status": "running", "started_at": _ago(minutes=11)})
+        assert (await crawls(on, kb["id"]))[0]["status"] == "interrupted"  # its worker went quiet
+        await web.save_beat(source_id, {"crawl_id": crawl_id, "at": _ago(seconds=5)})
+        assert (await crawls(on, kb["id"]))[0]["status"] == "running"
+        await web.save_beat(source_id, {"crawl_id": "kcr_000000000000", "at": _ago(seconds=5)})
+        assert (await crawls(on, kb["id"]))[0]["status"] == "interrupted"  # an earlier crawl's beat says nothing
+        assert first["crawl_id"] == crawl_id
+
+    async def test_only_the_crawl_its_row_names_runs_and_only_until_it_finishes(self, on, site, jobs, indexer, runner):
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        stray = await web.run_crawl(kb_id, source_id, "kcr_000000000000")
+        assert (stray["crawl_id"], stray["status"]) == (crawl_id, "queued") and _Site.hits == []
+        [done] = await runner.run()
+        hits = len(_Site.hits)
+        again = await web.run_crawl(kb_id, source_id, crawl_id)  # delivered twice
+        assert (again["status"], again["finished_at"]) == ("done", done["finished_at"]) and len(_Site.hits) == hits
+
+    async def test_a_crawl_its_worker_stopped_is_interrupted_and_armed_again_as_itself(
+            self, on, site, jobs, indexer, runner, monkeypatch):
+        from core.knowledge import bases
+
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        runner.started.clear()
+        async with _Hold(monkeypatch, "/docs/b") as hold:
+            task = asyncio.create_task(web.run_crawl(kb_id, source_id, crawl_id))
+            await hold.wait()
+            task.cancel()  # arq stopping for a deploy
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        state = await web.load_state(source_id)
+        assert (state["status"], state["crawl_id"], state.get("finished_at")) == ("interrupted", crawl_id, None)
+        assert (await crawls(on, kb["id"]))[0]["status"] == "interrupted"
+        assert await web.start_due(await bases.require_base(kb_id)) == 1
+        assert runner.started == [(kb_id, source_id, crawl_id)]  # the same crawl: it keeps its place
+        [result] = await runner.run()
+        assert result["status"] == "done"
+
+    async def test_a_crawl_started_three_times_without_finishing_fails(self, on, site, jobs, runner):
+        from core.knowledge import bases
+
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        runner.started.clear()
+        state = await web.load_state(source_id)
+        await web.save_state(source_id, {**state, "status": "interrupted"})
+        await web.save_beat(source_id, {"crawl_id": crawl_id, "at": _ago(minutes=30), "attempts": web.MAX_ATTEMPTS})
+        assert await web.start_due(await bases.require_base(kb_id)) == 0
+        state = await web.load_state(source_id)
+        assert state["status"] == "failed" and "3 times" in state["last_error"] and runner.started == []
+
+    async def test_the_heartbeat_says_what_the_crawl_has_reached(self, on, site, jobs, indexer, runner, monkeypatch):
+        monkeypatch.setattr(web, "HEARTBEAT_EVERY_S", 0.0)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        h = host(site)
+        seen = {}
+        real = web._page
+
+        async def peek(c, url, **kw):
+            if url.endswith("/docs/notes.txt"):  # the beat written as /docs/b began: index and a reached
+                seen.update(await web.load_beat(source_id))
+            return await real(c, url, **kw)
+
+        monkeypatch.setattr(web, "_page", peek)
+        await runner.run()
+        assert seen["crawl_id"] == crawl_id and seen["attempts"] == 1
+        assert {f"_web/{h}/docs/index.md", f"_web/{h}/docs/a.md"} <= set(seen["reached"])
+        assert await web.load_beat(source_id) == {}  # a finished crawl keeps no heartbeat
+
+    async def test_a_source_removed_mid_crawl_leaves_no_page_and_no_row(
+            self, on, site, jobs, indexer, runner, monkeypatch):
+        from core.knowledge import bases
+
+        monkeypatch.setattr(web, "HEARTBEAT_EVERY_S", 0.0)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        runner.started.clear()
+        async with _Hold(monkeypatch, "/docs/notes.txt") as hold:  # index and a reached, b written
+            task = asyncio.create_task(web.run_crawl(kb_id, source_id, crawl_id))
+            await hold.wait()
+            base = (await on.get(f"/api/knowledge/bases/{kb_id}")).json()
+            resp = await on.patch(f"/api/knowledge/bases/{kb_id}",
+                                  json={"revision": base["revision"], "web": {**base["web"], "sources": []}})
+            assert resp.status_code == 200, resp.text
+        await asyncio.wait_for(task, 30)
+        [(_, forgot_source, paths)] = runner.forgot
+        h = host(site)
+        assert forgot_source == source_id and {f"_web/{h}/docs/index.md", f"_web/{h}/docs/a.md"} <= set(paths)
+        await web.forget_pages(await bases.require_base(kb_id), source_id, paths)  # the runner's job
+        await drain(jobs)
+        assert await docs(kb_id) == {}
+        assert await web.load_state(source_id) == {} and await web.load_beat(source_id) == {}  # no orphan row
+
+    async def test_a_removed_sources_pages_go_through_the_runner_not_the_request(
+            self, on, site, jobs, indexer, runner):
+        from core.knowledge import bases
+
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, _)] = runner.started
+        await runner.run()
+        await drain(jobs)
+        base = (await on.get(f"/api/knowledge/bases/{kb_id}")).json()
+        resp = await on.patch(f"/api/knowledge/bases/{kb_id}",
+                              json={"revision": base["revision"], "web": {**base["web"], "sources": []}})
+        assert resp.status_code == 200, resp.text
+        [(_, _, paths)] = runner.forgot
+        assert len(paths) == 4 and len(await docs(kb_id)) == 4  # nothing deleted in the request
+        assert await web.forget_pages(await bases.require_base(kb_id), source_id, paths) == 4
+        await drain(jobs)
+        assert await docs(kb_id) == {}
+
+
+class TestFetchingAgainDuringACrawl:
+    async def test_it_is_refused_and_the_running_crawl_keeps_its_row(self, on, site, jobs, indexer, monkeypatch):
+        """F350: the second request wrote `queued` over the running crawl's row, and was then lost."""
+        kb = await _kb(on)
+        async with _Hold(monkeypatch, "/docs/b") as hold:
+            first = await on.post(f"/api/knowledge/bases/{kb['id']}/urls", json={"urls": [f"{site}/docs/"], "kind": "site"})
+            await hold.wait()
+            again = await on.post(f"/api/knowledge/bases/{kb['id']}/urls",
+                                  json={"urls": [f"{site}/docs/"], "kind": "site"})
+            assert again.status_code == 202
+            [state] = await crawls(on, kb["id"])
+        await crawled()
+        assert (state["status"], state["crawl_id"]) == ("running", first.json()["crawl_id"])
+        [state] = await crawls(on, kb["id"])
+        assert (state["status"], state["crawl_id"]) == ("done", first.json()["crawl_id"])
+
+
+class TestStartDue:
+    async def test_one_bases_due_crawls_start_without_the_loops_throttle(self, on, site, jobs, indexer):
+        from core.knowledge import bases
+
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/a", kind="page")
+        await drain(jobs)
+        [source] = (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["web"]["sources"]
+        await web.start_due_crawls(force=True)  # the loop's throttle is now armed
+        state = await web.load_state(source["id"])
+        await web.save_state(source["id"], {**state, "finished_at": _ago(days=8)})
+        assert await web.start_due(await bases.require_base(kb["id"])) == 1
+        await crawled()
+        assert (await crawls(on, kb["id"]))[0]["crawl_id"] != state["crawl_id"]
+

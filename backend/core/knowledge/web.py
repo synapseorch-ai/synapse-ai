@@ -36,8 +36,20 @@ fetch are only counted.
 
 **Re-crawl** is due `recrawl_days` after a crawl finished (0: never). OSS's
 reconcile loop starts what is due (`start_due_crawls`) — and any crawl a
-restart interrupted. Cloud never scans: it arms a job per `next_due_at` and runs
-`run_crawl` (S1's cloud half).
+restart interrupted. Cloud never scans: its tend pass calls `start_due` for one
+base, armed at the earliest `next_due_at` (S1c, D181).
+
+**Where a crawl runs.** OSS runs it in this process (`_start`). A deployment
+with a `CrawlRunner` (`set_crawl_runner`, cloud's knowledge worker) runs it
+elsewhere, so nothing here can ask a task whether it is alive: a crawl is
+judged by its row. Queued is live; running is live while its own heartbeat
+(a row of its own, `knowledge_web_beat:<kws_id>`, written every
+`HEARTBEAT_EVERY_S` with what the crawl has reached so far) is younger than
+`RUNNER_STALE`. A crawl runs only while its row still names it and it has not
+finished, so a stray or second delivery changes nothing; a worker stopped
+mid-crawl leaves it `interrupted`, and the same crawl is armed again, at most
+`MAX_ATTEMPTS` times. A removed source's pages are deleted by the runner, not
+by the request that removed it.
 """
 from __future__ import annotations
 
@@ -49,9 +61,10 @@ import posixpath
 import time
 import unicodedata
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from core.knowledge.ids import CRAWL_PREFIX, WEB_DIR, new_id, new_web_source_id
@@ -66,7 +79,15 @@ if TYPE_CHECKING:  # pragma: no cover
 _log = get_logger(__name__)
 
 STATE_PREFIX = "knowledge_web:"
+#: A crawl's heartbeat, apart from its row (S1c): `{crawl_id, at, attempts, reached, outcomes}`.
+BEAT_PREFIX = "knowledge_web_beat:"
 MAX_SOURCES = 50
+#: With a runner: a running crawl whose own heartbeat is older than this was left by a worker that stopped.
+RUNNER_STALE = timedelta(minutes=10)
+#: With a runner: how often a crawl says it is alive, and what it has reached so far.
+HEARTBEAT_EVERY_S = 60.0
+#: A crawl started this many times without finishing fails, rather than being started again.
+MAX_ATTEMPTS = 3
 #: Crawls running at once in one process; more wait their turn.
 MAX_CONCURRENT_CRAWLS = 2
 #: How often OSS's reconcile loop looks for a re-crawl that is due.
@@ -275,6 +296,25 @@ async def drop_state(source_id: str) -> None:
     from core.store import collections
 
     await collections.save(_state_name(source_id), [])
+    await collections.save(f"{BEAT_PREFIX}{source_id}", [])
+
+
+async def load_beat(source_id: str) -> dict[str, Any]:
+    from core.store import collections
+
+    return dict(await collections.load_one(f"{BEAT_PREFIX}{source_id}", {}) or {})
+
+
+async def save_beat(source_id: str, beat: dict[str, Any]) -> None:
+    from core.store import collections
+
+    await collections.save_one(f"{BEAT_PREFIX}{source_id}", beat)
+
+
+async def _drop_beat(source_id: str) -> None:
+    from core.store import collections
+
+    await collections.save(f"{BEAT_PREFIX}{source_id}", [])
 
 
 async def _held_by_others(kb: KnowledgeBase, source_id: str) -> tuple[set[str], set[str]]:
@@ -347,12 +387,83 @@ async def cancel(source_id: str) -> None:
         pass
 
 
+class CrawlRunner(Protocol):
+    """Where crawls run when not in this process — cloud's knowledge worker (S1c, D181)."""
+
+    async def start(self, kb_id: str, source_id: str, crawl_id: str) -> None:
+        """Have `run_crawl(kb_id, source_id, crawl_id)` run soon, elsewhere. Idempotent per crawl: starting
+        one that is already waiting changes nothing. Raising leaves a new crawl `failed`."""
+
+    async def forget(self, kb_id: str, source_id: str, paths: list[str]) -> None:
+        """Have `forget_pages(kb, source_id, paths)` run elsewhere: a removed source's pages (paths
+        relative to the base's folder), deleted unless another source holds them."""
+
+
+_runner: CrawlRunner | None = None
+
+
+def set_crawl_runner(runner: CrawlRunner | None) -> None:
+    """Cloud: crawls are run by `runner`. None: by this process (OSS)."""
+    global _runner
+    _runner = runner
+
+
+def get_crawl_runner() -> CrawlRunner | None:
+    return _runner
+
+
+async def _live(source_id: str, state: dict[str, Any]) -> bool:
+    """Whether the source's crawl is waiting or running now. OSS: this process holds its task. With a
+    runner: queued, or running with a heartbeat of its own younger than `RUNNER_STALE`."""
+    if _runner is None:
+        return is_running(source_id)
+    status = state.get("status")
+    if status == "queued":
+        return True
+    if status != "running":
+        return False
+    stamps = [state.get("started_at")]
+    beat = await load_beat(source_id)
+    if beat.get("crawl_id") and beat.get("crawl_id") == state.get("crawl_id"):
+        stamps.append(beat.get("at"))
+    seen = [datetime.fromisoformat(s) for s in stamps if s]
+    return bool(seen) and _now() - max(seen) < RUNNER_STALE
+
+
+_queue_locks: dict[tuple[int, str, str], asyncio.Lock] = {}
+
+
+def _queue_lock(source_id: str) -> asyncio.Lock:
+    from core.tenancy import get_tenant
+
+    key = (id(asyncio.get_running_loop()), get_tenant(), source_id)
+    lock = _queue_locks.get(key)
+    if lock is None:
+        lock = _queue_locks[key] = asyncio.Lock()
+    return lock
+
+
 async def _queue(kb: KnowledgeBase, source: WebSource, crawl_id: str, **request: Any) -> bool:
-    state = await load_state(source.id)
-    state.update(source_id=source.id, kb_id=kb.id, url=source.url, kind=source.kind, crawl_id=crawl_id,
-                 status="queued", queued_at=_now().isoformat(), **request)
-    await save_state(source.id, state)
-    return _start(kb.id, source.id, crawl_id)
+    """Queue a new crawl of `source`, unless one is waiting or running: that one keeps its row (F350 — the
+    request used to write `queued` over a running crawl, which then wrote its own row back)."""
+    async with _queue_lock(source.id):
+        state = await load_state(source.id)
+        if await _live(source.id, state):
+            return False
+        state.update(source_id=source.id, kb_id=kb.id, url=source.url, kind=source.kind, crawl_id=crawl_id,
+                     status="queued", queued_at=_now().isoformat(), **request)
+        await save_state(source.id, state)
+        if _runner is None:
+            return _start(kb.id, source.id, crawl_id)
+    try:
+        await _runner.start(kb.id, source.id, crawl_id)
+    except Exception as exc:  # noqa: BLE001 — the crawl says why it did not run
+        _log.warning(f"knowledge crawl of {source.id} not queued: {exc!r}")
+        state.update(status="failed", finished_at=_now().isoformat(),
+                     last_error=f"The crawl could not be queued: {exc}"[:2000])
+        await save_state(source.id, state)
+        return False
+    return True
 
 
 # ── sources: added, removed, listed ────────────────────────────────────────────
@@ -418,19 +529,39 @@ async def sources_changed(before: KnowledgeBase, after: KnowledgeBase) -> None:
 
 async def forget_source(kb: KnowledgeBase, source_id: str) -> int:
     """Stop the source's crawl and delete what it alone holds. `kb` no longer lists it. Returns how
-    many documents were deleted."""
-    from core.knowledge import documents, ingest
-
+    many documents were deleted here: none with a runner, which deletes them (`forget_pages`) — and a
+    crawl still running stops at its next check and deletes what it reached since its last heartbeat."""
     await cancel(source_id)
     state = await load_state(source_id)
+    paths = set(state.get("pages") or []) | set(state.get("outcomes") or [])
+    if _runner is None:
+        gone = await forget_pages(kb, source_id, paths)
+        await drop_state(source_id)
+        return gone
+    beat = await load_beat(source_id)
+    if beat.get("crawl_id") and beat.get("crawl_id") == state.get("crawl_id"):
+        paths |= set(beat.get("reached") or []) | set(beat.get("outcomes") or [])
+    await drop_state(source_id)
+    if paths:
+        try:
+            await _runner.forget(kb.id, source_id, sorted(paths))
+        except Exception as exc:  # noqa: BLE001 — the source is already gone from the base
+            _log.warning(f"knowledge: the pages of removed source {source_id} were not queued for deletion: {exc!r}")
+    return 0
+
+
+async def forget_pages(kb: KnowledgeBase, source_id: str, paths: Any) -> int:
+    """Delete the documents at `paths` (relative to the base's folder) that no other source of `kb` holds.
+    `source_id` is the source they came from, which `kb` no longer lists. Returns how many it deleted."""
+    from core.knowledge import documents, ingest
+
     pages, outcomes = await _held_by_others(kb, source_id)
     gone = 0
-    for rel in (set(state.get("pages") or []) - pages) | (set(state.get("outcomes") or []) - outcomes):
+    for rel in sorted(set(paths) - pages - outcomes):
         row = await documents.get_by_path(kb.id, f"{kb.folder}/{rel}")
         if row is not None and row.status != "deleting":
             await ingest.delete_document(row)
             gone += 1
-    await drop_state(source_id)
     return gone
 
 
@@ -459,7 +590,7 @@ async def crawl_states(kb: KnowledgeBase) -> list[WebCrawlState]:
     for source in kb.web.sources:
         state = await load_state(source.id)
         status = state.get("status") or "idle"
-        if status in ("queued", "running") and not is_running(source.id):
+        if status in ("queued", "running") and not await _live(source.id, state):
             status = "interrupted"  # the process that ran it stopped; the next due pass runs it again
         due = _next_due(kb, state)
         out.append(WebCrawlState(
@@ -481,21 +612,56 @@ async def start_due_crawls(*, force: bool = False) -> int:
     if not force and clock - _last_due.get(tenant, float("-inf")) < DUE_CHECK_EVERY_S:
         return 0
     _last_due[tenant] = clock
-    now = _now()
     started = 0
     for kb in await bases.list_bases():
-        if kb.status != "active":
-            continue
-        for source in kb.web.sources:
-            if is_running(source.id):
-                continue
-            state = await load_state(source.id)
-            due = _next_due(kb, state)
-            if not state.get("finished_at") or state.get("status") in ("queued", "running") or (
-                    due is not None and now >= due):
-                if await _queue(kb, source, new_id(CRAWL_PREFIX)):
-                    started += 1
+        if kb.status == "active":
+            started += await start_due(kb)
     return started
+
+
+async def start_due(kb: KnowledgeBase) -> int:
+    """Start every crawl of `kb` that is due, never finished, or was stopped mid-crawl — cloud's tend pass
+    calls this for one base (S1c). With a runner, a crawl that is waiting or was stopped is armed again as
+    itself (a no-op while its job exists, and back in place if it was lost), unless it was started
+    `MAX_ATTEMPTS` times without finishing; then it fails. Returns how many it started or armed."""
+    now = _now()
+    started = 0
+    for source in kb.web.sources:
+        state = await load_state(source.id)
+        status = state.get("status")
+        if _runner is not None and status in ("queued", "running", "interrupted") and state.get("crawl_id"):
+            if status == "running" and await _live(source.id, state):
+                continue
+            if await _resume(kb, source, state):
+                started += 1
+            continue
+        if _runner is None and is_running(source.id):
+            continue
+        due = _next_due(kb, state)
+        if not state.get("finished_at") or status in ("queued", "running", "interrupted") or (
+                due is not None and now >= due):
+            if await _queue(kb, source, new_id(CRAWL_PREFIX)):
+                started += 1
+    return started
+
+
+async def _resume(kb: KnowledgeBase, source: WebSource, state: dict[str, Any]) -> bool:
+    """Arm a waiting or stopped crawl again as itself, or fail it once it has been started too often."""
+    beat = await load_beat(source.id)
+    attempts = int(beat.get("attempts") or 0) if beat.get("crawl_id") == state["crawl_id"] else 0
+    if state.get("status") != "queued" and attempts >= MAX_ATTEMPTS:
+        state.update(status="failed", finished_at=_now().isoformat(),
+                     last_error=f"The crawl stopped {attempts} times before it finished; it is tried again later.")
+        await save_state(source.id, state)
+        await _drop_beat(source.id)
+        return False
+    assert _runner is not None
+    try:
+        await _runner.start(kb.id, source.id, state["crawl_id"])
+    except Exception as exc:  # noqa: BLE001 — the next pass arms it again
+        _log.warning(f"knowledge crawl of {source.id} not armed again: {exc!r}")
+        return False
+    return True
 
 
 _last_due: dict[str, float] = {}
@@ -526,6 +692,9 @@ class _Crawl:
     last_error: str | None = None
     checked_at: float = 0.0
     owned: bool = True  # a source of the base runs it; False: one page fetched for a document no source holds
+    crawl_id: str | None = None  # None: `fetch_document`'s one page, which keeps no heartbeat
+    attempts: int = 0
+    beat_at: float = float("-inf")
 
     def rel(self, path: str) -> str:
         return path[len(self.kb.folder) + 1:] if path.startswith(self.kb.folder + "/") else path
@@ -576,20 +745,27 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str) -> dict[str, Any]
     if kb is None or source is None:
         return {}
     state = await load_state(source_id)
+    if state.get("crawl_id") != crawl_id or state.get("status") not in ("queued", "running", "interrupted"):
+        return state  # superseded, finished, or never queued: not this crawl to run (a stray or second delivery)
     if not knowledge_enabled() or kb.status != "active":
         state.update(status="cancelled", finished_at=_now().isoformat(),
                      last_error="The knowledge base is disabled, or Knowledge is off.")
         await save_state(source_id, state)
         return state
+    beat = await load_beat(source_id)
+    attempts = (int(beat.get("attempts") or 0) if beat.get("crawl_id") == crawl_id else 0) + 1
     max_depth, max_pages, rps, doc_cap = _limits(kb, state)
     state.update(source_id=source_id, kb_id=kb.id, url=source.url, kind=source.kind, crawl_id=crawl_id,
                  status="running", started_at=_now().isoformat(), finished_at=None, last_error=None)
     await save_state(source_id, state)
+    if _runner is not None:
+        await save_beat(source_id, {"crawl_id": crawl_id, "at": _now().isoformat(), "attempts": attempts})
     by_url, by_path = await _web_rows(kb)
     status = "done"
     async with Fetcher(rps=rps) as fetcher:
         c = _Crawl(kb=kb, source=source, fetcher=fetcher, metadata=dict(state.get("metadata") or {}),
-                   doc_cap=doc_cap, by_url=by_url, by_path=by_path)
+                   doc_cap=doc_cap, by_url=by_url, by_path=by_path, crawl_id=crawl_id, attempts=attempts,
+                   beat_at=time.monotonic())
         try:
             if source.kind == "page":
                 c.named.add(source.url)
@@ -603,6 +779,9 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str) -> dict[str, Any]
             status = "cancelled"
             c.note(str(exc))
         except asyncio.CancelledError:
+            if _runner is not None:  # its worker stopped (a deploy, a scale-in): the same crawl runs again
+                await asyncio.shield(_interrupted(c, state))
+                raise
             status = "cancelled"
             c.note("The crawl was stopped.")
             await asyncio.shield(_finish(c, state, status, complete=False))
@@ -623,10 +802,46 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str) -> dict[str, Any]
         return await _finish(c, state, status, complete=complete)
 
 
+async def _still_mine(c: _Crawl) -> dict[str, Any] | None:
+    """The source's row while it still names this crawl, else None — and when the row is gone (the
+    source was removed, its base deleted), what this crawl reached that no other source holds is deleted:
+    the request that removed it deleted only what the row and the heartbeat had seen."""
+    from core.knowledge import bases
+
+    current = await load_state(c.source.id)
+    if current.get("crawl_id") == c.crawl_id:
+        return current
+    if not current:
+        kb = await bases.get_base(c.kb.id)
+        if kb is not None and c.owned:
+            try:
+                await forget_pages(kb, c.source.id, c.reached | c.outcomes)
+            except Exception as exc:  # noqa: BLE001 — logged; nothing else holds them
+                _log.warning(f"knowledge crawl of {c.source.id}: pages of a removed source not deleted: {exc!r}")
+    beat = await load_beat(c.source.id)
+    if beat.get("crawl_id") == c.crawl_id:
+        await _drop_beat(c.source.id)
+    return None
+
+
+async def _interrupted(c: _Crawl, state: dict[str, Any]) -> None:
+    """A crawl whose worker stopped: `interrupted`, holding what it reached, so the same crawl runs again."""
+    if await _still_mine(c) is None:
+        return
+    previous = set(state.get("pages") or [])
+    previous_outcomes = set(state.get("outcomes") or [])
+    state.update(status="interrupted", counts=c.counts, pages=sorted(previous | c.reached),
+                 outcomes=sorted(previous_outcomes | c.outcomes))
+    await save_state(c.source.id, state)
+
+
 async def _finish(c: _Crawl, state: dict[str, Any], status: str, *, complete: bool) -> dict[str, Any]:
-    """Delete what a complete crawl no longer reached; record the crawl."""
+    """Delete what a complete crawl no longer reached; record the crawl — unless its row no longer names
+    it (removed, or another crawl took over), which it never writes back."""
     from core.knowledge import ingest
 
+    if await _still_mine(c) is None:
+        return await load_state(c.source.id)
     previous = set(state.get("pages") or [])
     previous_outcomes = set(state.get("outcomes") or [])
     if complete:
@@ -644,6 +859,8 @@ async def _finish(c: _Crawl, state: dict[str, Any], status: str, *, complete: bo
                  pages=sorted(c.reached if complete else previous | c.reached),
                  outcomes=sorted(c.outcomes if complete else previous_outcomes | c.outcomes))
     await save_state(c.source.id, state)
+    if _runner is not None:
+        await _drop_beat(c.source.id)
     return state
 
 
@@ -656,6 +873,7 @@ async def _check(c: _Crawl) -> None:
     from core.knowledge import bases
     from core.knowledge.config import knowledge_enabled
 
+    await _beat(c)
     clock = time.monotonic()
     if clock - c.checked_at < 5.0:
         return
@@ -665,6 +883,23 @@ async def _check(c: _Crawl) -> None:
         raise _Stop("The knowledge base was deleted or disabled, or Knowledge was switched off.")
     if c.owned and not any(s.id == c.source.id for s in kb.web.sources):
         raise _Stop("The source was removed.")
+
+
+async def _beat(c: _Crawl) -> None:
+    """With a runner, every `HEARTBEAT_EVERY_S`: say this crawl is alive and what it has reached (in a
+    row of its own: `_finish` stays the only writer of the source's row). A row that no longer names
+    this crawl stops it."""
+    if _runner is None or c.crawl_id is None:
+        return
+    clock = time.monotonic()
+    if clock - c.beat_at < HEARTBEAT_EVERY_S:
+        return
+    c.beat_at = clock
+    current = await load_state(c.source.id)
+    if current.get("crawl_id") != c.crawl_id:
+        raise _Stop("The source was removed, or another crawl of it started.")
+    await save_beat(c.source.id, {"crawl_id": c.crawl_id, "at": _now().isoformat(), "attempts": c.attempts,
+                                  "reached": sorted(c.reached), "outcomes": sorted(c.outcomes)})
 
 
 async def _site(c: _Crawl, max_depth: int, max_pages: int) -> None:
