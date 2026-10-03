@@ -4923,6 +4923,10 @@ async def check_menuclose(browser) -> str:
         await asyncio.sleep(0.5)
         if await dialog.count():
             bad.append("Escape leaves the Delete dialog open")
+        back_on = await page.evaluate(
+            "() => document.activeElement?.getAttribute('aria-label') || document.activeElement?.tagName")
+        if back_on != "More actions":
+            bad.append(f"closing the Delete dialog left focus on {back_on}, not the menu's button (F310)")
         if await page.evaluate(open_menus):
             bad.append("the menu is still open once the Delete dialog closes")
         stuck = await page.evaluate("() => getComputedStyle(document.body).pointerEvents")
@@ -4957,6 +4961,62 @@ async def check_menuclose(browser) -> str:
     finally:
         await ctx.close()
         drop_fixture(oid)
+
+
+@check
+async def check_dialogfocus(browser) -> str:
+    """A kit dialog gives focus back to whatever opened it when it closes (F310).
+
+    `Modal` and `ConfirmDialog` are opened from state, with no `Dialog.Trigger`,
+    and Radix only hands focus back to its own trigger: every close dropped it
+    on `<body>`, so a keyboard or screen-reader user lost their place after each
+    confirm. Opened from the keyboard here, as that user would, and closed each
+    way a dialog closes: Escape, a footer button, the X.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    focused = """() => { const el = document.activeElement;
+      return el === document.body ? 'BODY' : (el?.getAttribute('aria-label') || el?.textContent?.trim()); }"""
+    try:
+        bad: list[str] = []
+        await page.goto(f"{APP}/kitchen-sink", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        cases = [
+            ("Open modal", "dialog", "Escape", None),
+            ("Open modal", "dialog", None, "Save"),
+            ("Open modal", "dialog", None, "Close"),
+            ("Delete something", "dialog", "Escape", None),
+            ("Delete something", "dialog", None, "Cancel"),
+        ]
+        for opener, role, key, button in cases:
+            await page.get_by_role("button", name=opener, exact=True).focus()
+            await page.keyboard.press("Enter")
+            dialog = page.get_by_role(role)
+            try:
+                await dialog.first.wait_for(timeout=5_000)
+            except Exception:
+                bad.append(f"Enter on {opener!r} opens no dialog")
+                continue
+            await asyncio.sleep(0.3)
+            if key:
+                await page.keyboard.press(key)
+            else:
+                await dialog.get_by_role("button", name=button, exact=True).click()
+            await asyncio.sleep(0.5)
+            how = key or f"its {button} button"
+            if await dialog.count():
+                bad.append(f"{how} leaves {opener!r}'s dialog open")
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.5)
+                continue
+            back_on = await page.evaluate(focused)
+            if back_on != opener:
+                bad.append(f"closing {opener!r}'s dialog with {how} left focus on {back_on!r}")
+        if bad:
+            raise AssertionError("; ".join(bad))
+        return "a Modal and a ConfirmDialog hand focus back to their opener on Escape, a footer button and the X"
+    finally:
+        await ctx.close()
 
 
 def _png(width: int = 4, height: int = 3) -> bytes:
@@ -5016,11 +5076,13 @@ async def check_lightbox(browser) -> str:
                 bad.append(f"the dialog draws {src[:40]!r}, not the attached image")
             if not await page.evaluate("() => !!document.activeElement?.closest('[role=dialog]')"):
                 bad.append("focus is not inside the image's dialog")
-            # Where focus goes on close is every kit dialog's (F310), not this one's.
             await page.keyboard.press("Escape")
             await asyncio.sleep(0.5)
             if await dialog.count():
                 bad.append("Escape leaves the image open")
+            back_on = await page.evaluate("() => document.activeElement?.getAttribute('aria-label')")
+            if back_on != "Open attached image 1":
+                bad.append(f"closing the image left focus on {back_on}, not its thumbnail (F310)")
         if len(ctx.pages) != pages_before:
             bad.append(f"opening the image opened {len(ctx.pages) - pages_before} new page(s)")
         fetched = [u for u in requests if not u.startswith("data:")]
