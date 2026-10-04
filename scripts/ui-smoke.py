@@ -170,6 +170,39 @@ async def check_token(browser) -> str:
 
 
 @check
+async def check_bodylimit(browser) -> str:
+    """A body over 10 MB reaches the backend whole through the app, and one over the limit is refused at once (F364).
+
+    Next cut `proxy.ts`'s copy of a body at 10 MiB and sent it on under the full Content-Length: the backend waited
+    for the rest until the request timed out, and a chat message with 8 MB of images answered 500. A 20 MiB import
+    that is not a bundle must come back as the backend's 422; 33 MiB is over `MAX_REQUEST_BODY_BYTES` (32 MiB) and
+    gets the 413. No browser: this is what the app's server does with a body.
+    """
+    def post(mib: int) -> tuple[int, str, float]:
+        body = json.dumps({"pad": "a" * (mib * 1024 * 1024 - 11)}).encode()
+        req = urllib.request.Request(f"{APP}/api/import", method="POST", data=body,
+                                     headers={"Content-Type": "application/json"})
+        started = time.monotonic()
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read().decode()[:200], time.monotonic() - started
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()[:200], time.monotonic() - started
+        except (TimeoutError, urllib.error.URLError):
+            raise AssertionError(f"a {mib} MiB POST /api/import never came back: the body was cut short (F364)")
+
+    status, text, took = post(20)
+    if status != 422:
+        raise AssertionError(f"a 20 MiB non-bundle through the app answered {status}, not the backend's 422: {text}")
+    over, said, over_took = post(33)
+    if over != 413 or "the most one request can carry is 32 MB" not in said:
+        raise AssertionError(f"33 MiB answered {over}, not the 413 that says the limit: {said}")
+    if over_took > 5:
+        raise AssertionError(f"the 413 took {over_took:.1f}s")
+    return f"20 MiB reached the backend (422 in {took:.1f}s); 33 MiB refused (413 in {over_took:.1f}s)"
+
+
+@check
 async def check_runbar(browser) -> str:
     """A run waiting for a person has an Answer control nothing else covers.
 

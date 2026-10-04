@@ -29,6 +29,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { jwtVerify } from 'jose';
 
 import { BACKEND_URL } from '@/lib/backend';
+import { MAX_REQUEST_BODY_BYTES } from '@/lib/requestBodyLimit';
 
 const AUTH_BYPASS_PREFIXES = [
     '/login',
@@ -132,6 +133,17 @@ async function frameAncestors(publicKey: string, internalToken: string): Promise
 export async function proxy(request: NextRequest) {
     const { pathname } = request.nextUrl;
     const internalToken = process.env.SYNAPSE_INTERNAL_TOKEN || '';
+
+    // A body over the limit would reach the backend cut short, and the request
+    // hang until it timed out (F364). Say so now instead.
+    const declared = Number(request.headers.get('content-length') || 0);
+    if (declared > MAX_REQUEST_BODY_BYTES) {
+        const mb = (n: number) => Math.ceil(n / (1024 * 1024));
+        return NextResponse.json(
+            { detail: `This request is ${mb(declared)} MB; the most one request can carry is ${mb(MAX_REQUEST_BODY_BYTES)} MB.` },
+            { status: 413 },
+        );
+    }
 
     // Always inject the internal token
     const requestHeaders = new Headers(request.headers);

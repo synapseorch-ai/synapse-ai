@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 import path from "path";
 import fs from "fs";
 import { MOVED_TABS } from "./src/lib/moved-routes";
+import { MAX_REQUEST_BODY_BYTES } from "./src/lib/requestBodyLimit";
 
 // ---------------------------------------------------------------------------
 // Load the project-root .env before reading any env vars.
@@ -44,6 +45,11 @@ const nextConfig: NextConfig = {
     // SYNAPSE_JWT_SECRET) are read from the live process.env instead: proxy.ts
     // and route handlers run on Node, and read them at request time.
     NEXT_PUBLIC_FRONTEND_PORT: _frontendPort,
+  },
+  experimental: {
+    // How much of a request's body proxy.ts's copy keeps; past it the backend
+    // got a cut body under the full Content-Length (F364). See requestBodyLimit.ts.
+    proxyClientMaxBodySize: MAX_REQUEST_BODY_BYTES,
   },
   async redirects() {
     // Screens that left /settings/* for the rail. These URLs are in browser

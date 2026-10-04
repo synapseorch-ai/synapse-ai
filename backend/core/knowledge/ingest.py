@@ -3,7 +3,8 @@
 **Uploads** follow `api_models.UploadSession`, the shape cloud serves with
 presigned S3 multipart URLs. OSS serves the parts itself
 (`PUT /api/knowledge/uploads/{id}/parts/{n}`): each part is at most
-`PART_SIZE` (8 MiB, under the web app's 10 MB proxy body limit) and lands in
+`PART_SIZE` (8 MiB, well under the web app's 32 MiB request limit,
+`frontend/src/lib/requestBodyLimit.ts`) and lands in
 the blob store under `knowledge/uploads/<id>/` — outside `vault/`, so a
 half-finished upload is never a Vault file and never counts toward a plan's
 storage. Completing streams the parts, in order and each checked against its
