@@ -28,6 +28,7 @@ import {
   CellStack,
   Checkbox,
   ConfirmDialog,
+  Drawer,
   EmptyState,
   ErrorNote,
   Field,
@@ -91,6 +92,7 @@ export function KitchenSink() {
   const [density, setDensity] = React.useState<Density>("comfortable");
   const [modal, setModal] = React.useState(false);
   const [confirm, setConfirm] = React.useState(false);
+  const [drawer, setDrawer] = React.useState(false);
   const [toast, setToast] = React.useState<{ message: string; tone: ToastTone }>({
     message: "",
     tone: "success",
@@ -256,6 +258,9 @@ export function KitchenSink() {
               </Button>
               <Button variant="danger" onClick={() => setConfirm(true)}>
                 Delete something
+              </Button>
+              <Button variant="secondary" onClick={() => setDrawer(true)}>
+                Open drawer
               </Button>
               {(["success", "warning", "danger"] as const).map((tone) => (
                 <Button
@@ -432,6 +437,18 @@ export function KitchenSink() {
             <Input placeholder="Researcher" />
           </Field>
         </Modal>
+
+        <Drawer
+          open={drawer}
+          onClose={() => setDrawer(false)}
+          title="A drawer"
+          description="Slides in from the right; focus goes back to whatever opened it."
+          footer={<Button onClick={() => setDrawer(false)}>Done</Button>}
+        >
+          <Field label="Note">
+            <Input placeholder="Anything" />
+          </Field>
+        </Drawer>
 
         <ConfirmDialog
           open={confirm}

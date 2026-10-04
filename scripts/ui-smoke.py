@@ -5085,13 +5085,14 @@ async def check_menuclose(browser) -> str:
 
 @check
 async def check_dialogfocus(browser) -> str:
-    """A kit dialog gives focus back to whatever opened it when it closes (F310).
+    """A kit dialog gives focus back to whatever opened it when it closes (F310, F382).
 
-    `Modal` and `ConfirmDialog` are opened from state, with no `Dialog.Trigger`,
-    and Radix only hands focus back to its own trigger: every close dropped it
-    on `<body>`, so a keyboard or screen-reader user lost their place after each
-    confirm. Opened from the keyboard here, as that user would, and closed each
-    way a dialog closes: Escape, a footer button, the X.
+    `Modal`, `ConfirmDialog` and `Drawer` are opened from state, with no
+    `Dialog.Trigger`, and Radix only hands focus back to its own trigger: every
+    close dropped it on `<body>`, so a keyboard or screen-reader user lost their
+    place after each confirm. Opened from the keyboard here, as that user would,
+    and closed each way a dialog closes: Escape, a footer button, the X. The
+    drawer was missed by F310 (F382) and is what the help panel is built on.
     """
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
@@ -5107,6 +5108,9 @@ async def check_dialogfocus(browser) -> str:
             ("Open modal", "dialog", None, "Close"),
             ("Delete something", "dialog", "Escape", None),
             ("Delete something", "dialog", None, "Cancel"),
+            ("Open drawer", "dialog", "Escape", None),
+            ("Open drawer", "dialog", None, "Done"),
+            ("Open drawer", "dialog", None, "Close"),
         ]
         for opener, role, key, button in cases:
             await page.get_by_role("button", name=opener, exact=True).focus()
@@ -5134,7 +5138,8 @@ async def check_dialogfocus(browser) -> str:
                 bad.append(f"closing {opener!r}'s dialog with {how} left focus on {back_on!r}")
         if bad:
             raise AssertionError("; ".join(bad))
-        return "a Modal and a ConfirmDialog hand focus back to their opener on Escape, a footer button and the X"
+        return ("a Modal, a ConfirmDialog and a Drawer hand focus back to their opener on Escape, a footer "
+                "button and the X")
     finally:
         await ctx.close()
 
