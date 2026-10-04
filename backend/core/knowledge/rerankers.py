@@ -64,7 +64,9 @@ ROUTES: tuple[RerankRoute, ...] = (
     RerankRoute("cohere.", "cohere", "Cohere", "https://api.cohere.com/v2/rerank", "cohere_key",
                 usd_per_search=0.002),
     RerankRoute("voyage.", "voyage", "Voyage AI", "https://api.voyageai.com/v1/rerank", "voyage_key",
-                top_field="top_k", usd_per_mtok={"rerank-2.5-lite": 0.02, "rerank-2.5": 0.05}),
+                top_field="top_k",
+                # docs.voyageai.com/docs/pricing, per 1M tokens (2026-10-04): rerank-3 is current (F368).
+                usd_per_mtok={"rerank-3-lite": 0.02, "rerank-3": 0.05, "rerank-2.5-lite": 0.02, "rerank-2.5": 0.05}),
     RerankRoute("jina.", "jina", "Jina AI", "https://api.jina.ai/v1/rerank", "jina_key"),
     RerankRoute("tei.", "tei", "the rerank server", None, "knowledge_rerank_key",
                 address="knowledge_rerank_base_url", path="/rerank", cost_source="local"),

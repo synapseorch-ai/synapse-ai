@@ -90,6 +90,19 @@ async def test_voyage_takes_top_k_answers_data_and_is_priced_per_token(monkeypat
     assert result.usage.est_usd == pytest.approx(1000 * 0.05 / 1_000_000)
 
 
+@pytest.mark.parametrize("model, usd_per_mtok", [
+    ("voyage.rerank-3", 0.05), ("voyage.rerank-3-lite", 0.02),
+    ("voyage.rerank-2.5", 0.05), ("voyage.rerank-2.5-lite", 0.02),
+])
+async def test_voyages_current_rerankers_are_priced_at_its_page(monkeypatch, model, usd_per_mtok):
+    """docs.voyageai.com/docs/pricing (read 2026-10-04): rerank-3 $0.05 and rerank-3-lite $0.02 per 1M tokens are its
+    current models; unpriced, their tokens counted $0 toward a base's budget (F368)."""
+    _capture(monkeypatch, FakeResponse({"data": [{"index": 0, "relevance_score": 0.7}],
+                                        "usage": {"total_tokens": 4000}}))
+    result = await _rerank(model, top_n=1)
+    assert result.usage.priced and result.usage.est_usd == pytest.approx(4000 * usd_per_mtok / 1_000_000)
+
+
 async def test_jina_is_unpriced(monkeypatch):
     _capture(monkeypatch, FakeResponse({"results": [{"index": 0, "relevance_score": 0.5}],
                                         "usage": {"total_tokens": 12}}))
