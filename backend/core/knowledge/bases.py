@@ -133,14 +133,22 @@ def _refuse_shared_sources(sources: list[Any], others: list[KnowledgeBase], *, h
                              f"names each source.")
 
 
+#: F348 (CCR-13, Naveen's call 2 in D190): extracting metadata is not built, and turning it on rebuilt the index for
+#: nothing, so no base turns it on. A base stored with it keeps it.
+_NOT_BUILT = ("Extracting metadata (enrichment.extract_metadata) is not built yet: leave it false. A document's "
+              "metadata is what its upload, record or web page carries.")
+
+
 async def create_base(body: KnowledgeBaseCreate) -> KnowledgeBase:
     """A new knowledge base on `body.folder`. Raises `KnowledgePathError` for a folder that
     is not allowed or overlaps another base's, and `ValueError` for a web source id another
-    base holds or named twice (F354)."""
+    base holds or named twice (F354), or for `extract_metadata` turned on (F348)."""
     from core.store import session
     from core.store.models import CollectionDB
     from core.tenancy import get_tenant
 
+    if body.enrichment.extract_metadata:
+        raise ValueError(_NOT_BUILT)
     async with _lock():
         existing = await list_bases()
         folder = validate_folder(body.folder, existing)
@@ -155,7 +163,8 @@ async def create_base(body: KnowledgeBaseCreate) -> KnowledgeBase:
 
 
 async def update_base(kb_id: str, patch: KnowledgeBaseUpdate) -> tuple[KnowledgeBase, KnowledgeBase]:
-    """Apply `patch`; returns (before, after). `StaleRevision` when `patch.revision` is not the stored one."""
+    """Apply `patch`; returns (before, after). `StaleRevision` when `patch.revision` is not the stored one, and
+    `ValueError` for a patch that turns `extract_metadata` on (F348; a base that has it may send it back)."""
     from sqlalchemy import update
 
     from core.store import session
@@ -170,6 +179,9 @@ async def update_base(kb_id: str, patch: KnowledgeBaseUpdate) -> tuple[Knowledge
         if patch.revision != before.revision:
             raise StaleRevision(f"This knowledge base was changed (revision {before.revision}) after the edit "
                                 f"started (revision {patch.revision}). Reload it and apply the change again.")
+        if patch.enrichment is not None and patch.enrichment.extract_metadata \
+                and not before.enrichment.extract_metadata:
+            raise ValueError(_NOT_BUILT)
         fields = {k: v for k, v in patch.model_dump(exclude_unset=True).items()
                   if v is not None and k not in ("revision", "clear_budget")}
         if patch.clear_budget:

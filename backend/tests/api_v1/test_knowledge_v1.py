@@ -172,6 +172,14 @@ class TestBasesRecordsDocuments:
         assert resp.status_code == 422 and source["id"] in resp.json()["detail"], resp.text
         assert [b["id"] for b in (await on.get(f"{V1}/knowledge/bases", headers=h)).json()] == [a["id"]]
 
+    async def test_turning_on_extract_metadata_is_a_422(self, on, api_key):
+        """F348 (CCR-13) on v1: not built, so refused, with the app's own words."""
+        h = api_key["headers"]
+        resp = await on.post(f"{V1}/knowledge/bases", headers=h, json={
+            "name": "M", "folder": "m", "enrichment": {"extract_metadata": True}})
+        assert resp.status_code == 422 and "not built yet" in resp.json()["detail"], resp.text
+        assert (await on.get(f"{V1}/knowledge/bases", headers=h)).json() == []
+
     async def test_an_unknown_base_or_document_is_a_404(self, on, api_key):
         h = api_key["headers"]
         assert (await on.get(f"{V1}/knowledge/bases/kb_000000000000", headers=h)).status_code == 404

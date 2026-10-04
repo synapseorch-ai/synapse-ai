@@ -141,6 +141,31 @@ class TestBases:
         resp = await on.post("/api/knowledge/bases", json={"name": "X", "folder": "docs/inner"})
         assert resp.status_code == 422 and "overlaps" in resp.json()["detail"]
 
+    async def test_extracting_metadata_is_not_built_so_turning_it_on_is_a_422(self, on, jobs):
+        """F348 (CCR-13): `extract_metadata: true` rebuilt the index and extracted nothing. A create or an edit that
+        turns it on is refused before anything is saved; a base stored with it may send it back unchanged."""
+        from _fakes.knowledge_corpus import save_bases
+        from core.knowledge import bases
+
+        metadata_on = {"mode": "prefix", "contextual_model": None, "extract_metadata": True}
+        made = await on.post("/api/knowledge/bases", json={"name": "X", "folder": "x", "enrichment": metadata_on})
+        assert made.status_code == 422 and "not built yet" in made.json()["detail"], made.text
+        assert (await on.get("/api/knowledge/bases")).json() == []
+        kb = await _kb(on)
+        turned = await on.patch(f"/api/knowledge/bases/{kb['id']}", json={"revision": 1, "enrichment": metadata_on})
+        assert turned.status_code == 422 and "not built yet" in turned.json()["detail"], turned.text
+        assert (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["revision"] == 1  # nothing saved
+
+        stored = await bases.require_base(kb["id"])  # as a base stored before CCR-13 could be
+        await save_bases(stored.model_copy(update={"enrichment": stored.enrichment.model_copy(
+            update={"extract_metadata": True})}))
+        kept = await on.patch(f"/api/knowledge/bases/{kb['id']}",
+                              json={"revision": 1, "name": "Kept", "enrichment": metadata_on})
+        assert kept.status_code == 200 and kept.json()["enrichment"]["extract_metadata"] is True, kept.text
+        off = await on.patch(f"/api/knowledge/bases/{kb['id']}",
+                             json={"revision": 2, "enrichment": {**metadata_on, "extract_metadata": False}})
+        assert off.status_code == 200 and off.json()["enrichment"]["extract_metadata"] is False, off.text
+
     async def test_unknown_fields_are_refused(self, on):
         resp = await on.post("/api/knowledge/bases", json={"name": "X", "folder": "x", "colour": "blue"})
         assert resp.status_code == 422

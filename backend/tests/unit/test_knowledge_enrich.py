@@ -226,7 +226,12 @@ async def test_a_snapshot_made_before_contextual_was_built_keeps_the_prefix(jobs
 
 
 async def test_extract_metadata_is_said_to_be_not_built(jobs, writer):
-    kb = await _base(enrichment=Enrichment(mode="contextual", contextual_model=MODEL, extract_metadata=True))
+    """A base stored with it (CCR-13 refuses turning it on, not a base that has it) is told it is not built."""
+    from _fakes.knowledge_corpus import save_bases
+
+    kb = await _base()
+    kb = kb.model_copy(update={"enrichment": kb.enrichment.model_copy(update={"extract_metadata": True})})
+    await save_bases(kb)
     row = await _ingest(jobs, kb)
     assert _enrich_stage(row)["detail"]["extract_metadata"] == "not built yet"
 
