@@ -529,7 +529,9 @@ function BaseDetail({
                         )}
                     >
                         Drop files here to add them to <span className="font-mono">{kb.folder}</span>. Documents, spreadsheets,
-                        slides, email, web pages and code are read; scanned pages and images are read once OCR is configured.
+                        slides, email, web pages and code are read{host.ocr
+                            ? ', and scanned pages and images by OCR.'
+                            : '. Scanned pages and images are not: this install has no OCR.'}
                     </div>
                 </>
             )}

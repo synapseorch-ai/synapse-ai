@@ -208,9 +208,13 @@ async def _parse_and_index(kb: KnowledgeBase, row: KnowledgeDocumentDB, parsing:
                           f"The file has {len(parsed.pages)} pages; the limit is {settings.max_file_pages}.", **common)
     if not parsed.blocks:
         scanned = parsed.stats.pages_no_text_layer - parsed.stats.pages_ocr
-        return await rest("skipped", "empty_document", (
-            f"All {scanned} page(s) are images with no text layer; they are read once OCR is configured."
-            if scanned else "The file has no text to index."), **common)
+        if not scanned:
+            return await rest("skipped", "empty_document", "The file has no text to index.", **common)
+        from core.knowledge.seams import get_ocr_provider
+
+        why = "OCR did not read them" if get_ocr_provider() is not None else "this install has no OCR to read them"
+        return await rest("skipped", "empty_document",
+                          f"All {scanned} page(s) are images with no text layer; {why}.", **common)
 
     indexing = await documents.transition(row.id, "indexing", previous="parsing")
     if indexing is None:

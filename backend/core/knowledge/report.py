@@ -42,8 +42,8 @@ _HINTS: dict[str, str] = {
     "encrypted": "The file is protected by a password. Remove the password and upload it again.",
     "truncated_pages": "Only some pages were read in time; the rest are not searchable. Retry to read them all.",
     "truncated_size": "The file holds more text than one document may; the rest is not searchable.",
-    "no_text_layer": "Some pages are images with no text layer. They are read once OCR is configured; if it "
-                     "already is, Retry reads them again.",
+    # Said by whether this install has OCR: see `retry_hint`.
+    "no_text_layer": "Some pages are images with no text layer that OCR did not read. Retry reads them again.",
     "ocr_failed": "Reading scanned pages failed. Retrying usually helps.",
     "attachment_skipped": "Some attachments could not be read; the report lists which and why.",
 }
@@ -67,7 +67,13 @@ def error_info(exc: BaseException) -> ErrorInfo:
 def retry_hint(reason: str | None) -> RetryHint:
     if reason is None:
         return RetryHint(allowed=True)
-    return RetryHint(allowed=reason not in _NOT_RETRYABLE, hint=_HINTS.get(reason))
+    hint = _HINTS.get(reason)
+    if reason == "no_text_layer":
+        from core.knowledge.seams import get_ocr_provider
+
+        if get_ocr_provider() is None:  # OSS: nothing reads a scan, so Retry would not either
+            hint = "Some pages are images with no text layer, and this install has no OCR to read them."
+    return RetryHint(allowed=reason not in _NOT_RETRYABLE, hint=hint)
 
 
 class StageHandle:

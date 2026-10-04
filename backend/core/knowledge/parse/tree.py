@@ -219,7 +219,7 @@ def merge_ocr(doc: ParsedDocument, texts: dict[int, tuple[str, float | None]], *
 def no_text_layer_warning(pages: list[int], *, ocr: bool) -> ParseWarning:
     """One warning for every page with no text layer: they are images until OCR reads them."""
     shown = ", ".join(str(n) for n in pages[:20]) + (" …" if len(pages) > 20 else "")
-    what = "OCR did not read them" if ocr else "they are read once OCR is configured"
+    what = "OCR did not read them" if ocr else "this install has no OCR to read them"
     return ParseWarning(code="no_text_layer", count=len(pages), page=pages[0] if len(pages) == 1 else None,
                         message=f"{len(pages)} page(s) have no text layer (page {shown}); {what}.")
 

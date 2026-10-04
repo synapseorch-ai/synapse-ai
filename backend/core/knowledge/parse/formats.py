@@ -135,7 +135,7 @@ def missing_capability_message(fmt: Format) -> str:
         return (f"{fmt.label[0].upper()}{fmt.label[1:]} is read through LibreOffice, which is not installed "
                 "here. Install it and the file is read automatically.")
     if fmt.needs == "ocr":
-        return "An image is read by OCR, and no OCR is configured. Once one is, the file is read automatically."
+        return "An image is read only by OCR, and this install has no OCR."
     if fmt.needs == "heic":
         return ("A HEIC photo is read by OCR after conversion, which needs pillow-heif and an OCR provider "
                 "(the knowledge extra).")

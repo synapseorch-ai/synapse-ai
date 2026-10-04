@@ -57,7 +57,7 @@ def _seams():
 class TestImages:
     def test_without_ocr_an_image_is_refused_saying_why(self):
         assert not supports("kb/receipt.png")
-        with pytest.raises(UnsupportedFormat, match="no OCR is configured"):
+        with pytest.raises(UnsupportedFormat, match="this install has no OCR"):
             parse_bytes(_image(), path="kb/receipt.png", source="vault", sha256="0" * 64, mime="image/png")
 
     def test_with_ocr_each_frame_is_a_page_read_by_it(self):

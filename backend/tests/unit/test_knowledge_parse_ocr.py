@@ -209,6 +209,7 @@ class TestReadAgainOnceOcrExists:
         _provider({}, per_call=5)
         kb, report, row = await _ingest("kb/scan.pdf", SCANNED, monkeypatch, real=True)
         assert row.status == "partial" and report.pages.ocr_failed == 2
+        assert report.retry.hint == "Some pages are images with no text layer that OCR did not read. Retry reads them again."
         seams.set_ingest_dispatcher(RecordingDispatcher())
         assert (await sync.reconcile(kb)).supported == 0
 

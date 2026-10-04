@@ -61,6 +61,9 @@ export type KnowledgeHost = {
     evaluate: boolean;
     /** May change bases, documents, uploads and question sets; reading and searching need nothing. */
     canEdit: boolean;
+    /** Scanned pages and images are read by OCR here (cloud: Textract). Without it a self-hosted install reports them
+     *  rather than reading them, and the drop zone says so. */
+    ocr: boolean;
     /** Fresh part URLs for an upload, where part URLs expire. */
     refreshParts?: RefreshParts;
     /** How a person turns Knowledge on here, for the screen shown while it is off; absent where nobody in the
@@ -80,6 +83,7 @@ export const DEFAULT_KNOWLEDGE_HOST: KnowledgeHost = {
     webSources: true,
     evaluate: true,
     canEdit: true,
+    ocr: false,
 };
 
 const KnowledgeHostContext = createContext<KnowledgeHost>(DEFAULT_KNOWLEDGE_HOST);

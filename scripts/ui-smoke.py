@@ -3949,6 +3949,26 @@ async def check_knowledge_retrieve_words(browser) -> str:
 
 
 @check
+async def check_knowledge_dropzone(browser) -> str:
+    """The drop zone says what this install reads: no OCR here, so scanned pages and images are not read (KP1). It
+    said they are read "once OCR is configured", and nothing in OSS configures one."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    for pattern, handler in _SMOKE_KB_ROUTES:
+        await ctx.route(pattern, handler)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        zone = page.get_by_text(re.compile(r"^Drop files here")).first
+        await zone.wait_for(timeout=30_000)
+        said = " ".join((await zone.inner_text()).split())
+        if "OCR is configured" in said or "this install has no OCR" not in said:
+            raise AssertionError(f"the drop zone says {said!r}")
+        return "the drop zone says this install reads no scanned pages or images"
+    finally:
+        await ctx.close()
+
+
+@check
 async def check_knowledge_eval(browser) -> str:
     """A knowledge base's eval (V1, D168): the Run dialog is named, every control in it is named, it prices the
     run before anything starts, and Escape closes it without starting one."""

@@ -129,7 +129,7 @@ class TestTheQualityGate:
         assert quality.no_text_layer and quality.image_only and not doc.pages[0].quality.no_text_layer
         (warning,) = doc.warnings
         assert (warning.code, warning.count, warning.page) == ("no_text_layer", 1, 2)
-        assert "OCR is configured" in warning.message
+        assert "this install has no OCR to read them" in warning.message
         assert doc.stats.pages_no_text_layer == 1 and partial_reason(doc) == "no_text_layer"
 
     def test_a_blank_page_is_not_a_scan(self):
@@ -255,12 +255,13 @@ class TestThroughTheJob:
         assert report.pages.total == 2 and report.pages.no_text_layer == 1 and report.pages.with_text == 1
         parse = report.stages[0]
         assert parse.detail["runner"] == "subprocess" and parse.detail["parser"] == "pdf"
-        assert "OCR is configured" in report.retry.hint
+        assert report.retry.hint == "Some pages are images with no text layer, and this install has no OCR to read them."
 
     async def test_a_fully_scanned_pdf_says_why_nothing_was_indexed(self):
         report, row = await self._ingest("kb/scan.pdf", (CORPUS / "scanned.pdf").read_bytes())
         assert (row.status, row.status_reason) == ("skipped", "empty_document")
-        assert "no text layer" in row.error and report.pages.no_text_layer == 1
+        assert row.error == "All 1 page(s) are images with no text layer; this install has no OCR to read them."
+        assert report.pages.no_text_layer == 1
 
     async def test_a_damaged_pdf_fails_and_may_be_retried(self):
         report, row = await self._ingest("kb/bad.pdf", b"%PDF-1.7\n garbage")
