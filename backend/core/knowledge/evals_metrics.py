@@ -47,7 +47,7 @@ MIN_QUOTE_CHARS = 20
 
 LABELS = {
     "lexical": "Keyword only",
-    "vector": "Vector only",
+    "vector": "Meaning only",  # the settings drawer's word for the vector weight (F371)
     "hybrid": "Hybrid (fused)",
     "served": "As served",
     "custom": "Custom weights",
@@ -277,10 +277,10 @@ def unavailable(legs: Sequence[CaseLegs], config: str) -> str | None:
         return "No question was searched."
     if config in ("vector", "hybrid", "custom") and all(c.vector is None for c in legs):
         why = "nothing in this index is embedded" if any("vector_unavailable" in c.degraded for c in legs) else \
-            "the searches had no vector leg"
+            "nothing was searched by meaning"
         return f"Not available: {why}."
     if config in ("lexical", "hybrid", "custom") and all(c.lexical is None for c in legs):
-        return "Not available: the searches had no keyword leg."
+        return "Not available: nothing was searched by keyword."
     return None
 
 
@@ -290,5 +290,5 @@ def label(config: str, *, reranked: bool = False, rrf_k: int | None = None,
         return "As served (reranked)"
     if config == "custom" and weights is not None:
         lex, vec = weights.get("lexical", 1.0), weights.get("vector", 1.0)
-        return f"Keyword {lex:g} · vector {vec:g} · k {rrf_k or 60}"
+        return f"Keyword {lex:g} · meaning {vec:g} · k {rrf_k or 60}"
     return LABELS[config]

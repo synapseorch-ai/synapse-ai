@@ -212,7 +212,9 @@ def test_hybrid_is_fused_with_the_traces_own_settings():
 
 def test_labels():
     assert EM.label("served", reranked=True) == "As served (reranked)"
-    assert EM.label("custom", rrf_k=30, weights={"lexical": 2.0, "vector": 1.0}) == "Keyword 2 · vector 1 · k 30"
+    # The vector weight is "Meaning" wherever a screen shows it, as the settings drawer names it (F371).
+    assert EM.label("custom", rrf_k=30, weights={"lexical": 2.0, "vector": 1.0}) == "Keyword 2 · meaning 1 · k 30"
+    assert EM.label("vector") == "Meaning only"
     assert EM.label("lexical") == "Keyword only"
 
 

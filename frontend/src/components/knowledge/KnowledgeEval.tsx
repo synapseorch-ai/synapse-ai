@@ -9,7 +9,7 @@
  * base's real searches, promoted with the passages that answer them.
  *
  * A run searches every question once per snapshot and scores where the answer
- * ranked, with no judge: keyword only, vector only, both fused, and as the base
+ * ranked, with no judge: keyword only, meaning only, both fused, and as the base
  * serves it. Two snapshots side by side compare an index built two ways. "Try
  * weights" fuses the same searches again for $0. A run can also grade a plain
  * answer drawn from the passages, with a judge from another model family (paid,
@@ -848,7 +848,7 @@ function Results({ kb, runs, run, runId, onPick, onCancel, notify }: {
                     {run.status === 'completed' || run.status === 'cancelled' ? (
                         <div className="flex flex-wrap items-end gap-2">
                             <Field label="Keyword weight"><Input className="w-24" type="number" min={0} step={0.1} value={lexical} onChange={e => setLexical(e.target.value)} /></Field>
-                            <Field label="Vector weight"><Input className="w-24" type="number" min={0} step={0.1} value={vector} onChange={e => setVector(e.target.value)} /></Field>
+                            <Field label="Meaning weight"><Input className="w-24" type="number" min={0} step={0.1} value={vector} onChange={e => setVector(e.target.value)} /></Field>
                             <Field label="k"><Input className="w-20" type="number" min={1} max={1000} value={rrfK} onChange={e => setRrfK(e.target.value)} /></Field>
                             <Button size="sm" variant="secondary" onClick={tryWeights} disabled={trying}>
                                 <ClipboardCheck className="size-4" aria-hidden />Try weights ($0)
@@ -881,7 +881,7 @@ function JudgeLine({ judge }: { judge: NonNullable<EvalRun['judge']> }) {
 
 function CaseList({ kb, run }: { kb: KnowledgeBase; run: EvalRun }) {
     const first = run.snapshots[0]?.snapshot_id ?? '';
-    const order: [string, string][] = [['served', 'As served'], ['hybrid', 'Hybrid'], ['lexical', 'Keyword'], ['vector', 'Vector']];
+    const order: [string, string][] = [['served', 'As served'], ['hybrid', 'Hybrid'], ['lexical', 'Keyword'], ['vector', 'Meaning']];
     return (
         <details className="rounded-md border border-border px-3 py-2">
             <summary className="cursor-pointer select-none text-sm text-text-muted">Each question ({run.cases.length})</summary>

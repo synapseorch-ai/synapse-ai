@@ -3906,6 +3906,29 @@ async def check_knowledge_recrawl(browser) -> str:
 
 
 @check
+async def check_knowledge_fusion_word(browser) -> str:
+    """The fusion weight has one name on every screen that shows it, Meaning (F371): the settings drawer said
+    "Meaning weight", Evaluate's Try weights "Vector weight" and its rankings "Vector only"."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    for pattern, handler in _SMOKE_KB_EVAL_ROUTES:
+        await ctx.route(pattern, handler)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile("^Evaluate")).wait_for(timeout=30_000)
+        await _kb_eval(page)
+        await page.get_by_text(re.compile(r"^Each question")).first.click()
+        await page.get_by_role("button", name=re.compile(r"^Try weights")).wait_for(timeout=10_000)
+        said = await page.locator("main").inner_text()
+        if "Meaning weight" not in said or re.search(r"\bVector\b", said):
+            found = sorted(set(re.findall(r"[^\n]*\bVector\b[^\n]*", said)))[:4]
+            raise AssertionError(f"Evaluate still says Vector: {found}")
+        return "Evaluate names the weight Meaning, in Try weights, the rankings and each question's ranks"
+    finally:
+        await ctx.close()
+
+
+@check
 async def check_knowledge_eval(browser) -> str:
     """A knowledge base's eval (V1, D168): the Run dialog is named, every control in it is named, it prices the
     run before anything starts, and Escape closes it without starting one."""
@@ -5714,7 +5737,7 @@ _SMOKE_EVAL_RESULTS = [
      "available": config != "vector", "reason": "Not available: nothing in this index is embedded."
      if config == "vector" else None, "weights": None, "rrf_k": None, "agent_sees": 8 if config == "served" else None,
      "scores": _SMOKE_EVAL_SCORES, "by_kind": {"direct": _SMOKE_EVAL_SCORES}}
-    for config, label in (("lexical", "Keyword only"), ("vector", "Vector only"), ("hybrid", "Hybrid (fused)"),
+    for config, label in (("lexical", "Keyword only"), ("vector", "Meaning only"), ("hybrid", "Hybrid (fused)"),
                           ("served", "As served"))]
 _SMOKE_EVAL_RUN_SUMMARY = {
     "id": "krun_smoke", "kb_id": "kb_00000000smoke", "set_id": "kset_smoke", "status": "completed",
