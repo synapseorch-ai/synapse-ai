@@ -499,7 +499,6 @@ export function getQueryTrace(queryId: string): Promise<SearchTrace> {
 
 export type SearchResult = { query_id: string; hits: SearchHit[]; degraded: string[]; trace: SearchTrace | null };
 
-/** A search's degraded codes (`trace.DEGRADED_CODES`), in words. */
 /** Rerank models by provider prefix (backend `core/knowledge/rerankers.py` ROUTES): suggestions; any model of a
  *  listed provider works. `key` is the setting the provider needs, saved on Settings → Models. */
 export const RERANK_SUGGESTIONS: { model: string; provider: string; key: string | null }[] = [
@@ -517,6 +516,7 @@ export const BUILD_PAUSED: Record<string, string> = {
     embedder_unavailable: 'Paused: the embedding model needs a key or address that is not saved.',
 };
 
+/** A search's degraded codes (`trace.DEGRADED_CODES`), in words. */
 export const DEGRADED: Record<string, string> = {
     vector_unavailable: 'Matched by words only: search by meaning needs an embedding model.',
     lexical_unavailable: 'Word matching is not available in this index.',

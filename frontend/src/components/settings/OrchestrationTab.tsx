@@ -20,7 +20,7 @@ import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
 import { humanAnswer, initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
 import type { KnowledgeBaseOption } from '../orchestration/panel/shared';
-import { getQueryTrace, knowledgeApi, useKnowledgeEnabled, type SearchTrace } from '@/lib/knowledge';
+import { DEGRADED, getQueryTrace, knowledgeApi, useKnowledgeEnabled, type SearchTrace } from '@/lib/knowledge';
 import { RetrievalTrace } from '@/components/RetrievalTrace';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -156,7 +156,8 @@ function RetrievalRow({ entry }: { entry: RetrievalLogEntry }) {
                     <BookOpenText size={11} className="mr-1 inline-block align-[-1px]" aria-hidden />
                     Retrieve{entry.step_name ? ` · ${entry.step_name}` : ''}: {n} passage{n !== 1 ? 's' : ''}
                     <span className="text-text-faint"> · ${entry.cost_usd.toFixed(4)}</span>
-                    {entry.degraded.length > 0 && <span className="text-text-faint"> · {entry.degraded.join(', ')}</span>}
+                    {/* In words, as the opened trace says them (F372); each is a sentence. */}
+                    {entry.degraded.length > 0 && <span className="text-text-faint"> · {entry.degraded.map(code => DEGRADED[code] ?? code).join(' ')}</span>}
                 </summary>
                 <div className="mt-0.5 rounded-md bg-zinc-800/50 px-2 py-1 text-zinc-300">
                     {loading && <Spinner />}

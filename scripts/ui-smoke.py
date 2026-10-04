@@ -3929,6 +3929,26 @@ async def check_knowledge_fusion_word(browser) -> str:
 
 
 @check
+async def check_knowledge_retrieve_words(browser) -> str:
+    """The run log's Retrieve row says what a search did without in words, as its opened trace does (F372); it
+    printed the code, `vector_unavailable`."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    for pattern, handler in _SMOKE_KB_RUN_ROUTES:
+        await ctx.route(pattern, handler)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/orchestrations?run=run_smoke_kb", wait_until="domcontentloaded")
+        row = page.get_by_text(re.compile(r"^Retrieve · Find clauses")).first
+        await row.wait_for(timeout=30_000)
+        said = " ".join((await row.inner_text()).split())
+        if "vector_unavailable" in said or "Matched by words only" not in said:
+            raise AssertionError(f"the Retrieve row says {said!r}")
+        return "the Retrieve row says its degraded search in words"
+    finally:
+        await ctx.close()
+
+
+@check
 async def check_knowledge_eval(browser) -> str:
     """A knowledge base's eval (V1, D168): the Run dialog is named, every control in it is named, it prices the
     run before anything starts, and Escape closes it without starting one."""
