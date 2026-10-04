@@ -107,7 +107,9 @@ class Enrichment(_Model):
 
     mode: Literal["prefix", "contextual"] = "prefix"
     contextual_model: str | None = None
-    extract_metadata: bool = False
+    #: Not built (F348, CCR-13): `true` is refused on create and on an edit that turns it on. A base stored with it
+    #: keeps it, and its enrich report says "not built yet".
+    extract_metadata: bool = Field(default=False, description="Not built yet: true is refused (422).")
 
 
 class WebSource(_Model):

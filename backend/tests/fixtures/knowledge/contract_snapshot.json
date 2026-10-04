@@ -335,6 +335,7 @@
       },
       "extract_metadata": {
        "default": false,
+       "description": "Not built yet: true is refused (422).",
        "title": "Extract Metadata",
        "type": "boolean"
       },
