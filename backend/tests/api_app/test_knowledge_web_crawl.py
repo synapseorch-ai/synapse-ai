@@ -1053,3 +1053,184 @@ class TestTheEgressProxy:
         await drain(jobs)
         [again] = (await docs(kb["id"])).values()
         assert (again.status, again.status_reason) == ("failed", "fetch_failed") and "egress proxy" in again.error
+
+
+# ── F353 (KL1, D191): a stopped crawl resumes where it stopped; a runner's slices ───────────────────────────────────
+
+
+def _paths(since: int = 0) -> list[str]:
+    return [path for path, _ in _Site.hits[since:] if path != "/robots.txt"]
+
+
+class TestResume:
+    async def test_a_crawl_its_worker_stopped_resumes_where_it_stopped(self, on, site, jobs, indexer, runner,
+                                                                      monkeypatch):
+        """F353, measured in S1c's proof: SIGTERM after 3 pages, re-delivered, 10 fetched. Now the pages fetched
+        before the stop are not asked for again — only the one in flight."""
+        from core.knowledge import bases
+
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        runner.started.clear()
+        async with _Hold(monkeypatch, "/docs/b") as hold:
+            task = asyncio.create_task(web.run_crawl(kb_id, source_id, crawl_id))
+            await hold.wait()
+            task.cancel()  # arq stopping for a deploy
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert _paths() == ["/docs/", "/docs/a"]
+        kept = await web.load_frontier(source_id)
+        assert kept["crawl_id"] == crawl_id and kept["frontier"][0][0].endswith("/docs/b"), "b goes back at the head"
+        before = len(_Site.hits)
+        assert await web.start_due(await bases.require_base(kb_id)) == 1
+        [result] = await runner.run()
+        assert result["status"] == "done"
+        assert _paths(before) == ["/docs/b", "/docs/notes.txt"], "only what it had not fetched"
+        assert result["counts"]["fetched"] == 4 and result["counts"]["deleted"] == 0
+        assert len(result["pages"]) == 4 and await web.load_frontier(source_id) == {}, "finished: nothing kept"
+        assert await web.load_beat(source_id) == {}
+
+    async def test_a_resumed_crawl_that_completes_deletes_nothing_it_reached_before_the_stop(
+            self, on, site, jobs, indexer, runner, monkeypatch):
+        from core.knowledge import bases
+
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        await runner.run()
+        await drain(jobs)
+        assert len(await docs(kb["id"])) == 4
+        again = await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        assert crawl_id == again["crawl_id"]
+        runner.started.clear()
+        async with _Hold(monkeypatch, "/docs/notes.txt") as hold:
+            task = asyncio.create_task(web.run_crawl(kb_id, source_id, crawl_id))
+            await hold.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert await web.start_due(await bases.require_base(kb_id)) == 1
+        [result] = await runner.run()
+        await drain(jobs)
+        assert result["status"] == "done" and result["counts"]["deleted"] == 0
+        assert len(result["pages"]) == 4 and len(await docs(kb_id)) == 4
+
+    async def test_a_runner_runs_a_crawl_in_slices_each_taking_up_where_the_last_left_off(
+            self, on, site, jobs, indexer, runner):
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        runner.started.clear()
+        slices = []
+        while True:
+            state = await web.run_crawl(kb_id, source_id, crawl_id, slice_s=0.0)
+            slices.append(state["status"])
+            if not state.get("_more"):
+                break
+            assert state["status"] == "queued" and (await crawls(on, kb_id))[0]["status"] == "queued"
+            assert "_more" not in await web.load_state(source_id), "said to the runner, never stored"
+        assert slices == ["queued", "queued", "queued", "done"], "a page a slice: a slice always takes one"
+        assert _paths() == ["/docs/", "/docs/a", "/docs/b", "/docs/notes.txt"], "no page twice"
+        assert state["counts"]["fetched"] == 4 and len(state["pages"]) == 4
+        assert (await web.load_beat(source_id)) == {} and runner.started == []
+
+    async def test_a_slice_end_is_not_an_attempt(self, on, site, jobs, indexer, runner, monkeypatch):
+        monkeypatch.setattr(web, "HEARTBEAT_EVERY_S", 0.0)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        for _ in range(web.MAX_ATTEMPTS + 1):
+            state = await web.run_crawl(kb_id, source_id, crawl_id, slice_s=0.0)
+            if not state.get("_more"):
+                break
+            assert (await web.load_beat(source_id))["attempts"] == 1
+        assert state["status"] in ("queued", "done")
+
+    async def test_a_crawls_time_across_its_slices_caps_it_and_it_deletes_nothing(
+            self, on, site, jobs, indexer, runner):
+        assert (await on.post("/api/settings", json={"knowledge_crawl_max_hours": 1e-9})).status_code == 200
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        state = await web.run_crawl(kb_id, source_id, crawl_id, slice_s=600.0)
+        assert state["status"] == "capped" and "time limit" in state["last_error"]
+        assert state["counts"]["deleted"] == 0 and await web.load_frontier(source_id) == {}
+
+    async def test_a_sitemaps_pages_resume_in_order_without_reading_the_sitemap_again(
+            self, on, site, jobs, indexer, runner):
+        _Site.pages["/sitemap.xml"] = (200, {"Content-Type": "application/xml"}, (
+            '<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            f"<url><loc>{site}/docs/a</loc></url><url><loc>{site}/docs/b</loc></url>"
+            f"<url><loc>{site}/docs/notes.txt</loc></url></urlset>").encode())
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/sitemap.xml", kind="sitemap")
+        [(kb_id, source_id, crawl_id)] = runner.started
+        while (state := await web.run_crawl(kb_id, source_id, crawl_id, slice_s=0.0)).get("_more"):
+            pass
+        assert state["status"] == "done" and len(state["pages"]) == 3
+        assert _paths() == ["/sitemap.xml", "/docs/a", "/docs/b", "/docs/notes.txt"], "listed once, each page once"
+
+
+    async def test_a_frontier_kept_no_longer_than_the_cap_leaves_still_caps_the_crawl(
+            self, on, site, jobs, indexer, runner, monkeypatch):
+        """What it keeps is bounded by the page cap (the rest could never be taken) — and the rest still makes the
+        resumed crawl `capped`, so it deletes nothing, as the crawl would have had it not stopped."""
+        from core.knowledge import bases
+
+        _Site.pages["/docs/"] = html("Docs home", "Many pages.", *(f"/docs/p{i}" for i in range(10)))
+        for i in range(10):
+            _Site.pages[f"/docs/p{i}"] = html(f"P{i}", f"Page {i}.")
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/", max_pages=3)
+        [(kb_id, source_id, crawl_id)] = runner.started
+        runner.started.clear()
+        async with _Hold(monkeypatch, "/docs/p0") as hold:
+            task = asyncio.create_task(web.run_crawl(kb_id, source_id, crawl_id))
+            await hold.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        kept = await web.load_frontier(source_id)
+        assert [url.rsplit("/", 1)[1] for url, _ in kept["frontier"]] == ["p0", "p1"] and kept["dropped"] == 8
+        assert await web.start_due(await bases.require_base(kb_id)) == 1
+        [result] = await runner.run()
+        assert result["status"] == "capped" and result["counts"]["deleted"] == 0
+        assert result["counts"]["not_followed"] >= 8 and len(result["pages"]) == 3
+
+
+class TestResumeInThisProcess:
+    """OSS runs crawls itself: a server stopped mid-crawl resumes the same crawl when it starts again; a person's
+    cancel (a removed source or base) still ends it."""
+
+    async def test_a_crawl_this_process_stopped_resumes_as_itself(self, on, site, jobs, indexer, monkeypatch):
+        kb = await _kb(on)
+        async with _Hold(monkeypatch, "/docs/b") as hold:
+            resp = await on.post(f"/api/knowledge/bases/{kb['id']}/urls", json={"urls": [f"{site}/docs/"],
+                                                                                  "kind": "site"})
+            crawl_id = resp.json()["crawl_id"]
+            await hold.wait()
+            [task] = [t for t in web._tasks.values() if not t.done()]
+            task.cancel()  # the server stopping
+            await asyncio.gather(task, return_exceptions=True)
+        [state] = await crawls(on, kb["id"])
+        assert (state["status"], state["crawl_id"]) == ("interrupted", crawl_id)
+        before = len(_Site.hits)
+        assert await web.start_due_crawls(force=True) == 1
+        await crawled()
+        [state] = await crawls(on, kb["id"])
+        assert (state["status"], state["crawl_id"]) == ("done", crawl_id), "the same crawl, not a new one"
+        assert _paths(before) == ["/docs/b", "/docs/notes.txt"]
+
+    async def test_a_persons_cancel_still_ends_the_crawl(self, on, site, jobs, indexer, monkeypatch):
+        kb = await _kb(on)
+        async with _Hold(monkeypatch, "/docs/b") as hold:
+            await on.post(f"/api/knowledge/bases/{kb['id']}/urls", json={"urls": [f"{site}/docs/"], "kind": "site"})
+            await hold.wait()
+            [source] = (await on.get(f"/api/knowledge/bases/{kb['id']}")).json()["web"]["sources"]
+            stopping = asyncio.ensure_future(web.cancel(source["id"]))
+            await asyncio.sleep(0)
+        await stopping
+        state = await web.load_state(source["id"])
+        assert state["status"] == "cancelled" and state.get("finished_at")
+        assert await web.load_frontier(source["id"]) == {}

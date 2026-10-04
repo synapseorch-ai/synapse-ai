@@ -50,6 +50,21 @@ finished, so a stray or second delivery changes nothing; a worker stopped
 mid-crawl leaves it `interrupted`, and the same crawl is armed again, at most
 `MAX_ATTEMPTS` times. A removed source's pages are deleted by the runner, not
 by the request that removed it.
+
+**A stopped crawl resumes where it stopped** (F353; KL1, D191). Every
+`HEARTBEAT_EVERY_S`, when it is interrupted, and at the end of a slice, a crawl
+keeps where it got to in a row of its own (`knowledge_web_frontier:<kws_id>`):
+its frontier (no more of it than the page cap leaves to take), the addresses it
+took, what it reached, its outcomes and counts, a sitemap's list and how far
+down it got. The same crawl run again — re-delivered after a deploy, armed again
+by a pass, or after an OSS restart — starts from there, and what an earlier run
+reached counts as reached, so a complete crawl deletes none of it. Only a crawl
+that stopped with no chance to say so (its process killed) counts as an attempt.
+**A runner may run a crawl in slices** (`run_crawl(slice_s=)`, cloud: ten
+minutes): at the end of one the crawl goes back to `queued`, keeping its place,
+and the runner queues it again behind other work. Its time across slices —
+fetching, never waiting in line — stops it `capped` at
+`knowledge_crawl_max_hours` (0, OSS's default: no limit; cloud: 6, CCR-14).
 """
 from __future__ import annotations
 
@@ -81,6 +96,9 @@ _log = get_logger(__name__)
 STATE_PREFIX = "knowledge_web:"
 #: A crawl's heartbeat, apart from its row (S1c): `{crawl_id, at, attempts, reached, outcomes}`.
 BEAT_PREFIX = "knowledge_web_beat:"
+#: Where a crawl got to, so a stopped one resumes there (F353): see the module docstring. A row of its own, so the
+#: heartbeat a tend pass reads stays small.
+FRONTIER_PREFIX = "knowledge_web_frontier:"
 MAX_SOURCES = 50
 #: With a runner: a running crawl whose own heartbeat is older than this was left by a worker that stopped.
 RUNNER_STALE = timedelta(minutes=10)
@@ -299,6 +317,25 @@ async def drop_state(source_id: str) -> None:
 
     await collections.save(_state_name(source_id), [])
     await collections.save(f"{BEAT_PREFIX}{source_id}", [])
+    await collections.save(f"{FRONTIER_PREFIX}{source_id}", [])
+
+
+async def load_frontier(source_id: str) -> dict[str, Any]:
+    from core.store import collections
+
+    return dict(await collections.load_one(f"{FRONTIER_PREFIX}{source_id}", {}) or {})
+
+
+async def _save_frontier(source_id: str, value: dict[str, Any]) -> None:
+    from core.store import collections
+
+    await collections.save_one(f"{FRONTIER_PREFIX}{source_id}", value)
+
+
+async def _drop_frontier(source_id: str) -> None:
+    from core.store import collections
+
+    await collections.save(f"{FRONTIER_PREFIX}{source_id}", [])
 
 
 async def load_beat(source_id: str) -> dict[str, Any]:
@@ -320,7 +357,8 @@ async def _drop_beat(source_id: str) -> None:
 
 
 async def _held_by_others(kb: KnowledgeBase, source_id: str) -> tuple[set[str], set[str]]:
-    """The pages and outcome rows the base's other sources hold (relative paths)."""
+    """The pages and outcome rows the base's other sources hold (relative paths) — what their crawls in progress
+    reached too (F353)."""
     pages: set[str] = set()
     outcomes: set[str] = set()
     for other in kb.web.sources:
@@ -328,6 +366,10 @@ async def _held_by_others(kb: KnowledgeBase, source_id: str) -> tuple[set[str], 
             state = await load_state(other.id)
             pages |= set(state.get("pages") or [])
             outcomes |= set(state.get("outcomes") or [])
+            kept = await load_frontier(other.id)
+            if kept.get("crawl_id") and kept.get("crawl_id") == state.get("crawl_id"):
+                pages |= set(kept.get("reached") or [])
+                outcomes |= set(kept.get("outcomes") or [])
     return pages, outcomes
 
 
@@ -335,6 +377,9 @@ async def _held_by_others(kb: KnowledgeBase, source_id: str) -> tuple[set[str], 
 
 _tasks: dict[tuple[str, str], asyncio.Task] = {}
 _slots: dict[int, asyncio.Semaphore] = {}
+#: Crawls `cancel` is stopping on a person's word (a removed source or base): those end `cancelled`. Any other cancel
+#: is this process stopping, and the crawl is left `interrupted`, to resume (F353).
+_cancelling: set[tuple[str, str]] = set()
 
 
 def _key(source_id: str) -> tuple[str, str]:
@@ -379,14 +424,18 @@ def _start(kb_id: str, source_id: str, crawl_id: str) -> bool:
 
 async def cancel(source_id: str) -> None:
     """Stop a source's crawl, if this process runs one, and wait for it to stop."""
-    task = _tasks.get(_key(source_id))
+    key = _key(source_id)
+    task = _tasks.get(key)
     if task is None or task.done():
         return
+    _cancelling.add(key)
     task.cancel()
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=10)
     except (asyncio.CancelledError, TimeoutError, Exception):  # noqa: BLE001 — it is stopping either way
         pass
+    finally:
+        _cancelling.discard(key)
 
 
 class CrawlRunner(Protocol):
@@ -548,6 +597,9 @@ async def forget_source(kb: KnowledgeBase, source_id: str) -> int:
     await cancel(source_id)
     state = await load_state(source_id)
     paths = set(state.get("pages") or []) | set(state.get("outcomes") or [])
+    kept = await load_frontier(source_id)
+    if kept.get("crawl_id") and kept.get("crawl_id") == state.get("crawl_id"):
+        paths |= set(kept.get("reached") or []) | set(kept.get("outcomes") or [])
     if _runner is None:
         gone = await forget_pages(kb, source_id, paths)
         await drop_state(source_id)
@@ -651,6 +703,12 @@ async def start_due(kb: KnowledgeBase) -> int:
             continue
         if _runner is None and is_running(source.id):
             continue
+        if (_runner is None and status in ("queued", "running", "interrupted") and state.get("crawl_id")
+                and (await load_frontier(source.id)).get("crawl_id") == state["crawl_id"]):
+            # OSS stopped mid-crawl (F353): the same crawl, from where it got to.
+            if await _resume(kb, source, state):
+                started += 1
+            continue
         due = _next_due(kb, state)
         if not state.get("finished_at") or status in ("queued", "running", "interrupted") or (
                 due is not None and now >= due):
@@ -660,16 +718,21 @@ async def start_due(kb: KnowledgeBase) -> int:
 
 
 async def _resume(kb: KnowledgeBase, source: WebSource, state: dict[str, Any]) -> bool:
-    """Arm a waiting or stopped crawl again as itself, or fail it once it has been started too often."""
+    """Arm a waiting or stopped crawl again as itself — OSS: start it here — or fail it once it has been started too
+    often."""
     beat = await load_beat(source.id)
-    attempts = int(beat.get("attempts") or 0) if beat.get("crawl_id") == state["crawl_id"] else 0
+    kept = await load_frontier(source.id)
+    attempts = max(int(beat.get("attempts") or 0) if beat.get("crawl_id") == state["crawl_id"] else 0,
+                   int(kept.get("attempts") or 0) if kept.get("crawl_id") == state["crawl_id"] else 0)
     if state.get("status") != "queued" and attempts >= MAX_ATTEMPTS:
         state.update(status="failed", finished_at=_now().isoformat(),
                      last_error=f"The crawl stopped {attempts} times before it finished; it is tried again later.")
         await save_state(source.id, state)
         await _drop_beat(source.id)
+        await _drop_frontier(source.id)
         return False
-    assert _runner is not None
+    if _runner is None:
+        return _start(kb.id, source.id, state["crawl_id"])
     try:
         await _runner.start(kb.id, source.id, state["crawl_id"])
     except Exception as exc:  # noqa: BLE001 — the next pass arms it again
@@ -690,6 +753,13 @@ class _Stop(Exception):
 class _Capped(Exception):
     """A limit other than the page cap — the crawl's time, the vault's storage — stopped the crawl:
     `capped`, so it deletes nothing, with the limit named in `last_error` (CCR-11)."""
+
+
+class _SliceEnd(Exception):
+    """The crawl's slice is over (`run_crawl(slice_s=)`): it keeps where it got to and goes back to `queued` (F353)."""
+
+
+TIME_LIMIT = "Stopped at the crawl's time limit, so nothing was removed; the next crawl starts again."
 
 
 @dataclass
@@ -717,6 +787,31 @@ class _Crawl:
     deadline: datetime | None = None
     room: Callable[[int], Awaitable[str | None]] | None = None
     stop_reason: str | None = None  # why a crawl was capped short of its page cap
+    # Where it got to, kept so a stopped crawl resumes there (F353; `_checkpoint`).
+    frontier: deque = field(default_factory=deque)  # a site's (url, depth) still to take
+    taken: int = 0  # a site's pages taken — fetched, refused or failed
+    current: tuple[str, int] | None = None  # the page being taken: it goes back at the frontier's head
+    dropped: int = 0  # frontier left behind past the page cap: never taken, but the crawl is capped by it
+    took: list[str] = field(default_factory=list)  # addresses taken, in order
+    landed: set[str] = field(default_factory=set)  # redirect and canonical addresses pages landed on
+    sitemap_urls: list[str] | None = None  # a sitemap's pages, once listed
+    sitemap_next: int = 0  # how far down them it got
+    resumed: bool = False
+    max_pages: int = 0
+    worked_before: float = 0.0  # seconds fetched by this crawl's earlier slices or runs
+    started_mono: float = field(default_factory=time.monotonic)
+    max_seconds: float | None = None  # `knowledge_crawl_max_hours`: its time across slices
+    slice_end: float | None = None  # monotonic: past it, the next loop head ends the slice
+    in_slice: int = 0  # pages taken this slice — a slice always takes one
+    saved_at: float = float("-inf")
+
+    def worked(self) -> float:
+        return self.worked_before + (time.monotonic() - self.started_mono)
+
+    def see(self, url: str) -> None:
+        """An address a page landed on (a redirect's, a canonical): seen, and kept with the frontier."""
+        self.seen.add(url)
+        self.landed.add(url)
 
     def rel(self, path: str) -> str:
         return path[len(self.kb.folder) + 1:] if path.startswith(self.kb.folder + "/") else path
@@ -755,10 +850,15 @@ def _limits(kb: KnowledgeBase, state: dict[str, Any]) -> tuple[int, int, float, 
     return max(depth, 0), max(pages, 1), rps, doc_cap
 
 
-async def run_crawl(kb_id: str, source_id: str, crawl_id: str, *, deadline: datetime | None = None) -> dict[str, Any]:
+async def run_crawl(kb_id: str, source_id: str, crawl_id: str, *, deadline: datetime | None = None,
+                    slice_s: float | None = None) -> dict[str, Any]:
     """Crawl one source and record what happened in its state. The entrypoint OSS runs in the
     background and cloud's crawl job calls. Never raises for a crawl's own failures. Past `deadline`
-    (a worker's job limit; never sooner than `MIN_DEADLINE`) the crawl stops `capped`, saying so."""
+    (a worker's job limit; never sooner than `MIN_DEADLINE`) the crawl stops `capped`, saying so.
+
+    The same crawl run again resumes where it stopped (F353). With `slice_s` it runs for about that long — at
+    least one page — and then goes back to `queued`, keeping its place: the state it answers then carries
+    `"_more": True`, for the runner to queue it again."""
     from core.knowledge import bases
     from core.knowledge.config import knowledge_enabled
     from core.knowledge.fetch import Fetcher, egress_refusal
@@ -783,20 +883,33 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str, *, deadline: date
             await _drop_beat(source_id)
         return state
     beat = await load_beat(source_id)
-    attempts = (int(beat.get("attempts") or 0) if beat.get("crawl_id") == crawl_id else 0) + 1
+    kept = await load_frontier(source_id)
+    resumed = kept.get("crawl_id") == crawl_id and kept.get("v") == 1 and kept.get("kind") == source.kind
+    attempts = max(int(beat.get("attempts") or 0) if beat.get("crawl_id") == crawl_id else 0,
+                   int(kept.get("attempts") or 0) if resumed else 0)
+    if not (resumed and state.get("status") in ("queued", "interrupted")):
+        attempts += 1  # a new crawl, or one whose process stopped with no chance to say so
     max_depth, max_pages, rps, doc_cap = _limits(kb, state)
+    started_at = (state.get("started_at") if resumed else None) or _now().isoformat()
     state.update(source_id=source_id, kb_id=kb.id, url=source.url, kind=source.kind, crawl_id=crawl_id,
-                 status="running", started_at=_now().isoformat(), finished_at=None, last_error=None)
+                 status="running", started_at=started_at, finished_at=None, last_error=None)
     await save_state(source_id, state)
     if _runner is not None:
         await save_beat(source_id, {"crawl_id": crawl_id, "at": _now().isoformat(), "attempts": attempts})
     by_url, by_path = await _web_rows(kb)
     status = "done"
+    from core.knowledge.config import knowledge_settings
+
+    hours = knowledge_settings().crawl_max_hours
     async with Fetcher(rps=rps) as fetcher:
         c = _Crawl(kb=kb, source=source, fetcher=fetcher, metadata=dict(state.get("metadata") or {}),
                    doc_cap=doc_cap, by_url=by_url, by_path=by_path, crawl_id=crawl_id, attempts=attempts,
                    beat_at=time.monotonic(), room=_vault_room() if _vault_room is not None else None,
-                   deadline=None if deadline is None else max(deadline, _now() + MIN_DEADLINE))
+                   deadline=None if deadline is None else max(deadline, _now() + MIN_DEADLINE),
+                   max_pages=max_pages, max_seconds=hours * 3600 if hours and hours > 0 else None,
+                   slice_end=None if slice_s is None else time.monotonic() + max(0.0, slice_s))
+        if resumed:
+            _resume_from(c, kept)
         try:
             if source.kind == "page":
                 c.named.add(source.url)
@@ -806,6 +919,8 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str, *, deadline: date
                 await _sitemap(c, max_pages)
             else:
                 await _site(c, max_depth, max_pages)
+        except _SliceEnd:
+            return await _yield(c, state)
         except _Stop as exc:
             status = "cancelled"
             c.note(str(exc))
@@ -813,8 +928,13 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str, *, deadline: date
             c.capped = True
             c.stop_reason = str(exc)
         except asyncio.CancelledError:
-            if _runner is not None:  # its worker stopped (a deploy, a scale-in): the same crawl runs again
-                await asyncio.shield(_interrupted(c, state))
+            if _runner is not None or _key(source_id) not in _cancelling:
+                # Its worker stopped (a deploy, a scale-in) or this process is stopping: the same crawl runs again,
+                # from where it got to (F353). A person's cancel (`cancel`) ends it below.
+                try:
+                    await asyncio.shield(_interrupted(c, state))
+                except Exception as exc:  # noqa: BLE001 — its last checkpoint stands
+                    _log.warning(f"knowledge crawl of {source_id}: where it stopped was not kept: {exc!r}")
                 raise
             status = "cancelled"
             c.note("The crawl was stopped.")
@@ -855,13 +975,17 @@ async def _still_mine(c: _Crawl) -> dict[str, Any] | None:
     beat = await load_beat(c.source.id)
     if beat.get("crawl_id") == c.crawl_id:
         await _drop_beat(c.source.id)
+    if c.crawl_id is not None and (await load_frontier(c.source.id)).get("crawl_id") == c.crawl_id:
+        await _drop_frontier(c.source.id)
     return None
 
 
 async def _interrupted(c: _Crawl, state: dict[str, Any]) -> None:
-    """A crawl whose worker stopped: `interrupted`, holding what it reached, so the same crawl runs again."""
+    """A crawl whose worker stopped: `interrupted`, holding what it reached and where it got to, so the same crawl
+    runs again from there."""
     if await _still_mine(c) is None:
         return
+    await _checkpoint(c, force=True)
     previous = set(state.get("pages") or [])
     previous_outcomes = set(state.get("outcomes") or [])
     state.update(status="interrupted", counts=c.counts, pages=sorted(previous | c.reached),
@@ -897,7 +1021,89 @@ async def _finish(c: _Crawl, state: dict[str, Any], status: str, *, complete: bo
     await save_state(c.source.id, state)
     if _runner is not None:
         await _drop_beat(c.source.id)
+    if c.crawl_id is not None:
+        await _drop_frontier(c.source.id)
     return state
+
+
+async def _yield(c: _Crawl, state: dict[str, Any]) -> dict[str, Any]:
+    """The end of a slice: where it got to kept, the source's row `queued` again (live, holding what it reached so
+    far), no attempt counted. Answers the row with `"_more": True`."""
+    if await _still_mine(c) is None:
+        return await load_state(c.source.id)
+    await _checkpoint(c, force=True)
+    previous = set(state.get("pages") or [])
+    previous_outcomes = set(state.get("outcomes") or [])
+    state.update(status="queued", queued_at=_now().isoformat(), counts=dict(c.counts),
+                 pages=sorted(previous | c.reached), outcomes=sorted(previous_outcomes | c.outcomes))
+    await save_state(c.source.id, state)
+    if _runner is not None:
+        await save_beat(c.source.id, {"crawl_id": c.crawl_id, "at": _now().isoformat(), "attempts": c.attempts,
+                                      "reached": sorted(c.reached), "outcomes": sorted(c.outcomes)})
+    return {**state, "_more": True}
+
+
+def _frontier_value(c: _Crawl) -> dict[str, Any]:
+    """Where `c` got to: no more of its frontier than its page cap leaves it to take (the rest only counts), the
+    page being taken put back at the head."""
+    pending = list(c.frontier)
+    taken = c.taken
+    if c.current is not None:
+        pending.insert(0, c.current)
+        taken -= 1
+    room = max(0, c.max_pages - taken)
+    kept = pending[:room]
+    seen = set(c.took) | {url for url, _ in kept} | c.landed | set(c.named)
+    value: dict[str, Any] = {
+        "v": 1, "crawl_id": c.crawl_id, "kind": c.source.kind, "attempts": c.attempts, "at": _now().isoformat(),
+        "worked_s": round(c.worked(), 3), "taken": taken, "frontier": [[url, depth] for url, depth in kept],
+        "dropped": c.dropped + max(0, len(pending) - room), "took": list(c.took), "seen": sorted(seen),
+        "named": sorted(c.named), "reached": sorted(c.reached), "outcomes": sorted(c.outcomes),
+        "counts": dict(c.counts), "capped": c.capped, "last_error": c.last_error,
+    }
+    if c.sitemap_urls is not None:
+        value["sitemap"] = {"urls": list(c.sitemap_urls), "next": c.sitemap_next}
+    return value
+
+
+def _resume_from(c: _Crawl, kept: dict[str, Any]) -> None:
+    """Seed `c` with where the same crawl got to: what it reached counts as reached, so a complete crawl deletes none
+    of it, and it takes up its frontier — or its sitemap's list — where it left off."""
+    c.resumed = True
+    c.frontier = deque((str(url), int(depth)) for url, depth in kept.get("frontier") or [])
+    c.taken = int(kept.get("taken") or 0)
+    c.dropped = int(kept.get("dropped") or 0)
+    c.took = [str(url) for url in kept.get("took") or []]
+    c.seen = set(kept.get("seen") or [])
+    c.landed = set(c.seen) - set(c.took) - {url for url, _ in c.frontier}
+    c.named = set(kept.get("named") or [])
+    c.reached = set(kept.get("reached") or [])
+    c.outcomes = set(kept.get("outcomes") or [])
+    c.counts.update({k: int(v) for k, v in (kept.get("counts") or {}).items() if k in c.counts})
+    c.capped = bool(kept.get("capped"))
+    c.last_error = kept.get("last_error")
+    c.worked_before = float(kept.get("worked_s") or 0.0)
+    sitemap = kept.get("sitemap")
+    if isinstance(sitemap, dict):
+        c.sitemap_urls = [str(url) for url in sitemap.get("urls") or []]
+        c.sitemap_next = int(sitemap.get("next") or 0)
+
+
+async def _checkpoint(c: _Crawl, *, force: bool = False) -> None:
+    """Keep where `c` got to (`FRONTIER_PREFIX`), every `HEARTBEAT_EVERY_S` or now. `fetch_document`'s one page
+    keeps nothing."""
+    if c.crawl_id is None or not c.owned:
+        return
+    clock = time.monotonic()
+    if not force and clock - c.saved_at < HEARTBEAT_EVERY_S:
+        return
+    c.saved_at = clock
+    await _save_frontier(c.source.id, _frontier_value(c))
+
+
+def _slice_over(c: _Crawl) -> bool:
+    """At a loop's head: the slice has run its time and taken a page at least."""
+    return c.slice_end is not None and c.in_slice > 0 and time.monotonic() >= c.slice_end
 
 
 class _CrawlFailed(Exception):
@@ -910,7 +1116,10 @@ async def _check(c: _Crawl) -> None:
     from core.knowledge.config import knowledge_enabled
 
     if c.deadline is not None and _now() >= c.deadline:
-        raise _Capped("Stopped at the crawl's time limit, so nothing was removed; the next crawl starts again.")
+        raise _Capped(TIME_LIMIT)
+    if c.max_seconds is not None and c.worked() >= c.max_seconds:
+        raise _Capped(TIME_LIMIT)  # its time across slices (F353): fetching, never waiting in line
+    await _checkpoint(c)
     await _beat(c)
     clock = time.monotonic()
     if clock - c.checked_at < 5.0:
@@ -943,19 +1152,28 @@ async def _beat(c: _Crawl) -> None:
 async def _site(c: _Crawl, max_depth: int, max_pages: int) -> None:
     from core.knowledge.fetch import RobotsDisallowed  # noqa: F401 — named in the docstring's terms
 
-    root = c.source.url
-    c.named.add(root)
-    c.seen.add(root)
-    frontier: deque[tuple[str, int]] = deque([(root, 0)])
-    taken = 0
+    if not c.resumed:
+        root = c.source.url
+        c.named.add(root)
+        c.seen.add(root)
+        c.frontier = deque([(root, 0)])
+        c.taken = 0
+    frontier = c.frontier
     while frontier:
-        if taken >= max_pages:
+        if c.taken >= max_pages:
             c.capped = True
-            c.counts["not_followed"] += len(frontier)
+            c.counts["not_followed"] += len(frontier) + c.dropped
+            c.dropped = 0
             break
+        if _slice_over(c):
+            raise _SliceEnd()
         url, depth = frontier.popleft()
-        taken += 1
+        c.taken += 1
+        c.in_slice += 1
+        c.current = (url, depth)
         links = await _page(c, url, links_needed=depth < max_depth)
+        c.current = None
+        c.took.append(url)
         if links is None:
             continue
         for link in links.links:
@@ -974,9 +1192,32 @@ async def _site(c: _Crawl, max_depth: int, max_pages: int) -> None:
                 c.counts["blocked"] += 1  # a link robots.txt disallows is never requested, and makes no row
                 continue
             frontier.append((found, depth + 1))
+    if c.dropped:  # resumed with its frontier cut at the cap: what lay past it still caps the crawl
+        c.capped = True
+        c.counts["not_followed"] += c.dropped
+        c.dropped = 0
 
 
 async def _sitemap(c: _Crawl, max_pages: int) -> None:
+    """A sitemap source: its list read (`_list_sitemap`), then its pages fetched in order — from where a stopped
+    crawl got to."""
+    if c.sitemap_urls is None:
+        c.sitemap_urls = await _list_sitemap(c, max_pages)
+        c.sitemap_next = 0
+    urls = c.sitemap_urls
+    while c.sitemap_next < len(urls):
+        if _slice_over(c):
+            raise _SliceEnd()
+        url = urls[c.sitemap_next]
+        c.in_slice += 1
+        await _page(c, url, links_needed=False)
+        c.sitemap_next += 1
+        c.took.append(url)
+
+
+async def _list_sitemap(c: _Crawl, max_pages: int) -> list[str]:
+    """The pages a sitemap source lists (its child sitemaps read too), up to the page cap. Quick: read again whole
+    when a crawl stopped before it was done."""
     from core import safe_fetch
     from core.knowledge import sitemaps
 
@@ -1023,8 +1264,7 @@ async def _sitemap(c: _Crawl, max_pages: int) -> None:
             c.capped = True
     if pending and len(urls) >= max_pages:
         c.capped = True
-    for url in urls:
-        await _page(c, url, links_needed=False)
+    return urls
 
 
 async def _exists(path: str) -> bool:
@@ -1106,7 +1346,7 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
         if final in c.seen and final not in c.named:
             c.keep(held)
             return None
-        c.seen.add(final)
+        c.see(final)
         if c.source.kind != "page" and not in_scope(c.source, final):
             c.counts["not_followed"] += 1  # redirected out of the source's scope
             c.keep(held)
@@ -1131,7 +1371,7 @@ async def _page(c: _Crawl, url: str, *, links_needed: bool) -> PageLinks | None:
             if canonical != final and (c.source.kind == "page" or in_scope(c.source, canonical)):
                 if canonical in c.seen and canonical != url:
                     return links  # the same page, already kept under its canonical address
-                c.seen.add(canonical)
+                c.see(canonical)
                 final = canonical
         if links.noindex:
             c.counts["skipped"] += 1
