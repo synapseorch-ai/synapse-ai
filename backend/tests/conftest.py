@@ -178,6 +178,7 @@ def _isolate_knowledge_seams():
     web.set_crawl_runner(None)
     web.set_vault_room(None)
     knowledge_fetch.set_proxy_required(False)
+    knowledge_fetch.set_pacer(None)
     vault_events.set_vault_observer(None)
     events.knowledge_observers.clear()
     yield
@@ -186,6 +187,7 @@ def _isolate_knowledge_seams():
     web.set_crawl_runner(None)
     web.set_vault_room(None)
     knowledge_fetch.set_proxy_required(False)
+    knowledge_fetch.set_pacer(None)
     vault_events.set_vault_observer(None)
     events.knowledge_observers.clear()
 

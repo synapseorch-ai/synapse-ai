@@ -41,7 +41,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urljoin, urlsplit
 
 from core.log import get_logger
@@ -215,8 +215,16 @@ def _matches(pattern: str, target: str) -> bool:
 
 # ── pace ───────────────────────────────────────────────────────────────────────
 
+class HostPacer(Protocol):
+    """Spaces requests to one host, `interval` seconds apart (at least), across every crawl that shares it."""
+
+    async def wait(self, host: str, interval: float) -> None: ...
+
+
 class Pacer:
-    """One request at a time per host, `interval` seconds apart (at least)."""
+    """One request at a time per host, `interval` seconds apart (at least) — in this process. Every
+    `Fetcher` shares one per event loop (`shared_pacer`), so two crawls of one site take turns at its pace
+    (F355); cloud installs a pacer shared across its processes (`set_pacer`)."""
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep):
@@ -233,6 +241,34 @@ class Pacer:
             if at > now:
                 await self._sleep(at - now)
             self._next[host] = at + interval
+
+
+_pacer: HostPacer | None = None
+_local_pacers: dict[int, Pacer] = {}
+
+
+def set_pacer(pacer: HostPacer | None) -> None:
+    """Install the pace every `Fetcher` shares (cloud: one in Redis, across its knowledge workers). None:
+    this process's own, one per event loop."""
+    global _pacer
+    _pacer = pacer
+    _local_pacers.clear()
+
+
+def shared_pacer() -> HostPacer:
+    """The installed pacer, else this event loop's own (an `asyncio.Lock` belongs to its loop)."""
+    if _pacer is not None:
+        return _pacer
+    try:
+        loop = id(asyncio.get_running_loop())
+    except RuntimeError:
+        loop = 0
+    pacer = _local_pacers.get(loop)
+    if pacer is None:
+        pacer = Pacer()
+        _local_pacers.clear()  # one loop at a time serves crawls; a stale loop's pacer goes with it
+        _local_pacers[loop] = pacer
+    return pacer
 
 
 # ── the fetcher ────────────────────────────────────────────────────────────────
@@ -265,15 +301,22 @@ def media_type(headers) -> str:
 
 
 class Fetcher:
-    """A crawl's HTTP: one client, robots per host, a pace per host. Use as `async with Fetcher(...)`."""
+    """A crawl's HTTP: one client, robots per host, and the pace per host every crawl shares (F355). Use as
+    `async with Fetcher(...)`."""
 
     def __init__(self, *, rps: float = 1.0, client: httpx.AsyncClient | None = None,
-                 pacer: Pacer | None = None):
+                 pacer: HostPacer | None = None):
         self.rps = max(rps, 1e-3)
         self._client = client
         self._own = client is None
-        self.pacer = pacer or Pacer()
+        self._pacer = pacer
         self._robots: dict[str, Robots] = {}
+
+    @property
+    def pacer(self) -> HostPacer:
+        """Its own pacer if it was given one (a test), else the shared one — read when it waits, so an
+        installed pacer applies to a fetcher made before it."""
+        return self._pacer if self._pacer is not None else shared_pacer()
 
     async def __aenter__(self) -> Fetcher:
         if self._client is None:

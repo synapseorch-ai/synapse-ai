@@ -256,6 +256,54 @@ class TestPace:
         await pacer.wait("https://a.test", 2.0)
         assert slept == [1.0, 1.0]
 
+    async def test_every_fetcher_shares_one_pace_per_host(self):
+        """F355: two crawls of one site went at 1 request/s each — a pace per crawl, not per site."""
+        assert F.Fetcher(rps=1.0).pacer is F.Fetcher(rps=2.0).pacer
+        own = F.Pacer()
+        assert F.Fetcher(pacer=own).pacer is own  # a test's own pacer still wins
+
+    async def test_an_installed_pacer_paces_every_fetcher_and_none_restores_the_default(self):
+        class Recorder:
+            def __init__(self):
+                self.waits: list[tuple[str, float]] = []
+
+            async def wait(self, host: str, interval: float) -> None:
+                self.waits.append((host, interval))
+
+        installed = Recorder()
+        F.set_pacer(installed)
+        assert F.Fetcher(rps=1.0).pacer is installed
+        F.set_pacer(None)
+        assert isinstance(F.Fetcher(rps=1.0).pacer, F.Pacer)
+
+    async def test_two_crawls_of_one_host_take_turns_at_its_pace(self):
+        import asyncio
+        import time
+
+        class Timed(http.server.BaseHTTPRequestHandler):
+            at: list[float] = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                type(self).at.append(time.monotonic())
+                body = b"User-agent: *\nAllow: /\n" if self.path == "/robots.txt" else b"<p>x</p>"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv, port = _serve(Timed)
+        base = f"http://127.0.0.1:{port}"
+        try:
+            async with F.Fetcher(rps=5.0) as one, F.Fetcher(rps=5.0) as two:
+                await asyncio.gather(one.get(f"{base}/a"), two.get(f"{base}/b"))
+        finally:
+            srv.shutdown()
+        gaps = [b - a for a, b in zip(Timed.at, Timed.at[1:])]
+        assert len(Timed.at) == 4 and min(gaps) >= 0.18, gaps  # robots + page each, 0.2 s apart
+
     def test_crawl_delay_slows_the_pace_up_to_the_ceiling(self):
         fetcher = F.Fetcher(rps=1.0)
         fetcher._robots["https://a.test"] = F.Robots(crawl_delay=5.0)
