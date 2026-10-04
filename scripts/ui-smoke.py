@@ -5845,6 +5845,12 @@ _SMOKE_KB_DOCS = [
 _SMOKE_KB_DOCS[6]["progress"] = {
     "stage": "enrich", "done": 12, "total": 357, "unit": "passages", "eta_s": 480, "updated_at": _NOW,
     "waiting": {"reason": "rate_limited", "provider": "OpenAI", "provider_id": "openai", "until": _NOW}}
+#: A queued document that gave its slot back to the platform's rate limit (KL1, CCR-14): where it got to, and until
+#: when.
+_SMOKE_KB_DOCS[5]["progress"] = {
+    "stage": "embed", "done": 96, "total": 400, "unit": "passages", "eta_s": None, "updated_at": _NOW,
+    "waiting": {"reason": "rate_limited", "provider": "model gateway", "provider_id": "model_gateway",
+                "until": _NOW}}
 #: The base's one web source and its latest crawl (S1, CCR-4): stopped at its page cap.
 _SMOKE_KB_CRAWLS = [{
     "source_id": "kws_00000smoke1", "url": "https://docs.example.com/guide/", "kind": "site", "status": "capped",
@@ -5852,6 +5858,10 @@ _SMOKE_KB_CRAWLS = [{
     "counts": {"fetched": 500, "unchanged": 480, "written": 20, "deleted": 0, "blocked": 3, "failed": 0, "skipped": 1,
                "not_followed": 42},
     "next_due_at": _NOW, "last_error": None}]
+#: The same source between the slices a runner runs a crawl in (KL1, F353): queued, 12 pages fetched so far.
+_SMOKE_KB_CRAWLS_SLICED = [{
+    **_SMOKE_KB_CRAWLS[0], "status": "queued", "finished_at": None, "pages": 12,
+    "counts": {**_SMOKE_KB_CRAWLS[0]["counts"], "fetched": 12, "unchanged": 10, "written": 2, "not_followed": 0}}]
 _SMOKE_KB_REPORT = {
     **_SMOKE_KB_DOCS[2], "report": {
         "report_version": 1, "doc_id": "kdoc_smoke02", "path": "smoke_kb/failed.md", "sha256": None, "attempt": 2,
@@ -6044,7 +6054,12 @@ LIGHT_STATES = (
     ("knowledge working document", "/knowledge", [], _SMOKE_KB_ROUTES, None,
      "Writing contexts · 12 of 357 passages"),
     ("knowledge rate limit waited out", "/knowledge", [], _SMOKE_KB_ROUTES, None,
-     "Waiting for OpenAI's rate limit; it carries on by itself."),
+     "Waiting for OpenAI's rate limit until"),
+    ("knowledge parked document", "/knowledge", [], _SMOKE_KB_ROUTES, None,
+     "Waiting for the platform's rate limit until"),
+    ("knowledge crawl between slices", "/knowledge", [],
+     _SMOKE_KB_ROUTES + [("**/api/knowledge/bases/*/crawls", _answer(_SMOKE_KB_CRAWLS_SLICED))], None,
+     "Waiting for its turn · 12 pages fetched so far"),
     ("knowledge costs", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name=re.compile("^Costs")).click(), "Reranking"),
     ("knowledge report", "/knowledge", [], _SMOKE_KB_ROUTES,

@@ -788,7 +788,9 @@ function AddWebDialog({
 function crawlLine(c: WebCrawlState): string {
     const n = c.counts;
     switch (c.status) {
-        case 'queued': return 'Waiting to fetch';
+        // Between the slices a runner runs a crawl in (cloud, F353): what it fetched so far.
+        case 'queued': return n.fetched ? `Waiting for its turn · ${count(n.fetched, 'page')} fetched so far`
+            : 'Waiting to fetch';
         case 'running': return 'Fetching now…';
         case 'interrupted': return 'Interrupted by a restart; fetched again shortly';
         case 'cancelled': return 'Stopped';

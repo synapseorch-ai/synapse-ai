@@ -283,12 +283,15 @@ export function progressCount(p: { done: number | null; total: number | null; un
     return `${p.done.toLocaleString()} of ${p.total.toLocaleString()} ${unit}`;
 }
 
-/** Whose rate limit the work is waiting out, and that it goes on by itself. Our gateway's own name is the
- *  platform's. */
+/** Whose rate limit the work is waiting out, until when, and that it goes on by itself. Our gateway's own name is
+ *  the platform's. A document that gave its slot back to the wait (cloud, CCR-14) shows the same note while queued. */
 export function waitNote(wait: ProgressWait | null | undefined): string | null {
     if (!wait) return null;
     const who = wait.provider_id === 'model_gateway' ? 'the platform' : wait.provider;
-    return `Waiting for ${who}'s rate limit; it carries on by itself.`;
+    const until = wait.until ? new Date(wait.until) : null;
+    const at = until && !Number.isNaN(until.getTime())
+        ? ` until ${until.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
+    return `Waiting for ${who}'s rate limit${at}; it carries on by itself.`;
 }
 
 /** Why a document is where it is, in a few words (the backend's `status_reason` codes). */
