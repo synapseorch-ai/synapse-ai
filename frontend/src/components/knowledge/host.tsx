@@ -63,6 +63,9 @@ export type KnowledgeHost = {
     canEdit: boolean;
     /** Fresh part URLs for an upload, where part URLs expire. */
     refreshParts?: RefreshParts;
+    /** How a person turns Knowledge on here, for the screen shown while it is off; absent where nobody in the
+     *  workspace can (cloud's switch is the deployment's). */
+    offHint?: string;
 };
 
 export const EMPTY_WORKSPACE: KnowledgeWorkspace = {

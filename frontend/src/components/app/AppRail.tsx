@@ -26,6 +26,7 @@ import {
     Label, Mark, Menu, MenuItem, MenuLabel, MenuLink, MenuSegment, MenuSeparator, usePersisted,
 } from '@/components/ui';
 import { AUTH_CHANGED_EVENT, canSignOut, readAuthStatus } from '@/lib/auth';
+import { KNOWLEDGE_SWITCHED_EVENT } from '@/lib/knowledge';
 import { PRIMARY_NAV, visibleItems, type NavEntry, type NavFlag } from '@/lib/nav';
 import { useNotifications } from '@/components/notifications/NotificationProvider';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
@@ -140,7 +141,12 @@ export function AppRail({
             .catch(() => { });
         read();
         window.addEventListener(AUTH_CHANGED_EVENT, read);
-        return () => { live = false; window.removeEventListener(AUTH_CHANGED_EVENT, read); };
+        window.addEventListener(KNOWLEDGE_SWITCHED_EVENT, read);
+        return () => {
+            live = false;
+            window.removeEventListener(AUTH_CHANGED_EVENT, read);
+            window.removeEventListener(KNOWLEDGE_SWITCHED_EVENT, read);
+        };
     }, []);
     useEffect(() => {
         let live = true;

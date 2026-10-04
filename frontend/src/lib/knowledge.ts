@@ -834,16 +834,22 @@ export async function uploadToKnowledge(
     return accepted.documents;
 }
 
+/** Dispatched on `window` once a saved setting switched Knowledge on or off (OSS's Settings → General, F367),
+ *  so every screen that reads the switch reads it again. */
+export const KNOWLEDGE_SWITCHED_EVENT = 'synapse-knowledge-switched';
+
 /** Whether Knowledge is switched on (`knowledge_enabled`); null until known. */
 export function useKnowledgeEnabled(): boolean | null {
     const [enabled, setEnabled] = useState<boolean | null>(null);
     useEffect(() => {
         let live = true;
-        fetch('/api/settings')
+        const read = () => fetch('/api/settings')
             .then(r => r.json())
             .then(data => { if (live) setEnabled(!!data?.knowledge_enabled); })
             .catch(() => { if (live) setEnabled(false); });
-        return () => { live = false; };
+        read();
+        window.addEventListener(KNOWLEDGE_SWITCHED_EVENT, read);
+        return () => { live = false; window.removeEventListener(KNOWLEDGE_SWITCHED_EVENT, read); };
     }, []);
     return enabled;
 }

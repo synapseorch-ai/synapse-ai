@@ -3929,6 +3929,48 @@ async def check_knowledge_settings(browser) -> str:
 
 
 @check
+async def check_knowledge_switch(browser) -> str:
+    """Knowledge's switch (F367): it ships off, and Settings → General is where a person turns it on. The switch is
+    named, reads the saved setting, is saved by the page's Save, and the rail shows Knowledge at once, with no
+    reload. Runs against the real backend, whose setting is put back as it was found."""
+    found = bool(api("/api/settings").get("knowledge_enabled"))
+    if found:
+        api("/api/settings", "POST", {"knowledge_enabled": False})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    posted: list[dict] = []
+
+    async def record(route):
+        if route.request.method == "POST":
+            posted.append(json.loads(route.request.post_data or "{}"))
+        await route.fallback()
+    await ctx.route("**/api/settings", record)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/settings/general", wait_until="domcontentloaded")
+        switch = page.get_by_role("switch", name="Knowledge", exact=True)
+        await switch.wait_for(timeout=30_000)
+        await page.wait_for_function(
+            "() => { const s = document.querySelector('[role=switch][aria-label=Knowledge]'); return s && !s.disabled; }",
+            timeout=30_000)
+        if await switch.get_attribute("aria-checked") != "false":
+            raise AssertionError("the switch does not read the saved setting (off)")
+        rail = page.locator('nav[aria-label="Primary"] a[href="/knowledge"]')
+        if await rail.count():
+            raise AssertionError("the rail shows Knowledge while it is off")
+        await switch.click()
+        await page.get_by_role("button", name="Save Changes", exact=True).click()
+        await rail.first.wait_for(timeout=15_000)
+        if not any(p.get("knowledge_enabled") is True for p in posted):
+            raise AssertionError(f"the save did not send knowledge_enabled: true ({posted})")
+        if api("/api/settings").get("knowledge_enabled") is not True:
+            raise AssertionError("the backend did not keep the switch")
+        return "Settings → General switches Knowledge on with its Save, and the rail shows it without a reload"
+    finally:
+        await ctx.close()
+        api("/api/settings", "POST", {"knowledge_enabled": found})
+
+
+@check
 async def check_knowledge_contextual(browser) -> str:
     """Contextual Retrieval in a knowledge base's settings (CR1, D180): choosing it shows a named Context model
     picker that starts on the workspace's default, the rebuild is priced with a "Writing contexts" line before

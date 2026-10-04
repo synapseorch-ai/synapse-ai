@@ -31,6 +31,9 @@ interface GeneralTabProps {
     setAutoCompactThreshold: (v: number) => void;
     allowDbWrite: boolean;
     setAllowDbWrite: (v: boolean) => void;
+    /** Knowledge's switch (`knowledge_enabled`, F367); null until the settings are read. */
+    knowledgeEnabled: boolean | null;
+    setKnowledgeEnabled: (v: boolean) => void;
     toolPolicyDefaults: ToolPolicy;
     setToolPolicyDefaults: (v: ToolPolicy) => void;
     embedCode: boolean;
@@ -57,6 +60,7 @@ export function GeneralTab({
     autoCompactEnabled, setAutoCompactEnabled,
     autoCompactThreshold, setAutoCompactThreshold,
     allowDbWrite, setAllowDbWrite,
+    knowledgeEnabled, setKnowledgeEnabled,
     toolPolicyDefaults, setToolPolicyDefaults,
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
@@ -178,6 +182,29 @@ export function GeneralTab({
                     placeholder="Enter Agent Name"
                 />
                 <p className="text-xs text-text-faint">This name identifies your agent across the system.</p>
+            </div>
+
+            <div className="space-y-4">
+                <Label size="sm" className="block">Knowledge</Label>
+                <div className="flex items-center justify-between">
+                    <div>
+                        <p className="text-xs text-text-faint mt-0.5">
+                            Makes Vault folders searchable, so agents and workflows answer from your documents and cite them. Once it is saved, choose an embedding model in Settings → Models.
+                        </p>
+                    </div>
+                    <button
+                        role="switch"
+                        aria-checked={!!knowledgeEnabled}
+                        aria-label="Knowledge"
+                        disabled={knowledgeEnabled === null}
+                        onClick={() => setKnowledgeEnabled(!knowledgeEnabled)}
+                        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50 ${knowledgeEnabled ? 'bg-accent' : 'bg-surface-2'}`}
+                    >
+                        <span
+                            className={`inline-block h-4 w-4 transform rounded-full transition-transform ${knowledgeEnabled ? 'translate-x-6 bg-accent-fg' : 'translate-x-1 bg-text-muted'}`}
+                        />
+                    </button>
+                </div>
             </div>
 
             <div className="space-y-4">

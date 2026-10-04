@@ -14,6 +14,7 @@ import type { Tab } from './settings/types';
 import { LinkButton, Screen } from '@/components/ui';
 import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 import { AUTH_CHANGED_EVENT, readAuthStatus } from '@/lib/auth';
+import { KNOWLEDGE_SWITCHED_EVENT } from '@/lib/knowledge';
 import { GeneralTab } from './settings/GeneralTab';
 import type { ToolPolicy } from './settings/ToolPolicy';
 import { PersonalDetailsTab } from './settings/PersonalDetailsTab';
@@ -65,6 +66,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [autoCompactEnabled, setAutoCompactEnabled] = useState(false);
     const [autoCompactThreshold, setAutoCompactThreshold] = useState(50000);
     const [allowDbWrite, setAllowDbWrite] = useState(false);
+    // Knowledge's switch (F367); null until read, and not saved until then, so a failed read never turns it off.
+    const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | null>(null);
     const [toolPolicyDefaults, setToolPolicyDefaults] = useState<ToolPolicy>({});
     const [bashAllowedDirs, setBashAllowedDirs] = useState<string[]>([]);
 
@@ -231,6 +234,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             tool_policy_defaults: toolPolicyDefaults,
             embed_code: embedCode,
             bash_allowed_dirs: bashAllowedDirs,
+            ...(knowledgeEnabled === null ? {} : { knowledge_enabled: knowledgeEnabled }),
             ...knowledgeModels,
         };
 
@@ -241,6 +245,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 body: JSON.stringify(payload),
             });
             if (!response.ok) throw new Error('Failed to update settings');
+            if (knowledgeEnabled !== null) window.dispatchEvent(new Event(KNOWLEDGE_SWITCHED_EVENT));
             // The answer serves no key either: note what is now saved, and empty
             // the fields a new key was typed into, which read "Saved" from here.
             const saved = await response.json().catch(() => null);
@@ -458,6 +463,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setAutoCompactEnabled(data.auto_compact_enabled || false);
                 setAutoCompactThreshold(data.auto_compact_threshold || 50000);
                 setAllowDbWrite(data.allow_db_write || false);
+                setKnowledgeEnabled(!!data.knowledge_enabled);
                 setToolPolicyDefaults(data.tool_policy_defaults || {});
                 setEmbedCode(data.embed_code || false);
                 setBashAllowedDirs(data.bash_allowed_dirs || []);
@@ -561,6 +567,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         setAutoCompactThreshold={setAutoCompactThreshold}
                         allowDbWrite={allowDbWrite}
                         setAllowDbWrite={setAllowDbWrite}
+                        knowledgeEnabled={knowledgeEnabled}
+                        setKnowledgeEnabled={setKnowledgeEnabled}
                         toolPolicyDefaults={toolPolicyDefaults}
                         setToolPolicyDefaults={setToolPolicyDefaults}
                         embedCode={embedCode}

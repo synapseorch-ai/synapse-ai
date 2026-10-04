@@ -42,6 +42,7 @@ export const ossKnowledgeHost: KnowledgeHost = {
     ...DEFAULT_KNOWLEDGE_HOST,
     loadWorkspace,
     withUnreachable,
+    offHint: 'Turn it on in Settings → General to make Vault folders searchable.',
 };
 
 export function OssKnowledgeHost({ children }: { children: ReactNode }) {

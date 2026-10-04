@@ -102,7 +102,7 @@ function summary(kb: KnowledgeBase): string {
 
 export function KnowledgeScreen() {
     const enabled = useKnowledgeEnabled();
-    const { canEdit } = useKnowledgeHost();
+    const { canEdit, offHint } = useKnowledgeHost();
     const [bases, setBases] = useState<KnowledgeBase[] | null>(null);
     const [selected, setSelected] = useState<string | null>(null);
     const [creating, setCreating] = useState(false);
@@ -149,8 +149,7 @@ export function KnowledgeScreen() {
         return (
             <Screen title="Knowledge" description="Agents that answer from your documents, with sources.">
                 <EmptyState title="Knowledge is off in this workspace">
-                    Turn on <span className="font-mono">knowledge_enabled</span> in the workspace settings to make
-                    Vault folders searchable.
+                    {offHint ?? 'Knowledge is not switched on here yet.'}
                 </EmptyState>
             </Screen>
         );
