@@ -151,15 +151,15 @@ def _isolate_run_checkpoints(tmp_path, monkeypatch):
 # ── notification store isolation (autouse) ───────────────────────────────────
 @pytest.fixture(autouse=True)
 def _isolate_notifications(tmp_path, monkeypatch):
-    """Reset the module-level notification hub's in-memory ring.
+    """Reset the module-level notification hub's in-memory rings.
 
     Notifications are a blob now, and `_isolate_store` gives each test its own
     blob directory — but the hub is a module singleton constructed at import,
-    so its in-memory items outlive that.
+    so its in-memory rings (one per tenant, F337) outlive that.
     """
     import core.notifications as notif_mod
-    notif_mod.hub._items = []
-    notif_mod.hub._next_id = 1
+    notif_mod.hub._rings.clear()
+    notif_mod.hub._subs.clear()
     notif_mod.hub._orch_names.clear()
     notif_mod.hub._terminal_notified.clear()
 
