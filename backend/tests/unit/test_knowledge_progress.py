@@ -691,3 +691,123 @@ def test_a_paused_rebuild_shows_no_estimate_and_no_document():
     assert going["eta_s"] == 210, "34 passages in 2 min, 56 left: 198 s, read as 3½ min"
     counted = snapshots._build_progress({**stats, "paused_reason": None, "cursor": "kdoc_b"}, row, now)
     assert counted["passages_done"] == 30, "once its beat has counted the document, its row does not again"
+
+
+# ── giving the slot back (KL1, D191; F360) ───────────────────────────────────
+
+
+@pytest.fixture
+def parks_at_once(monkeypatch):
+    """Inside `parking()`, the first wait (30 s) would pass the give-back time (0): the work parks at once."""
+    monkeypatch.setattr(pacing, "GIVE_BACK_AFTER_S", 0.0)
+    monkeypatch.setattr(pacing, "RATE_WAIT_S", 30.0)
+    monkeypatch.setattr(pacing, "RATE_WAIT_MAX_S", 60.0)
+
+
+async def test_inside_parking_a_long_limit_gives_the_slot_back_keeping_what_it_paid_for(jobs, provider,
+                                                                                      parks_at_once):
+    provider.script = {n: _limit for n in range(3, 500)}  # two slices answered, then the limit holds
+    kb = await _base()
+    row = await _queue(kb)
+    with pacing.parking(), pytest.raises(pacing.Parked) as parked:
+        await jobs.drain(run_ingest_job)
+    assert (parked.value.reason, parked.value.provider_id) == ("rate_limited", "openai")
+    assert parked.value.until > datetime.now(timezone.utc).timestamp() + 20, "queued again for after the wait"
+    assert parked.value.stalled_since is not None
+    row = await documents.get(row.id)
+    assert (row.status, row.attempts) == ("queued", 0), "queued again, the run not counted as an attempt"
+    sha = hashlib.sha256(TEXT.encode()).hexdigest()
+    kept = await embed_cache.load(sha, embed_cache.signature(MODEL, None, embedders.profile_version(MODEL)))
+    assert len(kept) == 4, "the two slices answered are kept for the next run (F345)"
+    assert sum(c.input_tokens for c in await _costs()) == 40, "and what they cost is recorded, once"
+    (shown,) = await progress.attach([documents.to_out(row)])
+    assert shown.progress is not None and shown.progress.stage == "embed"
+    assert shown.progress.waiting.provider == "OpenAI" and shown.progress.waiting.until
+    assert shown.progress.eta_s is None
+
+
+async def test_a_parked_document_run_again_buys_only_what_was_not_answered(jobs, provider, parks_at_once):
+    provider.script = {n: _limit for n in range(3, 500)}
+    kb = await _base()
+    row = await _queue(kb)
+    with pacing.parking(), pytest.raises(pacing.Parked):
+        await jobs.drain(run_ingest_job)
+    first = list(provider.sent)
+    provider.script = {}  # the limit lifted
+    await dispatch.enqueue(kb.id, "upsert", "retry", path=row.path, doc_id=row.id)
+    with pacing.parking():
+        await jobs.drain(run_ingest_job)
+    row = await documents.get(row.id)
+    assert (row.status, row.attempts) == ("indexed", 1)
+    resumed = provider.sent[len(first):]
+    assert not set(resumed) & set(first[:4]) and len(resumed) == row.chunks - 4
+    (shown,) = await progress.attach([documents.to_out(row)])
+    assert shown.progress is None and await _rows() == [], "the parked row is gone once it ran again"
+
+
+async def test_the_no_progress_time_carries_across_parks(jobs, provider, monkeypatch):
+    """A document parked again and again without an answer still fails after `NO_PROGRESS_S` from its last one."""
+    import time
+
+    monkeypatch.setattr(pacing, "NO_PROGRESS_S", 5.0)
+    provider.script = {n: _limit for n in range(1, 500)}
+    kb = await _base()
+    row = await _queue(kb)
+    with pacing.parking(stalled_since=time.time() - 6.0):
+        await jobs.drain(run_ingest_job)
+    row = await documents.get(row.id)
+    assert (row.status, row.status_reason) == ("failed", "embed_failed"), "no wait: its time was up"
+    assert len(provider.calls) == 1
+
+
+async def test_outside_parking_a_long_limit_is_waited_out_as_before(jobs, provider, monkeypatch):
+    monkeypatch.setattr(pacing, "GIVE_BACK_AFTER_S", 0.0)  # would park at once — but nothing asked to
+    provider.script = {2: _limit}
+    kb = await _base()
+    row = await _ingest(jobs, kb)
+    assert row.status == "indexed"
+
+
+async def test_a_rebuild_step_that_parks_releases_its_lease_where_it_got_to(jobs, provider, parks_at_once):
+    kb = await _base()
+    for i in range(2):
+        await _queue(kb, f"doc{i}.md")
+    await jobs.drain(run_ingest_job)
+    provider.script = {n: _limit for n in range(len(provider.calls) + 1, len(provider.calls) + 500)}
+    _, started = await _edit(kb.id, chunking=Chunking(target_tokens=200, max_tokens=300))
+    assert started
+    with pacing.parking(), pytest.raises(pacing.Parked):
+        await jobs.drain(run_ingest_job)
+    async with session() as s:
+        from core.store.models import KnowledgeSnapshotDB
+
+        snap = (await s.execute(select(KnowledgeSnapshotDB).where(
+            KnowledgeSnapshotDB.kb_id == kb.id, KnowledgeSnapshotDB.status == "building"))).scalar_one()
+    assert "lease_until" not in (snap.stats or {}), "the lease is released: the next step may claim it"
+    assert not (snap.stats or {}).get("cursor"), "no document built yet: it starts again at the first"
+    build = (await snapshots.build_states([kb]))[kb.id]
+    assert build.waiting is not None and build.waiting.provider == "OpenAI", "the rebuild says whose limit"
+
+
+async def test_a_busy_reader_gives_the_slot_back_only_inside_parking(monkeypatch):
+    from core.knowledge.parse import service
+
+    monkeypatch.setattr(pacing, "GIVE_BACK_AFTER_S", 0.05)
+    slot = service._docling_slot()
+    await slot.acquire()
+    try:
+        with pacing.parking(), pytest.raises(pacing.Parked) as parked:
+            async with service._reader():
+                pass
+        assert parked.value.reason == "reader_busy"
+        waiting = asyncio.ensure_future(_enter(service))
+        await asyncio.sleep(0.15)
+        assert not waiting.done(), "outside parking it waits for the reader, as before"
+    finally:
+        slot.release()
+    await waiting
+
+
+async def _enter(service) -> None:
+    async with service._reader():
+        pass

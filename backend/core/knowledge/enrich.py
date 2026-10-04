@@ -472,9 +472,13 @@ def _rate_limited(exc: BaseException) -> bool:
 
 class _Pacer:
     """One document's calls: `CONCURRENCY` at a time until a rate limit outlasts the provider's own retries, then one
-    at a time, each limit waited out, until nothing has been answered for `NO_PROGRESS_S` (F356)."""
+    at a time, each limit waited out, until nothing has been answered for `NO_PROGRESS_S` (F356) — counted from an
+    earlier run's last answer when the document was parked. Inside `pacing.parking()` a wait that would take the run
+    past `GIVE_BACK_AFTER_S` gives the slot back instead (`Parked`, KL1)."""
 
     def __init__(self, model: str = "") -> None:
+        from core.knowledge.pacing import _carried_stall
+
         self.model = model
         self.gate = asyncio.Semaphore(CONCURRENCY)
         self.serial = asyncio.Lock()
@@ -483,6 +487,11 @@ class _Pacer:
         self.waited_s = 0.0
         self._wait = RATE_WAIT_S
         self._answered = time.monotonic()
+        self._answered_at = time.time()
+        carried = _carried_stall()
+        if carried is not None:
+            self._answered -= max(0.0, time.time() - carried)
+            self._answered_at = carried
 
     async def call(self, fn: Callable[[], Awaitable[Any]]) -> Any:
         """`fn()`, one at a time once the document has been rate limited."""
@@ -493,13 +502,17 @@ class _Pacer:
 
     def answered(self) -> None:
         self._answered = time.monotonic()
+        self._answered_at = time.time()
         self._wait = RATE_WAIT_S
 
     async def rate_limited(self) -> bool:
         """Wait out a rate limit; False (give up) once nothing has been answered for `NO_PROGRESS_S`."""
+        from core.knowledge.pacing import give_back
+
         if time.monotonic() - self._answered >= NO_PROGRESS_S:
             return False
         self.limited = True
+        give_back(self._wait, model=self.model, answered_at=self._answered_at)
         wait, self._wait = self._wait, min(self._wait * 2, RATE_WAIT_MAX_S)
         self.waits += 1
         self.waited_s += wait

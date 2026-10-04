@@ -133,9 +133,18 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
     # This job's claim: every later move checks it still holds, so a job a newer write superseded stops
     # before it indexes the older text under the newer sha256 (F380).
     claim = {"sha256": sha, "attempts": attempt}
-    # From here the document is at work: a screen follows it stage by stage (PG1, F357).
-    async with progress.tracking(kb.id, row.id, doc_id=row.id):
-        return await _parse_and_index(kb, row, parsing, data, sha, builder, claim)
+    from core.knowledge.pacing import Parked
+
+    try:
+        # From here the document is at work: a screen follows it stage by stage (PG1, F357).
+        async with progress.tracking(kb.id, row.id, doc_id=row.id):
+            return await _parse_and_index(kb, row, parsing, data, sha, builder, claim)
+    except Parked:
+        # It gave its slot back (a long rate limit, a busy reader — KL1): queued again as it was before this run,
+        # not counted as an attempt, while it still holds its claim. Whoever parked it queues it for later.
+        await asyncio.shield(documents.transition(row.id, "queued", expect=claim, attempts=attempt - 1,
+                                                  queued_at=datetime.now(timezone.utc)))
+        raise
 
 
 async def _parse_and_index(kb: KnowledgeBase, row: KnowledgeDocumentDB, parsing: KnowledgeDocumentDB, data: bytes,

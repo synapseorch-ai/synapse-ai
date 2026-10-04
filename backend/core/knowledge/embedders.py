@@ -196,7 +196,18 @@ class ProviderEmbedder:
                     # before it cost is in the call's answer, or recorded once if the call fails in the end.
                     await _record_failed_charge(exc, model=model, provider=provider.id, attribution=attribution,
                                                 profile=profile)
-                    if await waiter.wait():
+                    try:
+                        waited = await waiter.wait()
+                    except pacing.Parked as parked:
+                        # The slot is given back (KL1): the slices answered were paid for, so their cost is
+                        # recorded and their vectors kept by indexing (F345), as on any other stop.
+                        if vectors:
+                            await asyncio.shield(_record_failed_charge(parked, model=model, provider=provider.id,
+                                                                       attribution=attribution, tokens=tokens,
+                                                                       charged=charged, profile=profile))
+                        parked.answered_vectors = list(vectors)  # type: ignore[attr-defined]
+                        raise
+                    if waited:
                         size = max(1, len(batch) // 2)
                         continue
                     exc.charged_microusd = None  # recorded above

@@ -621,6 +621,7 @@ async def build_step(kb: KnowledgeBase, snapshot_id: str) -> str:
         await _drop(kb.id, snapshot.id)                                            # first document has an estimate
         return "left"
     from core.knowledge import progress
+    from core.knowledge.pacing import Parked
 
     async with progress.tracking(kb.id, snapshot.id) as tracker:  # the document being built, for a screen (PG1)
         for row in batch:
@@ -632,6 +633,12 @@ async def build_step(kb: KnowledgeBase, snapshot_id: str) -> str:
             except _Fail as failure:
                 await _fail(kb, snapshot, str(failure), failure.doc, failure.code)
                 return "failed"
+            except Parked:
+                # A provider's limit outlasted this step's wait, or the reader is busy (KL1): the step gives its slot
+                # back, and the build resumes at this document when its runner queues the step again — the lease
+                # released, the cursor still at the last document built.
+                await asyncio.shield(_release(snapshot, cursor=cursor, pace=dict(pace)))
+                raise
             cursor = row.id
             done += 1 if built is not None else 0  # counted as it goes: a screen follows a rebuild document by document
             held, will_hold = await _passages(kb.id, snapshot.id)

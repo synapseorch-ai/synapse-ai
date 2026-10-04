@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -57,6 +58,28 @@ def _docling_slot() -> asyncio.Semaphore:
         _docling_slots.clear()
         _docling_slots[loop] = asyncio.Semaphore(1)
     return _docling_slots[loop]
+
+
+@asynccontextmanager
+async def _reader() -> AsyncIterator[None]:
+    """Hold the Docling slot. Inside `pacing.parking()` (cloud's knowledge worker) a document that would wait for it
+    longer than `GIVE_BACK_AFTER_S` gives its job slot back instead (`Parked`, `reader_busy`; KL1): the slot would
+    otherwise sit idle while a parse it cannot share runs, and the job's own time limit would run down."""
+    from core.knowledge import pacing
+
+    slot = _docling_slot()
+    if not pacing.is_parking():
+        async with slot:
+            yield
+        return
+    try:
+        await asyncio.wait_for(slot.acquire(), timeout=pacing.GIVE_BACK_AFTER_S)
+    except TimeoutError:
+        raise pacing.Parked(until=time.time(), reason="reader_busy") from None
+    try:
+        yield
+    finally:
+        slot.release()
 
 
 def docling_ready() -> bool:
@@ -113,7 +136,7 @@ async def parse_document(data: bytes, *, path: str, source: str, sha256: str, mi
 
         job["docling_artifacts"] = str(artifacts_path())
     async with _beating(heartbeat), AsyncExitStack() as stack:
-        async with _docling_slot() if docling else _no_slot():  # held while the child runs, not during OCR
+        async with _reader() if docling else _no_slot():  # held while the child runs, not during OCR
             out = await stack.enter_async_context(run_parse(
                 data, job, timeout_s=limits.parse_timeout_s(), memory_mb=limits.parse_memory_mb(docling=docling)))
         detail: dict[str, Any] = {"runner": "subprocess", "duration_ms": out.duration_ms,

@@ -302,22 +302,42 @@ async def _flush(row_key: str, tracker: Tracker) -> None:
 @asynccontextmanager
 async def tracking(kb_id: str, work_id: str, *, doc_id: str | None = None) -> AsyncIterator[Tracker]:
     """Track the work inside the block as `<kb_id>:<work_id>`: its row is written now, kept up to date, and
-    removed when the block ends, however it ends."""
+    removed when the block ends, however it ends — except when the work gave its slot back to a provider's rate
+    limit (`pacing.Parked`, KL1): then the row stays, `parked`, saying whose limit and until when, until the next
+    run's row replaces it."""
+    from core.knowledge.pacing import Parked
+
     tracker = Tracker(doc_id=doc_id)
     row_key = key(kb_id, work_id)
     token = _CURRENT.set(tracker)
     tracker.urgent.clear()
     await _safe_write(row_key, tracker.value())
     flusher = asyncio.create_task(_flush(row_key, tracker))
+    parked: Parked | None = None
     try:
         yield tracker
+    except Parked as exc:
+        parked = exc
+        raise
     finally:
         tracker.close()
         flusher.cancel()
         with suppress(asyncio.CancelledError):
             await flusher
         _CURRENT.reset(token)
-        await forget([row_key])
+        if parked is not None and parked.reason == "rate_limited":
+            await asyncio.shield(_safe_write(row_key, parked_value(tracker.value(), parked)))
+        else:
+            await forget([row_key])
+
+
+def parked_value(value: dict[str, Any], parked: Any) -> dict[str, Any]:
+    """A row for work that gave its slot back to a rate limit: where it got to, no estimate, and the wait until it
+    runs again."""
+    until = datetime.fromtimestamp(parked.until, tz=timezone.utc)
+    return {**value, "eta_s": None, "parked": True, "waiting": {
+        "reason": "rate_limited", "provider": parked.provider, "provider_id": parked.provider_id,
+        "until": _iso(until)}}
 
 
 # ── what a screen reads ───────────────────────────────────────────────────────
@@ -344,6 +364,9 @@ async def load(row_keys: Sequence[str]) -> dict[str, dict[str, Any]]:
 
 
 def _stale(value: dict[str, Any], now: datetime) -> bool:
+    """A row whose writer stopped. A parked row has no writer: it is live until its wait ends (KL1)."""
+    if value.get("parked"):
+        return _parked_until(value) is None or _parked_until(value) <= now
     try:
         at = datetime.fromisoformat(str(value.get("at")))
     except ValueError:
@@ -351,6 +374,15 @@ def _stale(value: dict[str, Any], now: datetime) -> bool:
     if at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
     return (now - at).total_seconds() > STALE_AFTER_S
+
+
+def _parked_until(value: dict[str, Any]) -> datetime | None:
+    wait = value.get("waiting")
+    try:
+        until = datetime.fromisoformat(str((wait or {}).get("until")))
+    except (TypeError, ValueError):
+        return None
+    return until if until.tzinfo else until.replace(tzinfo=timezone.utc)
 
 
 def wait_of(value: dict[str, Any], now: datetime | None = None) -> ProgressWait | None:
@@ -384,8 +416,9 @@ def to_progress(value: dict[str, Any], now: datetime | None = None) -> DocumentP
 
 
 async def attach(outs: Sequence[DocumentOut]) -> list[DocumentOut]:
-    """`outs` with `progress` set on each working document that has a row (one query for them all)."""
-    working = [o for o in outs if o.status in WORKING]
+    """`outs` with `progress` set on each working document that has a row (one query for them all) — and on a
+    queued one that gave its slot back to a rate limit, while its wait lasts (CCR-14)."""
+    working = [o for o in outs if o.status in WORKING or o.status == "queued"]
     if not working:
         return list(outs)
     rows = await load([key(o.kb_id, o.id) for o in working])
@@ -394,7 +427,9 @@ async def attach(outs: Sequence[DocumentOut]) -> list[DocumentOut]:
     now = _now()
     out = []
     for o in outs:
-        value = rows.get(key(o.kb_id, o.id)) if o.status in WORKING else None
+        value = rows.get(key(o.kb_id, o.id)) if o.status in WORKING or o.status == "queued" else None
+        if value and o.status == "queued" and (not value.get("parked") or _stale(value, now)):
+            value = None  # a queued document shows a wait only while it is parked on one
         found = to_progress(value, now) if value else None
         out.append(o.model_copy(update={"progress": found}) if found is not None else o)
     return out

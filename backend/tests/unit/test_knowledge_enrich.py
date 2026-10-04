@@ -754,6 +754,43 @@ async def test_a_rate_limit_that_never_lifts_fails_the_document_retryably(jobs, 
     assert len(writer.calls) > 1, "it waited and asked again before giving up"
 
 
+async def test_inside_parking_a_long_limit_gives_the_slot_back_and_the_next_run_asks_only_the_rest(jobs, monkeypatch):
+    """KL1 (F360): in cloud's knowledge worker a limit that would keep the document waiting past the give-back time
+    parks it — its contexts written so far kept — and the next run asks only for the passages still without one."""
+    from core.knowledge import pacing
+
+    monkeypatch.setattr(pacing, "GIVE_BACK_AFTER_S", 0.0)
+    monkeypatch.setattr(enrich, "RATE_WAIT_S", 30.0, raising=False)
+    limit = {"on": True}
+
+    def answer(passage, n):
+        if n > 2 and limit["on"]:
+            return LLMError("HTTP 429: Rate limit reached for gpt-4.1-nano on tokens per min (TPM)")
+        return f"Zebracontext {n}"
+
+    writer = Writer(answer=answer)
+    monkeypatch.setattr(enrich, "_ask", writer)
+    kb = await _base()
+    write_vault("kb/doc0.md", _long_text(6))
+    row, _ = await documents.upsert_for_path(kb, "kb/doc0.md", source="vault", sha256=None, size=None)
+    await dispatch.enqueue(kb.id, "upsert", "vault_write", path=row.path, doc_id=row.id)
+    with pacing.parking(), pytest.raises(pacing.Parked) as parked:
+        await jobs.drain(run_ingest_job)
+    assert parked.value.reason == "rate_limited"
+    row = await documents.get(row.id)
+    assert (row.status, row.attempts) == ("queued", 0)
+    asked_before = len(writer.calls)
+    limit["on"] = False
+    await dispatch.enqueue(kb.id, "upsert", "retry", path=row.path, doc_id=row.id)
+    with pacing.parking():
+        await jobs.drain(run_ingest_job)
+    row = await documents.get(row.id)
+    assert row.status == "indexed", row.error
+    chunks = await _chunks(kb.id)
+    assert all("Zebracontext" in c.context for c in chunks)
+    assert len(writer.calls) - asked_before == len(chunks) - 2, "the two contexts written before the park are kept"
+
+
 async def test_bedrock_throttling_is_paced_like_any_rate_limit(jobs, monkeypatch, quick_pacing):
     """Bedrock's throttling reaches the engine with no HTTP status (a `model_error`): its words say what it is."""
     def answer(passage, n):
