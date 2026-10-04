@@ -118,6 +118,21 @@ class TestBedrockBody:
         assert text == "bedrock answer"
         assert it == 12 and ot == 7
 
+    async def test_a_cache_hit_keeps_its_uncached_input_tokens(self, monkeypatch):
+        """F381: Converse's `inputTokens` is the uncached part only (measured on Nova Lite, 2026-10-04: a
+        cache point after a 9,641-token system answered 5 input + 9,636 read). Subtracting the read again
+        recorded 0 input tokens on every hit."""
+        class _FakeBedrock:
+            def converse(self, **kwargs):
+                return {"output": {"message": {"content": [{"text": "ok"}]}},
+                        "usage": {"inputTokens": 5, "outputTokens": 10, "cacheReadInputTokens": 9636,
+                                  "cacheWriteInputTokens": 0, "totalTokens": 9651}}
+
+        monkeypatch.setattr(llm, "_make_aws_client", lambda *a, **k: _FakeBedrock())
+        text, it, ot, cr, cw, *_ = await llm.call_bedrock(
+            "bedrock.amazon.nova-lite-v1:0", [{"role": "user", "content": "q"}], "sys", "us-east-1", {})
+        assert (it, ot, cr, cw) == (5, 10, 9636, 0)
+
 
 def _client_error(code, message="nope", status=400):
     import botocore.exceptions

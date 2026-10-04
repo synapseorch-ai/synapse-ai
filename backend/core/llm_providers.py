@@ -2924,9 +2924,8 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
         out = int(usage.get("outputTokens") or 0)
         from core.cache.prompt_cache import extract_bedrock_cache_tokens
         cache_read, cache_write = extract_bedrock_cache_tokens(converse_resp or {})
-        # Bedrock inputTokens may include cache hits; subtract for consistent billing math.
-        if cache_read:
-            inp = max(0, inp - cache_read)
+        # `inputTokens` is the uncached part already: input = inputTokens + read + write (measured on
+        # Nova Lite, F381 — subtracting the read again recorded 0 input tokens on every hit).
         raw_stop = (converse_resp or {}).get("stopReason")
         try:
             text, _reasoning = _extract_bedrock_content(msg, raw_stop)
