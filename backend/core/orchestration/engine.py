@@ -19,7 +19,7 @@ from .run_error import failure_reason, run_error, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
-from .time_limits import step_time_limit, timed_out
+from .time_limits import OWN_BUDGET, run_ceiling, step_time_limit, timed_out
 from .logger import OrchestrationLogger
 
 from core.log import get_logger
@@ -304,6 +304,14 @@ class OrchestrationEngine:
         logger = getattr(self, "logger", None)
         loop_start_time = started if started is not None else time.time()
         timeout_seconds = (self.orch.timeout_minutes or ORCH_GLOBAL_TIMEOUT_MIN) * 60
+        # A host's ceiling on how long one run works (PL1a: cloud's plan
+        # lengths), when it is the tighter of the two. Counted the same way.
+        ceiling = await run_ceiling(run.run_id)
+        if ceiling is not None and ceiling.seconds < timeout_seconds:
+            timeout_seconds = ceiling.seconds
+        else:
+            ceiling = None
+        budget = ceiling.name if ceiling is not None else OWN_BUDGET
         # The budget counts the time this run has worked, across its pauses
         # (F258). Each resume used to start it again, so a run with a person's
         # pause in it could work past its budget without limit. What earlier
@@ -362,8 +370,9 @@ class OrchestrationEngine:
             elapsed = active_seconds()
             if elapsed > timeout_seconds:
                 yield fail_run(
-                    f"Global timeout ({self.orch.timeout_minutes} min) exceeded after "
-                    f"{round(elapsed / 60, 1)} min of work — time waiting for a person is not counted")
+                    (f"Stopped at {ceiling.name}, after " if ceiling is not None else
+                     f"Global timeout ({self.orch.timeout_minutes} min) exceeded after ")
+                    + f"{round(elapsed / 60, 1)} min of work — time waiting for a person is not counted")
                 break
 
             step = self.step_map.get(run.current_step_id)
@@ -388,7 +397,7 @@ class OrchestrationEngine:
             # runs a workflow — that workflow's own budget, capped by what is
             # left of this run's (F291).
             step_timeout, timeout_why = await step_time_limit(
-                step, self, remaining=timeout_seconds - active_seconds())
+                step, self, remaining=timeout_seconds - active_seconds(), budget=budget)
 
             # A container node's budget has to cover every step it runs inside
             # itself, and each of those already gets its own fail_after. Charging
@@ -530,10 +539,15 @@ class OrchestrationEngine:
                         "error": f"Step '{step.name}' timed out {timeout_text}",
                         "reason": f"Timed out {timeout_text}",
                     }
+                    # With its times, like every other ending: the work it did
+                    # before the limit is work, and is counted as such (PL1a).
                     end_step(run.step_history, {
                         "step_id": step.id, "step_name": step.name,
                         "step_type": step.type.value, "status": "failed",
                         "error": f"Timed out {timeout_text}",
+                        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(step_start_time)),
+                        "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "duration_seconds": round(time.time() - step_start_time, 2),
                     })
                     run.status = "failed"
                     if logger:
