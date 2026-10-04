@@ -33,9 +33,10 @@ honest `KnowledgeUnavailable`, never to a stand-in that loses data.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from core.knowledge.errors import EmbedderUnavailable, EmbeddingInvalid, KnowledgeUnavailable
@@ -194,10 +195,17 @@ class InProcessDispatcher:
     The task is created in the caller's context, so the tenant (a ContextVar)
     travels with it. `knowledge_ingest_concurrency` bounds how many run at once;
     the rest wait on the semaphore, in order.
+
+    **One job per document at a time (F380).** A write while a job parses queues
+    the document again; a second job running beside the first could let the
+    older one index its text under the newer file's sha256. So a job for a
+    document waits for that document's running job first — before it takes a
+    slot, so waiting holds none.
     """
 
     def __init__(self) -> None:
         self._semaphores: dict[int, asyncio.Semaphore] = {}
+        self._documents: dict[tuple[int, str], tuple[asyncio.Lock, int]] = {}
 
     def _semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
@@ -217,12 +225,36 @@ class InProcessDispatcher:
         return DispatchReceipt(mode="background", job_id=None)
 
     async def _run(self, job: IngestJob) -> None:
-        async with self._semaphore():
-            runner = _load(INGEST_ENTRYPOINT)
-            if runner is None:
-                _log.warning("knowledge ingestion is not installed; job dropped")
-                return
-            await runner(job)
+        async with self._document(job):
+            async with self._semaphore():
+                runner = _load(INGEST_ENTRYPOINT)
+                if runner is None:
+                    _log.warning("knowledge ingestion is not installed; job dropped")
+                    return
+                await runner(job)
+
+    @contextlib.asynccontextmanager
+    async def _document(self, job: IngestJob) -> AsyncIterator[None]:
+        """Hold `job`'s document while it runs; a job naming no document (a reconcile, a rebuild step, a
+        resume, a base's delete) holds nothing."""
+        target = job.doc_id or job.path
+        if target is None:
+            yield
+            return
+        key = (id(asyncio.get_running_loop()), f"{job.tenant}:{job.kb_id}:{target}")
+        lock, users = self._documents.get(key, (None, 0))
+        if lock is None:
+            lock = asyncio.Lock()
+        self._documents[key] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            lock, users = self._documents[key]
+            if users <= 1:
+                del self._documents[key]
+            else:
+                self._documents[key] = (lock, users - 1)
 
 
 # ── the seams ──────────────────────────────────────────────────────────────────

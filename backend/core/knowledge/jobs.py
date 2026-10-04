@@ -130,13 +130,16 @@ async def _ingest(kb: KnowledgeBase, row: KnowledgeDocumentDB) -> IngestionRepor
         return None
     from core.knowledge import progress
 
+    # This job's claim: every later move checks it still holds, so a job a newer write superseded stops
+    # before it indexes the older text under the newer sha256 (F380).
+    claim = {"sha256": sha, "attempts": attempt}
     # From here the document is at work: a screen follows it stage by stage (PG1, F357).
     async with progress.tracking(kb.id, row.id, doc_id=row.id):
-        return await _parse_and_index(kb, row, parsing, data, sha, builder)
+        return await _parse_and_index(kb, row, parsing, data, sha, builder, claim)
 
 
 async def _parse_and_index(kb: KnowledgeBase, row: KnowledgeDocumentDB, parsing: KnowledgeDocumentDB, data: bytes,
-                           sha: str, builder) -> IngestionReport | None:
+                           sha: str, builder, claim: dict) -> IngestionReport | None:
     from core.knowledge import documents
     from core.knowledge.config import knowledge_settings
     from core.knowledge.errors import BudgetExceeded, WalletExhausted
@@ -152,7 +155,7 @@ async def _parse_and_index(kb: KnowledgeBase, row: KnowledgeDocumentDB, parsing:
     async def rest(status: str, reason: str | None, error: str | None = None, **fields) -> IngestionReport | None:
         report = builder.finish(status, reason, **fields)
         done = await documents.transition(row.id, status, reason=reason, error=error, previous=parsing.status,
-                                          report=report.model_dump(mode="json"))
+                                          expect=claim, report=report.model_dump(mode="json"))
         if done is not None and status == "paused":
             await _paused(kb.id, reason)
         return report if done is not None else None
@@ -216,13 +219,13 @@ async def _parse_and_index(kb: KnowledgeBase, row: KnowledgeDocumentDB, parsing:
         return await rest("skipped", "empty_document",
                           f"All {scanned} page(s) are images with no text layer; {why}.", **common)
 
-    indexing = await documents.transition(row.id, "indexing", previous="parsing")
+    indexing = await documents.transition(row.id, "indexing", previous="parsing", expect=claim)
     if indexing is None:
         return None
-    return await _index(kb, indexing, parsed, sha, builder, common, parse_usage=result.usage)
+    return await _index(kb, indexing, parsed, sha, builder, common, parse_usage=result.usage, claim=claim)
 
 
-async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> IngestionReport | None:
+async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=(), claim=None) -> IngestionReport | None:
     from datetime import datetime, timezone
 
     from core.config import load_settings
@@ -254,7 +257,7 @@ async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> In
         status, reason = failure_status(exc)
         report = builder.finish(status, reason, snapshot_id=snapshot_id, **common)
         done = await documents.transition(row.id, status, reason=reason, error=str(exc)[:2000], previous="indexing",
-                                          report=report.model_dump(mode="json"))
+                                          expect=claim, report=report.model_dump(mode="json"))
         if done is not None and status == "paused":
             await _paused(kb.id, reason)
         return report
@@ -277,7 +280,7 @@ async def _index(kb, row, parsed, sha, builder, common, *, parse_usage=()) -> In
                         charged_microusd=sum(charged) if charged else None, by_stage=by_stage),
         **{**common, "warnings": [*common["warnings"], *outcome.warnings]})
     await documents.transition(
-        row.id, outcome.status, reason=reason, previous="indexing", version=version, chunks=outcome.chunks,
+        row.id, outcome.status, reason=reason, previous="indexing", expect=claim, version=version, chunks=outcome.chunks,
         tokens=outcome.tokens, pages=len(parsed.pages) or None, snapshot_id=snapshot_id,
         indexed_at=datetime.now(timezone.utc), title=row.title or parsed.title, doc_date=row.doc_date or parsed.doc_date,
         meta=metadata, parser=f"{parsed.parser.name}/{parsed.parser.version}", report=report.model_dump(mode="json"))

@@ -168,6 +168,40 @@ class TestInProcessDispatcher:
             await asyncio.sleep(0.01)
         assert seen == [("kb_1", "default")]
 
+    async def test_one_document_is_worked_on_by_one_job_at_a_time(self, monkeypatch):
+        """F380: a second job for a document waits for the first to end (another document's does not);
+        and while it waits it holds no slot."""
+        running: list[str] = []
+        overlap: list[tuple[str, ...]] = []
+        release = asyncio.Event()
+
+        async def runner(job):
+            running.append(job.doc_id)
+            overlap.append(tuple(running))
+            await release.wait()
+            running.remove(job.doc_id)
+
+        monkeypatch.setattr(seams, "_load", lambda dotted: runner if dotted == seams.INGEST_ENTRYPOINT else None)
+        dispatcher = seams.InProcessDispatcher()
+
+        def job(doc):
+            return IngestJob(tenant="default", kb_id="kb_1", op="upsert", reason="vault_write", doc_id=doc)
+
+        for doc in ("doc_a", "doc_a", "doc_b"):
+            await dispatcher.dispatch(job(doc))
+        for _ in range(50):
+            if len(overlap) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        assert sorted(running) == ["doc_a", "doc_b"]  # the second doc_a waits; doc_b took the other slot
+        release.set()
+        for _ in range(50):
+            if len(overlap) == 3 and not running:
+                break
+            await asyncio.sleep(0.01)
+        assert len(overlap) == 3 and not any(o.count("doc_a") > 1 for o in overlap)
+
     async def test_a_missing_ingestion_drops_the_job_quietly(self, monkeypatch):
         monkeypatch.setattr(seams, "_load", lambda dotted: None)
         receipt = await seams.InProcessDispatcher().dispatch(

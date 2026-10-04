@@ -200,9 +200,14 @@ async def upsert_for_path(kb: KnowledgeBase, path: str, *, source: str, sha256: 
 
 
 async def transition(doc_id: str, target: str, *, reason: str | None = None, error: str | None = None,
-                     previous: str | None = None, **columns: Any) -> KnowledgeDocumentDB | None:
+                     previous: str | None = None, expect: Mapping[str, Any] | None = None,
+                     **columns: Any) -> KnowledgeDocumentDB | None:
     """Move a document to `target` if its current status allows it; the updated row, or None
-    when the race was lost. `columns` are written in the same UPDATE."""
+    when the race was lost. `columns` are written in the same UPDATE.
+
+    `expect` names columns that must still hold these values — a job's own claim (its sha256 and
+    attempt), so a job a newer write superseded loses even when the status alone would allow the
+    move (F380)."""
     from sqlalchemy import update
 
     from core.store import session
@@ -212,9 +217,10 @@ async def transition(doc_id: str, target: str, *, reason: str | None = None, err
     if reason is not None and reason not in REASONS.get(target, ()):
         raise ValueError(f"{reason!r} is not a reason a {target!r} document can carry")
     values = {"status": target, "status_reason": reason, "error": error, "updated_at": _now(), **columns}
+    claim = [getattr(D, column) == value for column, value in (expect or {}).items()]
     async with session() as s:
         row = (await s.execute(
-            update(D).where(D.tenant_id == get_tenant(), D.id == doc_id, D.status.in_(allowed_from(target)))
+            update(D).where(D.tenant_id == get_tenant(), D.id == doc_id, D.status.in_(allowed_from(target)), *claim)
             .values(**values).returning(D).execution_options(synchronize_session=False))).scalar_one_or_none()
     if row is not None and target in _ANNOUNCED:
         await emit_for(row, target, previous=previous)

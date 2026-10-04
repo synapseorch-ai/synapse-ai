@@ -172,6 +172,51 @@ class TestRaces:
         done = await documents.get(row.id)
         assert (done.status, done.version, done.sha256) == ("queued", 0, "newer")
 
+    async def test_a_newer_write_while_parsing_is_what_ends_up_indexed(self, monkeypatch):
+        """Two jobs for one document at once: the first is parsing the older file when a write queues the
+        document again and a second job claims it (OSS runs two at a time; cloud's lanes will too). The
+        older job must not index its content under the newer file's sha256."""
+        import asyncio
+
+        from core.knowledge.parse import service
+
+        indexer = FakeIndexer()
+        install_fake_indexing(monkeypatch, indexer)
+        real = service.parse_document
+        first_may_finish, second_parsing, second_may_finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def parse(data, **kw):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await first_may_finish.wait()
+            else:
+                second_parsing.set()
+                first_may_finish.set()
+                await second_may_finish.wait()
+            return await real(data, **kw)
+
+        monkeypatch.setattr(service, "parse_document", parse)
+        kb = await _kb()
+        row = await _queued(kb, "kb/a.md", "older")
+        first = asyncio.ensure_future(run_ingest_job(_job(row)))
+        while (await documents.get(row.id)).status != "parsing":
+            await asyncio.sleep(0.01)
+        write_vault("kb/a.md", "newer")
+        await documents.upsert_for_path(kb, "kb/a.md", source="vault", sha256=None, size=None)
+        second = asyncio.ensure_future(run_ingest_job(_job(row)))
+        await second_parsing.wait()
+        await first
+        second_may_finish.set()
+        await second
+        done = await documents.get(row.id)
+        indexed = [c.parsed.text for c in indexer.contexts]
+        import hashlib
+
+        assert done.sha256 == hashlib.sha256(b"newer").hexdigest()
+        assert done.status != "indexed" or indexed[-1] == "newer", (done.status, indexed)
+
     async def test_a_job_for_a_document_nobody_queued_does_nothing(self, indexer):
         kb = await _kb()
         row = await _queued(kb, "kb/a.md", "hello")
