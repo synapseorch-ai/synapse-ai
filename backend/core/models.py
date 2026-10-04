@@ -259,6 +259,7 @@ class Settings(BaseModel):
     knowledge_crawl_max_depth: int = 3
     knowledge_crawl_max_pages: int = 500
     knowledge_crawl_rps_per_host: float = 1.0
+    knowledge_crawl_max_hours: float = 0.0
     knowledge_recrawl_days: int = 7
     knowledge_trace_retention_days: int = 30
     knowledge_api_search_per_min: int = 120

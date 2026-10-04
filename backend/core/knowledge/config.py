@@ -26,6 +26,7 @@ DEFAULTS: dict[str, Any] = {
     "knowledge_crawl_max_depth": 3,
     "knowledge_crawl_max_pages": 500,
     "knowledge_crawl_rps_per_host": 1.0,
+    "knowledge_crawl_max_hours": 0.0,
     "knowledge_recrawl_days": 7,
     "knowledge_trace_retention_days": 30,
     "knowledge_api_search_per_min": 120,
@@ -50,6 +51,8 @@ class KnowledgeSettings:
     crawl_max_depth: int
     crawl_max_pages: int
     crawl_rps_per_host: float
+    #: Time one crawl may spend fetching, across its slices, before it stops `capped`; 0: no limit (CCR-14).
+    crawl_max_hours: float
     recrawl_days: int
     trace_retention_days: int
     api_search_per_min: int
@@ -84,6 +87,7 @@ def knowledge_settings(settings: Mapping[str, Any] | None = None) -> KnowledgeSe
         crawl_max_depth=int(_get(settings, "knowledge_crawl_max_depth")),
         crawl_max_pages=int(_get(settings, "knowledge_crawl_max_pages")),
         crawl_rps_per_host=float(_get(settings, "knowledge_crawl_rps_per_host")),
+        crawl_max_hours=float(_get(settings, "knowledge_crawl_max_hours")),
         recrawl_days=int(_get(settings, "knowledge_recrawl_days")),
         trace_retention_days=int(_get(settings, "knowledge_trace_retention_days")),
         api_search_per_min=int(_get(settings, "knowledge_api_search_per_min")),

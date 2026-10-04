@@ -569,7 +569,7 @@
     "type": "object"
    },
    "DocumentProgress": {
-    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.\n\nCCR-14 (KL1): a deployment that gives a long wait's slot back (cloud, after 2 minutes) queues the document\nagain; while it waits it is `queued`, and its progress is the stage it reached with `waiting` saying until\nwhen.",
     "properties": {
      "done": {
       "anyOf": [
@@ -971,7 +971,7 @@
     "type": "object"
    },
    "ProgressWait": {
-    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued\nto resume.",
     "properties": {
      "provider": {
       "title": "Provider",
@@ -1353,7 +1353,7 @@
  "DocumentOut": {
   "$defs": {
    "DocumentProgress": {
-    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.\n\nCCR-14 (KL1): a deployment that gives a long wait's slot back (cloud, after 2 minutes) queues the document\nagain; while it waits it is `queued`, and its progress is the stage it reached with `waiting` saying until\nwhen.",
     "properties": {
      "done": {
       "anyOf": [
@@ -1449,7 +1449,7 @@
     "type": "object"
    },
    "ProgressWait": {
-    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued\nto resume.",
     "properties": {
      "provider": {
       "title": "Provider",
@@ -1728,7 +1728,7 @@
  "DocumentProgress": {
   "$defs": {
    "ProgressWait": {
-    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued\nto resume.",
     "properties": {
      "provider": {
       "title": "Provider",
@@ -1765,7 +1765,7 @@
     "type": "object"
    }
   },
-  "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+  "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.\n\nCCR-14 (KL1): a deployment that gives a long wait's slot back (cloud, after 2 minutes) queues the document\nagain; while it waits it is `queued`, and its progress is the stage it reached with `waiting` saying until\nwhen.",
   "properties": {
    "done": {
     "anyOf": [
@@ -7076,7 +7076,7 @@
     "type": "object"
    },
    "DocumentProgress": {
-    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.\n\nCCR-14 (KL1): a deployment that gives a long wait's slot back (cloud, after 2 minutes) queues the document\nagain; while it waits it is `queued`, and its progress is the stage it reached with `waiting` saying until\nwhen.",
     "properties": {
      "done": {
       "anyOf": [
@@ -7172,7 +7172,7 @@
     "type": "object"
    },
    "ProgressWait": {
-    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued\nto resume.",
     "properties": {
      "provider": {
       "title": "Provider",
@@ -7518,7 +7518,7 @@
     "type": "object"
    },
    "DocumentProgress": {
-    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.",
+    "description": "How far a working document has got (CCR-12, PG1): the stage it is in, counted in the stage's own unit\n— pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the\nstage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows\nwork going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is\na pace to estimate from; `waiting` is set while a provider's rate limit is waited out.\n\nCCR-14 (KL1): a deployment that gives a long wait's slot back (cloud, after 2 minutes) queues the document\nagain; while it waits it is `queued`, and its progress is the stage it reached with `waiting` saying until\nwhen.",
     "properties": {
      "done": {
       "anyOf": [
@@ -7614,7 +7614,7 @@
     "type": "object"
    },
    "ProgressWait": {
-    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued\nto resume.",
     "properties": {
      "provider": {
       "title": "Provider",
@@ -9183,7 +9183,7 @@
     "type": "object"
    },
    "ProgressWait": {
-    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued\nto resume.",
     "properties": {
      "provider": {
       "title": "Provider",
@@ -9656,7 +9656,7 @@
  "KnowledgeBaseState": {
   "$defs": {
    "ProgressWait": {
-    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued\nto resume.",
     "properties": {
      "provider": {
       "title": "Provider",
@@ -10423,7 +10423,7 @@
   "type": "object"
  },
  "ProgressWait": {
-  "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+  "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued\nto resume.",
   "properties": {
    "provider": {
     "title": "Provider",
@@ -12815,7 +12815,7 @@
  "SnapshotBuild": {
   "$defs": {
    "ProgressWait": {
-    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends.",
+    "description": "Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by\nitself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the\ncurrent wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued\nto resume.",
     "properties": {
      "provider": {
       "title": "Provider",

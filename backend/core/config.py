@@ -249,6 +249,7 @@ _DEFAULTS = {
         "knowledge_crawl_max_depth": 3,
         "knowledge_crawl_max_pages": 500,
         "knowledge_crawl_rps_per_host": 1.0,
+        "knowledge_crawl_max_hours": 0.0,
         "knowledge_recrawl_days": 7,
         "knowledge_trace_retention_days": 30,
         "knowledge_api_search_per_min": 120,

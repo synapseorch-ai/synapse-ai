@@ -117,7 +117,8 @@ class KnowledgeBaseUpdate(_Request):
 class ProgressWait(_Response):
     """Work waiting on a provider (CCR-12, PG1): its rate limit is being waited out, and the work carries on by
     itself when it lifts. `provider` is the provider's own name (the registry's label), `until` when the
-    current wait ends."""
+    current wait ends — for a queued document that gave its slot back to the wait (CCR-14), when it is queued
+    to resume."""
 
     reason: Literal["rate_limited"]
     provider: str
@@ -130,7 +131,11 @@ class DocumentProgress(_Response):
     — pages read, scanned pages read, passages given a context, passages embedded. `total` is None when the
     stage cannot count (a reader that takes the file in one pass, the index's one write): a screen shows
     work going on, with no share. `eta_s` is an estimate from this stage's own pace, absent until there is
-    a pace to estimate from; `waiting` is set while a provider's rate limit is waited out."""
+    a pace to estimate from; `waiting` is set while a provider's rate limit is waited out.
+
+    CCR-14 (KL1): a deployment that gives a long wait's slot back (cloud, after 2 minutes) queues the document
+    again; while it waits it is `queued`, and its progress is the stage it reached with `waiting` saying until
+    when."""
 
     stage: Literal["parse", "ocr", "enrich", "embed", "index"]
     done: int | None = None
@@ -231,7 +236,8 @@ class DocumentOut(_Response):
     created_at: str | None = None
     updated_at: str | None = None
     indexed_at: str | None = None
-    # CCR-12 (PG1): how far it has got, while it is `parsing` or `indexing`.
+    # CCR-12 (PG1): how far it has got, while it is `parsing` or `indexing` — or `queued` after giving its slot
+    # back to a provider's rate limit, with `waiting.until` (CCR-14).
     progress: DocumentProgress | None = None
 
 
