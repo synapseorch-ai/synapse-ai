@@ -65,12 +65,19 @@ def _tenant() -> str:
 @dataclass(frozen=True)
 class Rate:
     """What a deployment charges for one model, in USD: per 1M input and output tokens, or per `unit` (a search
-    unit, a page)."""
+    unit, a page).
+
+    A chat model its gateway caches a prompt for (F349) also has a cache-read price, and maybe a cache-write price
+    (None: a write costs what input does; Nova's is 0) and the prompt a cache point needs (`cache_min_tokens`).
+    No cache-read price: the gateway caches nothing for it."""
 
     input_per_mtok: float = 0.0
     output_per_mtok: float = 0.0
     per_unit: float | None = None
     unit: str | None = None
+    cache_read_per_mtok: float | None = None
+    cache_write_per_mtok: float | None = None
+    cache_min_tokens: int | None = None
 
 
 #: `model` → what the deployment charges for it, or None when it does not price it.
@@ -137,14 +144,16 @@ async def chat_usd(model: str, input_tokens: int, output_tokens: int, *, cache_r
                    cache_write: int = 0) -> float | None:
     """What `model` charges for a chat call's tokens, or None when nothing prices it.
 
-    A platform model at the deployment's rate, its cache reads and writes at the input rate (our gateway settles
-    input and output tokens only); any other by the rate card (`usage_tracker`), `input_tokens` being the
-    uncached ones."""
+    A platform model at the deployment's rate — its cache reads and writes each at their own price, as our gateway
+    settles them (F349), at the input price where the rate has none; any other by the rate card (`usage_tracker`).
+    `input_tokens` are the uncached ones."""
     if _is_platform_model(model):
         rate = await platform_rate(model)
         if rate is not None:
-            billed_in = input_tokens + cache_read + cache_write
-            return round((billed_in * rate.input_per_mtok + output_tokens * rate.output_per_mtok) / 1_000_000, 8)
+            read = rate.input_per_mtok if rate.cache_read_per_mtok is None else rate.cache_read_per_mtok
+            write = rate.input_per_mtok if rate.cache_write_per_mtok is None else rate.cache_write_per_mtok
+            return round((input_tokens * rate.input_per_mtok + cache_read * read + cache_write * write
+                          + output_tokens * rate.output_per_mtok) / 1_000_000, 8)
     from core import usage_tracker
 
     await usage_tracker._ensure_pricing()

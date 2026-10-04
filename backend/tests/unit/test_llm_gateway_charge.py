@@ -50,6 +50,30 @@ class TestTheV1Body:
         assert result.charged_microusd == 0
 
 
+class TestTheGatewaysCacheTokens:
+    """F349: our gateway caches a long system prompt and reports what it read and wrote from the cache
+    (`prompt_tokens_details.cached_tokens`, `.cache_write_tokens`), with `prompt_tokens` the whole input.
+    The input recorded is the uncached part — what the gateway's ledger row says, which the Usage screen
+    pairs it by — whatever the workspace's own prompt-cache setting (the gateway caches regardless)."""
+
+    async def test_a_read_and_a_write_are_kept_apart_from_the_input(self, monkeypatch):
+        install_httpx(monkeypatch, _answer(prompt_tokens=9651, prompt_tokens_details={
+            "cached_tokens": 9636, "cache_write_tokens": 10}, charged_microusd=3))
+        result = await llm.call_model_gateway("synapse.nova-lite", [{"role": "user", "content": "q"}], "sys",
+                                              {"model_gateway_base_url": "http://gateway.test",
+                                               "model_gateway_key": "tok"}, prompt_cache=False)
+        assert (result.input_tokens, result.cache_read_tokens, result.cache_write_tokens) == (5, 9636, 10)
+
+    async def test_another_endpoints_cached_tokens_still_follow_the_setting(self, monkeypatch):
+        install_httpx(monkeypatch, _answer(prompt_tokens=100, prompt_tokens_details={"cached_tokens": 60}))
+        off = await llm.call_v1_compatible("m", [{"role": "user", "content": "q"}], "sys",
+                                           "https://openrouter.ai/api", "key", prompt_cache=False)
+        on = await llm.call_v1_compatible("m", [{"role": "user", "content": "q"}], "sys",
+                                          "https://openrouter.ai/api", "key")
+        assert (off.input_tokens, off.cache_read_tokens) == (100, 0)
+        assert (on.input_tokens, on.cache_read_tokens, on.cache_write_tokens) == (40, 60, 0)
+
+
 class TestThroughGenerateResponse:
     async def test_a_platform_calls_charge_reaches_the_caller(self, monkeypatch):
         install_httpx(monkeypatch, _answer(charged_microusd=77))

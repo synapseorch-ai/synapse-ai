@@ -2447,8 +2447,12 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
     output_tokens = usage.get("completion_tokens", 0)
     from core.cache.prompt_cache import extract_openai_cache_tokens
     cache_read, cache_write = extract_openai_cache_tokens(usage) if prompt_cache else (0, 0)
-    if cache_read:
-        input_tokens = max(0, input_tokens - cache_read)
+    if prompt_cache:
+        # Our model gateway also says what it wrote to the cache (F349); no other endpoint does.
+        cache_write = int((usage.get("prompt_tokens_details") or {}).get("cache_write_tokens") or 0)
+    if cache_read or cache_write:
+        # `prompt_tokens` is the whole input; what was read or written from the cache is kept apart.
+        input_tokens = max(0, input_tokens - cache_read - cache_write)
     charged = usage.get("charged_microusd")
     # Only our model gateway sends it; anything that is not a whole, non-negative count is not one.
     charged = charged if type(charged) is int and charged >= 0 else None
@@ -2492,7 +2496,9 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
             settings.get("model_gateway_key", ""),
             tools=tools,
             images=images,
-            prompt_cache=prompt_cache,
+            # The gateway caches a long system prompt itself, whatever the workspace's own setting, and
+            # settles the uncached input apart from the cache: its counts are always read (F349).
+            prompt_cache=True,
             reasoning=reasoning,
             max_tokens=max_tokens,
         )

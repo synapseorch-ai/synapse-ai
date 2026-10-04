@@ -293,8 +293,21 @@ async def _price(model: str, input_tokens: int, output_tokens: int, *, cache_rea
     return await chat_usd(model, input_tokens, output_tokens, cache_read=cache_read, cache_write=cache_write)
 
 
+async def caching_for(model: str) -> tuple[str | None, int]:
+    """Where a cache point holds for `model`: a platform model as the deployment's rate says — our gateway puts one
+    after the system prompt (the document) for a model it prices a cache for (F349) — any other by `_caching`."""
+    from core.knowledge.costs import _is_platform_model, platform_rate
+
+    if _is_platform_model(model):
+        rate = await platform_rate(model)
+        if rate is not None and rate.cache_read_per_mtok is not None:
+            return "explicit", int(rate.cache_min_tokens or 0)
+        return None, 0
+    return _caching(model)
+
+
 def _caching(model: str) -> tuple[str | None, int]:
-    """("explicit" | "automatic" | None, the prefix a cache needs) for `model`."""
+    """("explicit" | "automatic" | None, the prefix a cache needs) for `model`, by its provider."""
     from core.providers.registry import provider_for
 
     spec = provider_for(model)
@@ -306,15 +319,17 @@ def _caching(model: str) -> tuple[str | None, int]:
 
 
 def window_tokens(model: str, document_tokens: int, passages: Sequence[int], *,
-                  output_tokens: int = CONTEXT_OUTPUT_TOKENS) -> tuple[int, int, int, int]:
+                  output_tokens: int = CONTEXT_OUTPUT_TOKENS,
+                  caching: tuple[str | None, int] | None = None) -> tuple[int, int, int, int]:
     """(uncached input, output, cache reads, cache writes) for asking `passages` against one window of
-    `document_tokens`: a cache write and reads where a cache point holds, every call in full elsewhere."""
+    `document_tokens`: a cache write and reads where a cache point holds, every call in full elsewhere. `caching`
+    is `caching_for(model)` where the caller has it (a platform model's comes from its rate), else `_caching`."""
     n = len(passages)
     if not n:
         return 0, 0, 0, 0
     shown = document_tokens + DOCUMENT_WRAPPER_TOKENS
     misses = sum(p + INSTRUCTION_TOKENS for p in passages)
-    kind, floor = _caching(model)
+    kind, floor = caching if caching is not None else _caching(model)
     if kind == "explicit" and shown >= floor:
         return misses, n * output_tokens, shown * (n - 1), shown
     if kind == "automatic" and shown >= floor:
@@ -326,6 +341,7 @@ async def estimate_usd(model: str, docs: Sequence[tuple[int, int]]) -> float | N
     """What writing contexts for `docs` — (chunks, the document's tokens) each — costs on `model`, or None when it
     is unpriced. Windows as `plan` cuts them; each passage taken as the document's average."""
     total_in = total_out = total_read = total_write = 0
+    caching = await caching_for(model)
     for n, doc_tokens in docs:
         if n <= 0:
             continue
@@ -336,7 +352,7 @@ async def estimate_usd(model: str, docs: Sequence[tuple[int, int]]) -> float | N
             k = max(1, math.ceil(doc_tokens / WINDOW_TOKENS))
             groups = [(HEAD_TOKENS + WINDOW_TOKENS, n // k + (1 if i < n % k else 0)) for i in range(k)]
         for shown, count in groups:
-            i, o, r, w = window_tokens(model, shown, [each] * count)
+            i, o, r, w = window_tokens(model, shown, [each] * count, caching=caching)
             total_in, total_out, total_read, total_write = total_in + i, total_out + o, total_read + r, total_write + w
     return await _price(model, total_in, total_out, cache_read=total_read, cache_write=total_write)
 
@@ -627,6 +643,7 @@ async def contextualize(ctx: IndexContext, chunks: Sequence[Chunk], *, model: st
     cached = await enrich_cache.load(ctx.sha256, sig)
     written: dict[str, str] = dict(cached)
     windows = plan(ctx.parsed, chunks)
+    caching = await caching_for(model)
     hits = calls = fallback = 0
     keys: dict[str, str] = {}
     pacer = _Pacer(model)
@@ -648,7 +665,7 @@ async def contextualize(ctx: IndexContext, chunks: Sequence[Chunk], *, model: st
                     todo.append((chunk, key))
             if not todo:
                 continue
-            i, o, r, w = window_tokens(model, window.tokens, [c.tokens for c, _ in todo])
+            i, o, r, w = window_tokens(model, window.tokens, [c.tokens for c, _ in todo], caching=caching)
             estimate = await _price(model, i, o, cache_read=r, cache_write=w)
             await check_budget(ctx.kb, estimate or 0.0)
             tally = _Tally()

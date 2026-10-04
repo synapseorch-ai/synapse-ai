@@ -219,6 +219,25 @@ class TestTheDeploymentsRate:
         costs.set_platform_pricer(None)
         assert _stage(await costs.preview(kb, draft), "enrich").est_usd == 0.0, "no rate card prices it"
 
+    async def test_a_platform_calls_cache_reads_and_writes_are_each_at_their_own_rate(self):
+        """F349: our gateway settles what it read from the cache at the cache-read rate and what it wrote at the
+        cache-write rate (Nova's is $0); a rate with no write price charges a write as input."""
+        from core.knowledge.costs import Rate
+
+        async def pricer(model):
+            return {"synapse.nova-lite": Rate(input_per_mtok=0.075, output_per_mtok=0.30, cache_read_per_mtok=0.01875,
+                                              cache_write_per_mtok=0.0, cache_min_tokens=0),
+                    "synapse.nova-premier": Rate(input_per_mtok=3.125, output_per_mtok=15.625,
+                                                 cache_read_per_mtok=0.78125)}.get(model)
+
+        costs.set_platform_pricer(pricer)
+        lite = await costs.chat_usd("synapse.nova-lite", 5, 10, cache_read=9_636, cache_write=9_000)
+        assert lite == pytest.approx((5 * 0.075 + 9_636 * 0.01875 + 9_000 * 0.0 + 10 * 0.30) / 1_000_000)
+        premier = await costs.chat_usd("synapse.nova-premier", 5, 10, cache_write=1_000)
+        assert premier == pytest.approx(((5 + 1_000) * 3.125 + 10 * 15.625) / 1_000_000, abs=1e-8)  # chat_usd rounds to 8 places
+        plain = await costs.chat_usd("synapse.nova-micro", 5, 10, cache_read=100)
+        assert plain is None, "no rate for it here"
+
 
 # ── the settings check ─────────────────────────────────────────────────────────
 

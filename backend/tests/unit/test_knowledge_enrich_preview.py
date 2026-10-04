@@ -30,7 +30,7 @@ async def test_an_estimate_reads_the_cache_only_where_a_cache_point_holds():
     assert (r, w) == (0, 0) and i == 10 * (small + enrich.DOCUMENT_WRAPPER_TOKENS) + 10 * 180, \
         "under the cache minimum every call reads the document in full"
     i, o, r, w = enrich.window_tokens("synapse.nova-lite", big, [100] * 10)
-    assert (r, w) == (0, 0), "our gateway does not cache yet"
+    assert (r, w) == (0, 0), "a gateway model caches only as its rate says (none here)"
     _, _, r, w = enrich.window_tokens(MODEL, big, [100] * 10)
     assert w == 0 and r == 9 * (big + enrich.DOCUMENT_WRAPPER_TOKENS), "OpenAI caches a repeated prefix itself"
     assert await enrich.estimate_usd("some-unpriced-model", [(3, 500)]) is None
@@ -104,7 +104,31 @@ async def test_a_platform_model_is_quoted_at_what_the_deployment_charges():
     try:
         usd = await enrich.estimate_usd("synapse.nova-lite", [(10, 2_000)])
         i, o, r, w = enrich.window_tokens("synapse.nova-lite", 2_000, [200] * 10)
-        assert (r, w) == (0, 0), "our gateway does not cache yet: every call pays the document"
+        assert (r, w) == (0, 0), "a rate with no cache prices: every call pays the document"
         assert usd == pytest.approx((i * 0.075 + o * 0.30) / 1_000_000)
+    finally:
+        costs.set_platform_pricer(None)
+
+
+async def test_a_platform_model_whose_rate_prices_its_cache_is_quoted_with_the_cache():
+    """F349: our gateway puts a cache point after the document (the system prompt) for a model its catalogue prices
+    a cache for, so a window's first call writes it and the rest read it — and the estimate says so."""
+    async def pricer(model):
+        if model == "synapse.nova-lite":
+            return costs.Rate(input_per_mtok=0.075, output_per_mtok=0.30, cache_read_per_mtok=0.01875,
+                              cache_write_per_mtok=0.0, cache_min_tokens=0)
+        return None
+
+    costs.set_platform_pricer(pricer)
+    try:
+        assert await enrich.caching_for("synapse.nova-lite") == ("explicit", 0)
+        assert await enrich.caching_for("synapse.nova-micro") == (None, 0), "unpriced: no cache assumed"
+        usd = await enrich.estimate_usd("synapse.nova-lite", [(10, 2_000)])
+        i, o, r, w = enrich.window_tokens("synapse.nova-lite", 2_000, [200] * 10, caching=("explicit", 0))
+        shown = 2_000 + enrich.DOCUMENT_WRAPPER_TOKENS
+        assert (r, w) == (9 * shown, shown)
+        assert usd == pytest.approx((i * 0.075 + r * 0.01875 + o * 0.30) / 1_000_000)
+        uncached = await costs.chat_usd("synapse.nova-lite", i + r + w, o)
+        assert usd < uncached / 2, "nine of ten calls read the document at a quarter of the price"
     finally:
         costs.set_platform_pricer(None)
