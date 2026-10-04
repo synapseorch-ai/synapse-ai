@@ -181,6 +181,23 @@ class TestASecondQuestionAfterAResume:
         assert card["tool_args"] == {"n": 1}, "asked again, not run on the old approval"
 
 
+class TestTheTurnsKnowledgeLabels:
+    async def test_a_second_pause_keeps_the_labels_its_answer_will_cite(self, fake_llm):
+        """A turn that searched a knowledge base carries its [K#] labels in every
+        snapshot, so the answer after a resume still cites them — a gate's too."""
+        from core.knowledge.citations import KnowledgeTurn
+        labels = KnowledgeTurn()
+        labels.record(1, chunk_id="kch_1", kb_id="kb_a")
+        resume = {"turn": 1, "context_text": "User Request: clean up\n[K1] the handbook says so\n",
+                  "knowledge": labels.to_state()}
+
+        events = await _step(fake_llm, [tool_call("danger", n=1)], executed=[], session_id="s_bf2_k",
+                             resume_state=resume)
+
+        _card, parked = _parked(events)
+        assert parked["progress"]["knowledge"] == labels.to_state()
+
+
 LEAD, HELPER = "lead_bf2", "helper_bf2"
 
 
