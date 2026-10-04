@@ -678,7 +678,7 @@ const KINDS: { value: WebSourceKind; label: string; hint: string }[] = [
     { value: 'site', label: 'Sites', hint: 'Follows links from each address, on the same site and under its folder.' },
 ];
 
-/** Add public web pages: each URL becomes a web source, fetched now and again every week (S1). */
+/** Add public web pages: each URL becomes a web source, fetched now and again on the base's `recrawl_days` (S1, F370). */
 function AddWebDialog({
     kb, open, onClose, onAdded,
 }: {
@@ -730,7 +730,9 @@ function AddWebDialog({
             open={open}
             onClose={onClose}
             title="Add web pages"
-            description="Public pages are fetched into this base, respecting each site's robots.txt, and fetched again every week."
+            description={`Public pages are fetched into this base, respecting each site's robots.txt, and ${kb.web.recrawl_days > 0
+                ? `fetched again every ${count(kb.web.recrawl_days, 'day')}`
+                : 'fetched again only when you ask'}.`}
             footer={
                 <>
                     <Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button>

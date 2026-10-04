@@ -3882,6 +3882,30 @@ async def check_knowledge_drawer(browser) -> str:
 
 
 @check
+async def check_knowledge_recrawl(browser) -> str:
+    """Add web pages says when its pages are fetched again from the base's own `recrawl_days`, as the Web sources
+    section beside it does (F370). It said "every week" whatever the base said."""
+    for days, expected in ((3, "fetched again every 3 days"), (1, "fetched again every 1 day"),
+                           (0, "fetched again only when you ask")):
+        kb = {**_SMOKE_KB, "web": {**_SMOKE_KB["web"], "recrawl_days": days}}
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        try:
+            for pattern, handler in _SMOKE_KB_ROUTES + [("**/api/knowledge/bases", _answer([kb]))]:
+                await ctx.route(pattern, handler)
+            page = await ctx.new_page()
+            await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+            await page.get_by_role("button", name="Add web pages").click(timeout=30_000)
+            dialog = page.get_by_role("dialog", name="Add web pages")
+            await dialog.wait_for(timeout=10_000)
+            said = " ".join((await dialog.inner_text()).split())
+            if expected not in said or "every week" in said:
+                raise AssertionError(f"recrawl_days {days}: the dialog says {said[:160]!r}, not {expected!r}")
+        finally:
+            await ctx.close()
+    return "Add web pages says the base's own re-crawl, for 3, 1 and 0 days"
+
+
+@check
 async def check_knowledge_eval(browser) -> str:
     """A knowledge base's eval (V1, D168): the Run dialog is named, every control in it is named, it prices the
     run before anything starts, and Escape closes it without starting one."""
