@@ -347,6 +347,11 @@ class TestTheFetcher:
         assert paths == ["/robots.txt", "/page", "/page"]
         assert all(F.USER_AGENT in h for h in _RobotsSite.hits)
 
+    def test_the_user_agent_links_a_page_that_exists(self):
+        # F363: a site owner who looks the crawler up from their logs reaches the site's /bot page
+        # (synapseorch.com, trailing slash); synapseorch.ai has no DNS record.
+        assert F.USER_AGENT == "Mozilla/5.0 (compatible; SynapseBot/1.0; +https://synapseorch.com/bot/)"
+
     async def test_an_unreadable_robots_disallows_and_a_missing_one_allows(self):
         fetcher = F.Fetcher()
         assert not F.Robots.unreachable().allows("http://x/")

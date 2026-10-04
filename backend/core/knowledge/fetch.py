@@ -55,7 +55,7 @@ _log = get_logger(__name__)
 
 BOT = "SynapseBot"
 BOT_VERSION = "1.0"
-USER_AGENT = f"Mozilla/5.0 (compatible; {BOT}/{BOT_VERSION}; +https://synapseorch.ai/bot)"
+USER_AGENT = f"Mozilla/5.0 (compatible; {BOT}/{BOT_VERSION}; +https://synapseorch.com/bot/)"
 
 MIB = 1024 * 1024
 #: An HTML page larger than this is not read: its text would be cut anyway, and parsing it costs memory.
