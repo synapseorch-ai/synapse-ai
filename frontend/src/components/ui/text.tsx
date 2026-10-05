@@ -13,6 +13,8 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 
+import { PageHeaderSlot } from "./page-header-slot";
+
 export type Tone = "neutral" | "accent" | "danger" | "warning" | "success";
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -23,7 +25,15 @@ const TONE_TEXT: Record<Tone, string> = {
   success: "text-success",
 };
 
-/** The `<h1>` block at the top of a screen, with its actions on the right. */
+/**
+ * The `<h1>` block at the top of a screen, with its actions on the right.
+ *
+ * The shell's slot (the help "?") leads the right-hand cluster, so the page's
+ * own actions — a primary button, Settings' close — keep the far right. The
+ * cluster renders even with no actions, since the slot still needs a place, and
+ * hides itself when both are empty (`empty:hidden`): an empty item in a wrapping
+ * row would otherwise wrap alone and add a row gap under a long title.
+ */
 export function PageHeader({
   title,
   description,
@@ -48,7 +58,10 @@ export function PageHeader({
             <p className="mt-1 max-w-2xl text-sm leading-relaxed text-text-muted">{description}</p>
           )}
         </div>
-        {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+        <div className="flex shrink-0 flex-wrap items-center gap-2 empty:hidden">
+          <PageHeaderSlot />
+          {actions}
+        </div>
       </div>
     </div>
   );

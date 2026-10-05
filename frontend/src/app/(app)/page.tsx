@@ -19,6 +19,7 @@ import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
+import { HelpButton } from '@/components/help';
 
 // ─── LLM Thought Collapsible ────────────────────────────────────────────────
 type ThoughtEntry =
@@ -2561,6 +2562,9 @@ export default function Home() {
               </h1>
             </div>
             <div className="flex items-center">
+              {/* The "?" (H1). This header is chat's own, not the kit's
+                  PageHeader, so the shell's slot does not reach it. */}
+              <HelpButton className="mr-2 lg:mr-4" />
               {/* Mode & Model Info — or, for a workflow agent, its size (U64) */}
               {workflowId ? (
                 <div

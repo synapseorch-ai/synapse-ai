@@ -833,6 +833,20 @@ async def check_contrast(browser) -> str:
             except Exception:
                 pass
 
+        # The "?" panel (H1) over a knowledge base: its steps, its guide link, and the clip with its pause control.
+        ctx, _ = await _help_context(browser, routes=list(_SMOKE_KB_ROUTES))
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+            await page.get_by_role("button", name="Upload files").wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            _, dialog = await _open_help(page)
+            await dialog.get_by_role("button", name="Pause the clip").wait_for(timeout=10_000)
+            await measure("the help panel")
+        finally:
+            await ctx.close()
+
         # A chat turn with its panels open, on a stubbed stream.
         ctx, page = await _chat_page(browser, f"uismoke-contrast-{theme}")
         try:
@@ -855,7 +869,7 @@ async def check_contrast(browser) -> str:
     if bad:
         raise AssertionError(f"{len(bad)} under AA — " + "; ".join(bad[:5]))
     return (
-        f"{len(CONTRAST_PAGES)} screens, a run log and a chat turn in both themes meet AA"
+        f"{len(CONTRAST_PAGES)} screens, a run log, the help panel and a chat turn in both themes meet AA"
         + (f" ({len(CONTRAST_WAIVED)} waived)" if CONTRAST_WAIVED else "")
     )
 
@@ -6230,6 +6244,331 @@ async def check_lightstates(browser) -> str:
         raise AssertionError("; ".join(out))
     return f"{len(LIGHT_STATES)} states, both themes, all text at AA"
 
+
+
+# ── help (H1) ────────────────────────────────────────────────────────────────
+
+HELP_BUTTON = "Help for this page"
+HELP_FALLBACK = "Getting around"
+DOCS_ORIGIN = "https://docs.synapseorch.com"
+
+#: The docs site's pictures, stood in for: a 1×1 WebP and a one-second 16×10 VP9 WebM, both valid, so an `<img>`
+#: loads and a `<video>` plays exactly as HC0's would. Nothing here reaches the docs site.
+HELP_WEBP = b"UklGRh4AAABXRUJQVlA4TBEAAAAvH8AEAAfQsrZ0rf+BiOh/AAA="
+HELP_WEBM = (
+    b"GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAIkEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZU"
+    b"rmtTrIHYTbuMU6uEElTDZ1OsggEiTbuMU6uEHFO7a1OsggIO7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1M"
+    b"YXZmNTguNzYuMTAwV0GNTGF2ZjU4Ljc2LjEwMESJiECPQAAAAAAAFlSua8WuAQAAAAAAADzXgQFzxYivzfcwQ2AlOpyBACK1nIN1"
+    b"bmSGhVZfVlA5g4EBI+ODhB3NZQDgAQAAAAAAAAmwgRC6gQqagQISVMNnQJ5zcwEAAAAAAAAnY8CAZ8gBAAAAAAAAGkWjh0VOQ09E"
+    b"RVJEh41MYXZmNTguNzYuMTAwc3MBAAAAAAAAY2PAi2PFiK/N9zBDYCU6Z8gBAAAAAAAAJkWjh0VOQ09ERVJEh5lMYXZjNTguMTM0"
+    b"LjEwMCBsaWJ2cHgtdnA5Z8iiRaOIRFVSQVRJT05Eh5QwMDowMDowMS4wMDAwMDAwMDAAAB9DtnXD54EAo6mBAACAgkmDQgAA8ACW"
+    b"ADgkHBhCAAAwcAAASqf/+L4Bv/5hB//+rwcAAKOTgQH0AIYAQJKcAElAAAMgAABCQBxTu2uRu4+zgQC3iveBAfGCAcbwgQM="
+)
+
+
+async def _help_context(browser, *, media: str = "ok", reduced: bool = False, routes=()):
+    """A context whose requests to the docs site are answered here and written down.
+
+    `media`: "ok" serves the stand-in files, "404" answers every picture as missing (the docs site before HC0's
+    media is published). Every request for the docs origin lands in the returned list, answered or not.
+    """
+    import base64
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]},
+                                    reduced_motion="reduce" if reduced else "no-preference")
+    seen: list[str] = []
+    files = {".webp": ("image/webp", base64.b64decode(HELP_WEBP)), ".webm": ("video/webm", base64.b64decode(HELP_WEBM))}
+
+    async def docs(route):
+        url = route.request.url
+        seen.append(url)
+        kind = next((v for k, v in files.items() if url.split("?")[0].endswith(k)), None)
+        if media != "ok" or kind is None:
+            return await route.fulfill(status=404, body="")
+        await route.fulfill(status=200, content_type=kind[0], body=kind[1])
+
+    await ctx.route(f"{DOCS_ORIGIN}/**", docs)
+    for pattern, handler in routes:
+        await ctx.route(pattern, handler)
+    return ctx, seen
+
+
+async def _open_help(page, how: str = "click"):
+    """Press the page's "?" and wait for its panel. Returns (button, dialog)."""
+    button = page.get_by_role("button", name=HELP_BUTTON, exact=True)
+    await button.first.wait_for(timeout=30_000)
+    if await button.count() != 1:
+        raise AssertionError(f"{page.url}: {await button.count()} help buttons, not one")
+    if how == "keyboard":
+        await button.focus()
+        await page.keyboard.press("Enter")
+    else:
+        await button.click()
+    dialog = page.get_by_role("dialog")
+    await dialog.wait_for(timeout=10_000)
+    await asyncio.sleep(0.4)                      # the slide
+    return button, dialog
+
+
+_FOCUSED_LABEL = """() => { const el = document.activeElement;
+  return el === document.body ? 'BODY' : (el?.getAttribute('aria-label') || el?.textContent?.trim()); }"""
+
+
+@check
+async def check_help(browser) -> str:
+    """The "?" opens a panel about the page, only when pressed, and gives focus back when it closes (H1).
+
+    Naveen: help opens "when clicking" — never as a tour on a first visit — so a fresh browser loads pages and
+    nothing opens, and nothing is fetched from the docs site either. Then the panel: a dialog named for the page,
+    closed by Escape, its ✕ and the scrim, each handing focus back to the "?" that opened it (F382's drawer).
+    """
+    ctx, seen = await _help_context(browser)
+    page = await ctx.new_page()
+    try:
+        for path in ("/", "/agents", "/vault"):
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            if await page.get_by_role("dialog").count():
+                raise AssertionError(f"{path}: a dialog is open on a first visit")
+        if seen:
+            raise AssertionError(f"a first visit fetched from the docs site: {seen[:3]}")
+
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        # Read before opening: an open panel hides the page behind it from the accessibility tree.
+        first = page.get_by_role("button", name=HELP_BUTTON, exact=True)
+        await first.wait_for(timeout=30_000)
+        if await first.get_attribute("aria-haspopup") != "dialog":
+            raise AssertionError("the \"?\" does not say it opens a dialog")
+        button, dialog = await _open_help(page, "keyboard")
+        name = (await dialog.get_by_role("heading").first.inner_text()).strip()
+        if name != "Agents":
+            raise AssertionError(f"/agents: the panel is headed {name!r}")
+        inside = await page.evaluate("() => !!document.activeElement?.closest('[role=dialog]')")
+        if not inside:
+            raise AssertionError("opening the panel left focus outside it")
+        guide = dialog.get_by_role("link", name=re.compile("read the guide", re.I))
+        href, target, rel = (await guide.get_attribute("href"), await guide.get_attribute("target"),
+                             await guide.get_attribute("rel"))
+        if not (href or "").startswith(f"{DOCS_ORIGIN}/guides/") or target != "_blank" or "noopener" not in (rel or ""):
+            raise AssertionError(f"\"Read the guide\" is {href!r} target={target!r} rel={rel!r}")
+
+        bad: list[str] = []
+        for how in ("Escape", "the ✕", "the scrim"):
+            if how != "Escape":
+                button, dialog = await _open_help(page, "keyboard")
+            if how == "Escape":
+                await page.keyboard.press("Escape")
+            elif how == "the ✕":
+                await dialog.get_by_role("button", name="Close", exact=True).click()
+            else:
+                await page.mouse.click(40, WIDE[1] // 2)
+            await asyncio.sleep(0.5)
+            if await page.get_by_role("dialog").count():
+                bad.append(f"{how} leaves the panel open")
+                await page.keyboard.press("Escape")
+                continue
+            back_on = await page.evaluate(_FOCUSED_LABEL)
+            if back_on != HELP_BUTTON:
+                bad.append(f"closing with {how} left focus on {back_on!r}")
+        if bad:
+            raise AssertionError("; ".join(bad))
+
+        # Chat draws its own header, so its "?" is placed by hand.
+        await page.goto(APP, wait_until="domcontentloaded")
+        _, dialog = await _open_help(page)
+        name = (await dialog.get_by_role("heading").first.inner_text()).strip()
+        if name != "Chat":
+            raise AssertionError(f"/: the panel is headed {name!r}")
+        return ("nothing opens or loads on a first visit; the \"?\" opens a panel named for the page, and Escape, "
+                "the ✕ and the scrim close it with focus back on the \"?\"")
+    finally:
+        await ctx.close()
+
+
+@check
+async def check_help_media(browser) -> str:
+    """The panel's picture comes from the docs site only when it can be shown, and the words never depend on it.
+
+    Online, a clip plays (with a pause control) and a still loads; under reduced motion a clip is its still and the
+    clip is never fetched; offline, nothing is drawn or fetched and the steps are all there; a picture the docs site
+    does not have (before HC0's are published) takes its frame away and leaves the words.
+    """
+    kb = list(_SMOKE_KB_ROUTES)              # a base, so Knowledge shows the topic with a clip
+    out: list[str] = []
+
+    async def opened(path: str, **kw):
+        ctx, seen = await _help_context(browser, routes=kb, **kw)
+        page = await ctx.new_page()
+        await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+        if path == "/knowledge":                  # the clip's topic is the open base, shown once the bases load
+            await page.get_by_role("button", name="Upload files").wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        return ctx, seen, page
+
+    async def steps(dialog) -> int:
+        return await dialog.locator("ol > li").count()
+
+    # A clip, online.
+    ctx, seen, page = await opened("/knowledge")
+    try:
+        _, dialog = await _open_help(page)
+        video = dialog.locator("video")
+        await video.wait_for(timeout=10_000)
+        src = await video.get_attribute("src") or ""
+        if not src.startswith(f"{DOCS_ORIGIN}/media/") or not src.endswith(".webm"):
+            raise AssertionError(f"the clip's src is {src!r}")
+        for attr in ("autoplay", "muted", "loop", "playsinline"):
+            if await video.get_attribute(attr) is None and not await video.evaluate(f"v => !!v.{attr if attr != 'playsinline' else 'playsInline'}"):
+                raise AssertionError(f"the clip is not {attr}")
+        await asyncio.sleep(1.0)
+        if not any(u.endswith(".webm") for u in seen) or not any(u.endswith(".webp") for u in seen):
+            raise AssertionError(f"the clip and its poster were not both fetched: {seen}")
+        pause = dialog.get_by_role("button", name="Pause the clip")
+        await pause.click()
+        await asyncio.sleep(0.3)
+        if not await video.evaluate("v => v.paused"):
+            raise AssertionError("Pause the clip did not pause it")
+        if not await dialog.get_by_role("button", name="Play the clip").count():
+            raise AssertionError("a paused clip offers no Play")
+        out.append("a clip plays and pauses")
+    finally:
+        await ctx.close()
+
+    # A still, online.
+    ctx, seen, page = await opened("/vault")
+    try:
+        _, dialog = await _open_help(page)
+        img = dialog.locator("figure img")
+        await img.wait_for(timeout=10_000)
+        await asyncio.sleep(0.6)
+        alt, w, h = await img.get_attribute("alt"), await img.get_attribute("width"), await img.get_attribute("height")
+        if not alt or not w or not h:
+            raise AssertionError(f"the still has alt={alt!r} width={w!r} height={h!r}")
+        if not await img.evaluate("i => i.complete && i.naturalWidth > 0"):
+            raise AssertionError("the still never loaded")
+        if any(u.endswith(".webm") for u in seen):
+            raise AssertionError("a still's topic fetched a clip")
+        out.append("a still loads with its alt and size")
+    finally:
+        await ctx.close()
+
+    # Reduced motion: the clip's topic shows its still and never asks for the clip.
+    ctx, seen, page = await opened("/knowledge", reduced=True)
+    try:
+        _, dialog = await _open_help(page)
+        await dialog.locator("figure img").wait_for(timeout=10_000)
+        await asyncio.sleep(1.0)
+        if await dialog.locator("video").count():
+            raise AssertionError("under reduced motion the panel still drew a <video>")
+        if any(u.endswith(".webm") for u in seen):
+            raise AssertionError(f"under reduced motion the clip was fetched: {seen}")
+        out.append("reduced motion shows the poster and never fetches the clip")
+    finally:
+        await ctx.close()
+
+    # Offline: the words, no picture, no request.
+    ctx, seen, page = await opened("/knowledge")
+    try:
+        await ctx.set_offline(True)
+        seen.clear()
+        _, dialog = await _open_help(page)
+        await asyncio.sleep(1.0)
+        if await dialog.locator("figure, img, video").count():
+            raise AssertionError("offline, the panel still drew its picture")
+        if seen:
+            raise AssertionError(f"offline, the panel asked the docs site for {seen}")
+        n = await steps(dialog)
+        if not 3 <= n <= 5:
+            raise AssertionError(f"offline, the panel shows {n} steps")
+        out.append("offline shows every step and no picture")
+    finally:
+        await ctx.close()
+
+    # Missing on the docs site: the frame goes, the words stay — for a still and for a clip (whose still is missing too).
+    for path in ("/vault", "/knowledge"):
+        ctx, seen, page = await opened(path, media="404")
+        try:
+            _, dialog = await _open_help(page)
+            await asyncio.sleep(1.5)
+            if await dialog.locator("figure").count():
+                raise AssertionError(f"{path}: a picture the docs site does not have left its frame")
+            if not seen:
+                raise AssertionError(f"{path}: the picture was never asked for, so this checks nothing")
+            if not 3 <= await steps(dialog) <= 5:
+                raise AssertionError(f"{path}: a missing picture took the steps with it")
+        finally:
+            await ctx.close()
+    out.append("a missing picture leaves only the words")
+    return "; ".join(out)
+
+
+#: Every screen in the rail and Settings (H1). Each panel must be the page's own: headed like the page's `<h1>`,
+#: never the fallback, with three to five steps. Chat has no `<h1>`, so its heading is named.
+HELP_PAGES = (
+    "/dashboard", "/runs", "/evals", "/usage", "/orchestrations", "/agents", "/skills", "/schedules", "/tools",
+    "/mcp-servers", "/vault", "/knowledge",
+    "/settings/general", "/settings/models", "/settings/personal_details", "/settings/variables", "/settings/memory",
+    "/settings/workspace", "/settings/messaging", "/settings/widgets", "/settings/repos", "/settings/db_configs",
+    "/settings/api_keys", "/settings/import_export", "/settings/scale", "/settings/support", "/settings/datalab",
+)
+
+
+@check
+async def check_help_pages(browser) -> str:
+    """Every page has a "?" whose panel is about that page (H1): the walk is the coverage test OSS has no unit
+    runner for. A page with no topic shows the fallback, which fails here by name."""
+    bad: list[str] = []
+
+    async def walk(page, path: str, expect: str | None, ready=None) -> None:
+        await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+        try:
+            if ready is not None:                 # the state loads after the page: open the panel on it, not before
+                await ready(page).wait_for(timeout=30_000)
+            if expect is None:
+                await page.locator("main h1").first.wait_for(timeout=30_000)
+                expect = (await page.locator("main h1").first.inner_text()).strip()
+            _, dialog = await _open_help(page)
+        except Exception as exc:
+            bad.append(f"{path}: {str(exc).splitlines()[0][:90]}")
+            return
+        name = (await dialog.get_by_role("heading").first.inner_text()).strip()
+        n = await dialog.locator("ol > li").count()
+        # Knowledge opens its first base by itself, so with one the panel is about working in it.
+        allowed = {expect} | ({"Working in a knowledge base"} if path == "/knowledge" else set())
+        if name == HELP_FALLBACK:
+            bad.append(f"{path}: no topic (the fallback)")
+        elif name not in allowed:
+            bad.append(f"{path}: the panel is {name!r}, the page {expect!r}")
+        if not 3 <= n <= 5:
+            bad.append(f"{path}: {n} steps")
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.3)
+
+    ctx, _ = await _help_context(browser)
+    page = await ctx.new_page()
+    try:
+        await walk(page, "/", "Chat")
+        for path in HELP_PAGES:
+            await walk(page, path, None)
+    finally:
+        await ctx.close()
+
+    # The states a path does not name: an orchestration open in the editor, a knowledge base open.
+    oid = f"orch_uismoke_help_{int(time.time())}"
+    api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    ctx, _ = await _help_context(browser, routes=list(_SMOKE_KB_ROUTES))
+    page = await ctx.new_page()
+    try:
+        await walk(page, f"/orchestrations?id={oid}", "Editing an orchestration",
+                   lambda p: p.locator(".react-flow").first)
+        await walk(page, "/knowledge", "Working in a knowledge base",
+                   lambda p: p.get_by_role("button", name="Upload files"))
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if bad:
+        raise AssertionError(f"{len(bad)} — " + "; ".join(bad))
+    return f"{len(HELP_PAGES) + 3} pages and states each have a \"?\" whose panel is their own, with 3–5 steps"
 
 async def main() -> int:
     global APP, API

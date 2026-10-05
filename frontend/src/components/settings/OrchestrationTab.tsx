@@ -21,6 +21,7 @@ import { humanAnswer, initialHumanValues, type HumanField, type HumanValues } fr
 import type { Orchestration, StepConfig } from '@/types/orchestration';
 import type { KnowledgeBaseOption } from '../orchestration/panel/shared';
 import { DEGRADED, getQueryTrace, knowledgeApi, useKnowledgeEnabled, type SearchTrace } from '@/lib/knowledge';
+import { useHelpTopic } from '@/components/help';
 import { RetrievalTrace } from '@/components/RetrievalTrace';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -238,6 +239,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     // The draft with undo/redo, dirty tracking and the unload guard.
     // `setDraft` records history (edits); `replaceDraft` resets it (navigation).
     const { draft, setDraft, replaceDraft, markSaved, undo, redo, canUndo, canRedo, dirty } = useDraftHistory();
+    // The "?" panel explains the editor while one is open, the list otherwise (H1).
+    useHelpTopic(draft ? 'orchestrations.editor' : null);
 
     // The builder runs from the app shell now and can be talked to from any
     // screen, so this one learns about a save the way every other list does:

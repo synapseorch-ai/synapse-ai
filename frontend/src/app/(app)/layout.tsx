@@ -16,9 +16,11 @@ import { TemplateSourcesProvider, TooltipProvider, usePersisted } from '@/compon
 import { BuilderLauncher } from '@/components/app/BuilderLauncher';
 import { BuilderPanel } from '@/components/app/BuilderPanel';
 import { BuilderProvider } from '@/components/app/BuilderProvider';
+import { HelpProvider } from '@/components/help';
 import { AppRail, type ThemeMode } from '@/components/app/AppRail';
 import { NavGuardProvider } from '@/components/app/NavGuard';
 import { NotificationProvider } from '@/components/notifications/NotificationProvider';
+import { ossHelpHost } from '@/lib/helpHost';
 
 /**
  * Variables for `{{ global.… }}` suggestions in every editor, fetched on the
@@ -97,6 +99,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 it is reachable from every screen and its conversation has to
                 survive navigating between them. */}
             <BuilderProvider>
+            {/* The "?" in every page header and the one panel it opens (H1):
+                it fills the kit's header slot, so pages need nothing. */}
+            <HelpProvider host={ossHelpHost}>
             <div className="flex h-screen overflow-hidden bg-bg font-sans text-text">
                 <AppRail mode={mode} onModeChange={changeMode} />
                 {/* The only <main> in the app. Pages render a plain flex column
@@ -104,6 +109,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     scrollbars. */}
                 <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
             </div>
+            </HelpProvider>
             <BuilderLauncher />
             <BuilderPanel />
             </BuilderProvider>

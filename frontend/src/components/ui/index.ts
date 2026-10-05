@@ -53,6 +53,7 @@ export {
   type Tone,
 } from "./text";
 export { Screen, type ScreenWidth } from "./screen";
+export { PageHeaderSlot, PageHeaderSlotProvider } from "./page-header-slot";
 
 export { Checkbox, type CheckedState } from "./checkbox";
 export { Section } from "./collapsible";

@@ -39,6 +39,7 @@ import {
     Muted, Screen, Section, Select, Spinner, TBody, TD, TH, THead, TR, Table, TableActions, Textarea, Toast, useToast,
     type SelectOption,
 } from '@/components/ui';
+import { useHelpTopic } from '@/components/help';
 import { RetrievalTrace } from '@/components/RetrievalTrace';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
@@ -126,6 +127,8 @@ export function KnowledgeScreen() {
     useEffect(() => { if (enabled) load(); }, [enabled, load]);
 
     const kb = bases?.find(b => b.id === selected) ?? null;
+    // The "?" panel: starting out, or working in a base (H1).
+    useHelpTopic(kb ? 'knowledge.base' : null);
 
     const remove = async () => {
         if (!deleting) return;
