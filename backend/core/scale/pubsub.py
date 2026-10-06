@@ -6,9 +6,15 @@ Channel/key conventions:
   synapse:cancel:{run_id}         Redis SET key (1h TTL) — API server sets; worker polls
   synapse:chat:{session_id}:events Redis Stream — worker publishes chat SSE events
 """
+import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from typing import AsyncGenerator
+
+from core.log import get_logger
+
+_log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -36,16 +42,66 @@ def get_redis_client(redis_url: str):
 # Orchestration run event publisher (worker → Redis Stream)
 # ---------------------------------------------------------------------------
 
+#: Nudged with a run's id as its events arrive (F377). The stream keeps only about `STREAM_MAXLEN` of them, so an
+#: embedder that keeps a run's whole log (cloud's archive) copies them out from its own cursor before they go.
+RunSliceHook = Callable[[str], Awaitable[None]]
+
+_slice_hook: RunSliceHook | None = None
+_slicing: dict[str, asyncio.Task] = {}
+_again: set[str] = set()
+
+
+def set_run_slice_hook(hook: RunSliceHook | None) -> None:
+    """Install the hook every run's publisher nudges (None removes it)."""
+    global _slice_hook
+    _slice_hook = hook
+
+
+def _nudge(run_id: str) -> None:
+    """Start the hook for `run_id` without waiting for it — or, while one runs, ask it for one more pass."""
+    if _slice_hook is None:
+        return
+    running = _slicing.get(run_id)
+    if running is not None and not running.done():
+        _again.add(run_id)
+        return
+    _slicing[run_id] = asyncio.get_running_loop().create_task(_slice(run_id, _slice_hook))
+
+
+async def _slice(run_id: str, hook: RunSliceHook) -> None:
+    try:
+        while True:
+            _again.discard(run_id)
+            try:
+                await hook(run_id)
+            except Exception as e:  # noqa: BLE001 — publishing goes on; the next nudge tries again
+                _log.warning(f"[pubsub] slicing run {run_id}'s events failed: {e}")
+            if run_id not in _again:
+                return
+    finally:
+        _slicing.pop(run_id, None)
+
+
+async def drain_run_slices(run_id: str) -> None:
+    """Wait for `run_id`'s slicing in flight in this process, if any (before its log is archived)."""
+    running = _slicing.get(run_id)
+    if running is not None:
+        await running
+
+
 class RunEventPublisher:
     """Publishes SSE events for an orchestration run to a Redis Stream."""
 
     STREAM_MAXLEN = 10_000  # cap stream length to avoid unbounded memory
+    #: Every so many events, the slice hook (if one is installed) is nudged (F377).
+    SLICE_EVERY = 1_000
 
     def __init__(self, redis_client, run_id: str, ttl: int = 3600):
         self._redis = redis_client
         self._run_id = run_id
         self._key = f"synapse:run:{run_id}:events"
         self._ttl = ttl
+        self._published = 0
 
     async def publish(self, event: dict) -> None:
         payload = json.dumps(event, default=str)
@@ -56,6 +112,9 @@ class RunEventPublisher:
             approximate=True,
         )
         await self._redis.expire(self._key, self._ttl)
+        self._published += 1
+        if self._published % self.SLICE_EVERY == 0:
+            _nudge(self._run_id)
 
     async def publish_done(self) -> None:
         """Publish a sentinel 'done' event so subscribers know the stream ended."""
