@@ -71,6 +71,9 @@ async def get_status():
     from core.routes.agents import load_workspace_agents, active_agent_id
     from core.images import model_can_see_images
     from core.llm_providers import detect_provider_from_model
+    from core.model_readiness import model_problem, model_problems
+    from core.orchestration.step_models import attach_verdict, readiness_problem, walk_agent
+    from core.scale.context import resolve_agent, resolve_orchestration
 
     # The builder's own sub-agents are not the workspace's to chat with (F186).
     user_agents = await load_workspace_agents()
@@ -78,6 +81,7 @@ async def get_status():
     default_model = current_settings.get("model", "mistral")
 
     agents_status = {}
+    walks: dict = {}
     for a in user_agents:
         # Whether attaching an image to this agent does anything. DeepSeek and
         # HuggingFace log a warning and discard; the CLI providers discard in
@@ -93,6 +97,15 @@ async def get_status():
             "type": a.get("type") or "conversational",
             "orchestration_id": a.get("orchestration_id"),
         }
+        if a.get("type") == "orchestrator":
+            # Its steps decide (F313): Attach when a step takes attachments and
+            # every one that does can read them, and the reason when not.
+            walked = walks[a["id"]] = await walk_agent(
+                a, load_agent=resolve_agent, load_orchestration=resolve_orchestration,
+                workspace_model=default_model)
+            verdict = attach_verdict(walked, {s.model: model_can_see_images(s.model) for s in walked.attaching()})
+            agents_status[a["id"]]["can_see_images"] = verdict is None
+            agents_status[a["id"]]["attach_problem"] = verdict
 
     # Resolve active agent's model
     active_agent = next((a for a in user_agents if a["id"] == active_agent_id), None)
@@ -102,9 +115,13 @@ async def get_status():
 
     provider = detect_provider_from_model(resolved_model)
     # Whether that model can answer at all, so the page stops saying "Ready"
-    # when nothing can (F182). Free: no model call, no key tried.
-    from core.model_readiness import model_problem
-    problem = await model_problem(current_settings, resolved_model)
+    # when nothing can (F182). Free: no model call, no key tried. A workflow
+    # agent answers through its steps' models, each checked (F313).
+    walked = walks.get(active_agent["id"]) if active_agent else None
+    if walked is not None:
+        problem = readiness_problem(walked, await model_problems(current_settings, walked.models()))
+    else:
+        problem = await model_problem(current_settings, resolved_model)
 
     return {
         "agents": agents_status,

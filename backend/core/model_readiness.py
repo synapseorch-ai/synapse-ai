@@ -52,24 +52,41 @@ def _pulled(model: str, names: list[str]) -> bool:
 
 async def model_problem(settings: dict, model: str) -> str | None:
     """Why `model` cannot answer, in a sentence; None when nothing is known to stop it."""
-    provider = detect_provider_from_model(model)
-    if provider in _KEYED:
-        field, label = _KEYED[provider]
-        return None if (settings.get(field) or "").strip() else f"No {label} key is saved."
-    if provider in _ADDRESSED:
-        field, label = _ADDRESSED[provider]
-        return None if (settings.get(field) or "").strip() else f"No {label} server address is saved."
-    if provider != "ollama":
-        return None
+    return (await model_problems(settings, [model]))[model]
+
+
+async def model_problems(settings: dict, models: list[str]) -> dict[str, str | None]:
+    """`model_problem` for each of `models`, reading Ollama's list once for them all.
+
+    A workflow's steps can name several models (F313); they are checked
+    together, and the one local call is made only if one of them is Ollama's.
+    """
+    answers: dict[str, str | None] = {}
+    local: list[str] = []
+    for model in dict.fromkeys(models):
+        provider = detect_provider_from_model(model)
+        if provider in _KEYED:
+            field, label = _KEYED[provider]
+            answers[model] = None if (settings.get(field) or "").strip() else f"No {label} key is saved."
+        elif provider in _ADDRESSED:
+            field, label = _ADDRESSED[provider]
+            answers[model] = None if (settings.get(field) or "").strip() else f"No {label} server address is saved."
+        elif provider != "ollama":
+            answers[model] = None
+        else:
+            local.append(model)
+    if not local:
+        return answers
 
     base = _ollama_base_url(settings)
-    bare = model[len("ollama."):] if model.startswith("ollama.") else model
     try:
         names = await _ollama_models(base)
     except httpx.HTTPStatusError as e:
-        return f"Ollama at {base} answered {e.response.status_code}."
+        return answers | {m: f"Ollama at {base} answered {e.response.status_code}." for m in local}
     except Exception:
-        return f"Ollama is not reachable at {base}."
-    if _pulled(bare, names):
-        return None
-    return f"Ollama has no model named {bare}. Pull it with `ollama pull {bare}`, or choose another model."
+        return answers | {m: f"Ollama is not reachable at {base}." for m in local}
+    for model in local:
+        bare = model[len("ollama."):] if model.startswith("ollama.") else model
+        answers[model] = None if _pulled(bare, names) else (
+            f"Ollama has no model named {bare}. Pull it with `ollama pull {bare}`, or choose another model.")
+    return answers

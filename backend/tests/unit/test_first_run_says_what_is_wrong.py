@@ -202,3 +202,94 @@ class TestTheOllamaListIsReadOnce:
         assert await model_readiness._ollama_models("http://127.0.0.1:9") == ["mistral:latest", "llama3:8b"]
         assert seen["url"] == "http://127.0.0.1:9/api/tags"
         assert seen["timeout"] and seen["timeout"] <= 3, "a page load never waits long on it"
+
+    async def test_many_models_share_one_list(self, ollama):
+        """A workflow's steps name several models; Ollama's list is read once for them (F313)."""
+        from core.model_readiness import model_problems
+
+        said = await model_problems({}, ["ollama.mistral", "ollama.llama3", "ollama.qwen", "gpt-5"])
+        assert len(ollama["asked"]) == 1
+        assert said["ollama.mistral"] is None and said["gpt-5"] == "No OpenAI key is saved."
+        assert "ollama pull llama3" in said["ollama.llama3"] and "ollama pull qwen" in said["ollama.qwen"]
+
+
+async def _workflow(seed_steps, *, agents=(), name="Photo desk"):
+    """A workflow agent over `seed_steps`, made the active agent; seeds replace, so all at once."""
+    from _fakes import seed as S
+
+    orch = S.make_orchestration(id="orch_f313s", entry_step_id=seed_steps[0]["id"], steps=seed_steps)
+    await S.seed_orchestrations([orch])
+    top = S.make_orchestrator_agent("orch_f313s", id="agent_f313s", name=name)
+    await S.seed_agents([*agents, top])
+    return top
+
+
+def _agent_step(sid, *, model=None, takes=False, nxt=None, agent_id="agent_f313_eyes"):
+    step = {"id": sid, "name": sid.title(), "type": "agent", "agent_id": agent_id, "prompt_template": "go",
+            "output_key": f"{sid}_out", "next_step_id": nxt}
+    if model:
+        step["model"] = model
+    if takes:
+        step["pass_images"] = True
+    return step
+
+
+def _eyes(model="gpt-5"):
+    from _fakes import seed as S
+
+    return S.make_agent(id="agent_f313_eyes", name="Eyes", model=model)
+
+
+class TestAWorkflowAgentIsJudgedByItsSteps:
+    """Its readiness and Attach come from its steps' models, not the workspace default (F313)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_active(self, monkeypatch):
+        import core.routes.agents as agents_mod
+        monkeypatch.setattr(agents_mod, "active_agent_id", None)  # module memory; restored after
+
+    async def _activate(self, client, agent):
+        await client.post("/api/agents/active", json={"agent_id": agent["id"]})
+
+    async def test_attach_is_refused_when_no_step_takes_attachments(self, client, ollama):
+        top = await _workflow([_agent_step("look")], agents=[_eyes()])
+        flags = (await _status(client, model="ollama.mistral"))["agents"][top["id"]]
+        assert flags["can_see_images"] is False
+        assert flags["attach_problem"].startswith("No step of this workflow takes attachments")
+
+    async def test_attach_is_offered_when_a_step_takes_them_on_a_model_that_sees(self, client, ollama):
+        top = await _workflow([_agent_step("look", takes=True)], agents=[_eyes("gpt-5")])
+        flags = (await _status(client, model="deepseek-chat"))["agents"][top["id"]]
+        assert flags["can_see_images"] is True and flags["attach_problem"] is None
+
+    async def test_attach_names_the_step_whose_model_cannot_see(self, client, ollama):
+        top = await _workflow([_agent_step("look", takes=True, model="deepseek-chat")], agents=[_eyes()])
+        flags = (await _status(client, model="gpt-5"))["agents"][top["id"]]
+        assert flags["can_see_images"] is False
+        assert flags["attach_problem"] == "Step 'Look' takes attachments, but deepseek-chat cannot read images."
+
+    async def test_a_workflow_on_ready_steps_is_ready_though_the_default_is_not(self, client, ollama):
+        top = await _workflow([_agent_step("look", model="ollama.mistral")], agents=[_eyes()])
+        await self._activate(client, top)
+        status = await _status(client, model="gpt-5")
+        assert status["model_ready"] is True and status["model_problem"] is None
+
+    async def test_an_unready_step_is_named(self, client, ollama):
+        top = await _workflow([_agent_step("research", model="gemini-2.5-flash", nxt="write"),
+                               _agent_step("write", model="ollama.mistral")], agents=[_eyes()])
+        await self._activate(client, top)
+        status = await _status(client, model="ollama.mistral")
+        assert status["model_ready"] is False
+        assert status["model_problem"] == "Step 'Research' (gemini-2.5-flash): No Gemini key is saved."
+
+    async def test_ollamas_list_is_read_once_for_every_step(self, client, ollama):
+        top = await _workflow([_agent_step("a", model="ollama.mistral", nxt="b"),
+                               _agent_step("b", model="ollama.llama3", nxt="c"),
+                               _agent_step("c", model="ollama.qwen")], agents=[_eyes()])
+        await self._activate(client, top)
+        await _status(client, model="ollama.mistral")
+        ollama["asked"].clear()
+        status = (await client.get("/api/status")).json()
+        assert len(ollama["asked"]) == 1
+        assert "Step 'B' (ollama.llama3)" in status["model_problem"]
+        assert "Step 'C' (ollama.qwen)" in status["model_problem"]
