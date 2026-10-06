@@ -499,3 +499,60 @@ class TestResponseCacheSeam:
         assert await rc.get_semantic_routed("step_2", "m", "sys", "hello") is None
         await rc.set_semantic_routed("step_2", "m", "sys", "hello",
                                      text="t", input_tokens=1, output_tokens=2)
+
+    async def test_a_backend_is_used_whatever_the_embedding_model_says(self, monkeypatch):
+        """Cloud's backend embeds on its own: the local Embedding Model is never read for it (F327)."""
+        from core import llm_providers as llm
+        from core.cache import response_cache as rc
+
+        embedded = []
+
+        async def embed(*a, **k):
+            embedded.append(a)
+            raise AssertionError("the local path embedded")
+
+        monkeypatch.setattr(llm, "embed_batch_ex", embed)
+        calls = []
+
+        class Backend:
+            async def get(self, step_id, model, system, user_message, threshold):
+                calls.append(("get", step_id, model, system, user_message, threshold))
+
+            async def set(self, step_id, model, system, user_message, **kw):
+                calls.append(("set", step_id, model, system, user_message, kw))
+
+        rc.set_response_cache_backend(Backend())
+        try:
+            assert await rc.get_semantic_routed("step_3", "m", "sys", "hello", threshold=0.9) is None
+            await rc.set_semantic_routed("step_3", "m", "sys", "hello", text="t", input_tokens=1, output_tokens=2)
+        finally:
+            rc.set_response_cache_backend(None)
+        assert calls == [
+            ("get", "step_3", "m", "sys", "hello", 0.9),
+            ("set", "step_3", "m", "sys", "hello",
+             {"text": "t", "input_tokens": 1, "output_tokens": 2, "ttl_seconds": 3600}),
+        ]
+        assert embedded == []
+
+    async def test_no_store_never_embeds(self, monkeypatch):
+        from core import llm_providers as llm
+        from core import server
+        from core.cache import response_cache as rc
+        from core.config import load_settings
+        from core.routes.settings import save_settings
+
+        embedded = []
+
+        async def embed(*a, **k):
+            embedded.append(a)
+
+        monkeypatch.setattr(llm, "embed_batch_ex", embed)
+        monkeypatch.setattr(server, "memory_store", None, raising=False)
+        settings = load_settings()
+        settings["embedding_model"] = "text-embedding-3-small"
+        await save_settings(settings)
+        rc.set_response_cache_backend(None)
+        rc.forget_local_state()
+        assert await rc.get_semantic_routed("step_4", "m", "sys", "hello") is None
+        await rc.set_semantic_routed("step_4", "m", "sys", "hello", text="t", input_tokens=1, output_tokens=2)
+        assert embedded == []

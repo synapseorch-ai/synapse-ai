@@ -721,7 +721,7 @@ export const ModelsTab = ({
             <div className="space-y-4">
                 <div className="space-y-2">
                     <Label size="sm" className="block">Embedding Model</Label>
-                    <p className="text-2xs text-text-faint -mt-1">Used for code indexing and repository search. Requires compatible providers like Gemini, OpenAI, or Ollama.</p>
+                    <p className="text-2xs text-text-faint -mt-1">Indexes code repositories, matches each workflow step&apos;s semantic cache, and embeds knowledge bases unless Knowledge has its own. Gemini, OpenAI, Bedrock, Ollama and OpenAI-compatible servers embed.</p>
                     <Combobox
                         value={embeddingModel || undefined}
                         onChange={setEmbeddingModel}
@@ -735,8 +735,9 @@ export const ModelsTab = ({
                 {/* Warning Message */}
                 <div className="p-3 bg-warning-subtle border border-warning/50 rounded-sm">
                     <p className="text-2xs text-warning leading-relaxed uppercase font-bold tracking-tight">
-                        ⚠ Warning: Changing the global embedding model will affect new repository indexals. 
+                        ⚠ Warning: Changing the global embedding model will affect new repository indexes.
                         Existing repositories will NOT be automatically migrated. Use individual repo settings to re-index manually if needed.
+                        Each step&apos;s semantic cache starts afresh.
                     </p>
                 </div>
             </div>

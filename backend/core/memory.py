@@ -29,9 +29,9 @@ class MemoryStore:
         self.client = chromadb.PersistentClient(
             path=self.storage_path, settings=_ChromaSettings(anonymized_telemetry=False))
         self.collection = self.client.get_or_create_collection(name="chat_history")
-        self.model = model
+        self.model = model  # unused since F327; kept for the construction sites
         self._embed_fn = embed_fn
-        print(f"DEBUG: MemoryStore initialized at {self.storage_path} with model {self.model}")
+        print(f"DEBUG: MemoryStore initialized at {self.storage_path}")
 
     def get_embedding(self, text):
         # CRITICAL: AWS Bedrock embedding models have TWO limits:
@@ -46,25 +46,14 @@ class MemoryStore:
             text = text[:MAX_CHARS]
             print(f"WARNING: Truncated embedding text from {original_len} to {MAX_CHARS} chars to stay within token limit")
         
-        if self._embed_fn:
-            try:
-                return self._embed_fn(text)
-            except Exception as e:
-                print(f"Error getting embedding from configured provider: {e}")
-                return None
+        # No embedder of its own (F327): the step semantic cache embeds with
+        # Settings → Models' Embedding Model itself, and nothing else asks.
+        if not self._embed_fn:
+            return None
         try:
-            # Default: Use Ollama for embeddings (best-effort)
-            import ollama
-
-            from core.config import load_settings
-            from core.llm_providers import _ollama_base_url
-
-            # The setting, not only the ollama library's own OLLAMA_HOST (F76).
-            client = ollama.Client(host=_ollama_base_url(load_settings()))
-            response = client.embeddings(model=self.model, prompt=text)
-            return response["embedding"]
+            return self._embed_fn(text)
         except Exception as e:
-            print(f"Error getting embedding from Ollama: {e}")
+            print(f"Error getting embedding from configured provider: {e}")
             return None
 
     def add_memory(self, role, content, metadata: dict[str, Any] | None = None):

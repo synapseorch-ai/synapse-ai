@@ -50,18 +50,18 @@ async def save_settings(settings: dict):
 
 
 def _init_memory_store(settings: dict):
-    """Initialize the long-term memory store.
+    """The Chroma client the step semantic cache keeps its collections on.
 
-    Chat memory always uses Ollama with nomic-embed-text (384d) — a small, fast,
-    local model that stays consistent regardless of the LLM provider mode.
-    Code embeddings use provider models separately (see services/code_indexer.py).
+    It embeds nothing itself: the cache embeds with Settings → Models'
+    Embedding Model (`core/cache/response_cache.py`, F327). Code search and
+    Knowledge embed on their own paths.
     """
     try:
         from core.memory import MemoryStore as _MemoryStore
     except ImportError:
         return None
 
-    return _MemoryStore(model="nomic-embed-text", embed_fn=None)
+    return _MemoryStore()
 
 
 # --- Status & Settings ---
@@ -193,7 +193,10 @@ async def update_settings(settings: Settings):
 
     await save_settings(data)
 
-    # Reinitialize memory so embeddings provider matches the new mode.
+    # The semantic cache reads the Embedding Model afresh on its next call.
+    from core.cache import response_cache as _response_cache
+    _response_cache.forget_local_state()
+
     import core.server as _server
 
     # If the user's allowed directories changed, restart the Filesystem MCP
@@ -203,16 +206,6 @@ async def update_settings(settings: Settings):
             await _server.restart_filesystem_mcp()
         except Exception as e:
             print(f"Warning: Failed to restart filesystem MCP after settings update: {e}")
-    try:
-        from core.memory import MemoryStore as _MemoryStore
-    except ImportError:
-        _MemoryStore = None
-    
-    if _MemoryStore:
-        try:
-            _server.memory_store = _init_memory_store(data)
-        except Exception as e:
-            print(f"Warning: failed to reinitialize MemoryStore after settings update: {e}")
     return public_settings(data)
 
 

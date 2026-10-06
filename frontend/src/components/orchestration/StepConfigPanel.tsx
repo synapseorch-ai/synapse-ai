@@ -64,6 +64,12 @@ interface StepConfigPanelProps {
      */
     codeRunnerNote?: string;
     /**
+     * One sentence on what a step's semantic cache embeds with. Self-hosted's
+     * default names the setting; its host says whether one is set. The cloud
+     * embeds through its gateway, with nothing to set.
+     */
+    semanticCacheNote?: string;
+    /**
      * Look, don't touch — for a person who may read the orchestration but not
      * change it (a cloud viewer). The fields show what is set and take no input;
      * sections still open, so nothing is hidden; there is no Delete step and no
@@ -86,6 +92,10 @@ interface StepConfigPanelProps {
 const SELF_HOSTED_RUNNER_NOTE =
     'Runs in Docker by default (512MB RAM, up to a minute, with internet access); switch to host mode in Settings → General to lift the sandbox.';
 
+// F327: it embeds with the Embedding Model; with none set it never matches.
+const SELF_HOSTED_SEMANTIC_NOTE =
+    'It embeds each prompt with the Embedding Model in Settings → Models; with none set, only exact match runs.';
+
 const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end', 'retrieve', 'ingest'];
 
 const MIN_WIDTH = 320;
@@ -94,7 +104,8 @@ const MAX_WIDTH = 640;
 export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
     availableModels, orchestration, showVaultHints = true, canRunCode = true,
-    codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, readOnly = false, knowledgeEnabled = false, knowledgeBases,
+    codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, semanticCacheNote = SELF_HOSTED_SEMANTIC_NOTE, readOnly = false,
+    knowledgeEnabled = false, knowledgeBases,
 }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => {
         if (!readOnly) onUpdate({ ...step, ...patch });
@@ -331,7 +342,7 @@ export function StepConfigPanel({
                             </Frozen>
                         </Section>
 
-                        <CacheSection step={step} update={update} readOnly={readOnly} />
+                        <CacheSection step={step} update={update} readOnly={readOnly} semanticNote={semanticCacheNote} />
                     </>
                 )}
             </div>
@@ -367,7 +378,9 @@ export function StepConfigPanel({
  * would let shared_state diverge from what the LLM "saw". There is no tool
  * cache: the engine's was removed (F67) and its toggle with it.
  */
-function CacheSection({ step, update, readOnly = false }: { step: StepConfig; update: (patch: Partial<StepConfig>) => void; readOnly?: boolean }) {
+function CacheSection({ step, update, readOnly = false, semanticNote }: {
+    step: StepConfig; update: (patch: Partial<StepConfig>) => void; readOnly?: boolean; semanticNote: string;
+}) {
     const responseCacheAllowed = step.type !== 'agent';
     const responseEnabled = !!step.cache_responses_enabled;
     const semanticEnabled = !!step.cache_semantic_enabled;
@@ -406,10 +419,7 @@ function CacheSection({ step, update, readOnly = false }: { step: StepConfig; up
                                     <span className="text-xs text-text">
                                         Semantic match (fuzzy)
                                         <span className="mt-0.5 block text-[10px] text-text-faint">
-                                            Reuse a near-identical prior response when exact match misses. Needs an embedding
-                                            provider — Ollama with <span className="font-code">nomic-embed-text</span> (default) or an{' '}
-                                            <span className="font-code">embedding_model</span> in Settings. Without one it silently
-                                            does nothing; exact match still works.
+                                            Reuse a near-identical prior response when exact match misses. {semanticNote}
                                         </span>
                                     </span>
                                 </label>

@@ -2339,6 +2339,50 @@ async def check_cachetoggle(browser) -> str:
     return "Caching offers the response cache, and no tool cache"
 
 
+@check
+async def check_semanticnote(browser) -> str:
+    """Semantic match names the setting it embeds with, and says whether one is set (F327).
+
+    It said "Ollama with nomic-embed-text (default)", which the cache always
+    asked whatever Settings → Models chose; it now embeds with the Embedding
+    Model, and without one runs exact match only.
+    """
+    oid = f"orch_uismoke_semnote_{int(time.time())}"
+    orch = laid_out_orchestration(oid, 1)
+    orch["steps"][0].update({"type": "llm", "name": "Write", "prompt_template": "Say hi.",
+                             "cache_responses_enabled": True})
+    api("/api/orchestrations", "POST", orch)
+    chosen = str(api("/api/settings").get("embedding_model") or "")
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await open_step(page, oid, "Write")
+        panel = page.locator('aside[aria-label="Step configuration"]')
+        await panel.get_by_role("button", name=re.compile(r"^Caching")).click()
+        label = panel.locator("label").filter(has=page.get_by_role("checkbox", name="Semantic match"))
+        await label.wait_for(timeout=10_000)
+        note = " ".join((await label.inner_text()).split())
+        if re.search(r"ollama|nomic", note, re.I):
+            raise AssertionError(f"Semantic match still names Ollama: {note!r}")
+        if "Embedding Model" not in note or "Settings → Models" not in note:
+            raise AssertionError(f"Semantic match does not name the setting: {note!r}")
+        if chosen and chosen not in note:
+            raise AssertionError(f"Semantic match does not name the chosen model {chosen!r}: {note!r}")
+        if not chosen and "only exact match" not in note:
+            raise AssertionError(f"with no Embedding Model, Semantic match does not say only exact match runs: {note!r}")
+        await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
+        models = page.get_by_text(re.compile(r"semantic cache", re.I)).first
+        try:
+            await models.wait_for(timeout=15_000)
+        except Exception:
+            raise AssertionError("Settings → Models does not say the Embedding Model feeds the semantic cache")
+        models_says = " ".join((await models.inner_text()).split())
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    return f"Semantic match: {note!r}; Settings → Models: {models_says[:80]!r}…"
+
+
 # ── a human step's fields ────────────────────────────────────────────────────
 
 #: What the AI builder itself writes (`textarea`), a flag, and a type nobody

@@ -309,6 +309,18 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         return () => { live = false; };
     }, [knowledgeEnabled]);
     const [availableModels, setAvailableModels] = useState<string[]>([]);
+    // What a step's semantic cache embeds with (F327): the panel says whether one is set.
+    const [embeddingModel, setEmbeddingModel] = useState<string | null>(null);
+    useEffect(() => {
+        let live = true;
+        fetch('/api/settings').then(r => r.json())
+            .then((s) => { if (live) setEmbeddingModel(String(s?.embedding_model || '')); })
+            .catch(() => { /* the panel keeps its general note */ });
+        return () => { live = false; };
+    }, []);
+    const semanticCacheNote = embeddingModel === null ? undefined : embeddingModel
+        ? `It embeds each prompt with ${embeddingModel}, the Embedding Model in Settings → Models.`
+        : 'No Embedding Model is set in Settings → Models, so only exact match runs.';
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'warning' | 'error' } | null>(null);
     const showToast = (message: string, type: 'success' | 'warning' | 'error' = 'success') => {
@@ -2079,6 +2091,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                                 orchestration={draft}
                                 knowledgeEnabled={knowledgeEnabled}
                                 knowledgeBases={knowledgeBases}
+                                semanticCacheNote={semanticCacheNote}
                             />
                         )}
                     </div>
