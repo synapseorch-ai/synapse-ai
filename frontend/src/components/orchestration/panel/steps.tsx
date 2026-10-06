@@ -51,6 +51,37 @@ function HistoryToggle({ step, update }: { step: StepConfig; update: (patch: Par
 }
 
 /**
+ * "Sees attachments": the images a person attached in chat reach this step (F313).
+ *
+ * Off unless ticked — the engine's `pass_images` defaults to false — and chat
+ * offers Attach for a workflow agent only when some step has it on a model that
+ * can read images. A step that runs another workflow passes them on to it, whose
+ * own steps then choose.
+ */
+function SeesAttachmentsToggle({ step, update, runsWorkflow }: {
+    step: StepConfig; update: (patch: Partial<StepConfig>) => void; runsWorkflow: boolean;
+}) {
+    return (
+        <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-surface-2/40 px-3 py-2">
+            <Checkbox
+                className="mt-0.5"
+                checked={!!step.pass_images}
+                onChange={(checked) => update({ pass_images: checked || undefined })}
+                label="Sees attachments"
+            />
+            <span className="text-xs text-text">
+                Sees attachments
+                <span className="mt-0.5 block text-[10px] text-text-faint">
+                    {runsWorkflow
+                        ? 'Pass the images a person attaches in chat on to this workflow; its own steps choose whether to read them.'
+                        : 'The images a person attaches in chat reach this step. Use a model that can read images: chat offers Attach only when a step has this on.'}
+                </span>
+            </span>
+        </label>
+    );
+}
+
+/**
  * Narrow the agent's tool set for this step. `undefined` = agent default.
  *
  * The picker offers ONLY the selected agent's own tools — you can take access
@@ -182,6 +213,8 @@ function AgentSection(props: StepSectionProps) {
             </Field>
             <AllowedTools {...props} />
             <HistoryToggle step={step} update={update} />
+            <SeesAttachmentsToggle step={step} update={update}
+                runsWorkflow={agents.find((a: any) => a.id === step.agent_id)?.type === 'orchestrator'} />
         </div>
     );
 }

@@ -688,7 +688,7 @@ function WithCode({ text }: { text: string }) {
 /** Where every "the model cannot answer" message points (F182). */
 const MODELS_SETTINGS = '/settings/models';
 
-function WelcomeScreen({ agentName, modelReady, modelProblem, onPrompt, onNavigate, showExamplesBanner, onDismissBanner }: { agentName: string; modelReady?: boolean; modelProblem?: string | null; onPrompt: (text: string) => void; onNavigate: (path: string) => void; showExamplesBanner: boolean; onDismissBanner: () => void; }) {
+function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false, onPrompt, onNavigate, showExamplesBanner, onDismissBanner }: { agentName: string; modelReady?: boolean; modelProblem?: string | null; isWorkflow?: boolean; onPrompt: (text: string) => void; onNavigate: (path: string) => void; showExamplesBanner: boolean; onDismissBanner: () => void; }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -776,7 +776,7 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, onPrompt, onNaviga
         <span className="flex min-w-0 text-[11px] font-mono uppercase tracking-[0.2em] text-text-faint">
           <span className="min-w-0 truncate" title={agentName}>{agentName}</span>
           {modelReady !== undefined && (
-            <span className="shrink-0">{modelReady ? '\u00a0· Ready' : '\u00a0· Model not ready'}</span>
+            <span className="shrink-0">{modelReady ? '\u00a0· Ready' : isWorkflow ? '\u00a0· A step is not ready' : '\u00a0· Model not ready'}</span>
           )}
         </span>
       </div>
@@ -892,20 +892,20 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Shared with the AI builder's composer — one validator, one chip strip, one
-  // counter, one set of refusal messages.
-  const attachments = useImageAttachments();
-  const attachedImages = attachments.images;
   // Whether attaching anything to this agent does something. Answered by
   // `/api/status`, which already resolves each agent's model — the alternative
   // was a second copy in here of the list of providers that cannot see, and a
-  // silent drop every time the two disagreed.
-  const canAttach = (() => {
+  // silent drop every time the two disagreed. A workflow agent's comes from its
+  // steps, with the reason (F313). The button, a drop and a paste share it.
+  const attachRefusal = (() => {
     const info = currentAgentId ? systemStatus?.agents?.[currentAgentId] : undefined;
-    return typeof info === 'object' && info !== null && 'can_see_images' in info
-      ? (info as { can_see_images?: boolean }).can_see_images !== false
-      : true;
+    if (typeof info !== 'object' || info === null || info.can_see_images !== false) return '';
+    return info.attach_problem || "This agent's model cannot read images";
   })();
+  // Shared with the AI builder's composer — one validator, one chip strip, one
+  // counter, one set of refusal messages.
+  const attachments = useImageAttachments(attachRefusal);
+  const attachedImages = attachments.images;
 
   // A workflow agent has no model of its own: each step runs on the one set on
   // it, and `/api/status` resolves the workspace default for it. The header
@@ -2653,6 +2653,7 @@ export default function Home() {
               agentName={agentName}
               modelReady={systemStatus?.model_ready}
               modelProblem={systemStatus?.model_problem}
+              isWorkflow={!!workflowId}
               onPrompt={(text) => { setInput(text); setTimeout(() => textareaRef.current?.focus(), 50); }}
               onNavigate={(path) => router.push(path)}
               showExamplesBanner={showExamplesBanner}
@@ -2847,7 +2848,7 @@ export default function Home() {
               <AttachButton
                 onFiles={attachments.accept}
                 count={attachedImages.length}
-                disabledReason={canAttach ? '' : "This agent's model cannot read images"}
+                disabledReason={attachRefusal}
                 className="p-2.5 self-end mb-1 relative top-[1px]"
               />
               {/* The one button, in whichever job the moment calls for.

@@ -57,7 +57,12 @@ export interface ImageAttachments {
     pasteHandlers: { onPaste: (e: React.ClipboardEvent) => void };
 }
 
-export function useImageAttachments(): ImageAttachments {
+/**
+ * `refusal`, when set, is why this composer takes no images now (the agent's
+ * model cannot read them, or no step of its workflow takes them): a drop or a
+ * paste is refused with it, as the Attach button is (F313).
+ */
+export function useImageAttachments(refusal?: string): ImageAttachments {
     const [images, setImages] = useState<Attachment[]>([]);
     const [error, setError] = useState<string | null>(null);
 
@@ -67,6 +72,10 @@ export function useImageAttachments(): ImageAttachments {
     // twice in development. `accept` is recreated whenever `images` changes,
     // and handlers are re-bound on the same render, so the closure is current.
     const accept = useCallback((files: File[]) => {
+        if (refusal) {
+            setError(refusal);
+            return;
+        }
         setError(null);
         const current = images;
         const room = MAX_IMAGES - current.length;
@@ -114,7 +123,7 @@ export function useImageAttachments(): ImageAttachments {
             reader.onerror = () => setError(`${file.name || 'That image'} could not be read.`);
             reader.readAsDataURL(file);
         });
-    }, [images]);
+    }, [images, refusal]);
 
     const remove = useCallback((index: number) => {
         setImages((prev) => prev.filter((_, i) => i !== index));

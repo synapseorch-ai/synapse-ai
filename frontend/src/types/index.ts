@@ -83,6 +83,8 @@ export interface SystemStatus {
         status: string;
         name: string;
         can_see_images?: boolean;
+        /** Why Attach is off for a workflow agent: no step takes attachments, or one can't read them (F313). */
+        attach_problem?: string | null;
         /** `orchestrator` for a workflow agent, whose steps each have their own model (U64). */
         type?: string;
         orchestration_id?: string | null;

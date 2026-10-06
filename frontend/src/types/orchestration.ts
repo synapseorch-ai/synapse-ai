@@ -111,6 +111,9 @@ export interface StepConfig {
     // On re-invocation, include every prior turn (inputs/tools/output) in the prompt.
     include_full_history?: boolean;
 
+    // Agent steps only: "Sees attachments" — the images a person attached in chat reach this step (F313).
+    pass_images?: boolean;
+
     // Graph routing
     next_step_id?: string;
     max_iterations?: number;

@@ -5321,6 +5321,169 @@ async def check_workflowheader(browser) -> str:
     return "a workflow agent's header reads 'Workflow · 3 steps' from its orchestration, and names no model"
 
 
+@check
+async def check_seesattachments(browser) -> str:
+    """An agent step can be marked "Sees attachments", and the mark goes when it stops being one (F313).
+
+    `pass_images` had no control: chat's images could reach a workflow's step
+    only through the builder's own bundle. The engine refuses it on any other
+    type, so a step changed to LLM with it still set would be refused on save.
+    """
+    stamp = int(time.time())
+    aid, oid = f"agent_uismoke_eyes_{stamp}", f"orch_uismoke_sees_{stamp}"
+    api("/api/agents", "POST", _agent(aid, "UI smoke Eyes"))
+    orch = laid_out_orchestration(oid, 1)
+    orch["steps"][0].update({"type": "agent", "name": "Look", "agent_id": aid, "prompt_template": "Describe it."})
+    api("/api/orchestrations", "POST", orch)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    answered: list[int] = []
+    saving = lambda r: r.request.method == "POST" and r.url.endswith("/api/orchestrations")  # noqa: E731
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and r.url.endswith("/api/orchestrations") else None)
+    page.on("response", lambda r: answered.append(r.status) if saving(r) else None)
+    try:
+        await open_step(page, oid, "Look")
+        box = page.get_by_role("checkbox", name="Sees attachments")
+        try:
+            await box.wait_for(timeout=10_000)
+        except Exception:
+            raise AssertionError("an agent step has no 'Sees attachments' box")
+        await box.click()
+        await page.get_by_role("button", name=re.compile(r"^Save")).first.click()
+        await asyncio.sleep(1.5)
+        ticked = (sent[-1]["steps"][0] if sent else {}).get("pass_images", "absent")
+        await page.get_by_role("combobox", name="Step type").click()
+        await page.get_by_role("option", name=re.compile(r"^LLM")).click()
+        await page.get_by_role("button", name="Change type").click()
+        await asyncio.sleep(0.5)
+        await page.get_by_role("button", name=re.compile(r"^Save")).first.click()
+        await asyncio.sleep(1.5)
+        after = sent[-1]["steps"][0] if sent else {}
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+        api(f"/api/agents/{aid}", "DELETE")
+    bad = []
+    if ticked is not True:
+        bad.append(f"ticking it saved pass_images={ticked!r}, not true")
+    if after.get("type") != "llm":
+        bad.append(f"the type change did not save (type {after.get('type')!r})")
+    if "pass_images" in after:
+        bad.append(f"the step saved as LLM still carries pass_images={after['pass_images']!r}")
+    if answered and answered[-1] != 200:
+        bad.append(f"saving it as LLM answered {answered[-1]}")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "ticking saves pass_images: true; changing the step to LLM drops it, and that save is 200"
+
+
+# A 1×1 PNG: what a drop and a paste carry in the attach checks.
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+DROP_AND_PASTE = """async (b64) => {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const file = () => new File([bytes], 'pic.png', {type: 'image/png'});
+  const form = document.querySelector('main form');
+  const dropped = new DataTransfer(); dropped.items.add(file());
+  form.dispatchEvent(new DragEvent('drop', {dataTransfer: dropped, bubbles: true, cancelable: true}));
+  const pasted = new DataTransfer(); pasted.items.add(file());
+  form.querySelector('textarea').dispatchEvent(
+    new ClipboardEvent('paste', {clipboardData: pasted, bubbles: true, cancelable: true}));
+}"""
+
+WORKFLOW_REFUSES = ("No step of this workflow takes attachments. Turn on Sees attachments on the agent step "
+                    "that should read them.")
+
+
+async def _try_attaching(browser, oid: str, sees: bool, problem: str | None) -> dict:
+    flow = f"orch_agent_{oid}"
+    status = {**_status(True), "agents": {
+        flow: {"name": "Flow", "status": "online", "can_see_images": sees, "attach_problem": problem,
+               "type": "orchestrator", "orchestration_id": oid},
+    }, "active_agent_id": flow}
+    ctx, page = await _chat_page(browser, f"uismoke-wfattach-{int(sees)}",
+                                 extra_init=SERVE_STATUS % json.dumps(status))
+    try:
+        button = page.get_by_role("button", name="Attach images")
+        await button.wait_for(timeout=10_000)
+        seen = {"disabled": await button.is_disabled(), "title": await button.get_attribute("title")}
+        await page.evaluate(DROP_AND_PASTE, _PNG_B64)
+        await asyncio.sleep(1.0)
+        seen["chips"] = await page.locator('main form [aria-label^="Remove "]').count()
+        seen["said"] = " ".join((await page.locator('main [role="status"]').first.inner_text()).split())
+        return seen
+    finally:
+        await ctx.close()
+
+
+@check
+async def check_workflowattach(browser) -> str:
+    """A workflow agent's Attach follows its steps, and a drop or a paste is refused as the button is (F313).
+
+    Attach followed the workspace default model, which no step runs on; a drop
+    or a paste was never refused at all, only the button.
+    """
+    oid = f"orch_uismoke_wfattach_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, f"ui-smoke flow {oid[-6:]}"))
+    try:
+        takes = await _try_attaching(browser, oid, True, None)
+        refused = await _try_attaching(browser, oid, False, WORKFLOW_REFUSES)
+    finally:
+        drop_fixture(oid)
+    bad = []
+    if takes["disabled"] or takes["chips"] != 2:
+        bad.append(f"with a step that takes them, Attach was disabled={takes['disabled']} and a drop and a "
+                   f"paste made {takes['chips']} chips, not 2 (the control)")
+    if not refused["disabled"] or refused["title"] != WORKFLOW_REFUSES:
+        bad.append(f"refused, the button was disabled={refused['disabled']} with title {refused['title']!r}")
+    if refused["chips"]:
+        bad.append(f"refused, a drop and a paste still made {refused['chips']} chips")
+    if WORKFLOW_REFUSES not in refused["said"]:
+        bad.append(f"refused, the composer said {refused['said']!r}, not why")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a step that takes them: drop and paste attach; none: the button, a drop and a paste all say why"
+
+
+@check
+async def check_workflowready(browser) -> str:
+    """A workflow agent that cannot answer says which step, not "Model not ready" (F313)."""
+    oid = f"orch_uismoke_wfready_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, f"ui-smoke flow {oid[-6:]}"))
+    flow = f"orch_agent_{oid}"
+    problem = "Step 'Research' (gemini-2.5-flash): No Gemini key is saved."
+    status = {**_status(False, problem), "agents": {
+        flow: {"name": "Flow", "status": "online", "can_see_images": False, "attach_problem": WORKFLOW_REFUSES,
+               "type": "orchestrator", "orchestration_id": oid},
+    }, "active_agent_id": flow}
+    ctx, page = await _chat_page(browser, "uismoke-wfready", extra_init=SERVE_STATUS % json.dumps(status))
+    try:
+        greeting = {}
+        for _ in range(30):
+            greeting = await page.evaluate(GREETING)
+            if greeting.get("label") and "ready" in greeting["label"].lower():
+                break
+            await asyncio.sleep(0.2)
+        shown = await _on_screen(page, "No Gemini key is saved.")
+        dot = await page.evaluate("(p) => !!document.querySelector(`header [title=\"${p}\"]`)", problem)
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    bad = []
+    label = greeting.get("label") or ""
+    if "A step is not ready" not in label:
+        bad.append(f"the greeting reads {label!r}, not '… · A step is not ready'")
+    if not shown:
+        bad.append("the step's problem is not on the page")
+    if not dot:
+        bad.append("the header's dot does not carry the step's problem as its title")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the greeting says a step is not ready, names it, and so does the header's dot"
+
+
 def judged_question_orchestration(oid: str) -> dict:
     """A label written by one step, then a person asked with fields: the stress pass's shape (U65)."""
     return {

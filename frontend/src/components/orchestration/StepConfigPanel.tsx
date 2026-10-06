@@ -158,10 +158,14 @@ export function StepConfigPanel({
 
     // ── Guarded type change ────────────────────────────────────────────────
     const [pendingType, setPendingType] = useState<StepType | null>(null);
+    // Only an agent step reads Sees attachments, and the engine refuses it on any
+    // other, so it goes with the type rather than being kept (F313).
+    const toType = (next: StepType): Partial<StepConfig> =>
+        next === 'agent' ? { type: next } : { type: next, pass_images: undefined };
     const changeType = (next: StepType) => {
         if (next === step.type) return;
         if (hasTypeSpecificConfig(step)) setPendingType(next);
-        else update({ type: next });
+        else update(toType(next));
     };
 
     const sectionProps: StepSectionProps = {
@@ -360,11 +364,12 @@ export function StepConfigPanel({
                 open={pendingType !== null}
                 onClose={() => setPendingType(null)}
                 onConfirm={() => {
-                    if (pendingType) update({ type: pendingType });
+                    if (pendingType) update(toType(pendingType));
                     setPendingType(null);
                 }}
                 title="Change step type?"
-                description={`This step has ${meta.label}-specific configuration. It is kept but ignored by the new type — change back to see it again.`}
+                description={`This step has ${meta.label}-specific configuration. It is kept but ignored by the new type — change back to see it again.${
+                    step.pass_images && pendingType !== 'agent' ? ' Sees attachments is turned off: only agent steps read attachments.' : ''}`}
                 confirmLabel="Change type"
             />
         </aside>
