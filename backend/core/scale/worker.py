@@ -1397,15 +1397,75 @@ async def _gave_up(ctx: dict, job_function: str, run_id: str, orch_id: str | Non
     run stayed `running` with no dead letter until an API restart swept it. The
     worker now takes one more delivery than the policy, and on it the job does
     no work: the run is failed and dead-lettered, and Retry resumes it on purpose.
+
+    Only deliveries in a row that made no progress count (F376): see
+    `_deliveries_without_progress`.
     """
-    attempt = ctx.get("job_try", 1)
+    attempt = await _deliveries_without_progress(ctx, run_id)
     if attempt <= job_retries(ctx):
         return False
     await _dead_job(ctx, job_function, run_id, orch_id, RuntimeError(
-        f"Stopped {attempt - 1} times without finishing (the worker running it shut "
-        f"down or was killed each time), so it was not run again. Retry resumes it."
+        f"Stopped {attempt - 1} times in a row without finishing or getting any further (the "
+        f"worker running it shut down or was killed each time), so it was not run again. "
+        f"Retry resumes it."
     ), tb="")
     return True
+
+
+#: How far a run job's run had got when its last delivery began (F376), kept as long as ARQ keeps its own
+#: count of the job's deliveries (`arq:retry:<job_id>`, 88,400 s).
+RUN_PROGRESS_KEY = "synapse:run-progress:{job_id}"
+RUN_PROGRESS_TTL = 88_400
+
+
+async def _deliveries_without_progress(ctx: dict, run_id: str) -> int:
+    """Which delivery in a row without progress this one is: ARQ's `job_try`, unless the run got further.
+
+    ARQ counts every delivery of a job, so a long run that each deploy stopped and
+    the next delivery resumed used its tries up while it was working: a 6-hour run
+    met its end at its third restart (F376). A delivery that finds the run further
+    on than the previous delivery found it is the first again, and ARQ's own count
+    is set back to match. A run killed on the same step every time still gives up.
+
+    Further on: more steps ended, or the same step on a later agent turn — never
+    fewer entries (a resume drops a failed one) or an earlier turn (a step's turns
+    start again after three attempts). `ctx["job_try"]` keeps ARQ's value: the job
+    reads it to know it is resuming. Without Redis or a job id, ARQ's count stands.
+    """
+    attempt = int(ctx.get("job_try", 1) or 1)
+    redis, job_id = ctx.get("redis"), ctx.get("job_id")
+    if redis is None or not job_id:
+        return attempt
+    from arq.constants import retry_key_prefix
+
+    key = RUN_PROGRESS_KEY.format(job_id=job_id)
+    try:
+        now = _progress_of(await _load_run_row(ctx["session_factory"], run_id))
+        before = await redis.get(key)
+        await redis.set(key, json.dumps(now), ex=RUN_PROGRESS_TTL)
+        if attempt > 1 and before is not None and _further(now, json.loads(before)):
+            await redis.set(retry_key_prefix + job_id, 1, ex=RUN_PROGRESS_TTL)
+            _log.info(f"[worker] run {run_id}: further on than at its last delivery, so try {attempt} counts as 1")
+            return 1
+    except Exception as e:  # noqa: BLE001 — ARQ's count is the policy without this
+        _log.warning(f"[worker] run {run_id}: could not compare its progress across deliveries: {e}")
+    return attempt
+
+
+def _progress_of(row) -> list:
+    """[steps ended, the current step, its agent turn] — how far a run has got."""
+    if row is None:
+        return [0, None, 0]
+    step = row.current_step_id
+    turn = ((row.step_progress or {}).get(step) or {}).get("turn") if step else None
+    return [len(row.step_history or []), step,
+            int(turn) if isinstance(turn, (int, float)) and not isinstance(turn, bool) else 0]
+
+
+def _further(now: list, before: list) -> bool:
+    steps, step, turn = now
+    steps_before, step_before, turn_before = before
+    return steps > steps_before or (steps == steps_before and step == step_before and turn > turn_before)
 
 
 async def _dead_job(ctx: dict, job_function: str, run_id: str, orch_id: str | None, exc: Exception,

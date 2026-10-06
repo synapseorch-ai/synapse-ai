@@ -127,6 +127,68 @@ class TestAJobPastTheRetryPolicyGivesUp:
         assert (await _run("run_within")).shared_state["o_s1"] == "ran"
 
 
+async def _progress(run_id, *, history: int = 0, turn: int | None = None, step="s1"):
+    """The run as a stopped delivery left it: `history` steps ended, its current step on `turn`."""
+    from core.store import get_store, upsert
+    from core.store.models import OrchestrationRunDB
+    async with (await get_store())() as session:
+        await upsert(session, OrchestrationRunDB, values={
+            "run_id": run_id, "orchestration_id": "orch_giveup", "status": "running", "current_step_id": step,
+            "shared_state": {"user_input": "go"},
+            "step_history": [{"step_id": f"done{i}", "status": "completed"} for i in range(history)],
+            "step_progress": {step: {"turn": turn}} if turn is not None else {},
+        }, index_elements=["run_id"])
+        await session.commit()
+
+
+class TestOnlyDeliveriesWithoutProgressCount:
+    """F376: every deploy or crash hands a long run out again, and it resumed — but the fourth delivery gave up
+    whatever the run had done in between, so a 6-hour run met its end at its third restart."""
+
+    async def _deliver(self, worker, fake_redis, job_try: int):
+        ctx = {**await _ctx(fake_redis, job_try), "job_id": "run_long"}
+        await fake_redis.set("arq:retry:run_long", job_try)  # as ARQ counts it, before it calls the job
+        return ctx, await worker._gave_up(ctx, "run_orchestration_job", "run_long", "orch_giveup")
+
+    async def test_a_run_that_got_further_each_time_is_not_given_up(self, worker, fake_redis, orch):
+        last = worker.job_retries({}) + 1
+        for job_try, steps in enumerate(range(last), start=1):
+            await _progress("run_long", history=steps)
+            ctx, gave_up = await self._deliver(worker, fake_redis, job_try if job_try < 3 else 2)
+            assert gave_up is False, f"delivery {job_try} after {steps} steps"
+        assert [d for d in await _dead_letters() if d.run_id == "run_long"] == []
+        assert int(await fake_redis.get("arq:retry:run_long")) == 1, "ARQ's count starts again from progress"
+        assert ctx["job_try"] == 2, "the job still knows it was handed out again (it resumes, not reruns)"
+
+    async def test_progress_inside_an_agent_step_counts(self, worker, fake_redis, orch):
+        await _progress("run_long", history=2, turn=3)
+        await self._deliver(worker, fake_redis, 1)
+        await _progress("run_long", history=2, turn=5)
+        _, gave_up = await self._deliver(worker, fake_redis, worker.job_retries({}) + 1)
+        assert gave_up is False
+
+    async def test_deliveries_in_a_row_without_progress_still_give_up(self, worker, fake_redis, orch):
+        await _progress("run_long", history=4)
+        for job_try in range(1, worker.job_retries({}) + 1):
+            _, gave_up = await self._deliver(worker, fake_redis, job_try)
+            assert gave_up is False
+        _, gave_up = await self._deliver(worker, fake_redis, worker.job_retries({}) + 1)
+        assert gave_up is True
+        [letter] = [d for d in await _dead_letters() if d.run_id == "run_long"]
+        assert "in a row without finishing" in letter.error_message
+
+    async def test_a_shorter_history_or_an_earlier_turn_is_not_progress(self, worker, fake_redis, orch):
+        """A resume drops a failed step's entry, and a step's turns start again after three attempts."""
+        await _progress("run_long", history=4, turn=6)
+        await self._deliver(worker, fake_redis, 1)
+        await _progress("run_long", history=3, turn=7)
+        await self._deliver(worker, fake_redis, 2)
+        await _progress("run_long", history=3, turn=1)
+        await self._deliver(worker, fake_redis, 3)
+        _, gave_up = await self._deliver(worker, fake_redis, worker.job_retries({}) + 1)
+        assert gave_up is True
+
+
 class TestAChatTurnHandedOutAgain:
     async def test_is_not_rerun_and_says_so(self, worker, fake_redis, monkeypatch):
         import core.react_engine as re_mod
