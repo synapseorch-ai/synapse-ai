@@ -88,7 +88,7 @@ def test_up_to_date_says_so_and_changes_nothing(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_install_method", lambda: "uv")
     monkeypatch.setattr(cli, "_get_current_version", lambda: "2.1.0")
     monkeypatch.setattr(cli, "_latest_version", lambda: "2.1.0")
-    monkeypatch.setattr(cli, "_upgrade_with_installer", lambda v: pytest.fail("should not upgrade"))
+    monkeypatch.setattr(cli, "_upgrade_with_installer", lambda v, **kw: pytest.fail("should not upgrade"))
     cli._upgrade_command()
     assert capsys.readouterr().out.strip() == "Synapse 2.1.0 is up to date."
 
@@ -98,9 +98,77 @@ def test_a_newer_release_goes_to_its_own_installer(monkeypatch):
     monkeypatch.setattr(cli, "_install_method", lambda: "uv")
     monkeypatch.setattr(cli, "_get_current_version", lambda: "2.0.0")
     monkeypatch.setattr(cli, "_latest_version", lambda: "2.0.10")
-    monkeypatch.setattr(cli, "_upgrade_with_installer", seen.append)
+    monkeypatch.setattr(cli, "_upgrade_with_installer", lambda v, **kw: seen.append(v))
     cli._upgrade_command()
     assert seen == ["2.0.10"]
+
+
+def test_with_reinstalls_an_up_to_date_version_with_the_extra(monkeypatch):
+    """`synapse upgrade --with knowledge` is how the extra is added: the same
+    version again, on the installer's screen, with PyTorch's CPU build (IU1)."""
+    seen = []
+    monkeypatch.setattr(cli, "_install_method", lambda: "uv")
+    monkeypatch.setattr(cli, "_get_current_version", lambda: "2.1.0")
+    monkeypatch.setattr(cli, "_latest_version", lambda: "2.1.0")
+    monkeypatch.setattr(cli, "_installed_extras", lambda: [])
+    monkeypatch.setattr(cli, "_upgrade_with_installer", lambda v, **kw: seen.append((v, kw)))
+    cli._upgrade_command(extras=["knowledge"])
+    assert seen == [("2.1.0", {"extras": ["knowledge"], "method": "uv"})]
+
+
+def test_with_an_extra_already_there_is_up_to_date(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_install_method", lambda: "uv")
+    monkeypatch.setattr(cli, "_get_current_version", lambda: "2.1.0")
+    monkeypatch.setattr(cli, "_latest_version", lambda: "2.1.0")
+    monkeypatch.setattr(cli, "_installed_extras", lambda: ["knowledge"])
+    monkeypatch.setattr(cli, "_upgrade_with_installer", lambda v, **kw: pytest.fail("should not upgrade"))
+    cli._upgrade_command(extras=["knowledge"])
+    assert capsys.readouterr().out.strip() == "Synapse 2.1.0 is up to date, with knowledge."
+
+
+def test_with_an_unknown_extra_is_refused(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_install_method", lambda: "uv")
+    with pytest.raises(SystemExit) as exit_info:
+        cli._upgrade_command(extras=["knowlege"])
+    assert exit_info.value.code == 1
+    assert "knowledge, telemetry" in capsys.readouterr().out
+
+
+def test_the_installer_is_handed_the_extras(tmp_path):
+    args = cli._installer_args(tmp_path / "i.pyz", "/x/uv", "2.1.0", ["knowledge"], "uv")
+    assert args[-6:] == ["upgrade", "--uv", "/x/uv", "--version", "2.1.0", "--with=knowledge"]
+    npm = cli._installer_args(tmp_path / "i.pyz", "/x/uv", "2.1.0", [], "npm")
+    assert npm[-2:] == ["--method", "npm"]
+
+
+def test_pip_keeps_its_extras_and_takes_pytorchs_cpu_build(monkeypatch):
+    """pip has no receipt: the extras are read from what is installed."""
+    import sys as _sys
+
+    monkeypatch.setattr(cli, "_installed_extras", lambda: ["knowledge"])
+    assert cli._pip_upgrade_args("2.1.0", []) == [
+        _sys.executable, "-m", "pip", "install", "--upgrade", "synapse-orch-ai[knowledge]==2.1.0",
+        "--extra-index-url", "https://download.pytorch.org/whl/cpu"]
+    monkeypatch.setattr(cli, "_installed_extras", lambda: [])
+    assert cli._pip_upgrade_args("2.1.0", ["telemetry"])[-1] == "synapse-orch-ai[telemetry]==2.1.0"
+    assert cli._pip_upgrade_args("2.1.0", [])[-1] == "synapse-orch-ai==2.1.0"
+
+
+def test_extras_are_read_from_their_marker_distributions(monkeypatch):
+    """Not otel's api or sdk: chromadb brings those to every install."""
+    import importlib.metadata as md
+
+    present = {"docling-slim"}
+
+    def version(name):
+        if name in present:
+            return "1"
+        raise md.PackageNotFoundError(name)
+
+    monkeypatch.setattr(md, "version", version)
+    assert cli._installed_extras() == ["knowledge"]
+    present.add("opentelemetry-instrumentation-asgi")
+    assert cli._installed_extras() == ["knowledge", "telemetry"]
 
 
 def test_npm_is_told_the_npm_command(monkeypatch, capsys):

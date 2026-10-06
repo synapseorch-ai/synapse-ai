@@ -49,15 +49,22 @@ _TEXT_KINDS = {"text": "paragraph", "paragraph": "paragraph", "caption": "captio
                "checkbox_selected": "paragraph", "checkbox_unselected": "paragraph", "code": "code"}
 
 
-def artifacts_path() -> Path | None:
-    """Where Docling's models are, if they are there."""
+def models_dir() -> Path:
+    """Where Docling's models belong: `DOCLING_ARTIFACTS_PATH`, else the state dir's.
+
+    `synapse setup --knowledge-models` fetches them here.
+    """
     configured = os.environ.get("DOCLING_ARTIFACTS_PATH")
     if configured:
-        path = Path(configured)
-    else:
-        from core.runtime_dirs import state_root
+        return Path(configured)
+    from core.runtime_dirs import state_root
 
-        path = state_root() / "models" / "docling"
+    return state_root() / "models" / "docling"
+
+
+def artifacts_path() -> Path | None:
+    """Where Docling's models are, if they are there."""
+    path = models_dir()
     try:
         return path if path.is_dir() and any(path.iterdir()) else None
     except OSError:

@@ -1520,6 +1520,56 @@ def _first_run_setup() -> None:
         print(f"Note: setup wizard error ({e}). Run 'synapse setup' to configure.")
 
 
+def _knowledge_models_command() -> int:
+    """`synapse setup --knowledge-models`: put Docling's models where Knowledge reads them.
+
+    Knowledge never downloads them at run time (docling_adapter), and on a
+    one-command install `docling-tools` is not on PATH — uv puts only synapse
+    there — so an install with the [knowledge] extra fetches them here, once:
+    the installer and `synapse upgrade --with knowledge` both call this. About
+    670 MB. Into `<dir>.part` first, so a download cut short never leaves a
+    folder that reads as complete. Prints one JSON line.
+    """
+    import json as _json
+
+    from synapse import _store
+
+    _store.prepare()
+    from core.knowledge.parse.docling_adapter import MODELS, models_dir
+
+    dest = models_dir()
+
+    def report(code: int, **fields) -> int:
+        print(_json.dumps({**fields, "path": str(dest)}))
+        return code
+
+    try:
+        if dest.is_dir() and any(dest.iterdir()):
+            return report(0, models="present")
+    except OSError:
+        pass
+    exe = "docling-tools.exe" if IS_WIN else "docling-tools"
+    tool = Path(sys.executable).parent / exe
+    tool = str(tool) if tool.is_file() else shutil.which("docling-tools")
+    if not tool:
+        return report(1, models="failed", error="Docling is not installed: synapse upgrade --with knowledge")
+    partial = dest.with_name(dest.name + ".part")
+    shutil.rmtree(partial, ignore_errors=True)
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    done = subprocess.run([tool, "models", "download", *MODELS, "-o", str(partial)],
+                          capture_output=True, text=True)
+    sys.stderr.write(done.stdout + done.stderr)      # the install log keeps it; stdout is the report
+    if done.returncode != 0:
+        shutil.rmtree(partial, ignore_errors=True)
+        last = (done.stderr.strip().splitlines() or [f"exit {done.returncode}"])[-1]
+        return report(1, models="failed", error=f"docling-tools: {last}")
+    if dest.exists():
+        shutil.rmtree(dest)          # empty, or it would have been "present"
+    partial.rename(dest)
+    size = sum(f.stat().st_size for f in dest.rglob("*") if f.is_file())
+    return report(0, models="fetched", mb=round(size / 1_000_000))
+
+
 def _get_current_version() -> str:
     """This install's version.
 
@@ -1581,38 +1631,87 @@ def _latest_version() -> "str | None":
         return None
 
 
-def _upgrade_command(version: str = ""):
+#: The optional parts `--with` takes, and the distribution only that part
+#: brings — how a pip install, which has no uv receipt, shows it has the part.
+#: Not otel's api or sdk for telemetry: chromadb brings those to every install.
+_EXTRAS = {"knowledge": "docling-slim", "telemetry": "opentelemetry-instrumentation-asgi"}
+#: PyTorch's CPU build. Knowledge runs no model on a GPU, and PyPI's Linux
+#: torch is the CUDA build, several GB of it (D195).
+_TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+
+
+def _installed_extras() -> list:
+    """The optional parts this copy has, read from what is installed beside it."""
+    from importlib import metadata
+
+    found = []
+    for extra, dist in _EXTRAS.items():
+        try:
+            metadata.version(dist)
+            found.append(extra)
+        except metadata.PackageNotFoundError:
+            pass
+    return found
+
+
+def _upgrade_command(version: str = "", extras=()):
     """Install the newest Synapse over this one; data and settings stay.
 
     uv installs (the installer's) are upgraded by that release's own installer,
     with the same screen: stop, back up the database, install, update the
     database, and start again if it was running. pip installs do the same
     with pip. A checkout is updated with git.
+
+    The optional parts installed stay installed. `--with knowledge` adds one —
+    on an up-to-date install too, by installing the same version again with it.
     """
+    extras = [e for part in extras for e in str(part).replace(" ", "").lower().split(",") if e]
+    unknown = [e for e in extras if e not in _EXTRAS]
+    if unknown:
+        print(f"--with takes {', '.join(_EXTRAS)} (not {', '.join(unknown)}).")
+        sys.exit(1)
     method = _install_method()
     if method == "checkout":
-        print("This is a source checkout: update it with `git pull`.")
+        print("This is a source checkout: update it with `git pull`"
+              + (", and add an optional part with pip (see the docs)." if extras else "."))
         sys.exit(1)
     current = _get_current_version()
+    missing = [e for e in extras if e not in _installed_extras()]
     target = version or _latest_version()
+    if target is None and missing:
+        target = current     # adding a part needs no newer release
     if target is None:
         print("Could not reach PyPI to look for a newer Synapse. Try again in a while.")
         sys.exit(1)
     if not version and _parse_version(target) <= _parse_version(current):
-        print(f"Synapse {current} is up to date.")
-        return
-    if method == "npm":
+        if not missing:
+            print(f"Synapse {current} is up to date{', with ' + ', '.join(extras) if extras else ''}.")
+            return
+        target = current
+    if method == "npm" and target != current:
         # The npm package decides which Synapse its `synapse` runs; upgrading
         # only the Python side would be undone at its next start.
         print(f"Synapse {target} is out. Upgrade it the way it was installed:")
         print(f"  npm install -g synapse-orch-ai@{target}")
+        if missing:
+            print(f"  then: synapse upgrade --with {','.join(missing)}")
         return
     if method == "pip":
-        sys.exit(_upgrade_with_pip(current, target))
-    _upgrade_with_installer(target)
+        sys.exit(_upgrade_with_pip(current, target, extras))
+    _upgrade_with_installer(target, extras=extras, method=method)
 
 
-def _upgrade_with_installer(target: str) -> None:
+def _installer_args(pyz: Path, uv: str, target: str, extras, method: str) -> list:
+    """How `synapse upgrade` runs release `target`'s installer."""
+    cmd = [uv, "run", "--no-project", "--quiet", "--python", "3.12", "python", str(pyz),
+           "upgrade", "--uv", uv, "--version", target]
+    cmd += [f"--with={e}" for e in extras]
+    if method == "npm":
+        cmd += ["--method", "npm"]
+    return cmd
+
+
+def _upgrade_with_installer(target: str, extras=(), method: str = "uv") -> None:
     """Hand over to release `target`'s own installer (`synapse-install.pyz upgrade`)."""
     from synapse.installer import net, runtime
     from synapse.installer.home import home_dir, read_install
@@ -1641,8 +1740,7 @@ def _upgrade_with_installer(target: str) -> None:
         pyz.unlink()
         print("The downloaded installer did not match its published checksum. Nothing was changed.")
         sys.exit(1)
-    cmd = [uv, "run", "--no-project", "--quiet", "--python", "3.12", "python", str(pyz),
-           "upgrade", "--uv", uv, "--version", target]
+    cmd = _installer_args(pyz, uv, target, extras, method)
     if IS_WIN:
         # This process runs from the files the upgrade replaces, and Windows
         # will not replace a running .exe. The new installer waits for this
@@ -1654,7 +1752,17 @@ def _upgrade_with_installer(target: str) -> None:
     os.execv(uv, cmd)
 
 
-def _upgrade_with_pip(current: str, target: str) -> int:
+def _pip_upgrade_args(target: str, extras=()) -> list:
+    """pip has no receipt to keep the optional parts in: name them, the installed ones too."""
+    parts = list(dict.fromkeys([*_installed_extras(), *extras]))
+    requirement = f"synapse-orch-ai[{','.join(parts)}]=={target}" if parts else f"synapse-orch-ai=={target}"
+    args = [sys.executable, "-m", "pip", "install", "--upgrade", requirement]
+    if "knowledge" in parts:
+        args += ["--extra-index-url", _TORCH_CPU_INDEX]
+    return args
+
+
+def _upgrade_with_pip(current: str, target: str, extras=()) -> int:
     """pip's upgrade, on the installer's screen: stop, back up, install, migrate, start."""
     from synapse.installer import backup
     from synapse.installer.runner import CommandFailed, Log, run
@@ -1663,10 +1771,15 @@ def _upgrade_with_pip(current: str, target: str) -> int:
 
     home = synapse_home() or Path.home() / ".synapse"
     term = Term()
-    screen = make_screen(term, f"Synapse {current} {term.g('arrow')} {target}")
-    for key, title in (("stop", "Stopping Synapse"), ("backup", "Backing up the database"),
-                       ("install", f"Installing {target}"), ("migrate", "Updating the database"),
-                       ("start", "Starting")):
+    parts = list(dict.fromkeys([*_installed_extras(), *extras]))
+    screen = make_screen(term, f"Synapse {current} {term.g('arrow')} {target}" if target != current
+                         else f"Synapse {current}")
+    installing = f"Installing {target}" + (f" with {', '.join(parts)}" if parts else "")
+    steps = [("stop", "Stopping Synapse"), ("backup", "Backing up the database"), ("install", installing)]
+    if "knowledge" in parts:
+        steps.append(("models", "Knowledge's PDF models"))
+    steps += [("migrate", "Updating the database"), ("start", "Starting")]
+    for key, title in steps:
         screen.add(key, title)
     log = Log(home / "logs" / "install.log")
     screen.open()
@@ -1691,8 +1804,18 @@ def _upgrade_with_pip(current: str, target: str) -> int:
             screen.skip("backup")
 
         screen.start("install")
-        run([sys.executable, "-m", "pip", "install", "--upgrade", f"synapse-orch-ai=={target}"], log)
+        run(_pip_upgrade_args(target, extras), log)
         screen.done("install", target)
+
+        if "knowledge" in parts:
+            # Not needed to start: without them the basic PDF reader carries on.
+            screen.start("models")
+            code, out = run([sys.executable, "-P", "-m", "synapse", "setup", "--knowledge-models"], log,
+                            check=False)
+            if code == 0:
+                screen.done("models", "already here" if '"present"' in out else "")
+            else:
+                screen.skip("models", "not now — run synapse upgrade --with knowledge again")
 
         # The new code from here on, in a new interpreter.
         screen.start("migrate")
@@ -2136,6 +2259,8 @@ def main():
     p_setup = sub.add_parser("setup", help="Run interactive setup wizard to configure Synapse")
     p_setup.add_argument("--apply", metavar="-", default=None,
                          help="Read the installer's answers as JSON from stdin (pass '-') instead of asking")
+    p_setup.add_argument("--knowledge-models", action="store_true",
+                         help="Fetch Docling's models for Knowledge's PDF reader (needs the knowledge part)")
     p_migrate = sub.add_parser(
         "migrate",
         help="Create or update the database, and import an old backend/data folder if present",
@@ -2156,6 +2281,8 @@ def main():
     p_upgrade = sub.add_parser(
         "upgrade", help="Install the newest Synapse over this one; your data and settings stay",
     )
+    p_upgrade.add_argument("--with", dest="with_extras", action="append", default=[], metavar="PART",
+                           help="Also install an optional part, kept on every upgrade: knowledge, telemetry")
     p_upgrade.add_argument("--version", dest="to_version", default="", metavar="X",
                            help="Install this version instead of the newest")
 
@@ -2222,6 +2349,8 @@ def main():
     elif args.cmd == "migrate":
         _migrate_command(args.sources, args.logs, args.as_json)
     elif args.cmd == "setup":
+        if args.knowledge_models:
+            sys.exit(_knowledge_models_command())
         if args.apply is not None:
             if args.apply != "-":
                 parser.error("setup --apply reads JSON from stdin: pass '-'")
@@ -2245,7 +2374,7 @@ def main():
             verbose=getattr(args, "verbose", False),
         )
     elif args.cmd == "upgrade":
-        _upgrade_command(args.to_version)
+        _upgrade_command(args.to_version, args.with_extras)
     elif args.cmd == "uninstall":
         _uninstall_command(keep_data=getattr(args, "keep_data", False))
     elif args.cmd == "profile":

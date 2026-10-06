@@ -470,3 +470,66 @@ def test_a_second_installer_is_refused_while_the_first_runs(tmp_path):
     with home.InstallLock(tmp_path):
         pass
     assert not (tmp_path / "install.lock").exists()
+
+
+# ── options from the environment: `irm … | iex` passes no arguments (IU1) ─────
+
+@pytest.fixture
+def captured_options(monkeypatch):
+    from synapse.installer import flow
+
+    seen = []
+
+    class Fake:
+        def __init__(self, options, term=None):
+            seen.append(options)
+
+        def run(self):
+            return 0
+
+    monkeypatch.setattr(flow, "Installer", Fake)
+    for var in ("SYNAPSE_YES", "SYNAPSE_NO_START", "SYNAPSE_NO_BROWSER", "SYNAPSE_INSTALL_VERSION",
+                "SYNAPSE_WITH"):
+        monkeypatch.delenv(var, raising=False)
+    return seen
+
+
+def test_every_user_option_has_an_environment_twin(captured_options, monkeypatch):
+    """setup.ps1 under `irm … | iex` runs with no arguments, so on Windows an
+    option can only arrive in the environment; the docs offered --no-start and
+    --version there, and only SYNAPSE_YES worked (G1 found it)."""
+    from synapse.installer import __main__ as entry
+
+    monkeypatch.setenv("SYNAPSE_YES", "1")
+    monkeypatch.setenv("SYNAPSE_NO_START", "1")
+    monkeypatch.setenv("SYNAPSE_NO_BROWSER", "1")
+    monkeypatch.setenv("SYNAPSE_INSTALL_VERSION", "2.0.3")
+    monkeypatch.setenv("SYNAPSE_WITH", "knowledge, telemetry")
+
+    assert entry.main([]) == 0
+    o = captured_options[0]
+    assert (o.yes, o.no_start, o.no_browser, o.version, o.extras) == (
+        True, True, True, "2.0.3", ("knowledge", "telemetry"))
+
+
+def test_a_flag_wins_over_its_twin(captured_options, monkeypatch):
+    from synapse.installer import __main__ as entry
+
+    monkeypatch.setenv("SYNAPSE_INSTALL_VERSION", "2.0.3")
+    monkeypatch.setenv("SYNAPSE_WITH", "telemetry")
+    monkeypatch.setenv("SYNAPSE_NO_START", "0")
+
+    assert entry.main(["upgrade", "--version", "2.0.4", "--with", "knowledge"]) == 0
+    o = captured_options[0]
+    assert (o.version, o.extras, o.no_start, o.upgrade) == ("2.0.4", ("knowledge",), False, True)
+
+
+def test_an_unknown_extra_is_refused_before_anything_runs(captured_options, capsys):
+    from synapse.installer import __main__ as entry
+
+    with pytest.raises(SystemExit) as exit_info:
+        entry.main(["--with", "knowlege"])
+
+    assert exit_info.value.code == 2
+    assert "knowledge, telemetry" in capsys.readouterr().err
+    assert captured_options == []

@@ -7,6 +7,10 @@
 # its questions and ends with the link; everything else goes to
 # %USERPROFILE%\.synapse\logs\install.log.
 #
+# `irm | iex` passes no arguments, so every option is an environment variable
+# set before that line: $env:SYNAPSE_YES='1' (ask nothing), SYNAPSE_NO_START,
+# SYNAPSE_NO_BROWSER, SYNAPSE_INSTALL_VERSION='2.0.0', SYNAPSE_WITH='knowledge'.
+#
 # For testing: $env:SYNAPSE_INSTALLER = a local synapse-install.pyz,
 # $env:SYNAPSE_PACKAGE = a local wheel, $env:SYNAPSE_HOME = another home.
 #

@@ -5,9 +5,10 @@ Build dist/synapse-install.pyz: the installer as one file, for a release.
 setup.sh and setup.ps1 download it from the GitHub release and run it with a
 Python uv provides. It is a zipapp of `synapse/installer/` (standard library
 only), stamped with the version it installs (`BUILT_FOR`) and carrying the
-pinned dependency set (`constraints.txt`, from backend/requirements-wheel.lock
-when present), so a release's installer always installs that release, resolved
-the way CI tested it.
+pinned dependency sets (`constraints.txt` from backend/requirements-wheel.lock,
+and `constraints-knowledge.txt` from requirements-wheel-knowledge.lock for an
+install with [knowledge]), so a release's installer always installs that
+release, resolved the way CI tested it.
 
     python scripts/build_installer.py [--out dist] [--version X]
 """
@@ -43,9 +44,10 @@ def build(out_dir: Path, version: str) -> Path:
                          init.read_text(encoding="utf-8"), flags=re.M)
         assert f'BUILT_FOR = "{version}"' in stamped, "BUILT_FOR line not found"
         init.write_text(stamped, encoding="utf-8")
-        lock = ROOT / "backend" / "requirements-wheel.lock"
-        if lock.exists():
-            shutil.copy2(lock, package / "constraints.txt")
+        for lock, name in (("requirements-wheel.lock", "constraints.txt"),
+                           ("requirements-wheel-knowledge.lock", "constraints-knowledge.txt")):
+            if (ROOT / "backend" / lock).exists():
+                shutil.copy2(ROOT / "backend" / lock, package / name)
         (stage / "__main__.py").write_text(
             "import sys\nfrom synapse.installer.__main__ import main\nsys.exit(main())\n",
             encoding="utf-8",

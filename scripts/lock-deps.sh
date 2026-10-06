@@ -108,7 +108,6 @@ grep -v '^typer==' requirements.lock > .knowledge-constraints.txt
 trap 'rm -f .knowledge-constraints.txt' EXIT
 compile requirements-knowledge.lock requirements-knowledge.txt \
     -- --constraint .knowledge-constraints.txt --torch-backend cpu
-rm -f .knowledge-constraints.txt
 
 compile requirements-worker.lock requirements.txt requirements-worker.txt \
     -- --constraint requirements.lock
@@ -120,6 +119,18 @@ compile requirements-worker.lock requirements.txt requirements-worker.txt \
 # package both name is the same version in every install.
 compile requirements-wheel.lock ../pyproject.toml \
     -- --constraint requirements.lock --constraint requirements-messaging.lock
+
+# The same, with the knowledge and telemetry extras: the installer's pins when an
+# install has [knowledge] (scripts/build_installer.py → constraints-knowledge.txt).
+# The set above cannot take [knowledge] at all — it pins typer above
+# docling-core's cap — so this one leaves typer to the knowledge lock, and takes
+# torch from PyTorch's CPU index as that lock does.
+compile requirements-wheel-knowledge.lock ../pyproject.toml \
+    -- --extra knowledge --extra telemetry \
+    --constraint .knowledge-constraints.txt --constraint requirements-messaging.lock \
+    --constraint requirements-knowledge.lock --constraint requirements-telemetry.lock \
+    --torch-backend cpu
+rm -f .knowledge-constraints.txt
 
 if [ "$CHECK_MODE" -eq 1 ]; then
     echo "Locks are up to date."

@@ -59,6 +59,12 @@ elif args[:2] == ["status", "--json"]:
                       "backend": {"running": True}}))
 elif args[:1] == ["stop"]:
     pass
+elif args == ["setup", "--knowledge-models"]:
+    if os.environ.get("FAKE_MODELS_FAIL"):
+        print(json.dumps({"models": "failed", "error": "huggingface.co did not answer"}))
+        sys.exit(1)
+    print(json.dumps({"models": os.environ.get("FAKE_MODELS", "fetched"), "mb": 669,
+                      "path": "/x/models/docling"}))
 else:
     sys.exit("unexpected: %s" % args)
 '''
@@ -75,6 +81,11 @@ elif args[:2] == ["python", "install"]:
     print("Installed Python 3.12.8 in 1.02s")
 elif args[:2] == ["python", "find"]:
     print(sys.argv[0])
+elif args[:2] == ["tool", "install"] and "--help" in args:
+    # An older uv takes no --torch-backend on `tool install`.
+    print("Usage: uv tool install [OPTIONS] <PACKAGE>")
+    if not os.environ.get("FAKE_UV_OLD"):
+        print("      --torch-backend <TORCH_BACKEND>  The backend to use when fetching packages in the PyTorch ecosystem")
 elif args[:2] == ["tool", "install"]:
     if os.environ.get("FAKE_UV_FAIL"):
         print("Resolved 181 packages in 1.2s")
@@ -130,9 +141,10 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(legacy.shutil, "which", lambda *a, **k: None)
     uv = _script(fakes / "uv", FAKE_UV)
 
-    def install(**opts):
+    def install(version_override=None, **opts):
         out = io.StringIO()
-        options = flow.Options(uv=str(uv), yes=True, version="2.0.0",
+        version = "2.0.0" if version_override is None else version_override
+        options = flow.Options(uv=str(uv), yes=True, version=version,
                                home=tmp_path / ".synapse", **opts)
         code = flow.Installer(options, term=tui.Term(stream=out)).run()
         recorded = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
@@ -319,3 +331,168 @@ def test_not_now_changes_nothing(world, monkeypatch):
     assert code == 0
     assert root.exists() and not (world["home"] / "backups").exists()
     assert "Nothing was changed." in term.stream.getvalue()
+
+
+# ── extras: kept on upgrade, added with --with, PyTorch from its CPU index (IU1) ─
+
+def _existing(world, extras=None, version="2.0.0"):
+    """A 2.x install made by the installer: install.json, its tool venv and uv's receipt."""
+    venv = world["tmp"] / "uv-tools" / "synapse-orch-ai"
+    (venv / "bin").mkdir(parents=True)
+    python = venv / "bin" / "python"
+    python.write_text(Path(os.environ["FAKE_CLI_SRC"]).read_text())
+    python.chmod(0o755)
+    requirement = '{ name = "synapse-orch-ai"' + (
+        f", extras = {json.dumps(extras)}" if extras else "") + f', specifier = "=={version}" }}'
+    (venv / "uv-receipt.toml").write_text(
+        f"[tool]\nrequirements = [{requirement}]\npython = \"3.12\"\n", encoding="utf-8")
+    world["home"].mkdir(parents=True, exist_ok=True)
+    (world["home"] / "install.json").write_text(json.dumps(
+        {"method": "uv", "version": version, "tool_python": str(python)}))
+
+
+def _bundled_constraints(monkeypatch):
+    """The two pinned sets a release's pyz carries (a checkout has neither)."""
+    monkeypatch.setattr(flow, "_bundled", lambda name: {
+        "constraints.txt": "typer==0.27.1\n",
+        "constraints-knowledge.txt": "typer==0.26.8\ntorch==2.14.1+cpu ; sys_platform != 'darwin'\n",
+    }.get(name, ""))
+
+
+def _tool_install(calls):
+    return next(c for c in calls if c[:3] == ["uv", "tool", "install"] and "--help" not in c)
+
+
+def test_an_upgrade_keeps_the_extras_uv_installed(world, monkeypatch):
+    """`uv tool install --force` replaces the receipt, so an upgrade that did not
+    read it first reinstalled without [knowledge] (DOC2's finding; IU1 measured
+    torch and docling gone after 2.0.0 → 2.0.1)."""
+    _existing(world, extras=["knowledge", "telemetry"])
+    _bundled_constraints(monkeypatch)
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0, out
+    install = _tool_install(calls)
+    assert install[-1] == "synapse-orch-ai[knowledge,telemetry]==2.0.1"
+    # Knowledge runs no model on a GPU: without this, Linux gets CUDA's gigabytes.
+    assert install[install.index("--torch-backend") + 1] == "cpu"
+    # The base set pins typer above docling-core's cap; [knowledge] gets its own.
+    assert install[install.index("-c") + 1].endswith("constraints-knowledge.txt")
+    assert "with knowledge, telemetry" in out
+
+
+def test_an_upgrade_with_no_extras_runs_the_same_command_as_before(world, monkeypatch):
+    _existing(world)
+    _bundled_constraints(monkeypatch)
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0, out
+    install = _tool_install(calls)
+    assert install[-1] == "synapse-orch-ai==2.0.1"
+    assert "--torch-backend" not in install
+    assert install[install.index("-c") + 1].endswith(os.sep + "constraints.txt")
+    assert not [c for c in calls if "--help" in c]      # uv is not asked about PyTorch
+
+
+def test_with_adds_an_extra_and_a_later_upgrade_keeps_it(world, monkeypatch):
+    _existing(world)
+    _bundled_constraints(monkeypatch)
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.0", extras=("knowledge",))
+
+    assert code == 0, out
+    install = _tool_install(calls)
+    assert install[-1] == "synapse-orch-ai[knowledge]==2.0.0"
+    assert install[install.index("--torch-backend") + 1] == "cpu"
+
+
+def test_with_telemetry_alone_needs_no_pytorch_flag(world, monkeypatch):
+    _bundled_constraints(monkeypatch)
+
+    code, out, calls = world["install"](extras=("telemetry",))
+
+    assert code == 0, out
+    install = _tool_install(calls)
+    assert install[-1] == "synapse-orch-ai[telemetry]==2.0.0"
+    assert "--torch-backend" not in install
+    assert install[install.index("-c") + 1].endswith(os.sep + "constraints.txt")
+
+
+def test_a_uv_that_cannot_choose_pytorchs_build_is_swapped_for_the_installers(world, monkeypatch):
+    """An older system uv rejects --torch-backend; UV_TORCH_BACKEND it would
+    silently ignore, and Linux would get CUDA. The pinned private uv takes it."""
+    _existing(world, extras=["knowledge"])
+    monkeypatch.setenv("FAKE_UV_OLD", "1")
+    private = world["tmp"] / "fakes" / "private-uv"
+    private.write_text((world["tmp"] / "fakes" / "uv").read_text())
+    private.chmod(0o755)
+    fetched = []
+    monkeypatch.setattr(runtime, "install_uv", lambda home, progress=None: fetched.append(home) or private)
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0, out
+    assert fetched == [world["home"]]
+    record = json.loads((world["home"] / "install.json").read_text())
+    assert record["uv"] == str(private)
+
+
+def test_a_wheel_path_takes_its_extras_as_a_direct_reference(world, monkeypatch, tmp_path):
+    """SYNAPSE_PACKAGE (the e2e scripts' wheel) cannot take `[extra]` after a path."""
+    wheel = tmp_path / "synapse_orch_ai-2.0.1-py3-none-any.whl"
+    wheel.write_bytes(b"")
+    monkeypatch.setenv("SYNAPSE_PACKAGE", str(wheel))
+    _existing(world, extras=["knowledge"])
+
+    code, out, calls = world["install"](upgrade=True, version_override="")
+
+    assert code == 0, out
+    assert _tool_install(calls)[-1] == f"synapse-orch-ai[knowledge] @ {wheel.resolve().as_uri()}"
+
+
+def test_knowledges_models_are_fetched_after_the_install(world, monkeypatch):
+    _existing(world, extras=["knowledge"])
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0, out
+    names = _names(calls)
+    assert names.index("setup --knowledge-models") > names.index("uv tool")
+    assert names.index("setup --knowledge-models") < names.index("start --detach")
+    models = [line for line in out.splitlines() if "Knowledge's PDF models" in line]
+    assert models and models[0].endswith("669 MB"), models
+
+
+def test_models_already_there_are_not_fetched_again(world, monkeypatch):
+    _existing(world, extras=["knowledge"])
+    monkeypatch.setenv("FAKE_MODELS", "present")
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0, out
+    models = [line for line in out.splitlines() if "Knowledge's PDF models" in line]
+    assert models and models[0].endswith("already here"), models
+    assert len([c for c in calls if c == ["setup", "--knowledge-models"]]) == 1
+
+
+def test_a_failed_model_download_does_not_fail_the_install(world, monkeypatch):
+    """Synapse starts without them: the basic PDF reader carries on."""
+    _existing(world, extras=["knowledge"])
+    monkeypatch.setenv("FAKE_MODELS_FAIL", "1")
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0, out
+    assert "synapse upgrade --with knowledge" in out
+    assert "start --detach" in _names(calls)
+
+
+def test_no_knowledge_no_models_step(world):
+    _existing(world, extras=["telemetry"])
+
+    code, out, calls = world["install"](upgrade=True, version_override="2.0.1")
+
+    assert code == 0, out
+    assert "setup --knowledge-models" not in _names(calls)

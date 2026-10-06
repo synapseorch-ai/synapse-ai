@@ -11,6 +11,10 @@ Three shapes, one screen:
 * **2.x upgrade** — Stopping → Backing up the database → Installing →
   Updating the database → Starting (only if it was running).
 
+An optional part (`[knowledge]`, `[telemetry]`) is asked for with `--with` and
+kept on every later upgrade: uv's receipt in the installed copy names it, and
+`uv tool install --force` would otherwise replace that copy without it.
+
 Everything a command prints goes to `<home>/logs/install.log`. The screen shows
 step names, bars and one line at the end.
 """
@@ -42,6 +46,8 @@ PYTHON = "3.12"
 #: (D186), and a taken one still stops the install.
 BACKEND_PORT = 8765
 IS_WIN = sys.platform == "win32"
+#: The optional parts `--with` takes (pyproject's extras, less `test`).
+EXTRAS = ("knowledge", "telemetry")
 RETRY = {
     "posix": "curl -LsSf https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh | bash",
     "nt": "irm https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.ps1 | iex",
@@ -60,6 +66,7 @@ class Options:
     legacy_root: str = ""         # a v1.x script install handing over (see handoff.py)
     carrier: str = ""             # a source tree that only brought this installer (setup.py stub)
     upgrade: bool = False         # `synapse upgrade`: restart only if it was running
+    extras: tuple = ()            # optional parts asked for (`--with`); installed ones are kept anyway
     home: Path | None = None
 
 
@@ -99,6 +106,7 @@ class Installer:
         self.uv: Path | None = None
         self.target = ""               # the requirement uv installs
         self.version = ""
+        self.extras: list[str] = []    # asked for, plus what the installed copy has
         self._errors: list[Failed] = []
         self._node_ready = threading.Event()
         self._failed = threading.Event()     # ends any open question
@@ -125,12 +133,15 @@ class Installer:
     def _run(self) -> int:
         self._resolve_target()
         tool_root = self._tool_root_guess()
+        self.extras = _merge_extras(self.o.extras, _receipt_extras(tool_root))
+        self.target = _with_extras(self.target, self.extras)
         self.legacy = legacy.find(self.home, tool_root)
         if self.o.legacy_root:
             self._include_legacy_root(Path(self.o.legacy_root))
         mode = "legacy" if self.legacy.data_dirs or self.legacy.installs else (
             "upgrade" if self.existing.get("version") else "fresh")
-        self.log.write(f"mode={mode} target={self.target} home={self.home}")
+        self.log.write(f"mode={mode} target={self.target} home={self.home}"
+                       + (f" extras={','.join(self.extras)}" if self.extras else ""))
 
         title = f"Synapse {self.version}".strip()
         if mode == "legacy":
@@ -198,6 +209,8 @@ class Installer:
             add("backup", "Backing up the database")
         add("python", "Getting Python")
         add("install", "Installing Synapse")
+        if "knowledge" in self.extras:
+            add("models", "Knowledge's PDF models")
         add("node", "Node.js")
         add("browser", "Browser")
         if mode == "legacy":
@@ -242,6 +255,8 @@ class Installer:
         def python_install_browser():
             self._step("python", self._python)
             self._step("install", self._install)
+            if "knowledge" in self.extras:
+                self._models_step()
             self._node_ready.wait()
             if not self._errors:
                 self._browser_step()
@@ -372,6 +387,11 @@ class Installer:
 
     def _python(self) -> str:
         self.uv = self._find_uv()
+        if "knowledge" in self.extras and not self._uv_takes_torch_backend():
+            # An older uv rejects --torch-backend, and would silently ignore
+            # UV_TORCH_BACKEND: Linux would get CUDA's gigabytes. The pinned uv takes it.
+            self.log.write(f"{self.uv} cannot choose PyTorch's build; using the installer's own uv")
+            self.uv = runtime.install_uv(self.home, lambda f: self.screen.progress("python", f * 0.5))
         run([self.uv, "python", "install", PYTHON], self.log, env=self._uv_env())
         _, where = run([self.uv, "python", "find", PYTHON], self.log, env=self._uv_env(), check=False)
         python = where.strip().splitlines()[-1] if where.strip() else ""
@@ -382,14 +402,31 @@ class Installer:
                 return version.strip()
         return PYTHON
 
-    def _install(self) -> str:
-        parser = UvInstall()
+    def _install_cmd(self) -> list:
         cmd = [self.uv, "tool", "install", "--force", "--managed-python", "--python", PYTHON]
-        constraints = _constraints_file(self.home)
+        knowledge = "knowledge" in self.extras
+        if knowledge:
+            # Knowledge runs no model on a GPU; PyPI's Linux torch is the CUDA
+            # build, several GB of it (D195). uv's receipt does not keep this
+            # flag, so every install that has the extra passes it.
+            cmd += ["--torch-backend", "cpu"]
+        constraints = _constraints_file(self.home, knowledge)
         if constraints:
             cmd += ["-c", constraints]
         cmd.append(self.target)
-        run(cmd, self.log, env=self._uv_env(),
+        return cmd
+
+    def _uv_takes_torch_backend(self) -> bool:
+        try:
+            out = subprocess.run([str(self.uv), "tool", "install", "--help"], capture_output=True,
+                                 text=True, env=self._uv_env(), timeout=60).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        return "--torch-backend" in out
+
+    def _install(self) -> str:
+        parser = UvInstall()
+        run(self._install_cmd(), self.log, env=self._uv_env(),
             on_line=lambda line: self.screen.progress("install", parser.feed(line)))
         tool_dir = Path(run([self.uv, "tool", "dir"], self.log, env=self._uv_env())[1].strip().splitlines()[-1])
         bin_dir = Path(run([self.uv, "tool", "dir", "--bin"], self.log, env=self._uv_env())[1].strip().splitlines()[-1])
@@ -398,7 +435,7 @@ class Installer:
         self.s.tool_bin = bin_dir
         installed = self._cli(["--version"]).strip().split()[-1:] or [self.version]
         self.version = self.version or installed[0]
-        return installed[0]
+        return installed[0] + (f" with {', '.join(self.extras)}" if self.extras else "")
 
     def _node(self) -> str:
         found = runtime.find_node(self.home)
@@ -420,6 +457,20 @@ class Installer:
         except (CommandFailed, OSError) as exc:
             self.log.write(f"browser: {exc}")
             self.screen.skip("browser", "not now — Synapse retries when it starts")
+
+    def _models_step(self) -> None:
+        # Docling reads no PDF until its models are on disk, and Knowledge never
+        # fetches them at run time. Not needed to start Synapse — the basic PDF
+        # reader carries on — so a failure is noted, not fatal.
+        self.screen.start("models")
+        report = self._cli_json(["setup", "--knowledge-models"], timeout=3600) or {}
+        self.log.write("models: " + json.dumps(report))
+        if report.get("models") == "present":
+            self.screen.done("models", "already here")
+        elif report.get("models") == "fetched":
+            self.screen.done("models", f"{report.get('mb', '?')} MB")
+        else:
+            self.screen.skip("models", "not now — run synapse upgrade --with knowledge again")
 
     def _browser(self) -> str:
         path = _playwright_dir()
@@ -559,8 +610,7 @@ class Installer:
             return
         code, _ = run([install.python, "-m", "pip", "uninstall", "-y", PACKAGE], self.log, check=False)
         if code == 0:
-            run([self.uv, "tool", "install", "--force", "--managed-python", "--python", PYTHON,
-                 self.target], self.log, env=self._uv_env(), check=False)
+            run(self._install_cmd(), self.log, env=self._uv_env(), check=False)
 
     def _record(self, mode: str) -> None:
         fields = {
@@ -634,13 +684,17 @@ class Installer:
         return run(cmd + args, self.log, env=self._runtime_env(), stdin_text=stdin_text,
                    cwd=self.home)[1]
 
-    def _cli_json(self, args: list, old: bool = False):
+    def _cli_json(self, args: list, old: bool = False, timeout: int = 900):
         cmd = self._cli_cmd(old)
         if not cmd:
             return None
         env = self._runtime_env()
-        out = subprocess.run([str(c) for c in cmd + args], capture_output=True, text=True,
-                             env=env, timeout=900, cwd=str(self.home))
+        try:
+            out = subprocess.run([str(c) for c in cmd + args], capture_output=True, text=True,
+                                 env=env, timeout=timeout, cwd=str(self.home))
+        except subprocess.TimeoutExpired:
+            self.log.write(f"$ {' '.join(str(c) for c in cmd + args)}: no answer in {timeout} s")
+            return None
         self.log.write("$ " + " ".join(str(c) for c in cmd + args))
         if out.stderr.strip():
             for line in out.stderr.strip().splitlines():
@@ -740,17 +794,78 @@ def _checkout_version() -> str:
         return ""
 
 
-def _constraints_file(home: Path) -> str:
-    """The pinned dependency set shipped in the installer, written out for uv."""
+def _bundled(name: str) -> str:
+    """A file shipped inside the installer (scripts/build_installer.py), or ""."""
     try:
         from importlib import resources
-        text = resources.files(__package__).joinpath("constraints.txt").read_text(encoding="utf-8")
+        return resources.files(__package__).joinpath(name).read_text(encoding="utf-8")
     except (FileNotFoundError, OSError, ModuleNotFoundError):
         return ""
-    path = home / "runtime" / "constraints.txt"
+
+
+def _constraints_file(home: Path, knowledge: bool = False) -> str:
+    """The pinned dependency set shipped in the installer, written out for uv.
+
+    With Knowledge, its own set (`requirements-wheel-knowledge.lock`): the base
+    set pins typer above docling-core's cap, so `[knowledge]` cannot resolve
+    under it at all. Without that set (a checkout) nothing is pinned.
+    """
+    name = "constraints-knowledge.txt" if knowledge else "constraints.txt"
+    text = _bundled(name)
+    if not text:
+        return ""
+    path = home / "runtime" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return str(path)
+
+
+def _receipt_extras(tool_root: Path | None) -> list[str]:
+    """The extras the installed copy was asked for, from uv's receipt in it.
+
+    Read before the install, which replaces it. Anything unreadable (no
+    receipt, an old Python without tomllib) means none — the install itself is
+    not stopped by it.
+    """
+    if not tool_root:
+        return []
+    try:
+        import tomllib
+        receipt = tomllib.loads((tool_root / "uv-receipt.toml").read_text(encoding="utf-8"))
+    except (ImportError, OSError, ValueError):
+        return []
+    for requirement in (receipt.get("tool") or {}).get("requirements") or []:
+        if isinstance(requirement, dict) and \
+                re.sub(r"[-_.]+", "-", str(requirement.get("name", "")).lower()) == PACKAGE:
+            return [str(e) for e in requirement.get("extras") or []]
+    return []
+
+
+def _merge_extras(*groups) -> list[str]:
+    merged: list[str] = []
+    for group in groups:
+        for extra in group or ():
+            if extra and extra not in merged:
+                merged.append(extra)
+    return merged
+
+
+def _with_extras(target: str, extras: list[str]) -> str:
+    """`synapse-orch-ai==2.0.1` → `synapse-orch-ai[knowledge]==2.0.1`.
+
+    A wheel or folder (SYNAPSE_PACKAGE, for testing) takes them as a direct
+    reference, since nothing may follow a path.
+    """
+    if not extras:
+        return target
+    path = Path(target)
+    if path.exists() or target.endswith(".whl"):
+        return f"{PACKAGE}[{','.join(extras)}] @ {path.resolve().as_uri()}"
+    named = re.match(r"^\s*synapse[-_.]orch[-_.]ai\s*(?:\[([^\]]*)\])?(.*)$", target, re.I)
+    if named:
+        own = [e.strip() for e in (named.group(1) or "").split(",")]
+        return f"{PACKAGE}[{','.join(_merge_extras(own, extras))}]{named.group(2)}"
+    return target
 
 
 def _playwright_dir() -> Path:

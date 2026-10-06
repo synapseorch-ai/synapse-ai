@@ -417,3 +417,76 @@ def test_a_configured_install_neither_imports_nor_asks(monkeypatch):
 
     assert state["order"] == []
 
+
+# ── Docling's models, fetched once for an install with [knowledge] (IU1) ──────
+
+FAKE_DOCLING_TOOLS = r'''
+import os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_DOCLING_CALLS"], "a") as f:
+    f.write(" ".join(args) + "\n")
+out = args[args.index("-o") + 1]
+os.makedirs(os.path.join(out, "docling-project--docling-models"), exist_ok=True)
+with open(os.path.join(out, "docling-project--docling-models", "model.safetensors"), "wb") as f:
+    f.write(b"x" * 2_000_000)
+if os.environ.get("FAKE_DOCLING_FAIL"):
+    print("ConnectionError: huggingface.co", file=sys.stderr)
+    sys.exit(1)
+'''
+
+
+@pytest.fixture
+def docling_tools(tmp_path, monkeypatch):
+    if os.name != "posix":
+        pytest.skip("the fake tool needs a shebang")
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    tool = bin_dir / "docling-tools"
+    tool.write_text(f"#!{sys.executable}\n{FAKE_DOCLING_TOOLS}")
+    tool.chmod(0o755)
+    calls = tmp_path / "docling-calls"
+    monkeypatch.setenv("FAKE_DOCLING_CALLS", str(calls))
+    monkeypatch.setattr(sys, "executable", str(bin_dir / "python"))
+    dest = tmp_path / "state" / "models" / "docling"
+    monkeypatch.setenv("DOCLING_ARTIFACTS_PATH", str(dest))
+    return {"dest": dest, "calls": calls}
+
+
+def test_the_models_land_where_knowledge_reads_them_once(docling_tools, capsys):
+    """Knowledge never downloads at run time, and on a one-command install
+    `docling-tools` is not on PATH (uv puts only synapse there), so the install
+    fetches them: `synapse upgrade --with knowledge` is one command."""
+    from core.knowledge.parse import docling_adapter
+
+    assert cli._knowledge_models_command() == 0
+    report = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert report["models"] == "fetched" and report["mb"] == 2
+    assert docling_tools["calls"].read_text().split()[:4] == ["models", "download", "layout", "tableformer"]
+    assert docling_adapter.artifacts_path() == docling_tools["dest"]
+
+    assert cli._knowledge_models_command() == 0
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["models"] == "present"
+    assert len(docling_tools["calls"].read_text().splitlines()) == 1
+
+
+def test_a_download_cut_short_leaves_nothing_that_looks_complete(docling_tools, monkeypatch, capsys):
+    """A part-filled folder would read as "present" next time, and Docling
+    would fail on every PDF instead of the basic reader taking them."""
+    monkeypatch.setenv("FAKE_DOCLING_FAIL", "1")
+
+    assert cli._knowledge_models_command() == 1
+
+    report = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert report["models"] == "failed"
+    assert not docling_tools["dest"].exists()
+    assert not list(docling_tools["dest"].parent.glob("*.part"))
+
+
+def test_without_docling_installed_it_says_so(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "bin" / "python"))
+    monkeypatch.setattr(cli.shutil, "which", lambda *a, **k: None)
+    monkeypatch.setenv("DOCLING_ARTIFACTS_PATH", str(tmp_path / "models"))
+
+    assert cli._knowledge_models_command() == 1
+    report = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert report["models"] == "failed" and "knowledge" in report["error"]

@@ -3,6 +3,7 @@
 #
 #   curl -LsSf https://github.com/synapseorch-ai/synapse-ai/releases/latest/download/setup.sh | bash
 #   curl … | bash -s -- --yes            # ask nothing, take every default
+#   curl … | bash -s -- --with knowledge # also Knowledge's PDF parsers (Docling, CPU PyTorch)
 #
 # This only fetches two things quietly — uv, and the installer that ships with
 # the same release — and hands over to it. The installer draws the steps, asks
