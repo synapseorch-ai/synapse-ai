@@ -368,6 +368,9 @@ class AgentStepExecutor:
 
         sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)
         sub_engine.caller = engine.caller_for(run, step)
+        # What the person attached reaches the child only through a step that
+        # passes it (F313); the child's own steps then decide, as here.
+        sub_engine.images = list(getattr(engine, "images", None) or []) if step.pass_images else []
         # One id per run of this step (F251): each Loop iteration and each retry
         # used to overwrite one record, one log and one set of usage rows.
         sub_run_id = new_child_run_id(run.run_id, step.id, parent_depth + 1)

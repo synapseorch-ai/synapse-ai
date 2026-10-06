@@ -3043,6 +3043,7 @@ async def run_orchestrator_agent(
     session_id: str | None = None,
     run_id: str | None = None,
     with_history: bool = False,
+    images: list[str] | None = None,
 ):
     """Run an Orchestrator agent's orchestration, yielding the engine's events.
 
@@ -3058,6 +3059,10 @@ async def run_orchestrator_agent(
     v1 and the widget) and a messaging channel — pass it; a schedule and a
     delegation start fresh, as they always have. The session is the caller's,
     so a widget visitor reads only their own conversation.
+
+    `images` are what the person attached (F313). The run holds them beside its
+    state, never in it, and only an agent step marked "Sees attachments"
+    (`pass_images`) is given them.
     """
     orch_id = agent.get("orchestration_id")
     if not orch_id:
@@ -3076,6 +3081,7 @@ async def run_orchestrator_agent(
             return
         orch = Orchestration.model_validate(orch_data)
         engine = OrchestrationEngine(orch, server_module)
+        engine.images = list(images or [])
         if with_history and session_id:
             # The turn this run owes its conversation (F261). Saved here when
             # the run ends in this request; if a person has to answer first,
@@ -3231,6 +3237,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         else:
             source = run_orchestrator_agent(
                 active_agent, user_message, server_module, session_id=session_id, with_history=True,
+                images=getattr(request, "images", None) or None,
             )
         async for event in source:
             if event.get("type") == "orchestration_complete" and event.get("status") == "failed":

@@ -1170,8 +1170,10 @@ class OrchestrationEngine:
         resume_error: str | None = None
         try:
             async for sub_event in type(self).resume(
-                nested_run_id, human_response, self.server_module, depth=self.depth + 1,
-                caller=self.caller_for(run, parent_step),
+                nested_run_id, human_response, self.server_module,
+                # The answer's attachments, through a step that passes them (F313).
+                images=list(self.images) if parent_step is not None and parent_step.pass_images else None,
+                depth=self.depth + 1, caller=self.caller_for(run, parent_step),
             ):
                 sub_events.append(sub_event)
                 sub_outcome.read(sub_event)
