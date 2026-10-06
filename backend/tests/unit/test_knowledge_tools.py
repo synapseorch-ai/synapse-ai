@@ -30,6 +30,37 @@ async def _call(name, args, *, bases=None, turn=None, transcript_turn=1):
 
 # ── which bases, which tools ───────────────────────────────────────────────────
 
+class TestChooseBases:
+    """`kb` takes an id, a name, or the `Name (id)` the roster and the refusal print (F383)."""
+
+    def test_the_roster_s_form_is_its_id(self):
+        assert T.choose_bases(f"Contracts ({CONTRACTS.id})", [CONTRACTS, REPORTS]) == ([CONTRACTS], None)
+
+    def test_the_whole_roster_line_is_its_id(self):
+        line = f"- Contracts ({CONTRACTS.id}): Customer contracts and their renewals."
+        assert T.choose_bases(line, [CONTRACTS, REPORTS]) == ([CONTRACTS], None)
+
+    def test_the_id_decides_when_the_name_beside_it_is_stale(self):
+        assert T.choose_bases(f"Old reports ({REPORTS.id.upper()})", [CONTRACTS, REPORTS]) == ([REPORTS], None)
+
+    def test_an_id_that_is_not_yours_is_refused(self):
+        chosen, refusal = T.choose_bases(f"Reports ({REPORTS.id})", [CONTRACTS])
+        assert chosen == [] and refusal.startswith('You have no knowledge base "Reports (kb_00000000000b)"')
+        assert "Contracts (kb_00000000000a)" in refusal
+
+    def test_two_ids_name_neither(self):
+        chosen, refusal = T.choose_bases(f"Contracts ({CONTRACTS.id}) and Reports ({REPORTS.id})", [CONTRACTS, REPORTS])
+        assert chosen == [] and refusal.startswith("You have no knowledge base")
+
+    def test_a_name_ending_in_brackets_is_still_a_name(self):
+        draft = KnowledgeBase(id="kb_00000000000e", name="Q3 (draft)", folder="q3")
+        assert T.choose_bases("q3 (draft)", [draft, CONTRACTS]) == ([draft], None)
+
+    def test_a_name_holding_an_id_matches_by_name_first(self):
+        odd = KnowledgeBase(id="kb_00000000000f", name=f"Copy of Contracts ({CONTRACTS.id})", folder="odd")
+        assert T.choose_bases(odd.name, [CONTRACTS, odd]) == ([odd], None)
+
+
 @pytest.mark.usefixtures("knowledge_store")
 class TestWhichBases:
     async def test_an_agent_s_active_bases_in_a_stable_order(self):
@@ -141,6 +172,13 @@ class TestSearch:
         assert by_name.event["kb_ids"] == [REPORTS.id]
         by_id = await _call("search_knowledge", {"query": "hosting", "kb": CONTRACTS.id})
         assert by_id.event["kb_ids"] == [CONTRACTS.id]
+
+    async def test_kb_as_the_roster_prints_it(self):
+        """F383: the roster and the refusal both print `Name (id)`; a small model copies it, and is answered."""
+        await corpus()
+        result = await _call("search_knowledge", {"query": "hosting", "kb": f"Contracts ({CONTRACTS.id})"})
+        assert result.event is not None, result.observation
+        assert result.event["kb_ids"] == [CONTRACTS.id]
 
     async def test_an_unknown_kb_names_only_the_agent_s_own(self):
         await corpus()

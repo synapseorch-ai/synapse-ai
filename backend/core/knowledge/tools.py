@@ -125,9 +125,13 @@ def build_tools(kbs: list) -> list:
     ]
 
 
+#: An id in brackets, as the roster and the refusal print a base: `Name (kb_…)`.
+_BRACKETED_ID = re.compile(r"\((kb_[0-9a-f]{12})\)", re.IGNORECASE)
+
+
 def choose_bases(kb_arg: Any, bases: list) -> tuple[list, str | None]:
-    """The bases a `kb` argument names — an id or a name — or why it names none. MCP's search names
-    them the same way (`core/mcp_server/knowledge.py`)."""
+    """The bases a `kb` argument names — an id, a name, or the `Name (id)` the roster prints — or why it
+    names none. MCP's search names them the same way (`core/mcp_server/knowledge.py`)."""
     wanted = "" if kb_arg is None else str(kb_arg).strip()
     if wanted in ("", "all", "*"):
         return list(bases), None
@@ -137,6 +141,12 @@ def choose_bases(kb_arg: Any, bases: list) -> tuple[list, str | None]:
     named = [kb for kb in bases if _fold(kb.name) == _fold(wanted)]
     if len(named) == 1:
         return named, None
+    if not named:
+        # A model copies what it was shown (F383): one bracketed id is that base, whatever the name beside it.
+        ids = {found.lower() for found in _BRACKETED_ID.findall(wanted)}
+        by_id = [kb for kb in bases if kb.id in ids]
+        if len(ids) == 1 and by_id:
+            return by_id, None
     wanted = _one_line(wanted, 200)
     if named:
         return [], (f'More than one of your knowledge bases is called "{wanted}": '

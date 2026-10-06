@@ -220,6 +220,14 @@ class TestKnowledgeSearchOverMcp:
         assert bad.isError and "filter is not valid" in bad.content[0].text
         assert broken.isError and "filter is not valid" in broken.content[0].text
 
+    async def test_a_base_named_as_its_own_refusal_prints_it(self, mcp_app, api_key, corpus_on):
+        """F383: the refusal lists `Name (id)`; a client that sends that back is answered."""
+        async with mcp_session(mcp_app, api_key) as s:
+            result = await s.call_tool("search_knowledge", {"query": "hosting monthly fee",
+                                                            "kb": "Contracts (kb_00000000000a)"})
+        assert not result.isError, result.content[0].text
+        assert "from Contracts." in result.content[0].text
+
     async def test_what_it_refuses(self, mcp_app, api_key, corpus_on):
         async with mcp_session(mcp_app, api_key) as s:
             nameless = await s.call_tool("search_knowledge", {"query": "  "})
