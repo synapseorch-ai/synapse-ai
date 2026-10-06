@@ -142,7 +142,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         steps: [
             'Click “Agents” in the header and pick who to talk to; switching agents starts a new conversation.',
             'Type your message and press Enter; Shift+Enter adds a line, and “Stop” halts the agent.',
-            'Attach, paste or drop images when the agent’s model can read them.',
+            'Attach, paste or drop images when the agent’s model can read them; a workflow agent takes them when one of its steps has “Sees attachments” on.',
             'Click + for a new chat, or the history button to reopen or delete an earlier one.',
         ],
         media: { id: 'chat/oss-home', alt: 'Chat: the agent’s name and model in the header, a conversation with a tool call opened, and the message box below.' },
