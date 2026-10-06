@@ -398,3 +398,109 @@ class TestOneRingPerTenant:
         with tenant_scope("acme"):
             assert [i["title"] for i in hub.list()] == ["acme done"]
             assert hub.publish("run_completed", "acme again")["id"] == 2
+
+
+class TestOneRingInScaleMode:
+    """F361: in scale mode each API server and each worker kept its own copy of
+    the ring and wrote it whole: a worker's eval regression went over the file
+    the API kept rewriting, the API's next publish wrote its own copy back over
+    the worker's item, and the bell (which reads memory) never heard it. OSS's
+    k8s runs three API servers, which did the same to each other. Shared, every
+    process changes the one ring in turn and every API server hears it."""
+
+    KEY = "scale_notifications.json"
+
+    @pytest.fixture
+    async def redis(self):
+        from _fakes.fake_redis_stream import new_fake_redis
+
+        r = new_fake_redis()
+        yield r
+        await r.aclose()
+
+    @pytest.fixture
+    async def processes(self, redis):
+        made: list[NotificationHub] = []
+
+        async def process(*, api: bool) -> NotificationHub:
+            hub = NotificationHub(persist_path=self.KEY)
+            hub.share(redis, listen=api)
+            if api:
+                await asyncio.wait_for(hub._shared.listening.wait(), 2)
+            made.append(hub)
+            return hub
+
+        yield process
+        for hub in made:
+            await hub.unshare()
+
+    @staticmethod
+    async def _resolved(queue: asyncio.Queue) -> dict:
+        while not (item := await queue.get()).get("resolved"):
+            pass
+        return item
+
+    def _saved(self) -> list[tuple[int, str]]:
+        return [(i["id"], i["title"]) for i in NotificationHub(persist_path=self.KEY).list()]
+
+    async def test_a_worker_s_notice_and_the_api_s_both_survive(self, processes):
+        api, worker = await processes(api=True), await processes(api=False)
+        api.publish("run_completed", "A")
+        await api.flush()
+        assert [i["title"] for i in worker.list()] == ["A"]  # the worker has read the ring
+        api.publish("run_completed", "B")
+        await api.flush()
+        worker.publish("eval_regression", "C")
+        await worker.flush()
+        assert self._saved() == [(1, "A"), (2, "B"), (3, "C")]
+
+    async def test_every_api_server_hears_a_worker_s_notice(self, processes):
+        one, two, worker = await processes(api=True), await processes(api=True), await processes(api=False)
+        heard = [one.subscribe(), two.subscribe()]
+        worker.publish("eval_regression", "C")
+        await worker.flush()
+        got = [await asyncio.wait_for(q.get(), 2) for q in heard]
+        assert [(g["id"], g["title"]) for g in got] == [(1, "C"), (1, "C")]
+        assert [i["title"] for i in one.list()] == [i["title"] for i in two.list()] == ["C"]
+
+    async def test_a_worker_s_resolve_is_kept_and_heard(self, processes):
+        api, worker = await processes(api=True), await processes(api=False)
+        api.publish("tool_approval", "Approve?", data={"approval_id": "ap1"})
+        await api.flush()
+        heard = api.subscribe()
+        worker.resolve_approval("ap1", "allowed")
+        await worker.flush()
+        update = await asyncio.wait_for(self._resolved(heard), 2)  # the item's own announcement may come first
+        assert (update["id"], update["resolved_as"]) == (1, "allowed")
+        assert [i.get("resolved") for i in api.list()] == [True]
+
+    async def test_processes_writing_at_once_never_reuse_an_id(self, processes):
+        api, worker = await processes(api=True), await processes(api=False)
+        for n in range(5):
+            api.publish("run_completed", f"api {n}")
+            worker.publish("eval_regression", f"worker {n}")
+        await asyncio.gather(api.flush(), worker.flush())
+        saved = self._saved()
+        assert [i for i, _ in saved] == list(range(1, 11)) and len({t for _, t in saved}) == 10
+
+    async def test_a_worker_shutting_down_writes_what_it_was_given(self, redis):
+        worker = NotificationHub(persist_path=self.KEY)
+        worker.share(redis, listen=False)
+        worker.publish("eval_regression", "last words")
+        await worker.unshare()
+        assert self._saved() == [(1, "last words")]
+
+    async def test_each_tenant_has_its_own_shared_ring(self, processes, multi_tenant):
+        from core.tenancy import tenant_scope
+
+        api, worker = await processes(api=True), await processes(api=False)
+        with tenant_scope("acme"):
+            heard = api.subscribe()
+        with tenant_scope("globex"):
+            worker.publish("eval_regression", "globex regressed")
+        with tenant_scope("acme"):
+            worker.publish("eval_regression", "acme regressed")
+        await worker.flush()
+        assert (await asyncio.wait_for(heard.get(), 2))["title"] == "acme regressed" and heard.empty()
+        with tenant_scope("globex"):
+            assert [i["title"] for i in api.list()] == ["globex regressed"]

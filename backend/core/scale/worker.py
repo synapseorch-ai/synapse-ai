@@ -1037,6 +1037,11 @@ async def worker_startup(ctx: dict) -> None:
     # Redis client (already provided by ARQ as ctx["redis"])
     redis = ctx["redis"]
 
+    # This worker's notifications (an eval's regression, a resolved approval) join the one ring every API
+    # server and worker shares, rather than a copy of it written over theirs (F361).
+    from core.notifications import hub as notification_hub
+    notification_hub.share(redis, listen=False)
+
     # Settings come from the store, per job, for the tenant in context.
     # Nothing is written to the process environment: a provider key there is
     # readable in /proc/<pid>/environ and inherited by every stdio MCP server
@@ -1102,6 +1107,8 @@ async def worker_startup(ctx: dict) -> None:
 async def worker_shutdown(ctx: dict) -> None:
     """Mark worker offline, cancel heartbeat, close connections."""
     _tqueue.stop_watching(ctx.get("queue_depth_task"))
+    from core.notifications import hub as notification_hub
+    await notification_hub.unshare()  # what this worker announced is written before Redis closes (F361)
     heartbeat_task = ctx.get("heartbeat_task")
     if heartbeat_task and not heartbeat_task.done():
         heartbeat_task.cancel()

@@ -21,6 +21,16 @@ store keys by whichever tenant is current. So each tenant has its own ring,
 loaded from and saved to its own blob, and its own subscribers. A single-tenant
 install has exactly one tenant, `default`, and behaves as it always did.
 
+**One ring in scale mode (F361).** There each API server and each worker kept
+its own copy of a tenant's ring and wrote it whole, so a worker's eval
+regression and the API's next publish overwrote each other, and three API
+servers (OSS's k8s) did the same; the bell, which reads memory, never heard a
+worker's item. `share(redis)` makes the blob the ring: every change is queued to
+one writer per process, which takes a Redis lock, reads the blob, applies the
+change (the id comes from the ring), writes it back and PUBLISHes what changed.
+Every API server listens and passes it to its own streams, and reads the blob
+when asked for the list. Standalone and cloud never call `share`.
+
 Delivery surfaces:
 - `GET /api/notifications` + `/api/notifications/stream` (routes/notifications.py)
   for the in-app provider (toasts, badges, browser notifications).
@@ -35,13 +45,18 @@ Delivery surfaces:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
+import uuid
 from collections import OrderedDict
 from pathlib import Path
 
+from core.log import get_logger
 from core.native_builder import BUILDER_RUN_PREFIX
-from core.tenancy import get_tenant
+from core.tenancy import get_tenant, tenant_scope
+
+_log = get_logger(__name__)
 
 #: Blob key. A 200-item ring already rewritten whole on every publish, so it
 #: maps onto put() directly — there is nothing append-shaped about it.
@@ -51,6 +66,10 @@ CAPACITY = 200
 #: used one loses nothing — every change is saved as it happens — so this only
 #: bounds memory in a process that serves many tenants.
 MAX_TENANTS = 64
+#: Scale mode (F361): what changed, for every API server; and the lock a change is made under.
+SHARED_CHANNEL = "synapse:notifications"
+SHARED_LOCK = "synapse:notifications:lock:{tenant}"
+SHARED_LOCK_MS = 10_000
 
 
 class _Ring:
@@ -82,6 +101,7 @@ class NotificationHub:
         # can emit both orchestration_error and orchestration_complete(failed).
         self._terminal_notified: set[str] = set()
         self._server_module = None
+        self._shared: _Shared | None = None
 
     def _ring(self) -> _Ring:
         """The current tenant's ring, read from its own blob the first time."""
@@ -97,6 +117,28 @@ class NotificationHub:
 
     def _streams(self) -> list[asyncio.Queue]:
         return list(self._subs.get(get_tenant(), ()))
+
+    def _items(self) -> list[dict]:
+        """The current tenant's notifications: read from the blob in scale mode, where other processes change
+        them (F361); this process's ring otherwise."""
+        return self._load() if self._shared is not None else self._ring().items
+
+    # ── scale mode (F361) ────────────────────────────────────────────────
+    def share(self, redis, *, listen: bool) -> None:
+        """Make the blob the ring, changed in turn by every process through `redis`. An API server `listen`s, so
+        its streams hear every process's changes; a worker only writes. Call from the event loop that serves it."""
+        self._shared = _Shared(self, redis, listen=listen)
+
+    async def flush(self) -> None:
+        """Wait until every change this process queued is written and announced."""
+        if self._shared is not None:
+            await self._shared.ops.join()
+
+    async def unshare(self, timeout: float = 10.0) -> None:
+        """Write what is queued (a worker shutting down), then stop the writer and the listener."""
+        shared, self._shared = self._shared, None
+        if shared is not None:
+            await shared.close(timeout)
 
     # ── persistence ──────────────────────────────────────────────────────
     def reload(self):
@@ -130,9 +172,7 @@ class NotificationHub:
     # ── core API ─────────────────────────────────────────────────────────
     def publish(self, kind: str, title: str, body: str = "",
                 run_id: str | None = None, data: dict | None = None) -> dict:
-        ring = self._ring()
-        item = {
-            "id": ring.next_id,
+        fields = {
             "ts": time.time(),
             "kind": kind,          # human_input | tool_approval | run_completed | run_failed
             "title": title[:200],
@@ -140,6 +180,13 @@ class NotificationHub:
             "run_id": run_id,
             "data": data or {},
         }
+        if self._shared is not None:  # the ring's writer gives it its id
+            self._shared.submit({"op": "publish", "fields": fields})
+            item = {"id": None, **fields}
+            self._dispatch_messaging(item)
+            return item
+        ring = self._ring()
+        item = {"id": ring.next_id, **fields}
         ring.next_id += 1
         ring.items.append(item)
         if len(ring.items) > self._capacity:
@@ -151,9 +198,12 @@ class NotificationHub:
         return item
 
     def list(self, after_id: int = 0) -> list[dict]:
-        return [i for i in self._ring().items if i["id"] > after_id]
+        return [i for i in self._items() if i["id"] > after_id]
 
     def last_id(self) -> int:
+        if self._shared is not None:
+            items = self._items()
+            return items[-1]["id"] if items else 0
         return self._ring().next_id - 1
 
     def subscribe(self) -> asyncio.Queue:
@@ -235,11 +285,7 @@ class NotificationHub:
         (F193) — the bell said "answered" for both. The updated items (same id,
         resolved=true) are re-pushed to live subscribers; clients upsert by id
         so the bell stops showing them as actionable."""
-        self._resolve([
-            item for item in self._ring().items
-            if item["run_id"] == run_id and item["kind"] == "human_input"
-            and not item.get("resolved")
-        ], how)
+        self._resolve_where({"kind": "human_input", "run_id": run_id}, how)
 
     def resolve_approval(self, approval_id: str | None, how: str) -> None:
         """Mark a scheduled run's tool-approval item resolved (F268): `allowed`,
@@ -247,11 +293,13 @@ class NotificationHub:
         Its Approve / Refuse go away on every open bell."""
         if not approval_id:
             return
-        self._resolve([
-            item for item in self._ring().items
-            if item["kind"] == "tool_approval" and not item.get("resolved")
-            and (item.get("data") or {}).get("approval_id") == approval_id
-        ], how)
+        self._resolve_where({"kind": "tool_approval", "approval_id": approval_id}, how)
+
+    def _resolve_where(self, match: dict, how: str) -> None:
+        if self._shared is not None:
+            self._shared.submit({"op": "resolve", "match": match, "how": how})
+            return
+        self._resolve([item for item in self._ring().items if _matches(item, match)], how)
 
     def _resolve(self, updated: list[dict], how: str) -> None:
         if not updated:
@@ -290,7 +338,7 @@ class NotificationHub:
             # Only an *unresolved* item counts as already-notified: a run that
             # paused again at a later step deserves a fresh notification.
             notified_runs = {
-                i["run_id"] for i in self._ring().items
+                i["run_id"] for i in self._items()
                 if i["kind"] == "human_input" and not i.get("resolved")
             }
             paused_waiting: set[str] = set()
@@ -359,6 +407,123 @@ class NotificationHub:
             await adapter.send_message(chat_id, text)
         except Exception as e:
             print(f"Warning: messaging notification failed: {e}", flush=True)
+
+
+def _matches(item: dict, match: dict) -> bool:
+    """Whether `item` is an unresolved one a resolve names: a run's human input, or a tool approval."""
+    if item.get("resolved") or item.get("kind") != match["kind"]:
+        return False
+    if match["kind"] == "human_input":
+        return item.get("run_id") == match["run_id"]
+    return (item.get("data") or {}).get("approval_id") == match["approval_id"]
+
+
+class _Shared:
+    """Scale mode's ring (F361): one writer per process, and, on an API server, a listener.
+
+    The writer takes each queued change in turn under the change's own tenant:
+    the tenant's Redis lock, the blob read, the change applied (a new item's id
+    is the ring's next), the blob written, then what changed PUBLISHed. A resolve
+    that names nothing is dropped after one read, without the lock: most of them
+    (every step of a run asks) name nothing. If the lock cannot be had in its own
+    lifetime, the change is made without it and that is logged."""
+
+    def __init__(self, hub: NotificationHub, redis, *, listen: bool):
+        self.hub = hub
+        self.redis = redis
+        self.ops: asyncio.Queue = asyncio.Queue()
+        self.listening = asyncio.Event()
+        self.writer = asyncio.create_task(self._write(), name="notifications-writer")
+        self.listener = asyncio.create_task(self._listen(), name="notifications-listener") if listen else None
+
+    def submit(self, op: dict) -> None:
+        self.ops.put_nowait({**op, "tenant": get_tenant()})
+
+    async def close(self, timeout: float) -> None:
+        try:
+            await asyncio.wait_for(self.ops.join(), timeout)
+        except TimeoutError:
+            _log.warning(f"notifications: {self.ops.qsize()} change(s) not written before shutdown")
+        for task in (self.writer, self.listener):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+
+    async def _write(self) -> None:
+        while True:
+            op = await self.ops.get()
+            try:
+                scope = tenant_scope(op["tenant"]) if op["tenant"] != get_tenant() else contextlib.nullcontext()
+                with scope:
+                    await self._apply(op)
+            except Exception as e:  # noqa: BLE001 — a notification never fails the work that raised it
+                _log.warning(f"notifications: could not write a change to the shared ring: {e}")
+            finally:
+                self.ops.task_done()
+
+    async def _apply(self, op: dict) -> None:
+        hub = self.hub
+        if op["op"] == "resolve" and not any(
+                _matches(item, op["match"]) for item in await asyncio.to_thread(hub._load)):
+            return
+        key, token = SHARED_LOCK.format(tenant=op["tenant"]), uuid.uuid4().hex
+        locked = await self._lock(key, token)
+        try:
+            ring = _Ring(await asyncio.to_thread(hub._load))
+            if op["op"] == "publish":
+                changed = [{"id": ring.next_id, **op["fields"]}]
+                ring.items.append(changed[0])
+                ring.items = ring.items[-hub._capacity:]
+            else:
+                changed = [item for item in ring.items if _matches(item, op["match"])]
+                for item in changed:
+                    item["resolved"] = True
+                    item["resolved_as"] = op["how"]
+                if not changed:
+                    return
+            await asyncio.to_thread(hub._persist, ring)
+        finally:
+            if locked:
+                await self._unlock(key, token)
+        await self.redis.publish(SHARED_CHANNEL, json.dumps({"tenant": op["tenant"], "items": changed},
+                                                            default=str))
+
+    async def _lock(self, key: str, token: str) -> bool:
+        deadline = time.monotonic() + SHARED_LOCK_MS / 1000
+        while time.monotonic() < deadline:
+            if await self.redis.set(key, token, nx=True, px=SHARED_LOCK_MS):
+                return True
+            await asyncio.sleep(0.02)
+        _log.warning(f"notifications: {key} stayed held for {SHARED_LOCK_MS} ms; writing without it")
+        return False
+
+    async def _unlock(self, key: str, token: str) -> None:
+        held = await self.redis.get(key)
+        if (held.decode() if isinstance(held, bytes) else held) == token:  # never another writer's
+            await self.redis.delete(key)
+
+    async def _listen(self) -> None:
+        while True:
+            pubsub = self.redis.pubsub()
+            try:
+                await pubsub.subscribe(SHARED_CHANNEL)
+                self.listening.set()
+                async for message in pubsub.listen():
+                    if message.get("type") != "message":
+                        continue
+                    change = json.loads(message["data"])
+                    for queue in list(self.hub._subs.get(change["tenant"], ())):
+                        for item in change["items"]:
+                            queue.put_nowait(item)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — Redis went away: listen again
+                _log.warning(f"notifications: lost {SHARED_CHANNEL}, listening again: {e}")
+                await asyncio.sleep(1)
+            finally:
+                with contextlib.suppress(Exception):
+                    await pubsub.aclose()
 
 
 hub = NotificationHub()

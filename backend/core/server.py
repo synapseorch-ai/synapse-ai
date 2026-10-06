@@ -774,6 +774,11 @@ async def lifespan(app: FastAPI):
                 )
                 app.state.reap_task = _reap_task
 
+                # Every API server and worker changes one notification ring in turn, and every API server's
+                # bell hears each change (F361).
+                from core.notifications import hub as _notification_hub
+                _notification_hub.share(_redis, listen=True)
+
                 print(f"Scale mode enabled: Redis={_scale_cfg.redis_url[:30]}... Postgres connected.")
             else:
                 print("Scale mode disabled (no redis_url configured). Running in standalone mode.")
@@ -883,6 +888,8 @@ async def lifespan(app: FastAPI):
                     await _reap
                 except (asyncio.CancelledError, Exception):
                     pass
+            from core.notifications import hub as _notification_hub
+            await _notification_hub.unshare()
             _arq = getattr(app.state, "arq_redis", None)
             if _arq:
                 await _arq.close()
