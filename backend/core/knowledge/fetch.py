@@ -216,7 +216,11 @@ def _matches(pattern: str, target: str) -> bool:
 # ── pace ───────────────────────────────────────────────────────────────────────
 
 class HostPacer(Protocol):
-    """Spaces requests to one host, `interval` seconds apart (at least), across every crawl that shares it."""
+    """Spaces requests to one host, `interval` seconds apart (at least), across every crawl that shares it.
+
+    `wait` reserves a request's turn. A pacer may also have `claim(host, interval, hold=)`, which the fetcher
+    calls just before the request is actually sent: it holds the request until `interval` after the last one
+    sent and marks this one sent (F385). Without it, the pace spaces turns, not sends."""
 
     async def wait(self, host: str, interval: float) -> None: ...
 
@@ -231,6 +235,7 @@ class Pacer:
         self._clock = clock
         self._sleep = sleep
         self._next: dict[str, float] = {}
+        self._sent: dict[str, float] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def wait(self, host: str, interval: float) -> None:
@@ -241,6 +246,23 @@ class Pacer:
             if at > now:
                 await self._sleep(at - now)
             self._next[host] = at + interval
+
+    async def claim(self, host: str, interval: float, *,
+                    hold: Callable[[float], Awaitable[None]] | None = None) -> None:
+        """Mark a request to `host` sent now, holding it first until `interval` after the last one sent.
+
+        A turn `wait` gave can reach the send late — a stalled loop, a slow resolve — and the next turn then
+        came at once (F385). Checked and marked with no await between, so no lock: `wait` holds the host's
+        while it sleeps."""
+        hold = hold or self._sleep
+        while True:
+            now = self._clock()
+            due = self._sent.get(host, now - interval) + interval
+            if due <= now:
+                self._sent[host] = now
+                self._next[host] = max(self._next.get(host, now), now + interval)
+                return
+            await hold(due - now)
 
 
 _pacer: HostPacer | None = None
@@ -353,10 +375,15 @@ class Fetcher:
         from core import safe_fetch
 
         host = host_key(url)
-        await self.pacer.wait(host, self._interval(host))
+        interval = self._interval(host)
+        pacer = self.pacer
+        await pacer.wait(host, interval)
         assert self._client is not None, "use the Fetcher as an async context manager"
+        claim = getattr(pacer, "claim", None)  # a pacer without one spaces turns only (F385)
         return await safe_fetch.fetch(url, client=self._client, headers={"User-Agent": USER_AGENT, **(headers or {})},
-                                      max_bytes=max_bytes, timeout_s=REQUEST_TIMEOUT_S)
+                                      max_bytes=max_bytes, timeout_s=REQUEST_TIMEOUT_S,
+                                      before_send=None if claim is None else (
+                                          lambda hold: claim(host, interval, hold=hold)))
 
     async def robots(self, url: str) -> Robots:
         """`url`'s host's robots.txt, read once per crawl."""

@@ -3,7 +3,7 @@ indexed, kept and deleted, and the crawl's state.
 
 The site is a loopback server named in `EGRESS_ALLOW_HOSTS` (the guard runs for
 real); its pages are a dict a test changes between crawls. Pace is switched
-off (`Pacer.wait`), ingest jobs are recorded and drained in order, and indexing
+off (`Pacer.wait`, `Pacer.claim`), ingest jobs are recorded and drained in order, and indexing
 is faked unless a test searches. SQLite always; Postgres with
 `SYNAPSE_TEST_POSTGRES_URL`.
 """
@@ -74,10 +74,11 @@ def site(server, monkeypatch):
     monkeypatch.setenv("EGRESS_ALLOW_HOSTS", "127.0.0.1")
     egress_guard._resolve_cache.clear()
 
-    async def no_pace(self, host, interval):
+    async def no_pace(self, host, interval, **_):
         return None
 
     monkeypatch.setattr(F.Pacer, "wait", no_pace)
+    monkeypatch.setattr(F.Pacer, "claim", no_pace)
     base = f"http://127.0.0.1:{server}"
     _Site.hits = []
     _Site.pages = {

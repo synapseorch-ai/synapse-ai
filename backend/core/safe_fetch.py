@@ -35,7 +35,7 @@ and the header is lost, so both are read.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
@@ -153,29 +153,47 @@ def proxy_refusal(exc: BaseException) -> str | None:
     return None
 
 
+#: Holds a request for so many seconds, time its deadline does not count.
+Hold = Callable[[float], Awaitable[None]]
+
+
 async def fetch(url: str, *, client: httpx.AsyncClient, headers: Mapping[str, str] | None = None,
-                max_bytes: int | None = None, timeout_s: float = TOTAL_TIMEOUT_SECONDS) -> Fetched:
+                max_bytes: int | None = None, timeout_s: float = TOTAL_TIMEOUT_SECONDS,
+                before_send: Callable[[Hold], Awaitable[None]] | None = None) -> Fetched:
     """GET `url` through `client` with the egress policy on every hop, redirects followed here.
 
     Raises `FetchBlocked` (the guard or a proxy refused an address), `FetchTooLarge` (a 2xx body over
     `max_bytes`), or `FetchRefused` (no answer: a network error, the deadline, too many redirects).
     Any status is an answer: the caller decides what a 304, a 404 or a 503 means.
+
+    `before_send(hold)` is awaited once, just before the first request goes out and after its address is
+    checked: a crawler's pace is counted from there (F385). What it holds with `hold` is not the request's time.
     """
     try:
-        async with asyncio.timeout(timeout_s):
-            return await _fetch_answer(url, client=client, headers=dict(headers or {}), max_bytes=max_bytes)
+        async with asyncio.timeout(timeout_s) as deadline:
+            async def hold(seconds: float) -> None:
+                if seconds > 0:
+                    deadline.reschedule(deadline.when() + seconds)
+                    await asyncio.sleep(seconds)
+
+            ready = None if before_send is None else (lambda: before_send(hold))
+            return await _fetch_answer(url, client=client, headers=dict(headers or {}), max_bytes=max_bytes,
+                                       ready=ready)
     except TimeoutError:
         raise FetchRefused(f"{url} did not answer within {timeout_s:g} seconds") from None
 
 
 async def _fetch_answer(url: str, *, client: httpx.AsyncClient, headers: dict[str, str],
-                        max_bytes: int | None) -> Fetched:
+                        max_bytes: int | None, ready: Callable[[], Awaitable[None]] | None = None) -> Fetched:
     seen: list[str] = []
     for _hop in range(MAX_REDIRECTS + 1):
         try:
             await egress_guard.check_url(url)
         except egress_guard.BlockedEgress as exc:
             raise FetchBlocked(str(exc)) from None
+        if ready is not None:
+            await ready()
+            ready = None
         try:
             async with client.stream("GET", url, headers=headers, follow_redirects=False) as response:
                 status = response.status_code

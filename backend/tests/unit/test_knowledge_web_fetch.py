@@ -187,6 +187,28 @@ class TestThroughTheEgressProxy:
         assert safe_fetch.proxy_refusal(httpx.ConnectError("refused")) is None
 
 
+class TestHeldBeforeTheSend:
+    async def test_a_hold_before_the_send_is_not_the_request_s_time(self, site):
+        """A pacer holding a request (F385) must not turn into "did not answer within" its deadline."""
+        held: list[float] = []
+
+        async def before_send(hold):
+            held.append(0.5)
+            await hold(0.5)
+
+        got = await _fetch(f"{site}/page", timeout_s=0.3, before_send=before_send)
+        assert got.status == 200 and held == [0.5]
+
+    async def test_it_is_called_once_before_the_first_request(self, site):
+        calls: list[int] = []
+
+        async def before_send(hold):
+            calls.append(1)
+
+        got = await _fetch(f"{site}/redirect?to=/page", before_send=before_send)
+        assert calls == [1] and got.status == 200 and got.redirects
+
+
 class TestFetchBytesIsUnchanged:
     """`fetch_bytes` (the PDF and spreadsheet tools) still raises `FetchRefused` for each refusal."""
 
@@ -303,6 +325,97 @@ class TestPace:
             srv.shutdown()
         gaps = [b - a for a, b in zip(Timed.at, Timed.at[1:])]
         assert len(Timed.at) == 4 and min(gaps) >= 0.18, gaps  # robots + page each, 0.2 s apart
+
+    async def test_the_pace_counts_from_the_send_not_the_slot(self):
+        """F385: a request that went out late after its slot let the next one go at once (26 ms apart on KL1's
+        proof); the pace is counted from when a request is actually sent."""
+        now = [100.0]
+        slept: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            now[0] += seconds
+
+        pacer = F.Pacer(clock=lambda: now[0], sleep=sleep)
+        await pacer.wait("https://a.test", 1.0)  # the slot: 100.0
+        now[0] += 0.9  # the send comes late — a stalled loop, a slow resolve
+        await pacer.claim("https://a.test", 1.0)  # sent at 100.9
+        await pacer.wait("https://a.test", 1.0)
+        await pacer.claim("https://a.test", 1.0)
+        assert now[0] == pytest.approx(101.9) and slept == [pytest.approx(1.0)]
+
+    async def test_a_claim_waits_out_a_send_made_since_its_slot(self):
+        now = [100.0]
+        slept: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            now[0] += seconds
+
+        pacer = F.Pacer(clock=lambda: now[0], sleep=sleep)
+        await pacer.wait("https://a.test", 1.0)  # one crawl's slot: 100
+        await pacer.wait("https://a.test", 1.0)  # another's: 101
+        await pacer.claim("https://a.test", 1.0)  # the first, held up until 101, sends now
+        await pacer.claim("https://a.test", 1.0)  # the second waits a full interval after it
+        await pacer.claim("https://b.test", 1.0)  # another site owes nothing
+        assert slept == [1.0, 1.0] and now[0] == 102.0
+
+    async def test_a_late_send_does_not_bring_the_next_request_close(self, monkeypatch):
+        """Two crawls of one site; the first's address check takes 0.3 s after its slot, so it sends late."""
+        import asyncio
+        import time
+
+        class Timed(http.server.BaseHTTPRequestHandler):
+            at: list[float] = []
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                type(self).at.append(time.monotonic())
+                body = b"User-agent: *\nAllow: /\n" if self.path == "/robots.txt" else b"<p>x</p>"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        check = egress_guard.check_url
+        first = [True]
+
+        async def slow_once(url, *args, **kwargs):
+            if first[0]:
+                first[0] = False
+                await asyncio.sleep(0.3)
+            return await check(url, *args, **kwargs)
+
+        monkeypatch.setattr(egress_guard, "check_url", slow_once)
+        srv, port = _serve(Timed)
+        base = f"http://127.0.0.1:{port}"
+        try:
+            async with F.Fetcher(rps=5.0) as one, F.Fetcher(rps=5.0) as two:
+                await asyncio.gather(one.get(f"{base}/a"), two.get(f"{base}/b"))
+        finally:
+            srv.shutdown()
+        gaps = [b - a for a, b in zip(Timed.at, Timed.at[1:])]
+        assert len(Timed.at) == 4 and min(gaps) >= 0.18, gaps
+
+    async def test_a_pacer_without_claim_still_paces(self):
+        """An installed pacer from before F385 (cloud's, until its pin carries `claim`) keeps working."""
+        class SlotsOnly:
+            def __init__(self):
+                self.waits: list[str] = []
+
+            async def wait(self, host: str, interval: float) -> None:
+                self.waits.append(host)
+
+        pacer = SlotsOnly()
+        srv, port = _serve(_RobotsSite)
+        try:
+            async with F.Fetcher(pacer=pacer) as fetcher:
+                got = await fetcher.get(f"http://127.0.0.1:{port}/page")
+        finally:
+            srv.shutdown()
+        assert got.status == 200 and len(pacer.waits) == 2  # robots.txt, then the page
 
     def test_crawl_delay_slows_the_pace_up_to_the_ceiling(self):
         fetcher = F.Fetcher(rps=1.0)
