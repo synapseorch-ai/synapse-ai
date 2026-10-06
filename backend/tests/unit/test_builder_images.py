@@ -126,3 +126,78 @@ class TestTheFlagRefusesToBeANoOp:
 
     def test_an_agent_step_can(self):
         assert StepConfig(id="s", name="S", type=StepType.AGENT, pass_images=True).pass_images
+
+
+# ── the builder sets it (F313) ───────────────────────────────────────────────
+
+def _builder_server():
+    import types
+    return types.SimpleNamespace(agent_sessions={}, memory_store=None, tool_router={})
+
+
+async def _call(tool, args):
+    import json
+    from core.builder_tools import execute_builder_tool
+    return json.loads(await execute_builder_tool(tool, args, _builder_server()))
+
+
+async def _stored(orch_id):
+    from core.models_orchestration import Orchestration
+    from core.scale.context import resolve_orchestration
+    data = await resolve_orchestration(orch_id)
+    Orchestration.model_validate(data)  # what a run does first
+    return {s["id"]: s for s in data["steps"]}
+
+
+async def _two_steps():
+    """An orchestration the builder wrote: an agent step and an llm step, both asked to see attachments."""
+    import json
+    from _fakes import seed as S
+    await S.seed_agents([S.make_agent(id="agent_eyes")])
+    made = await _call("create_orchestration", {
+        "name": "Photo desk", "description": "d", "entry_step_id": "look",
+        "steps_json": json.dumps([
+            {"id": "look", "name": "Look", "type": "agent", "agent_id": "agent_eyes",
+             "prompt_template": "Describe it.", "pass_images": True, "next_step_id": "write"},
+            {"id": "write", "name": "Write", "type": "llm", "prompt_template": "Caption it.",
+             "pass_images": True},
+        ]),
+    })
+    return made.get("orch_id") or made.get("id") or made.get("orchestration", {}).get("id")
+
+
+class TestTheBuilderCanSetIt:
+    """The AI builder could not mark a step "Sees attachments": no tool offered it (F313)."""
+
+    def test_both_step_tools_offer_it(self):
+        from core.builder_tools import BUILDER_TOOL_SCHEMAS
+        tools = {t["function"]["name"]: t["function"]["parameters"] for t in BUILDER_TOOL_SCHEMAS}
+        assert tools["add_single_step"]["properties"]["pass_images"]["type"] == "boolean"
+        items = tools["add_multiple_steps"]["properties"]["steps"]["items"]["properties"]
+        assert items["pass_images"]["type"] == "boolean"
+
+    def test_the_cheatsheet_and_both_json_descriptions_name_it(self):
+        from core.builder_tools import PATCH_JSON_DESCRIPTION, STEPS_JSON_DESCRIPTION
+        from core.native_builder import STEP_TYPE_CHEATSHEET
+        for text in (STEPS_JSON_DESCRIPTION, PATCH_JSON_DESCRIPTION, STEP_TYPE_CHEATSHEET):
+            assert "pass_images" in text
+
+    async def test_a_non_agent_step_the_builder_writes_drops_it_and_still_loads(self):
+        orch_id = await _two_steps()
+        steps = await _stored(orch_id)
+        assert steps["look"]["pass_images"] is True
+        assert "pass_images" not in steps["write"]
+
+    async def test_a_step_patched_away_from_agent_drops_it(self):
+        import json
+        orch_id = await _two_steps()
+        await _call("update_step", {"orch_id": orch_id, "step_id": "look",
+                                    "patch_json": json.dumps({"type": "llm", "prompt_template": "Describe it."})})
+        steps = await _stored(orch_id)
+        assert steps["look"]["type"] == "llm" and "pass_images" not in steps["look"]
+
+    def test_defaults_add_nothing_to_a_step_that_did_not_ask(self):
+        from core.builder_tools import _fill_step_defaults
+        [agent, llm] = _fill_step_defaults([{"id": "a", "name": "A", "type": "agent"},
+                                            {"id": "b", "name": "B", "type": "llm"}])
+        assert "pass_images" not in agent and "pass_images" not in llm

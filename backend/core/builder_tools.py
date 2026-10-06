@@ -254,7 +254,8 @@ STEPS_JSON_DESCRIPTION = (
     "Sub-structures MUST be JSON strings inside each step: route_map_json, "
     "route_descriptions_json, parallel_branches_json, human_fields_json, "
     "switch_cases_json. Retrieve and ingest steps take add_single_step's flat "
-    "retrieve_* / ingest_* fields.\n"
+    "retrieve_* / ingest_* fields. An agent step that should read the images "
+    "a person attaches in chat sets \"pass_images\": true.\n"
     "Minimal example (2 agent steps):\n"
     "'[{\"id\":\"step_abc1234\",\"name\":\"Analyse\",\"type\":\"agent\","
     "\"agent_id\":\"agent_123\",\"prompt_template\":\"Summarise {state.user_input}\","
@@ -268,7 +269,7 @@ PATCH_JSON_DESCRIPTION = (
     "field you don't want touched. Use *_json string keys for sub-structures "
     "(route_map_json, parallel_branches_json, human_fields_json, "
     "route_descriptions_json); a retrieve or ingest step's flat retrieve_* / ingest_* "
-    "fields change only those settings. "
+    "fields change only those settings; pass_images (agent steps) turns Sees attachments on or off. "
     "Example: '{\"prompt_template\":\"New prompt\",\"next_step_id\":\"step_xyz7890\"}'"
 )
 
@@ -919,6 +920,10 @@ BUILDER_TOOL_SCHEMAS = [
                         "Step timeout (default 300). An agent step whose agent runs a workflow waits "
                         "on that workflow's own timeout_minutes at the default; set another value to cap it")},
                     "model": {"type": "string", "description": "LLM model override for this step"},
+                    "pass_images": {"type": "boolean", "description": (
+                        "Agent steps only: Sees attachments. The images a person attaches in chat reach this "
+                        "step's model (pick one that can read images). A step that runs another workflow "
+                        "passes them on to it. Off by default; chat offers Attach only when a step has it.")},
                     "include_full_history": {
                         "type": "boolean",
                         "description": (
@@ -1003,6 +1008,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "max_turns": {"type": "integer"},
                                 "timeout_seconds": {"type": "integer"},
                                 "model": {"type": "string"},
+                                "pass_images": {"type": "boolean", "description": "Agent steps only: Sees attachments — the images a person attaches in chat reach this step"},
                                 "include_full_history": {"type": "boolean", "description": "Opt OUT of full revision history on re-runs (default: auto-on for any re-run). Set false to keep prompts small."},
                             },
                             "required": ["step_id", "name", "type"],
@@ -3140,6 +3146,11 @@ def _fill_step_defaults(steps: list) -> list:
         s.setdefault("switch_cases", {})
         s.setdefault("switch_default_step_id", None)
         s.setdefault("include_full_history", None)
+        # Only an agent step reads it, and the engine refuses it on any other:
+        # a step written (or patched) as another type would save and then fail
+        # to load at its first run (F313).
+        if s.get("type") != "agent":
+            s.pop("pass_images", None)
         result.append(s)
     return result
 
