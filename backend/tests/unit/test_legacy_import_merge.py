@@ -257,3 +257,50 @@ def test_migrate_json_exits_non_zero_when_a_folder_fails(tmp_path, monkeypatch, 
     report = json.loads(capsys.readouterr().out)
     assert report["sources"][0]["error"] == "RuntimeError: nope"
     assert bad.is_dir()
+
+
+# ── settings written after the old install stopped are newer (IU1) ───────────
+
+async def _settings() -> dict:
+    async with session() as s:
+        rows = (await s.execute(select(SettingDB))).scalars().all()
+    return {r.key: json.loads(r.value) for r in rows}
+
+
+async def test_a_setting_already_in_the_store_is_not_overwritten_by_the_import(layout):
+    """A 1.x pip install upgraded with pip reached 2.0's wizard with an empty
+    database; the backend then booted, imported settings.json, and every answer
+    went back to the 1.x value (IU1 measured it in a container). Whatever is in
+    the store was written after the old install stopped, so it stays; the file
+    fills in only what the store does not have."""
+    async with session() as s:
+        s.add(SettingDB(tenant_id="default", key="model", value=json.dumps("claude-new")))
+        s.add(SettingDB(tenant_id="default", key="anthropic_key", value=json.dumps("sk-ant-NEW")))
+        await s.commit()
+    _write(layout["home_data"] / "settings.json",
+           {"model": "gpt-4o", "anthropic_key": "", "openai_key": "sk-OLD", "agent_name": "OldName"})
+    _write(layout["home_data"] / "user_agents.json", [{"id": "agent_a1", "name": "Researcher"}])
+
+    counts = await importer.import_legacy_data_if_present()
+
+    assert counts and counts["user_agents"] == 1
+    settings = await _settings()
+    assert settings["model"] == "claude-new"
+    assert settings["anthropic_key"] == "sk-ant-NEW"
+    assert settings["openai_key"] == "sk-OLD" and settings["agent_name"] == "OldName"
+    assert counts["settings"] == 2      # only what was written
+
+
+async def test_between_two_folders_the_first_named_still_wins_a_setting(layout):
+    """The rule above is about what was in the store before the import began,
+    not what an earlier folder of the same import wrote: taking it per folder
+    would hand a clash to the lower-priority folder."""
+    real, stale = layout["tmp"] / "real", layout["home_data"]
+    _write(real / "settings.json", {"model": "current"})
+    _write(stale / "settings.json", {"model": "stale", "agent_name": "Only-here"})
+
+    await importer.import_sources([real, stale])
+
+    settings = await _settings()
+    assert settings["model"] == "current"
+    assert settings["agent_name"] == "Only-here"

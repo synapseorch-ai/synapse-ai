@@ -1209,18 +1209,7 @@ def _start_command(
     _ensure_jwt_secret()
     _ensure_access_token()
 
-    # First run — nothing configured yet, so run the wizard before starting.
-    # Only with someone at a terminal to answer it: under a service manager
-    # (start on login) the wizard's first read hits end-of-input and exits 0,
-    # which used to end the start silently. The app shows what is missing.
-    from synapse import _store
-    # (pythonw — start on login on Windows — has no stdin at all.)
-    if sys.stdin is not None and sys.stdin.isatty() and not _store.is_configured():
-        try:
-            from synapse import setup_wizard
-            setup_wizard.run()
-        except Exception as e:
-            print(f"Note: setup wizard error ({e}). Run 'synapse setup' to configure.")
+    _first_run_setup()
 
     # The bundled UI reads the backend's address when it starts (BACKEND_URL,
     # set by `start_frontend`), so the backend runs on the port asked for. It
@@ -1490,6 +1479,45 @@ def _setup_apply_command() -> None:
     with _quiet_stdout():
         agent = _store.run(_apply)
     print(_json.dumps({"saved": sorted(values), "ignored": ignored, "default_agent": agent}))
+
+
+def _first_run_setup() -> None:
+    """First run, nothing configured: bring a 1.x install's data across, then ask what is still missing.
+
+    Only with someone at a terminal to answer: under a service manager (start
+    on login) the wizard's first read hits end-of-input and exits 0, which used
+    to end the start silently, and pythonw (start on login on Windows) has no
+    stdin at all. The app shows what is missing.
+
+    A 1.x pip install upgraded with `pip install --upgrade` reaches here with an
+    empty database and its answers still in JSON. The backend imports that JSON
+    when it boots — after this point — so the wizard asked everything again and
+    the import then wrote the 1.x values over the new answers (IU1). Importing
+    first is what the installer has always done (migrate before setup --apply).
+    """
+    from synapse import _store
+
+    if sys.stdin is None or not sys.stdin.isatty() or _store.is_configured():
+        return
+    try:
+        with _quiet_stdout():
+            counts = _store.run(_import_legacy)
+    except Exception as e:
+        counts = None
+        print(f"Note: your Synapse 1.x data could not be brought across yet ({e}); "
+              "Synapse tries again when it starts.")
+    if counts:
+        moved = [f"{counts[k]} {name}" for k, name in (("user_agents", "agents"),
+                                                       ("orchestrations", "orchestrations"),
+                                                       ("chat_sessions", "chats")) if counts.get(k)]
+        print(f"Brought your Synapse 1.x data across{': ' + ', '.join(moved) if moved else ''}.")
+        if _store.is_configured():
+            return
+    try:
+        from synapse import setup_wizard
+        setup_wizard.run()
+    except Exception as e:
+        print(f"Note: setup wizard error ({e}). Run 'synapse setup' to configure.")
 
 
 def _get_current_version() -> str:

@@ -360,3 +360,60 @@ def test_logs_prints_the_tail(monkeypatch, capsys, tmp_path):
 
     assert out.split() == ["l97", "l98", "l99"]
     assert "No backend log yet" in _run(monkeypatch, capsys, ["logs"])
+
+
+# ── the first start at a terminal (IU1) ──────────────────────────────────────
+
+class _Terminal(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def _first_run(monkeypatch, configured_after_import: bool, imported):
+    """The wizard's seams: is the store set up, did an import run, did the wizard."""
+    state = {"configured": False, "order": []}
+
+    def run(factory):
+        state["order"].append("import")
+        if configured_after_import:
+            state["configured"] = True
+        return imported
+
+    monkeypatch.setattr("synapse._store.is_configured", lambda: state["configured"])
+    monkeypatch.setattr("synapse._store.run", run)
+    monkeypatch.setattr("synapse.setup_wizard.run", lambda: state["order"].append("wizard"))
+    monkeypatch.setattr(sys, "stdin", _Terminal(""))
+    return state
+
+
+def test_a_pip_upgraded_1x_brings_its_answers_across_before_any_question(monkeypatch, capsys):
+    """`pip install --upgrade` gives 2.0 an empty database and leaves 1.x's
+    answers in JSON. The wizard used to ask them all again, then the backend's
+    boot import wrote the 1.x values over the new answers (IU1, measured in a
+    container). Import first, as the installer does; ask only what is missing."""
+    state = _first_run(monkeypatch, configured_after_import=True,
+                       imported={"user_agents": 2, "settings": 37, "chat_sessions": 1})
+
+    cli._first_run_setup()
+
+    assert state["order"] == ["import"]
+    out = capsys.readouterr().out
+    assert "Synapse 1.x" in out and "2 agents" in out
+
+
+def test_with_nothing_to_bring_across_the_wizard_still_asks(monkeypatch):
+    state = _first_run(monkeypatch, configured_after_import=False, imported=None)
+
+    cli._first_run_setup()
+
+    assert state["order"] == ["import", "wizard"]
+
+
+def test_a_configured_install_neither_imports_nor_asks(monkeypatch):
+    state = _first_run(monkeypatch, configured_after_import=False, imported=None)
+    state["configured"] = True
+
+    cli._first_run_setup()
+
+    assert state["order"] == []
+

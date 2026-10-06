@@ -9,6 +9,8 @@ becomes a support thread for every self-hoster who missed it.
 
 Runs at startup. Does nothing at all when the store already holds data, so it
 is safe to call on every boot and cannot overwrite work done since the import.
+Settings do not count as data there (a fresh install writes some first), so a
+setting already in the store is kept and the file only fills in the rest.
 On success the folder is renamed to `data.migrated/` rather than deleted: if
 something did not come across, the original is still there, and the rename is
 also what stops the import running twice.
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,6 +37,20 @@ _SOURCES = (
     "orchestrations", "user_agents", "custom_tools", "mcp_servers", "schedules",
     "usage_logs", "model_pricing", "settings",
 )
+
+#: The setting keys the store held when the current import run began
+#: (`import_sources`), so a later folder of the same run can still win a clash
+#: an earlier, lower-priority folder wrote.
+_settings_before: ContextVar[frozenset | None] = ContextVar("settings_before", default=None)
+
+
+async def _setting_keys(tenant_id: str) -> frozenset:
+    from core.store import session
+    from core.store.models import SettingDB
+
+    async with session() as s:
+        rows = await s.execute(select(SettingDB.key).where(SettingDB.tenant_id == tenant_id))
+    return frozenset(rows.scalars().all())
 
 
 def _legacy_data_dirs() -> list[Path]:
@@ -198,6 +215,13 @@ async def import_data_dir(data_dir: str | Path, tenant_id: str = DEFAULT_TENANT)
 
     root = Path(data_dir)
     counts = dict.fromkeys(_SOURCES, 0)
+    # A setting the store already has was written after the old install
+    # stopped — by the wizard, `synapse setup` or the app — so it is the newer
+    # answer. A 1.x pip install upgraded with pip asked its wizard first and
+    # then had every answer put back to the 1.x value here (IU1).
+    keep = _settings_before.get()
+    if keep is None:
+        keep = await _setting_keys(tenant_id)
     # Not in _SOURCES: chat history is a directory of per-session files rather
     # than one file at the root, so it does not take part in the "is there
     # anything here to import" check.
@@ -401,6 +425,8 @@ async def import_data_dir(data_dir: str | Path, tenant_id: str = DEFAULT_TENANT)
         # ── settings ────────────────────────────────────────────────────────
         settings = _read(root / "settings.json") or {}
         for key, value in (settings.items() if isinstance(settings, dict) else []):
+            if key in keep:
+                continue
             await upsert(
                 s, SettingDB,
                 values={"tenant_id": tenant_id, "key": key, "value": json.dumps(value)},
@@ -490,22 +516,26 @@ async def import_sources(roots, tenant_id: str = DEFAULT_TENANT) -> list[dict]:
     from core.store.legacy_files import import_legacy_files
 
     reports: list[dict] = []
-    for root in reversed([Path(r) for r in roots]):
-        try:
-            counts = await import_data_dir(root, tenant_id)
-            files = import_legacy_files(root)
-        except Exception as exc:
-            reports.append({"path": str(root), "error": f"{type(exc).__name__}: {exc}"})
-            continue
-        try:
-            where = _retire(root)
-        except OSError as exc:
-            # The data is in the store either way; retiring the files is only
-            # what stops a second import, and `store_is_empty()` does that too.
-            print(f"[import] imported, but could not retire {root}: {exc}", flush=True)
-            where = str(root)
-        reports.append({"path": str(root), "counts": counts, "files": files,
-                        "retired_to": where})
+    token = _settings_before.set(await _setting_keys(tenant_id))
+    try:
+        for root in reversed([Path(r) for r in roots]):
+            try:
+                counts = await import_data_dir(root, tenant_id)
+                files = import_legacy_files(root)
+            except Exception as exc:
+                reports.append({"path": str(root), "error": f"{type(exc).__name__}: {exc}"})
+                continue
+            try:
+                where = _retire(root)
+            except OSError as exc:
+                # The data is in the store either way; retiring the files is only
+                # what stops a second import, and `store_is_empty()` does that too.
+                print(f"[import] imported, but could not retire {root}: {exc}", flush=True)
+                where = str(root)
+            reports.append({"path": str(root), "counts": counts, "files": files,
+                            "retired_to": where})
+    finally:
+        _settings_before.reset(token)
     reports.reverse()
     return reports
 
