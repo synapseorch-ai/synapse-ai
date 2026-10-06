@@ -128,7 +128,7 @@ function describeSchedule(s: Schedule): string {
 }
 
 function fmtTime(iso: string | null | undefined): string {
-    if (!iso) return '--';
+    if (!iso) return '—';
     try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
 
@@ -497,7 +497,7 @@ export const SchedulesTab = () => {
                             <h2 className="text-sm font-semibold text-white">
                                 {editingId ? 'Edit Schedule' : 'New Schedule'}
                             </h2>
-                            <button onClick={closeForm} className="text-text-faint hover:text-white text-xs">? Cancel</button>
+                            <button onClick={closeForm} className="text-text-faint hover:text-white text-xs">✕ Cancel</button>
                         </div>
 
                         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
@@ -517,20 +517,20 @@ export const SchedulesTab = () => {
                                 {showInstructions && (
                                     <div className="px-4 pb-4 text-xs text-text-faint space-y-3 border-t border-zinc-800">
                                         <div className="pt-3">
-                                            <p className="text-zinc-300 font-semibold mb-1">Interval -- run every N minutes/hours/days</p>
+                                            <p className="text-zinc-300 font-semibold mb-1">Interval — run every N minutes/hours/days</p>
                                             <ul className="space-y-1 text-text-faint">
-                                                <li>? <span className="text-zinc-400">Every 5 minutes</span> -- monitor a feed, poll an API</li>
-                                                <li>? <span className="text-zinc-400">Every 2 hours</span> -- periodic summaries or reports</li>
-                                                <li>? <span className="text-zinc-400">Every 1 day</span> -- daily digest or cleanup tasks</li>
+                                                <li>• <span className="text-zinc-400">Every 5 minutes</span> — monitor a feed, poll an API</li>
+                                                <li>• <span className="text-zinc-400">Every 2 hours</span> — periodic summaries or reports</li>
+                                                <li>• <span className="text-zinc-400">Every 1 day</span> — daily digest or cleanup tasks</li>
                                             </ul>
                                             <p className="text-text-faint mt-1.5">Interval restarts from the last run time. If the server was offline and the schedule is overdue, it runs immediately on restart.</p>
                                         </div>
                                         <div>
-                                            <p className="text-zinc-300 font-semibold mb-1">Cron / Fixed Time -- run at specific times</p>
+                                            <p className="text-zinc-300 font-semibold mb-1">Cron / Fixed Time — run at specific times</p>
                                             <ul className="space-y-1 text-text-faint">
-                                                <li>? <span className="text-zinc-400">Every day at 9 AM</span> -- morning standup report</li>
-                                                <li>? <span className="text-zinc-400">Every Monday at 6 PM</span> -- weekly digest</li>
-                                                <li>? <span className="text-zinc-400">1st of month</span> -- monthly invoice summary</li>
+                                                <li>• <span className="text-zinc-400">Every day at 9 AM</span> — morning standup report</li>
+                                                <li>• <span className="text-zinc-400">Every Monday at 6 PM</span> — weekly digest</li>
+                                                <li>• <span className="text-zinc-400">1st of month</span> — monthly invoice summary</li>
                                             </ul>
                                             <p className="text-text-faint mt-1.5">If a run was missed while offline, choose whether to run immediately or skip to the next scheduled time.</p>
                                         </div>
