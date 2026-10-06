@@ -193,9 +193,9 @@ class ScheduleManager:
     async def _on_startup(self) -> None:
         """
         On server start, evaluate all enabled schedules.
-        - Interval schedules overdue ? run immediately
-        - Cron schedules overdue ? apply missed_run_policy (run_immediately or skip)
-        - Never-run schedules ? compute next_run_at from now (run immediately for interval)
+        - Interval schedules overdue → run immediately
+        - Cron schedules overdue → apply missed_run_policy (run_immediately or skip)
+        - Never-run schedules → compute next_run_at from now (run immediately for interval)
         Writes an updated next_run_at for any schedule that needs recalculation.
         """
         schedules = await schedule_store.load()
@@ -210,10 +210,10 @@ class ScheduleManager:
             if not next_run_str:
                 # Never scheduled before -- compute next_run_at
                 if s.get("schedule_type") == "interval":
-                    # Interval with no history ? run immediately then set interval from now
+                    # Interval with no history → run immediately then set interval from now
                     asyncio.create_task(self._execute_schedule(s["id"]))
                 else:
-                    # Cron with no history ? compute from now, no immediate run
+                    # Cron with no history → compute from now, no immediate run
                     await schedule_store.set_next_run(s["id"], compute_next_run(s, now))
                 continue
 

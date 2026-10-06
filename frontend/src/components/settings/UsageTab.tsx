@@ -137,7 +137,7 @@ function fmtKB(chars: number) {
     return kb >= 1 ? `${kb.toFixed(1)}KB` : `${chars}B`;
 }
 function fmtDate(ts: string) {
-    if (!ts) return '--';
+    if (!ts) return '—';
     try {
         return new Date(ts).toLocaleString(undefined, {
             month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -145,7 +145,7 @@ function fmtDate(ts: string) {
     } catch { return ts; }
 }
 function fmtTime(ts: string) {
-    if (!ts) return '--';
+    if (!ts) return '—';
     try {
         return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch { return ts; }
@@ -545,12 +545,12 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                                         <td className="py-2.5 pr-4 max-w-[130px]">
                                             {log.tool_name
                                                 ? <span className="text-sky-400 font-mono truncate block" title={log.tool_name}>{log.tool_name}</span>
-                                                : <span className="text-text-faint">--</span>}
+                                                : <span className="text-text-faint">—</span>}
                                         </td>
                                         <td className="py-2.5 pr-3 text-right text-zinc-300 tabular-nums">{fmtKB(log.context_chars)}</td>
                                         <td className="py-2.5 pr-3 text-right tabular-nums">
                                             <span className={delta > 0 ? 'text-amber-400 font-medium' : 'text-text-faint'}>
-                                                {delta > 0 ? `+${fmtKB(delta)}` : '--'}
+                                                {delta > 0 ? `+${fmtKB(delta)}` : '—'}
                                             </span>
                                         </td>
                                         <td className="py-2.5 pr-3 text-right text-zinc-400 tabular-nums">{fmtK(log.input_tokens)}</td>
@@ -569,7 +569,7 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                                                     {usd(savings)}
                                                 </span>
                                             ) : (
-                                                <span className="text-text-faint">--</span>
+                                                <span className="text-text-faint">—</span>
                                             )}
                                         </td>
                                         <td className="py-2.5 pr-3 text-right font-medium tabular-nums text-text">{usd(log.estimated_cost)}</td>
@@ -607,8 +607,8 @@ function CompactionRow({ log, idx }: { log: IndexedLog; idx: number }) {
             <td colSpan={3} className="py-2.5 pr-3 text-right text-cyan-400 font-semibold tabular-nums text-xs">
                 -{reductionPct}%
             </td>
-            <td className="py-2.5 pr-3 text-right text-text-faint text-xs">--</td>
-            <td className="py-2.5 pr-3 text-right text-text-faint text-xs">--</td>
+            <td className="py-2.5 pr-3 text-right text-text-faint text-xs">—</td>
+            <td className="py-2.5 pr-3 text-right text-text-faint text-xs">—</td>
         </tr>
     );
 }
@@ -721,7 +721,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                 <div className="flex items-center gap-3">
                     <Info className="w-4 h-4 text-zinc-400" />
                     <span className="text-sm font-semibold text-white">Pricing Reference</span>
-                    <span className="text-xs text-text-faint">-- edit rates used for cost calculation (USD / 1M tokens)</span>
+                    <span className="text-xs text-text-faint">— edit rates used for cost calculation (USD / 1M tokens)</span>
                 </div>
                 <div className="flex items-center gap-3">
                     {saveMsg && (
@@ -1065,7 +1065,7 @@ export function UsageTab() {
                                 <div className="flex items-center gap-2">
                                     <Clock className="w-4 h-4 text-zinc-400" />
                                     <h2 className="text-sm font-semibold text-white tracking-wide">Session History</h2>
-                                    <span className="text-xs text-text-faint">{sessions.length} sessions -- click to expand per-turn breakdown</span>
+                                    <span className="text-xs text-text-faint">{sessions.length} sessions — click to expand per-turn breakdown</span>
                                 </div>
                                 <div className="flex items-center gap-3 text-xs text-text-faint flex-wrap">
                                     <span className="flex items-center gap-1.5"><Zap className="w-3 h-3 text-emerald-400" /> Chat</span>
@@ -1145,7 +1145,7 @@ export function UsageTab() {
                         <p>
                             Token counts are sourced from API response metadata for OpenAI, Anthropic, Gemini, Grok, and DeepSeek.
                             Ollama uses its <code className="font-code">eval_count</code> field. AWS Bedrock does not expose token counts directly,
-                            so tokens are estimated from character length (chars / 4) -- costs for Bedrock calls may be less accurate.
+                            so tokens are estimated from character length (chars ÷ 4) — costs for Bedrock calls may be less accurate.
                             Edit prices above and click <strong>Save Pricing</strong> to update rates used for future cost calculations.
                         </p>
                     </div>

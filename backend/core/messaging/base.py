@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 # Built-in commands handled before routing to agent
 _BUILTIN_COMMANDS = {"/start", "/help", "/reset", "/agent", "/agents"}
 
-HELP_TEXT = """? *Synapse AI Bot*
+HELP_TEXT = """🤖 *Synapse AI Bot*
 
 Available commands:
-/start -- Show this welcome message
-/help -- Show available commands
-/reset -- Clear your conversation memory
-/agent <name> -- Switch to another agent assigned to this channel (if multi-agent mode is on)
-/agents -- List the agents assigned to this channel (if multi-agent mode is on)
+/start — Show this welcome message
+/help — Show available commands
+/reset — Clear your conversation memory
+/agent <name> — Switch to another agent assigned to this channel (if multi-agent mode is on)
+/agents — List the agents assigned to this channel (if multi-agent mode is on)
 
 Just send any message to chat with the agent!"""
 
@@ -156,7 +156,7 @@ class MessagingAdapter(ABC):
             # message achieves a soft reset. For now, tell the user.
             await self.send_message(
                 chat_id,
-                "? Conversation reset. Your next message will start fresh."
+                "✅ Conversation reset. Your next message will start fresh."
             )
             # Signal manager to clear per-chat active agent selection
             self.manager.reset_chat_agent(self.channel_id, chat_id)
@@ -166,7 +166,7 @@ class MessagingAdapter(ABC):
             if not self.multi_agent_mode:
                 await self.send_message(
                     chat_id,
-                    "?? Multi-agent mode is disabled for this bot."
+                    "ℹ️ Multi-agent mode is disabled for this bot."
                 )
                 return True
             agent_list = await self.manager.list_agent_names(self.channel_id)
@@ -183,7 +183,7 @@ class MessagingAdapter(ABC):
                 )
             else:
                 lines = ["Agents on this channel (the first one answers by default):"]
-                lines += [f"? {name}" for name in agent_list]
+                lines += [f"• {name}" for name in agent_list]
                 await self.send_message(chat_id, "\n".join(lines))
             return True
 
@@ -191,7 +191,7 @@ class MessagingAdapter(ABC):
             if not self.multi_agent_mode:
                 await self.send_message(
                     chat_id,
-                    "?? Multi-agent mode is disabled for this bot."
+                    "ℹ️ Multi-agent mode is disabled for this bot."
                 )
                 return True
             agent_name = args.strip()
@@ -201,12 +201,12 @@ class MessagingAdapter(ABC):
             ok = await self.manager.switch_agent(self.channel_id, chat_id, agent_name)
             if ok:
                 await self.send_message(
-                    chat_id, f"? Switched to agent: *{agent_name}*"
+                    chat_id, f"✅ Switched to agent: *{agent_name}*"
                 )
             else:
                 await self.send_message(
                     chat_id,
-                    f"? Agent '{agent_name}' is not assigned to this channel. "
+                    f"❌ Agent '{agent_name}' is not assigned to this channel. "
                     "Use /agents to see who is."
                 )
             return True
@@ -324,7 +324,7 @@ class MessagingAdapter(ABC):
             )
         except Exception as e:
             logger.error("[%s] Agent run failed: %s", self.platform, e)
-            response = "?? An error occurred while processing your message. Please try again."
+            response = "⚠️ An error occurred while processing your message. Please try again."
 
         # -- 4. Send response ---------------------------------------------
         if response:

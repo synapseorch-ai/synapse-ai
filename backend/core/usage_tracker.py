@@ -168,7 +168,7 @@ async def seed_pricing_table() -> int:
 # -------------------------------------------------------------
 
 def estimate_tokens_from_text(text: str) -> int:
-    """Rough heuristic: 1 token ? 4 characters. Used when the API doesn't return usage."""
+    """Rough heuristic: 1 token ≈ 4 characters. Used when the API doesn't return usage."""
     if not text:
         return 0
     return max(1, len(text) // 4)

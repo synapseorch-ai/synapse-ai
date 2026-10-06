@@ -161,3 +161,41 @@ class TestResolutionIsPerMessage:
         await adapter._dispatch("chat1", "hello", "user1")
         assert ran == []
         assert adapter.sent[-1] == NO_AGENT_MESSAGE
+
+
+class TestWhatTheBotSays:
+    """F390: an ASCII pass (00eb45d) turned the bot's glyphs into "?" — "? Conversation reset", "?? Multi-agent
+    mode is disabled" — and that is what Telegram, Slack and Discord users read."""
+
+    async def test_the_commands_answer_with_their_glyphs(self, manager):
+        from core.messaging.base import HELP_TEXT
+
+        a, b = await _agents("Alpha", "Beta")
+        ch = await _channel(multi_agent_mode=True)
+        await channel_store.set_assignments(ch["id"], [a["id"], b["id"]])
+        adapter = _adapter(await channel_store.get_channel(ch["id"]), manager)
+        for command, args in (("/help", ""), ("/reset", ""), ("/agents", ""), ("/agent", "Beta"), ("/agent", "Nobody")):
+            await adapter._handle_command("chat1", command, args, "sess")
+        help_text, reset, listed, switched, refused = adapter.sent
+        assert help_text == HELP_TEXT and HELP_TEXT.startswith("🤖 *Synapse AI Bot*") and "/reset — Clear" in HELP_TEXT
+        assert reset.startswith("✅ Conversation reset.")
+        assert listed.splitlines()[1:] == ["• Alpha", "• Beta"]
+        assert switched == "✅ Switched to agent: *Beta*"
+        assert refused.startswith("❌ Agent 'Nobody' is not assigned")
+
+    async def test_multi_agent_mode_off_says_so_with_its_glyph(self, manager):
+        adapter = _adapter(await channel_store.get_channel((await _channel())["id"]), manager)
+        await adapter._handle_command("chat1", "/agents", "", "sess")
+        assert adapter.sent == ["ℹ️ Multi-agent mode is disabled for this bot."]
+
+    def test_no_reply_leads_with_a_lost_glyph(self):
+        import ast
+        import inspect
+        import re
+
+        from core.messaging import base
+
+        lost = [node.value for node in ast.walk(ast.parse(inspect.getsource(base)))
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and re.match(r"\?+ \S", node.value)]
+        assert lost == []
