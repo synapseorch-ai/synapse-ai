@@ -576,6 +576,30 @@ async def test_at_its_list_price_the_same_rerank_fits_under_the_cap():
     assert len(reranker.calls) == 1 and response.degraded == []
 
 
+async def _voyage_rerank_with_room(room_usd: float) -> FakeReranker:
+    """A base reranking with Voyage, priced by the token ($0.05 per 1M), with `room_usd` left under its cap."""
+    await _embedded_corpus(budget_monthly_usd=0.01, rerank={"enabled": True, "model": "voyage.rerank-3"})
+    await _spent(CONTRACTS.id, 0.01 - room_usd)
+    reranker = FakeReranker()
+    seams.set_reranker(reranker)
+    return reranker
+
+
+async def test_a_rerank_priced_by_the_token_is_counted_before_it_is_paid_for():
+    """F373: a Voyage rerank counted $0 in the check before a search, so a base at its cap paid for one anyway."""
+    reranker = await _voyage_rerank_with_room(0.000_002)  # two micro-dollars: less than any pool's tokens
+    response = await _search(query=QUERY, include_trace=True)
+    assert reranker.calls == [] and response.trace.rerank is None
+    assert "budget_paused" in response.degraded and {leg.leg for leg in response.trace.legs} == {"lexical", "vector"}
+    assert "Contracts" in next(d.detail for d in response.trace.degraded if d.code == "budget_paused")
+
+
+async def test_room_for_its_tokens_and_the_voyage_rerank_runs():
+    reranker = await _voyage_rerank_with_room(0.001)
+    response = await _search(query=QUERY, include_trace=True)
+    assert len(reranker.calls) == 1 and response.degraded == []
+
+
 async def test_only_the_base_at_its_cap_loses_its_vector_leg():
     embedder = await _embedded_corpus(budget_monthly_usd=0.01)
     await _spent(CONTRACTS.id, 0.02)

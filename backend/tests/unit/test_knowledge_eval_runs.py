@@ -330,6 +330,38 @@ class TestMoney:
         charged = rerank_line(await RUNS.estimate(kb, EvalRunRequest(set_id=made.id)))
         assert charged.est_usd == pytest.approx(0.0025 * 3) and charged.counts_toward_budget
 
+    async def test_a_rerank_priced_by_the_token_is_estimated_not_unpriced(self, jobs):
+        """F373: a Voyage rerank's line said unpriced, and the run's budget check counted it as $0."""
+        from core.knowledge.chunker import estimate_tokens
+        from core.knowledge.evals_runs import eval_top_k
+        from core.knowledge.kb_settings import Rerank
+
+        kb = await policies(jobs)
+        made = await question_set(kb)
+        kb = kb.model_copy(update={"rerank": Rerank(enabled=True, model="voyage.rerank-3")})
+        est = await RUNS.estimate(kb, EvalRunRequest(set_id=made.id))
+        line = next(line for line in est.lines if line.model == "voyage.rerank-3")
+        window = min(max(eval_top_k(kb), kb.rerank.candidates), 100)
+        tokens = sum(window * (estimate_tokens(c["question"]) + kb.chunking.target_tokens)
+                     for c in await evals_cases(kb.id, made.id))
+        assert "voyage.rerank-3" not in est.unpriced and line.counts_toward_budget
+        assert line.est_usd == pytest.approx(tokens * 0.05 / 1_000_000)
+
+    async def test_a_rerank_nothing_prices_is_still_unpriced(self, jobs):
+        from core.knowledge.kb_settings import Rerank
+
+        kb = await policies(jobs)
+        made = await question_set(kb)
+        kb = kb.model_copy(update={"rerank": Rerank(enabled=True, model="jina.jina-reranker-v2")})
+        est = await RUNS.estimate(kb, EvalRunRequest(set_id=made.id))
+        assert est.unpriced == ["jina.jina-reranker-v2"]
+
+
+async def evals_cases(kb_id: str, set_id: str) -> list[dict]:
+    from core.knowledge import evals
+
+    return await evals.cases_of(kb_id, set_id)
+
 
 class TestRoutes:
     async def test_a_run_through_the_api(self, jobs, client):

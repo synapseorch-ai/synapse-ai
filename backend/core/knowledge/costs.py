@@ -36,7 +36,7 @@ Imports are function-local, as in the rest of the package.
 from __future__ import annotations
 
 import math
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -138,6 +138,23 @@ async def rerank_usd_per_search(model: str) -> float | None:
         if rate is not None and rate.per_unit is not None:
             return rate.per_unit
     return route.usd_per_search
+
+
+async def rerank_estimate_usd(model: str, *, query_tokens: int, document_tokens: Sequence[int]) -> float | None:
+    """What one rerank of these documents is expected to cost, before it is made: a search unit's price, or for a
+    reranker priced by the token (Voyage) the query once per document plus the documents, at its rate (F373).
+    None for a model nothing prices."""
+    from core.knowledge.rerankers import _token_rate, route_for
+
+    per_search = await rerank_usd_per_search(model)
+    if per_search is not None:
+        return per_search
+    route = route_for(model or "")
+    rate = None if route is None else _token_rate(route, (model or "").strip()[len(route.prefix):])
+    if rate is None:
+        return None
+    tokens = len(document_tokens) * max(0, query_tokens) + sum(max(0, n) for n in document_tokens)
+    return tokens * rate / 1_000_000
 
 
 async def chat_usd(model: str, input_tokens: int, output_tokens: int, *, cache_read: int = 0,

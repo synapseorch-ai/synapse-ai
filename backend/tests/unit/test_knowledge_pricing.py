@@ -88,6 +88,16 @@ async def test_a_model_the_gateway_does_not_serve_never_asks_the_pricer(pricer, 
     assert pricer.asked == []
 
 
+async def test_a_rerank_is_estimated_by_the_search_or_by_its_tokens():
+    """F373: a search unit's price as it is; a per-token reranker's query once per document plus the documents."""
+    assert await costs.rerank_estimate_usd("cohere.rerank-v3.5", query_tokens=10, document_tokens=[500] * 50) == 0.002
+    assert await costs.rerank_estimate_usd("voyage.rerank-3-lite", query_tokens=10, document_tokens=[90, 100]) == (
+        pytest.approx((2 * 10 + 190) * 0.02 / 1e6))
+    assert await costs.rerank_estimate_usd("voyage.rerank-3", query_tokens=10, document_tokens=[]) == 0.0
+    assert await costs.rerank_estimate_usd("jina.jina-reranker-v2", query_tokens=10, document_tokens=[100]) is None
+    assert await costs.rerank_estimate_usd("", query_tokens=10, document_tokens=[100]) is None
+
+
 async def test_a_platform_model_the_deployment_does_not_price_keeps_its_list_price(pricer):
     assert await budgets.embed_rate("synapse.titan-embed-text-v1") == (0.10, "platform")
     assert await costs.ocr_usd_per_page(_Ocr(engine="another-ocr")) == 0.0015

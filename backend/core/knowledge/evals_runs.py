@@ -204,8 +204,9 @@ async def estimate(kb: KnowledgeBase, body: EvalRunRequest, settings: Mapping[st
     from core.knowledge import evals
     from core.knowledge.api_models import EvalCostLine, EvalEstimate
     from core.knowledge.budgets import embed_estimate_usd
-    from core.knowledge.costs import rerank_usd_per_search
+    from core.knowledge.costs import rerank_estimate_usd
     from core.knowledge.ledger import kb_month_spend
+    from core.knowledge.search import MAX_RERANK, RERANK_TEXT_CHARS
 
     cases = await evals.cases_of(kb.id, body.set_id)
     questions = [c["question"] for c in cases]
@@ -219,9 +220,14 @@ async def estimate(kb: KnowledgeBase, body: EvalRunRequest, settings: Mapping[st
                                   counts_toward_budget=True))
     on, model = rerank_plan(kb, body.rerank, settings)
     if on and questions:
-        rate = await rerank_usd_per_search(model or "")
+        # Each search reranks up to `window` passages; one priced by the token is estimated at the base's chunk size
+        # (F373), since no passage is known before the search.
+        window = min(max(eval_top_k(kb), kb.rerank.candidates), MAX_RERANK)
+        passage = min(kb.chunking.target_tokens, RERANK_TEXT_CHARS // 4)
+        each = [await rerank_estimate_usd(model or "", query_tokens=_tokens(q), document_tokens=[passage] * window)
+                for q in questions]
         lines.append(EvalCostLine(part="search", model=model or "", calls=len(questions) * len(snaps),
-                                  est_usd=None if rate is None else rate * len(questions) * len(snaps),
+                                  est_usd=None if None in each else sum(each) * len(snaps),
                                   counts_toward_budget=True))
     if body.judge is not None:
         from core.knowledge import evals_judge

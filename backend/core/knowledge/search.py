@@ -413,11 +413,11 @@ async def search(req: SearchRequest, *, origin: Origin, label_start: int = 1,
     from core.knowledge.costs import rerank_usd_per_search
 
     over: set[str] = set()
+    embed_models = {kb.id: (info.get(snapshot_of.get(kb.id) or "") or {}).get("embed_model") for kb in kbs}
+    # A search unit's price is known now; a rerank priced by the token is checked at the rerank, on its pool (F373).
+    rerank_quote = await rerank_usd_per_search(rerank_model or "") if rerank_on else None
     if vector_groups or rerank_on:  # nothing else in a search costs money
-        rerank_usd = (await rerank_usd_per_search(rerank_model or "") or 0.0) if rerank_on else 0.0
-        over = await _capped(kbs, query=req.query, models={
-            kb.id: (info.get(snapshot_of.get(kb.id) or "") or {}).get("embed_model") for kb in kbs},
-            rerank_usd=float(rerank_usd))
+        over = await _capped(kbs, query=req.query, models=embed_models, rerank_usd=float(rerank_quote or 0.0))
     if over:
         _note(degraded, "budget_paused", "monthly budget reached: " + ", ".join(by_id[k].name for k in sorted(over)))
         vector_groups = {key: kept for key, scopes in vector_groups.items()
@@ -535,11 +535,23 @@ async def search(req: SearchRequest, *, origin: Origin, label_start: int = 1,
         window = min(max(top_k, max(kb.rerank.candidates for kb in kbs)),
                      int(getattr(reranker, "max_documents", MAX_RERANK) or MAX_RERANK), MAX_RERANK)
         pool, beyond = candidates[:window], candidates[window:]
+        texts = [_rerank_text(view) for *_, view in pool]
+        payer = by_id.get(pool[0][0].kb_id)
+        if rerank_quote is None and payer is not None and payer.budget_monthly_usd is not None:
+            from core.knowledge.chunker import estimate_tokens
+            from core.knowledge.costs import rerank_estimate_usd
+
+            estimate = await rerank_estimate_usd(rerank_model or "", query_tokens=estimate_tokens(req.query),
+                                                 document_tokens=[estimate_tokens(t) for t in texts])
+            if estimate and await _capped([payer], query=req.query, models=embed_models, rerank_usd=estimate):
+                _note(degraded, "budget_paused", "monthly budget reached: " + payer.name)
+                rerank_on = False  # priced by the token: this pool would cross its base's cap (F373)
+    if rerank_on and candidates:
         top_n = min(len(pool), max(top_k, max(kb.rerank.top_n for kb in kbs)))
         who = attribution(Scope(pool[0][0].kb_id, pool[0][0].snapshot_id))
         t_rerank = time.monotonic()
         try:
-            answer = await reranker.rerank(req.query, [_rerank_text(view) for *_, view in pool],
+            answer = await reranker.rerank(req.query, texts,
                                            spec=RerankSpec(model=rerank_model, top_n=top_n), settings=rerank_cfg,
                                            attribution=who)
         except Exception as exc:  # noqa: BLE001 — any reranker's failure keeps the fused order, and says why
