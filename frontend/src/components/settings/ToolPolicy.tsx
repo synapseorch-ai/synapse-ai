@@ -125,7 +125,7 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
                                     aria-pressed={selected === undefined}
                                     className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors disabled:opacity-50 ${
                                         selected === undefined
-                                            ? 'border-accent bg-accent/10 text-accent'
+                                            ? 'border-accent bg-accent/10 text-accent-ink'
                                             : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
                                     }`}
                                 >
@@ -143,7 +143,7 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
                                         aria-pressed={active}
                                         className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors disabled:opacity-50 ${
                                             active
-                                                ? 'border-accent bg-accent/10 text-accent'
+                                                ? 'border-accent bg-accent/10 text-accent-ink'
                                                 : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
                                         }`}
                                     >

@@ -545,7 +545,7 @@ export const CustomToolsTab = ({
                                 const allGood = dockerStatus.installed && dockerStatus.running && dockerStatus.image_exists;
                                 if (allGood && !dockerBuildError) {
                                     return (
-                                        <div className="flex items-center gap-2 px-3 py-2 bg-success/20 border border-success/40 rounded-md text-xs text-success">
+                                        <div className="flex items-center gap-2 px-3 py-2 bg-success-subtle border border-success/40 rounded-md text-xs text-success">
                                             <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                                             Docker sandbox is ready
                                             <button onClick={checkDockerStatus} disabled={dockerChecking} className="ml-auto text-success hover:opacity-80 transition-opacity disabled:opacity-50">

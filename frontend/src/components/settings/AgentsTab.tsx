@@ -704,7 +704,7 @@ export const AgentsTab = ({
                                                                     aria-pressed={active}
                                                                     className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors ${
                                                                         active
-                                                                            ? 'border-accent bg-accent/10 text-accent'
+                                                                            ? 'border-accent bg-accent/10 text-accent-ink'
                                                                             : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
                                                                     }`}
                                                                 >
@@ -870,7 +870,7 @@ export const AgentsTab = ({
                                                                 <span className="block text-xs font-bold text-text">All Agents</span>
                                                                 <span className="block text-2xs text-text-faint">Allow delegation to any available agent</span>
                                                             </span>
-                                                            {allSelected && <span className="text-2xs px-1.5 py-0.5 bg-success/20 text-success border border-success/40 rounded-md">ACTIVE</span>}
+                                                            {allSelected && <span className="text-2xs px-1.5 py-0.5 bg-success-subtle text-success border border-success/40 rounded-md">ACTIVE</span>}
                                                         </label>
 
                                                         {/* Individual agents */}
@@ -965,7 +965,7 @@ export const AgentsTab = ({
                                                                     <div className="p-4 flex items-center gap-2">
                                                                         <Lock className="w-3 h-3 text-accent flex-shrink-0" aria-hidden />
                                                                         <span className="text-xs font-bold text-text truncate flex-1">{cap.label}</span>
-                                                                        <span className="text-2xs px-1.5 py-0.5 bg-accent/50 text-accent border border-accent/40 rounded-md">DEFAULT</span>
+                                                                        <span className="text-2xs px-1.5 py-0.5 bg-accent-subtle text-accent-ink border border-accent/40 rounded-md">DEFAULT</span>
                                                                     </div>
                                                                 ) : hasMultipleTools ? (
                                                                     <div className="p-4 flex items-center gap-2 transition-colors hover:bg-surface-2/30">
@@ -984,7 +984,7 @@ export const AgentsTab = ({
                                                                         >
                                                                             <span className="text-xs font-bold text-text truncate flex-1">{cap.label}</span>
                                                                             {cap.toolType === 'custom' && <span className="text-2xs px-1 bg-surface-2 text-text-muted rounded-md">CUSTOM</span>}
-                                                                            {cap.toolType === 'mcp' && <span className="text-2xs px-1 bg-accent/50 text-accent border border-accent/40 rounded-md">MCP</span>}
+                                                                            {cap.toolType === 'mcp' && <span className="text-2xs px-1 bg-accent-subtle text-accent-ink border border-accent/40 rounded-md">MCP</span>}
                                                                             <span className="text-2xs text-text-faint">{enabledCount}/{cap.tools.length}</span>
                                                                             {isExpanded
                                                                                 ? <ChevronDown className="h-3 w-3 text-text-faint flex-shrink-0" aria-hidden />
@@ -1001,7 +1001,7 @@ export const AgentsTab = ({
                                                                         />
                                                                         <span className="text-xs font-bold text-text truncate flex-1">{cap.label}</span>
                                                                         {cap.toolType === 'custom' && <span className="text-2xs px-1 bg-surface-2 text-text-muted rounded-md">CUSTOM</span>}
-                                                                        {cap.toolType === 'mcp' && <span className="text-2xs px-1 bg-accent/50 text-accent border border-accent/40 rounded-md">MCP</span>}
+                                                                        {cap.toolType === 'mcp' && <span className="text-2xs px-1 bg-accent-subtle text-accent-ink border border-accent/40 rounded-md">MCP</span>}
                                                                     </label>
                                                                 )}
 

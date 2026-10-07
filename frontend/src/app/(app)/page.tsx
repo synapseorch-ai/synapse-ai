@@ -223,7 +223,7 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
           <Markdown>{linkLabels(displayContent, msg.citations, anchor)}</Markdown>
           <button
             onClick={() => { navigator.clipboard.writeText(displayContent); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-accent-subtle hover:bg-accent/20 text-accent hover:text-accent-hover"
+            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-accent-subtle hover:bg-accent/20 text-accent-ink hover:text-accent-hover"
             title="Copy response"
           >
             {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
@@ -744,7 +744,7 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
             <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
               <div className="flex items-center gap-1.5 flex-wrap justify-center sm:justify-start">
                 {['Web research agent', 'Multi-step orchestration', 'MCP Servers'].map(label => (
-                  <span key={label} className="px-2 py-0.5 text-[10px] font-mono text-accent bg-accent/10 border border-accent/40 rounded-sm">
+                  <span key={label} className="px-2 py-0.5 text-[10px] font-mono text-accent-ink bg-accent-subtle border border-accent/40 rounded-sm">
                     {label}
                   </span>
                 ))}

@@ -114,12 +114,12 @@ const PLACEHOLDER_TOKENS: Record<string, { preset: string; needs: 'oauth' | 'tok
 
 const StatusBadge = ({ status }: { status?: string }) => {
     if (status === 'connecting') return (
-        <span className="flex items-center gap-1 text-2xs bg-accent/20 text-accent px-1.5 py-0.5 rounded-md border border-accent/30 uppercase">
+        <span className="flex items-center gap-1 text-2xs bg-accent-subtle text-accent-ink px-1.5 py-0.5 rounded-md border border-accent/30 uppercase">
             <Spinner size={10} /> Connecting
         </span>
     );
     if (status === 'connected') return (
-        <span className="flex items-center gap-1 text-2xs bg-success/20 text-success px-1.5 py-0.5 rounded-md border border-success/30 uppercase">
+        <span className="flex items-center gap-1 text-2xs bg-success-subtle text-success px-1.5 py-0.5 rounded-md border border-success/30 uppercase">
             <CheckCircle className="h-2.5 w-2.5" /> Active
         </span>
     );
@@ -137,7 +137,7 @@ const StatusBadge = ({ status }: { status?: string }) => {
 
 const TypePill = ({ type }: { type?: string }) => (
     type === 'remote'
-        ? <span className="flex items-center gap-1 text-2xs bg-accent/15 text-accent px-1.5 py-0.5 rounded-md border border-accent/25 uppercase"><Globe className="h-2 w-2" />Remote</span>
+        ? <span className="flex items-center gap-1 text-2xs bg-accent-subtle text-accent-ink px-1.5 py-0.5 rounded-md border border-accent/25 uppercase"><Globe className="h-2 w-2" />Remote</span>
         : <span className="flex items-center gap-1 text-2xs bg-surface-2 text-text-faint px-1.5 py-0.5 rounded-md border border-border-strong uppercase"><Terminal className="h-2 w-2" />Local</span>
 );
 

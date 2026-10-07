@@ -564,7 +564,7 @@ export const ModelsTab = ({
                                                         : `No CLI binary found in PATH for ${providerLabel(key)}.`
                                                     }
                                                 </div>
-                                                <div className="p-2.5 bg-accent/5 border border-accent/20 text-2xs text-accent leading-relaxed rounded-md">
+                                                <div className="p-2.5 bg-accent/5 border border-accent/20 text-2xs text-accent-ink leading-relaxed rounded-md">
                                                     <strong>No API key needed</strong> — uses your existing CLI session. Run the CLI manually first to authenticate.
                                                 </div>
                                                 <div className="flex flex-col gap-1">
@@ -662,7 +662,7 @@ export const ModelsTab = ({
                                 aria-pressed={active}
                                 className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors ${
                                     active
-                                        ? 'border-accent bg-accent/10 text-accent'
+                                        ? 'border-accent bg-accent/10 text-accent-ink'
                                         : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
                                 }`}
                             >

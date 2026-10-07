@@ -144,13 +144,13 @@ function copyToClipboard(text: string) {
 
 function StatusBadge({ status }: { status: string }) {
     const colors: Record<string, string> = {
-        online: 'text-success bg-success/10',
+        online: 'text-success bg-success-subtle',
         offline: 'text-danger bg-danger/10',
         draining: 'text-warning bg-warning/10',
-        ok: 'text-success bg-success/10',
+        ok: 'text-success bg-success-subtle',
         error: 'text-danger bg-danger/10',
-        completed: 'text-success bg-success/10',
-        running: 'text-accent bg-accent/10',
+        completed: 'text-success bg-success-subtle',
+        running: 'text-accent-ink bg-machine-subtle',
         failed: 'text-danger bg-danger/10',
         paused: 'text-person-ink bg-person-subtle',
         cancelled: 'text-text-muted bg-surface-2',

@@ -891,7 +891,7 @@ export const APIKeysTab = () => {
             {/* Toast */}
             {toast && (
                 <div className={`fixed top-6 right-6 z-50 flex items-center gap-2 px-4 py-3 text-sm font-medium shadow-lg
-                    ${toast.type === 'success' ? 'bg-success/20 text-success border border-success/30' : 'bg-danger/20 text-danger border border-danger/30'} rounded-md`}>
+                    ${toast.type === 'success' ? 'bg-success-subtle text-success border border-success/30' : 'bg-danger/20 text-danger border border-danger/30'} rounded-md`}>
                     {toast.type === 'success' ? <CheckCircle className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
                     {toast.message}
                 </div>

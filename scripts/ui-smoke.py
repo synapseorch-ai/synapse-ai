@@ -2979,6 +2979,48 @@ async def check_prepaint(browser) -> str:
         await ctx.close()
 
 
+#: Records the theme the first frame gets when nothing is saved.
+DEFAULT_THEME_PROBE = """(() => {
+  try { localStorage.removeItem('synapseTheme'); } catch (e) {}
+  new MutationObserver((m, o) => {
+    if (!document.body) return;
+    o.disconnect();
+    const h = document.documentElement;
+    window.__firstPaint = { theme: h.getAttribute('data-theme'), scheme: getComputedStyle(h).colorScheme };
+  }).observe(document, { childList: true, subtree: true });
+})()"""
+
+
+@check
+async def check_themedefault(browser) -> str:
+    """With no saved theme the app follows the OS, light or dark, from the first frame (M0a, D207).
+
+    Nothing saved used to mean dark whatever the OS said. Now a light OS paints
+    light and a dark OS dark, `color-scheme` follows, and nothing is written to
+    localStorage until someone picks a theme, so the OS keeps deciding.
+    """
+    seen = {}
+    for scheme in ("light", "dark"):
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]}, color_scheme=scheme)
+        await ctx.add_init_script(DEFAULT_THEME_PROBE)
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+            first = await page.evaluate("() => window.__firstPaint")
+            if not first or first["theme"] != scheme or first["scheme"] != scheme:
+                raise AssertionError(f"with nothing saved, a {scheme} OS paints {first}")
+            await asyncio.sleep(SETTLE)
+            saved = await page.evaluate("() => [document.documentElement.getAttribute('data-theme'), localStorage.getItem('synapseTheme')]")
+            if saved[0] != scheme:
+                raise AssertionError(f"after hydration a {scheme} OS shows {saved[0]!r}")
+            if saved[1] is not None:
+                raise AssertionError(f"a visit saved a theme nobody picked: {saved[1]!r}")
+            seen[scheme] = first["theme"]
+        finally:
+            await ctx.close()
+    return f"nothing saved: a light OS paints {seen['light']} and a dark OS {seen['dark']}, from the first frame, and nothing is saved"
+
+
 # ── chat and the builder (B5) ────────────────────────────────────────────────
 
 #: `/api/status` as the test says it is, for a page that must describe it.
