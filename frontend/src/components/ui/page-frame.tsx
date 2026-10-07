@@ -116,29 +116,39 @@ export function PageFrame({
   bleed?: boolean;
   children: React.ReactNode;
 }) {
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <PageFrameHeader
-        title={title}
-        description={description}
-        actions={actions}
-        eyebrow={eyebrow}
-        breadcrumb={breadcrumb}
-        tabs={tabs}
-        bleed={bleed}
-        width={aside ? "full" : width}
-      />
+  const header = (
+    <PageFrameHeader
+      title={title}
+      description={description}
+      actions={actions}
+      eyebrow={eyebrow}
+      breadcrumb={breadcrumb}
+      tabs={tabs}
+      bleed={bleed}
+      width={aside ? "full" : width}
+    />
+  );
 
-      {bleed ? (
+  if (bleed) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {header}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className={cn("w-full pb-12", GUTTER, tabs ? "pt-6" : "pt-6 md:pt-8", aside && "lg:flex lg:items-start lg:gap-10")}>
-            {aside && <div className="mb-6 lg:sticky lg:top-0 lg:mb-0 lg:shrink-0">{aside}</div>}
-            <div className={cn("min-w-0 space-y-10", aside && "lg:flex-1", WIDTHS[width])}>{children}</div>
-          </div>
-        </div>
-      )}
+      </div>
+    );
+  }
+
+  // The header scrolls with the page (Prototype 4). Held still above a scroller
+  // with no rule under it, scrolled content was cut off at an edge nobody could
+  // see, under the description (Naveen, M1a review). A bleeding page keeps its
+  // header still, and its rule shows where the body begins.
+  return (
+    <div className="h-full min-h-0 overflow-y-auto">
+      {header}
+      <div className={cn("w-full pb-12", GUTTER, tabs ? "pt-6" : "pt-6 md:pt-8", aside && "lg:flex lg:items-start lg:gap-10")}>
+        {aside && <div className="mb-6 lg:sticky lg:top-6 lg:mb-0 lg:shrink-0">{aside}</div>}
+        <div className={cn("min-w-0 space-y-10", aside && "lg:flex-1", WIDTHS[width])}>{children}</div>
+      </div>
     </div>
   );
 }

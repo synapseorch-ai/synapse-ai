@@ -1,15 +1,18 @@
 /*
  * A rail page's frame, from its nav entry (M1a).
  *
- * Every page under a hub says the same three things in the same place: the
- * menu group it sits in (the eyebrow), its name, and its one-line blurb. They
- * come from `lib/nav.ts`, so a rename lands in the rail and the page together.
+ * Every page says the same things in the same place: the menu group it sits in
+ * (the eyebrow), its name and its one-line blurb. A page that is one of a hub's
+ * tabs (D209) is titled by its hub, with the hub's tab bar under the title, so
+ * Runs, Logs, Evals and Usage read as one place. The words come from
+ * `lib/nav.ts`, so a rename lands in the rail and the page together.
  *
  * No "use client": the route pages are server components, and this renders no
  * hooks.
  */
 import { PageFrame, type PageWidth } from '@/components/ui';
 import { hubOf } from '@/lib/nav';
+import { AppHubTabs } from './AppHubTabs';
 
 export function AppScreen({
     id, actions, bleed, width, children,
@@ -23,12 +26,14 @@ export function AppScreen({
 }) {
     const found = hubOf(id);
     if (!found) throw new Error(`AppScreen: no rail page has the id "${id}"`);
-    const { group, entry } = found;
+    const { group, hub, entry } = found;
+    const tabbed = hub.tabs.length > 1;
     return (
         <PageFrame
             eyebrow={group ?? 'Overview'}
-            title={entry.label}
+            title={tabbed ? hub.label : entry.label}
             description={entry.blurb}
+            tabs={tabbed ? <AppHubTabs hubId={hub.id} current={entry.href} /> : undefined}
             actions={actions}
             bleed={bleed}
             width={width}
