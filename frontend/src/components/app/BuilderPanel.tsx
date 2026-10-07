@@ -190,10 +190,17 @@ function HumanPromptCard({ content, onStop, open }: { content: string; onStop?: 
 export function BuilderPanel() {
     const {
         isOpen, entered, close, state, streaming, send, stop, newConversation, canAttach,
-        providers, builderModel, sessionModel, setSessionModel, saveBuilderModel,
+        providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft,
     } = useBuilder();
 
     const [input, setInput] = useState('');
+    // Words handed over by `open({ prompt })` land in the composer, unsent, for
+    // the person to read and send. Adopted while rendering, not in an effect.
+    const [adopted, setAdopted] = useState(draft?.n ?? 0);
+    if (draft && draft.n !== adopted) {
+        setAdopted(draft.n);
+        setInput(draft.text);
+    }
     const [how, setHow] = useState(false);
     const bottomRef = useRef<HTMLDivElement>(null);
     const attachments = useImageAttachments();

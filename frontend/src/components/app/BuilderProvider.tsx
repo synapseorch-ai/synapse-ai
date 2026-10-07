@@ -100,7 +100,15 @@ function newSessionId(): string {
 
 interface OpenOptions {
     currentOrchestrationId?: string | null;
+    /**
+     * Words to put in the composer, unsent, for the person to read and send
+     * (Home's "describe what you want to automate" and its suggestions, M2a).
+     */
+    prompt?: string;
 }
+
+/** Words waiting for the composer; `n` tells one hand-over from the next with the same words. */
+export type BuilderDraft = { text: string; n: number };
 
 interface BuilderContextValue {
     isOpen: boolean;
@@ -119,6 +127,8 @@ interface BuilderContextValue {
      */
     entered: boolean;
     open: (options?: OpenOptions) => void;
+    /** The words the last `open({ prompt })` handed over, for the panel's composer. */
+    draft: BuilderDraft | null;
     close: () => void;
     state: BuilderState;
     streaming: boolean;
@@ -154,6 +164,7 @@ export function useBuilder(): BuilderContextValue {
 export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const [isOpen, setIsOpen] = useState(false);
     const [entered, setEntered] = useState(false);
+    const [draft, setDraft] = useState<BuilderDraft | null>(null);
     const [state, setState] = useState<BuilderState>(() => emptyBuilderState([WELCOME]));
     const [streaming, setStreaming] = useState(false);
     const [providers, setProviders] = useState<Record<string, ProviderModels>>({});
@@ -234,6 +245,10 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         // whichever screen has registered itself.
         if (options && 'currentOrchestrationId' in options) {
             currentOrchestrationId.current = options.currentOrchestrationId ?? null;
+        }
+        if (options?.prompt) {
+            const text = options.prompt;
+            setDraft((cur) => ({ text, n: (cur?.n ?? 0) + 1 }));
         }
         // Cancel a close still in flight. `OrchestrationTab`'s "Build with AI"
         // stays clickable while the panel is leaving, so reopening inside the
@@ -574,11 +589,11 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
 
     const value = useMemo(
         () => ({
-            isOpen, entered, open, close, state, streaming, send, stop, newConversation,
+            isOpen, entered, open, draft, close, state, streaming, send, stop, newConversation,
             providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
             setCurrentOrchestration,
         }),
-        [isOpen, entered, open, close, state, streaming, send, stop, newConversation,
+        [isOpen, entered, open, draft, close, state, streaming, send, stop, newConversation,
          providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
          setCurrentOrchestration],
     );

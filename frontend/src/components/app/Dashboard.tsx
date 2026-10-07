@@ -28,12 +28,12 @@ import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvid
 import { NOTIFICATION_EVENT, useNotifications } from '@/components/notifications/NotificationProvider';
 import { ToolApprovalActions } from '@/components/notifications/ToolApproval';
 import {
-    ComingUp, firstName, greeting, HomeSection, HomeStats, MAX_CARDS, NeedsYou, RecentRuns, RunHostProvider, RunWeek,
-    statusLine, today, upcoming, weekRuns, weekStats, useClock, type RunRecord, type RunRow, type ToolCall,
-    type WaitingBrief,
+    byHandFavourite, ComingUp, firstName, GettingStarted, greeting, HomeSection, HomeStats, MAX_CARDS, NeedsYou,
+    RecentRuns, RunHostProvider, RunWeek, START_SUGGESTIONS, startDone, startSteps, statusLine, today, upcoming,
+    weekRuns, weekStats, useClock, type RunRecord, type RunRow, type ToolCall, type WaitingBrief,
 } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
-import { Button, LinkButton, Mark, StatStrip, TextLink } from '@/components/ui';
+import { Button, LinkButton, Mark, StatStrip, TextLink, usePersisted } from '@/components/ui';
 import { usdCompact } from '@/lib/money';
 import { plainText } from '@/lib/plainText';
 import { OSS_RUN_HOST, ossRunRecord, ossRunRow } from '@/lib/runHost';
@@ -64,6 +64,13 @@ const compact = (n: number) =>
                 : String(n);
 
 const runHref = (id: string) => `/runs/${encodeURIComponent(id)}`;
+const editorHref = (id: string) => `/workflows?id=${encodeURIComponent(id)}`;
+
+/** Settings that mean a model can be called: a provider's key or an address of one. */
+const MODEL_SETTINGS = [
+    'gemini_key', 'anthropic_key', 'openai_key', 'grok_key', 'deepseek_key', 'bedrock_api_key', 'aws_access_key_id',
+    'openai_compatible_base_url', 'local_compatible_base_url', 'model_gateway_base_url', 'huggingface_models',
+];
 const isWaiting = (r: RunSummary) => r.status === 'paused' && Boolean(r.waiting_for_human);
 /** A waiting run's record is read again only when its question may have changed. */
 const keyOf = (r: RunSummary) => `${r.run_id}:${r.current_step_id ?? ''}:${r.steps_completed ?? 0}`;
@@ -71,6 +78,9 @@ const keyOf = (r: RunSummary) => `${r.run_id}:${r.current_step_id ?? ''}:${r.ste
 export function Dashboard() {
     const clock = useClock();
     const { open: openBuilder } = useBuilder();
+    // "Don't show again" on the first-workflow path: this browser's, as OSS has one person.
+    const [startHidden, setStartHidden] = usePersisted<'0' | '1'>('synapseHomeStartHidden', (raw) => (raw === '1' ? '1' : '0'), '0');
+    const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
     const { notifications } = useNotifications();
     const [runs, setRuns] = useState<RunSummary[]>([]);
     const [runsLoaded, setRunsLoaded] = useState(false);
@@ -97,8 +107,8 @@ export function Dashboard() {
         const j = (url: string) => fetch(url).then(r => (r.ok ? r.json() : null)).catch(() => null);
         Promise.all([
             j('/api/usage/summary'), j('/api/orchestrations'), j('/api/agents'),
-            j('/api/schedules'), j('/api/mcp/servers'), j('/api/personal-details'),
-        ]).then(([usage, orch, agentList, scheduleList, mcp, me]) => {
+            j('/api/schedules'), j('/api/mcp/servers'), j('/api/personal-details'), j('/api/settings'),
+        ]).then(([usage, orch, agentList, scheduleList, mcp, me, set]) => {
             const list = (v: any) => (Array.isArray(v) ? v : Array.isArray(v?.servers) ? v.servers : []);
             if (usage) setSummary(usage);
             setWorkflows(list(orch));
@@ -106,6 +116,7 @@ export function Dashboard() {
             setSchedules(list(scheduleList));
             setMcpCount(list(mcp).length);
             setName(firstName(me?.first_name));
+            if (set && typeof set === 'object') setSettings(set);
             setLoaded(true);
         });
     }, []);
@@ -193,6 +204,27 @@ export function Dashboard() {
         .filter((s): s is string => Boolean(s))
         .sort()[0] ?? null;
     const next = upcoming(schedules, s => targetName(s, workflows, agents));
+    const favourite = byHandFavourite(week);
+
+    // A new workspace's first workflow, as a path that ticks itself (Naveen's ask).
+    const hasHuman = (w: Orchestration | undefined) => Boolean(w?.steps?.some(st => st.type === 'human'));
+    const newest = [...workflows].sort((a, b) => String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? '')))[0];
+    const humanWorkflow = workflows.find(w => hasHuman(w));
+    const latest = [...rows].sort((a, b) => String(b.startedAt ?? '').localeCompare(String(a.startedAt ?? '')))[0];
+    const steps = startSteps({
+        modelReady: MODEL_SETTINGS.some(k => String(settings?.[k] ?? '').trim()) || rows.some(r => r.status === 'completed'),
+        modelText: typeof settings?.model === 'string' && settings.model ? `Using ${settings.model}` : undefined,
+        workflow: newest ? { id: newest.id, name: newest.name } : null,
+        lastRun: latest ? { at: latest.startedAt, name: latest.workflowName } : null,
+        humanWorkflow: humanWorkflow ? { id: humanWorkflow.id, name: humanWorkflow.name } : null,
+        answered: rows.some(r => r.status === 'completed' && hasHuman(byWorkflow.get(r.workflowId))),
+        waiting: waiting.length > 0,
+        runsOnItsOwn: schedules.some(s => s.enabled !== false),
+    });
+    const showStart = loaded && runsLoaded && startHidden !== '1' && !startDone(steps);
+    // Once a workflow has run the path folds to one line under Needs you (Naveen's call).
+    const startFolded = Boolean(steps.find(st => st.id === 'run')?.done);
+    const target = newest ?? null;
 
     const live = rows.filter(r => r.status === 'running' || r.status === 'paused');
     const recent = [...rows]
@@ -218,7 +250,7 @@ export function Dashboard() {
             width="wide"
             eyebrow={<span suppressHydrationWarning>{today(clock) ?? blank}</span>}
             title={<span suppressHydrationWarning>{greeting(clock, name) ?? blank}</span>}
-            description={runsLoaded ? statusLine({ waiting: waitingCount, runs: stats.runs, failed: stats.failed }) : blank}
+            description={runsLoaded ? statusLine({ waiting: waitingCount, runs: stats.runs, failed: stats.failed, starting: showStart }) : blank}
             actions={
                 <>
                     <LinkButton href="/">
@@ -233,9 +265,43 @@ export function Dashboard() {
             }
         >
             <div className="grid gap-7">
-                <RunHostProvider value={OSS_RUN_HOST}>
-                    <NeedsYou runs={cards} more={more} tools={tools} hrefOf={runHref} onChanged={refreshRuns} />
-                </RunHostProvider>
+                {/* With nothing waiting, a new workspace's path leads; its fourth step says what Needs you is. */}
+                {(!showStart || startFolded || waitingCount > 0) && (
+                    <RunHostProvider value={OSS_RUN_HOST}>
+                        <NeedsYou runs={cards} more={more} tools={tools} hrefOf={runHref} onChanged={refreshRuns} />
+                    </RunHostProvider>
+                )}
+
+                {showStart && (
+                    <GettingStarted
+                        steps={steps}
+                        foldable={startFolded}
+                        onDismiss={() => setStartHidden('1')}
+                        describe={{ onSubmit: text => openBuilder(text ? { prompt: text } : undefined), suggestions: START_SUGGESTIONS }}
+                        actions={{
+                            model: <LinkButton href="/settings/models" size="sm">Models</LinkButton>,
+                            build: (
+                                <>
+                                    <LinkButton href="/templates" size="sm" variant="primary">Browse templates</LinkButton>
+                                    <Button size="sm" variant="secondary" onClick={() => openBuilder()}>Build with AI</Button>
+                                </>
+                            ),
+                            run: target ? <LinkButton href={editorHref(target.id)} size="sm" variant="primary">Open “{target.name}”</LinkButton> : undefined,
+                            approve: waitingCount > 0
+                                ? <TextLink href="#home-needs-you">Answer it under Needs you</TextLink>
+                                : (humanWorkflow ?? target)
+                                    ? <LinkButton href={editorHref((humanWorkflow ?? target)!.id)} size="sm">{humanWorkflow ? `Open “${humanWorkflow.name}”` : 'Add a Human step'}</LinkButton>
+                                    : undefined,
+                            own: (
+                                <>
+                                    <LinkButton href="/schedules" size="sm" variant="primary">Add a schedule</LinkButton>
+                                    <LinkButton href="/channels" size="sm">Channels</LinkButton>
+                                    <LinkButton href="/settings/api_keys" size="sm">API keys</LinkButton>
+                                </>
+                            ),
+                        }}
+                    />
+                )}
 
                 <HomeStats
                     running={rows.filter(r => r.status === 'running').length}
@@ -280,7 +346,20 @@ export function Dashboard() {
                         />
                     </HomeSection>
                     <HomeSection id="next" title="Coming up" link={{ href: '/schedules', label: 'Schedules' }}>
-                        <ComingUp items={next} clock={clock} />
+                        <ComingUp
+                            items={next}
+                            clock={clock}
+                            ways={{ schedules: '/schedules', channels: '/channels', api: '/settings/api_keys' }}
+                            tip={favourite ? {
+                                text: `“${favourite.name}” ran ${favourite.count} times by hand this week. Put it on a schedule?`,
+                                action: (
+                                    <Button size="sm" variant="secondary" onClick={() => openBuilder({ prompt: `Put the workflow “${favourite.name}” on a schedule.` })}>
+                                        <Mark size={20} compact={false} className="text-accent" />
+                                        Schedule it with AI
+                                    </Button>
+                                ),
+                            } : null}
+                        />
                     </HomeSection>
                 </div>
 
