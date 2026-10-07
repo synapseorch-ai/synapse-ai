@@ -1659,7 +1659,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                         aria-label="Build with AI"
                         className="flex shrink-0 items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs whitespace-nowrap bg-accent hover:bg-accent-hover text-accent-fg transition-colors"
                     >
-                        <Mark size={14} /> <span className="hidden sm:inline">Build with AI</span>
+                        <Mark size={20} compact={false} className="-my-0.5" /> <span className="hidden sm:inline">Build with AI</span>
                     </button>
                 </div>
 

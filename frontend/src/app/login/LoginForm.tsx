@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import { Wordmark } from '@/components/ui';
+
 export function LoginForm({
     redirectTo,
     mode = 'password',
@@ -57,7 +59,11 @@ export function LoginForm({
         <div className="min-h-screen bg-black flex items-center justify-center px-4">
             <div className="w-full max-w-sm space-y-8">
                 <div>
-                    <h1 className="text-2xl font-bold text-white tracking-tight">Synapse AI</h1>
+                    {/* The product's name with its mark, as cloud's sign-in sets it: the mark
+                        keeps the accent, the name sets in text colour. */}
+                    <h1>
+                        <Wordmark size={26} className="gap-2.5 text-lg text-text" markClassName="text-accent" />
+                    </h1>
                     <p className="text-text-faint text-sm mt-1">Sign in to continue</p>
                 </div>
 
@@ -173,7 +179,11 @@ function AccessLinkForm({ redirectTo, linkProblem }: { redirectTo: string; linkP
         <div className="min-h-screen bg-black flex items-center justify-center px-4">
             <div className="w-full max-w-sm space-y-8">
                 <div>
-                    <h1 className="text-2xl font-bold text-white tracking-tight">Synapse AI</h1>
+                    {/* The product's name with its mark, as cloud's sign-in sets it: the mark
+                        keeps the accent, the name sets in text colour. */}
+                    <h1>
+                        <Wordmark size={26} className="gap-2.5 text-lg text-text" markClassName="text-accent" />
+                    </h1>
                     <p className="text-text-faint text-sm mt-1">This Synapse needs its access link</p>
                 </div>
 
