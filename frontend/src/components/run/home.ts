@@ -70,7 +70,12 @@ const counted = (n: number) => (n < SMALL.length ? SMALL[n] : String(n));
  * Home's one status line, under the greeting: what needs the reader, then how
  * the rest of the week went.
  */
-export function statusLine({ waiting, runs, failed }: { waiting: number; runs: number; failed: number }): string {
+export function statusLine({ waiting, runs, failed, starting = false }: {
+    waiting: number; runs: number; failed: number;
+    /** A new workspace on its first-workflow path. */
+    starting?: boolean;
+}): string {
+    if (starting && waiting === 0 && runs === 0) return 'Let’s get your first workflow running. It takes about ten minutes.';
     const first = waiting === 0
         ? 'Nothing needs you.'
         : `${counted(waiting)} ${waiting === 1 ? 'thing needs' : 'things need'} you.`;
@@ -136,4 +141,110 @@ export function barHeights(rows: RunRow[]): number[] {
         if (b !== 'completed' || s === null) return 100;
         return Math.round(30 + 70 * (Math.sqrt(s) / max));
     });
+}
+
+// ── Getting started (M2a, Naveen's ask): a new workspace's first workflow as a path ──
+
+export type StartStepId = 'model' | 'build' | 'run' | 'approve' | 'own' | 'connect';
+
+export type StartStep = {
+    id: StartStepId;
+    title: string;
+    done: boolean;
+    /** Not needed to finish: the path is done without it. */
+    optional?: boolean;
+    /** What was done, on a done step ("Invoice triage, built today"). */
+    doneText?: string;
+    /** What to do, on a step not done yet. */
+    detail: string;
+    /** One thing worth knowing at this step. */
+    tip?: string;
+};
+
+/** What each product knows about a workspace, for its first-workflow path. */
+export type StartFacts = {
+    /** A model the workspace can call: a provider key or address set, managed models, or a run that completed. */
+    modelReady: boolean;
+    /** What "done" says about the model ("Using gemini-2.5-flash", "Managed models are included"). */
+    modelText?: string;
+    /** The newest workflow of the workspace's own, if any. */
+    workflow: { id: string; name: string } | null;
+    /** The newest run, if any. */
+    lastRun: { at: string | null; name: string | null } | null;
+    /** A workflow with a Human step, if any. */
+    humanWorkflow: { id: string; name: string } | null;
+    /** A run of a workflow with a Human step completed: its question was answered. */
+    answered: boolean;
+    /** Something waits on the reader right now. */
+    waiting: boolean;
+    /** An enabled schedule (or another way it starts itself). */
+    runsOnItsOwn: boolean;
+    /** Cloud: the connections the onboarding answers named, and which are made. */
+    connect?: { label: string; connected: boolean }[];
+};
+
+/** The path's steps, in order (one list for both products, Naveen's call). */
+export function startSteps(f: StartFacts): StartStep[] {
+    const steps: StartStep[] = [
+        {
+            id: 'model', title: 'Connect a model', done: f.modelReady, doneText: f.modelText,
+            detail: 'Add a provider’s key, or point the workspace at a model you run yourself.',
+        },
+        {
+            id: 'build', title: 'Build a workflow', done: Boolean(f.workflow),
+            doneText: f.workflow ? `“${f.workflow.name}”` : undefined,
+            detail: 'Start from a template, or describe what you want and Build with AI drafts it.',
+            tip: 'A template is a finished workflow: run it as it is, then change it.',
+        },
+        {
+            id: 'run', title: 'Run it once', done: Boolean(f.lastRun),
+            doneText: f.lastRun?.name ? `“${f.lastRun.name}” ran` : 'It ran',
+            detail: 'Open it, give it an input and press Run.',
+            tip: 'Each step lights up as it works, and the run’s page shows the path it took and what it cost.',
+        },
+        {
+            id: 'approve', title: 'Answer its first question', done: f.answered,
+            // Without a Human step there is nothing to answer: shown, not required.
+            optional: !f.humanWorkflow && !f.waiting,
+            doneText: 'Answered, and the run carried on',
+            detail: f.waiting
+                ? 'A run is waiting on you: answer it under Needs you.'
+                : f.humanWorkflow
+                    ? `When “${f.humanWorkflow.name}” reaches its Human step, it waits on Home until you answer.`
+                    : 'Add a Human step where a person should approve, and the run asks you here before it goes on.',
+            tip: 'An approval is answered in place, here or on the run’s page; the run carries on with your answer.',
+        },
+        {
+            id: 'own', title: 'Let it run on its own', done: f.runsOnItsOwn,
+            doneText: 'It starts on its own',
+            detail: 'Put it on a schedule, connect a channel, or start it from your own systems.',
+            tip: 'Ask Build with AI: “run it every weekday at 9”. It sets the schedule up for you.',
+        },
+    ];
+    if (f.connect && f.connect.length) {
+        const pending = f.connect.filter((c) => !c.connected).map((c) => c.label);
+        steps.push({
+            id: 'connect', title: 'Connect what you told us about', done: pending.length === 0, optional: true,
+            doneText: `${f.connect.map((c) => c.label).join(', ')} connected`,
+            detail: `Connect ${pending.join(', ')} so its steps can use ${pending.length === 1 ? 'it' : 'them'}.`,
+        });
+    }
+    return steps;
+}
+
+/** The path is done once every step it needs is. */
+export const startDone = (steps: StartStep[]) => steps.every((s) => s.done || s.optional);
+
+/** The workflow the reader ran most by hand this week, at least twice: worth putting on a schedule. */
+export function byHandFavourite(week: Pick<RunRow, 'workflowId' | 'workflowName' | 'trigger'>[]): { workflowId: string; name: string; count: number } | null {
+    const counts = new Map<string, { name: string; count: number }>();
+    for (const r of week) {
+        if (r.trigger !== 'Manual' || !r.workflowName) continue;
+        const c = counts.get(r.workflowId) ?? { name: r.workflowName, count: 0 };
+        c.count += 1;
+        counts.set(r.workflowId, c);
+    }
+    let best: { workflowId: string; name: string; count: number } | null = null;
+    for (const [workflowId, c] of counts) if (c.count >= 2 && (!best || c.count > best.count)) best = { workflowId, ...c };
+    return best;
 }
