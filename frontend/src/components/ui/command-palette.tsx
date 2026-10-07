@@ -33,6 +33,13 @@ export type CommandItem = {
   /** More words it should be found by. */
   keywords?: string[];
   onSelect: () => void;
+  /**
+   * Makes the item draggable as well: dropping it somewhere that reads
+   * `type` (the open canvas reads a step type) does what dropping it there
+   * means. The palette closes once the drag has begun, so the drop reaches the
+   * page under it (a modal dialog keeps the page from pointer events).
+   */
+  drag?: { type: string; value: string };
 };
 
 export type CommandGroup = { heading: string; items: CommandItem[] };
@@ -173,9 +180,25 @@ export function CommandPalette({
                           onOpenChange(false);
                           item.onSelect();
                         }}
+                        {...(item.drag
+                          ? {
+                              draggable: true,
+                              onDragStart: (event: React.DragEvent) => {
+                                event.dataTransfer.setData(item.drag!.type, item.drag!.value);
+                                event.dataTransfer.effectAllowed = "move";
+                                // Close on the next tick: the drag has its picture by
+                                // then, and Chromium carries it on to the drop.
+                                window.setTimeout(() => {
+                                  setQuery("");
+                                  onOpenChange(false);
+                                }, 0);
+                              },
+                            }
+                          : {})}
                         className={cn(
                           "group grid cursor-pointer grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm",
                           "data-[selected=true]:bg-surface-2",
+                          item.drag && "active:cursor-grabbing",
                         )}
                       >
                         <span className="grid size-7 place-items-center rounded-md bg-surface-2 text-text-muted group-data-[selected=true]:bg-bg">

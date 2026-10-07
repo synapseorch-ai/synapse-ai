@@ -45,6 +45,7 @@ export function Combobox<T extends string = string>({
   disabled,
   className,
   size = "md",
+  trigger = "field",
   "aria-label": ariaLabel,
   "aria-describedby": ariaDescribedBy,
 }: {
@@ -57,6 +58,12 @@ export function Combobox<T extends string = string>({
   disabled?: boolean;
   className?: string;
   size?: ControlSize;
+  /**
+   * `field` (the default) shows the choice in a select-shaped box. `icon` is a
+   * square chevron beside something that already shows the choice — the open
+   * canvas's name — and its list takes a fixed width. Name it with `aria-label`.
+   */
+  trigger?: "field" | "icon";
   "aria-label"?: string;
   "aria-describedby"?: string;
 }) {
@@ -87,10 +94,11 @@ export function Combobox<T extends string = string>({
           controlStyles({ size }),
           "group inline-flex items-center justify-between gap-2 text-left",
           !selected && "text-text-faint",
+          trigger === "icon" && "size-8 w-8 shrink-0 justify-center px-0 py-0",
           className,
         )}
       >
-        <span className="truncate">{selected?.label ?? placeholder}</span>
+        <span className={trigger === "icon" ? "sr-only" : "truncate"}>{selected?.label ?? placeholder}</span>
         <ChevronDown
           className="size-4 shrink-0 text-text-faint transition-transform group-data-[state=open]:rotate-180"
           aria-hidden
@@ -109,8 +117,9 @@ export function Combobox<T extends string = string>({
           className={cn(
             "z-50 flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-elevated",
             // Match the trigger's width rather than hugging the longest option,
-            // which otherwise makes the popup jump as the selection changes.
-            "w-[var(--radix-popover-trigger-width)]",
+            // which otherwise makes the popup jump as the selection changes. An
+            // icon trigger is too narrow to match, so its list has a width of its own.
+            trigger === "icon" ? "w-72 max-w-[calc(100vw-16px)]" : "w-[var(--radix-popover-trigger-width)]",
             // Never taller than the space Radix measured to the viewport edge —
             // without this a long list near the bottom of the screen ran off
             // the page instead of scrolling inside itself.

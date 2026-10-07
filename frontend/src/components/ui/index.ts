@@ -67,6 +67,8 @@ export {
   type CommandGroup,
   type CommandItem,
 } from "./command-palette";
+export { CommandRegistryProvider, useRegisterCommands, useRegisteredCommands } from "./command-registry";
+export { CanvasModeHide, CanvasModeProvider, useCanvasMode, useIsCanvasMode } from "./canvas-mode";
 export { Section } from "./collapsible";
 export { DataTable, type Column } from "./data-table";
 export { ConfirmDialog, Modal } from "./dialog";

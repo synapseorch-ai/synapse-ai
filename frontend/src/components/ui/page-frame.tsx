@@ -20,6 +20,7 @@
  */
 import { cn } from "@/lib/cn";
 
+import { CanvasModeHide } from "./canvas-mode";
 import { PageHeader } from "./text";
 
 /**
@@ -132,7 +133,9 @@ export function PageFrame({
   if (bleed) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        {header}
+        {/* An open canvas is the page: its own floating bar takes the header's
+            place (D204, `canvas-mode`). Only a bleeding page holds a canvas. */}
+        <CanvasModeHide>{header}</CanvasModeHide>
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
       </div>
     );
