@@ -142,7 +142,7 @@ async def ax_fields(page) -> list[dict]:
 
 async def open_step(page, oid: str, step_name: str) -> None:
     """Open a fixture orchestration and the config panel of one of its steps."""
-    await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+    await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
     await asyncio.sleep(SETTLE + 1.0)
     node = page.locator(".react-flow__node", has_text=step_name).first
     box = await node.bounding_box()
@@ -222,7 +222,7 @@ async def check_runbar(browser) -> str:
         for width in (WIDE, PHONE):
             ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
             page = await ctx.new_page()
-            await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+            await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
             await asyncio.sleep(SETTLE + 2.0)
             await page.get_by_role("button", name="Run", exact=True).click()
             # Settle on content, never networkidle: the notifications stream is
@@ -558,7 +558,7 @@ async def check_money(browser) -> str:
 
 #: Screens to check for a page that scrolls when it should not. Five, because
 #: the defect this exists for was in the app shell and so was on every one.
-LAYOUT_PAGES = ("/dashboard", "/orchestrations", "/agents", "/vault", "/usage", "/knowledge")
+LAYOUT_PAGES = ("/dashboard", "/workflows", "/agents", "/vault", "/usage", "/knowledge")
 
 
 @check
@@ -665,10 +665,10 @@ async def check_layout(browser) -> str:
 #: one and was in fact in both: the light palette is an inversion of the dark
 #: one, so it inherits the dark one's mistakes exactly.
 CONTRAST_PAGES = (
-    "/", "/agents", "/orchestrations", "/schedules", "/tools", "/vault", "/runs",
-    "/evals", "/mcp-servers", "/skills", "/kitchen-sink",
-    "/settings/general", "/settings/models", "/settings/scale", "/settings/widgets",
-    "/settings/messaging", "/settings/memory", "/settings/api-keys",
+    "/", "/agents", "/workflows", "/schedules", "/tools", "/vault", "/runs", "/logs",
+    "/evals", "/apps", "/skills", "/kitchen-sink", "/templates",
+    "/settings/general", "/settings/models", "/settings/scale", "/widgets",
+    "/channels", "/settings/memory", "/settings/api-keys",
     # The rest of the rail (F101): the uses the inversion layer lacks sit mostly
     # on screens the walk never opened.
     "/dashboard", "/usage", "/settings/personal_details", "/settings/variables",
@@ -816,7 +816,7 @@ async def check_contrast(browser) -> str:
         await ctx.add_init_script(RUNLOG_STUB)
         page = await ctx.new_page()
         try:
-            await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+            await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
             await asyncio.sleep(SETTLE + 2.0)
             await page.get_by_role("button", name="Run", exact=True).click()
             for _ in range(30):
@@ -1009,9 +1009,10 @@ async def check_builderctx(browser) -> str:
             await box.press("Enter")
             await asyncio.sleep(1.5)
 
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
-        await page.get_by_role("button", name="Build with AI").first.click()
+        # The canvas toolbar's own button: the rail's Build with AI row (M1a) comes first in the page.
+        await page.locator("main").get_by_role("button", name="Build with AI").first.click()
         await asyncio.sleep(1.2)
         await say("one")                       # on the orchestration: names it
         # Client-side navigation, the way a person moves. A hard load would
@@ -1134,7 +1135,7 @@ async def check_runfollow(browser) -> str:
     await ctx.add_init_script(RUNLOG_STUB)
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
         await page.get_by_role("button", name="Run", exact=True).click()
         for _ in range(30):
@@ -1543,7 +1544,7 @@ async def check_unsaved(browser) -> str:
 
         # ── leaving the screen ──
         await name.fill("UI smoke Beta, renamed")
-        await page.click('a[href="/orchestrations"]')
+        await page.click('a[href="/workflows"]')
         if not await asked():
             problems.append("leaving through the rail discarded an unsaved edit without asking")
         else:
@@ -1551,11 +1552,11 @@ async def check_unsaved(browser) -> str:
             await asyncio.sleep(0.6)
             if not page.url.endswith("/agents"):
                 problems.append(f"keeping the edit still left, for {page.url}")
-            await page.click('a[href="/orchestrations"]')
+            await page.click('a[href="/workflows"]')
             await asyncio.sleep(0.8)
             await dialog.get_by_role("button", name=re.compile("discard", re.I)).first.click()
             await asyncio.sleep(1.5)
-            if not page.url.endswith("/orchestrations"):
+            if not page.url.endswith("/workflows"):
                 problems.append("discarding did not go where the link pointed")
     finally:
         await ctx.close()
@@ -1594,7 +1595,7 @@ async def check_mcppresets(browser) -> str:
     page = await ctx.new_page()
     problems: list[str] = []
     try:
-        await page.goto(f"{APP}/mcp-servers", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/apps", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
         opener = page.get_by_role("button", name=re.compile(r"^(add|new|connect)", re.I)).first
         if await opener.count():
@@ -1638,7 +1639,7 @@ async def check_guardrails(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 1.0)
         await page.get_by_role("button", name="Guardrails", exact=True).first.click()
         await asyncio.sleep(0.8)
@@ -1740,7 +1741,7 @@ async def check_mcpplaceholder(browser) -> str:
                 pass
     page.on("response", keep)
     try:
-        await page.goto(f"{APP}/mcp-servers", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/apps", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 1.0)
         rows = await page.evaluate("""(names) => names.map(n => {
           const tag = [...document.querySelectorAll('span')].find(s => (s.textContent || '').trim() === n);
@@ -1874,10 +1875,10 @@ async def check_headers(browser) -> str:
 #: three screens with a form of their own; the create forms are opened where a
 #: "New…" button leads to one.
 LABEL_PAGES = (
-    "/", "/agents", "/orchestrations", "/schedules", "/tools", "/vault", "/runs",
-    "/evals", "/mcp-servers", "/skills",
-    "/settings/general", "/settings/models", "/settings/agents", "/settings/widgets",
-    "/settings/databases", "/settings/schedules", "/settings/messaging", "/settings/scale",
+    "/", "/agents", "/workflows", "/schedules", "/tools", "/vault", "/runs", "/logs",
+    "/evals", "/apps", "/skills", "/templates",
+    "/settings/general", "/settings/models", "/settings/agents", "/widgets",
+    "/settings/databases", "/settings/schedules", "/channels", "/settings/scale",
     "/settings/memory", "/settings/api-keys", "/settings/integrations", "/settings/custom-tools",
     "/knowledge",
 )
@@ -2124,7 +2125,7 @@ async def check_canvasfit(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 1.0)
         opened = await page.evaluate(NODES_UNDER_PALETTE)
         await page.get_by_role("button", name="Fit view").click()
@@ -2213,7 +2214,7 @@ async def check_ctrls(browser) -> str:
     page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
             if r.method == "POST" and r.url.endswith("/api/orchestrations") else None)
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 1.0)
         await page.evaluate(r"""() => { window.__saveKey = null;
             window.addEventListener('keydown', (e) => {
@@ -2792,7 +2793,7 @@ async def check_cancelanswer(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
         await page.get_by_role("button", name="Run", exact=True).click()
         for _ in range(25):
@@ -3582,7 +3583,7 @@ async def check_stepreason(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
         await page.get_by_role("button", name="Run", exact=True).click()
         await page.get_by_text("Done — status: failed").first.wait_for(timeout=60_000)
@@ -3595,7 +3596,7 @@ async def check_stepreason(browser) -> str:
         if not live["run"]:
             raise AssertionError("the run log never named its run")
 
-        await page.goto(f"{APP}/orchestrations?run={live['run']}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?run={live['run']}", wait_until="domcontentloaded")
         await page.get_by_text("Done — status: failed").first.wait_for(timeout=60_000)
         await asyncio.sleep(0.5)
         again = await page.evaluate(STEP_REASON)
@@ -3629,7 +3630,7 @@ async def check_cancelquestion(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
         await page.get_by_role("button", name="Run", exact=True).click()
         await page.get_by_text("Waiting for your input").first.wait_for(timeout=60_000)
@@ -3649,7 +3650,7 @@ async def check_cancelquestion(browser) -> str:
         if not any(n.get("title", "").endswith("cancelled") for n in mine):
             raise AssertionError(f"no notification says the run was cancelled: {[n.get('title') for n in mine]}")
 
-        await page.goto(f"{APP}/orchestrations?run={run_id}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?run={run_id}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 4.0)
         if await page.get_by_text("Waiting for your input").count():
             raise AssertionError("reopened from its link, the cancelled run asks again")
@@ -3753,7 +3754,7 @@ async def check_keyrows(browser) -> str:
         if await first.get_attribute("aria-checked") != "true":
             raise AssertionError("Space on a Memory card's checkbox did not tick it")
 
-        await page.goto(f"{APP}/orchestrations", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 1.0)
         await page.get_by_role("button", name=re.compile(r"^Recent")).click()
         try:
@@ -3865,7 +3866,7 @@ async def check_logrows(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/runs", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/logs", wait_until="domcontentloaded")
         tab = page.get_by_role("button", name=re.compile("Orchestration Logs"))
         await tab.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
@@ -4037,7 +4038,7 @@ async def check_knowledge_retrieve_words(browser) -> str:
         await ctx.route(pattern, handler)
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?run=run_smoke_kb", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?run=run_smoke_kb", wait_until="domcontentloaded")
         row = page.get_by_text(re.compile(r"^Retrieve · Find clauses")).first
         await row.wait_for(timeout=30_000)
         said = " ".join((await row.inner_text()).split())
@@ -4455,7 +4456,7 @@ async def check_phonetoolbar(browser) -> str:
     ctx = await browser.new_context(viewport={"width": 360, "height": 780})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
         names = ["Back", "Orchestration", "New orchestration", "Build with AI", "Undo (Ctrl+Z)",
@@ -4492,7 +4493,7 @@ async def check_duplicateurl(browser) -> str:
     page = await ctx.new_page()
     page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
         async with page.expect_response(
@@ -4551,7 +4552,7 @@ async def check_resumesettle(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
         await page.get_by_role("button", name="Run", exact=True).click()
@@ -4567,7 +4568,7 @@ async def check_resumesettle(browser) -> str:
         live = await page.evaluate(NODE_FRAMES)
         if any(v != "border-success" for v in live.values()):
             raise AssertionError(f"after the resumed run completed, the canvas shows {live}")
-        await page.goto(f"{APP}/orchestrations?run={run_id}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?run={run_id}", wait_until="domcontentloaded")
         await page.get_by_text("Done — status: completed").first.wait_for(timeout=60_000)
         await asyncio.sleep(SETTLE)
         again = await page.evaluate(NODE_FRAMES)
@@ -4614,7 +4615,7 @@ async def check_humandictwarn(browser) -> str:
 
     async def said(step_id: str) -> str:
         # By id: the Print's card carries the warning, which names "Review".
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         node = page.locator(f'.react-flow__node[data-id="{step_id}"]')
         await node.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
@@ -4688,7 +4689,7 @@ async def check_badgecontrast(browser) -> str:
         page = await ctx.new_page()
         try:
             # Each fixture's own label: "n8n" alone also names a hidden control.
-            for path, shows in (("/orchestrations", "Needs input"), ("/tools", "Smoke n8n"), ("/mcp-servers", "Smoke off"),
+            for path, shows in (("/workflows", "Needs input"), ("/tools", "Smoke n8n"), ("/apps", "Smoke off"),
                                 ("/settings/db_configs", "Smoke untested")):
                 await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
                 try:
@@ -4818,7 +4819,7 @@ async def check_plurals(browser) -> str:
         if "1 criterion " not in line + " ":
             raise AssertionError(f"a rubric with one criterion reads {line!r}")
 
-        await page.goto(f"{APP}/runs", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/logs", wait_until="domcontentloaded")
         tab = page.get_by_role("button", name=re.compile("Orchestration Logs"))
         await tab.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
@@ -5007,7 +5008,7 @@ async def check_morerows(browser) -> str:
             "() => ({label: document.activeElement.getAttribute('aria-label'),"
             " opacity: getComputedStyle(document.activeElement).opacity})")
     try:
-        row = await reach("/settings/messaging", "Smoke channel", "a channel")
+        row = await reach("/channels", "Smoke channel", "a channel")
         await row.focus()
         after = await next_stop()
         if after["label"] != "Start Smoke channel" or after["opacity"] != "1":
@@ -5102,7 +5103,7 @@ async def check_menuclose(browser) -> str:
     open_menus = "() => document.querySelectorAll('[role=menu]').length"
     try:
         bad: list[str] = []
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
         more = page.get_by_role("button", name="More actions", exact=True)
@@ -5557,7 +5558,7 @@ async def check_humancontext(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
         await page.get_by_role("button", name="Run", exact=True).click()
@@ -5710,7 +5711,7 @@ async def check_evaluatoronce(browser) -> str:
     await ctx.add_init_script(RUNLOG_STUB)
     page = await ctx.new_page()
     try:
-        await page.goto(f"{APP}/orchestrations?id={oid}", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
         await page.get_by_role("button", name="Run", exact=True).click()
@@ -5835,7 +5836,7 @@ async def check_mcpadd(browser) -> str:
     page = await ctx.new_page()
     notes: list[str] = []
     try:
-        await page.goto(f"{APP}/mcp-servers", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/apps", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
 
         async def add(name: str, url: str) -> str:
@@ -6308,7 +6309,7 @@ LIGHT_STATES = (
     ("knowledge web sources", "/knowledge", [], _SMOKE_KB_ROUTES, None, "stopped at the page limit"),
     ("knowledge add web pages", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name="Add web pages").click(), "What to fetch"),
-    ("a Retrieve step's trace", "/orchestrations?run=run_smoke_kb", [], _SMOKE_KB_RUN_ROUTES,
+    ("a Retrieve step's trace", "/workflows?run=run_smoke_kb", [], _SMOKE_KB_RUN_ROUTES,
      lambda p: p.get_by_text(re.compile(r"^Retrieve · Find clauses")).first.click(), "ksnap_smoke"),
     ("knowledge settings", "/knowledge", [], _SMOKE_KB_ROUTES, _kb_settings_rebuild, "Saving rebuilds the index"),
     ("knowledge contextual retrieval", "/knowledge", [], _SMOKE_KB_CONTEXTUAL_ROUTES, _kb_settings_contextual,
@@ -6345,10 +6346,10 @@ LIGHT_STATES = (
      lambda p: p.get_by_role("button", name=re.compile(r"^Thinking")).first.click(), "Turn 2"),
     ("orchestration runs", "/orchestrations", [], [("**/api/orchestrations/runs", _answer(_SMOKE_RUNS))],
      lambda p: p.get_by_role("button", name="Recent", exact=True).click(), "3.1"),
-    ("a failed run", "/orchestrations?run=run_smoke_fail", [], _SMOKE_RUN_ROUTES, None, "Nested runs (1)"),
-    ("a step's full response", "/orchestrations?run=run_smoke_fail", [], _SMOKE_RUN_ROUTES,
+    ("a failed run", "/workflows?run=run_smoke_fail", [], _SMOKE_RUN_ROUTES, None, "Nested runs (1)"),
+    ("a step's full response", "/workflows?run=run_smoke_fail", [], _SMOKE_RUN_ROUTES,
      lambda p: p.get_by_title("View full response").first.click(), "— full response"),
-    ("Recent Runs' Resume", "/orchestrations?id=orch_smoke_c", [], _SMOKE_RUN_ROUTES,
+    ("Recent Runs' Resume", "/workflows?id=orch_smoke_c", [], _SMOKE_RUN_ROUTES,
      lambda p: p.get_by_role("button", name=re.compile(r"^Recent Runs")).first.click(), "Resume"),
     ("usage", "/usage", [], _SMOKE_USAGE, None, "Top orchestration runs by savings"),
     ("usage compaction row", "/usage", [], _SMOKE_USAGE + [("**/api/usage/logs*", _answer({"logs": [
@@ -6399,12 +6400,12 @@ LIGHT_STATES = (
                    {"name": "create_pet", "method": "POST", "url": "https://api.example.com/pets"}],
          "group": {"name": "Smoke Pets"}}, methods=("POST",)))],
      _openapi_preview, "3 operations found"),
-    ("messaging last error", "/settings/messaging", [], [("**/api/messaging/channels", _answer([
+    ("messaging last error", "/channels", [], [("**/api/messaging/channels", _answer([
         {"id": "ch_smoke_err", "name": "Smoke broken channel", "platform": "telegram", "status": "error",
          "last_error": "Unauthorized: bot token rejected (401)", "agent_ids": [], "multi_agent_mode": False,
          "enabled": True, "credentials": {}}]))],
      lambda p: p.get_by_role("button", name=re.compile("Smoke broken channel")).first.click(), "Last Error"),
-    ("a compacted log", "/runs", [], [
+    ("a compacted log", "/logs", [], [
         ("**/api/logs/agents*", _answer([{"run_id": "run_smoke_log", "agent_name": "Smoke log agent",
                                           "source": "chat", "session_id": "sess_smoke",
                                           "started_at": "2026-09-30 10:00:00", "file_size_kb": 2}])),
@@ -6751,13 +6752,14 @@ async def check_help_media(browser) -> str:
     return "; ".join(out)
 
 
-#: Every screen in the rail and Settings (H1). Each panel must be the page's own: headed like the page's `<h1>`,
-#: never the fallback, with three to five steps. Chat has no `<h1>`, so its heading is named.
+#: Every screen in the rail and Settings (H1). Each panel must be the page's own: headed like the page's `<h1>` —
+#: or, on a hub's tab (D209, M1a), like the current tab, since the `<h1>` is the hub's — never the fallback, with
+#: three to five steps. Chat is named: it was checked before its header had an `<h1>` of its own.
 HELP_PAGES = (
-    "/dashboard", "/runs", "/evals", "/usage", "/orchestrations", "/agents", "/skills", "/schedules", "/tools",
-    "/mcp-servers", "/vault", "/knowledge",
+    "/dashboard", "/runs", "/logs", "/evals", "/usage", "/workflows", "/schedules", "/templates", "/agents",
+    "/skills", "/vault", "/knowledge", "/apps", "/tools", "/channels", "/widgets",
     "/settings/general", "/settings/models", "/settings/personal_details", "/settings/variables", "/settings/memory",
-    "/settings/workspace", "/settings/messaging", "/settings/widgets", "/settings/repos", "/settings/db_configs",
+    "/settings/workspace", "/settings/repos", "/settings/db_configs",
     "/settings/api_keys", "/settings/import_export", "/settings/scale", "/settings/support", "/settings/datalab",
 )
 
@@ -6776,6 +6778,10 @@ async def check_help_pages(browser) -> str:
             if expect is None:
                 await page.locator("main h1").first.wait_for(timeout=30_000)
                 expect = (await page.locator("main h1").first.inner_text()).strip()
+                # A hub's tab: the panel is about the tab shown, not the hub.
+                tab = page.locator('main header nav a[aria-current="page"]')
+                if await tab.count():
+                    expect = (await tab.first.inner_text()).strip()
             _, dialog = await _open_help(page)
         except Exception as exc:
             bad.append(f"{path}: {str(exc).splitlines()[0][:90]}")
@@ -6808,7 +6814,7 @@ async def check_help_pages(browser) -> str:
     ctx, _ = await _help_context(browser, routes=list(_SMOKE_KB_ROUTES))
     page = await ctx.new_page()
     try:
-        await walk(page, f"/orchestrations?id={oid}", "Editing an orchestration",
+        await walk(page, f"/workflows?id={oid}", "Editing a workflow",
                    lambda p: p.locator(".react-flow").first)
         await walk(page, "/knowledge", "Working in a knowledge base",
                    lambda p: p.get_by_role("button", name="Upload files"))
@@ -6818,6 +6824,269 @@ async def check_help_pages(browser) -> str:
     if bad:
         raise AssertionError(f"{len(bad)} — " + "; ".join(bad))
     return f"{len(HELP_PAGES) + 3} pages and states each have a \"?\" whose panel is their own, with 3–5 steps"
+
+# ── the shell (M1a): hubs, moved addresses, ⌘K, one title place, the phone menu ─────────────────────────────
+
+#: D209's hubs with tabs: the title every tab page shows, and its tabs in order.
+HUB_TABS = {
+    "Runs": [("/runs", "Runs"), ("/logs", "Logs"), ("/evals", "Evals"), ("/usage", "Usage")],
+    "Workflows": [("/workflows", "Workflows"), ("/schedules", "Schedules"), ("/templates", "Templates")],
+    "Agents": [("/agents", "Agents"), ("/skills", "Skills"), ("/vault", "Vault")],
+    "Apps": [("/apps", "Apps"), ("/tools", "Tools")],
+    "Channels": [("/channels", "Channels"), ("/widgets", "Widgets")],
+}
+
+
+@check
+async def check_hubtabs(browser) -> str:
+    """Each page of a hub sits under the hub's one title, with the hub's tab bar and its own tab current, the rail
+    lights the hub, and a tab is a client-side link (D209, M1a). Messaging is on in the smoke store, so Channels
+    shows both tabs."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        for hub, tabs in HUB_TABS.items():
+            for href, label in tabs:
+                await page.goto(f"{APP}{href}", wait_until="domcontentloaded")
+                await page.locator("main h1").first.wait_for(timeout=30_000)
+                await asyncio.sleep(0.8)
+                h1 = (await page.locator("main h1").first.inner_text()).strip()
+                bar = page.locator(f'main header nav[aria-label="{hub}"]')
+                labels = [t.strip() for t in await bar.locator("a").all_inner_texts()]
+                current = [t.strip() for t in await bar.locator('a[aria-current="page"]').all_inner_texts()]
+                # The name only: Workflows carries its unseen-run count beside it.
+                lit = [t.strip().splitlines()[0] for t in
+                       await page.locator('nav[aria-label="Primary"] a[aria-current="page"]').all_inner_texts()]
+                if h1 != hub:
+                    bad.append(f"{href}: the title is {h1!r}, not the hub's {hub!r}")
+                if labels != [t[1] for t in tabs]:
+                    bad.append(f"{href}: the tabs are {labels}")
+                if current != [label]:
+                    bad.append(f"{href}: the current tab is {current}")
+                if lit != [hub]:
+                    bad.append(f"{href}: the rail lights {lit}")
+        # A tab is a link the app follows itself: the page is not reloaded.
+        await page.goto(f"{APP}/runs", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await page.evaluate("() => { window.__m1aMark = 1; }")
+        await page.locator('main header nav[aria-label="Runs"] a', has_text="Evals").click()
+        await page.wait_for_url("**/evals", timeout=10_000)
+        if not await page.evaluate("() => window.__m1aMark === 1"):
+            bad.append("a tab reloaded the page instead of moving within it")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return f"{sum(len(t) for t in HUB_TABS.values())} tab pages under {len(HUB_TABS)} hubs: title, bar, current tab, rail"
+
+
+#: Addresses that moved (D209, M1a), with the query that must ride along. The first seven are 308s at the routing
+#: layer; a rail page's id under /settings is sent to its own page by the settings route.
+MOVED_ADDRESSES = [
+    ("/orchestrations?run=run_x&x=1", "/workflows?run=run_x&x=1", True),
+    ("/mcp-servers", "/apps", True),
+    ("/settings/orchestrations?id=o", "/workflows?id=o", True),
+    ("/settings/mcp_servers", "/apps", True),
+    ("/settings/logs", "/logs", True),
+    ("/settings/messaging", "/channels", True),
+    ("/settings/widgets", "/widgets", True),
+    ("/settings/evals", "/evals", False),
+]
+
+
+@check
+async def check_redirects(browser) -> str:
+    """Every old address lands on its new page with its query, permanently where the routing layer answers (M1a)."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        for old, new, permanent in MOVED_ADDRESSES:
+            if permanent:
+                r = await ctx.request.get(f"{APP}{old}", max_redirects=0)
+                where = r.headers.get("location", "")
+                if r.status != 308 or not where.endswith(new):
+                    bad.append(f"{old} answers {r.status} → {where!r}, not 308 → {new}")
+            await page.goto(f"{APP}{old}", wait_until="domcontentloaded")
+            await page.wait_for_url(f"**{new}", timeout=15_000)
+            await page.locator("main h1").first.wait_for(timeout=30_000)
+    except Exception as exc:
+        bad.append(str(exc).splitlines()[0][:120])
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return f"{len(MOVED_ADDRESSES)} old addresses land on their new pages, query kept"
+
+
+@check
+async def check_cmdk(browser) -> str:
+    """⌘K: Ctrl+K opens it with the field focused, words filter it, Enter goes, Escape closes with focus back where
+    it was, Ctrl+K closes it again, the rail's Jump to… row opens it, New workflow opens a blank draft, an agent by
+    name opens that agent, and Ctrl+K inside the markdown editor is still the editor's link (M1a)."""
+    aid = f"agent_uismoke_cmdk_{int(time.time())}"
+    api("/api/agents", "POST", _agent(aid, "UI smoke Kestrel"))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    bad: list[str] = []
+    palette = page.locator("[cmdk-input]")
+
+    async def open_palette():
+        await page.keyboard.press("Control+k")
+        await palette.wait_for(timeout=5_000)
+
+    try:
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await open_palette()
+        if not await page.evaluate("() => document.activeElement?.hasAttribute('cmdk-input')"):
+            bad.append("the field is not focused on open")
+        await page.keyboard.type("logs")
+        await asyncio.sleep(0.4)
+        first = (await page.locator("[cmdk-item][data-selected=true]").inner_text()).splitlines()[0]
+        if first != "Logs":
+            bad.append(f"'logs' highlights {first!r} first")
+        await page.keyboard.press("Enter")
+        await page.wait_for_url("**/logs", timeout=10_000)
+        if await palette.count():
+            bad.append("the palette stayed open after Enter")
+
+        await page.get_by_role("button", name=HELP_BUTTON).first.focus()
+        await open_palette()
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.4)
+        if await palette.count() or await page.evaluate("() => document.activeElement?.getAttribute('aria-label')") != HELP_BUTTON:
+            bad.append("Escape did not close it with focus back on what opened it")
+        await open_palette()
+        await page.keyboard.press("Control+k")
+        await asyncio.sleep(0.4)
+        if await palette.count():
+            bad.append("Ctrl+K inside the palette does not close it")
+        # A blank workflow, before the agent steps leave an unsaved edit that would hold the page.
+        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await open_palette()
+        await page.keyboard.type("new workflow")
+        await asyncio.sleep(0.4)
+        await page.keyboard.press("Enter")
+        name = page.locator("input[aria-label='Orchestration name']")
+        await name.wait_for(timeout=15_000)
+        if await name.input_value() != "New Orchestration" or "new=" in page.url:
+            bad.append(f"New workflow did not open a blank draft ({await name.input_value()!r}, {page.url})")
+        await page.get_by_role("button", name=re.compile(r"^Jump to")).click()
+        await palette.wait_for(timeout=5_000)
+        await page.keyboard.type("kestrel")
+        await asyncio.sleep(0.6)
+        names = [t.splitlines()[0] for t in await page.locator("[cmdk-item]").all_inner_texts()]
+        if names != ["UI smoke Kestrel"]:
+            bad.append(f"'kestrel' lists {names}")
+        await page.keyboard.press("Enter")
+        await page.wait_for_url("**/agents**", timeout=10_000)
+        await page.locator("button[aria-current=true]", has_text="UI smoke Kestrel").wait_for(timeout=15_000)
+        await asyncio.sleep(0.6)
+        if "id=" in page.url:
+            bad.append(f"the agents address kept the request: {page.url}")
+
+        # The prompt editor's own Ctrl+K: a link round the selection, and no palette.
+        tid = await page.locator("[role=toolbar][aria-label=Formatting]").first.get_attribute("aria-controls")
+        editor = page.locator(f"textarea[id='{tid}']")
+        await editor.click()
+        await page.keyboard.press("Control+a")
+        await page.keyboard.press("Control+k")
+        await asyncio.sleep(0.4)
+        if await palette.count() or not (await editor.input_value()).startswith("["):
+            bad.append("Ctrl+K in the markdown editor opened the palette instead of making a link")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "⌘K opens, filters, goes, closes with focus back; Jump row, an agent by name, New workflow; the editor keeps its Ctrl+K"
+
+
+#: Every page whose title the page frame places (M1a): one x and one y each, at both widths.
+TITLE_PAGES = HELP_PAGES + ("/", "/kitchen-sink")
+
+
+@check
+async def check_titlepos(browser) -> str:
+    """The title sits at one x and one y on every page and settings tab, at the wide and the phone width (UX1
+    measured six x positions in OSS; M1a's page frame never centres its column)."""
+    seen: dict[tuple, set] = {}
+    bad: list[str] = []
+    for width, height in (WIDE, PHONE):
+        ctx = await browser.new_context(viewport={"width": width, "height": height})
+        page = await ctx.new_page()
+        try:
+            boxes = {}
+            for path in TITLE_PAGES:
+                await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+                try:
+                    await page.locator("main h1").first.wait_for(timeout=30_000)
+                except Exception:
+                    bad.append(f"{path} at {width}: no title")
+                    continue
+                await asyncio.sleep(0.6)
+                box = await page.locator("main h1").first.bounding_box()
+                boxes[path] = (round(box["x"]), round(box["y"]))
+            xs = {b[0] for b in boxes.values()}
+            ys = {b[1] for b in boxes.values()}
+            seen[(width, "x")], seen[(width, "y")] = xs, ys
+            if len(xs) != 1 or len(ys) != 1:
+                odd = {p: b for p, b in boxes.items() if b != max(set(boxes.values()), key=list(boxes.values()).count)}
+                bad.append(f"at {width}px the titles sit at x {sorted(xs)}, y {sorted(ys)}: {odd}")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return (f"{len(TITLE_PAGES)} pages: x {seen[(WIDE[0], 'x')].pop()} y {seen[(WIDE[0], 'y')].pop()} at {WIDE[0]}px, "
+            f"x {seen[(PHONE[0], 'x')].pop()} y {seen[(PHONE[0], 'y')].pop()} at {PHONE[0]}px")
+
+
+@check
+async def check_phonemenu(browser) -> str:
+    """On a phone the rail is a drawer behind the top bar's menu button (M1a): it opens with focus inside, a link
+    goes and closes it, Escape closes it with focus back on the button, and the page holds one bell."""
+    ctx = await browser.new_context(viewport={"width": PHONE[0], "height": PHONE[1]})
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        if await page.locator('nav[aria-label="Primary"]').is_visible():
+            bad.append("the rail shows beside the page on a phone")
+        if await page.locator('button[title="Notifications"]').count() != 1:
+            bad.append(f"{await page.locator('button[title=Notifications]').count()} bells in the page")
+        menu = page.get_by_role("button", name="Open the menu")
+        await menu.click()
+        drawer = page.locator('[role=dialog] nav[aria-label="Primary"]')
+        await drawer.wait_for(timeout=5_000)
+        if not await page.evaluate("() => !!document.activeElement?.closest('[role=dialog]')"):
+            bad.append("focus did not move into the menu")
+        await drawer.get_by_role("link", name="Agents").click()
+        await page.wait_for_url("**/agents", timeout=10_000)
+        await asyncio.sleep(0.6)
+        if await drawer.count():
+            bad.append("the menu stayed open after a link")
+        await menu.click()
+        await drawer.wait_for(timeout=5_000)
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
+        if await drawer.count() or await page.evaluate("() => document.activeElement?.getAttribute('aria-label')") != "Open the menu":
+            bad.append("Escape did not close the menu with focus back on its button")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the phone's menu opens with focus inside, a link closes it, Escape hands focus back; one bell"
+
 
 async def main() -> int:
     global APP, API

@@ -592,13 +592,19 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     };
 
     // ⌘K's New workflow lands here as `?new=<n>`: the same as clicking New, once
-    // per request. The address effect above has already taken `new` off the URL.
+    // per request. The request then leaves the address — the address effect above
+    // does not run again when this page is already open, so it would linger.
     const newHandledRef = useRef<string | undefined>(undefined);
     const onNewRequested = useEffectEvent(() => createNew());
     useEffect(() => {
         if (!newRequest || newHandledRef.current === newRequest) return;
         newHandledRef.current = newRequest;
         onNewRequested();
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('new')) {
+            url.searchParams.delete('new');
+            window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+        }
     }, [newRequest]);
 
     // --- Duplicate orchestration ---
