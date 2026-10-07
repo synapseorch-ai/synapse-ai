@@ -29,6 +29,7 @@ import { validateOrchestration } from './validate';
 import { KeyChips, StepTargetSelect, intOrUndefined, type KnowledgeBaseOption, type StepSectionProps } from './panel/shared';
 import { STEP_SECTIONS } from './panel/steps';
 import { useAvailableTools } from './panel/use-available-tools';
+import { StepIcon } from '../run/StepIcon';
 
 interface StepConfigPanelProps {
     step: StepConfig;
@@ -84,6 +85,12 @@ interface StepConfigPanelProps {
     knowledgeEnabled?: boolean;
     /** The workspace's knowledge bases, for the Retrieve and Ingest pickers. Without them the ids are typed. */
     knowledgeBases?: KnowledgeBaseOption[];
+    /**
+     * `docked` (the default) is a column beside the canvas with its own width
+     * and resize handle. `card` fills the floating setup card of the open canvas
+     * (`CanvasWorkbench`, M3a), which owns the width; everything inside is the same.
+     */
+    frame?: 'docked' | 'card';
 }
 
 // The engine asks the runner for the internet (`Network.INTERNET` in the
@@ -105,7 +112,7 @@ export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
     availableModels, orchestration, showVaultHints = true, canRunCode = true,
     codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, semanticCacheNote = SELF_HOSTED_SEMANTIC_NOTE, readOnly = false,
-    knowledgeEnabled = false, knowledgeBases,
+    knowledgeEnabled = false, knowledgeBases, frame = 'docked',
 }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => {
         if (!readOnly) onUpdate({ ...step, ...patch });
@@ -178,27 +185,27 @@ export function StepConfigPanel({
 
     return (
         <aside
-            className="relative flex shrink-0 flex-col border-l border-border bg-surface"
-            style={{ width }}
+            className={frame === 'card'
+                ? 'relative flex h-full min-h-0 w-full flex-col'
+                : 'relative flex shrink-0 flex-col border-l border-border bg-surface'}
+            style={frame === 'card' ? undefined : { width }}
             aria-label="Step configuration"
         >
-            {/* Resize handle */}
-            <div
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="Resize panel"
-                onPointerDown={startResize}
-                className="absolute inset-y-0 -left-0.5 z-10 w-1.5 cursor-col-resize transition-colors hover:bg-accent/40 active:bg-accent/60"
-            />
-
-            {/* Header */}
-            <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-                <span
-                    className="flex size-6 shrink-0 items-center justify-center rounded-md"
-                    style={{ backgroundColor: meta.color + '26', color: meta.color }}
-                    aria-hidden
+            {/* Resize handle (the card has its own, on its left edge) */}
+            {frame !== 'card' && (
+                <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize panel"
+                    onPointerDown={startResize}
+                    className="absolute inset-y-0 -left-0.5 z-10 w-1.5 cursor-col-resize transition-colors hover:bg-accent/40 active:bg-accent/60"
                 />
-                <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-text">{step.name}</h3>
+            )}
+
+            {/* Header: the type's icon on its role's tint (D211), the name, close */}
+            <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
+                <StepIcon type={step.type} className="size-7 [&_svg]:size-4" />
+                <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-text">{step.name}</h3>
                 <IconButton label="Close panel" onClick={onClose} size="sm" icon={X} />
             </div>
 

@@ -12,17 +12,10 @@
  */
 
 import { useMemo, useState } from 'react';
-import {
-    Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench,
-    Braces, GitFork, ArrowLeftRight, FileText, BookOpenText, FileInput, PanelLeftClose, PanelLeftOpen,
-} from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { SearchInput, usePersisted } from '@/components/ui';
 import { STEP_TYPE_META, type StepCategory, type StepType } from '@/types/orchestration';
-
-const ICONS: Record<string, React.FC<{ size?: number; className?: string }>> = {
-    Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench,
-    Braces, GitFork, ArrowLeftRight, FileText, BookOpenText, FileInput,
-};
+import { StepIcon } from '../run/StepIcon';
 
 const CATEGORY_ORDER: StepCategory[] = ['Core', 'Logic', 'Data', 'I/O'];
 
@@ -120,7 +113,6 @@ export function StepPalette({ onAdd, hiddenTypes }: { onAdd: (type: StepType) =>
                         <div className="space-y-0.5">
                             {types.map((type) => {
                                 const meta = STEP_TYPE_META[type];
-                                const Icon = ICONS[meta.icon] || Bot;
                                 return (
                                     <button
                                         key={type}
@@ -134,13 +126,7 @@ export function StepPalette({ onAdd, hiddenTypes }: { onAdd: (type: StepType) =>
                                         title={`${meta.blurb} — drag onto the canvas, or click to add`}
                                         className="flex w-full cursor-grab items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text active:cursor-grabbing"
                                     >
-                                        <span
-                                            className="flex size-5 shrink-0 items-center justify-center rounded-md"
-                                            style={{ backgroundColor: meta.color + '26', color: meta.color }}
-                                            aria-hidden
-                                        >
-                                            <Icon size={12} />
-                                        </span>
+                                        <StepIcon type={type} className="size-5 [&_svg]:size-3" />
                                         <span className="min-w-0 flex-1 truncate" translate="no">{meta.label}</span>
                                     </button>
                                 );

@@ -209,7 +209,7 @@ export interface StepNodeData {
     isEntry: boolean;
     isSelected: boolean;
     agentName?: string;
-    runStatus?: 'pending' | 'running' | 'completed' | 'failed';
+    runStatus?: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
     /** Why the step failed in the run on screen, in its own words (F195). */
     runError?: string;
     issues?: StepIssue[];
@@ -219,10 +219,10 @@ export interface StepNodeData {
 export type StepNode = Node<StepNodeData>;
 export type StepEdge = Edge;
 
-// Step type metadata for UI. `color` is identity (icon chip, minimap) and is a
-// literal hex on purpose — it renders on both themes and never carries meaning
-// beyond "which type is this". `category` groups the palette; `blurb` is the
-// one-liner shown while choosing a step.
+// Step type metadata for UI. `category` groups the step list; `blurb` is the
+// one-liner shown while choosing a step. `color` was each type's own hue; the
+// canvas colours steps by who does the work now (D211, `orchestration/roles.ts`)
+// and draws none of these, but they stay exported for anything that reads them.
 export type StepCategory = 'Core' | 'Logic' | 'Data' | 'I/O';
 
 export const STEP_TYPE_META: Record<StepType, {

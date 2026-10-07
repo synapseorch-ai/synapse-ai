@@ -2,16 +2,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { AlertTriangle, Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText, BookOpenText, FileInput } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { STEP_TYPE_META } from '@/types/orchestration';
 import type { StepConfig, StepIssue, StepType } from '@/types/orchestration';
-import { ROUTE_COLORS } from './graph';
+import { cn } from '@/lib/cn';
 import { reasonHeadline } from '@/lib/runErrors';
+import { StepIcon } from '../run/StepIcon';
 
-const ICONS: Record<string, React.FC<{ size?: number; className?: string }>> = {
-    Bot, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Square, Zap, Wrench, Braces, GitFork, ArrowLeftRight, FileText,
-    BookOpenText, FileInput,
-};
+/**
+ * A connection's handle and its word. Every handle is the same quiet grey: the
+ * word says which road it is (true, false, a route's name), and colour on the
+ * canvas is kept for who does the work and for a run in progress (D211).
+ */
+const HANDLE_INK = 'var(--text-faint)';
 
 /** Evenly distribute n source handles down the right edge. */
 function handleOffsets(n: number): number[] {
@@ -19,7 +22,7 @@ function handleOffsets(n: number): number[] {
 }
 
 /** A right-edge source handle with its floating label, at `top` percent. */
-function LabelledHandle({ id, top, color, label }: { id: string; top: number; color: string; label: string }) {
+function LabelledHandle({ id, top, label }: { id: string; top: number; label: string }) {
     return (
         <>
             <Handle
@@ -27,11 +30,11 @@ function LabelledHandle({ id, top, color, label }: { id: string; top: number; co
                 position={Position.Right}
                 id={id}
                 className="!size-2.5 !border-2 !border-[var(--bg)]"
-                style={{ top: `${top}%`, backgroundColor: color }}
+                style={{ top: `${top}%`, backgroundColor: HANDLE_INK }}
             />
             <span
-                className="pointer-events-none absolute -right-2 translate-x-full -translate-y-1/2 text-[9px] leading-none"
-                style={{ top: `${top}%`, color }}
+                className="pointer-events-none absolute -right-2 translate-x-full -translate-y-1/2 text-[10px] leading-none"
+                style={{ top: `${top}%`, color: HANDLE_INK }}
                 translate="no"
             >
                 {label}
@@ -92,16 +95,20 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const issues: StepIssue[] | undefined = data.issues;
     const meta = STEP_TYPE_META[step.type as StepType];
     if (!meta) return null;
-    const IconComp = ICONS[meta.icon] || Bot;
 
     // Run state paints the frame; selection paints the ring. Both are tokens,
     // so the card is legible on either theme.
     const statusFrame: Record<string, string> = {
         pending: 'border-border-strong',
-        running: 'border-accent shadow-[0_0_0_3px_var(--ring)] animate-pulse',
-        paused: 'border-person shadow-[0_0_12px_-2px_var(--person)]',
+        running: 'border-accent animate-pulse',
+        paused: 'border-person',
         completed: 'border-success',
         failed: 'border-danger',
+    };
+    // Kept apart from the frame so `cn` lets a status glow win over the resting shadow.
+    const statusShadow: Record<string, string> = {
+        running: 'shadow-[0_0_0_3px_var(--ring)]',
+        paused: 'shadow-[0_0_12px_-2px_var(--person)]',
     };
     const frame = runStatus
         ? statusFrame[runStatus] || 'border-border-strong'
@@ -126,8 +133,16 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const summary = summaryFor(step, agentName);
 
     return (
+        // The status class comes first among the frame's `border-*` classes:
+        // ui-smoke reads the first one as the step's state.
         <div
-            className={`relative min-w-[170px] max-w-[230px] rounded-lg border-2 bg-surface shadow-sm transition-all ${frame} ${selected ? 'shadow-[0_0_0_3px_var(--ring)]' : ''}`}
+            className={cn(
+                'relative min-w-[176px] max-w-[232px] rounded-xl border',
+                frame,
+                'bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.06)] transition-[border-color,box-shadow]',
+                runStatus && statusShadow[runStatus],
+                selected && 'shadow-[0_0_0_3px_var(--ring)]',
+            )}
             style={{ minHeight }}
         >
             {/* Issue badge — errors take precedence over warnings */}
@@ -145,60 +160,54 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             {/* Input handle — left side */}
             <Handle type="target" position={Position.Left} className="!size-2.5 !border-2 !border-[var(--bg)] !bg-text-faint" />
 
-            {/* Header */}
-            <div className="flex items-center gap-2 rounded-t-[calc(var(--radius-lg)-2px)] border-b border-border px-3 py-2">
-                <span
-                    className="flex size-5 shrink-0 items-center justify-center rounded-md"
-                    style={{ backgroundColor: meta.color + '26', color: meta.color }}
-                    aria-hidden
-                >
-                    <IconComp size={12} />
-                </span>
-                <span className="min-w-0 flex-1 truncate text-xs font-medium text-text" translate="no">{step.name}</span>
+            {/* Header: the type's icon on its role's tint (D211), the name, Start */}
+            <div className="flex items-center gap-2 px-3 pb-1 pt-2.5">
+                <StepIcon type={step.type} />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.01em] text-text" translate="no">{step.name}</span>
                 {isEntry && (
-                    <span className="rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-accent-fg">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-accent-ink">
                         START
                     </span>
                 )}
             </div>
 
             {/* Body */}
-            <div className="space-y-1 px-3 py-2">
-                <div className="text-[10px] uppercase tracking-wider text-text-faint">{meta.label}</div>
+            <div className="space-y-0.5 px-3 pb-2.5">
+                <div className="text-[10.5px] font-medium uppercase tracking-wider text-text-faint">{meta.label}</div>
 
                 {summary && (
-                    <div className="truncate text-[11px] text-text-muted" translate="no">{summary}</div>
+                    <div className="truncate text-xs text-text-muted" translate="no">{summary}</div>
                 )}
                 {/* An agent step's own prompt template wins over the text typed
                     into the run box (context.py gives it precedence) — invisible
                     here is how a run "ignores" its input. Show it. */}
                 {step.type === 'agent' && step.prompt_template && (
-                    <div className="truncate text-[10px] text-text-faint" translate="no">
+                    <div className="truncate text-[11px] text-text-faint" translate="no">
                         <span className="opacity-70">prompt:</span>{' '}
                         {step.prompt_template.slice(0, 40) + (step.prompt_template.length > 40 ? '…' : '')}
                     </div>
                 )}
                 {step.type === 'switch' && step.switch_expression && (
-                    <div className="truncate font-code text-[10px] text-text-faint" translate="no">
+                    <div className="truncate font-code text-[11px] text-text-faint" translate="no">
                         {step.switch_expression.slice(0, 35) + (step.switch_expression.length > 35 ? '…' : '')}
                     </div>
                 )}
 
                 {/* I/O keys */}
                 {step.input_keys && step.input_keys.length > 0 && (
-                    <div className="truncate text-[10px] text-text-faint" translate="no">
+                    <div className="truncate text-[11px] text-text-faint" translate="no">
                         <span className="opacity-70">in:</span> {step.input_keys.join(', ')}
                     </div>
                 )}
                 {step.output_key && (
-                    <div className="truncate text-[10px] text-text-faint" translate="no">
+                    <div className="truncate text-[11px] text-text-faint" translate="no">
                         <span className="opacity-70">out:</span> {step.output_key}
                     </div>
                 )}
                 {/* Why it failed, where the eye already is (F195). The run log
                     has the whole text; the card keeps it for a hover. */}
                 {runError && (
-                    <div className="line-clamp-2 break-words text-[10px] text-danger" title={runError} translate="no">
+                    <div className="line-clamp-2 break-words text-[11px] text-danger" title={runError} translate="no">
                         {reasonHeadline(runError)}
                     </div>
                 )}
@@ -211,19 +220,18 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                         key={`route_${routeLabels[idx]}`}
                         id={`route_${routeLabels[idx]}`}
                         top={top}
-                        color={ROUTE_COLORS[idx % ROUTE_COLORS.length]}
                         label={routeLabels[idx]}
                     />
                 ))
             ) : step.type === 'loop' ? (
                 <>
-                    <LabelledHandle id="body" top={35} color="var(--flow-loop)" label="body" />
-                    <LabelledHandle id="done" top={65} color="var(--success)" label="done" />
+                    <LabelledHandle id="body" top={35} label="body" />
+                    <LabelledHandle id="done" top={65} label="done" />
                 </>
             ) : step.type === 'if_else' ? (
                 <>
-                    <LabelledHandle id="if_true" top={35} color="var(--success)" label="true" />
-                    <LabelledHandle id="if_false" top={65} color="var(--danger)" label="false" />
+                    <LabelledHandle id="if_true" top={35} label="true" />
+                    <LabelledHandle id="if_false" top={65} label="false" />
                 </>
             ) : step.type === 'switch' && switchCaseLabels.length > 0 ? (
                 handleOffsets(switchCaseLabels.length + 1).map((top, idx) =>
@@ -232,11 +240,10 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                             key={`case_${switchCaseLabels[idx]}`}
                             id={`case_${switchCaseLabels[idx]}`}
                             top={top}
-                            color={ROUTE_COLORS[idx % ROUTE_COLORS.length]}
                             label={switchCaseLabels[idx]}
                         />
                     ) : (
-                        <LabelledHandle key="default" id="default" top={top} color="var(--flow-edge)" label="default" />
+                        <LabelledHandle key="default" id="default" top={top} label="default" />
                     ),
                 )
             ) : (
@@ -250,7 +257,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                     id="limit"
                     title="When it reaches the limit"
                     className="!size-2.5 !border-2 !border-[var(--bg)]"
-                    style={{ backgroundColor: 'var(--flow-loop)' }}
+                    style={{ backgroundColor: HANDLE_INK }}
                 />
             )}
         </div>
