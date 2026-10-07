@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import calendar
 import json
 import os
 import re
@@ -6776,6 +6777,10 @@ async def check_help_pages(browser) -> str:
         try:
             if ready is not None:                 # the state loads after the page: open the panel on it, not before
                 await ready(page).wait_for(timeout=30_000)
+            if expect is None and path == "/dashboard":
+                # Home's h1 greets the reader (M2a); its panel is the page the menu names.
+                await page.locator("main h1").first.wait_for(timeout=30_000)
+                expect = "Home"
             if expect is None:
                 await page.locator("main h1").first.wait_for(timeout=30_000)
                 expect = (await page.locator("main h1").first.inner_text()).strip()
@@ -7342,7 +7347,8 @@ async def check_runfailure(browser) -> str:
 @check
 async def check_runanswer(browser) -> str:
     """A waiting run is answered on its page (M2b): its steps as a stepper with the waiting step marked, the
-    step's fields, and Send answer posts them keyed by name; the page then reads the run on, and the card goes."""
+    step's fields, and the answer posted keyed by name; the page then reads the run on, and the card goes. The step's
+    one Yes / No is two buttons since M2a (Naveen's call): "Approve payment" posts it true with the note."""
     runs = json.loads(json.dumps(_M2B_RUNS))
     answered = json.loads(json.dumps(runs["run_smoke_m2b_wait"]))
     answered.update(status="completed", waiting_for_human=False, human_prompt=None, ended_at=_m2b_at(4))
@@ -7362,11 +7368,12 @@ async def check_runanswer(browser) -> str:
         if "Not reached" not in await steps.locator("li").nth(3).inner_text():
             bad.append("the step after the question is not 'Not reached'")
         card = page.get_by_role("region", name="Waiting for a person")
-        await card.get_by_role("checkbox", name="Approve payment").click()
+        if await card.get_by_role("checkbox", name="Approve payment").count():
+            bad.append("the lone Yes / No is still a checkbox, not the two buttons")
         await card.get_by_role("textbox", name="Note for the ledger").fill("Paid on Friday")
         # The page reads the answered run from here on.
         await ctx.route("**/api/orchestrations/runs/run_smoke_m2b_wait", _answer(answered))
-        await card.get_by_role("button", name="Send answer").click()
+        await card.get_by_role("button", name="Approve payment").click()
         await page.get_by_text("Answer sent — the run is resuming.").wait_for(timeout=10_000)
         if sent != [{"response": {"approved": True, "note": "Paid on Friday"}}]:
             bad.append(f"the answer posted {sent}")
@@ -7409,6 +7416,156 @@ async def check_runcontrast(browser) -> str:
     if bad:
         raise AssertionError(f"{len(bad)} below AA: " + "; ".join(bad[:8]))
     return f"{len(shots)} run screens in both themes, every text at AA"
+
+
+
+# ── Home (M2a): what needs you first, answered in place ──────────────────────────────────────────────────────────
+
+
+def _m2a_runs() -> dict:
+    """M2b's stubbed runs, moved to an hour ago so they fall in this week, plus a second question waiting."""
+    shift = time.time() - 3600 - 1790762400
+    def move(v):
+        if isinstance(v, str) and re.fullmatch(r"2026-\d\d-\d\dT\d\d:\d\d:\d\dZ", v):
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(calendar.timegm(time.strptime(v, "%Y-%m-%dT%H:%M:%SZ")) + shift))
+        if isinstance(v, dict):
+            return {k: move(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [move(x) for x in v]
+        return v
+    runs = move(json.loads(json.dumps(_M2B_RUNS)))
+    second = json.loads(json.dumps(runs["run_smoke_m2b_wait"]))
+    second.update(run_id="run_smoke_m2a_wait2", human_prompt="Invoice INV-1048 totals **$2,544.00**. Approve payment?")
+    runs["run_smoke_m2a_wait2"] = second
+    return runs
+
+
+@check
+async def check_homeanswer(browser) -> str:
+    """Home answers what waits in place (M2a): each waiting run is the run page's own card, its one Yes / No two
+    buttons; Approve and Decline post exactly what the run page posts, to the same address; an answered card says so
+    and the count goes down; Open run goes to the run's page."""
+    runs = _m2a_runs()
+    sent: list[tuple[str, dict]] = []
+    ctx, page, _ = await _m2b_page(browser, "/dashboard", runs=runs)
+    bad: list[str] = []
+    try:
+        for rid in ("run_smoke_m2b_wait", "run_smoke_m2a_wait2"):
+            async def human(route, rid=rid):
+                sent.append((urllib.parse.urlsplit(route.request.url).path, json.loads(route.request.post_data or "{}")))
+                await route.fulfill(status=200, content_type="text/event-stream", body=_frame({"type": "done"}))
+            await ctx.route(f"**/api/orchestrations/runs/{rid}/human-input", human)
+        cards = page.get_by_role("region", name="Waiting for a person")
+        await cards.first.wait_for(timeout=15_000)
+        heading = (await page.locator("#home-needs-you").inner_text()).strip()
+        if heading != "Needs you · 2":
+            bad.append(f"the section reads {heading!r}")
+        if await cards.count() != 2:
+            bad.append(f"{await cards.count()} cards for two waiting runs")
+        first = cards.filter(has_text="INV-1047")
+        if "Smoke invoice triage" not in await first.inner_text():
+            bad.append("the card does not name its workflow")
+        href = await first.get_by_role("link", name="Open run").get_attribute("href")
+        if href != "/runs/run_smoke_m2b_wait":
+            bad.append(f"Open run goes to {href!r}")
+        if await first.get_by_role("button", name="Send answer").count():
+            bad.append("a lone Yes / No still has Send answer")
+        await first.get_by_role("textbox", name="Note for the ledger").fill("Paid on Friday")
+        # From here the list reads the first run as answered.
+        answered = {k: v for k, v in runs.items() if k != "run_smoke_m2b_wait"}
+        await ctx.route(re.compile(r".*/api/orchestrations/runs(\?.*)?$"),
+                        _answer([_m2b_summary(r) for r in answered.values()]))
+        await first.get_by_role("button", name="Approve payment").click()
+        await page.get_by_role("status").filter(has_text="Answer sent — the run is resuming.").first.wait_for(timeout=10_000)
+        await cards.filter(has_text="INV-1048").get_by_role("button", name="Decline").click()
+        await page.get_by_role("status").filter(has_text="Answer sent").nth(1).wait_for(timeout=10_000)
+        want = [("/api/orchestrations/runs/run_smoke_m2b_wait/human-input", {"response": {"approved": True, "note": "Paid on Friday"}}),
+                ("/api/orchestrations/runs/run_smoke_m2a_wait2/human-input", {"response": {"approved": False, "note": ""}})]
+        if sent != want:
+            bad.append(f"the answers posted {sent}")
+        if await cards.count():
+            bad.append("a card stayed up after its answer")
+        heading = (await page.locator("#home-needs-you").inner_text()).strip()
+        if heading != "Needs you · 0":
+            bad.append(f"after both answers the section reads {heading!r}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "two waiting runs answered in place, Approve and Decline posting the run page's request"
+
+
+@check
+async def check_homestats(browser) -> str:
+    """Home's head, strip and week say how things stand (M2a): the greeting, one status line, the four figures with a
+    dot each and the numbers in the text colour, a bar per run of the week, and every run row opening its run's page."""
+    ctx, page, _ = await _m2b_page(browser, "/dashboard", runs=_m2a_runs())
+    bad: list[str] = []
+    try:
+        await page.get_by_role("region", name="Waiting for a person").first.wait_for(timeout=15_000)
+        title = (await page.locator("main h1").first.inner_text()).strip()
+        if not re.match(r"^Good (morning|afternoon|evening)\b", title):
+            bad.append(f"the title reads {title!r}")
+        line = (await page.locator("main header p").first.inner_text()).strip()
+        if line != "Two things need you. Two runs failed this week.":
+            bad.append(f"the status line reads {line!r}")
+        strip = await page.evaluate("""() => [...document.querySelectorAll('dl[aria-label="This week"] > div')].map(d => ({
+            k: d.querySelector('dt').innerText.trim(), v: d.querySelector('dd').innerText.trim(),
+            s: (d.querySelectorAll('dd')[1] || {}).innerText || '', dot: !!d.querySelector('dt span[aria-hidden]'),
+            colour: getComputedStyle(d.querySelector('dd')).color, text: getComputedStyle(document.querySelector('main h1')).color }))""")
+        got = {c["k"]: (c["v"], c["s"].strip()) for c in strip}
+        want = {"Running now": "0", "Waiting on you": "2", "Failed · 7 days": "2", "Completed · 7 days": "20%"}
+        for k, v in want.items():
+            if got.get(k, ("?",))[0] != v:
+                bad.append(f"{k} shows {got.get(k)}")
+        if got.get("Completed · 7 days", ("", ""))[1] != "1 of 5 runs":
+            bad.append(f"Completed's line is {got.get('Completed · 7 days')}")
+        for c in strip:
+            if not c["dot"] or c["colour"] != c["text"]:
+                bad.append(f"{c['k']}: dot {c['dot']}, number {c['colour']} (text {c['text']})")
+        summary = (await page.locator("p.sr-only", has_text="This week").inner_text()).strip()
+        if summary != "This week, 5 runs: 1 completed, 2 failed, 2 waiting on a person.":
+            bad.append(f"the week says {summary!r}")
+        recent = page.get_by_role("list", name="Recent runs")
+        hrefs = await recent.get_by_role("link").evaluate_all("els => els.map(e => e.getAttribute('href'))")
+        if not hrefs or not all(h.startswith("/runs/run_smoke_") for h in hrefs):
+            bad.append(f"Recent runs open {hrefs}")
+        active = await page.get_by_role("list", name="Active now").get_by_role("link").count()
+        if active != 2:
+            bad.append(f"Active now lists {active} runs, not the two waiting")
+        for label in ("Total spend", "Requests", "Tokens", "Cache saved", "Spend by model", "Workspace", "Coming up"):
+            if not await page.get_by_text(label, exact=True).count():
+                bad.append(f"no {label!r}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "greeting, status line, the strip in quiet colour, the week's bars, run rows to their pages"
+
+
+@check
+async def check_homeempty(browser) -> str:
+    """Home with nothing yet (M2a): one calm line under Needs you, no card, and each section's own empty words."""
+    ctx, page, _ = await _m2b_page(browser, "/dashboard", runs={})
+    bad: list[str] = []
+    try:
+        await page.get_by_text("Nothing is waiting on you.").wait_for(timeout=15_000)
+        if await page.get_by_role("region", name="Waiting for a person").count():
+            bad.append("a card with nothing waiting")
+        heading = (await page.locator("#home-needs-you").inner_text()).strip()
+        if heading != "Needs you · 0":
+            bad.append(f"the section reads {heading!r}")
+        line = (await page.locator("main header p").first.inner_text()).strip()
+        if line != "Nothing needs you. Nothing has run this week.":
+            bad.append(f"the status line reads {line!r}")
+        for words in ("Nothing running.", "No runs this week.", "No runs yet", "all clear", "No runs yet"):
+            if not await page.get_by_text(words, exact=False).count():
+                bad.append(f"no {words!r}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "nothing waiting reads as one calm line, and every section says it is empty"
 
 
 async def main() -> int:
