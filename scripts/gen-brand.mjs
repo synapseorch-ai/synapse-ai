@@ -76,6 +76,10 @@ const TILE_RX = { tab: 4.5, mail: 5, app: 0 };
 // The mark's box inside a tile. Its outer ring then spans 60% of the tile,
 // inside Android's maskable safe zone.
 const IN_TILE = 0.72;
+// The tab icon's mark, inside its own tile. Full size it came within a pixel
+// of the edge at 16px and read as congested; at 86% the gap doubles while the
+// rings stay about a pixel wide (Naveen's review, M4a).
+const IN_TAB = 0.86;
 
 /* ── Primitives ─────────────────────────────────────────────────────────── */
 
@@ -468,7 +472,7 @@ console.log("wrote frontend/src/app/brand-motion.css");
    recognisably the same mark. An installed icon and the mail header have room
    for the full one.                                                          */
 
-const TAB = { g: compact, paint: COLOUR.cyan, tile: COLOUR.navy, rx: TILE_RX.tab };
+const TAB = { g: compact, paint: COLOUR.cyan, tile: COLOUR.navy, rx: TILE_RX.tab, scale: IN_TAB };
 const APP = { g: full, paint: COLOUR.cyan, tile: COLOUR.navy, rx: TILE_RX.app, scale: IN_TILE };
 const MAIL = { g: full, paint: COLOUR.cyan, tile: COLOUR.navy, rx: TILE_RX.mail, scale: IN_TILE };
 const ICO_SIZES = [16, 32, 48];
