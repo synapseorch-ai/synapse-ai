@@ -8,7 +8,7 @@
  */
 
 import { useBuilder } from '@/components/app/BuilderProvider';
-import { Hint, Mark } from '@/components/ui';
+import { Hint, Mark, useIsCanvasMode } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
 
 export function BuilderLauncher() {
@@ -16,8 +16,11 @@ export function BuilderLauncher() {
     // A question waiting on the person, whether asked in this page or brought
     // back by a reload (F214): with the panel closed, this is the only sign.
     const waiting = state.pending !== null;
+    // An open canvas owns this corner (zoom and Fit, D204) and has its own way in:
+    // Change with AI in its bar; the rail's Build with AI row shows the waiting dot.
+    const canvas = useIsCanvasMode();
 
-    if (isOpen) return null;
+    if (isOpen || canvas) return null;
 
     return (
         // The wrapper takes the fixed position, not the button. `Hint` wraps

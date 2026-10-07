@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 
 import {
-    Label, Mark, Menu, MenuItem, MenuLabel, MenuLink, MenuSegment, MenuSeparator, usePersisted,
+    Label, Mark, Menu, MenuItem, MenuLabel, MenuLink, MenuSegment, MenuSeparator, useIsCanvasMode, usePersisted,
 } from '@/components/ui';
 import { AUTH_CHANGED_EVENT, canSignOut, readAuthStatus } from '@/lib/auth';
 import { HUB_NAV, isAtHref, visibleTabs, type NavHub } from '@/lib/nav';
@@ -116,9 +116,20 @@ export function AppRail({
     const { open: openBuilder, streaming, state } = useBuilder();
     const flags = useNavFlags();
     const mayLeave = useNavGuard();
-    const [collapsedFlag, setCollapsed] = usePersisted<'0' | '1'>(
+    const [collapsedFlag, setCollapsedFlag] = usePersisted<'0' | '1'>(
         'synapseRailCollapsed', raw => (raw === '1' ? '1' : '0'), '0');
-    const collapsed = variant === 'side' && collapsedFlag === '1';
+    // On an open canvas the menu folds to icons, and comes back as it was when
+    // the canvas closes (D204; Naveen's default at M3a's plan). Expanding it there
+    // holds for that visit only: the saved setting is never written from a canvas.
+    const canvas = useIsCanvasMode();
+    const [openOnCanvas, setOpenOnCanvas] = useState(false);
+    const [seenCanvas, setSeenCanvas] = useState(canvas);
+    if (seenCanvas !== canvas) {
+        setSeenCanvas(canvas);
+        setOpenOnCanvas(false);
+    }
+    const collapsed = variant === 'side' && (canvas ? !openOnCanvas : collapsedFlag === '1');
+    const setCollapsed = (next: '0' | '1') => (canvas ? setOpenOnCanvas(next === '0') : setCollapsedFlag(next));
     // A question waiting on the person (F214) shows here as well as on the
     // floating launcher, which is hidden while the panel is open.
     const waiting = state.pending !== null;

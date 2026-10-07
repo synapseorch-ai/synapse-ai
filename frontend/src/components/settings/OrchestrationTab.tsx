@@ -1,9 +1,9 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useEffectEvent, useCallback, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowDown, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX, MoreHorizontal, BookOpenText } from 'lucide-react';
-import { Button, buttonStyles, Combobox, Hint, IconButton, Mark, Markdown, Menu, MenuItem, MenuSeparator, Modal, SearchInput, Spinner } from '@/components/ui';
+import { useState, useEffect, useEffectEvent, useCallback, useRef, useSyncExternalStore } from 'react';
+import { Plus, Trash, Copy, Radio, Bot } from 'lucide-react';
+import { Combobox, ConfirmDialog, Mark, SearchInput } from '@/components/ui';
+import { useRouter } from 'next/navigation';
 import { matchesQuery } from '@/lib/search';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
@@ -12,61 +12,28 @@ import { useBuilderShortcuts, useDraftHistory } from '../orchestration/use-draft
 import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
 import { failureReason, stepErrorsFrom } from '@/lib/runErrors';
-import { ReactFlowProvider } from '@xyflow/react';
-import { WorkflowCanvas } from '../orchestration/WorkflowCanvas';
+import { CanvasWorkbench } from '../orchestration/CanvasWorkbench';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
-import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
+import {
+    DescriptionField, GuardrailsFields, RunInputField, SchedulesList, SettingsSection, WorkflowSettingsPanel,
+} from '../orchestration/WorkflowSettings';
 import { humanAnswer, initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
 import type { KnowledgeBaseOption } from '../orchestration/panel/shared';
-import { DEGRADED, getQueryTrace, knowledgeApi, useKnowledgeEnabled, type SearchTrace } from '@/lib/knowledge';
+import { knowledgeApi, useKnowledgeEnabled } from '@/lib/knowledge';
 import { useHelpTopic } from '@/components/help';
-import { RetrievalTrace } from '@/components/RetrievalTrace';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
 import { isLiveRun, runStatusMeta, type RunSummary } from '@/components/runs/summary';
 import { RunList, type RunRow } from '@/components/run';
 import { ossRunRow } from '@/lib/runHost';
-
-type ToolCallLogEntry = { kind: 'tool_call'; tool_name: string; args: Record<string, any>; step_name?: string };
-type ToolResultLogEntry = { kind: 'tool_result'; tool_name: string; preview: string };
-type StepResultLogEntry = { kind: 'step_result'; step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string };
-// Model reasoning ([REASONING] blocks) and inter-tool prose, collapsible so a
-// chatty agent doesn't drown the structural log lines.
-type ReasoningLogEntry = { kind: 'reasoning'; step_name?: string; content: string };
-type ThoughtLogEntry = { kind: 'thought'; step_name?: string; content: string };
-type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
-type TasksLogEntry = { kind: 'tasks'; step_name?: string; tasks: { content: string; status: TaskStatus }[] };
-// A structural log line: the tone picks an icon and a colour in the renderer,
-// which is what replaced the emoji prefixes — an icon column reads as product
-// chrome where a row of pictographs read as a group chat.
-type LineTone = 'start' | 'ok' | 'error' | 'pause' | 'loop' | 'flow' | 'parallel' | 'merge' | 'end' | 'info' | 'warn' | 'compact' | 'branch' | 'muted';
-type LineLogEntry = { kind: 'line'; tone: LineTone; text: string };
-// A Retrieve step's search (R1): its trace is stored by id and fetched when the row is opened.
-type RetrievalLogEntry = { kind: 'retrieval'; step_name?: string; query_id: string; hit_count: number; cost_usd: number; degraded: string[] };
-type LogEntry = string | ToolCallLogEntry | ToolResultLogEntry | StepResultLogEntry | ReasoningLogEntry | ThoughtLogEntry | TasksLogEntry | LineLogEntry | RetrievalLogEntry;
-
-const line = (tone: LineTone, text: string): LineLogEntry => ({ kind: 'line', tone, text });
-
-const LINE_META: Record<LineTone, { icon: React.FC<{ size?: number; className?: string }>; cls: string }> = {
-    start:    { icon: Play,            cls: 'text-blue-400' },
-    ok:       { icon: Check,           cls: 'text-green-400' },
-    error:    { icon: X,               cls: 'text-red-400' },
-    pause:    { icon: Pause,           cls: 'text-amber-400' },
-    loop:     { icon: RefreshCw,       cls: 'text-accent' },
-    flow:     { icon: GitFork,         cls: 'text-zinc-300' },
-    parallel: { icon: GitBranch,       cls: 'text-zinc-300' },
-    merge:    { icon: GitMerge,        cls: 'text-zinc-300' },
-    end:      { icon: Square,          cls: 'text-zinc-400' },
-    info:     { icon: Info,            cls: 'text-zinc-400' },
-    warn:     { icon: AlertTriangle,   cls: 'text-amber-400' },
-    compact:  { icon: Minimize2,       cls: 'text-zinc-400' },
-    branch:   { icon: CornerDownRight, cls: 'text-text-faint pl-2' },
-    muted:    { icon: Info,            cls: 'text-text-faint' },
-};
+import {
+    line, ResponseModal, type LogEntry, type ReasoningLogEntry, type RetrievalLogEntry, type StepResultLogEntry,
+    type TasksLogEntry, type ThoughtLogEntry, type ToolCallLogEntry, type ToolResultLogEntry,
+} from '@/components/workflows/runLog';
+import { RunDrawer } from '@/components/workflows/RunDrawer';
+import { RunStrip, type RunDrawerView } from '@/components/workflows/RunStrip';
 
 type RunStepStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed';
 
@@ -124,110 +91,12 @@ const EMPTY_ORCHESTRATION: Orchestration = {
 const NESTED_STEP_EVENTS = new Set(['step_start', 'step_complete', 'step_error', 'final',
     'tasks_updated', 'orchestration_error']);
 
-interface NestedRun {
-    run_id: string;
-    orchestration_id: string;
-    status: string;
-    steps_completed: number;
-    total_cost_usd?: number;
-    error?: string | null;
+function subscribeResize(onChange: () => void) {
+    window.addEventListener('resize', onChange);
+    return () => window.removeEventListener('resize', onChange);
 }
-
-/**
- * A Retrieve step's search in the run log (R1): the passage count, cost and
- * what degraded, and its trace — the legs, cuts, index versions and passages —
- * fetched the first time the row is opened (`GET /api/knowledge/queries/{id}`,
- * kept 30 days).
- */
-function RetrievalRow({ entry }: { entry: RetrievalLogEntry }) {
-    const [trace, setTrace] = useState<SearchTrace | null>(null);
-    const [failed, setFailed] = useState<string | null>(null);
-    const [loading, setLoading] = useState(false);
-    const load = () => {
-        if (trace || loading) return;
-        setLoading(true);
-        setFailed(null);
-        getQueryTrace(entry.query_id)
-            .then(setTrace)
-            .catch((err) => setFailed(err instanceof Error ? err.message : String(err)))
-            .finally(() => setLoading(false));
-    };
-    const n = entry.hit_count;
-    return (
-        <div className="pl-2 text-accent">
-            <details onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) load(); }}>
-                <summary className="cursor-pointer list-none">
-                    <BookOpenText size={11} className="mr-1 inline-block align-[-1px]" aria-hidden />
-                    Retrieve{entry.step_name ? ` · ${entry.step_name}` : ''}: {n} passage{n !== 1 ? 's' : ''}
-                    <span className="text-text-faint"> · ${entry.cost_usd.toFixed(4)}</span>
-                    {/* In words, as the opened trace says them (F372); each is a sentence. */}
-                    {entry.degraded.length > 0 && <span className="text-text-faint"> · {entry.degraded.map(code => DEGRADED[code] ?? code).join(' ')}</span>}
-                </summary>
-                <div className="mt-0.5 rounded-md bg-zinc-800/50 px-2 py-1 text-zinc-300">
-                    {loading && <Spinner />}
-                    {failed && <span className="text-red-300">Trace unavailable: {failed}</span>}
-                    {trace && <RetrievalTrace trace={trace} withDegraded withHits dense />}
-                    <div className="pt-0.5 text-[10px] text-text-faint" translate="no">{entry.query_id}</div>
-                </div>
-            </details>
-        </div>
-    );
-}
-
-/** The runs nested directly under this run — one per run of a nested step (F251). */
-function NestedRuns({ runId, refreshKey, names }: { runId: string; refreshKey: string; names: Record<string, string> }) {
-    const [children, setChildren] = useState<NestedRun[]>([]);
-    useEffect(() => {
-        let live = true;
-        fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}/children`)
-            .then(r => (r.ok ? r.json() : []))
-            .then(rows => { if (live) setChildren(Array.isArray(rows) ? rows : []); })
-            .catch(() => { if (live) setChildren([]); });
-        return () => { live = false; };
-    }, [runId, refreshKey]);
-    if (children.length === 0) return null;
-    return (
-        <div className="rounded-md border border-border bg-surface-2/40 px-2.5 py-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-text-faint mb-1">
-                Nested runs ({children.length})
-            </div>
-            <ul className="space-y-0.5">
-                {children.map(c => (
-                    <li key={c.run_id} className="flex items-baseline gap-2 text-[11px]">
-                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                            c.status === 'completed' ? 'bg-green-400' :
-                            c.status === 'failed' ? 'bg-red-400' :
-                            c.status === 'cancelled' ? 'bg-zinc-500' :
-                            c.status === 'paused' ? 'bg-yellow-400' : 'bg-blue-400 animate-pulse'
-                        }`} aria-hidden />
-                        <span className="text-zinc-300 truncate">{names[c.orchestration_id] || c.orchestration_id}</span>
-                        <span className="text-text-faint capitalize">{c.status}</span>
-                        <span className="text-text-faint">
-                            {c.steps_completed} step{c.steps_completed === 1 ? '' : 's'}
-                        </span>
-                        {c.error && <span className="text-red-300/90 truncate" title={c.error}>{c.error}</span>}
-                    </li>
-                ))}
-            </ul>
-        </div>
-    );
-}
-
-/** The keys a run's result can name: each written by a step, labelled with the
- *  steps that write it. A saved key no step writes stays listed, so the select
- *  shows what is stored rather than silently reading as the default (F249). */
-function resultKeyOptions(orch: Orchestration): { key: string; label: string }[] {
-    const writers = new Map<string, string[]>();
-    for (const step of orch.steps) {
-        if (!step.output_key) continue;
-        writers.set(step.output_key, [...(writers.get(step.output_key) ?? []), step.name || step.id]);
-    }
-    const options = [...writers].map(([key, names]) => ({ key, label: `${key} — ${names.join(', ')}` }));
-    if (orch.result_key && !writers.has(orch.result_key)) {
-        options.push({ key: orch.result_key, label: `${orch.result_key} — written by no step` });
-    }
-    return options;
-}
+const readWindowWidth = () => window.innerWidth;
+const serverWindowWidth = () => 0;
 
 /** A human step's declared fields off the wire — anything else is no fields (F75). */
 function fieldList(raw: unknown): HumanField[] {
@@ -247,6 +116,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // The draft with undo/redo, dirty tracking and the unload guard.
     // `setDraft` records history (edits); `replaceDraft` resets it (navigation).
     const { draft, setDraft, replaceDraft, markSaved, undo, redo, canUndo, canRedo, dirty } = useDraftHistory();
+    const router = useRouter();
     // The "?" panel explains the editor while one is open, the list otherwise (H1).
     useHelpTopic(draft ? 'orchestrations.editor' : null);
 
@@ -380,8 +250,20 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // Map of orch_step_id -> pending step result (supports parallel branches)
     const pendingStepResultRef = useRef<Map<string, { step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string }>>(new Map());
     const [responseModal, setResponseModal] = useState<{ step_name: string; step_type?: string; content: string } | null>(null);
+    // The open canvas's run drawer (M3a): the Run Log or Recent Runs, or shut.
+    // A run started, resumed or reopened opens it on the log, where its lines arrive.
+    const [runDrawer, setRunDrawer] = useState<RunDrawerView | null>(null);
+    // Leaving an unsaved draft asks first (M3a, Naveen's OK): Back, the
+    // switcher, New, another run, a link in the app. It used to drop it silently;
+    // the browser's own prompt covered only a reload or a closed tab. The same
+    // question as the agents screen's (F73).
+    const [pendingLeave, setPendingLeave] = useState<null | (() => void)>(null);
     const [confirmDeleteOrchId, setConfirmDeleteOrchId] = useState<string | null>(null);
-    const { open: openBuilder, setCurrentOrchestration } = useBuilder();
+    const { open: openBuilder, setCurrentOrchestration, isOpen: builderOpen } = useBuilder();
+    // The builder's panel stands at the window's right edge, 620 px wide at
+    // most; the open canvas keeps its chrome clear of it while it is open.
+    const windowWidth = useSyncExternalStore(subscribeResize, readWindowWidth, serverWindowWidth);
+    const builderInset = builderOpen ? Math.min(620, windowWidth - 24) + 12 : 0;
     // Set when the builder saved the orchestration being edited while the draft
     // had unsaved changes — the user chooses which version survives.
     const [builderSavedOrch, setBuilderSavedOrch] = useState<any | null>(null);
@@ -490,6 +372,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         setSelectedStepId(null);
         replaceDraft({ ...orch }, { saved: true });
         setRunId(runInfo.run_id);
+        setRunDrawer('run');
         // Sync the ref synchronously — the useEffect that mirrors runId only runs
         // after render, but streamRunJournal's guard reads currentRunIdRef immediately.
         currentRunIdRef.current = runInfo.run_id;
@@ -578,6 +461,32 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // Detaches this browser from the run's event stream; the run itself keeps
     // executing server-side on the runner pump and stays listed under Active,
     // so leaving the view never interrupts work.
+    // A blank workflow nobody has touched yet holds nothing to lose: it asks only
+    // once there is an edit (an undo step) or a saved workflow differs from its save.
+    const hasEdits = !!draft && dirty && (canUndo || orchestrations.some(o => o.id === draft.id));
+    const guardLeave = useCallback((go: () => void) => {
+        if (hasEdits) setPendingLeave(() => go);
+        else go();
+    }, [hasEdits]);
+
+    // A link inside the app gets the question too: the App Router cannot stop a
+    // navigation once it has started, so the click is taken before it does.
+    useEffect(() => {
+        if (!hasEdits) return;
+        const onClick = (e: MouseEvent) => {
+            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            const link = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+            if (!link || link.target === '_blank' || link.hasAttribute('download')) return;
+            const url = new URL(link.href, window.location.href);
+            if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setPendingLeave(() => () => router.push(url.pathname + url.search + url.hash));
+        };
+        document.addEventListener('click', onClick, true);
+        return () => document.removeEventListener('click', onClick, true);
+    }, [hasEdits, router]);
+
     const backToList = useCallback(() => {
         abortRef.current?.abort();
         abortRef.current = null;
@@ -600,7 +509,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // per request. The request then leaves the address — the address effect above
     // does not run again when this page is already open, so it would linger.
     const newHandledRef = useRef<string | undefined>(undefined);
-    const onNewRequested = useEffectEvent(() => createNew());
+    const onNewRequested = useEffectEvent(() => guardLeave(createNew));
     useEffect(() => {
         if (!newRequest || newHandledRef.current === newRequest) return;
         newHandledRef.current = newRequest;
@@ -776,15 +685,18 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         if (selectedStepId === stepId) setSelectedStepId(null);
     }, [draft, selectedStepId, setDraft]);
 
-    // --- Duplicate the selected step (Cmd+D) ---
-    const duplicateSelectedStep = useCallback(() => {
-        if (!draft || !selectedStepId) return;
-        const step = draft.steps.find(s => s.id === selectedStepId);
+    // --- Duplicate a step: the selected one (Cmd+D), or the one the canvas's step toolbar is over ---
+    const duplicateStep = useCallback((stepId: string) => {
+        if (!draft) return;
+        const step = draft.steps.find(s => s.id === stepId);
         if (!step) return;
         const copy = cloneStep(step);
         setDraft({ ...draft, steps: [...draft.steps, copy] });
         setSelectedStepId(copy.id);
-    }, [draft, selectedStepId, setDraft]);
+    }, [draft, setDraft]);
+    const duplicateSelectedStep = useCallback(() => {
+        if (selectedStepId) duplicateStep(selectedStepId);
+    }, [selectedStepId, duplicateStep]);
 
     // --- Set entry point ---
     const setEntryPoint = useCallback((stepId: string) => {
@@ -1040,6 +952,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         setHumanPrompt(null);
         setLiveActivity(null);
         lastEventIdRef.current = 0;  // fresh run, fresh journal
+        setRunDrawer('run');
 
         streamSSE(`/api/orchestrations/${draft.id}/run`, { message: runInput });
     };
@@ -1482,6 +1395,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     const resumeRun = async () => {
         if (!runId) return;
         setRunStatus('running');
+        setRunDrawer('run');
         setRunLog(prev => [...prev, '[Resuming from where run stopped...]']);
         streamSSE(`/api/orchestrations/runs/${runId}/resume`, {});
     };
@@ -1551,12 +1465,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         };
     }, []);
 
-    const selectedStep = draft?.steps.find(s => s.id === selectedStepId) || null;
     const allStepIds = draft?.steps.map(s => ({ id: s.id, name: s.name })) || [];
 
-    // Issues drive the toolbar chip and the Run gate; the canvas badges nodes
-    // and the panel explains — all from the same validate.ts pass.
-    const validation = draft ? validateOrchestration(draft, agents) : null;
 
     // The builder's "this one" is whatever this screen is showing, for exactly
     // as long as it is showing it — including across a client-side navigation,
@@ -1622,21 +1532,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     return (
         <div className="flex flex-col h-full relative">
             {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
-            {/* Toolbar: orchestration picker + actions. One row from `sm` up; below
-                it the actions take a second row, because at 360 px the two groups
-                overlapped and Back, New, Build with AI, Undo and Redo could not be
-                tapped (F218). */}
+            {/* The list's toolbar: the picker, New and Build with AI. One row from `sm`
+                up (F218). The open canvas has its own floating bar (M3a). */}
+            {!draft && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 border-b border-zinc-800 shrink-0">
                 <div className="flex items-center gap-2 w-full min-w-0 sm:w-auto sm:flex-1">
-                    {draft && (
-                        <button
-                            onClick={backToList}
-                            title="Back to all orchestrations and runs"
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-zinc-400 hover:text-white border border-zinc-700 hover:border-white transition-colors shrink-0"
-                        >
-                            <ArrowLeft size={14} /> Back
-                        </button>
-                    )}
                     <Combobox
                         value={selectedOrchId || undefined}
                         onChange={(id: string) => selectOrchestration(id || null)}
@@ -1662,81 +1562,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                         <Mark size={20} compact={false} className="-my-0.5" /> <span className="hidden sm:inline">Build with AI</span>
                     </button>
                 </div>
-
-                {draft && (
-                    <div className="ml-auto flex items-center gap-1.5 sm:pr-6">
-                        {validation && validation.errorCount + validation.warningCount > 0 && (
-                            <Hint
-                                content={[
-                                    ...validation.global.map(i => i.message),
-                                    ...Object.values(validation.byStep).flat().map(i => i.message),
-                                ].slice(0, 6).join(' · ')}
-                            >
-                                <span className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs ${validation.errorCount > 0 ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning'}`}>
-                                    <AlertTriangle size={12} aria-hidden />
-                                    {validation.errorCount > 0
-                                        ? `${validation.errorCount} error${validation.errorCount !== 1 ? 's' : ''}`
-                                        : `${validation.warningCount} warning${validation.warningCount !== 1 ? 's' : ''}`}
-                                </span>
-                            </Hint>
-                        )}
-                        <IconButton label="Undo (Ctrl+Z)" icon={Undo2} size="sm" onClick={undo} disabled={!canUndo} />
-                        <IconButton label="Redo (Ctrl+Shift+Z)" icon={Redo2} size="sm" onClick={redo} disabled={!canRedo} />
-                        <div className="mx-1 h-5 w-px bg-border-strong" />
-                        <Button size="sm" variant="secondary" onClick={handleSave} disabled={saving} title={dirty ? 'Unsaved changes (Ctrl+S)' : 'Saved (Ctrl+S)'}>
-                            {saving ? <Spinner size={16} /> : <Save size={14} aria-hidden />}
-                            Save
-                            {dirty && <span className="size-1.5 rounded-full bg-accent" aria-label="Unsaved changes" />}
-                        </Button>
-                        {runStatus === 'idle' || runStatus === 'completed' || runStatus === 'failed' || runStatus === 'cancelled' ? (
-                            <Button size="sm" variant="primary" onClick={startRun}>
-                                <Play size={14} aria-hidden /> Run
-                            </Button>
-                        ) : (
-                            <Button size="sm" variant="danger" onClick={cancelRun}>
-                                <Square size={14} aria-hidden /> Cancel
-                            </Button>
-                        )}
-                        {/* Below `sm` the row has no room for these three: they were cut off
-                            past the edge at 360 px (F218), so a ⋯ menu holds them there. */}
-                        <span className="hidden sm:contents">
-                            <Button size="sm" variant="secondary" onClick={handleDeploy}>
-                                Deploy as Agent
-                            </Button>
-                            <Button size="sm" variant="secondary" onClick={handleDuplicate} disabled={saving}>
-                                <Copy size={13} aria-hidden /> Duplicate
-                            </Button>
-                            <span className="mx-1 h-5 w-px bg-border-strong" />
-                            <Button size="sm" variant="ghost" className="text-text-faint hover:text-danger" onClick={handleDelete}>
-                                <Trash size={13} aria-hidden /> Delete
-                            </Button>
-                        </span>
-                        <span className="sm:hidden">
-                            <Menu
-                                align="end"
-                                trigger={
-                                    <button
-                                        type="button"
-                                        aria-label="More actions"
-                                        title="More actions"
-                                        className={buttonStyles({ variant: 'secondary', size: 'sm', iconOnly: true })}
-                                    >
-                                        <MoreHorizontal size={14} aria-hidden />
-                                    </button>
-                                }
-                            >
-                                <MenuItem icon={Bot} onSelect={handleDeploy}>Deploy as Agent</MenuItem>
-                                <MenuItem icon={Copy} onSelect={handleDuplicate} disabled={saving}>Duplicate</MenuItem>
-                                <MenuSeparator />
-                                <MenuItem icon={Trash} tone="danger" onSelect={handleDelete}>Delete</MenuItem>
-                            </Menu>
-                        </span>
-                    </div>
-                )}
             </div>
+            )}
 
-            {/* Active runs banner */}
-            {activeRuns.filter(r => r.run_id !== runId).length > 0 && (
+            {/* Active runs banner (the list; the open canvas's run strip has them as a menu) */}
+            {!draft && activeRuns.filter(r => r.run_id !== runId).length > 0 && (
                 <div className="px-4 py-2 border-b border-zinc-800 bg-zinc-900/60 shrink-0">
                     <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs text-text-faint flex items-center gap-1">
@@ -1910,54 +1740,30 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     </div>
                 </div>
             ) : (
-                <div className="flex-1 flex flex-col min-h-0">
-                    {/* Name + description. The step palette lives inside the canvas. */}
-                    <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 shrink-0">
-                        <input
-                            aria-label="Orchestration name"
-                            className="bg-transparent border-b border-zinc-700 text-zinc-200 text-sm font-medium px-1 py-0.5 outline-none focus:border-accent w-64"
-                            value={draft.name}
-                            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                            placeholder="Orchestration name"
-                        />
-                        <input
-                            aria-label="Orchestration description"
-                            className="bg-transparent border-b border-zinc-700 text-zinc-400 text-xs px-1 py-0.5 outline-none focus:border-accent flex-1 mr-6"
-                            value={draft.description}
-                            onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-                            placeholder="Description..."
-                        />
-                    </div>
-
-                    {/* Main content: canvas + optional side panel */}
-                    <div className="flex-1 flex min-h-0">
-                        {/* Canvas */}
-                        <div className="flex-1 min-w-0">
-                            <ReactFlowProvider>
-                                <WorkflowCanvas
-                                    orchestration={draft}
-                                    agents={agents}
-                                    selectedStepId={selectedStepId}
-                                    onSelectStep={setSelectedStepId}
-                                    onUpdateOrchestration={updateOrchestration}
-                                    runStepStatuses={runStepStatuses}
-                                    runStepErrors={runStepErrors}
-                                    knowledgeEnabled={knowledgeEnabled}
-                                />
-                            </ReactFlowProvider>
-                        </div>
-
-                        {/* Step config panel */}
-                        {selectedStep && (
+                // The open canvas (Prototype 4, D204): the workflow fills the sheet and
+                // everything else floats over it. Every control of the old editor is
+                // here, moved (M3a's field map): the toolbar's into the bar and the
+                // dock, the panels' into the card's Workflow settings, the run log's
+                // into the run strip and drawer.
+                <div className="relative min-h-0 flex-1">
+                    <CanvasWorkbench
+                        orchestration={draft}
+                        onChange={updateOrchestration}
+                        agents={agents}
+                        knowledgeEnabled={knowledgeEnabled}
+                        selectedStepId={selectedStepId}
+                        onSelectStep={setSelectedStepId}
+                        renderStep={(step) => (
                             <StepConfigPanel
-                                step={selectedStep}
+                                frame="card"
+                                step={step}
                                 agents={agents}
                                 allStepIds={allStepIds}
                                 onUpdate={updateStep}
-                                onDelete={() => deleteStep(selectedStep.id)}
+                                onDelete={() => deleteStep(step.id)}
                                 onClose={() => setSelectedStepId(null)}
-                                isEntry={draft.entry_step_id === selectedStep.id}
-                                onSetEntry={() => setEntryPoint(selectedStep.id)}
+                                isEntry={draft.entry_step_id === step.id}
+                                onSetEntry={() => setEntryPoint(step.id)}
                                 availableModels={availableModels}
                                 orchestration={draft}
                                 knowledgeEnabled={knowledgeEnabled}
@@ -1965,36 +1771,104 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                 semanticCacheNote={semanticCacheNote}
                             />
                         )}
-                    </div>
-
-                    {/* Bottom panel: state schema + guardrails + run log */}
-                    <div className="border-t border-zinc-700 bg-zinc-900 shrink-0">
-                        <BottomPanel
-                            draft={draft}
-                            setDraft={setDraft}
-                            runStatus={runStatus}
-                            liveActivity={liveActivity}
-                            runLog={runLog}
-                            runInput={runInput}
-                            setRunInput={setRunInput}
-                            onStartRun={startRun}
-                            humanPrompt={humanPrompt}
-                            humanContext={humanContext}
-                            humanResponse={humanResponse}
-                            setHumanResponse={setHumanResponse}
-                            humanFields={humanFields}
-                            humanValues={humanValues}
-                            setHumanValues={setHumanValues}
-                            onSubmitHuman={submitHumanInput}
-                            onOpenResponseModal={setResponseModal}
-                            runId={runId}
-                            rubrics={rubrics}
-                            orchestrationNames={Object.fromEntries(orchestrations.map(o => [o.id, o.name]))}
-                            onResumeRun={resumeRun}
-                            pastRuns={pastRuns}
-                            onRestoreRun={restoreRun}
-                        />
-                    </div>
+                        renderSettings={(close) => (
+                            <WorkflowSettingsPanel name={draft.name} onClose={close}>
+                                <SettingsSection title="Description">
+                                    <DescriptionField draft={draft} onChange={setDraft} />
+                                </SettingsSection>
+                                <SettingsSection title="Run input">
+                                    <RunInputField value={runInput} onChange={setRunInput} onRun={startRun} />
+                                </SettingsSection>
+                                <SettingsSection title="Schedules">
+                                    <SchedulesList schedules={schedules} workflowId={draft.id} href="/schedules" />
+                                </SettingsSection>
+                                <SettingsSection title="State schema">
+                                    <StateSchemaEditor
+                                        schema={draft.state_schema}
+                                        onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
+                                    />
+                                </SettingsSection>
+                                <SettingsSection title="Guardrails">
+                                    <GuardrailsFields draft={draft} onChange={setDraft} rubrics={rubrics} />
+                                </SettingsSection>
+                            </WorkflowSettingsPanel>
+                        )}
+                        stepActions={{
+                            duplicate: duplicateStep,
+                            setEntry: setEntryPoint,
+                            remove: deleteStep,
+                        }}
+                        history={{ undo, redo, canUndo, canRedo }}
+                        save={{ dirty, saving, onSave: handleSave }}
+                        onBack={() => guardLeave(backToList)}
+                        switcher={
+                            <Combobox
+                                trigger="icon"
+                                value={selectedOrchId || undefined}
+                                onChange={(id: string) => guardLeave(() => selectOrchestration(id || null))}
+                                placeholder="Select orchestration…"
+                                searchPlaceholder="Search orchestrations…"
+                                aria-label="Orchestration"
+                                size="sm"
+                                options={orchestrations.map(o => ({ value: o.id, label: o.name }))}
+                            />
+                        }
+                        menu={[
+                            { id: 'new', label: 'New orchestration', icon: Plus, onSelect: () => guardLeave(createNew), separatorBefore: true },
+                            { id: 'deploy', label: 'Deploy as Agent', icon: Bot, onSelect: handleDeploy },
+                            { id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: handleDuplicate, disabled: saving },
+                            { id: 'delete', label: 'Delete', icon: Trash, onSelect: handleDelete, danger: true, separatorBefore: true },
+                        ]}
+                        onChangeWithAI={() => openBuilder({ currentOrchestrationId: realOrchId })}
+                        insetRight={builderInset}
+                        run={{
+                            phase: runStatus,
+                            stepStatuses: runStepStatuses,
+                            stepErrors: runStepErrors,
+                            onRun: startRun,
+                            onStop: cancelRun,
+                        }}
+                        runStrip={
+                            <RunStrip
+                                runStatus={runStatus}
+                                liveActivity={liveActivity}
+                                runId={runId}
+                                humanPrompt={humanPrompt}
+                                humanContext={humanContext}
+                                humanResponse={humanResponse}
+                                setHumanResponse={setHumanResponse}
+                                humanFields={humanFields}
+                                humanValues={humanValues}
+                                setHumanValues={setHumanValues}
+                                onSubmitHuman={submitHumanInput}
+                                onResumeRun={resumeRun}
+                                drawer={runDrawer}
+                                onDrawer={setRunDrawer}
+                                pastRunCount={pastRuns.length}
+                                activeRuns={activeRuns.filter(r => r.run_id !== runId)}
+                                workflowName={(id) => orchestrations.find(o => o.id === id)?.name ?? id}
+                                onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
+                            />
+                        }
+                        runDrawer={runDrawer ? {
+                            open: true,
+                            content: (
+                                <RunDrawer
+                                    view={runDrawer}
+                                    onClose={() => setRunDrawer(null)}
+                                    runStatus={runStatus}
+                                    liveActivity={liveActivity}
+                                    runLog={runLog}
+                                    onOpenResponseModal={setResponseModal}
+                                    runId={runId}
+                                    humanPrompt={humanPrompt}
+                                    orchestrationNames={Object.fromEntries(orchestrations.map(o => [o.id, o.name]))}
+                                    pastRuns={pastRuns}
+                                    onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
+                                />
+                            ),
+                        } : undefined}
+                    />
 
                     {/* Response detail modal */}
                     {responseModal && (
@@ -2007,6 +1881,19 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     )}
                 </div>
             )}
+
+            <ConfirmDialog
+                open={pendingLeave !== null}
+                onClose={() => setPendingLeave(null)}
+                onConfirm={() => {
+                    const go = pendingLeave;
+                    setPendingLeave(null);
+                    go?.();
+                }}
+                title="Discard unsaved changes?"
+                description={<>Your changes to <strong>{draft?.name || 'this workflow'}</strong> have not been saved.</>}
+                confirmLabel="Discard changes"
+            />
 
             <ConfirmationModal
                 isOpen={!!confirmDeleteOrchId}
@@ -2032,690 +1919,6 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 onClose={() => setBuilderSavedOrch(null)}
             />
 
-        </div>
-    );
-}
-
-// --- Response detail modal ---
-// The full document treatment — styled headings, lists, tables, code — shared
-// by every modal that shows model-written markdown. The human-input context
-// used to render through a four-entry map at text-xs, which flattened a
-// report's headings into cramped body text while the agent-response modal
-// next to it looked finished.
-
-function ResponseModal({ stepName, stepType, content, onClose }: { stepName: string; stepType?: string; content: string; onClose: () => void }) {
-    // Try to pretty-print JSON for extract_json steps
-    const isJson = stepType === 'extract_json';
-    let formattedJson = content;
-    let jsonParseOk = false;
-    if (isJson) {
-        try {
-            const parsed = JSON.parse(content);
-            formattedJson = JSON.stringify(parsed, null, 2);
-            jsonParseOk = true;
-        } catch {
-            // content may already be pretty or non-JSON — just display as-is
-            formattedJson = content;
-        }
-    }
-    const [copied, setCopied] = useState(false);
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-        document.addEventListener('keydown', handler);
-        return () => document.removeEventListener('keydown', handler);
-    }, [onClose]);
-
-    return createPortal(
-        <div
-            className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
-            onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-        >
-            {/* Backdrop */}
-            <div className="absolute inset-0 bg-scrim/70 backdrop-blur-sm" />
-            {/* Panel */}
-            <div className="relative z-10 w-full max-w-3xl max-h-[80vh] flex flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
-                {/* Header */}
-                <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-700 shrink-0">
-                    <div className="flex items-center gap-2">
-                        <Bot size={14} className="text-blue-400" />
-                        <span className="text-sm font-semibold text-zinc-100">{stepName}</span>
-                        <span className="text-xs text-text-faint">— full response</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                        <button
-                            onClick={() => { navigator.clipboard.writeText(isJson ? formattedJson : content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-                            className="text-zinc-400 hover:text-zinc-100 transition-colors p-1 rounded-md hover:bg-zinc-700"
-                            title="Copy to clipboard"
-                        >
-                            {copied ? <Check size={15} className="text-green-400" /> : <Copy size={15} />}
-                        </button>
-                        <button onClick={onClose} className="text-zinc-400 hover:text-zinc-100 transition-colors p-1 rounded-md hover:bg-zinc-700">
-                            <X size={15} />
-                        </button>
-                    </div>
-                </div>
-                {/* Content */}
-                <div className="flex-1 overflow-y-auto p-5">
-                    {isJson ? (
-                        /* Pretty-printed JSON with basic syntax colouring */
-                        <pre className="text-xs font-code leading-relaxed whitespace-pre-wrap break-all rounded-lg bg-zinc-800/70 border border-zinc-700/50 p-4 overflow-x-auto">
-                            {(jsonParseOk ? formattedJson : content)
-                                .split('\n')
-                                .map((line, i) => {
-                                    /* Colour keys orange, strings lime, numbers/booleans/null cyan */
-                                    const coloured = line
-                                        .replace(/("(?:[^"\\]|\\.)*")(\s*:)/g, '<span class="text-orange-300">$1</span><span class="text-zinc-400">$2</span>')
-                                        .replace(/:\s*("(?:[^"\\]|\\.)*")/g, ': <span class="text-lime-300">$1</span>')
-                                        .replace(/:\s*(\d+\.?\d*)/g, ': <span class="text-cyan-300">$1</span>')
-                                        .replace(/:\s*(true|false|null)\b/g, ': <span class="text-cyan-400">$1</span>');
-                                    return (
-                                        <span key={i} dangerouslySetInnerHTML={{ __html: coloured + '\n' }} />
-                                    );
-                                })}
-                        </pre>
-                    ) : (
-                    <Markdown className="max-w-none">{content}</Markdown>
-                    )}
-                </div>
-            </div>
-        </div>,
-        document.body
-    );
-}
-
-// --- Bottom panel with collapsible sections ---
-function BottomPanel({
-    draft, setDraft, runStatus, liveActivity, runLog, runInput, setRunInput, onStartRun,
-    humanPrompt, humanContext, humanResponse, setHumanResponse, onSubmitHuman, onOpenResponseModal,
-    humanFields, humanValues, setHumanValues,
-    runId, onResumeRun, pastRuns, onRestoreRun, rubrics, orchestrationNames,
-}: {
-    draft: Orchestration;
-    setDraft: (o: Orchestration) => void;
-    runStatus: string;
-    liveActivity: string | null;
-    runLog: LogEntry[];
-    runInput: string;
-    setRunInput: (v: string) => void;
-    onStartRun: () => void;
-    humanPrompt: string | null;
-    humanContext: { text: string; key: string | null } | null;
-    humanResponse: string;
-    setHumanResponse: (v: string) => void;
-    humanFields: HumanField[];
-    humanValues: HumanValues;
-    setHumanValues: (v: HumanValues) => void;
-    onSubmitHuman: () => void;
-    onOpenResponseModal: (entry: { step_name: string; step_type?: string; content: string }) => void;
-    runId: string | null;
-    onResumeRun: () => void;
-    pastRuns: { run_id: string; orchestration_id: string; status: string; started_at?: string | null; ended_at?: string | null }[];
-    onRestoreRun: (run: { run_id: string; orchestration_id: string; status: string }) => void;
-    rubrics: { id: string; name: string }[];
-    /** Orchestration names by id, to name a nested run (F251). */
-    orchestrationNames: Record<string, string>;
-}) {
-    const [activeSection, setActiveSection] = useState<'state' | 'guardrails' | 'run' | 'recent'>('run');
-    const [panelHeight, setPanelHeight] = useState(280);
-    // The question opens in a modal (the agent-response pattern): on a short
-    // log area the inline card, context and all, swallowed the whole tab. The
-    // sticky strip below is the trigger and stays one line tall. A fresh
-    // prompt closes a stale modal — reset during render (the sanctioned
-    // "adjust state when a prop changes" pattern) rather than in an effect.
-    const [humanModalOpen, setHumanModalOpen] = useState(false);
-    const [seenPrompt, setSeenPrompt] = useState(humanPrompt);
-    if (seenPrompt !== humanPrompt) {
-        setSeenPrompt(humanPrompt);
-        setHumanModalOpen(false);
-    }
-    // The panel's one scroller, shared by all four sections. The run log
-    // follows the newest line only while the reader is at its foot (F127):
-    // the old effect set `scrollTop` on the log's own div, which does not
-    // scroll, so the log never followed at all. Scrolling up to read stops the
-    // following; "Jump to latest" starts it again, as cloud's RunPanel does.
-    const scrollRef = useRef<HTMLDivElement>(null);
-    const [pinned, setPinned] = useState(true);
-    if (runLog.length === 0 && !pinned) setPinned(true); // a new run starts at its foot
-    const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
-
-    const onDragHandleMouseDown = useCallback((e: React.MouseEvent) => {
-        e.preventDefault();
-        dragRef.current = { startY: e.clientY, startHeight: panelHeight };
-        const onMouseMove = (ev: MouseEvent) => {
-            if (!dragRef.current) return;
-            const delta = dragRef.current.startY - ev.clientY;
-            const newHeight = Math.max(120, Math.min(700, dragRef.current.startHeight + delta));
-            setPanelHeight(newHeight);
-        };
-        const onMouseUp = () => {
-            dragRef.current = null;
-            document.removeEventListener('mousemove', onMouseMove);
-            document.removeEventListener('mouseup', onMouseUp);
-        };
-        document.addEventListener('mousemove', onMouseMove);
-        document.addEventListener('mouseup', onMouseUp);
-    }, [panelHeight]);
-
-    useEffect(() => {
-        const el = scrollRef.current;
-        if (el && pinned && activeSection === 'run') el.scrollTop = el.scrollHeight;
-    }, [runLog, pinned, activeSection]);
-
-    const onPanelScroll = () => {
-        const el = scrollRef.current;
-        if (el && activeSection === 'run') setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
-    };
-
-    return (
-        <div style={{ height: panelHeight }} className="flex flex-col">
-            {/* Drag handle */}
-            <div
-                onMouseDown={onDragHandleMouseDown}
-                className="h-1.5 w-full cursor-row-resize bg-zinc-800 hover:bg-blue-500/40 transition-colors flex-shrink-0 group flex items-center justify-center"
-            >
-                <div className="w-8 h-0.5 rounded-md bg-zinc-600 group-hover:bg-blue-400 transition-colors" />
-            </div>
-            {/* Section tabs */}
-            <div className="flex border-b border-zinc-800 flex-shrink-0">
-                {(['state', 'guardrails', 'run'] as const).map(section => (
-                    <button
-                        key={section}
-                        onClick={() => setActiveSection(section)}
-                        className={`px-4 py-2 text-xs font-medium capitalize transition-colors ${
-                            activeSection === section
-                                ? 'text-blue-400 border-b-2 border-blue-400'
-                                : 'text-text-faint hover:text-zinc-300'
-                        }`}
-                    >
-                        {section === 'state' ? 'State Schema' : section === 'guardrails' ? 'Guardrails' : 'Run Log'}
-                        {section === 'run' && runStatus !== 'idle' && (
-                            <span className={`ml-2 inline-block w-2 h-2 rounded-full ${
-                                runStatus === 'running' ? 'bg-blue-400 animate-pulse' :
-                                runStatus === 'completed' ? 'bg-green-400' :
-                                runStatus === 'paused' ? 'bg-yellow-400' :
-                                runStatus === 'cancelled' ? 'bg-zinc-500' : 'bg-red-400'
-                            }`} />
-                        )}
-                    </button>
-                ))}
-                <button
-                    onClick={() => setActiveSection('recent')}
-                    className={`px-4 py-2 text-xs font-medium transition-colors ${
-                        activeSection === 'recent'
-                            ? 'text-blue-400 border-b-2 border-blue-400'
-                            : 'text-text-faint hover:text-zinc-300'
-                    }`}
-                >
-                    Recent Runs
-                    {pastRuns.length > 0 && (
-                        <span className="ml-1.5 text-[10px] bg-surface-2 text-text-muted rounded-md px-1.5 py-0.5">
-                            {pastRuns.length}
-                        </span>
-                    )}
-                </button>
-                {/* The run's own page (M2b): its path, why it failed, what it produced.
-                    A plain link, not a client one, so unsaved edits still get the
-                    browser's leave prompt (the draft's `beforeunload` guard). */}
-                {runId && (
-                    <a
-                        href={`/runs/${encodeURIComponent(runId)}`}
-                        className="ml-auto mr-3 inline-flex items-center gap-1 self-center rounded-sm text-xs text-accent-ink hover:underline"
-                    >
-                        <ExternalLink size={11} aria-hidden /> Open run page
-                    </a>
-                )}
-            </div>
-
-            <div ref={scrollRef} onScroll={onPanelScroll} className="p-4 flex-1 overflow-y-auto min-h-0">
-                {/* State Schema */}
-                {activeSection === 'state' && (
-                    <StateSchemaEditor
-                        schema={draft.state_schema}
-                        onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
-                    />
-                )}
-
-                {/* Guardrails */}
-                {activeSection === 'guardrails' && (
-                    <div className="grid grid-cols-3 gap-4">
-                        <div>
-                            <label htmlFor="orch-max-turns" className="text-xs text-zinc-400 block mb-1">Max Total Turns</label>
-                            <input
-                                id="orch-max-turns"
-                                type="number"
-                                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
-                                value={draft.max_total_turns}
-                                onChange={(e) => setDraft({ ...draft, max_total_turns: parseInt(e.target.value) || 100 })}
-                            />
-                        </div>
-                        <div>
-                            <label htmlFor="orch-timeout" className="text-xs text-zinc-400 block mb-1">Timeout (minutes)</label>
-                            <input
-                                id="orch-timeout"
-                                type="number"
-                                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
-                                value={draft.timeout_minutes}
-                                onChange={(e) => setDraft({ ...draft, timeout_minutes: parseInt(e.target.value) || 30 })}
-                            />
-                        </div>
-                        {/* No "Max Cost (USD)": nothing ever enforced it, and batch 1C
-                            deleted it from the engine. A cap that does not cap is
-                            worse than none — whoever set it expected a runaway run
-                            to stop (F76). */}
-                        <div className="col-span-3">
-                            <label className="flex items-start gap-2 cursor-pointer">
-                                <input
-                                    type="checkbox"
-                                    className="mt-0.5"
-                                    checked={!!draft.strict_state_types}
-                                    onChange={(e) => setDraft({ ...draft, strict_state_types: e.target.checked })}
-                                />
-                                <span>
-                                    <span className="text-xs text-zinc-400 block">Stop on a state type mismatch</span>
-                                    <span className="text-[11px] text-text-faint block mt-0.5">
-                                        A step&apos;s output is read as the type its state key declares —
-                                        JSON text becomes a list or an object. Off, a step whose text will
-                                        not convert leaves the text in place and warns. On, the run stops
-                                        there instead of carrying on with the wrong shape.
-                                    </span>
-                                </span>
-                            </label>
-                        </div>
-                        <div className="col-span-3">
-                            <label htmlFor="orch-result" className="text-xs text-zinc-400 block mb-1">Result</label>
-                            <select
-                                id="orch-result"
-                                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
-                                value={draft.result_key ?? ''}
-                                onChange={(e) => setDraft({ ...draft, result_key: e.target.value })}
-                            >
-                                <option value="">Last step that produces content</option>
-                                {resultKeyOptions(draft).map(({ key, label }) => (
-                                    <option key={key} value={key}>{label}</option>
-                                ))}
-                            </select>
-                            <div className="text-[11px] text-text-faint mt-1">
-                                What a run makes: the answer when this is chatted with as an agent, what the API
-                                returns, and what a parent workflow gets back when it runs this one. Left on the
-                                last step, a person&apos;s answer, an evaluator&apos;s route and End never count.
-                            </div>
-                        </div>
-                        <div className="col-span-3">
-                            <label htmlFor="orch-rubric" className="text-xs text-zinc-400 block mb-1">Score runs against</label>
-                            <select
-                                id="orch-rubric"
-                                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 outline-none"
-                                value={draft.rubric_id ?? ''}
-                                onChange={(e) => setDraft({ ...draft, rubric_id: e.target.value })}
-                            >
-                                <option value="">Not evaluated</option>
-                                {rubrics.map((r) => (
-                                    <option key={r.id} value={r.id}>{r.name}</option>
-                                ))}
-                            </select>
-                            <div className="text-[11px] text-text-faint mt-1">
-                                {draft.rubric_id
-                                    ? 'Every run is judged when it finishes. The judge is a model call, billed like any other.'
-                                    : 'Pick a rubric to have an LLM judge score every run and flag regressions. Rubrics are written on the Evals screen.'}
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* Recent Runs */}
-                {activeSection === 'recent' && (
-                    <div className="space-y-1">
-                        {pastRuns.length === 0 ? (
-                            <div className="text-text-faint italic text-xs">No runs yet.</div>
-                        ) : (
-                            pastRuns.slice(0, 20).map(r => (
-                                <div key={r.run_id} className="flex items-center gap-2 text-[11px] py-1 px-2 rounded-md bg-zinc-800/50">
-                                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                                        r.status === 'completed' ? 'bg-green-400' :
-                                        r.status === 'failed'    ? 'bg-red-400' :
-                                        r.status === 'cancelled' ? 'bg-zinc-500' :
-                                        r.status === 'paused'    ? 'bg-yellow-400' : 'bg-blue-400 animate-pulse'
-                                    }`} />
-                                    <span className="text-zinc-400 truncate flex-1" title={r.run_id}>{r.run_id}</span>
-                                    <span className="text-text-faint capitalize">{r.status}</span>
-                                    {r.started_at && (
-                                        <span className="text-text-faint text-[10px]">
-                                            {new Date(r.started_at).toLocaleTimeString()}
-                                        </span>
-                                    )}
-                                    {(r.status === 'failed' || r.status === 'cancelled') && (
-                                        <button
-                                            onClick={() => { onRestoreRun(r); setActiveSection('run'); }}
-                                            className="px-2 py-0.5 text-[10px] bg-orange-700 hover:bg-orange-800 text-white rounded-md"
-                                        >
-                                            Resume
-                                        </button>
-                                    )}
-                                </div>
-                            ))
-                        )}
-                    </div>
-                )}
-
-                {/* Run Log */}
-                {activeSection === 'run' && (
-                    <div className="space-y-2">
-                        {/* Input bar */}
-                        {(runStatus === 'idle' || runStatus === 'completed' || runStatus === 'failed' || runStatus === 'cancelled') && (
-                            <div className="flex gap-2">
-                                <input
-                                    aria-label="Initial input for this run"
-                                    className="flex-1 bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-xs text-zinc-200 outline-none"
-                                    value={runInput}
-                                    onChange={(e) => setRunInput(e.target.value)}
-                                    placeholder="Initial input for the orchestration..."
-                                    onKeyDown={(e) => { if (e.key === 'Enter') onStartRun(); }}
-                                />
-                                {(runStatus === 'failed' || runStatus === 'cancelled') && runId && (
-                                    <button
-                                        onClick={onResumeRun}
-                                        className="px-3 py-1.5 text-xs bg-orange-700 hover:bg-orange-800 text-white rounded-md whitespace-nowrap"
-                                    >
-                                        Resume from failure
-                                    </button>
-                                )}
-                            </div>
-                        )}
-
-                        {/* Live activity: what the model is doing right now */}
-                        {runStatus === 'running' && liveActivity && (
-                            <div className="flex items-center gap-2 text-[11px] text-sky-300/90 bg-sky-950/30 border border-sky-900/40 rounded-md px-2.5 py-1.5">
-                                <Spinner size={16} className="shrink-0" />
-                                <span className="truncate">{liveActivity}</span>
-                            </div>
-                        )}
-
-                        {/* Log output */}
-                        <div className="font-mono text-[11px] text-zinc-400 space-y-0.5">
-                            {runLog.length === 0 ? (
-                                <div className="text-text-faint italic">No run output yet. Click Run to start.</div>
-                            ) : (
-                                runLog.map((entry, i) => {
-                                    if (typeof entry !== 'string') {
-                                        if (entry.kind === 'line') {
-                                            const meta = LINE_META[entry.tone];
-                                            const LineIcon = meta.icon;
-                                            return (
-                                                <div key={i} className={`flex items-start gap-1.5 ${meta.cls}`}>
-                                                    <LineIcon size={11} className="mt-[3px] shrink-0" aria-hidden />
-                                                    {/* Plain text, not markdown. These lines are built
-                                                        above out of event fields — an expression, a step
-                                                        name, a tool name, a customer's own data — and none
-                                                        of them is markdown anyone wrote. Rendering them as
-                                                        markdown ate the underscores in
-                                                        `().__class__.__bases__[0].__subclasses__()`, so a
-                                                        run log explaining which attribute the engine
-                                                        refused named a different attribute. */}
-                                                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{entry.text}</span>
-                                                </div>
-                                            );
-                                        }
-                                        if (entry.kind === 'tool_call') {
-                                            return (
-                                                <div key={i} className="text-accent pl-2">
-                                                    <details>
-                                                        <summary className="cursor-pointer list-none">
-                                                            <Wrench size={11} className="mr-1 inline-block align-[-1px]" aria-hidden />
-                                                            {entry.tool_name}
-                                                            {entry.step_name && <span className="text-text-faint text-[10px]"> · {entry.step_name}</span>}
-                                                        </summary>
-                                                        <pre className="font-code bg-zinc-800/50 p-1 rounded-md mt-0.5 text-[10px] text-zinc-300 overflow-x-auto whitespace-pre-wrap">
-                                                            {JSON.stringify(entry.args, null, 2)}
-                                                        </pre>
-                                                    </details>
-                                                </div>
-                                            );
-                                        }
-                                        if (entry.kind === 'retrieval') {
-                                            return <RetrievalRow key={i} entry={entry} />;
-                                        }
-                                        if (entry.kind === 'tool_result') {
-                                            return (
-                                                <div key={i} className="flex items-start gap-1.5 pl-4 text-[10px] text-text-faint">
-                                                    <CornerDownRight size={10} className="mt-[2px] shrink-0" aria-hidden />
-                                                    <span className="min-w-0 flex-1">{entry.preview.slice(0, 200)}{entry.preview.length > 200 ? '…' : ''}</span>
-                                                </div>
-                                            );
-                                        }
-                                        if (entry.kind === 'step_result') {
-                                            const preview = entry.content.slice(0, 200).replace(/\n+/g, ' ').trim();
-                                            const isTruncated = entry.content.length > 200;
-                                            const isAgent = entry.step_type === 'agent';
-                                            const isPrint = entry.step_type === 'print';
-                                            const isExtractJson = entry.step_type === 'extract_json';
-                                            const dotColor = isAgent ? 'bg-emerald-400' : isPrint ? 'bg-lime-400' : isExtractJson ? 'bg-orange-400' : 'bg-teal-400';
-                                            const labelColor = isAgent ? 'text-emerald-400' : isPrint ? 'text-lime-400' : isExtractJson ? 'text-orange-400' : 'text-teal-400';
-                                            const typeLabel = isAgent ? 'agent response' : isPrint ? 'print output' : isExtractJson ? 'json output' : 'llm output';
-                                            return (
-                                                <div key={i} className="my-1.5">
-                                                    {/* Header label */}
-                                                    <div className="flex items-center gap-1.5 mb-1 pl-1">
-                                                        <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotColor}`} />
-                                                        <span className={`text-[10px] font-semibold uppercase tracking-wider ${labelColor}`}>
-                                                            {entry.step_name}
-                                                        </span>
-                                                        <span className="text-[9px] text-text-faint uppercase tracking-wide">
-                                                            {typeLabel}
-                                                        </span>
-                                                    </div>
-                                                    {/* Content bubble \u2014 the whole card opens the full
-                                                        response; the hover hint is just the signpost. */}
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => onOpenResponseModal({ step_name: entry.step_name, step_type: entry.step_type, content: entry.content })}
-                                                        title="View full response"
-                                                        className="group ml-3 flex w-[calc(100%-0.75rem)] items-start gap-2 rounded-lg border border-zinc-700/50 bg-zinc-800/70 px-3 py-2 text-left transition-colors hover:border-zinc-600 hover:bg-zinc-800"
-                                                    >
-                                                        <span className="min-w-0 flex-1 leading-relaxed text-zinc-300">
-                                                            {preview}{isTruncated ? '\u2026' : ''}
-                                                        </span>
-                                                        <span className="ml-1 flex shrink-0 items-center gap-1 self-center whitespace-nowrap text-[10px] text-text-faint opacity-0 transition-opacity group-hover:opacity-100">
-                                                            <ExternalLink size={10} aria-hidden />
-                                                            View full
-                                                        </span>
-                                                    </button>
-                                                </div>
-                                            );
-                                        }
-                                        if (entry.kind === 'tasks') {
-                                            const done = entry.tasks.filter(t => t.status === 'completed').length;
-                                            return (
-                                                <div key={i} className="my-1.5 ml-1 rounded-lg border border-zinc-700/50 bg-zinc-800/40 px-3 py-2">
-                                                    <div className="flex items-center gap-1.5 mb-1">
-                                                        <ListTodo size={11} className="text-accent shrink-0" aria-hidden />
-                                                        <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Tasks</span>
-                                                        <span className="text-[9px] text-text-faint">
-                                                            {done}/{entry.tasks.length} done{entry.step_name ? ` · ${entry.step_name}` : ''}
-                                                        </span>
-                                                    </div>
-                                                    <ul className="space-y-0.5">
-                                                        {entry.tasks.map((t, j) => (
-                                                            <li key={j} className="flex items-start gap-1.5 text-[11px] leading-snug">
-                                                                {t.status === 'completed' ? (
-                                                                    <CircleCheck size={11} className="mt-[2px] shrink-0 text-emerald-400" aria-hidden />
-                                                                ) : t.status === 'in_progress' ? (
-                                                                    <CircleDot size={11} className="mt-[2px] shrink-0 text-accent" aria-hidden />
-                                                                ) : t.status === 'cancelled' ? (
-                                                                    <CircleX size={11} className="mt-[2px] shrink-0 text-text-faint" aria-hidden />
-                                                                ) : (
-                                                                    <Circle size={11} className="mt-[2px] shrink-0 text-text-faint" aria-hidden />
-                                                                )}
-                                                                <span className={
-                                                                    t.status === 'completed' ? 'text-text-faint line-through' :
-                                                                    t.status === 'in_progress' ? 'text-zinc-200' :
-                                                                    t.status === 'cancelled' ? 'text-text-faint line-through' :
-                                                                    'text-zinc-400'
-                                                                }>{t.content}</span>
-                                                            </li>
-                                                        ))}
-                                                    </ul>
-                                                </div>
-                                            );
-                                        }
-                                        if (entry.kind === 'reasoning' || entry.kind === 'thought') {
-                                            const isReasoning = entry.kind === 'reasoning';
-                                            const firstLine = entry.content.split('\n')[0].slice(0, 120);
-                                            return (
-                                                <div key={i} className="pl-2 my-0.5">
-                                                    <details>
-                                                        <summary className={`cursor-pointer list-none text-[10px] ${isReasoning ? 'text-sky-400/80' : 'text-text-faint'}`}>
-                                                            {isReasoning
-                                                                ? <Brain size={10} className="mr-1 inline-block align-[-1px]" aria-hidden />
-                                                                : <MessageSquare size={10} className="mr-1 inline-block align-[-1px]" aria-hidden />}
-                                                            {firstLine}{entry.content.length > firstLine.length ? '…' : ''}
-                                                            {entry.step_name && <span className="text-text-faint"> · {entry.step_name}</span>}
-                                                        </summary>
-                                                        <div className="mt-0.5 bg-zinc-800/40 border border-zinc-800 rounded-md p-2 text-[10px] text-zinc-400 whitespace-pre-wrap max-h-64 overflow-y-auto">
-                                                            {entry.content}
-                                                        </div>
-                                                    </details>
-                                                </div>
-                                            );
-                                        }
-                                        return null;
-                                    }
-                                    return (
-                                        <div key={i} className={
-                                            entry.startsWith('✓') ? 'text-green-400' :
-                                            entry.startsWith('✗') ? 'text-red-400' :
-                                            entry.startsWith('▶') ? 'text-blue-400' :
-                                            entry.startsWith('⏸') ? 'text-amber-400' :
-                                            entry.startsWith('⟳') ? 'text-accent' :
-                                            'text-zinc-400'
-                                        }>
-                                            <ReactMarkdown
-                                                remarkPlugins={[remarkGfm]}
-                                                components={{
-                                                    p: ({ children }) => <span>{children}</span>,
-                                                    code: ({ children }) => <code className="font-code bg-surface-2 px-1 rounded-md text-[10px]">{children}</code>,
-                                                    pre: ({ children }) => <pre className="font-code bg-surface-2 p-1 rounded-md mt-0.5 overflow-x-auto">{children}</pre>,
-                                                    a: ({ href, children }) => <a href={href} className="underline opacity-70" target="_blank" rel="noreferrer">{children}</a>,
-                                                }}
-                                            >{entry}</ReactMarkdown>
-                                        </div>
-                                    );
-                                })
-                            )}
-                        </div>
-
-                        {runId && (
-                            <NestedRuns
-                                runId={runId}
-                                refreshKey={`${runStatus}:${runLog.length > 0}`}
-                                names={orchestrationNames}
-                            />
-                        )}
-
-                        {/* Centred, not in the bottom-right corner the builder launcher
-                            owns (F37). Not while a question is up: the run is waiting,
-                            nothing new arrives, and the strip below says where it is. */}
-                        {!pinned && !humanPrompt && runLog.length > 0 && (
-                            <div className="pointer-events-none sticky bottom-0 z-10 flex justify-center pt-2">
-                                <button
-                                    type="button"
-                                    onClick={() => setPinned(true)}
-                                    className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] text-text-muted shadow-md transition-colors hover:text-text"
-                                >
-                                    <ArrowDown size={11} aria-hidden /> Jump to latest
-                                </button>
-                            </div>
-                        )}
-
-                        {/* Human input — a slim sticky strip as the trigger, with the
-                            question, context and answer in a modal (the same pattern
-                            as the agent-response bubble). On a short log area the
-                            inline card swallowed the whole tab. */}
-                        {/* Paused as well as asking (F141): a cancelled run kept its
-                            prompt, so this strip stayed up offering an Answer the API
-                            refuses with a 409 — and an in-process cancel emits no
-                            event, so nothing cleared it. Cloud's run page has checked
-                            the status since F136. */}
-                        {humanPrompt && runStatus === 'paused' && (
-                            <div className="sticky bottom-0 z-10 pt-2">
-                                {/* pr-16 keeps Answer out of the bottom-right corner the
-                                    builder launcher owns (44px at a 20px inset, fixed).
-                                    Once the log is long enough this strip reaches the
-                                    foot of the viewport, and the launcher sat on top of
-                                    the one control that answers the run. */}
-                                <button
-                                    type="button"
-                                    onClick={() => setHumanModalOpen(true)}
-                                    className="group flex w-full items-center gap-2 rounded-lg border border-amber-600/50 bg-zinc-900 py-2 pl-3 pr-16 text-left shadow-[0_-12px_28px_-8px_rgba(0,0,0,0.55)] transition-colors hover:border-amber-500"
-                                >
-                                    <span className="relative flex size-2 shrink-0">
-                                        <span className="absolute inline-flex size-full animate-ping rounded-full bg-amber-400 opacity-60" aria-hidden />
-                                        <span className="relative inline-flex size-2 rounded-full bg-amber-400" aria-hidden />
-                                    </span>
-                                    <span className="shrink-0 text-xs font-semibold text-amber-300">Waiting for your input</span>
-                                    <span className="min-w-0 flex-1 truncate text-[11px] text-amber-200">{humanPrompt}</span>
-                                    <span className="shrink-0 rounded-md bg-amber-500 px-2.5 py-1 text-[11px] font-medium text-zinc-950 transition-colors group-hover:bg-amber-400">
-                                        Answer
-                                    </span>
-                                </button>
-                            </div>
-                        )}
-
-                        <Modal
-                            open={!!humanPrompt && runStatus === 'paused' && humanModalOpen}
-                            onClose={() => setHumanModalOpen(false)}
-                            title="Human input required"
-                            size="lg"
-                            footer={
-                                <>
-                                    <Button variant="secondary" onClick={() => setHumanModalOpen(false)}>Later</Button>
-                                    <Button onClick={onSubmitHuman} disabled={!humanFields.length && !humanResponse.trim()}>Submit</Button>
-                                </>
-                            }
-                        >
-                            <div className="space-y-3">
-                                {humanContext && (
-                                    // Labelled with the state key it came from: a bare
-                                    // "pass" under the title said nothing (U65).
-                                    <figure>
-                                        <figcaption className="mb-1.5 text-xs text-text-muted">
-                                            {humanContext.key
-                                                ? <>From <span className="font-code text-text">{humanContext.key}</span></>
-                                                : 'From this run'}
-                                        </figcaption>
-                                        <div className="max-h-[45vh] overflow-y-auto rounded-md border border-border bg-surface-2 p-4">
-                                            <Markdown>{humanContext.text}</Markdown>
-                                        </div>
-                                    </figure>
-                                )}
-                                <div className="text-sm leading-relaxed text-amber-300">
-                                    <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
-                                        components={{
-                                            p: ({ children }) => <p className="mb-0">{children}</p>,
-                                            a: ({ href, children }) => <a href={href} className="text-amber-200 underline" target="_blank" rel="noreferrer">{children}</a>,
-                                            strong: ({ children }) => <strong className="font-semibold text-amber-200">{children}</strong>,
-                                        }}
-                                    >{humanPrompt}</ReactMarkdown>
-                                </div>
-                                {humanFields.length > 0 ? (
-                                    <HumanFieldsForm fields={humanFields} values={humanValues} onChange={setHumanValues} idPrefix="orch-answer" />
-                                ) : (
-                                    <input
-                                        autoFocus
-                                        aria-label="Your answer"
-                                        className="w-full rounded-md border border-amber-700/40 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 outline-none transition-colors placeholder:text-zinc-500 focus:border-amber-500"
-                                        value={humanResponse}
-                                        onChange={(e) => setHumanResponse(e.target.value)}
-                                        placeholder="Your response…"
-                                        onKeyDown={(e) => { if (e.key === 'Enter') onSubmitHuman(); }}
-                                    />
-                                )}
-                            </div>
-                        </Modal>
-
-                    </div>
-                )}
-            </div>
         </div>
     );
 }

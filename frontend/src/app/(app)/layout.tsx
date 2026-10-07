@@ -15,7 +15,8 @@
 import { useEffect, useState } from 'react';
 
 import {
-    TemplateSourcesProvider, TooltipProvider, useCommandShortcut, useCommandShortcutLabel, usePersisted,
+    CanvasModeProvider, CommandRegistryProvider, TemplateSourcesProvider, TooltipProvider, useCommandShortcut,
+    useCommandShortcutLabel, usePersisted,
 } from '@/components/ui';
 import { AppCommands } from '@/components/app/AppCommands';
 import { BuilderLauncher } from '@/components/app/BuilderLauncher';
@@ -106,6 +107,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     return (
         <NavGuardProvider>
+            {/* An open canvas folds the rail and takes the page header's place;
+                a page's own ⌘K group joins the list (M3a). */}
+            <CanvasModeProvider>
+            <CommandRegistryProvider>
             {/* Run notifications are the signed-in app's, so the stream is
                 opened here and not in the root layout, which /login and the
                 widget's iframe share (F178). */}
@@ -149,6 +154,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </TemplateSourcesProvider>
             </TooltipProvider>
             </NotificationProvider>
+            </CommandRegistryProvider>
+            </CanvasModeProvider>
         </NavGuardProvider>
     );
 }

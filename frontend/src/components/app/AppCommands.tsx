@@ -6,6 +6,7 @@
  *   ("In Runs › Logs"), from lib/nav.ts — so a page added there is findable here
  * - Actions: Build with AI, a new workflow, and the two themes not in force
  * - Workflows and agents by name, read when the palette opens
+ * - First, whatever the open page adds: on the open canvas, "Add a step" (M3a)
  *
  * Every way out honours chat's guard, and goes through a real link click, so
  * AgentsScreen's unsaved-edits guard (a capture-phase listener on links) still
@@ -15,7 +16,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Bot, Monitor, Moon, Plus, Sun, Workflow } from 'lucide-react';
 
-import { CommandPalette, Mark, type CommandGroup } from '@/components/ui';
+import { CommandPalette, Mark, useRegisteredCommands, type CommandGroup } from '@/components/ui';
 import { HUB_NAV, SETTINGS_NAV, visibleItems, visibleTabs } from '@/lib/nav';
 import { useAppliedTheme, type ThemeMode } from '@/lib/theme';
 import { useBuilder } from './BuilderProvider';
@@ -38,6 +39,7 @@ export function AppCommands({
     const flags = useNavFlags();
     const mayLeave = useNavGuard();
     const { open: openBuilder } = useBuilder();
+    const pageGroups = useRegisteredCommands();
     const [workflows, setWorkflows] = useState<Named[]>([]);
     const [agents, setAgents] = useState<Named[]>([]);
 
@@ -160,6 +162,7 @@ export function AppCommands({
             open={open}
             onOpenChange={onOpenChange}
             groups={[
+                ...pageGroups,
                 pages,
                 actions,
                 named('Workflows', workflows, <Workflow className={ICON} aria-hidden />, id => `/workflows?id=${encodeURIComponent(id)}`),
