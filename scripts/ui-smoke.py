@@ -7545,11 +7545,17 @@ async def check_homestats(browser) -> str:
 
 @check
 async def check_homeempty(browser) -> str:
-    """Home with nothing yet (M2a): one calm line under Needs you, no card, and each section's own empty words."""
+    """Home with nothing yet (M2a): one calm line under Needs you, no card, and each section's own empty words.
+    A fresh Home leads with its first-workflow path since Naveen's ask (`homestart`), so this one has it hidden, as
+    "Don't show again" leaves it."""
     ctx, page, _ = await _m2b_page(browser, "/dashboard", runs={})
     bad: list[str] = []
     try:
+        await page.evaluate("localStorage.setItem('synapseHomeStartHidden', '1')")
+        await page.reload(wait_until="domcontentloaded")
         await page.get_by_text("Nothing is waiting on you.").wait_for(timeout=15_000)
+        if await page.locator("#home-start").count():
+            bad.append("the path shows after Don't show again")
         if await page.get_by_role("region", name="Waiting for a person").count():
             bad.append("a card with nothing waiting")
         heading = (await page.locator("#home-needs-you").inner_text()).strip()
@@ -7558,7 +7564,7 @@ async def check_homeempty(browser) -> str:
         line = (await page.locator("main header p").first.inner_text()).strip()
         if line != "Nothing needs you. Nothing has run this week.":
             bad.append(f"the status line reads {line!r}")
-        for words in ("Nothing running.", "No runs this week.", "No runs yet", "all clear", "No runs yet"):
+        for words in ("Nothing running.", "No runs this week.", "No runs yet", "all clear", "Nothing runs on its own yet."):
             if not await page.get_by_text(words, exact=False).count():
                 bad.append(f"no {words!r}")
     finally:
@@ -7566,6 +7572,102 @@ async def check_homeempty(browser) -> str:
     if bad:
         raise AssertionError("; ".join(bad))
     return "nothing waiting reads as one calm line, and every section says it is empty"
+
+
+
+async def _composer(page) -> str:
+    """What the AI builder's composer holds, once its panel is open."""
+    box = page.get_by_role("complementary", name="AI builder").get_by_role("textbox", name="Message the AI builder")
+    await box.wait_for(timeout=10_000)
+    return await box.input_value()
+
+
+@check
+async def check_homestart(browser) -> str:
+    """A new workspace's Home leads with its first workflow as a path (M2a, Naveen's ask): steps that tick themselves,
+    the current one with its action and tip; "describe what you want to automate" and a suggestion each open Build
+    with AI with the words typed, unsent; Don't show again puts it away."""
+    ctx, page, _ = await _m2b_page(browser, "/dashboard", runs={})
+    bad: list[str] = []
+    try:
+        await page.evaluate("localStorage.removeItem('synapseHomeStartHidden'); localStorage.removeItem('synapseHomeStartOpen')")
+        await page.reload(wait_until="domcontentloaded")
+        path = page.locator("section[aria-labelledby='home-start']")
+        await path.wait_for(timeout=15_000)
+        steps = page.get_by_role("list", name="Your first workflow").locator("li")
+        titles = [(await steps.nth(i).locator("p").first.inner_text()).strip().split("\n")[0] for i in range(await steps.count())]
+        if [t.split(" · ")[0] for t in titles][:5] != ["Connect a model", "Build a workflow", "Run it once",
+                                                       "Answer its first question", "Let it run on its own"]:
+            bad.append(f"the steps read {titles}")
+        current = page.locator("li[aria-current='step']")
+        if await current.count() != 1:
+            bad.append(f"{await current.count()} current steps")
+        if await page.locator("#home-needs-you").count():
+            bad.append("Needs you shows above a fresh path with nothing waiting")
+        line = (await page.locator("main header p").first.inner_text()).strip()
+        if line != "Let’s get your first workflow running. It takes about ten minutes.":
+            bad.append(f"the status line reads {line!r}")
+        await page.get_by_label("Or describe what you want to automate").fill("Every Friday, sum up the week's invoices")
+        await path.get_by_role("button", name="Build with AI").last.click()
+        if (await _composer(page)) != "Every Friday, sum up the week's invoices":
+            bad.append(f"the builder opened with {await _composer(page)!r}")
+        sent = await page.evaluate("[...document.querySelectorAll('[aria-label=\"AI builder\"] *')].some(e => e.innerText === \"Every Friday, sum up the week's invoices\" && e.tagName !== 'TEXTAREA')")
+        if sent:
+            bad.append("the words were sent, not left in the composer")
+        await page.get_by_role("button", name="Close the AI builder").click()
+        await page.get_by_role("button", name="A weekly report").click()
+        if not (await _composer(page)).startswith("Every Monday at 9, write a short report"):
+            bad.append(f"the suggestion opened the builder with {await _composer(page)!r}")
+        await page.get_by_role("button", name="Close the AI builder").click()
+        await page.get_by_role("button", name="Don’t show again").click()
+        await page.get_by_text("Nothing is waiting on you.").wait_for(timeout=5_000)
+        if await path.count():
+            bad.append("Don't show again left the path up")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the path with one current step, the describe field and a suggestion fill the builder unsent, it hides"
+
+
+@check
+async def check_homeways(browser) -> str:
+    """With nothing scheduled, Coming up says how a workflow starts on its own (M2a, Naveen's ask): a schedule, a
+    message, your systems, each to its page; the tip names the workflow run most by hand this week and opens Build
+    with AI with the sentence typed. Once a workflow has run, the path is one line that opens and closes."""
+    ctx, page, _ = await _m2b_page(browser, "/dashboard", runs=_m2a_runs())
+    bad: list[str] = []
+    try:
+        await page.evaluate("localStorage.removeItem('synapseHomeStartHidden'); localStorage.removeItem('synapseHomeStartOpen')")
+        await page.reload(wait_until="domcontentloaded")
+        ways = page.get_by_role("list", name="Ways a workflow starts on its own")
+        await ways.wait_for(timeout=15_000)
+        links = await ways.get_by_role("link").evaluate_all("els => els.map(e => [e.innerText.trim(), e.getAttribute('href')])")
+        if links != [["Add a schedule", "/schedules"], ["Channels", "/channels"], ["API keys", "/settings/api_keys"]]:
+            bad.append(f"the ways link to {links}")
+        # The ways show once the schedules are read; the tip waits for the runs too.
+        tip = page.get_by_text("“Smoke invoice triage” ran 3 times by hand this week. Put it on a schedule?")
+        try:
+            await tip.wait_for(timeout=15_000)
+        except Exception:
+            bad.append("no tip for the workflow run most by hand")
+        await page.get_by_role("button", name="Schedule it with AI").click()
+        if (await _composer(page)) != "Put the workflow “Smoke invoice triage” on a schedule.":
+            bad.append(f"Schedule it with AI opened the builder with {await _composer(page)!r}")
+        await page.get_by_role("button", name="Close the AI builder").click()
+        folded = page.locator("section[aria-labelledby='home-start']")
+        if "Next:" not in await folded.inner_text():
+            bad.append(f"the path after a run reads {await folded.inner_text()!r}")
+        await folded.get_by_role("button", name="Show").click()
+        await page.get_by_role("list", name="Your first workflow").wait_for(timeout=5_000)
+        await page.locator("section[aria-labelledby='home-start']").get_by_role("button", name="Hide").click()
+        if await page.get_by_role("list", name="Your first workflow").count():
+            bad.append("Hide left the steps open")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "three ways to their pages, the by-hand tip fills the builder, the folded path opens and closes"
 
 
 async def main() -> int:
