@@ -59,6 +59,13 @@ export { Screen, type ScreenWidth } from "./screen";
 export { PageHeaderSlot, PageHeaderSlotProvider } from "./page-header-slot";
 
 export { Checkbox, type CheckedState } from "./checkbox";
+export {
+  CommandPalette,
+  useCommandShortcut,
+  useCommandShortcutLabel,
+  type CommandGroup,
+  type CommandItem,
+} from "./command-palette";
 export { Section } from "./collapsible";
 export { DataTable, type Column } from "./data-table";
 export { ConfirmDialog, Modal } from "./dialog";

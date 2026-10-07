@@ -13,7 +13,7 @@
  * but it is not one a user edits or deletes, and every consumer of this list
  * has wanted it hidden.
  */
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { useDispatch } from "react-redux";
 
@@ -58,6 +58,24 @@ export function AgentsScreen() {
         if (dirty) setPending(() => go);
         else go();
     }, [dirty]);
+
+    // `?id=<agent>` opens that agent — ⌘K's agents by name (M1a) — through the
+    // same question as a click on another agent. The address then drops it, so
+    // asking for the same agent again later is a new request.
+    const askedFor = useSearchParams().get("id");
+    useEffect(() => {
+        if (!askedFor) return;
+        const agent = (agents as any[]).find((a) => a.id === askedFor);
+        if (!agent) return;   // still loading, or no such agent
+        const url = new URL(window.location.href);
+        url.searchParams.delete("id");
+        window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+        if (agent.id === selectedAgentId) return;
+        guard(() => {
+            setSelectedAgentId(agent.id);
+            loadDraftAgent({ ...agent });
+        });
+    }, [askedFor, agents, selectedAgentId, guard, loadDraftAgent]);
 
     // Leaving. A reload or a closed tab gets the browser's own prompt; a link
     // inside the app gets ours, because the App Router has no way to stop a

@@ -1,6 +1,6 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useEffectEvent, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, Save, Play, Trash, Square, Copy, Check, Radio, Bot, ExternalLink, X, Sparkles, ArrowDown, ArrowLeft, Undo2, Redo2, AlertTriangle, Pause, RefreshCw, GitFork, GitBranch, GitMerge, Info, Minimize2, CornerDownRight, Wrench, Brain, MessageSquare, ListTodo, Circle, CircleDot, CircleCheck, CircleX, MoreHorizontal, BookOpenText } from 'lucide-react';
 import { Button, buttonStyles, Combobox, Hint, IconButton, Mark, Markdown, Menu, MenuItem, MenuSeparator, Modal, SearchInput, Spinner } from '@/components/ui';
@@ -232,7 +232,12 @@ function fieldList(raw: unknown): HumanField[] {
     return Array.isArray(raw) ? (raw as HumanField[]) : [];
 }
 
-export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId?: string; initialOrchId?: string } = {}) {
+export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
+    initialRunId?: string;
+    initialOrchId?: string;
+    /** A value that changes each time a blank workflow is asked for from elsewhere (⌘K's New workflow, M1a). */
+    newRequest?: string;
+} = {}) {
     // --- Orchestration list ---
     const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
     const [orchQuery, setOrchQuery] = useState('');
@@ -585,6 +590,16 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         setSelectedOrchId(id);
         setSelectedStepId(null);
     };
+
+    // ⌘K's New workflow lands here as `?new=<n>`: the same as clicking New, once
+    // per request. The address effect above has already taken `new` off the URL.
+    const newHandledRef = useRef<string | undefined>(undefined);
+    const onNewRequested = useEffectEvent(() => createNew());
+    useEffect(() => {
+        if (!newRequest || newHandledRef.current === newRequest) return;
+        newHandledRef.current = newRequest;
+        onNewRequested();
+    }, [newRequest]);
 
     // --- Duplicate orchestration ---
     const handleDuplicate = async () => {

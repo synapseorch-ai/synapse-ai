@@ -12,9 +12,12 @@
  * shell used to read `synapseTheme` separately; now it is read once, and always
  * AFTER hydration — reading localStorage during render mismatches the SSR HTML.
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
-import { TemplateSourcesProvider, TooltipProvider, usePersisted } from '@/components/ui';
+import {
+    TemplateSourcesProvider, TooltipProvider, useCommandShortcut, useCommandShortcutLabel, usePersisted,
+} from '@/components/ui';
+import { AppCommands } from '@/components/app/AppCommands';
 import { BuilderLauncher } from '@/components/app/BuilderLauncher';
 import { BuilderPanel } from '@/components/app/BuilderPanel';
 import { BuilderProvider } from '@/components/app/BuilderProvider';
@@ -93,6 +96,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     }, [mode]);
     const isPhone = useIsPhone();
 
+    // ⌘K (Ctrl+K off a Mac) from anywhere, and the rail's Jump to… row.
+    const [jumping, setJumping] = useState(false);
+    useCommandShortcut(() => setJumping(open => !open));
+    const jumpHint = useCommandShortcutLabel();
+    const jump = () => setJumping(true);
+
     const changeMode = (next: ThemeMode) => switchTheme(setMode, next);
 
     return (
@@ -117,7 +126,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <div className="flex h-dvh overflow-hidden bg-frame font-sans text-text">
                 <div className="hidden md:flex">
                     {/* On a phone the top bar holds the bell; one bell at a time. */}
-                    <AppRail mode={mode} onModeChange={changeMode} showBell={!isPhone} />
+                    <AppRail mode={mode} onModeChange={changeMode} showBell={!isPhone} onJump={jump} jumpHint={jumpHint} />
                 </div>
                 {/* The only <main> in the app, and the sheet the page sits on.
                     Pages render a plain flex column inside it — a nested <main>
@@ -126,10 +135,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     'flex min-w-0 flex-1 flex-col overflow-hidden bg-bg',
                     'md:my-2 md:mr-2 md:rounded-2xl md:border md:border-border md:shadow-elevated',
                 )}>
-                    <PhoneBar mode={mode} onModeChange={changeMode} />
+                    <PhoneBar mode={mode} onModeChange={changeMode} onJump={jump} jumpHint={jumpHint} />
                     <div className="min-h-0 flex-1">{children}</div>
                 </main>
             </div>
+            {/* Inside the builder's provider, for Build with AI. */}
+            <AppCommands open={jumping} onOpenChange={setJumping} mode={mode} onModeChange={changeMode} />
             </NavFlagsProvider>
             </HelpProvider>
             <BuilderLauncher />

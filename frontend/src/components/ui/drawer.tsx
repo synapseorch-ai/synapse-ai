@@ -70,6 +70,9 @@ export function Drawer({
           }}
           className={cn(
             "fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border-strong bg-surface shadow-elevated",
+            // Above `md` it sits inside the app's own edges, as the page's sheet
+            // does (8px in, the sheet's radius), not against the window (M1a).
+            "md:inset-y-2 md:right-2 md:overflow-hidden md:rounded-2xl md:border",
             "focus:outline-none",
             "transition-transform duration-200 ease-out starting:translate-x-full motion-reduce:transition-none",
             width === "md" ? "sm:max-w-lg" : "sm:max-w-2xl",

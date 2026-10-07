@@ -13,10 +13,12 @@ export default async function WorkflowsPage(props: {
     const searchParams = await props.searchParams;
     const runId = typeof searchParams.run === 'string' ? searchParams.run : undefined;
     const orchId = typeof searchParams.id === 'string' ? searchParams.id : undefined;
+    // `?new=<n>` (⌘K's New workflow): a blank workflow on the canvas, once per value.
+    const newRequest = typeof searchParams.new === 'string' ? searchParams.new : undefined;
 
     return (
         <AppScreen id="orchestrations" bleed>
-            <OrchestrationTab initialRunId={runId} initialOrchId={orchId} />
+            <OrchestrationTab initialRunId={runId} initialOrchId={orchId} newRequest={newRequest} />
         </AppScreen>
     );
 }

@@ -220,7 +220,7 @@ export function AppRail({
 
             {/* Reached from every page, so they stand above the hubs rather
                 than inside one. */}
-            <div className="shrink-0 space-y-1 px-2 pb-3">
+            <div className="shrink-0 space-y-1 px-2 pb-2">
                 {onJump && (
                     <button
                         type="button"
@@ -267,7 +267,10 @@ export function AppRail({
                 </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-2 pb-2">
+            {/* `pt-1`: a scroller clips at its own edge, and the current row's
+                hairline and shadow sit just outside the row — on Home, the first
+                row, its top was cut off. */}
+            <div className="flex-1 overflow-y-auto px-2 pb-2 pt-1">
                 {HUB_NAV.map(({ group, hubs }, groupIndex) => {
                     const shown = hubs
                         .map(hub => ({ hub, tabs: visibleTabs(hub, flags) }))
