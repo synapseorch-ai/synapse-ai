@@ -19,6 +19,8 @@
  */
 import type { Orchestration, StepConfig, StepType } from '@/types/orchestration';
 
+import { humanFieldType } from '../orchestration/humanFields';
+
 // ── Shapes ───────────────────────────────────────────────────────────────────
 
 /** One row of a run list, whatever product it came from. */
@@ -90,6 +92,15 @@ export type Task = { content: string; status: TaskStatus };
 
 /** A field a human step asks for — the synced form's own type. */
 export type { HumanField } from '../orchestration/humanFields';
+
+/**
+ * The one Yes / No field that makes a human step an approval, or `null`: its flag is
+ * answered with two buttons, the field's label and Decline (Naveen, M2a).
+ */
+export function decisionField<F extends { name: string; type?: string }>(fields: F[]): F | null {
+    const flags = fields.filter((f) => humanFieldType(f.type) === 'boolean');
+    return flags.length === 1 ? flags[0] : null;
+}
 
 /** One run, as the run page reads it. */
 export type RunRecord = {

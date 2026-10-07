@@ -55,7 +55,8 @@ const SORTS: { value: RunSort; label: string }[] = [
     { value: 'cost-least', label: 'Least cost' },
 ];
 
-const DOT: Record<RunBucket, string> = {
+/** A run's status dot, by bucket: quiet success, red failure, amber a person, cyan the machine. */
+export const RUN_DOT: Record<RunBucket, string> = {
     completed: 'bg-success',
     failed: 'bg-danger',
     needs: 'bg-person motion-safe:animate-pulse',
@@ -227,7 +228,7 @@ export function RunList({
                                             : 'border-border text-text-muted hover:border-border-strong hover:text-text',
                                     )}
                                 >
-                                    {f.id !== 'all' && <span aria-hidden className={cn('size-2 rounded-full', DOT[f.id as RunBucket].split(' ')[0])} />}
+                                    {f.id !== 'all' && <span aria-hidden className={cn('size-2 rounded-full', RUN_DOT[f.id as RunBucket].split(' ')[0])} />}
                                     {f.label}
                                     <span className="text-[11.5px] tabular-nums opacity-70">{counts[f.id]}</span>
                                 </button>
@@ -318,7 +319,7 @@ function Row({
             )}
         >
             <span role="cell" className="flex items-center">
-                <span aria-hidden className={cn('inline-block size-2 rounded-full', DOT[bucket])} />
+                <span aria-hidden className={cn('inline-block size-2 rounded-full', RUN_DOT[bucket])} />
             </span>
             <span role="cell" className="min-w-0 py-2">
                 {href ? (
