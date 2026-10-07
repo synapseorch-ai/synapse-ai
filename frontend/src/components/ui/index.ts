@@ -48,8 +48,10 @@ export {
   Mono,
   Muted,
   PageHeader,
+  sectionClass,
   Stat,
   Text,
+  titleClass,
   type Tone,
 } from "./text";
 export { Screen, type ScreenWidth } from "./screen";

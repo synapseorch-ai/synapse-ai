@@ -1,17 +1,17 @@
 @import "tailwindcss";
+@import "./tokens.css";
+@import "./raw-ramps.css";
 @import "./brand-motion.css";
 
 /*
- * The design tokens, taken from `synapse-ai-pro-v1/web/src/app/globals.css`.
+ * The design tokens' values live in `tokens.css` (M0a, UX2): every colour,
+ * shadow and type token for both themes, keyed off `data-theme` on <html>, and
+ * nothing product-specific, because the cloud app takes that file verbatim and
+ * the site copies it. `raw-ramps.css` maps the raw Tailwind neutrals onto them.
  *
- * The cloud product already had a finished token layer — a *designed* light
- * palette rather than a ramp inversion, and the D27 accent — so this file
- * adopts its names and values verbatim. That is what lets the 19 primitives in
- * `components/ui/` drop in unmodified, and what makes the two products look
- * like one.
- *
- * Two things stay OSS-specific: the fonts (Inter + Geist Mono, chosen here),
- * and the zinc-ramp inversion further down, which the cloud does not need.
+ * What stays here is this product's wiring: the fonts (Inter + Geist Mono),
+ * the corner knob, the canvas and scrollbar variables, Tailwind's `@theme`
+ * names for every token, and the light theme's inversion of the other raw hues.
  */
 :root {
   /* ── Fonts ───────────────────────────────────────────────────────────────
@@ -47,58 +47,14 @@
    * -------------------------------------------------------------------- */
   --ui-radius: 6px;
 
-  /* ── Surfaces, text, borders ─────────────────────────────────────────── */
-  --bg: #09090b;            /* zinc-950 */
-  --surface: #18181b;       /* zinc-900 */
-  --surface-2: #27272a;     /* zinc-800 */
-  --border: #27272a;        /* zinc-800 */
-  --border-strong: #3f3f46; /* zinc-700 */
-  --text: #fafafa;          /* zinc-50 */
-  --text-muted: #a1a1aa;    /* zinc-400 */
-  /* Measured, not picked: #71717a read 4.12:1 on the page and 3.67:1 on a
-     surface — under AA on the two grounds faint text actually lands on, in
-     every screen that has a hint under a field. #87878f reads 5.6 / 5.0 / 4.6
-     on page, surface, header and surface-2 — the last being where the run
-     strip puts it — and stays clearly quieter than --text-muted, so the
-     three-step hierarchy survives (F43). */
-  --text-faint: #919199;
-
-  /* ── Accent (D27) ────────────────────────────────────────────────────────
-   * Cyan, hue 186 — the hue of the product mark, toned from neon down to the
-   * same muted shade the rest of the palette keeps. Used sparingly: active nav
-   * indicator, focus ring, primary button, selected-option check.
-   * -------------------------------------------------------------------- */
-  --accent: #6bb4bd;
-  --accent-hover: #80c4cb;
-  --accent-fg: #09090b;
-  --accent-subtle: #172a2c;
-  --ring: #6bb4bd40;
-
-  --danger: #f87171;
-  /* Text on a danger ground, as --accent-fg is on an accent one. --danger is
-   * both the colour of danger text and the ground of a danger button, and
-   * white on it is 2.77:1 here (F100); near-black is 7.2:1. */
-  --danger-fg: #09090b;
-  --danger-subtle: #2e1b18;
-  --warning: #fbbf24;
-  --warning-subtle: #2c2313;
-  --success: #4ade80;
-  --success-subtle: #17281e;
-
-  /* Table furniture. A header needs to separate from the rows under it without
-     becoming a band of its own — `surface-2` is the hover colour, so a header
-     painted with it reads as a permanently-hovered row. These sit between. */
-  --surface-header: #1f1f23;
-  --row-hover: #202024;
-
   /* Legacy aliases: `body` and a few older rules still read these. */
   --background: var(--bg);
   --foreground: var(--text);
 
-  /* Scrollbar */
-  --sb-track: #09090b;
-  --sb-thumb: #27272a;
-  --sb-thumb-hover: #3f3f46;
+  /* Scrollbar: on the page's own neutrals. */
+  --sb-track: var(--bg);
+  --sb-thumb: var(--border);
+  --sb-thumb-hover: var(--border-strong);
 
   /* ── Canvas (React Flow) ─────────────────────────────────────────────────
    * Edge colours live here because React Flow takes them as *props*
@@ -106,8 +62,12 @@
    * colour that reaches a library prop needs its own variable (D37a).
    * -------------------------------------------------------------------- */
   --minimap-mask: rgba(0, 0, 0, 0.6);
-  --flow-edge: #52525b;      /* zinc-600 — the default link */
+  --flow-edge: #4d545a;      /* the default link: zinc-600's lightness on the new neutrals (2.45:1, was 2.57) */
   --flow-parallel: #8b5cf6;  /* parallel fan-out; violet reads on both themes */
+  /* A loop's body and at-limit edges and handles. They were `--warning`, which
+     is a neutral-strong alias now (M0a), and would have become the loudest line
+     on the canvas. A quiet grey until M3 colours the canvas by role. */
+  --flow-loop: var(--text-faint);
 }
 
 @theme inline {
@@ -146,6 +106,14 @@
   --color-accent-hover: var(--accent-hover);
   --color-accent-fg: var(--accent-fg);
   --color-accent-subtle: var(--accent-subtle);
+  --color-accent-ink: var(--accent-ink);
+  --color-frame: var(--frame);
+  --color-machine: var(--machine);
+  --color-machine-subtle: var(--machine-subtle);
+  --color-person: var(--person);
+  --color-person-fg: var(--person-fg);
+  --color-person-ink: var(--person-ink);
+  --color-person-subtle: var(--person-subtle);
   --color-danger: var(--danger);
   --color-danger-fg: var(--danger-fg);
   --color-danger-subtle: var(--danger-subtle);
@@ -157,96 +125,53 @@
    * The scrim, and why it is not `bg-black`.
    *
    * A `bg-black/60` overlay compiles to color-mix over `--color-black`, and the
-   * compatibility layer below sets `--color-black: #ffffff` so that the ~2.5k
-   * raw utilities invert with everything else. That is right for `text-black`
-   * and catastrophic for an overlay: every scrim in the app — the kit's own
+   * light theme's `raw-ramps.css` sets `--color-black` to the page ground so
+   * that the raw utilities invert with everything else. That is right for
+   * `text-black` and catastrophic for an overlay: every scrim in the app — the kit's own
    * Modal included — turned into a white wash in light mode, which reads as a
    * rendering fault rather than a dimmed background.
    *
    * A scrim is one of the few things that is genuinely the same colour in both
    * themes: its job is to darken whatever is behind it. This token is declared
-   * here and deliberately NOT redefined under .light-mode.
+   * here and deliberately NOT redefined for the light theme.
    */
   --color-scrim: #000000;
 
   --color-surface-header: var(--surface-header);
   --color-row-hover: var(--row-hover);
+
+  /* `shadow-elevated`: what floats — menus, popovers, dialogs, drawers,
+     tooltips, toasts. One shadow per theme, from `tokens.css`. */
+  --shadow-elevated: var(--shadow);
+
+  /* The title scale (UX1): `text-title` for a page's title, `text-section`
+     for a section head. Inter's optical sizing draws the 28px title from its
+     display cut. `lib/cn.ts` tells tailwind-merge these are sizes. */
+  --text-title: var(--type-title-size);
+  --text-title--line-height: var(--type-title-leading);
+  --text-title--letter-spacing: var(--type-title-tracking);
+  --text-title--font-weight: var(--type-title-weight);
+  --text-section: var(--type-section-size);
+  --text-section--line-height: var(--type-section-leading);
+  --text-section--letter-spacing: var(--type-section-tracking);
+  --text-section--font-weight: var(--type-section-weight);
 }
 
 /*
- * Light mode.
+ * The light theme's inversion of the other raw hues.
  *
- * Two jobs in one block. The first half is the cloud's *designed* light
- * palette — chosen values, not an algorithmic flip of the dark ones.
+ * The designed light palette is in `tokens.css`, and the raw neutrals (zinc,
+ * slate, black and white) are mapped onto it in `raw-ramps.css`. What is left
+ * here exists only because a few hundred raw colour utilities (red, amber,
+ * blue…) are still spread across the screens: each value below flips a dark
+ * shade to the light one a measured failure asked for. A compatibility layer
+ * with an expiry date: M2 sweeps the screens onto the tokens, and the last
+ * raw utility takes this block with it.
  *
- * The second half inverts the raw Tailwind ramps, and exists only because
- * ~2,589 `zinc-*` and a few hundred other raw colour utilities are still
- * spread across the 26 tab components. It is a compatibility layer with an
- * expiry date: as screens move onto the tokens above, it shrinks, and when the
- * last raw utility is gone it can be deleted outright.
+ * Scoped to `:root`: the embed widget puts its own `data-theme` on a div and
+ * loads this file, and a bare `[data-theme="light"]` would reach into it.
  */
-.light-mode {
-  --bg: #ffffff;
-  --surface: #ffffff;
-  --surface-2: #f4f4f5;
-  /* Divider weight, measured rather than guessed. The cloud's #e4e4e7 is
-     1.27:1 against white — technically present, but not visible enough, twice.
-     zinc-300 is 1.44:1, which reads as a hairline without becoming a rule, and
-     matches the compatibility layer below so the semantic borders and the raw
-     `border-zinc-800` ones are finally the same colour. Worth feeding back to
-     the cloud, where the same value is in use. */
-  --border: #d4d4d8;
-  --border-strong: #a1a1aa;
-  --text: #09090b;
-  --text-muted: #27272a;    /* zinc-800: body copy reads near-black, as Apple and Microsoft set theirs */
-  --text-faint: #52525b;    /* zinc-600 */
-
-  --accent: #2e656b;
-  --accent-hover: #235258;
-  --accent-fg: #ffffff;
-  --accent-subtle: #ebf4f5;
-  --ring: #2e656b33;
-
-  --danger: #b91c1c;
-  --danger-fg: #ffffff;
-  --danger-subtle: #fef2f2;
-  /* Status text sits on a tint of its own colour (a /20 badge), not only on
-     white: #a16207 and #15803d read 3.78:1 and 3.82:1 there, so the MCP
-     servers' "Disconnected" and "Active" failed AA. The 800s read 5.0 and
-     5.2 on those tints and 6.9 and 7.1 on white (F223). */
-  --warning: #854d0e;
-  --warning-subtle: #fefce8;
-  --success: #166534;
-  --success-subtle: #f0fdf4;
-
-  --surface-header: #fafafa;
-  --row-hover: #fafafa;
-
-  /* ── Compatibility layer: raw ramp inversion ─────────────────────────── */
-
-  /* --- ZINC PALETTE INVERSION --- */
-  --color-zinc-950: #fafafa;
-  --color-zinc-900: #f4f4f5;
-  --color-zinc-800: #d4d4d8;   /* dividers: #e4e4e7 was ~1.15:1 on white */
-  --color-zinc-700: #b9b9c0;
-  --color-zinc-600: #a1a1aa;
-  --color-zinc-500: #71717a;
-  --color-zinc-400: #52525b;
-  --color-zinc-300: #3f3f46;
-  --color-zinc-200: #27272a;
-  --color-zinc-100: #18181b;
-  --color-zinc-50: #09090b;
-
-  /* --- SLATE/GRAY/NEUTRAL PALETTE INVERSION (if used) --- */
-  --color-slate-950: #f8fafc;
-  --color-slate-900: #f1f5f9;
-  --color-slate-800: #e2e8f0;
-  --color-slate-700: #cbd5e1;
-  --color-slate-400: #475569;
-  --color-slate-300: #334155;
-  --color-slate-200: #1e293b;
-  --color-slate-100: #0f172a;
-
+:root[data-theme="light"] {
   /* --- RED PALETTE INVERSION (for errors/warnings) --- */
   --color-red-950: #fef2f2;
   --color-red-900: #fee2e2;
@@ -368,34 +293,28 @@
      themes: dark ground, light text (F8). */
   --color-amber-500: oklch(55.5% 0.163 48.998);    /* amber-700 */
 
-  /* --- CORE COLORS INVERSION --- */
-  --color-black: #ffffff;
-  --color-white: #09090b;
-
   /* --- SCROLLBAR LIGHT --- */
-  --sb-track: #fafafa;
-  --sb-thumb: #e4e4e7;
-  --sb-thumb-hover: #d4d4d8;
+  --sb-track: var(--frame);
 
   /* --- CANVAS LIGHT --- */
   --minimap-mask: rgba(255, 255, 255, 0.7);
-  --flow-edge: #a1a1aa;      /* zinc-400 — a hairline, but a visible one */
+  --flow-edge: #9ea3a7;      /* a hairline, but a visible one: today's #a1a1aa lightness, retinted (2.55:1) */
   --flow-parallel: #7c3aed;
 }
 
 /* Force white text on colorful primary buttons in light mode */
-.light-mode .bg-blue-600,
-.light-mode .bg-purple-600,
-.light-mode .bg-violet-600,
-.light-mode .bg-green-600,
-.light-mode .bg-red-600,
-.light-mode .bg-blue-500,
-.light-mode .bg-purple-500,
-.light-mode .bg-green-500,
-.light-mode .bg-red-500,
+:root[data-theme="light"] .bg-blue-600,
+:root[data-theme="light"] .bg-purple-600,
+:root[data-theme="light"] .bg-violet-600,
+:root[data-theme="light"] .bg-green-600,
+:root[data-theme="light"] .bg-red-600,
+:root[data-theme="light"] .bg-blue-500,
+:root[data-theme="light"] .bg-purple-500,
+:root[data-theme="light"] .bg-green-500,
+:root[data-theme="light"] .bg-red-500,
 /* The Resume buttons: orange-600 held white at 3.58:1 in dark, so they are
    orange-700 in both themes, and white stays white on it here (F101). */
-.light-mode .bg-orange-700 {
+:root[data-theme="light"] .bg-orange-700 {
   color: #ffffff !important;
 }
 
@@ -405,7 +324,7 @@
 }
 
 /* Light Theme: Remove the filter so the icon stays its native black */
-.light-mode .theme-adaptive-icon {
+:root[data-theme="light"] .theme-adaptive-icon {
   filter: none;
 }
 
@@ -506,18 +425,18 @@ body {
 }
 
 /*
- * Focus: the safety net, not the design.
+ * Focus: the one indicator, on the accent.
  *
- * Anything built from `@/components/ui` sets its own `focus-visible` ring (see
- * `focusRing` / `focusRingInset` in `lib/cn.ts`) and overrides this — a class +
- * pseudo-class beats a bare pseudo-class. What is left catching this rule is
- * markup that predates the primitives, where an ugly ring is still far better
- * than none.
+ * Every element shows this on keyboard focus — the kit included (`lib/cn.ts`
+ * explains why its own ring is gone: a layered `outline-none` never beat this
+ * rule, so kit controls drew both). A control that owns a border shows focus
+ * on the border instead and sets `data-no-focus-ring` (below), as the kit's
+ * fields and the chat composer do.
  *
  * Unlayered on purpose: `focus:outline-none` fires on :focus, which also
  * matches while :focus-visible is active, and as a class selector it
  * outspecifies a bare `:focus-visible`. Unlayered CSS beats layered CSS in the
- * cascade regardless of specificity — the same mechanism .light-mode relies on.
+ * cascade regardless of specificity — the same mechanism the theme blocks rely on.
  *
  * There is deliberately NO special case for input/textarea/select here. The
  * previous version tucked a 1px outline inside every field, which drew a second

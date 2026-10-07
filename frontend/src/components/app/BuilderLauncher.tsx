@@ -39,7 +39,7 @@ export function BuilderLauncher() {
                         // `relative`, because the fixed position that used to
                         // anchor the streaming dot now lives on the wrapper.
                         'relative flex h-11 w-11 items-center justify-center',
-                        'rounded-full border border-border-strong bg-surface text-accent shadow-xl',
+                        'rounded-full border border-border-strong bg-surface text-accent shadow-elevated',
                         'transition-colors hover:bg-row-hover hover:text-accent-hover',
                         focusRing,
                     )}

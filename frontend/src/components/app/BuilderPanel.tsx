@@ -64,7 +64,7 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
                 <div key={i} className="flex items-center gap-2 py-0.5 pl-1">
                     {done
                         ? <CheckCircle2 size={12} className="shrink-0 text-success" aria-hidden />
-                        : <Spinner size={16} className="shrink-0 text-accent" />}
+                        : <Spinner size={16} className="shrink-0 text-machine" />}
                     <span className={cn('truncate font-code text-[11px]', done ? 'text-text-faint' : 'text-text-muted')}>
                         {message.stepName}
                     </span>

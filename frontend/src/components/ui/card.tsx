@@ -6,6 +6,10 @@
  * sites instead, where it became `px-5 py-4`, `px-5 pb-5`, `p-5` and
  * `space-y-4 px-5 py-4` across fourteen of them. `CardBody` is that padding,
  * named once.
+ *
+ * A border is for a separate object (UX1). `variant="plain"` is the same
+ * structure with no border, ground or header rule: a group of content on the
+ * page, not a box inside a box.
  */
 
 import * as React from "react";
@@ -16,6 +20,7 @@ export function Card({
   title,
   description,
   actions,
+  variant = "object",
   children,
   className,
 }: {
@@ -23,13 +28,23 @@ export function Card({
   description?: string;
   /** Right-hand side of the header — usually one button. */
   actions?: React.ReactNode;
+  /** `object` (bordered, the default) or `plain` (a group with no box). */
+  variant?: "object" | "plain";
   children?: React.ReactNode;
   className?: string;
 }) {
+  const plain = variant === "plain";
   return (
-    <section className={cn("overflow-hidden rounded-lg border border-border bg-surface", className)}>
+    <section
+      className={cn(plain ? "" : "overflow-hidden rounded-lg border border-border bg-surface", className)}
+    >
       {(title || actions) && (
-        <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
+        <header
+          className={cn(
+            "flex flex-wrap items-start justify-between gap-3 px-5 py-4",
+            !plain && "border-b border-border",
+          )}
+        >
           <div className="min-w-0">
             {title && <h2 className="text-sm font-semibold text-text">{title}</h2>}
             {description && (

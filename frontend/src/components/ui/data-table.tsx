@@ -190,7 +190,7 @@ export function DataTable<T>({
                 <button
                   type="button"
                   onClick={() => selection!.onChange([])}
-                  className="rounded-md px-2 py-1 text-sm text-text-muted transition-colors hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                  className="rounded-md px-2 py-1 text-sm text-text-muted transition-colors hover:text-text"
                 >
                   Clear
                 </button>
@@ -244,7 +244,6 @@ export function DataTable<T>({
                       onClick={() => toggleSort(column)}
                       className={cn(
                         "inline-flex items-center gap-1.5 rounded-md transition-colors hover:text-text",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
                         active && "text-text",
                       )}
                     >

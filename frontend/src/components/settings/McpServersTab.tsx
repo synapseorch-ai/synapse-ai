@@ -141,10 +141,12 @@ const TypePill = ({ type }: { type?: string }) => (
         : <span className="flex items-center gap-1 text-2xs bg-surface-2 text-text-faint px-1.5 py-0.5 rounded-md border border-border-strong uppercase"><Terminal className="h-2 w-2" />Local</span>
 );
 
-const NOTICE_TONES: Record<ToastTone, { chip: string; icon: React.ElementType }> = {
-    success: { chip: 'bg-success-subtle border-success/40 text-success', icon: CheckCircle },
-    warning: { chip: 'bg-warning-subtle border-warning/40 text-warning', icon: AlertCircle },
-    danger: { chip: 'bg-danger-subtle border-danger/40 text-danger', icon: XCircle },
+// The kit Toast's tones, in lockstep (components/ui/toast.tsx): the tone is the
+// icon's, and only a failure is coloured through.
+const NOTICE_TONES: Record<ToastTone, { chip: string; icon: React.ElementType; mark: string }> = {
+    success: { chip: 'bg-surface border-border text-text', icon: CheckCircle, mark: 'text-success' },
+    warning: { chip: 'bg-surface border-border text-text', icon: AlertCircle, mark: 'text-text' },
+    danger: { chip: 'bg-danger-subtle border-danger/40 text-danger', icon: XCircle, mark: 'text-danger' },
 };
 
 const inputCls = "w-full bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none placeholder:text-text-faint";
@@ -322,7 +324,7 @@ export const McpServersTab = ({
             {/* ── Inline Toast ── */}
             {notice && (
                 <div className={`flex items-start gap-2.5 px-4 py-3 rounded-md border text-xs font-medium animate-in fade-in slide-in-from-top-2 duration-200 ${NOTICE_TONES[notice.tone].chip}`}>
-                    {(() => { const Icon = NOTICE_TONES[notice.tone].icon; return <Icon className="h-4 w-4 mt-0.5 shrink-0" />; })()}
+                    {(() => { const Icon = NOTICE_TONES[notice.tone].icon; return <Icon className={`h-4 w-4 mt-0.5 shrink-0 ${NOTICE_TONES[notice.tone].mark}`} />; })()}
                     <span className="leading-relaxed">{notice.message}</span>
                 </div>
             )}
@@ -383,7 +385,7 @@ export const McpServersTab = ({
                                 </div>
                                 <div className="flex items-center gap-1 ml-4 shrink-0">
                                     {server.status === 'connecting' && (
-                                        <span className="p-2"><Spinner size={14} className="text-accent" /></span>
+                                        <span className="p-2"><Spinner size={14} className="text-machine" /></span>
                                     )}
                                     {server.status === 'reauth_needed' && (
                                         <button onClick={() => onReconnectServer(server.name)} title="Re-authenticate"

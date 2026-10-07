@@ -240,7 +240,7 @@ export function useSuggestions<T extends Field>({
             if (ref.current && event.target instanceof Node && ref.current.contains(event.target))
               event.preventDefault();
           }}
-          className="z-50 w-72 max-w-[calc(100vw-1rem)] overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl"
+          className="z-50 w-72 max-w-[calc(100vw-1rem)] overflow-hidden rounded-lg border border-border-strong bg-surface shadow-elevated"
         >
           <ul
             id={listId}

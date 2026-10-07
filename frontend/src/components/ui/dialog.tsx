@@ -69,7 +69,7 @@ export function Modal({
           }}
           className={cn(
             "fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col",
-            "rounded-xl border border-border-strong bg-surface shadow-2xl focus:outline-none",
+            "rounded-xl border border-border-strong bg-surface shadow-elevated focus:outline-none",
             { sm: "max-w-sm", md: "max-w-lg", lg: "max-w-2xl" }[size],
           )}
         >

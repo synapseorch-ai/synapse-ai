@@ -20,7 +20,7 @@ import { cn, focusRing } from "@/lib/cn";
 
 import { Spinner } from "./brand";
 
-export type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
+export type ButtonVariant = "primary" | "secondary" | "danger" | "ghost" | "person";
 export type ButtonSize = "sm" | "md";
 
 const VARIANTS: Record<ButtonVariant, string> = {
@@ -32,6 +32,9 @@ const VARIANTS: Record<ButtonVariant, string> = {
   danger: "border-transparent bg-danger text-danger-fg hover:opacity-90 active:opacity-100",
   ghost:
     "border-transparent bg-transparent text-text-muted hover:bg-surface-2 hover:text-text active:bg-surface",
+  // A person is needed: Approve, Answer. The one warm button (UX1's colour
+  // rule), with dark text on the amber in both themes (10:1).
+  person: "border-transparent bg-person text-person-fg hover:opacity-90 active:opacity-100",
 };
 
 const SIZES: Record<ButtonSize, string> = {

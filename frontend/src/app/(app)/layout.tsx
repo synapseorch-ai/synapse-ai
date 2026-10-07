@@ -17,10 +17,11 @@ import { BuilderLauncher } from '@/components/app/BuilderLauncher';
 import { BuilderPanel } from '@/components/app/BuilderPanel';
 import { BuilderProvider } from '@/components/app/BuilderProvider';
 import { HelpProvider } from '@/components/help';
-import { AppRail, type ThemeMode } from '@/components/app/AppRail';
+import { AppRail } from '@/components/app/AppRail';
 import { NavGuardProvider } from '@/components/app/NavGuard';
 import { NotificationProvider } from '@/components/notifications/NotificationProvider';
 import { ossHelpHost } from '@/lib/helpHost';
+import { parseThemeMode, resolveTheme, switchTheme, THEME_KEY, type ThemeMode } from '@/lib/theme';
 
 /**
  * Variables for `{{ global.… }}` suggestions in every editor, fetched on the
@@ -34,34 +35,25 @@ async function loadVariables() {
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-    // Three modes, one class. `system` follows the OS and keeps following it
-    // while the tab is open; the two explicit modes pin the class regardless.
-    const [mode, setMode] = usePersisted<ThemeMode>(
-        'synapseTheme',
-        raw => (raw === 'light' || raw === 'system' ? raw : 'dark'),
-        'dark',
-    );
+    // Three modes, one attribute. `system` (also what nothing saved means)
+    // follows the OS and keeps following it while the tab is open; the two
+    // explicit modes pin the attribute regardless.
+    const [mode, setMode] = usePersisted<ThemeMode>(THEME_KEY, parseThemeMode, 'system');
 
-    // The class goes on <html>, not on the shell div. `body` resolves
-    // `--background` against itself, so a .light-mode starting below body left
-    // the page ground dark behind a light app — visible on overscroll and
-    // behind the app-wide toast host, which renders outside this shell.
+    // The attribute goes on <html>, not on the shell div. `body` resolves
+    // `--background` against itself, so a theme starting below body left the
+    // page ground dark behind a light app — visible on overscroll and behind
+    // the app-wide toast host, which renders outside this shell. `color-scheme`
+    // follows the attribute in `tokens.css`.
     //
-    // The first paint is the root layout's script's (F220); this keeps the class
-    // and `color-scheme` in step from then on, and clears both on leaving the
-    // shell (/login is dark by design).
+    // The first paint is the root layout's script's (F220); this keeps the
+    // attribute in step from then on, and clears it on leaving the shell
+    // (/login is dark by design).
     useEffect(() => {
         const root = document.documentElement;
         const media = window.matchMedia('(prefers-color-scheme: light)');
-        const apply = () => {
-            const light = mode === 'light' || (mode === 'system' && media.matches);
-            root.classList.toggle('light-mode', light);
-            root.style.colorScheme = light ? 'light' : 'dark';
-        };
-        const clear = () => {
-            root.classList.remove('light-mode');
-            root.style.colorScheme = '';
-        };
+        const apply = () => root.setAttribute('data-theme', resolveTheme(mode));
+        const clear = () => root.removeAttribute('data-theme');
         apply();
         if (mode !== 'system') return clear;
         media.addEventListener('change', apply);
@@ -71,18 +63,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         };
     }, [mode]);
 
-    // Swapping the palette drags every `transition-colors` in the app along at
-    // once — a smear where controls are mid-way between the two while cards,
-    // which have no transition, have already switched. Suppress transitions for
-    // a frame around the swap.
-    const changeMode = (next: ThemeMode) => {
-        const root = document.documentElement;
-        root.setAttribute('data-theme-switching', '');
-        setMode(next);
-        window.requestAnimationFrame(() => {
-            window.requestAnimationFrame(() => root.removeAttribute('data-theme-switching'));
-        });
-    };
+    const changeMode = (next: ThemeMode) => switchTheme(setMode, next);
 
     return (
         <NavGuardProvider>

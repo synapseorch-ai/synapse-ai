@@ -63,6 +63,7 @@ export function Select<T extends string = string>({
       disabled={disabled}
     >
       <RSelect.Trigger
+        data-no-focus-ring=""
         aria-label={ariaLabel}
         aria-describedby={ariaDescribedBy}
         // Built from the same `controlStyles` as `Input`, so a select and a
@@ -94,7 +95,7 @@ export function Select<T extends string = string>({
           // leave the option list floating over whatever replaced it.
           hideWhenDetached
           className={cn(
-            "z-50 overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl",
+            "z-50 overflow-hidden rounded-lg border border-border-strong bg-surface shadow-elevated",
             // `--radix-select-trigger-width` keeps the list the width of the
             // control instead of hugging its longest option, which otherwise
             // makes the popup jump around as the selection changes. The
@@ -113,7 +114,7 @@ export function Select<T extends string = string>({
                 disabled={option.disabled}
                 className={cn(
                   "relative flex cursor-pointer select-none flex-col rounded-md px-2 py-1.5 pr-8 text-sm text-text outline-none",
-                  "data-[highlighted]:bg-surface-2 data-[state=checked]:text-accent",
+                  "data-[highlighted]:bg-surface-2 data-[state=checked]:text-accent-ink",
                   "data-[disabled]:pointer-events-none data-[disabled]:opacity-45",
                 )}
               >

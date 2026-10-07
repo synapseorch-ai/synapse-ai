@@ -64,7 +64,7 @@ export function Hint({
           side={side}
           sideOffset={6}
           collisionPadding={8}
-          className="z-50 max-w-64 rounded-md border border-border-strong bg-surface px-2.5 py-1.5 text-xs leading-relaxed text-text shadow-xl"
+          className="z-50 max-w-64 rounded-md border border-border-strong bg-surface px-2.5 py-1.5 text-xs leading-relaxed text-text shadow-elevated"
         >
           {content}
           <RTooltip.Arrow className="fill-[var(--border-strong)]" />

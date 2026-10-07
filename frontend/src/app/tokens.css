@@ -1,0 +1,136 @@
+/*
+ * The design tokens: every colour, shadow and type token, for both themes.
+ *
+ * One file, shared: the open-source app imports it from `globals.css`, the cloud
+ * app takes it verbatim through `scripts/sync-ui.sh`, and the site copies it. So
+ * it holds nothing product-specific — no fonts (each product loads its own
+ * Inter), no Tailwind directives, no raw-palette mapping (`raw-ramps.css`), and
+ * it never reads a `--color-*` variable, since one of those reading a token
+ * here would be a cycle, and a cycle makes both values silently transparent.
+ *
+ * The values are UX1's (D202, pro MEMORY/18 → "The token contract"), with M0a's
+ * measured calls (2026-10-07): light border and reading text at the strength of
+ * the earlier measured decisions, and field edges at today's strength.
+ *
+ * The colour rule they encode: cool is the machine, warm is a person. The
+ * accent (Cerulean, hue 245; dark shifts toward the mark's cyan, hue 224) is
+ * the product acting and the one primary action, and the mark's colour in the
+ * product (L1, D205); `machine` marks the product at
+ * work; `person` marks someone being needed; green and red only report an
+ * outcome. Everything else is a neutral with a trace of the accent's hue.
+ *
+ * Themes are keyed off `data-theme` on <html>, always scoped to `:root`: the
+ * embed widget puts its own `data-theme` on a div. With no attribute (/login,
+ * /embed) a page takes the dark tokens and no `color-scheme`, which keeps a
+ * widget's iframe transparent over a light page. A product must set the
+ * attribute for both themes for `color-scheme` to follow.
+ */
+
+:root,
+:root[data-theme="dark"] {
+  /* ── Neutrals: navy-tinted graphite ─────────────────────────────────── */
+  --frame: #080c10;           /* the ground behind the rail and the sheet */
+  --bg: #0d1216;              /* the sheet: the page itself */
+  --surface: #13181c;
+  --surface-2: #1a2025;
+  --border: #22272c;
+  --border-strong: #3a4147;   /* field and control edges: today's #3f3f46 strength (1.72:1 on a surface) */
+  --text: #f0f4f8;
+  --text-muted: #bcc2c7;
+  --text-faint: #93999f;
+
+  /* Table furniture: between the page and `surface-2`, so a header is not a
+     band of its own and a hovered row is not a selected one. */
+  --surface-header: #14191d;
+  --row-hover: #14191d;
+
+  /* ── The action: Cerulean's dark form, toward the mark's cyan ────────── */
+  --accent: #45cffc;
+  --accent-hover: #83dcfd;
+  --accent-fg: #040f14;       /* 10.7:1 */
+  --accent-subtle: #012b38;
+  --accent-ink: #45cffc;      /* links and text in the action colour */
+  --ring: #45cffc40;
+
+  /* ── Meaning ────────────────────────────────────────────────────────── */
+  --machine: #45cffc;         /* the product acting: a run in progress, a model step */
+  --machine-subtle: #012b38;
+  --person: #f9bb51;          /* a person is needed: an approval, waiting on you */
+  --person-fg: #1d1406;       /* text on the person fill, 10.6:1 */
+  --person-ink: #f9bb51;      /* person text on a page */
+  --person-subtle: #2e2207;
+  --success: #6cd092;
+  --success-subtle: #132a1b;
+  --danger: #f47b74;
+  --danger-subtle: #391917;
+  --danger-fg: #080c10;       /* text on the danger fill: 7.4:1 (white is 2.7:1) */
+
+  /* `warning` is not a colour any more (M0a): a problem or a caveat is
+     ordinary strong text with a warning sign, and amber belongs to a person.
+     An alias for the uses still to be swept (M2 deletes it). */
+  --warning: var(--text);
+  --warning-subtle: var(--surface-2);
+
+  /* What floats: menus, popovers, dialogs, drawers, tooltips, toasts. */
+  --shadow: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 12px 32px -18px rgb(0 0 0 / 0.6);
+
+  /* ── Type (Inter with optical sizing; mono only for code and data) ──── */
+  --type-title-size: 28px;
+  --type-title-weight: 600;
+  --type-title-tracking: -0.028em;
+  --type-title-leading: 1.15;
+  --type-section-size: 15px;
+  --type-section-weight: 600;
+  --type-section-tracking: -0.01em;
+  --type-section-leading: 1.4;
+}
+
+:root[data-theme="light"] {
+  /* ── Neutrals: near-white ───────────────────────────────────────────── */
+  --frame: #f5f7f8;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f1f3f4;
+  --border: #d1d5d8;          /* 1.48:1: a divider that is seen (UX1's #e1e3e5 was the 1.27:1 found too faint, twice) */
+  --border-strong: #9ea3a7;   /* field and control edges: today's #a1a1aa strength, 2.55:1 */
+  --text: #12171b;
+  --text-muted: #23282d;      /* reading copy near-black, 14.9:1 (the 2026-09-09 call) */
+  --text-faint: #4e5459;      /* 7.7:1 */
+
+  --surface-header: #f7f9fa;
+  --row-hover: #f7f9fa;
+
+  /* ── The action: Cerulean ───────────────────────────────────────────── */
+  --accent: #0f71b0;
+  --accent-hover: #0b5f96;
+  --accent-fg: #ffffff;       /* 5.2:1 */
+  --accent-subtle: #e9f4fe;
+  --accent-ink: #0d68a3;      /* 6.0:1 on white */
+  --ring: #0f71b033;
+
+  /* ── Meaning ────────────────────────────────────────────────────────── */
+  --machine: #1886cf;         /* a fill or a dot, never text (3.9:1): its text is accent-ink */
+  --machine-subtle: #e9f4fe;
+  --person: #f9b73f;          /* a fill, never text (1.8:1): its text is person-ink or person-fg */
+  --person-fg: #1d1406;       /* 10.3:1 on the fill */
+  --person-ink: #96570f;      /* 5.7:1 on white */
+  --person-subtle: #fff3dc;
+  --success: #1d7d3e;
+  --success-subtle: #e6fae9;
+  --danger: #c22826;
+  --danger-subtle: #fff0ee;
+  --danger-fg: #ffffff;       /* 5.8:1 */
+
+  --warning: var(--text);
+  --warning-subtle: var(--surface-2);
+
+  --shadow: 0 1px 2px rgb(16 24 40 / 0.05), 0 10px 30px -18px rgb(16 24 40 / 0.18);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}

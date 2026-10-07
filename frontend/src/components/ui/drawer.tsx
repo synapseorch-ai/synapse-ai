@@ -69,7 +69,7 @@ export function Drawer({
             }
           }}
           className={cn(
-            "fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border-strong bg-surface shadow-2xl",
+            "fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border-strong bg-surface shadow-elevated",
             "focus:outline-none",
             "transition-transform duration-200 ease-out starting:translate-x-full motion-reduce:transition-none",
             width === "md" ? "sm:max-w-lg" : "sm:max-w-2xl",

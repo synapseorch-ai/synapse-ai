@@ -6,9 +6,9 @@
  * Two things this catches that clicking through the product does not. First,
  * states nobody navigates to on purpose: loading, disabled, invalid, the
  * indeterminate checkbox, a badge with a word long enough to wrap. Second,
- * *light mode* — `globals.css` has carried a full `.light-mode`
- * palette since the beginning with nothing in the app to switch it on, so
- * until now no one had ever seen it. The toggle at the top sets that attribute.
+ * both themes — the toggle at the top switches the app's own theme (the
+ * shell's `data-theme`, through `lib/theme.ts`), and `?theme=light|dark` opens
+ * straight into one, which is what makes each reviewable in a screenshot.
  *
  * Reachability is decided by `page.tsx` and the middleware, both server-side.
  * It cannot be decided here: a client component only sees `NEXT_PUBLIC_*` and
@@ -16,8 +16,10 @@
  * gating on that would hide this page in the one environment it is for.
  */
 
-import { Bot, Copy, ExternalLink, Pencil, Plus, Trash2 } from "lucide-react";
+import { Bot, Copy, ExternalLink, LogOut, Monitor, Moon, Pencil, Plus, Settings, Sun, Trash2 } from "lucide-react";
 import * as React from "react";
+
+import { parseThemeMode, switchTheme, THEME_KEY, useAppliedTheme, type ThemeMode } from "@/lib/theme";
 
 import {
   Badge,
@@ -27,7 +29,9 @@ import {
   CardFooter,
   CellStack,
   Checkbox,
+  Combobox,
   ConfirmDialog,
+  DataTable,
   Drawer,
   EmptyState,
   ErrorNote,
@@ -35,6 +39,11 @@ import {
   Heading,
   Label,
   Hint,
+  Mark,
+  Menu,
+  MenuLabel,
+  MenuLink,
+  MenuSegment,
   IconButton,
   Input,
   LinkButton,
@@ -47,7 +56,9 @@ import {
   RowMenu,
   SearchInput,
   Section,
+  sectionClass,
   Select,
+  Spinner,
   Stat,
   StatusBadge,
   SuccessNote,
@@ -62,16 +73,31 @@ import {
   Text,
   Textarea,
   TextLink,
+  titleClass,
   Toast,
   type ToastTone,
   TooltipProvider,
+  usePersisted,
   type BadgeTone,
   type ButtonVariant,
   type Density,
 } from "@/components/ui";
 
-const VARIANTS: ButtonVariant[] = ["primary", "secondary", "danger", "ghost"];
-const TONES: BadgeTone[] = ["neutral", "accent", "danger", "warning", "success"];
+const VARIANTS: ButtonVariant[] = ["primary", "secondary", "danger", "ghost", "person"];
+const TONES: BadgeTone[] = ["neutral", "accent", "machine", "person", "danger", "warning", "success"];
+const MODEL_OPTIONS = [
+  { value: "nova-pro", label: "Nova Pro", hint: "Managed", group: "Synapse" },
+  { value: "nova-micro", label: "Nova Micro", hint: "Managed", group: "Synapse" },
+  { value: "gpt-5-mini", label: "GPT-5 mini", group: "OpenAI" },
+  { value: "gemini-flash", label: "Gemini Flash", group: "Google" },
+];
+type Sample = { id: string; name: string; status: string; runs: number };
+const SAMPLE_ROWS: Sample[] = [
+  { id: "a", name: "Order desk", status: "completed", runs: 128 },
+  { id: "b", name: "Supplier review", status: "running", runs: 12 },
+  { id: "c", name: "Invoice triage", status: "paused", runs: 3 },
+  { id: "d", name: "Weekly digest", status: "failed", runs: 41 },
+];
 const STATUSES = ["queued", "running", "paused", "completed", "failed", "cancelled"];
 
 function Row({ title, children }: { title: string; children: React.ReactNode }) {
@@ -84,11 +110,19 @@ function Row({ title, children }: { title: string; children: React.ReactNode }) 
 }
 
 export function KitchenSink() {
-  const [theme, setTheme] = React.useState<"dark" | "light">("dark");
+  // The app's own theme, not a copy of it: the toggle and `?theme=` go through
+  // the shell's setting, and what is shown is what the shell applied. (A copy
+  // kept here once wrote "dark" on every visit, so a light pass measured this
+  // page dark, and its cleanup removed the attribute the shell had set.)
+  const [, setMode] = usePersisted<ThemeMode>(THEME_KEY, parseThemeMode, "system");
+  const theme = useAppliedTheme();
   const [text, setText] = React.useState("");
   const [query, setQuery] = React.useState("");
   const [checked, setChecked] = React.useState(true);
   const [selectValue, setSelectValue] = React.useState("conversational");
+  const [model, setModel] = React.useState<string | undefined>("nova-pro");
+  const [segment, setSegment] = React.useState<"system" | "light" | "dark">("system");
+  const [picked, setPicked] = React.useState<string[]>([]);
   const [density, setDensity] = React.useState<Density>("comfortable");
   const [modal, setModal] = React.useState(false);
   const [confirm, setConfirm] = React.useState(false);
@@ -105,32 +139,8 @@ export function KitchenSink() {
   // different tree than it sent.
   React.useEffect(() => {
     const wanted = new URLSearchParams(window.location.search).get("theme");
-    if (wanted === "light" || wanted === "dark") setTheme(wanted);
-  }, []);
-
-  React.useEffect(() => {
-    // The palette is keyed off the root element, exactly as a real theme
-    // switcher would set it. `data-theme-switching` suppresses every
-    // `transition-colors` for the duration of the swap — without it the
-    // controls animate between palettes while the cards, which have no
-    // transition, change instantly, and the page spends a beat in neither
-    // theme.
-    const root = document.documentElement;
-    root.setAttribute("data-theme-switching", "");
-    // This app keys light mode off a class, not `data-theme` — see the shell
-    // layout, which owns the same flag in localStorage.
-    root.classList.toggle("light-mode", theme === "light");
-    window.localStorage.setItem("synapseTheme", theme);
-    window.dispatchEvent(new Event("synapse-local-storage"));
-    const frame = requestAnimationFrame(() =>
-      requestAnimationFrame(() => root.removeAttribute("data-theme-switching")),
-    );
-    return () => {
-      cancelAnimationFrame(frame);
-      root.removeAttribute("data-theme");
-      root.removeAttribute("data-theme-switching");
-    };
-  }, [theme]);
+    if (wanted === "light" || wanted === "dark") switchTheme(setMode, wanted);
+  }, [setMode]);
 
   return (
     <TooltipProvider>
@@ -146,7 +156,7 @@ export function KitchenSink() {
           actions={
             <Button
               variant="secondary"
-              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+              onClick={() => switchTheme(setMode, theme === "dark" ? "light" : "dark")}
             >
               Switch to {theme === "dark" ? "light" : "dark"}
             </Button>
@@ -332,7 +342,73 @@ export function KitchenSink() {
           <Stat label="Accent" value="12" tone="accent" hint="With a hint" icon={Bot} />
           <Stat label="Warning" value="3" tone="warning" icon={Bot} />
           <Stat label="Small" value="4m 20s" size="sm" />
+          <Stat label="Machine" value="2 running" tone="machine" icon={Bot} />
+          <Stat label="Person" value="1 waiting" tone="person" icon={Bot} />
+          <Stat label="Success" value="98%" tone="success" icon={Bot} />
+          <Stat label="Danger" value="1 failed" tone="danger" icon={Bot} />
         </div>
+
+        <Card title="Title scale, the mark, and what floats" description="The title classes are for the page frame (M1a); every overlay sits on the surface with the elevated shadow.">
+          <CardBody className="space-y-5">
+            <div className="space-y-1">
+              <p className={titleClass}>A page title, 28px</p>
+              <p className={sectionClass}>A section head, 15px</p>
+              <Text tone="muted">Body copy under them, at the product&apos;s reading size.</Text>
+            </div>
+            <Row title="The mark is the action colour; the loader, where the product works, the machine's (D205)">
+              <span className="text-accent"><Mark size={20} compact={false} /></span>
+              <span className="text-accent"><Mark size={40} compact={false} /></span>
+              <Spinner size={16} className="text-machine" />
+              <Spinner size={32} className="text-machine" label="Working" />
+            </Row>
+            <Row title="Combobox and menu">
+              <Combobox
+                value={model}
+                onChange={setModel}
+                options={MODEL_OPTIONS}
+                aria-label="Model"
+                className="w-64"
+              />
+              <Menu trigger={<Button variant="secondary">Open menu</Button>}>
+                <MenuLabel>Account</MenuLabel>
+                <MenuLink href="/kitchen-sink" icon={Settings} hint="⌘,">Settings</MenuLink>
+                <MenuSegment
+                  label="Theme"
+                  value={segment}
+                  onChange={setSegment}
+                  options={[
+                    { value: "system", label: "System theme", icon: Monitor },
+                    { value: "light", label: "Light theme", icon: Sun },
+                    { value: "dark", label: "Dark theme", icon: Moon },
+                  ]}
+                />
+                <MenuItem icon={LogOut} onSelect={() => {}}>Sign out</MenuItem>
+              </Menu>
+            </Row>
+          </CardBody>
+        </Card>
+
+        <Card title="A plain card" variant="plain" description="No border and no ground: a group of content on the page, not a box inside a box.">
+          <CardBody>
+            <Text tone="muted">A card&apos;s border is for a separate object. This one only groups.</Text>
+          </CardBody>
+        </Card>
+
+        <Card title="Data table" description="Search, sort, select; header and hover on the neutrals.">
+          <DataTable
+            rows={SAMPLE_ROWS}
+            getRowId={(row) => row.id}
+            searchKeys={(row) => [row.name]}
+            selection={{ selected: picked, onChange: setPicked }}
+            bulkActions={() => <Button size="sm" variant="secondary">Archive</Button>}
+            minWidth="32rem"
+            columns={[
+              { id: "name", header: "Name", cell: (row) => row.name, sortBy: (row) => row.name, width: "full" },
+              { id: "status", header: "Last run", cell: (row) => <StatusBadge status={row.status} />, width: "min" },
+              { id: "runs", header: "Runs", cell: (row) => row.runs, sortBy: (row) => row.runs, align: "right", width: "min" },
+            ]}
+          />
+        </Card>
 
         <Card
           title="Table"

@@ -19,7 +19,7 @@ export type TextLinkVariant = "accent" | "quiet" | "plain";
 
 const VARIANTS: Record<TextLinkVariant, string> = {
   /** The action in a row, the "sign up instead" under a form. */
-  accent: "font-medium text-accent hover:underline focus-visible:underline",
+  accent: "font-medium text-accent-ink hover:underline focus-visible:underline",
   /** Navigation and back-links: present, but not competing with the content. */
   quiet: "text-text-muted transition-colors hover:text-text focus-visible:text-text",
   /** Inherits its colour — for a link inside a sentence that is already styled. */
@@ -40,7 +40,7 @@ export function TextLink({
   external?: boolean;
 }) {
   const classes = cn(
-    "rounded-sm underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
+    "rounded-sm underline-offset-2",
     VARIANTS[variant],
     className,
   );

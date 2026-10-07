@@ -79,6 +79,7 @@ export function Combobox<T extends string = string>({
   return (
     <RPopover.Root open={open} onOpenChange={setOpen}>
       <RPopover.Trigger
+        data-no-focus-ring=""
         disabled={disabled}
         aria-label={ariaLabel}
         aria-describedby={ariaDescribedBy}
@@ -106,7 +107,7 @@ export function Combobox<T extends string = string>({
           // over unrelated content — hidden-when-detached is the honest state.
           hideWhenDetached
           className={cn(
-            "z-50 flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl",
+            "z-50 flex flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-elevated",
             // Match the trigger's width rather than hugging the longest option,
             // which otherwise makes the popup jump as the selection changes.
             "w-[var(--radix-popover-trigger-width)]",
@@ -165,7 +166,7 @@ export function Combobox<T extends string = string>({
                         "relative flex cursor-pointer select-none flex-col rounded-md px-2 py-1.5 pr-8 text-sm text-text outline-none",
                         "data-[selected=true]:bg-surface-2",
                         "data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-45",
-                        option.value === value && "text-accent",
+                        option.value === value && "text-accent-ink",
                       )}
                     >
                       <span className="truncate">{option.label}</span>

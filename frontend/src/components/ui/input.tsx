@@ -33,6 +33,9 @@ export function Input({
 }) {
   return (
     <input
+      // The field's own focus (accent border, soft ring) is the indicator; the
+      // global outline would draw a second one 2px outside it.
+      data-no-focus-ring=""
       {...props}
       aria-invalid={invalid || undefined}
       className={cn(controlStyles({ size, invalid }), className)}
@@ -51,6 +54,7 @@ export function Textarea({
 }) {
   return (
     <textarea
+      data-no-focus-ring=""
       {...props}
       aria-invalid={invalid || undefined}
       className={cn(controlStyles({ size, invalid }), "resize-y", className)}
@@ -240,7 +244,7 @@ export function SearchInput({
           type="button"
           onClick={() => onChange("")}
           aria-label="Clear search"
-          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-text-faint transition-colors hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-text-faint transition-colors hover:text-text"
         >
           <X className="size-3.5" aria-hidden />
         </button>

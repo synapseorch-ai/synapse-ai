@@ -63,7 +63,7 @@ const COMPONENTS: Components = {
         target.scrollIntoView({ block: 'nearest' });
         target.focus({ preventScroll: true });
       }}
-      className="text-accent underline underline-offset-2 hover:text-accent-hover"
+      className="text-accent-ink underline underline-offset-2 hover:text-accent-hover"
     >
       {children}
     </a>
@@ -72,7 +72,7 @@ const COMPONENTS: Components = {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex items-center gap-1 break-all text-accent underline underline-offset-2 hover:text-accent-hover"
+      className="inline-flex items-center gap-1 break-all text-accent-ink underline underline-offset-2 hover:text-accent-hover"
     >
       {children}
       <ExternalLink className="inline h-3 w-3 shrink-0" aria-hidden />

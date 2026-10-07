@@ -6,10 +6,9 @@
  * is a chunk fetched by the pages that show one, not a weight carried by every
  * page that imports the kit.
  *
- * **Themed from CSS variables and nothing else.** The two products switch
- * themes differently (a `.light-mode` class here, `data-theme="light"` in
- * cloud), so the editor never asks which theme is on: every colour is a token,
- * and the tokens change underneath it. No hex values, no `darkTheme` facet, no
+ * **Themed from CSS variables and nothing else.** Both products switch theme
+ * with `data-theme` on <html>, but the editor never asks which theme is on:
+ * every colour is a token, and the tokens change underneath it. No hex values, no `darkTheme` facet, no
  * reconfigure on a theme switch. The editor used to be one-dark in both themes
  * on purpose; a dark block in a light form is what the light theme was built
  * to stop.
@@ -130,19 +129,19 @@ const theme = EditorView.theme({
   },
   ".cm-completionIcon": { display: "none" },
   ".cm-completionDetail": { color: "var(--text-faint)", fontStyle: "normal", marginLeft: "1.5em" },
-  ".cm-completionMatchedText": { textDecoration: "none", color: "var(--accent)" },
+  ".cm-completionMatchedText": { textDecoration: "none", color: "var(--accent-ink)" },
   // The default squiggle is an SVG with its colour baked in, which no token can reach.
   ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy var(--danger)", textUnderlineOffset: "3px" },
   ".cm-lintRange-warning": { backgroundImage: "none", textDecoration: "underline wavy var(--warning)", textUnderlineOffset: "3px" },
   ".cm-diagnostic": { padding: "4px 8px", borderLeft: "3px solid var(--border-strong)" },
   ".cm-diagnostic-error": { borderLeftColor: "var(--danger)" },
   ".cm-diagnostic-warning": { borderLeftColor: "var(--warning)" },
-  ".cm-template-ref": { color: "var(--accent)", backgroundColor: "var(--accent-subtle)", borderRadius: "3px" },
+  ".cm-template-ref": { color: "var(--accent-ink)", backgroundColor: "var(--accent-subtle)", borderRadius: "3px" },
 });
 
 const highlight = HighlightStyle.define([
-  { tag: [tags.keyword, tags.controlKeyword, tags.definitionKeyword, tags.moduleKeyword, tags.operatorKeyword], color: "var(--accent)" },
-  { tag: tags.propertyName, color: "var(--accent)" },
+  { tag: [tags.keyword, tags.controlKeyword, tags.definitionKeyword, tags.moduleKeyword, tags.operatorKeyword], color: "var(--accent-ink)" },
+  { tag: tags.propertyName, color: "var(--accent-ink)" },
   { tag: [tags.string, tags.special(tags.string)], color: "var(--success)" },
   { tag: [tags.number, tags.bool, tags.null, tags.atom], color: "var(--warning)" },
   { tag: [tags.comment, tags.lineComment, tags.blockComment], color: "var(--text-faint)", fontStyle: "italic" },

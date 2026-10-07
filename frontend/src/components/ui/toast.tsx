@@ -15,14 +15,18 @@ import { cn } from "@/lib/cn";
  * `warning` exists because the settings screens have a third outcome that is
  * neither: "Config saved. Use Retry to reconnect." is a success that did not
  * fully succeed, and collapsing it into either of the other two loses the only
- * part the user has to act on. The tokens were already there.
+ * part the user has to act on.
+ *
+ * It floats, so it sits on the surface with the elevated shadow, and the tone
+ * is carried by its icon (UX1): success stays quiet, a warning is a caveat in
+ * ordinary text with a warning sign, and only a failure is coloured through.
  */
 export type ToastTone = "success" | "warning" | "danger";
 
-const TOAST_TONES: Record<ToastTone, { chip: string; icon: typeof CheckCircle2 }> = {
-  success: { chip: "border-success/40 bg-success-subtle text-success", icon: CheckCircle2 },
-  warning: { chip: "border-warning/40 bg-warning-subtle text-warning", icon: AlertTriangle },
-  danger: { chip: "border-danger/40 bg-danger-subtle text-danger", icon: AlertCircle },
+const TOAST_TONES: Record<ToastTone, { chip: string; icon: typeof CheckCircle2; mark: string }> = {
+  success: { chip: "border-border bg-surface text-text", icon: CheckCircle2, mark: "text-success" },
+  warning: { chip: "border-border bg-surface text-text", icon: AlertTriangle, mark: "text-text" },
+  danger: { chip: "border-danger/40 bg-danger-subtle text-danger", icon: AlertCircle, mark: "text-danger" },
 };
 
 export function Toast({
@@ -42,7 +46,7 @@ export function Toast({
 
   if (!message) return null;
 
-  const { chip, icon: Icon } = TOAST_TONES[tone];
+  const { chip, icon: Icon, mark } = TOAST_TONES[tone];
 
   return (
     <div
@@ -51,11 +55,11 @@ export function Toast({
         // `bottom-20`, not `bottom-5`: the AI builder's launcher owns the
         // bottom-right corner in both products, and a toast landing on top of
         // it hides the control the user is most likely reaching for.
-        "fixed bottom-20 right-5 z-50 flex items-center gap-2.5 rounded-lg border px-4 py-2.5 text-sm shadow-xl",
+        "fixed bottom-20 right-5 z-50 flex items-center gap-2.5 rounded-lg border px-4 py-2.5 text-sm shadow-elevated",
         chip,
       )}
     >
-      <Icon className="size-4 shrink-0" aria-hidden />
+      <Icon className={cn("size-4 shrink-0", mark)} aria-hidden />
       {message}
     </div>
   );

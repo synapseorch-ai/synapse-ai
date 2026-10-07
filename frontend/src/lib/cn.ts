@@ -15,27 +15,47 @@
  */
 
 import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { extendTailwindMerge } from "tailwind-merge";
+
+/*
+ * The scale entries `globals.css` adds to Tailwind's. tailwind-merge only knows
+ * Tailwind's own names, so it read `text-title` as a text *colour* and
+ * `shadow-elevated` as a shadow colour, and silently dropped one when the other
+ * followed: `cn("text-section font-semibold text-text")` came back without its
+ * size (measured, M0a). Named here, each sits in its real group.
+ */
+const twMerge = extendTailwindMerge({
+  extend: {
+    theme: {
+      text: ["title", "section"],
+      shadow: ["elevated"],
+    },
+  },
+});
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
 /**
- * The focus ring, in one place.
+ * Focus, in one place: one indicator per control, on the accent.
  *
  * There were three treatments in the codebase — `focus:ring-2`,
  * `focus-visible:ring-2`, and the global `:focus-visible { outline }` — so
  * tabbing across a form changed the shape of the indicator between controls.
+ * And the kit's own ring never replaced the outline: the global rule is
+ * unlayered, so it beats `focus-visible:outline-none` (a layered utility)
+ * whatever the specificity, and every kit control drew both — measured, M0a.
  *
- * `focus-visible` rather than `focus`: a mouse click on a button should not
- * leave a ring behind, but a keyboard user must never lose their place. The
- * global outline in `globals.css` stays as the safety net for anything not
- * built from these primitives.
+ * So the indicator is the global outline (2px of `--accent`, 2px out), which
+ * every element gets on `:focus-visible` — keyboard focus, never a mouse click.
+ * `focusRing` adds nothing to it; it stays as the name call sites already use.
+ * A control that owns a border shows focus on that border instead
+ * (`focusRingInset`) and sets `data-no-focus-ring`, which turns the outline
+ * off for it. The alpha ring alone would not do: it is about 1.4:1, under the
+ * 3:1 a focus indicator needs; the accent border is over 5:1.
  */
-export const focusRing =
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--bg)]";
+export const focusRing = "";
 
-/** Focus ring for controls that own a border, which the ring should sit against. */
-export const focusRingInset =
-  "focus-visible:outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-[var(--ring)]";
+/** Focus for controls that own a border: the border turns accent, with a soft ring. Pair with `data-no-focus-ring`. */
+export const focusRingInset = "focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-[var(--ring)]";

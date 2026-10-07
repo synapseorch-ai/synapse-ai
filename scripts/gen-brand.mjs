@@ -388,8 +388,7 @@ const css = `/**
    part — but a dim accent on white is a much weaker line than on near-black,
    so light theme sets them back less (both products' light switches). */
 .synapse-track { opacity: 0.4; }
-:root[data-theme="light"] .synapse-track,
-.light-mode .synapse-track { opacity: 0.7; }
+:root[data-theme="light"] .synapse-track { opacity: 0.7; }
 
 /* The assembly turns as one body. Turning the layers at different rates would
    slide their shared gaps out of register, and a shared gap is the only reason

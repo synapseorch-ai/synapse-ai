@@ -32,8 +32,9 @@ import { useNotifications } from '@/components/notifications/NotificationProvide
 import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { useNavGuard } from './NavGuard';
 import { cn } from '@/lib/utils';
+import type { ThemeMode } from '@/lib/theme';
 
-export type ThemeMode = 'system' | 'light' | 'dark';
+export type { ThemeMode };
 
 const SETTINGS_HREF = '/settings/general';
 const DOCS_URL = 'https://docs.synapseorch.com';

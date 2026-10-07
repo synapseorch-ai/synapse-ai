@@ -1,0 +1,77 @@
+/*
+ * The raw Tailwind neutrals, mapped onto the tokens — both themes, one place.
+ *
+ * A compatibility layer with an expiry date. A few hundred screens still say
+ * `bg-zinc-900` or `text-zinc-400` rather than a token, and Tailwind compiles
+ * those to `var(--color-zinc-…)`; redefining the variables here gives every one
+ * of them the new neutrals with no screen edited. M2 moves the screens onto the
+ * tokens, and deletes this file with the last raw neutral utility.
+ *
+ * The rule, so the ladder keeps its meaning: a step that equals a token today
+ * follows that token (`var()`); every other step keeps the lightness it has
+ * today — stock zinc in dark, the old light inversion in light — retinted to the
+ * neutrals' hue, so a raw text colour keeps its contrast. The values come from
+ * pro MEMORY/drafts/ux2/m0a/tokens.py (`ramps`). Slate (two uses) follows zinc.
+ * Every step is in both blocks: a step missing from one would silently take the
+ * other theme's token.
+ *
+ * In light, black and white swap with the page, as they always have here (a
+ * `text-white` on a dark chip becomes the page's ink). The scrim does not use
+ * them (`--color-scrim` in globals.css).
+ */
+
+:root,
+:root[data-theme="dark"] {
+  --color-zinc-950: var(--bg);
+  --color-zinc-900: var(--surface);
+  --color-zinc-800: var(--border);
+  --color-zinc-700: var(--border-strong);
+  --color-zinc-600: #4d545a;  /* L 0.442 */
+  --color-zinc-500: #6c7379;  /* L 0.552 */
+  --color-zinc-400: var(--text-muted);
+  --color-zinc-300: #d0d5da;  /* L 0.871 */
+  --color-zinc-200: #e0e5e9;  /* L 0.919 */
+  --color-zinc-100: #e8ecf0;  /* L 0.941 */
+  --color-zinc-50: var(--text);
+
+  --color-slate-950: var(--color-zinc-950);
+  --color-slate-900: var(--color-zinc-900);
+  --color-slate-800: var(--color-zinc-800);
+  --color-slate-700: var(--color-zinc-700);
+  --color-slate-600: var(--color-zinc-600);
+  --color-slate-500: var(--color-zinc-500);
+  --color-slate-400: var(--color-zinc-400);
+  --color-slate-300: var(--color-zinc-300);
+  --color-slate-200: var(--color-zinc-200);
+  --color-slate-100: var(--color-zinc-100);
+  --color-slate-50: var(--color-zinc-50);
+}
+
+:root[data-theme="light"] {
+  --color-zinc-950: var(--row-hover);
+  --color-zinc-900: var(--surface-2);
+  --color-zinc-800: var(--border);
+  --color-zinc-700: #b6babe;  /* L 0.787 */
+  --color-zinc-600: var(--border-strong);
+  --color-zinc-500: #6d7377;  /* L 0.552 */
+  --color-zinc-400: var(--text-faint);
+  --color-zinc-300: #3b4146;  /* L 0.372 */
+  --color-zinc-200: var(--text-muted);
+  --color-zinc-100: #1a1f24;  /* L 0.236 */
+  --color-zinc-50: var(--text);
+
+  --color-slate-950: var(--color-zinc-950);
+  --color-slate-900: var(--color-zinc-900);
+  --color-slate-800: var(--color-zinc-800);
+  --color-slate-700: var(--color-zinc-700);
+  --color-slate-600: var(--color-zinc-600);
+  --color-slate-500: var(--color-zinc-500);
+  --color-slate-400: var(--color-zinc-400);
+  --color-slate-300: var(--color-zinc-300);
+  --color-slate-200: var(--color-zinc-200);
+  --color-slate-100: var(--color-zinc-100);
+  --color-slate-50: var(--color-zinc-50);
+
+  --color-white: var(--text);
+  --color-black: var(--bg);
+}

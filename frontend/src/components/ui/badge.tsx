@@ -7,21 +7,29 @@
  * `whitespace-nowrap` matters more than it sounds: these sit in table cells
  * that shrink, and a two-word badge breaking across lines takes the row height
  * with it and makes one row taller than its neighbours.
+ *
+ * Tones follow the colour rule (UX1): `machine` is the product acting, `person`
+ * is someone needed (the one loud chip), `danger` a failure. `success` is quiet
+ * — neutral text with a green dot — and `warning` is a problem or a caveat, not
+ * a person: neutral-strong text with a warning sign, which is what carries it.
  */
 
-import { X } from "lucide-react";
+import { AlertTriangle, X } from "lucide-react";
 import * as React from "react";
 
 import { cn } from "@/lib/cn";
 
-export type BadgeTone = "neutral" | "accent" | "danger" | "warning" | "success";
+export type BadgeTone = "neutral" | "accent" | "machine" | "person" | "danger" | "warning" | "success";
 
-const TONES: Record<BadgeTone, { chip: string; dot: string }> = {
+/** `mark`: what the tone always shows before its label, whatever `dot` says. */
+const TONES: Record<BadgeTone, { chip: string; dot: string; mark?: "dot" | "icon" }> = {
   neutral: { chip: "bg-surface-2 text-text-muted", dot: "bg-text-faint" },
-  accent: { chip: "bg-accent-subtle text-accent", dot: "bg-accent" },
+  accent: { chip: "bg-accent-subtle text-accent-ink", dot: "bg-accent" },
+  machine: { chip: "bg-machine-subtle text-accent-ink", dot: "bg-machine" },
+  person: { chip: "bg-person text-person-fg", dot: "bg-person-fg" },
   danger: { chip: "bg-danger-subtle text-danger", dot: "bg-danger" },
-  warning: { chip: "bg-warning-subtle text-warning", dot: "bg-warning" },
-  success: { chip: "bg-success-subtle text-success", dot: "bg-success" },
+  warning: { chip: "bg-surface-2 text-text", dot: "bg-text", mark: "icon" },
+  success: { chip: "bg-surface-2 text-text-muted", dot: "bg-success", mark: "dot" },
 };
 
 export function Badge({
@@ -38,6 +46,7 @@ export function Badge({
   dot?: boolean;
   className?: string;
 }) {
+  const mark = TONES[tone].mark ?? (dot ? "dot" : null);
   return (
     <span
       className={cn(
@@ -47,7 +56,8 @@ export function Badge({
         className,
       )}
     >
-      {dot && <span className={cn("size-1.5 shrink-0 rounded-full", TONES[tone].dot)} aria-hidden />}
+      {mark === "icon" && <AlertTriangle className="size-3 shrink-0" aria-hidden />}
+      {mark === "dot" && <span className={cn("size-1.5 shrink-0 rounded-full", TONES[tone].dot)} aria-hidden />}
       <span className="truncate">{children}</span>
     </span>
   );
@@ -77,7 +87,7 @@ export function Tag({
           type="button"
           onClick={onRemove}
           aria-label={`Remove ${typeof children === "string" ? children : "tag"}`}
-          className="rounded-md p-0.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          className="rounded-md p-0.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text"
         >
           <X className="size-3" aria-hidden />
         </button>

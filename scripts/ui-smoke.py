@@ -2951,7 +2951,7 @@ PREPAINT_PROBE = """(() => {
     if (!document.body) return;
     o.disconnect();
     const h = document.documentElement;
-    window.__firstPaint = { light: h.classList.contains('light-mode'), scheme: getComputedStyle(h).colorScheme };
+    window.__firstPaint = { light: h.getAttribute('data-theme') === 'light', scheme: getComputedStyle(h).colorScheme };
   }).observe(document, { childList: true, subtree: true });
 })()"""
 

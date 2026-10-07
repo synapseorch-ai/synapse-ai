@@ -2670,7 +2670,7 @@ export default function Home() {
                     {/* The mark is the avatar while the agent is working: one
                         symbol carrying the motion, at the size the robot tile
                         used to be, rather than a bot inside a spinning ring. */}
-                    <Spinner size={32} className="mt-0.5 shrink-0 text-accent" label="Working" />
+                    <Spinner size={32} className="mt-0.5 shrink-0 text-machine" label="Working" />
 
                     <div className="flex flex-col gap-1">
                       <div className="flex items-baseline gap-0.5">

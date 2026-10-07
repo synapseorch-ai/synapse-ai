@@ -15,15 +15,28 @@ import { cn } from "@/lib/cn";
 
 import { PageHeaderSlot } from "./page-header-slot";
 
-export type Tone = "neutral" | "accent" | "danger" | "warning" | "success";
+export type Tone = "neutral" | "accent" | "machine" | "person" | "danger" | "warning" | "success";
 
+/** As `Badge`'s tones: the machine and person colours as their inks; a warning in ordinary strong text. */
 const TONE_TEXT: Record<Tone, string> = {
   neutral: "text-text-muted",
-  accent: "text-accent",
+  accent: "text-accent-ink",
+  machine: "text-accent-ink",
+  person: "text-person-ink",
   danger: "text-danger",
-  warning: "text-warning",
+  warning: "text-text",
   success: "text-success",
 };
+
+/**
+ * The title scale (UX1), as classes rather than components, so a page frame can
+ * put them on the element it already renders: a page's title (28px, 600,
+ * −0.028em, from Inter's display cut) and a section's head (15px, 600). The
+ * sizes come from `tokens.css` through `globals.css`'s `text-title` and
+ * `text-section`; `lib/cn.ts` keeps tailwind-merge from dropping them.
+ */
+export const titleClass = "text-title text-balance text-text";
+export const sectionClass = "text-section text-text";
 
 /**
  * The `<h1>` block at the top of a screen, with its actions on the right.

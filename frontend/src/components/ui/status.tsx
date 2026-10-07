@@ -6,6 +6,12 @@
  * One map, because a status shown as amber on one screen and grey on the next
  * is how people stop trusting the colour and start reading every label.
  *
+ * The colours follow the product's one rule (UX1): cyan is the machine acting,
+ * amber is a person being needed, and green and red only report an outcome —
+ * success quietly, as a dot beside ordinary text, because most runs succeed and
+ * a page of green says nothing. The machine and person colours are fills here,
+ * never text: their text is `accent-ink` and `person-ink`, which read on white.
+ *
  * Colour is never the only signal: each state has its own dot treatment and its
  * own word, so the table still reads correctly in greyscale and to the ~8% of
  * men with a colour vision deficiency — for whom `failed` red and `completed`
@@ -26,9 +32,9 @@ export type RunStatus =
 
 const STATUS: Record<RunStatus, { label: string; dot: string; text: string; pulse?: boolean }> = {
   queued: { label: "Queued", dot: "bg-text-faint", text: "text-text-muted" },
-  running: { label: "Running", dot: "bg-accent", text: "text-accent", pulse: true },
-  paused: { label: "Needs input", dot: "bg-warning", text: "text-warning" },
-  completed: { label: "Completed", dot: "bg-success", text: "text-success" },
+  running: { label: "Running", dot: "bg-machine", text: "text-accent-ink", pulse: true },
+  paused: { label: "Needs input", dot: "bg-person", text: "font-medium text-person-ink" },
+  completed: { label: "Completed", dot: "bg-success", text: "text-text-muted" },
   failed: { label: "Failed", dot: "bg-danger", text: "text-danger" },
   cancelled: { label: "Cancelled", dot: "bg-text-faint", text: "text-text-faint" },
 };
