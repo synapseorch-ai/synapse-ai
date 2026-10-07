@@ -226,7 +226,7 @@ async def check_runbar(browser) -> str:
             page = await ctx.new_page()
             await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
             await asyncio.sleep(SETTLE + 2.0)
-            await page.get_by_role("button", name="Run", exact=True).click()
+            await page.get_by_role("button", name="Run now", exact=True).click()
             # Settle on content, never networkidle: the notifications stream is
             # held open for the life of the page.
             for _ in range(25):
@@ -820,7 +820,7 @@ async def check_contrast(browser) -> str:
         try:
             await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
             await asyncio.sleep(SETTLE + 2.0)
-            await page.get_by_role("button", name="Run", exact=True).click()
+            await page.get_by_role("button", name="Run now", exact=True).click()
             for _ in range(30):
                 if await page.evaluate("() => !!window.__run.raw"):
                     break
@@ -976,7 +976,7 @@ BUILDER_TURN = (
 async def check_builderctx(browser) -> str:
     """A builder message names the orchestration the person is actually on.
 
-    "Build with AI" on an orchestration screen tells the builder which one, so
+    "Change with AI" on an orchestration screen tells the builder which one, so
     that "add a step to this" has a referent. That answer was kept in a ref
     that only ever got written when a caller passed one — and the app-wide
     launcher passes nothing, while a new conversation cleared everything else.
@@ -1013,8 +1013,9 @@ async def check_builderctx(browser) -> str:
 
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
-        # The canvas toolbar's own button: the rail's Build with AI row (M1a) comes first in the page.
-        await page.locator("main").get_by_role("button", name="Build with AI").first.click()
+        # The open canvas's own way in, in its bar: "Change with AI" (M3a; it was the
+        # toolbar's "Build with AI"). The rail keeps its Build with AI row.
+        await page.locator("main").get_by_role("button", name="Change with AI").first.click()
         await asyncio.sleep(1.2)
         await say("one")                       # on the orchestration: names it
         # Client-side navigation, the way a person moves. A hard load would
@@ -1139,7 +1140,7 @@ async def check_runfollow(browser) -> str:
     try:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
-        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_role("button", name="Run now", exact=True).click()
         for _ in range(30):
             if await page.evaluate("() => !!window.__run.push"):
                 break
@@ -1643,7 +1644,9 @@ async def check_guardrails(browser) -> str:
     try:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 1.0)
-        await page.get_by_role("button", name="Guardrails", exact=True).first.click()
+        # The Guardrails tab under the old canvas is a section of the open canvas's
+        # Workflow settings now (M3a).
+        await page.get_by_role("button", name="Workflow settings", exact=True).first.click()
         await asyncio.sleep(0.8)
         turns = await page.get_by_label("Max Total Turns").count()
         cost = await page.get_by_label(re.compile("max cost", re.I)).count()
@@ -1651,7 +1654,7 @@ async def check_guardrails(browser) -> str:
         await ctx.close()
         drop_fixture(oid)
     if not turns:
-        raise AssertionError("the Guardrails tab did not open (no Max Total Turns)")
+        raise AssertionError("Workflow settings did not open its Guardrails (no Max Total Turns)")
     if cost:
         raise AssertionError("Guardrails still offers Max Cost (USD), which nothing enforces")
     return "Guardrails offers turns and a timeout, and no cost cap that does nothing"
@@ -2097,30 +2100,32 @@ def laid_out_orchestration(oid: str, n: int = 3) -> dict:
     }
 
 
-NODES_UNDER_PALETTE = r"""
+NODES_UNDER_CHROME = r"""
 () => {
-  const pal = document.querySelector('.react-flow__panel.top.left');
-  if (!pal) return {palette: false, hits: []};
-  const p = pal.getBoundingClientRect();
+  const chrome = [...document.querySelectorAll('[data-canvas-chrome]')]
+    .map(el => ({name: el.getAttribute('data-canvas-chrome'), r: el.getBoundingClientRect()}))
+    .filter(c => c.r.width && c.r.height);
   const hits = [];
   for (const n of document.querySelectorAll('.react-flow__node')) {
     const r = n.getBoundingClientRect();
-    const overlap = r.left < p.right && r.right > p.left && r.top < p.bottom && r.bottom > p.top;
-    if (overlap) hits.push(`${n.innerText.split('\n')[0]} at x ${Math.round(r.left)}–${Math.round(r.right)}, palette to ${Math.round(p.right)}`);
+    for (const {name, r: p} of chrome) {
+      if (r.left < p.right && r.right > p.left && r.top < p.bottom && r.bottom > p.top)
+        hits.push(`${n.innerText.split('\n')[0]} under the ${name} (${Math.round(r.left)},${Math.round(r.top)})`);
+    }
   }
-  return {palette: true, hits};
+  return {chrome: chrome.map(c => c.name), hits};
 }
 """
 
 
 @check
 async def check_canvasfit(browser) -> str:
-    """Fitting the graph leaves room for the step palette that floats over it.
+    """Fitting the graph leaves room for everything that floats over it.
 
-    Fit-view used the whole canvas, and the palette is drawn on top of its left
-    edge, so an orchestration opened with its first step under the palette —
-    and a click on that step pressed the palette (F31). Checked on open and on
-    the Fit view button, with the palette open (its default).
+    Fit-view used the whole canvas while the palette was drawn on top of its
+    left edge, so a workflow opened with its first step under the palette (F31).
+    The open canvas (M3a) floats a bar, a dock, a zoom cluster and the run strip
+    over the graph instead: no step may open, or be fitted, under any of them.
     """
     oid = f"orch_uismoke_fit_{int(time.time())}"
     api("/api/orchestrations", "POST", laid_out_orchestration(oid))
@@ -2129,30 +2134,31 @@ async def check_canvasfit(browser) -> str:
     try:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 1.0)
-        opened = await page.evaluate(NODES_UNDER_PALETTE)
+        opened = await page.evaluate(NODES_UNDER_CHROME)
         await page.get_by_role("button", name="Fit view").click()
         await asyncio.sleep(0.8)
-        refit = await page.evaluate(NODES_UNDER_PALETTE)
+        refit = await page.evaluate(NODES_UNDER_CHROME)
     finally:
         await ctx.close()
         drop_fixture(oid)
-    if not opened["palette"]:
-        raise AssertionError("no step palette on the canvas")
+    if "bar" not in opened["chrome"] or "dock" not in opened["chrome"]:
+        raise AssertionError(f"the canvas's floating bar and dock are missing: {opened['chrome']}")
     problems = [f"on open: {h}" for h in opened["hits"]] + [f"after Fit view: {h}" for h in refit["hits"]]
     if problems:
-        raise AssertionError("steps under the palette — " + "; ".join(problems))
-    return "every step clear of the palette, on open and after Fit view"
+        raise AssertionError("steps under the canvas's chrome — " + "; ".join(problems))
+    return "every step clear of the bar, dock, zoom and strip, on open and after Fit view"
 
 
 @check
 async def check_palettelink(browser) -> str:
-    """A step added from the palette follows the step that is selected.
+    """A step added from the step list follows the step that is selected.
 
     The palette only appended: four steps added one after another ran as one,
     the first completing and the run ending, while the editor said only
     "Unreachable from the entry point" (F47). Now a selected linear step with
     no next step points at the new one and hands it its output key, so adding
-    steps in a row builds a chain. Read from what Save actually sends.
+    steps in a row builds a chain. The list is the dock's Add step since M3a
+    (D211: steps come from ⌘K). Read from what Save actually sends.
     """
     oid = f"orch_uismoke_link_{int(time.time())}"
     api("/api/orchestrations", "POST", laid_out_orchestration(oid, 1))
@@ -2170,10 +2176,10 @@ async def check_palettelink(browser) -> str:
     page.on("request", on_request)
     try:
         await open_step(page, oid, "Step 1")
-        palette = page.locator(".react-flow__panel.top.left")
         for _ in range(2):
-            await palette.get_by_role("button", name="Print", exact=True).click()
-            await asyncio.sleep(0.4)
+            await page.get_by_role("button", name="Add step", exact=True).click()
+            await page.get_by_role("option", name=re.compile(r"^Print")).first.click()
+            await asyncio.sleep(0.5)
         await page.get_by_role("button", name=re.compile(r"^Save")).first.click()
         await asyncio.sleep(1.5)
     finally:
@@ -2196,7 +2202,480 @@ async def check_palettelink(browser) -> str:
         problems.append("the second added step does not follow the first")
     if problems:
         raise AssertionError("; ".join(problems))
-    return "two steps added from the palette chain on from the selected step"
+    return "two steps added from the step list chain on from the selected step"
+
+
+# ── the open canvas (M3a, D204) ──────────────────────────────────────────────
+
+def roles_orchestration(oid: str) -> dict:
+    """One step for each role (D211): an LLM (a model), a print (logic) and a human (a person)."""
+    steps = [
+        {"id": f"{oid}_m", "name": "Draft", "type": "llm", "prompt_template": "Say hi", "next_step_id": f"{oid}_l",
+         "output_key": "draft", "position_x": 0, "position_y": 0},
+        {"id": f"{oid}_l", "name": "Note", "type": "print", "print_content": "noted", "next_step_id": f"{oid}_h",
+         "output_key": "note", "position_x": 280, "position_y": 0},
+        {"id": f"{oid}_h", "name": "Approve", "type": "human", "human_prompt": "OK?", "next_step_id": None,
+         "output_key": "ok", "position_x": 560, "position_y": 0},
+    ]
+    return {"id": oid, "name": "ui-smoke roles", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+            "steps": steps, "entry_step_id": steps[0]["id"], "state_schema": {}, "trigger": "manual"}
+
+
+CARD_BOX = """() => {
+  const a = document.querySelector('aside[aria-label="Step configuration"]');
+  const c = a && a.closest('[data-canvas-chrome="card"]');
+  if (!c) return null;
+  const r = c.getBoundingClientRect();
+  return {left: r.left, top: r.top, right: r.right, bottom: r.bottom};
+}"""
+
+NODE_BOX = """(id) => {
+  const n = document.querySelector(`.react-flow__node[data-id="${id}"]`);
+  if (!n) return null;
+  const r = n.getBoundingClientRect();
+  return {left: r.left, top: r.top, right: r.right, bottom: r.bottom};
+}"""
+
+
+async def click_node(page, step_id: str) -> None:
+    box = await page.evaluate(NODE_BOX, step_id)
+    if box is None:
+        raise AssertionError(f"no canvas node {step_id}")
+    await page.mouse.click((box["left"] + box["right"]) / 2, (box["top"] + box["bottom"]) / 2)
+    await asyncio.sleep(0.8)
+
+
+async def click_empty_canvas(page) -> None:
+    pane = await page.locator(".react-flow__pane").bounding_box()
+    await page.mouse.click(pane["x"] + 30, pane["y"] + 100)
+    await asyncio.sleep(0.6)
+
+
+@check
+async def check_canvascard(browser) -> str:
+    """The open canvas's setup card (D204): it opens on a step and gets out of the way.
+
+    It opens when a step is selected; Esc, its ✕ and a click on empty canvas
+    close it, and Esc hands the focus back to the step. Its left edge resizes it
+    within 300–560 px. A step the card would cover slides into view.
+    """
+    oid = f"orch_uismoke_card_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid, 4))
+    ctx = await browser.new_context(viewport={"width": 1280, "height": 800})
+    page = await ctx.new_page()
+    problems = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        if await page.evaluate(CARD_BOX) is not None:
+            problems.append("a card was open before any step was selected")
+        last = f"{oid}_s3"
+        await click_node(page, last)
+        card = await page.evaluate(CARD_BOX)
+        node = await page.evaluate(NODE_BOX, last)
+        if card is None:
+            raise AssertionError("selecting a step opened no setup card")
+        if node["right"] > card["left"] and node["left"] < card["right"]:
+            problems.append(f"the card covers the step it opened for (step to x {round(node['right'])}, card from {round(card['left'])})")
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.6)
+        if await page.evaluate(CARD_BOX) is not None:
+            problems.append("Esc did not close the card")
+        focused = await page.evaluate("() => document.activeElement?.closest('.react-flow__node')?.getAttribute('data-id')")
+        if focused != last:
+            problems.append(f"after Esc the focus is on {focused!r}, not the step")
+        await click_node(page, last)
+        await page.get_by_role("button", name="Close panel").click()
+        await asyncio.sleep(0.5)
+        if await page.evaluate(CARD_BOX) is not None:
+            problems.append("✕ did not close the card")
+        await click_node(page, last)
+        await click_empty_canvas(page)
+        if await page.evaluate(CARD_BOX) is not None:
+            problems.append("a click on empty canvas did not close the card")
+        await click_node(page, last)
+        handle = page.get_by_role("separator", name="Resize the panel")
+        before = int(await handle.get_attribute("aria-valuenow"))
+        await handle.focus()
+        for _ in range(30):
+            await page.keyboard.press("ArrowLeft")
+        wide = int(await handle.get_attribute("aria-valuenow"))
+        for _ in range(40):
+            await page.keyboard.press("ArrowRight")
+        narrow = int(await handle.get_attribute("aria-valuenow"))
+        if wide != 560 or narrow != 300:
+            problems.append(f"the card resized from {before} to {wide} and {narrow}, not within 300–560")
+        await handle.focus()
+        for _ in range(3):
+            await page.keyboard.press("ArrowLeft")  # leave it at 348, not at a bound
+    finally:
+        await page.evaluate("() => localStorage.removeItem('orch-card-width')")
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "the card opens on a step, clears it, closes on Esc, ✕ and empty canvas, and resizes within 300–560"
+
+
+@check
+async def check_canvaskeys(browser) -> str:
+    """Delete removes a step only from the canvas, and Undo brings it back whole.
+
+    xyflow takes Delete and Backspace from the whole page, skipping only text
+    fields, so Backspace on a focused button in the step's panel ("Set as entry
+    point") deleted the step (found in M3a). The keys act now only while the
+    person is working on the canvas. And Undo (Ctrl+Z) restores a deleted step
+    with its connections, read from what Save sends.
+    """
+    oid = f"orch_uismoke_keys_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid, 3))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and r.url.endswith("/api/orchestrations") else None)
+    problems = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        middle = f"{oid}_s1"
+        await click_node(page, middle)
+        await page.get_by_role("button", name="Set as entry point").focus()
+        await page.keyboard.press("Backspace")
+        await asyncio.sleep(0.6)
+        if await page.locator(".react-flow__node").count() != 3:
+            problems.append("Backspace on the panel's Set as entry point deleted the step")
+        edges = await page.locator(".react-flow__edge").count()
+        await click_node(page, middle)
+        await page.keyboard.press("Delete")
+        await asyncio.sleep(0.6)
+        if await page.locator(".react-flow__node").count() != 2:
+            problems.append("Delete on the selected step did not remove it")
+        await page.keyboard.press("Control+z")
+        await asyncio.sleep(0.8)
+        if await page.locator(".react-flow__node").count() != 3:
+            problems.append("Ctrl+Z did not bring the step back")
+        if await page.locator(".react-flow__edge").count() != edges:
+            problems.append("Ctrl+Z brought the step back without its connections")
+        await page.get_by_role("button", name=re.compile(r"^Save")).first.click()
+        await asyncio.sleep(1.2)
+        if not sent:
+            problems.append("Save sent nothing")
+        else:
+            steps = {st["id"]: st for st in sent[-1]["steps"]}
+            if steps.get(f"{oid}_s0", {}).get("next_step_id") != middle or steps.get(middle, {}).get("next_step_id") != f"{oid}_s2":
+                problems.append("the saved workflow lost the restored step's links")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "Backspace in the panel leaves the step, Delete on the canvas removes it, and Undo restores it with its links"
+
+
+@check
+async def check_canvasdrop(browser) -> str:
+    """A step type dragged from Add step lands where it is dropped (D211, D204).
+
+    Steps come from ⌘K now, not a side palette; dragging one onto an exact spot
+    still works, from the dock's list. The app's ⌘K lists the same steps while a
+    canvas is open.
+    """
+    oid = f"orch_uismoke_drop_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid, 1))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    problems = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Add step", exact=True).click()
+        option = page.get_by_role("option", name=re.compile(r"^Print")).first
+        await option.wait_for(timeout=5_000)
+        src = await option.bounding_box()
+        pane = await page.locator(".react-flow__pane").bounding_box()
+        target = (pane["x"] + pane["width"] * 0.3, pane["y"] + pane["height"] * 0.7)
+        await page.mouse.move(src["x"] + 40, src["y"] + src["height"] / 2)
+        await page.mouse.down()
+        for i in range(1, 11):
+            await page.mouse.move(src["x"] + 40 + (target[0] - src["x"] - 40) * i / 10,
+                                  src["y"] + src["height"] / 2 + (target[1] - src["y"] - src["height"] / 2) * i / 10)
+            await asyncio.sleep(0.03)
+        await page.mouse.up()
+        await asyncio.sleep(1.0)
+        boxes = await page.evaluate("""() => [...document.querySelectorAll('.react-flow__node')].map(n => {
+            const r = n.getBoundingClientRect(); return {x: r.left + r.width / 2, y: r.top + r.height / 2}; })""")
+        if len(boxes) != 2:
+            problems.append(f"the drop made {len(boxes) - 1} steps, not one")
+        elif not any(abs(b["x"] - target[0]) < 60 and abs(b["y"] - target[1]) < 60 for b in boxes):
+            problems.append(f"the dropped step is not under the drop point {tuple(round(t) for t in target)}: {boxes}")
+        await page.keyboard.press("Escape")
+        await page.keyboard.press("Control+k")
+        await asyncio.sleep(0.6)
+        if not await page.locator("[cmdk-group-heading]", has_text="Add a step").count():
+            problems.append("⌘K on the canvas has no 'Add a step' group")
+        await page.keyboard.press("Escape")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "a step dragged from Add step lands at the drop point, and ⌘K lists the steps"
+
+
+@check
+async def check_canvasfold(browser) -> str:
+    """The menu folds to icons on the canvas and comes back as it was (D204, M3a).
+
+    Opening a workflow folds the rail; leaving it restores whatever the person
+    had. Expanding it on the canvas holds for that visit only and never writes
+    the saved setting.
+    """
+    oid = f"orch_uismoke_fold_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid, 2))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    problems = []
+    folded = lambda: page.get_by_role("button", name="Expand sidebar").count()
+    stored = lambda: page.evaluate("() => localStorage.getItem('synapseRailCollapsed')")
+    try:
+        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        if await folded():
+            problems.append("the list opened with the rail folded")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        if not await folded():
+            problems.append("the open canvas left the rail expanded")
+        await page.get_by_role("button", name="Expand sidebar").click()
+        await asyncio.sleep(0.4)
+        if await folded():
+            problems.append("Expand did not open the rail on the canvas")
+        if (await stored()) == "1":
+            problems.append("expanding on the canvas wrote the saved setting")
+        await page.get_by_role("button", name="Back", exact=True).click()
+        await asyncio.sleep(1.0)
+        if await folded():
+            problems.append("leaving the canvas left the rail folded")
+        if await page.locator("main h1", has_text="Workflows").count() == 0:
+            problems.append("the list's header did not come back")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "the rail folds on the canvas, opens there for the visit, and is as it was after"
+
+
+@check
+async def check_workflowsettings(browser) -> str:
+    """Workflow settings hold every field the panels under the old canvas had (D204).
+
+    Description, the run's input, State schema and Guardrails (Max Total Turns,
+    Timeout, strict state types, Result, Score runs against) moved into the
+    card; each still saves.
+    """
+    oid = f"orch_uismoke_wfs_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid, 2))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[dict] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}"))
+            if r.method == "POST" and r.url.endswith("/api/orchestrations") else None)
+    problems = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Workflow settings", exact=True).click()
+        await asyncio.sleep(0.6)
+        panel = page.get_by_role("region", name="Workflow settings")
+        for role, name in [("textbox", "Orchestration description"), ("textbox", "Initial input for this run"),
+                           ("spinbutton", "Max Total Turns"), ("spinbutton", "Timeout (minutes)"),
+                           ("checkbox", "Stop on a state type mismatch"), ("combobox", "Result"),
+                           ("combobox", "Score runs against"), ("button", "Add key")]:
+            if not await panel.get_by_role(role, name=name, exact=True).count():
+                problems.append(f"no {role} {name!r}")
+        await panel.get_by_role("textbox", name="Orchestration description").fill("smoke described")
+        await panel.get_by_role("spinbutton", name="Max Total Turns").fill("77")
+        await page.get_by_role("button", name=re.compile(r"^Save")).first.click()
+        await asyncio.sleep(1.2)
+        if not sent:
+            problems.append("Save sent nothing")
+        elif sent[-1].get("max_total_turns") != 77 or sent[-1].get("description") != "smoke described":
+            problems.append(f"Save sent turns {sent[-1].get('max_total_turns')!r}, description {sent[-1].get('description')!r}")
+        await page.get_by_role("button", name="Close the workflow settings").click()
+        await asyncio.sleep(0.4)
+        if await panel.count():
+            problems.append("Close did not put the settings away")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "Workflow settings hold the description, run input, state and every guardrail, and they save"
+
+
+@check
+async def check_canvasphone(browser) -> str:
+    """On a phone the canvas fills the screen and the card is a bottom sheet (D204)."""
+    oid = f"orch_uismoke_sheet_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid, 2))
+    ctx = await browser.new_context(viewport={"width": PHONE[0], "height": PHONE[1]}, has_touch=False)
+    page = await ctx.new_page()
+    problems = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await click_node(page, f"{oid}_s0")
+        card = await page.evaluate(CARD_BOX)
+        if card is None:
+            raise AssertionError("selecting a step on a phone opened nothing")
+        if abs(card["bottom"] - PHONE[1]) > 2 or card["left"] > 2:
+            problems.append(f"the card is not a bottom sheet: {card}")
+        if card["top"] < PHONE[1] * 0.29:
+            problems.append(f"the sheet covers more than 70% of the screen (top at {round(card['top'])})")
+        await page.get_by_role("button", name=re.compile("press to close")).click()
+        await asyncio.sleep(0.5)
+        if await page.evaluate(CARD_BOX) is not None:
+            problems.append("the sheet's grip did not put it away")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "on a phone the step's setup is a bottom sheet that its grip puts away"
+
+
+@check
+async def check_canvasroles(browser) -> str:
+    """Steps are coloured by who does the work, and so is the minimap (D211).
+
+    Cyan for a step that calls a model, grey for logic, amber for a person, on
+    the step's icon and in the minimap, which is off until asked for (D204).
+    """
+    oid = f"orch_uismoke_roles_{int(time.time())}"
+    api("/api/orchestrations", "POST", roles_orchestration(oid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    problems = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        tiles = await page.evaluate("""(oid) => Object.fromEntries(['m', 'l', 'h'].map(k => {
+            const tile = document.querySelector(`.react-flow__node[data-id="${oid}_${k}"] [aria-hidden].inline-flex`);
+            return [k, tile ? getComputedStyle(tile).backgroundColor : null];
+        }))""", oid)
+        if len({tiles["m"], tiles["l"], tiles["h"]}) != 3 or None in tiles.values():
+            problems.append(f"the three roles' tiles are not three colours: {tiles}")
+        if await page.locator(".react-flow__minimap").count():
+            problems.append("the minimap is on before anyone asked for it")
+        await page.get_by_role("button", name="Minimap").click()
+        await asyncio.sleep(0.6)
+        fills = await page.evaluate("""() => [...document.querySelectorAll('.react-flow__minimap-node')]
+            .map(n => getComputedStyle(n).fill)""")
+        if len(set(fills)) != 3:
+            problems.append(f"the minimap's three steps are not three colours: {fills}")
+        await page.get_by_role("button", name="Minimap").click()
+    finally:
+        await page.evaluate("() => localStorage.removeItem('orch-minimap')")
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "model, logic and person steps are three colours on the canvas and in the minimap, which starts off"
+
+
+@check
+async def check_runstrip(browser) -> str:
+    """The run strip opens the Run Log and Recent Runs above it, and a run opens the log (M3a)."""
+    oid = f"orch_uismoke_strip_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, "ui-smoke strip"))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    problems = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        drawer = page.locator('[data-canvas-chrome="drawer"]')
+        if await drawer.count():
+            problems.append("the run drawer was open before any run")
+        await page.get_by_role("button", name=re.compile(r"^Recent Runs")).click()
+        await asyncio.sleep(0.4)
+        if not await drawer.get_by_role("heading", name="Recent runs").count():
+            problems.append("Recent Runs did not open the recent runs")
+        await page.get_by_role("button", name="Close recent runs").click()
+        await page.get_by_role("button", name="Run now", exact=True).click()
+        try:
+            await drawer.get_by_text(re.compile(r"^Started run")).first.wait_for(timeout=20_000)
+        except Exception:
+            problems.append("a run did not open its log")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "the strip opens Recent Runs and the Run Log, and a run opens its log"
+
+
+@check
+async def check_canvasleave(browser) -> str:
+    """Leaving a workflow with unsaved edits asks first (M3a, Naveen's OK).
+
+    Back, the switcher, New and the rail used to drop an edited draft without a
+    word; only a reload got the browser's prompt. A blank draft nobody touched
+    still leaves quietly.
+    """
+    oid = f"orch_uismoke_leave_{int(time.time())}"
+    api("/api/orchestrations", "POST", laid_out_orchestration(oid, 2))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    problems = []
+    ask = page.get_by_role("dialog", name="Discard unsaved changes?")
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Back", exact=True).click()
+        await asyncio.sleep(0.6)
+        if await ask.count():
+            problems.append("Back with nothing edited asked anyway")
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.locator("input[aria-label='Orchestration name']").fill("ui-smoke leave, edited")
+        await page.get_by_role("button", name="Back", exact=True).click()
+        await asyncio.sleep(0.6)
+        if not await ask.count():
+            problems.append("Back with an unsaved edit did not ask")
+        else:
+            await ask.get_by_role("button", name="Cancel").click()
+            await asyncio.sleep(0.4)
+            if await page.locator("input[aria-label='Orchestration name']").input_value() != "ui-smoke leave, edited":
+                problems.append("Cancel did not keep the edit")
+        await page.click('nav[aria-label="Primary"] a[href="/agents"]')
+        await asyncio.sleep(0.6)
+        if not await ask.count():
+            problems.append("a rail link with an unsaved edit did not ask")
+        else:
+            await ask.get_by_role("button", name="Discard changes").click()
+            try:
+                await page.wait_for_url("**/agents", timeout=10_000)
+            except Exception:
+                problems.append("Discard changes did not go on to the link")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "an edited workflow asks before Back or a link drops it; an untouched one leaves quietly"
 
 
 @check
@@ -2461,7 +2940,7 @@ async def check_humanfields(browser) -> str:
                 problems.append(f"the editor shows {field['type']!r} as a blank type")
         # The orchestration screen: run it, answer it, read what went out.
         await page.keyboard.press("Escape")
-        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_role("button", name="Run now", exact=True).click()
         for _ in range(25):
             await asyncio.sleep(1.0)
             if await page.get_by_text("Waiting for your input").count():
@@ -2797,7 +3276,7 @@ async def check_cancelanswer(browser) -> str:
     try:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
-        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_role("button", name="Run now", exact=True).click()
         for _ in range(25):
             await asyncio.sleep(1.0)
             if await page.get_by_text("Waiting for your input").count():
@@ -2805,7 +3284,7 @@ async def check_cancelanswer(browser) -> str:
         else:
             raise AssertionError("the run never reached its question")
 
-        await page.get_by_role("button", name="Cancel", exact=True).click()
+        await page.get_by_role("button", name="Stop", exact=True).click()
         await asyncio.sleep(1.5)
         if await page.get_by_text("Waiting for your input").count():
             raise AssertionError("a cancelled run still offers Answer in the tab that cancelled it")
@@ -3587,7 +4066,7 @@ async def check_stepreason(browser) -> str:
     try:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
-        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_role("button", name="Run now", exact=True).click()
         await page.get_by_text("Done — status: failed").first.wait_for(timeout=60_000)
         await asyncio.sleep(0.5)
         live = await page.evaluate(STEP_REASON)
@@ -3634,14 +4113,14 @@ async def check_cancelquestion(browser) -> str:
     try:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
-        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_role("button", name="Run now", exact=True).click()
         await page.get_by_text("Waiting for your input").first.wait_for(timeout=60_000)
         await asyncio.sleep(0.5)
         run_id = await page.evaluate("() => (document.body.innerText.match(/Started run (\\S+)/) || [])[1] || null")
         if await page.evaluate(QUESTION_FRAME, asking) != "border-person":
             raise AssertionError("the question never showed as waiting, so this checks nothing")
 
-        await page.get_by_role("button", name="Cancel", exact=True).click()
+        await page.get_by_role("button", name="Stop", exact=True).click()
         await asyncio.sleep(2.0)
         if await page.evaluate(QUESTION_FRAME, asking) == "border-person":
             raise AssertionError("the step that asked still shows as waiting after the cancel")
@@ -4449,9 +4928,10 @@ async def check_phonetoolbar(browser) -> str:
 
     At 360 px the toolbar sat in one clipped row: Deploy as Agent, Duplicate
     and Delete were past the edge, and the two halves overlapped, so a tap on
-    New or Build with AI landed on Save or Run. Below `sm` the rarer three now
-    sit in a ⋯ menu, the actions take a second row, and the step palette, which
-    covered most of the canvas, starts folded.
+    New or Build with AI landed on Save or Run. On the open canvas (M3a) the
+    bar keeps back, the name, the switcher, Save, Run now, help and ⋯; the rest
+    is in ⋯; the dock keeps Add step and Undo, and Fit stays at the corner.
+    There is no palette to cover the canvas: steps come from Add step.
     """
     oid = f"orch_uismoke_phone_{int(time.time())}"
     api("/api/orchestrations", "POST", print_orchestration(oid, "ui-smoke phone toolbar"))
@@ -4461,20 +4941,19 @@ async def check_phonetoolbar(browser) -> str:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        names = ["Back", "Orchestration", "New orchestration", "Build with AI", "Undo (Ctrl+Z)",
-                 "Save", "Run", "More actions"]
+        names = ["Back", "Orchestration", "Save", "Run now", "More actions", "Add step", "Undo (Ctrl+Z)",
+                 "Fit view"]
         reach = await page.evaluate(TOOLBAR_REACH, names)
         bad = {k: v for k, v in reach.items() if v != "ok"}
         if bad:
             raise AssertionError(f"at 360 px these editor controls cannot be tapped: {bad}")
         await page.get_by_role("button", name="More actions").click()
         items = await page.get_by_role("menuitem").all_inner_texts()
-        if [i.strip() for i in items] != ["Deploy as Agent", "Duplicate", "Delete"]:
-            raise AssertionError(f"the ⋯ menu holds {items}")
+        want = ["Workflow settings", "Change with AI", "New orchestration", "Deploy as Agent", "Duplicate", "Delete"]
+        if [i.strip() for i in items] != want:
+            raise AssertionError(f"the ⋯ menu holds {items}, not {want}")
         await page.keyboard.press("Escape")
-        if not await page.get_by_role("button", name="Show step palette").count():
-            raise AssertionError("with no choice stored, the step palette opens over a phone's canvas")
-        return "at 360 px every editor action can be tapped, the rare ones behind ⋯, and the palette starts folded"
+        return "at 360 px every editor action can be tapped, and the rest are behind ⋯"
     finally:
         await ctx.close()
         drop_fixture(oid)
@@ -4501,7 +4980,9 @@ async def check_duplicateurl(browser) -> str:
         async with page.expect_response(
             lambda r: r.url.endswith("/api/orchestrations") and r.request.method == "POST", timeout=20_000,
         ) as made:
-            await page.get_by_role("button", name="Duplicate", exact=True).click()
+            # In the open canvas's ⋯ (M3a), with Deploy as Agent and Delete.
+            await page.get_by_role("button", name="More actions", exact=True).click()
+            await page.get_by_role("menuitem", name="Duplicate", exact=True).click()
         copy_id = (await (await made.value).json())["id"]
         await asyncio.sleep(1.0)
         if f"id={copy_id}" not in page.url:
@@ -4557,7 +5038,7 @@ async def check_resumesettle(browser) -> str:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_role("button", name="Run now", exact=True).click()
         await page.get_by_text("Waiting for your input").first.wait_for(timeout=60_000)
         await asyncio.sleep(0.5)
         run_id = await page.evaluate("() => (document.body.innerText.match(/Started run (\\S+)/) || [])[1] || null")
@@ -5563,7 +6044,7 @@ async def check_humancontext(browser) -> str:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_role("button", name="Run now", exact=True).click()
         strip = page.get_by_role("button", name=re.compile("Waiting for your input"))
         await strip.wait_for(timeout=30_000)
         await strip.click()
@@ -5716,7 +6197,7 @@ async def check_evaluatoronce(browser) -> str:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        await page.get_by_role("button", name="Run", exact=True).click()
+        await page.get_by_role("button", name="Run now", exact=True).click()
         for _ in range(30):
             if await page.evaluate("() => !!window.__run.raw"):
                 break
