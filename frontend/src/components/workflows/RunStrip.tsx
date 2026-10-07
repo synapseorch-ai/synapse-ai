@@ -58,6 +58,9 @@ export function RunStrip({
     // Paused as well as asking (F141): a cancelled run kept its prompt, and the
     // Answer it offered was refused with a 409.
     const waiting = !!humanPrompt && runStatus === 'paused';
+    // The rule only separates the run's state from the two buttons: with no run
+    // and nothing else going, there is nothing on its left (Naveen, M3a-1 review).
+    const lead = waiting || runStatus !== 'idle' || !!runId || activeRuns.length > 0;
     const toggle = (view: RunDrawerView) => onDrawer(drawer === view ? null : view);
 
     return (
@@ -116,7 +119,7 @@ export function RunStrip({
                 </Menu>
             )}
 
-            <span className="mx-0.5 h-5 w-px bg-border" aria-hidden />
+            {lead && <span className="mx-0.5 h-5 w-px bg-border" aria-hidden />}
             <button
                 type="button"
                 aria-pressed={drawer === 'run'}
