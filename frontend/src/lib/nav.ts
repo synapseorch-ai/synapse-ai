@@ -13,8 +13,8 @@
  */
 import {
     Activity, ArrowLeftRight, Blocks, BookOpen, Bot, Braces, Clock, Cloud, Cpu, Database, DollarSign, Eraser,
-    FlaskConical, FolderGit2, Gauge, Globe, Key, LayoutDashboard, LayoutGrid, LayoutTemplate, LifeBuoy, Library,
-    MessageSquare, MessagesSquare, Radio, ScrollText, Shield, Target, Vault, Workflow, Wrench,
+    FlaskConical, FolderGit2, FolderOpen, Gauge, Globe, Key, LayoutDashboard, LayoutGrid, LayoutTemplate, LifeBuoy, Library,
+    MessageSquare, MessagesSquare, Radio, ScrollText, Shield, Target, Workflow, Wrench,
     type LucideIcon,
 } from 'lucide-react';
 
@@ -133,10 +133,11 @@ export const HUB_NAV: NavHubGroup[] = [
             {
                 // Its own place, not a tab of Agents (Naveen, M1b): agents read the
                 // Vault, workflows write their outputs to it, and every knowledge
-                // base is one of its folders.
-                id: 'vault', label: 'Vault', icon: Vault,
+                // base is one of its folders. An open folder, not lucide's `Vault` (a
+                // crossed box at 16px): the workspace's files.
+                id: 'vault', label: 'Vault', icon: FolderOpen,
                 tabs: [{
-                    id: 'vault', label: 'Vault', href: '/vault', icon: Vault,
+                    id: 'vault', label: 'Vault', href: '/vault', icon: FolderOpen,
                     blurb: 'Knowledge files and skills agents reference with @[path] in their prompts.',
                 }],
             },
