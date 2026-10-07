@@ -89,7 +89,13 @@ function ApprovalItem({ n }: { n: RunNotification }) {
 // rail's header put 97 px of it off the left of the screen. Radix places it
 // against the viewport, portals it out of the rail, closes it on Escape and
 // outside clicks, and hands focus back to the bell.
-export function NotificationBell() {
+export function NotificationBell({
+    side = 'bottom', align = 'start',
+}: {
+    /** Where the panel opens: below a bell in a top bar, to the right of one at the rail's foot. */
+    side?: 'bottom' | 'right';
+    align?: 'start' | 'end';
+} = {}) {
     const {
         notifications, unseenCount, markAllSeen, openItem,
         browserNotificationsEnabled, setBrowserNotificationsEnabled,
@@ -123,8 +129,8 @@ export function NotificationBell() {
 
             <RPopover.Portal>
                 <RPopover.Content
-                    side="bottom"
-                    align="start"
+                    side={side}
+                    align={align}
                     sideOffset={4}
                     collisionPadding={8}
                     aria-label="Notifications"

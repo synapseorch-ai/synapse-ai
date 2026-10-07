@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
  * they did when SettingsView wrapped this — so the header is unchanged and
  * there is still one place the words live.
  */
-export default function McpServersPage() {
+export default function AppsPage() {
     const nav = navEntryFor('mcp_servers')!;
 
     return (

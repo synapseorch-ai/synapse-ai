@@ -707,8 +707,8 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
   const PILLS = [
     { label: 'Build an agent', path: '/agents', icon: Bot },
     { label: 'Add a tool', path: '/tools', icon: Wrench },
-    { label: 'Orchestrate agents', path: '/orchestrations', icon: Network },
-    { label: 'Connect MCP', path: '/mcp-servers', icon: Server },
+    { label: 'Orchestrate agents', path: '/workflows', icon: Network },
+    { label: 'Connect MCP', path: '/apps', icon: Server },
     { label: 'Schedule a task', path: '/schedules', icon: CalendarClock },
   ];
 
@@ -752,7 +752,7 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
               </div>
               <button
                 id="examples-banner-link"
-                onClick={() => onNavigate('/settings/import_export?tab=examples')}
+                onClick={() => onNavigate('/templates')}
                 className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-accent hover:bg-accent-hover active:bg-accent text-accent-fg transition-colors rounded-sm cursor-pointer shrink-0 w-full sm:w-auto shadow-sm shadow-accent/20"
               >
                 <Sparkles className="h-3 w-3" /> Browse Examples

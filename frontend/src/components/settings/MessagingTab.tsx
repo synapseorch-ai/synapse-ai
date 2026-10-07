@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+"use client";
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
     MessageSquare, Plus, Trash, Save, Play, Square, FlaskConical,

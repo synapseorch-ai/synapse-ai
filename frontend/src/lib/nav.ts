@@ -12,10 +12,9 @@
  * component would fail — and the symptom is a 200 with a 404 body.
  */
 import {
-    Braces,
-    ArrowLeftRight, BookOpen, Bot, Clock, Cloud, Cpu, Database, DollarSign, Eraser, FlaskConical, LayoutDashboard,
-    FolderGit2, Gauge, Globe, Key, LayoutGrid, LifeBuoy, Library, MessageSquare, MessagesSquare,
-    ScrollText, Server, Shield, Target, Vault, Workflow, Wrench,
+    Activity, ArrowLeftRight, Blocks, BookOpen, Bot, Braces, Clock, Cloud, Cpu, Database, DollarSign, Eraser,
+    FlaskConical, FolderGit2, Gauge, Globe, Key, LayoutDashboard, LayoutGrid, LayoutTemplate, LifeBuoy, Library,
+    MessageSquare, MessagesSquare, Radio, ScrollText, Shield, Target, Vault, Workflow, Wrench,
     type LucideIcon,
 } from 'lucide-react';
 
@@ -23,7 +22,7 @@ import {
 export type NavFlag = 'messaging_enabled' | 'coding_agent_enabled' | 'knowledge_enabled';
 
 export type NavEntry = {
-    /** Legacy settings tab id, where one exists — also the SettingsView `initialTab`. */
+    /** Legacy settings tab id, where one exists — also the SettingsView `initialTab`, and the help topic's key. */
     id: string;
     label: string;
     href: string;
@@ -36,8 +35,6 @@ export type NavEntry = {
     /** One line, shown under the title by <Screen>. Never a template. */
     blurb: string;
     icon: LucideIcon;
-    /** Renders the unseen-run count. Only Orchestrations uses it. */
-    badge?: 'unseenRuns';
     /** Hidden unless this /api/settings flag is on. */
     flag?: NavFlag;
 };
@@ -45,78 +42,143 @@ export type NavEntry = {
 export type NavGroup = { group: string | null; items: NavEntry[] };
 
 /**
- * The rail. Three groups, read top to bottom as *watch → author → connect*:
- * Overview is the workspace as it stands and what it has done; Build is what
- * you author; Tools is what agents reach through. Settings is rendered
- * separately at the foot.
+ * One item in the rail (D209). Its pages are its tabs, in order: each keeps its
+ * own address, renders under the hub's one title with a tab bar, and lights the
+ * hub in the rail. A hub with one page has no tab bar.
  */
-export const PRIMARY_NAV: NavGroup[] = [
+export type NavHub = {
+    id: string;
+    label: string;
+    icon: LucideIcon;
+    tabs: NavEntry[];
+    /** Renders the unseen-run count. Only Workflows uses it. */
+    badge?: 'unseenRuns';
+};
+
+export type NavHubGroup = { group: string | null; hubs: NavHub[] };
+
+/**
+ * The rail: eight hubs (D209), the same in both products. Home and Runs watch,
+ * Build is what you author, Connect is what agents reach through and where they
+ * meet people. Settings is rendered separately at the foot.
+ */
+export const HUB_NAV: NavHubGroup[] = [
     {
-        group: 'Overview',
-        items: [
+        group: null,
+        hubs: [
             {
-                id: 'dashboard', label: 'Home', href: '/dashboard', icon: LayoutDashboard,
-                blurb: 'Where the workspace stands right now.',
+                id: 'home', label: 'Home', icon: LayoutDashboard,
+                tabs: [{
+                    id: 'dashboard', label: 'Home', href: '/dashboard', icon: LayoutDashboard,
+                    blurb: 'Where the workspace stands right now.',
+                }],
             },
             {
-                id: 'logs', label: 'Runs & Logs', href: '/runs', icon: ScrollText,
-                blurb: 'Replay what agents, orchestrations and schedules actually did.',
-            },
-            {
-                id: 'evals', label: 'Evals', href: '/evals', icon: Target,
-                blurb: 'Score runs against a rubric and catch regressions early.',
-            },
-            {
-                id: 'usage', label: 'Usage', href: '/usage', icon: DollarSign,
-                blurb: 'Token usage and cost tracking across every LLM call.',
+                id: 'runs', label: 'Runs', icon: Activity,
+                tabs: [
+                    {
+                        id: 'runs', label: 'Runs', href: '/runs', icon: Activity,
+                        blurb: 'Every run of a workflow, newest first.',
+                    },
+                    {
+                        id: 'logs', label: 'Logs', href: '/logs', icon: ScrollText,
+                        blurb: 'Replay what agents, workflows and schedules actually did.',
+                    },
+                    {
+                        id: 'evals', label: 'Evals', href: '/evals', icon: Target,
+                        blurb: 'Score runs against a rubric and catch regressions early.',
+                    },
+                    {
+                        id: 'usage', label: 'Usage', href: '/usage', icon: DollarSign,
+                        blurb: 'Token usage and cost tracking across every LLM call.',
+                    },
+                ],
             },
         ],
     },
     {
         group: 'Build',
-        items: [
+        hubs: [
             {
-                id: 'orchestrations', label: 'Orchestrations', href: '/orchestrations', icon: Workflow,
-                blurb: 'Design multi-agent workflows on a visual canvas.',
-                badge: 'unseenRuns',
+                id: 'workflows', label: 'Workflows', icon: Workflow, badge: 'unseenRuns',
+                tabs: [
+                    {
+                        id: 'orchestrations', label: 'Workflows', href: '/workflows', icon: Workflow,
+                        blurb: 'Design multi-agent workflows on a visual canvas.',
+                    },
+                    {
+                        id: 'schedules', label: 'Schedules', href: '/schedules', icon: Clock,
+                        blurb: 'Automate agent and workflow runs on a recurring schedule.',
+                    },
+                    {
+                        id: 'templates', label: 'Templates', href: '/templates', icon: LayoutTemplate,
+                        blurb: 'Ready-made packs of agents, workflows and servers to preview and import.',
+                    },
+                ],
             },
             {
-                id: 'agents', label: 'Agents', href: '/agents', icon: Bot,
-                blurb: 'Build and configure the agents that do the work.',
+                id: 'agents', label: 'Agents', icon: Bot,
+                tabs: [
+                    {
+                        id: 'agents', label: 'Agents', href: '/agents', icon: Bot,
+                        blurb: 'Build and configure the agents that do the work.',
+                    },
+                    {
+                        id: 'skills', label: 'Skills', href: '/skills', icon: BookOpen,
+                        blurb: 'Reusable instruction packages agents load on demand.',
+                    },
+                    {
+                        id: 'vault', label: 'Vault', href: '/vault', icon: Vault,
+                        blurb: 'Knowledge files and skills agents reference with @[path] in their prompts.',
+                    },
+                ],
             },
             {
-                id: 'skills', label: 'Skills', href: '/skills', icon: BookOpen,
-                blurb: 'Reusable instruction packages agents load on demand.',
+                id: 'knowledge', label: 'Knowledge', icon: Library,
+                tabs: [{
+                    id: 'knowledge', label: 'Knowledge', href: '/knowledge', icon: Library,
+                    blurb: 'Vault folders made searchable, so agents answer from your documents with sources.',
+                    flag: 'knowledge_enabled',
+                }],
             },
             {
-                id: 'chat', label: 'Chat', href: '/', icon: MessagesSquare,
-                blurb: 'Talk to an agent and watch it work.',
-            },
-            {
-                id: 'schedules', label: 'Schedules', href: '/schedules', icon: Clock,
-                blurb: 'Automate agent and orchestration runs on a recurring schedule.',
+                id: 'chat', label: 'Chat', icon: MessagesSquare,
+                tabs: [{
+                    id: 'chat', label: 'Chat', href: '/', icon: MessagesSquare,
+                    blurb: 'Talk to an agent and watch it work.',
+                }],
             },
         ],
     },
     {
-        group: 'Tools',
-        items: [
+        group: 'Connect',
+        hubs: [
             {
-                id: 'custom_tools', label: 'Tools', href: '/tools', icon: Wrench,
-                blurb: 'Wire up HTTP, Python and n8n tools your agents can call.',
+                id: 'apps', label: 'Apps', icon: Blocks,
+                tabs: [
+                    {
+                        id: 'mcp_servers', label: 'Apps', href: '/apps', icon: Blocks,
+                        blurb: 'Connect Model Context Protocol servers and their tool catalogues.',
+                    },
+                    {
+                        id: 'custom_tools', label: 'Tools', href: '/tools', icon: Wrench,
+                        blurb: 'Wire up HTTP, Python and n8n tools your agents can call.',
+                    },
+                ],
             },
             {
-                id: 'mcp_servers', label: 'MCP Servers', href: '/mcp-servers', icon: Server,
-                blurb: 'Connect Model Context Protocol servers and their tool catalogues.',
-            },
-            {
-                id: 'vault', label: 'Vault', href: '/vault', icon: Vault,
-                blurb: 'Knowledge files and skills agents reference with @[path] in their prompts.',
-            },
-            {
-                id: 'knowledge', label: 'Knowledge', href: '/knowledge', icon: Library,
-                blurb: 'Vault folders made searchable, so agents answer from your documents with sources.',
-                flag: 'knowledge_enabled',
+                id: 'channels', label: 'Channels', icon: Radio,
+                tabs: [
+                    {
+                        id: 'messaging', label: 'Channels', href: '/channels', icon: MessageSquare,
+                        blurb: 'Reach your agents from Telegram, Discord, Slack, Teams or WhatsApp.',
+                        flag: 'messaging_enabled',
+                    },
+                    {
+                        id: 'widgets', label: 'Widgets', href: '/widgets', icon: Globe,
+                        blurb: 'Embed an agent in your own site with one script tag.',
+                    },
+                ],
             },
         ],
     },
@@ -157,15 +219,6 @@ export const SETTINGS_NAV: NavGroup[] = [
                 blurb: 'Connect n8n and your Google Workspace credentials.',
             },
             {
-                id: 'messaging', label: 'Messaging', href: '/settings/messaging', icon: MessageSquare,
-                blurb: 'Reach your agents from Telegram, Discord, Slack, Teams or WhatsApp.',
-                flag: 'messaging_enabled',
-            },
-            {
-                id: 'widgets', label: 'Widgets', href: '/settings/widgets', icon: Globe,
-                blurb: 'Embed an agent in your own site with one script tag.',
-            },
-            {
                 id: 'repos', label: 'Repos', href: '/settings/repos', icon: FolderGit2,
                 blurb: 'Index code repositories so agents can search them.',
                 flag: 'coding_agent_enabled',
@@ -186,7 +239,7 @@ export const SETTINGS_NAV: NavGroup[] = [
             },
             {
                 id: 'import_export', label: 'Import / Export', href: '/settings/import_export', icon: ArrowLeftRight,
-                blurb: 'Move orchestrations, agents, servers and tools between instances as a bundle.',
+                blurb: 'Move workflows, agents, servers and tools between instances as a bundle.',
             },
         ],
     },
@@ -212,9 +265,10 @@ export const SETTINGS_NAV: NavGroup[] = [
 
 // Re-exported from a dependency-free module so next.config.ts can import the
 // same list without pulling React in. See src/lib/moved-routes.ts.
-export { MOVED_TABS } from './moved-routes';
+export { MOVED_ROUTES, MOVED_TABS } from './moved-routes';
 
-const ALL_ENTRIES: NavEntry[] = [...PRIMARY_NAV, ...SETTINGS_NAV].flatMap(g => g.items);
+const HUBS: NavHub[] = HUB_NAV.flatMap(g => g.hubs);
+const ALL_ENTRIES: NavEntry[] = [...HUBS.flatMap(h => h.tabs), ...SETTINGS_NAV.flatMap(g => g.items)];
 
 /** Look an entry up by its tab id (`api_keys`) or by its href (`/settings/api_keys`). */
 export function navEntryFor(idOrHref: string): NavEntry | undefined {
@@ -232,4 +286,37 @@ export function isSettingsEntry(id: string): boolean {
  */
 export function visibleItems(items: NavEntry[], flags: Partial<Record<NavFlag, boolean>>): NavEntry[] {
     return items.filter(e => !e.hidden && (!e.flag || flags[e.flag]));
+}
+
+/** True when `pathname` is this page or below it. Chat (`/`) matches only itself. */
+export function isAtHref(pathname: string, href: string): boolean {
+    if (href === '/') return pathname === '/';
+    return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+/** The hub an entry (by id or href) belongs to, with the rail group it sits under. */
+export function hubOf(idOrHref: string): { hub: NavHub; group: string | null; entry: NavEntry } | undefined {
+    for (const { group, hubs } of HUB_NAV) {
+        for (const hub of hubs) {
+            const entry = hub.tabs.find(e => e.id === idOrHref || e.href === idOrHref);
+            if (entry) return { hub, group, entry };
+        }
+    }
+    return undefined;
+}
+
+/** The hub whose tabs hold this path, and the tab. */
+export function hubForPath(pathname: string): { hub: NavHub; group: string | null; entry: NavEntry } | undefined {
+    for (const { group, hubs } of HUB_NAV) {
+        for (const hub of hubs) {
+            const entry = hub.tabs.find(e => isAtHref(pathname, e.href));
+            if (entry) return { hub, group, entry };
+        }
+    }
+    return undefined;
+}
+
+/** A hub's tabs that show with these flags; a hub with none is not offered. */
+export function visibleTabs(hub: NavHub, flags: Partial<Record<NavFlag, boolean>>): NavEntry[] {
+    return visibleItems(hub.tabs, flags);
 }

@@ -2,7 +2,7 @@
  * What the "?" says on each OSS page (H1, D192). Cloud keeps its own topics.
  *
  * Keyed by the page's nav id (`lib/nav.ts`), plus the states a path does not
- * name: an orchestration open in the editor, a knowledge base open. A topic's
+ * name: a workflow open in the editor, a knowledge base open. A topic's
  * title is the page's own heading, which ui-smoke's `help_pages` walk checks.
  *
  * Written from the screens, not from memory: labels are quoted as the code
@@ -20,13 +20,13 @@ export const HELP_FALLBACK = 'app';
 export const HELP_TOPICS: Record<string, HelpTopic> = {
     app: {
         title: 'Getting around',
-        summary: 'The rail on the left has three groups: Overview to watch what ran, Build to make agents and workflows, and Tools for what agents can reach.',
+        summary: 'The menu on the left has eight items. Pages that belong together are tabs under one of them: Runs holds Logs, Evals and Usage, for one.',
         steps: [
-            'Use Overview — Home, Runs & Logs, Evals and Usage — to see what is running, what ran and what it cost.',
-            'Use Build — Orchestrations, Agents, Skills, Chat and Schedules — to make things and run them.',
-            'Use Tools — Tools, MCP Servers, Vault and, when it is on, Knowledge — for what agents can call and read.',
-            'Open Settings at the foot of the rail for models, keys and integrations; More holds the theme and the documentation.',
-            'The bell lists run notifications, and the round button at the bottom right builds with AI from any page.',
+            'Use Home and Runs to see what is running, what ran, what it said and what it cost.',
+            'Under Build, make Workflows (with Schedules and Templates), Agents (with Skills and Vault), Knowledge when it is on, and Chat.',
+            'Under Connect, give agents Apps and Tools to call, and Channels and Widgets to meet people on.',
+            'Press Ctrl+K (⌘K on a Mac), or click “Jump to…”, to go to any page or tab by name.',
+            'Click “Build with AI” in the menu, or the round button at the bottom right, to build with AI from any page; Settings sits at the foot.',
         ],
         guide: '/guides/start/how-it-fits',
     },
@@ -34,23 +34,34 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     // ── Overview ────────────────────────────────────────────────────────────
     dashboard: {
         title: 'Home',
-        summary: 'A snapshot of the workspace: orchestration runs that are live, what your model calls have cost, what you have built, and the latest runs.',
+        summary: 'A snapshot of the workspace: workflow runs that are live, what your model calls have cost, what you have built, and the latest runs.',
         steps: [
             'Check “Active now” for runs that are running or paused, and click one to open it.',
             'Read “Total spend”, “Requests”, “Tokens” and “Cache saved”, totalled over every recorded model call.',
             'Use “Spend by model” to see which models cost most; “Add one” sets a missing price in Usage.',
-            'Click a row under “Workspace” to go to your orchestrations, agents, schedules or MCP servers.',
-            'Open a run from “Recent runs”, or go to Runs & Logs for every log.',
+            'Click a row under “Workspace” to go to your workflows, agents, schedules or apps.',
+            'Open a run from “Recent runs”, or click “All runs” for every run; each run’s full log is in Runs › Logs.',
         ],
         media: { id: 'home/oss-dashboard', alt: 'The Home page: an Active now card, tiles for spend, requests, tokens and cache savings, spend by model, and recent runs.' },
         guide: '/guides/start/how-it-fits',
     },
+    runs: {
+        title: 'Runs',
+        summary: 'Every run of a workflow, newest first: its status, the step it is on, what started it, what it cost and how it scored.',
+        steps: [
+            'Choose “Active”, “Recent” or “All runs” at the top; it opens on “Active” while something is running.',
+            '“Needs input” means a run is waiting for a person: open it to answer.',
+            'Click a run or “View →” to open it on its workflow’s canvas, with its log.',
+            'For the full transcript of what each model was sent, open Logs, the tab beside this one.',
+        ],
+        guide: '/guides/start/runs',
+    },
     logs: {
-        title: 'Runs & Logs',
-        summary: 'The full log of every agent, orchestration and schedule run, grouped by session, so you can see what a run actually did and in what order.',
+        title: 'Logs',
+        summary: 'The full log of every agent, workflow and schedule run, grouped by session, so you can see what a run actually did and in what order.',
         steps: [
             'Choose “Agent Logs”, “Orchestration Logs” or “Schedule Logs” at the top.',
-            'Use “Filter” to show one agent, orchestration or schedule; it appears once the list holds more than one.',
+            'Use “Filter” to show one agent, workflow or schedule; it appears once the list holds more than one.',
             'Click a log on the left to read it on the right; a run another run started sits beneath it.',
             'Click “Load More” for older logs, or the refresh button for new ones.',
             'Deleting a log, from its row, is immediate and cannot be undone.',
@@ -60,11 +71,11 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     },
     evals: {
         title: 'Evals',
-        summary: 'Rubrics say what a good run looks like. A model judges every run of an orchestration bound to one and flags regressions; golden sets replay fixed inputs.',
+        summary: 'Rubrics say what a good run looks like. A model judges every run of a workflow bound to one and flags regressions; golden sets replay fixed inputs.',
         steps: [
             'Click “New” beside Rubrics, add criteria with “Add criterion”, set “Floor” and “Drop”, and click “Save rubric”.',
-            'In Orchestrations, open one and choose the rubric under Guardrails → “Score runs against”, then save it.',
-            'Pick the orchestration in “Show scores for” to see its scores and flagged runs, and say whether you agree.',
+            'In Workflows, open one and choose the rubric under Guardrails → “Score runs against”, then save it.',
+            'Pick the workflow in “Show scores for” to see its scores and flagged runs, and say whether you agree.',
             'If it says “Nothing scored yet”, click “Score earlier runs” to judge runs from before the rubric.',
             'Under Golden sets, click “New set”, add cases and “Save set”; “Run” tells you the cost before it starts.',
         ],
@@ -76,7 +87,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         summary: 'What your model calls have cost: totals, cache savings, cost by model and session, and the price table the estimates come from.',
         steps: [
             'Read “Total Cost”, “Total Requests”, “Input Tokens” and “Output Tokens”; costs are estimates from the price table.',
-            'Check “Cache Analytics” for what caching saved, by model and by orchestration run.',
+            'Check “Cache Analytics” for what caching saved, by model and by workflow run.',
             'Under “Session History”, pick a “Filter by” option and click a session for its turn-by-turn cost.',
             'In “Pricing Reference”, edit a rate or click “Add model”, then “Save Pricing” to match what you pay.',
             '“Clear Logs” deletes every usage record once you confirm; it cannot be undone.',
@@ -87,10 +98,10 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
 
     // ── Build ───────────────────────────────────────────────────────────────
     orchestrations: {
-        title: 'Orchestrations',
+        title: 'Workflows',
         summary: 'Multi-agent workflows, built on a canvas. This page lists them and their runs; open one to edit it, or start a new one.',
         steps: [
-            'Click “New” for a blank orchestration, or “Build with AI” to describe one to the AI builder.',
+            'Click “New” for a blank workflow, or “Build with AI” to describe one to the AI builder.',
             'On the “Orchestrations” tab, click a row or “Open →” to edit it.',
             'Switch to “Active”, “Recent” or “All runs” for each run’s status, current step, cost and duration.',
             'Click a run or “View →” to open it with its log; “Needs input” means it is waiting for you.',
@@ -99,7 +110,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         guide: '/guides/start/workflows',
     },
     'orchestrations.editor': {
-        title: 'Editing an orchestration',
+        title: 'Editing a workflow',
         summary: 'Lay the workflow out on the canvas: add steps, connect them and set each one up, then save and run it. The bottom panel holds state, guardrails and the run log.',
         steps: [
             'Click a step in the “Steps” palette or drag it onto the canvas, then drag between handles to connect steps.',
@@ -113,7 +124,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     },
     agents: {
         title: 'Agents',
-        summary: 'The agents that do the work: their instructions, model, tools and skills. An agent can be chatted with, scheduled, or used as a step in an orchestration.',
+        summary: 'The agents that do the work: their instructions, model, tools and skills. An agent can be chatted with, scheduled, or used as a step in a workflow.',
         steps: [
             'Click the + beside “YOUR AGENTS” for a new agent, or the sparkle to describe one and let AI build it.',
             'On “Configuration”, set its name, description and model; “Use default” follows Settings → Models.',
@@ -150,16 +161,28 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     },
     schedules: {
         title: 'Schedules',
-        summary: 'Run an agent or an orchestration on its own, every so often or at set times, with a standing prompt.',
+        summary: 'Run an agent or a workflow on its own, every so often or at set times, with a standing prompt.',
         steps: [
             'Click “New Schedule”, name it, choose “Agent” or “Orchestration” under “Run as”, and pick which one.',
             'Write the “Prompt”: the instruction it is given every time the schedule fires.',
             'Choose “Interval” and how often, or “Fixed Time (Cron)” with a preset and an hour; times are in UTC.',
             'Leave it enabled and click “Create Schedule”. Each row can be paused, run now, edited or deleted.',
-            'Each run’s log is in Runs & Logs, under “Schedule Logs”.',
+            'Each run’s log is in Runs › Logs, under “Schedule Logs”.',
         ],
         media: { id: 'schedules/list', alt: 'Schedules: a table of schedules with their target, timing, next and last run, and the schedule form beside it.' },
         guide: '/guides/recipes/schedules-and-channels',
+    },
+
+    templates: {
+        title: 'Templates',
+        summary: 'Ready-made packs of agents, workflows and MCP servers. You see everything a pack holds before anything is imported.',
+        steps: [
+            'Click “Preview & Import” on a pack to see what it brings.',
+            'Untick anything you do not want; what the rest needs is kept.',
+            'Click “Import Now”, or “Configure Secrets →” when servers or tools need secret values.',
+            'Find what it imported under Workflows, Agents and Apps; “All templates” goes back without importing.',
+        ],
+        guide: '/guides/start/setup',
     },
 
     // ── Tools ───────────────────────────────────────────────────────────────
@@ -177,7 +200,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         guide: '/guides/start/tools',
     },
     mcp_servers: {
-        title: 'MCP Servers',
+        title: 'Apps',
         summary: 'Connect Model Context Protocol servers, and their tools are offered to your agents. A local server is a command this machine runs; a remote one is reached by URL.',
         steps: [
             'Choose “Local (stdio)” or “Remote (URL)”, and click a preset to fill in the form, or fill it in yourself.',
@@ -304,13 +327,13 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         guide: '/guides/start/tools',
     },
     messaging: {
-        title: 'Messaging',
+        title: 'Channels',
         summary: 'Let people reach your agents from Telegram, Discord, Slack, Teams or WhatsApp. Each channel is one bot, answered by the agents you assign to it.',
         steps: [
             'Click + beside Channels, pick a platform and name the channel.',
             'Fill in the platform’s credentials; its setup guide says where each one comes from.',
             'Click “Save & Connect”, then pick the agents that answer it; the default one takes plain messages.',
-            'Click “Test” to check it, and pick it under “Run notifications” to hear about orchestration runs there.',
+            'Click “Test” to check it, and pick it under “Run notifications” to hear about workflow runs there.',
             'If messaging is off for this install, no channels load and saving fails.',
         ],
         media: { id: 'settings/oss-messaging', alt: 'Settings → Messaging: channels and their status on the left, and a channel’s platform, agents and credentials on the right.' },
@@ -368,7 +391,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     },
     import_export: {
         title: 'Import / Export',
-        summary: 'Move orchestrations, agents, MCP servers and tools between Synapse installs as one JSON bundle, or start from a ready-made example.',
+        summary: 'Move workflows, agents, MCP servers and tools between Synapse installs as one JSON bundle, or start from a ready-made example.',
         steps: [
             'On “Export”, click “Load Export Data” and tick what to take; what those need is added too.',
             'Name the file and click “Export & Download”.',

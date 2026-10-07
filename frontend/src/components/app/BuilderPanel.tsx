@@ -485,7 +485,7 @@ export function BuilderPanel() {
             <HowImBuilt
                 open={how}
                 onClose={() => setHow(false)}
-                onDuplicated={(id) => { window.location.href = `/orchestrations?id=${id}`; }}
+                onDuplicated={(id) => { window.location.href = `/workflows?id=${id}`; }}
             />
         </>
     );

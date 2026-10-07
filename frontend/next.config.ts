@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 import path from "path";
 import fs from "fs";
-import { MOVED_TABS } from "./src/lib/moved-routes";
+import { MOVED_ROUTES, MOVED_TABS } from "./src/lib/moved-routes";
 import { MAX_REQUEST_BODY_BYTES } from "./src/lib/requestBodyLimit";
 
 // ---------------------------------------------------------------------------
@@ -52,15 +52,22 @@ const nextConfig: NextConfig = {
     proxyClientMaxBodySize: MAX_REQUEST_BODY_BYTES,
   },
   async redirects() {
-    // Screens that left /settings/* for the rail. These URLs are in browser
-    // history and were in the app's own buttons; a bookmark that 404s is a bug
-    // report. Permanent, and the query string rides along — which is what keeps
+    // Screens that left /settings/* for the rail, and rail pages that were
+    // renamed. These URLs are in browser history and were in the app's own
+    // buttons; a bookmark that 404s is a bug report. Permanent, and the query string rides along — which is what keeps
     // /settings/orchestrations?run=<id> landing on the right run.
     return [
       // Bare /settings used to 404 — there was never a page at that level.
       { source: "/settings", destination: "/settings/general", permanent: false },
       ...Object.entries(MOVED_TABS).map(([tab, destination]) => ({
         source: `/settings/${tab}`,
+        destination,
+        permanent: true,
+      })),
+      // Pages renamed in what people see (D209). The query string rides along
+      // here too, so /orchestrations?run=<id> still opens that run.
+      ...Object.entries(MOVED_ROUTES).map(([source, destination]) => ({
+        source,
         destination,
         permanent: true,
       })),

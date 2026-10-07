@@ -16,7 +16,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
-    Activity, ArrowRight, Bot, Clock, Coins, DollarSign, Hash, Server, Workflow,
+    Activity, ArrowRight, Blocks, Bot, Clock, Coins, DollarSign, Hash, Workflow,
 } from 'lucide-react';
 
 import { Card, CardBody, EmptyState, Stat, StatusBadge, TextLink } from '@/components/ui';
@@ -127,7 +127,7 @@ export function Dashboard() {
 
     const runRow = (run: Run, tone: string) => (
         <button
-            onClick={() => router.push(`/orchestrations?run=${encodeURIComponent(run.run_id)}`)}
+            onClick={() => router.push(`/workflows?run=${encodeURIComponent(run.run_id)}`)}
             className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-2"
         >
             <span className="w-32 shrink-0">
@@ -146,12 +146,12 @@ export function Dashboard() {
             <Card
                 title="Active now"
                 actions={live.length > 0
-                    ? <TextLink href="/orchestrations">All runs</TextLink>
+                    ? <TextLink href="/runs">All runs</TextLink>
                     : undefined}
             >
                 {live.length === 0 ? (
                     <EmptyState title="Nothing running">
-                        Start one from <TextLink href="/orchestrations">Orchestrations</TextLink>.
+                        Start one from <TextLink href="/workflows">Workflows</TextLink>.
                     </EmptyState>
                 ) : (
                     <CardBody>
@@ -214,13 +214,13 @@ export function Dashboard() {
                     <CardBody>
                         <ul className="divide-y divide-border">
                             {[
-                                { icon: Workflow, label: 'Orchestrations', href: '/orchestrations', value: counts.orchestrations },
+                                { icon: Workflow, label: 'Workflows', href: '/workflows', value: counts.orchestrations },
                                 { icon: Bot, label: 'Agents', href: '/agents', value: counts.agents },
                                 {
                                     icon: Clock, label: 'Schedules', href: '/schedules', value: counts.schedules,
                                     sub: counts.schedules > 0 ? `${counts.schedulesOn} enabled` : undefined,
                                 },
-                                { icon: Server, label: 'MCP servers', href: '/mcp-servers', value: counts.mcp },
+                                { icon: Blocks, label: 'Apps', href: '/apps', value: counts.mcp },
                             ].map(row => (
                                 <li key={row.href}>
                                     <Link href={row.href} className="flex items-center gap-3 py-2.5 transition-colors hover:text-text">
@@ -238,7 +238,7 @@ export function Dashboard() {
                 </Card>
             </div>
 
-            <Card title="Recent runs" actions={<TextLink href="/runs">Runs &amp; Logs</TextLink>}>
+            <Card title="Recent runs" actions={<TextLink href="/runs">All runs</TextLink>}>
                 {recent.length === 0 ? (
                     <EmptyState title="No runs yet" />
                 ) : (

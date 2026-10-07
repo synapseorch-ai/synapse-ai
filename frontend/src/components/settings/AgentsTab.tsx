@@ -1253,13 +1253,13 @@ export const AgentsTab = ({
                                     <p className="text-2xs text-text-faint">
                                         Channels this agent answers on. A channel can front several agents,
                                         and an agent can answer on several channels — assign them from{' '}
-                                        <strong className="text-text">Settings → Messaging</strong>.
+                                        <strong className="text-text">Channels</strong>.
                                     </p>
                                     {agentChannels.length === 0 ? (
                                         <div className="p-8 border border-dashed border-border text-center text-text-faint space-y-3">
                                             <MessageSquare className="h-8 w-8 mx-auto opacity-20" />
                                             <p className="text-xs">This agent is not assigned to any channel yet.</p>
-                                            <p className="text-2xs">Go to <strong className="text-text-muted">Settings → Messaging</strong>, pick a channel and add this agent to it.</p>
+                                            <p className="text-2xs">Go to <strong className="text-text-muted">Channels</strong>, pick a channel and add this agent to it.</p>
                                         </div>
                                     ) : (
                                         <div className="space-y-2">

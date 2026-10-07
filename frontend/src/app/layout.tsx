@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist_Mono, Inter } from "next/font/google";
 // @ts-ignore: CSS module declarations are not present in this repo setup
 import "./globals.css";
@@ -30,6 +30,18 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Synapse AI",
   description: "Synapse AI",
+};
+
+/*
+ * The browser's chrome takes the frame's colour (`--frame` in tokens.css): the
+ * light frame on a light OS, the dark one on a dark OS, from the first paint.
+ * The app shell rewrites it when someone picks a theme against their OS.
+ */
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f5f7f8" },
+    { media: "(prefers-color-scheme: dark)", color: "#080c10" },
+  ],
 };
 
 /*

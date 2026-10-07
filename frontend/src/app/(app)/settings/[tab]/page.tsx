@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
 
 import { SettingsView } from '@/components/SettingsView';
-import { navEntryFor } from '@/lib/nav';
+import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,10 +12,12 @@ export default async function SettingsPage(props: {
     const { tab } = await props.params;
     const searchParams = await props.searchParams;
 
-    // The eight moved URLs are redirected at the routing layer by
-    // next.config.ts, so they never reach this component. Anything else that
-    // isn't a real tab is a typo — send it to the settings landing page.
-    if (!navEntryFor(tab)) redirect('/settings/general');
+    // The moved URLs are redirected at the routing layer by next.config.ts, so
+    // they never reach this component. A rail page's id (`/settings/evals`)
+    // used to pass here and render Settings with that page's title over an
+    // empty body (M0-base, defect 8): it goes to its own page now. Anything
+    // else that isn't a settings tab is a typo — the settings landing page.
+    if (!isSettingsEntry(tab)) redirect(navEntryFor(tab)?.href ?? '/settings/general');
 
     const subTab = typeof searchParams.tab === 'string' ? searchParams.tab : undefined;
     return <SettingsView initialTab={tab} initialSubTab={subTab} />;

@@ -52,7 +52,7 @@ export const SupportTab = () => {
                     </div>
                     <div className="bg-zinc-950 p-3 border border-zinc-800 rounded-md">
                         <strong className="text-zinc-300 block mb-1">2. MCP Servers</strong>
-                        <p className="text-sm">Connect external tools via the Model Context Protocol in the <Link href="/mcp-servers" className="text-blue-400 hover:underline">MCP Servers</Link>. Provide the connection command/URL, and the server's tools will be auto-registered.</p>
+                        <p className="text-sm">Connect external tools via the Model Context Protocol in <Link href="/apps" className="text-blue-400 hover:underline">Apps</Link>. Provide the connection command/URL, and the server's tools will be auto-registered.</p>
                     </div>
                     <div className="flex gap-3">
                         <a href="https://docs.synapseorch.com/custom-tools/overview" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-400 hover:underline">
@@ -72,7 +72,7 @@ export const SupportTab = () => {
                     <p>An Orchestration is a multi-agent workflow defined as a Directed Acyclic Graph (DAG).</p>
                     <ol className="list-decimal pl-5 space-y-1 text-sm">
                         <li>First, define specialized agents in the <Link href="/agents" className="text-blue-400 hover:underline">Agents</Link>.</li>
-                        <li>Then, go to the <Link href="/orchestrations" className="text-blue-400 hover:underline">Orchestrations</Link>.</li>
+                        <li>Then, go to <Link href="/workflows" className="text-blue-400 hover:underline">Workflows</Link>.</li>
                         <li>Connect your agents into a sequence or complex flow, defining how tasks and data move between them.</li>
                     </ol>
                     <div className="flex gap-3 mt-1">
@@ -107,7 +107,7 @@ export const SupportTab = () => {
             answer: (
                 <div className="space-y-2 text-zinc-400 text-sm">
                     <p>
-                        Monitor system activity, agent executions, and tool calls in the <Link href="/runs" className="text-blue-400 hover:underline">Runs &amp; Logs</Link>.
+                        Monitor system activity, agent executions, and tool calls in <Link href="/logs" className="text-blue-400 hover:underline">Runs › Logs</Link>.
                     </p>
                     <p>
                         This is crucial for debugging complex orchestrations, tracking token usage, and ensuring everything is running smoothly.
@@ -220,7 +220,7 @@ export const SupportTab = () => {
                         <div className="flex-1">
                             <h3 className="text-sm font-semibold text-zinc-200 mb-0.5 flex items-center gap-2">
                                 Add Tools & Servers (Optional)
-                                <Link href="/mcp-servers" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-text-faint hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
+                                <Link href="/apps" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-text-faint hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
                                     Go <ChevronRight className="h-2.5 w-2.5" />
                                 </Link>
                             </h3>
@@ -250,7 +250,7 @@ export const SupportTab = () => {
                         <div className="flex-1">
                             <h3 className="text-sm font-semibold text-zinc-200 mb-0.5 flex items-center gap-2">
                                 Create Orchestrations
-                                <Link href="/orchestrations" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-text-faint hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
+                                <Link href="/workflows" className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-text-faint hover:text-zinc-300 transition-colors flex items-center gap-1 rounded-md">
                                     Go <ChevronRight className="h-2.5 w-2.5" />
                                 </Link>
                             </h3>

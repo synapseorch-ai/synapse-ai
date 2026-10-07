@@ -4,7 +4,7 @@ import { navEntryFor } from '@/lib/nav';
 
 export const dynamic = 'force-dynamic';
 
-export default async function OrchestrationsPage(props: {
+export default async function WorkflowsPage(props: {
     searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
     // Read `?run=` and `?id=` on the server and pass them down.

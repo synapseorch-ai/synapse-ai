@@ -1,7 +1,7 @@
 "use client";
 
 /*
- * /mcp-servers — its own screen, not a branch of SettingsView.
+ * /apps (was /mcp-servers) — its own screen, not a branch of SettingsView.
  *
  * McpServersTab took 12 props, every one of them drilled from the 1,087-line
  * component that also owned the Models tab's forty key fields. Its state was

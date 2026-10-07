@@ -1,6 +1,11 @@
 import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
+import type { Viewport } from 'next';
+
 import { LoginForm } from './LoginForm';
+
+/** Sign-in is dark by design, whatever the OS says: the browser's chrome is too. */
+export const viewport: Viewport = { themeColor: '#080c10' };
 
 /**
  * `redirect` is read on the SERVER and passed down.

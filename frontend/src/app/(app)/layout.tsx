@@ -1,6 +1,8 @@
 "use client";
 /*
- * The application shell: persistent rail, one <main>, a real page.
+ * The application shell: the rail on the frame colour, and one <main> — the
+ * sheet — inset beside it with a hairline, a radius and a shadow (UX1, M1a).
+ * On a phone the sheet fills the screen and a top bar opens the rail.
  *
  * Replaces app/settings/layout.tsx, which rendered `fixed inset-0 z-50
  * bg-black/90 backdrop-blur-md` with a close X — a dialog drawn over a page
@@ -18,10 +20,13 @@ import { BuilderPanel } from '@/components/app/BuilderPanel';
 import { BuilderProvider } from '@/components/app/BuilderProvider';
 import { HelpProvider } from '@/components/help';
 import { AppRail } from '@/components/app/AppRail';
+import { NavFlagsProvider } from '@/components/app/NavFlags';
+import { PhoneBar, useIsPhone } from '@/components/app/PhoneBar';
 import { NavGuardProvider } from '@/components/app/NavGuard';
 import { NotificationProvider } from '@/components/notifications/NotificationProvider';
 import { ossHelpHost } from '@/lib/helpHost';
 import { parseThemeMode, resolveTheme, switchTheme, THEME_KEY, type ThemeMode } from '@/lib/theme';
+import { cn } from '@/lib/utils';
 
 /**
  * Variables for `{{ global.… }}` suggestions in every editor, fetched on the
@@ -32,6 +37,24 @@ async function loadVariables() {
     if (!response.ok) return [];
     const { values } = (await response.json()) as { values?: Record<string, unknown> };
     return Object.keys(values ?? {}).map((key) => ({ key }));
+}
+
+/**
+ * The browser's own chrome (a phone's status bar, a PWA's title bar) in the
+ * frame's colour (M0a's note, M1a). The root layout declares both themes' frames
+ * by media query for a first paint; once the shell knows the theme it writes the
+ * one in force into both, so a light choice on a dark OS is light too. `null`
+ * puts the declared values back, for the pages outside the shell.
+ */
+const THEME_COLOR_DEFAULTS = new WeakMap<HTMLMetaElement, string>();
+function paintThemeColor(color?: string | null) {
+    const frame = color === null
+        ? null
+        : color ?? getComputedStyle(document.documentElement).getPropertyValue('--frame').trim();
+    document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]').forEach((meta) => {
+        if (!THEME_COLOR_DEFAULTS.has(meta)) THEME_COLOR_DEFAULTS.set(meta, meta.content);
+        meta.content = frame || THEME_COLOR_DEFAULTS.get(meta) || meta.content;
+    });
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -52,8 +75,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     useEffect(() => {
         const root = document.documentElement;
         const media = window.matchMedia('(prefers-color-scheme: light)');
-        const apply = () => root.setAttribute('data-theme', resolveTheme(mode));
-        const clear = () => root.removeAttribute('data-theme');
+        const apply = () => {
+            root.setAttribute('data-theme', resolveTheme(mode));
+            paintThemeColor();
+        };
+        const clear = () => {
+            root.removeAttribute('data-theme');
+            paintThemeColor(null);
+        };
         apply();
         if (mode !== 'system') return clear;
         media.addEventListener('change', apply);
@@ -62,6 +91,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             clear();
         };
     }, [mode]);
+    const isPhone = useIsPhone();
 
     const changeMode = (next: ThemeMode) => switchTheme(setMode, next);
 
@@ -83,13 +113,24 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {/* The "?" in every page header and the one panel it opens (H1):
                 it fills the kit's header slot, so pages need nothing. */}
             <HelpProvider host={ossHelpHost}>
-            <div className="flex h-screen overflow-hidden bg-bg font-sans text-text">
-                <AppRail mode={mode} onModeChange={changeMode} />
-                {/* The only <main> in the app. Pages render a plain flex column
-                    inside it — a nested <main> gives two landmarks and two
-                    scrollbars. */}
-                <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
+            <NavFlagsProvider>
+            <div className="flex h-dvh overflow-hidden bg-frame font-sans text-text">
+                <div className="hidden md:flex">
+                    {/* On a phone the top bar holds the bell; one bell at a time. */}
+                    <AppRail mode={mode} onModeChange={changeMode} showBell={!isPhone} />
+                </div>
+                {/* The only <main> in the app, and the sheet the page sits on.
+                    Pages render a plain flex column inside it — a nested <main>
+                    gives two landmarks and two scrollbars. */}
+                <main className={cn(
+                    'flex min-w-0 flex-1 flex-col overflow-hidden bg-bg',
+                    'md:my-2 md:mr-2 md:rounded-2xl md:border md:border-border md:shadow-elevated',
+                )}>
+                    <PhoneBar mode={mode} onModeChange={changeMode} />
+                    <div className="min-h-0 flex-1">{children}</div>
+                </main>
             </div>
+            </NavFlagsProvider>
             </HelpProvider>
             <BuilderLauncher />
             <BuilderPanel />

@@ -27,6 +27,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
+import { RunsTable, isLiveRun, runStatusMeta, type RunSummary } from '@/components/runs/RunsTable';
 
 type ToolCallLogEntry = { kind: 'tool_call'; tool_name: string; args: Record<string, any>; step_name?: string };
 type ToolResultLogEntry = { kind: 'tool_result'; tool_name: string; preview: string };
@@ -379,23 +380,6 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
     const [builderSavedOrch, setBuilderSavedOrch] = useState<any | null>(null);
 
     // --- Active runs (for reconnect banner) ---
-    type RunSummary = {
-        run_id: string;
-        orchestration_id: string;
-        status: string;
-        started_at?: string | null;
-        ended_at?: string | null;
-        current_step_id?: string | null;
-        steps_completed?: number;
-        last_step_name?: string | null;
-        waiting_for_human?: boolean;
-        total_cost_usd?: number | null;
-        session_id?: string | null;
-        /** The judge's latest verdict, when the orchestration has a rubric
-         *  bound. `null` is "not scored", which is not the same as zero. */
-        score?: number | null;
-        score_regression?: boolean;
-    };
     const [activeRuns, setActiveRuns] = useState<RunSummary[]>([]);
     const activeRunsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     // Rubrics, for the "score runs against" picker in Guardrails. Names only —
@@ -477,165 +461,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
         return () => clearInterval(interval);
     }, [landingTab]);
 
-    // --- Landing-table helpers ---
-    const orchNameOf = (id: string) => orchestrations.find(o => o.id === id)?.name ?? id;
-    const currentStepNameOf = (run: RunSummary): string | null => {
-        const orch = orchestrations.find(o => o.id === run.orchestration_id);
-        const byId = run.current_step_id
-            ? orch?.steps.find(s => s.id === run.current_step_id)?.name
-            : null;
-        return byId || run.last_step_name || null;
-    };
-    // What kicked this run off. Derived from session_id, which the scheduler
-    // sets to `schedule_<schedule_id>` and the orchestrator-agent path sets to
-    // the chat session id; manual UI and API runs carry none.
-    const triggerOf = (run: RunSummary): string => {
-        const session = run.session_id || '';
-        if (session.startsWith('schedule_')) {
-            const schedId = session.slice('schedule_'.length);
-            const sched = schedules.find(s => s.id === schedId);
-            return sched ? `Schedule · ${sched.name}` : 'Schedule';
-        }
-        if (session) return 'Agent chat';
-        return 'Manual';
-    };
-
-    const fmtDuration = (start?: string | null, end?: string | null): string => {
-        if (!start) return '—';
-        const s = new Date(start).getTime();
-        const e = end ? new Date(end).getTime() : Date.now();
-        const sec = Math.max(0, Math.round((e - s) / 1000));
-        if (sec < 60) return `${sec}s`;
-        const m = Math.floor(sec / 60);
-        if (m < 60) return `${m}m ${sec % 60}s`;
-        return `${Math.floor(m / 60)}h ${m % 60}m`;
-    };
-    const runStatusMeta = (run: RunSummary): { dot: string; label: string; text: string } => {
-        switch (run.status) {
-            case 'running': return { dot: 'bg-blue-400 animate-pulse', label: 'Running', text: 'text-blue-300' };
-            case 'paused': return run.waiting_for_human
-                ? { dot: 'bg-yellow-400', label: 'Needs input', text: 'text-yellow-300' }
-                : { dot: 'bg-yellow-400', label: 'Paused', text: 'text-yellow-300' };
-            case 'completed': return { dot: 'bg-green-500', label: 'Completed', text: 'text-zinc-400' };
-            case 'cancelled': return { dot: 'bg-zinc-500', label: 'Cancelled', text: 'text-text-faint' };
-            default: return { dot: 'bg-red-500', label: 'Failed', text: 'text-red-300' };
-        }
-    };
-
-    // Colour band for a judge score. A flagged run is red whatever it scored:
-    // the point of the column is to be scannable, and "this one regressed" is
-    // the fact worth seeing from across the table.
-    const runScoreMeta = (run: RunSummary): { text: string; title: string } => {
-        if (run.score === null || run.score === undefined) {
-            return { text: 'text-text-faint', title: 'Not scored' };
-        }
-        if (run.score_regression) {
-            return { text: 'text-red-300', title: 'Scored below expectation' };
-        }
-        if (run.score >= 7.5) return { text: 'text-green-400', title: 'Scored well' };
-        if (run.score >= 5) return { text: 'text-yellow-300', title: 'Scored moderately' };
-        return { text: 'text-red-300', title: 'Scored poorly' };
-    };
-
     const thCls = 'px-4 py-2 text-[10px] font-medium uppercase tracking-wider text-text-faint whitespace-nowrap';
     const tdCls = 'px-4 py-2.5 text-xs';
-
-    const renderRunsTable = (rows: RunSummary[], empty: string) => (
-        <div className="border border-border bg-zinc-900/60 rounded-md">
-            <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                    <thead>
-                        <tr className="border-b border-border bg-zinc-950/40">
-                            <th className={thCls}>Status</th>
-                            <th className={thCls}>Orchestration</th>
-                            <th className={thCls}>Step</th>
-                            <th className={thCls}>Trigger</th>
-                            <th className={`${thCls} text-right`}>Progress</th>
-                            <th className={`${thCls} text-right`}>Cost</th>
-                            <th className={`${thCls} text-right`}>Score</th>
-                            <th className={`${thCls} text-right`}>Started</th>
-                            <th className={`${thCls} text-right`}>Duration</th>
-                            <th className={thCls}></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {rows.length === 0 ? (
-                            <tr>
-                                <td colSpan={10} className="px-4 py-10 text-center text-xs text-text-faint italic">
-                                    {empty}
-                                </td>
-                            </tr>
-                        ) : rows.map(run => {
-                            const meta = runStatusMeta(run);
-                            const stepName = currentStepNameOf(run);
-                            const isLive = run.status === 'running' || run.status === 'paused';
-                            return (
-                                <tr
-                                    key={run.run_id}
-                                    onClick={() => restoreRun(run)}
-                                    className="border-b border-border last:border-b-0 hover:bg-row-hover cursor-pointer transition-colors group"
-                                >
-                                    <td className={`${tdCls} whitespace-nowrap`}>
-                                        <span className="inline-flex items-center gap-2">
-                                            <span className={`w-2 h-2 rounded-full shrink-0 ${meta.dot}`} />
-                                            <span className={meta.text}>{meta.label}</span>
-                                        </span>
-                                    </td>
-                                    <td className={`${tdCls} text-zinc-200 max-w-[220px]`}>
-                                        <span className="block truncate">{orchNameOf(run.orchestration_id)}</span>
-                                        <span className="block text-[10px] text-text-faint truncate">{run.run_id}</span>
-                                    </td>
-                                    <td className={`${tdCls} max-w-[200px]`}>
-                                        {stepName ? (
-                                            <span className={`block truncate ${isLive ? 'text-zinc-300' : 'text-text-faint'}`}>
-                                                {stepName}
-                                            </span>
-                                        ) : <span className="text-text-faint">—</span>}
-                                    </td>
-                                    <td className={`${tdCls} text-text-faint max-w-[160px]`}>
-                                        <span className="block truncate">{triggerOf(run)}</span>
-                                    </td>
-                                    <td className={`${tdCls} text-right text-zinc-400 whitespace-nowrap`}>
-                                        {run.steps_completed ?? 0} step{(run.steps_completed ?? 0) === 1 ? '' : 's'}
-                                    </td>
-                                    <td className={`${tdCls} text-right text-text-faint whitespace-nowrap`}>
-                                        {run.total_cost_usd ? `$${run.total_cost_usd.toFixed(4)}` : '—'}
-                                    </td>
-                                    <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                        <span
-                                            className={runScoreMeta(run).text}
-                                            title={runScoreMeta(run).title}
-                                        >
-                                            {run.score === null || run.score === undefined
-                                                ? '—'
-                                                : run.score.toFixed(1)}
-                                        </span>
-                                    </td>
-                                    <td className={`${tdCls} text-right text-text-faint whitespace-nowrap`}>
-                                        {run.started_at ? new Date(run.started_at).toLocaleString() : '—'}
-                                    </td>
-                                    <td className={`${tdCls} text-right text-text-faint whitespace-nowrap`}>
-                                        {fmtDuration(run.started_at, run.ended_at)}
-                                    </td>
-                                    <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                        {/* The row opens on a click; this is the same for a keyboard (F219). */}
-                                        <button
-                                            type="button"
-                                            onClick={(e) => { e.stopPropagation(); restoreRun(run); }}
-                                            aria-label={`View run ${run.run_id}`}
-                                            className="text-[11px] text-text-faint group-hover:text-zinc-300 hover:text-zinc-100 transition-colors rounded-sm"
-                                        >
-                                            View →
-                                        </button>
-                                    </td>
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
 
     // --- Restore a run from the active runs banner / recent runs / deep link ---
     // The run's event journal is replayable, so restoring = hydrate step
@@ -2022,19 +1849,34 @@ export function OrchestrationTab({ initialRunId, initialOrchId }: { initialRunId
                             </div>
                         )}
 
-                        {landingTab === 'active' && renderRunsTable(
-                            activeRuns,
-                            'No active runs — start one from the Orchestrations tab.',
+                        {landingTab === 'active' && (
+                            <RunsTable
+                                rows={activeRuns}
+                                empty="No active runs — start one from the Orchestrations tab."
+                                workflows={orchestrations}
+                                schedules={schedules}
+                                onOpen={restoreRun}
+                            />
                         )}
 
-                        {landingTab === 'recent' && renderRunsTable(
-                            pastRuns.filter(r => r.status !== 'running' && r.status !== 'paused').slice(0, 10),
-                            'No finished runs yet.',
+                        {landingTab === 'recent' && (
+                            <RunsTable
+                                rows={pastRuns.filter(r => !isLiveRun(r)).slice(0, 10)}
+                                empty="No finished runs yet."
+                                workflows={orchestrations}
+                                schedules={schedules}
+                                onOpen={restoreRun}
+                            />
                         )}
 
-                        {landingTab === 'all' && renderRunsTable(
-                            allRuns.length > 0 ? allRuns : pastRuns,
-                            'No runs recorded yet.',
+                        {landingTab === 'all' && (
+                            <RunsTable
+                                rows={allRuns.length > 0 ? allRuns : pastRuns}
+                                empty="No runs recorded yet."
+                                workflows={orchestrations}
+                                schedules={schedules}
+                                onOpen={restoreRun}
+                            />
                         )}
                     </div>
                 </div>
