@@ -94,7 +94,7 @@ export function Combobox<T extends string = string>({
           controlStyles({ size }),
           "group inline-flex items-center justify-between gap-2 text-left",
           !selected && "text-text-faint",
-          trigger === "icon" && "size-8 w-8 shrink-0 justify-center px-0 py-0",
+          trigger === "icon" && "size-8 w-8 shrink-0 justify-center border-transparent bg-transparent px-0 py-0 hover:bg-surface-2",
           className,
         )}
       >

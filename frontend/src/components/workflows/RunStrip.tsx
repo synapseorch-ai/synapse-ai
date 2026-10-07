@@ -66,7 +66,7 @@ export function RunStrip({
                 <button
                     type="button"
                     onClick={() => setHumanModalOpen(true)}
-                    className="group -ml-1.5 flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-person/50 bg-person-subtle py-1.5 pl-2.5 pr-1.5 text-left transition-colors hover:border-person"
+                    className="group -ml-1.5 flex min-w-0 flex-[1_1_18rem] items-center gap-2 overflow-hidden rounded-lg border border-person/50 bg-person-subtle py-1.5 pl-2.5 pr-1.5 text-left transition-colors hover:border-person"
                 >
                     <span className="relative flex size-2 shrink-0">
                         <span className="absolute inline-flex size-full rounded-full bg-person opacity-60 motion-safe:animate-ping" aria-hidden />

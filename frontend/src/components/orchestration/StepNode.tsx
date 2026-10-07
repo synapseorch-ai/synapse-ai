@@ -33,7 +33,7 @@ function LabelledHandle({ id, top, label }: { id: string; top: number; label: st
                 style={{ top: `${top}%`, backgroundColor: HANDLE_INK }}
             />
             <span
-                className="pointer-events-none absolute -right-2 translate-x-full -translate-y-1/2 text-[10px] leading-none"
+                className="pointer-events-none absolute -right-2 translate-x-full -translate-y-1/2 rounded-sm bg-bg px-0.5 text-[10px] leading-none"
                 style={{ top: `${top}%`, color: HANDLE_INK }}
                 translate="no"
             >

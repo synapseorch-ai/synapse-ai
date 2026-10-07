@@ -122,6 +122,8 @@ function Workbench({
     const rootRef = useRef<HTMLDivElement>(null);
     const flowRef = useRef<HTMLDivElement>(null);
     const sheetRef = useRef<HTMLDivElement>(null);
+    const dockRef = useRef<HTMLDivElement>(null);
+    const stripRef = useRef<HTMLDivElement>(null);
     const box = useElementBox(rootRef);
     const phone = useMediaQuery(PHONE_QUERY);
     const reduced = useReducedMotion();
@@ -141,6 +143,8 @@ function Workbench({
     const view: 'step' | 'settings' | null = selectedStep ? 'step' : settingsOpen ? 'settings' : null;
     const cardOpen = view !== null;
     const sheetBox = useElementBox(sheetRef, cardOpen && phone);
+    const dockBox = useElementBox(dockRef);
+    const stripBox = useElementBox(stripRef, !!runStrip);
 
     const [storedWidth, setStoredWidth] = usePersisted<string>(
         'orch-card-width',
@@ -293,7 +297,10 @@ function Workbench({
     // ── Layout of the bottom row ──────────────────────────────────────────
     const dockCentre = phone ? box.width / 2 : (box.width - localInset - (cardSpace ? cardSpace + 24 : 0)) / 2;
     const zoomRight = 12 + localInset + (cardSpace ? cardSpace + 12 : 0);
-    const stripMax = phone ? undefined : Math.max(240, dockCentre - 200);
+    // The strip runs up to the dock, and wraps to a second row rather than under it.
+    const stripMax = phone ? undefined : Math.max(240, dockCentre - (dockBox.width || 320) / 2 - 24);
+    // The drawer opens above the strip, however tall the strip has wrapped.
+    const drawerBottom = (phone ? 56 : 12) + (stripBox.height || 44) + 8;
     const drawerWidth = Math.max(280, Math.min(640, freeWidth - 24));
     const [drawerHeight, setDrawerHeight] = useState(320);
     const drawerMax = Math.max(120, Math.min(700, box.height - 150));
@@ -432,6 +439,7 @@ function Workbench({
             )}
 
             <Dock
+                boxRef={dockRef}
                 left={dockCentre}
                 phone={phone}
                 tier={tier}
@@ -461,8 +469,8 @@ function Workbench({
                     data-canvas-chrome="drawer"
                     className={cn(FLOAT, 'nokey absolute z-20 flex flex-col overflow-hidden rounded-[12px]', phone ? 'inset-x-2' : 'left-3')}
                     style={phone
-                        ? { bottom: 104, height: Math.min(drawerHeight, box.height - 190) }
-                        : { bottom: 62, width: drawerWidth, height: Math.min(drawerHeight, drawerMax) }}
+                        ? { bottom: drawerBottom, height: Math.min(drawerHeight, box.height - drawerBottom - 70) }
+                        : { bottom: drawerBottom, width: drawerWidth, height: Math.min(drawerHeight, box.height - drawerBottom - 70) }}
                 >
                     <div
                         role="separator"
@@ -483,6 +491,7 @@ function Workbench({
             )}
             {runStrip && (
                 <div
+                    ref={stripRef}
                     data-canvas-chrome="strip"
                     className={cn('nokey absolute z-10', phone ? 'inset-x-2 bottom-[56px]' : 'bottom-3 left-3')}
                     style={stripMax ? { maxWidth: stripMax } : undefined}

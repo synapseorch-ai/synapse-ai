@@ -140,6 +140,22 @@ export function TopBar({
                         ))}
                     </Menu>
                 )}
+                {!phone && (
+                    <button
+                        type="button"
+                        onClick={onOpenSettings}
+                        aria-pressed={settingsOpen}
+                        aria-label={compact ? 'Workflow settings' : undefined}
+                        title="Workflow settings"
+                        className={cn(
+                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: compact }),
+                            settingsOpen && 'bg-surface-2 text-text',
+                        )}
+                    >
+                        <SlidersHorizontal className="size-3.5" aria-hidden />
+                        {!compact && 'Workflow settings'}
+                    </button>
+                )}
                 {onChangeWithAI && !phone && (
                     <Button
                         size="sm"
@@ -171,22 +187,6 @@ export function TopBar({
                             <Play className="size-3.5" aria-hidden /> {phone ? 'Run' : 'Run now'}
                         </Button>
                     </Hint>
-                )}
-                {!phone && (
-                    <button
-                        type="button"
-                        onClick={onOpenSettings}
-                        aria-pressed={settingsOpen}
-                        aria-label={compact ? 'Workflow settings' : undefined}
-                        title="Workflow settings"
-                        className={cn(
-                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: compact }),
-                            settingsOpen && 'bg-surface-2 text-text',
-                        )}
-                    >
-                        <SlidersHorizontal className="size-3.5" aria-hidden />
-                        {!compact && 'Workflow settings'}
-                    </button>
                 )}
                 <PageHeaderSlot />
                 <Menu

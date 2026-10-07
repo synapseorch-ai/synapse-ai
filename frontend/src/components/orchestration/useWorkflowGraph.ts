@@ -70,10 +70,11 @@ function stepsToNodes(
 /**
  * One builder for every edge on the canvas.
  *
- * Every connection is the same quiet line (D211): its label says which road it
- * is (true, false, a route's name, a case, "done", "at limit"), loops and
- * parallel branches are dashed, and colour on the canvas is kept for who does
- * the work and for a run in progress. `data` carries the relationship the edge
+ * Every connection is the same quiet line (D211): the word on its handle says
+ * which road it is (true, false, a route's name, a case, done), "at limit" says
+ * it on the line (its handle has no word), loops and parallel branches are
+ * dashed, and colour on the canvas is kept for who does the work and for a run
+ * in progress. `data` carries the relationship the edge
  * stands for, so deleting it can clear exactly the field that drew it — see
  * `clearEdgeLink`. Implicit `seq` edges (chains inside a loop body or parallel
  * branch) follow from list membership, not a link field, so they are drawn but
@@ -143,7 +144,6 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
                     sourceHandle: `route_${label}`,
                     target: targetId,
                     link: { kind: 'route', key: label },
-                    label,
                 }));
             });
             // Evaluator may also have a next_step_id as fallback — skip if routes exist
@@ -159,7 +159,6 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
                     sourceHandle: 'if_true',
                     target: step.if_true_step_id,
                     link: { kind: 'if_true' },
-                    label: 'true',
                 }));
             }
             if (step.if_false_step_id) {
@@ -169,7 +168,6 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
                     sourceHandle: 'if_false',
                     target: step.if_false_step_id,
                     link: { kind: 'if_false' },
-                    label: 'false',
                 }));
             }
             continue;
@@ -187,7 +185,6 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
                     sourceHandle: `case_${caseVal}`,
                     target: targetId,
                     link: { kind: 'case', key: caseVal },
-                    label: caseVal,
                 }));
             });
             if (step.switch_default_step_id) {
@@ -197,7 +194,6 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
                     sourceHandle: 'default',
                     target: step.switch_default_step_id,
                     link: { kind: 'switch_default' },
-                    label: 'default',
                 }));
             }
             continue;
@@ -234,7 +230,6 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
                     sourceHandle: 'done',
                     target: step.next_step_id,
                     link: { kind: 'loop_done' },
-                    label: 'done',
                 }));
             }
             continue;

@@ -11,8 +11,9 @@ import { FLOAT } from './TopBar';
 import type { Tier } from './geometry';
 
 export function Dock({
-    left, phone, tier, onAddStep, onTidy, tidy, undo, redo, canUndo, canRedo,
+    boxRef, left, phone, tier, onAddStep, onTidy, tidy, undo, redo, canUndo, canRedo,
 }: {
+    boxRef?: React.Ref<HTMLDivElement>;
     /** The dock's centre, in the canvas's pixels. */
     left: number;
     phone: boolean;
@@ -29,6 +30,7 @@ export function Dock({
     const words = tier === 'full' && !phone;
     return (
         <div
+            ref={boxRef}
             role="toolbar"
             aria-label="Canvas tools"
             data-canvas-chrome="dock"

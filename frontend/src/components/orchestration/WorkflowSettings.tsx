@@ -181,16 +181,20 @@ export function RunInputField({ value, onChange, onRun, disabled }: {
     disabled?: boolean;
 }) {
     return (
-        <Field label="Input for the next run" hint="Run now sends this as the run's input. It is not saved with the workflow.">
+        <div className="space-y-1.5">
             <Input
                 aria-label="Initial input for this run"
+                aria-describedby="orch-run-input-hint"
                 size="sm"
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
                 placeholder="Initial input for the orchestration..."
                 onKeyDown={(e) => { if (e.key === 'Enter' && !disabled) onRun(); }}
             />
-        </Field>
+            <p id="orch-run-input-hint" className="text-xs leading-relaxed text-text-faint">
+                Run now sends this as the run&apos;s input. It is not saved with the workflow.
+            </p>
+        </div>
     );
 }
 

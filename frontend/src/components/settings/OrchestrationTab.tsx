@@ -1782,12 +1782,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                 <SettingsSection title="Schedules">
                                     <SchedulesList schedules={schedules} workflowId={draft.id} href="/schedules" />
                                 </SettingsSection>
-                                <SettingsSection title="State schema">
-                                    <StateSchemaEditor
-                                        schema={draft.state_schema}
-                                        onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
-                                    />
-                                </SettingsSection>
+                                {/* Its own heading and Add key, as in the State Schema tab. */}
+                                <StateSchemaEditor
+                                    schema={draft.state_schema}
+                                    onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
+                                />
                                 <SettingsSection title="Guardrails">
                                     <GuardrailsFields draft={draft} onChange={setDraft} rubrics={rubrics} />
                                 </SettingsSection>
