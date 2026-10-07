@@ -17,13 +17,17 @@ export function useMediaQuery(query: string): boolean {
 export const useReducedMotion = () => useMediaQuery('(prefers-reduced-motion: reduce)');
 
 export type Box = { width: number; height: number; right: number };
+const NONE: Box = { width: 0, height: 0, right: 0 };
 
-/** An element's size, and how far its right edge is from the window's, kept current. */
-export function useElementBox(ref: React.RefObject<HTMLElement | null>): Box {
+/**
+ * An element's size, and how far its right edge is from the window's, kept current.
+ * `present` says when an element that mounts later (the phone's sheet) is there to measure.
+ */
+export function useElementBox(ref: React.RefObject<HTMLElement | null>, present = true): Box {
     const [box, setBox] = useState<Box>({ width: 0, height: 0, right: 0 });
     useEffect(() => {
         const el = ref.current;
-        if (!el) return;
+        if (!el || !present) return;
         const read = () => {
             const r = el.getBoundingClientRect();
             setBox((prev) => {
@@ -39,6 +43,7 @@ export function useElementBox(ref: React.RefObject<HTMLElement | null>): Box {
             observer.disconnect();
             window.removeEventListener('resize', read);
         };
-    }, [ref]);
-    return box;
+    }, [ref, present]);
+    // What was measured while it was there says nothing once it has gone.
+    return present ? box : NONE;
 }

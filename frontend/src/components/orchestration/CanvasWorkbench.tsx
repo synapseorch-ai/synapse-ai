@@ -123,7 +123,6 @@ function Workbench({
     const flowRef = useRef<HTMLDivElement>(null);
     const sheetRef = useRef<HTMLDivElement>(null);
     const box = useElementBox(rootRef);
-    const sheetBox = useElementBox(sheetRef);
     const phone = useMediaQuery(PHONE_QUERY);
     const reduced = useReducedMotion();
     const coarsePointer = useSyncExternalStore(subscribeCoarse, () => window.matchMedia(COARSE).matches, () => false);
@@ -141,6 +140,7 @@ function Workbench({
     }
     const view: 'step' | 'settings' | null = selectedStep ? 'step' : settingsOpen ? 'settings' : null;
     const cardOpen = view !== null;
+    const sheetBox = useElementBox(sheetRef, cardOpen && phone);
 
     const [storedWidth, setStoredWidth] = usePersisted<string>(
         'orch-card-width',
