@@ -31,6 +31,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 APP = os.environ.get("SMOKE_APP", "http://localhost:3100")
@@ -7086,6 +7087,328 @@ async def check_phonemenu(browser) -> str:
     if bad:
         raise AssertionError("; ".join(bad))
     return "the phone's menu opens with focus inside, a link closes it, Escape hands focus back; one bell"
+
+
+
+# ── M2b: the runs list and the run page as a path ────────────────────────────
+# Stubbed runs, so the checks are the same on every install and call no model.
+
+def _m2b_at(seconds: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1790762400 + seconds))  # 2026-09-30 10:00 UTC
+
+
+_M2B_REVIEW = {
+    "id": "orch_smoke_m2b", "name": "Smoke supplier review", "description": "", "trigger": "manual",
+    "entry_step_id": "gather", "max_total_turns": 100, "timeout_minutes": 30, "updated_at": _m2b_at(-86400),
+    "result_key": "review", "state_schema": {"review": {"type": "string", "default": "", "description": "The review"}},
+    "steps": [
+        {"id": "gather", "name": "Gather", "type": "parallel", "parallel_branches": [["score"], ["find"]],
+         "next_step_id": "combine"},
+        {"id": "score", "name": "Score suppliers", "type": "agent", "output_key": "scorecard"},
+        {"id": "find", "name": "Find issues", "type": "llm", "output_key": "issues"},
+        {"id": "combine", "name": "Combine", "type": "merge", "next_step_id": "write", "output_key": "inputs"},
+        {"id": "write", "name": "Write the review", "type": "llm", "output_key": "review", "next_step_id": "end"},
+        {"id": "end", "name": "End", "type": "end"}]}
+_M2B_TRIAGE = {
+    "id": "orch_smoke_m2b_triage", "name": "Smoke invoice triage", "description": "", "trigger": "manual",
+    "entry_step_id": "check", "max_total_turns": 100, "timeout_minutes": 30, "updated_at": _m2b_at(-86400),
+    "state_schema": {},
+    "steps": [
+        {"id": "check", "name": "Check totals", "type": "transform", "next_step_id": "review", "output_key": "triage"},
+        {"id": "review", "name": "Needs review?", "type": "if_else", "if_true_step_id": "approve",
+         "if_false_step_id": "draft"},
+        {"id": "approve", "name": "Accounts payable approval", "type": "human", "next_step_id": "draft",
+         "output_key": "approval"},
+        {"id": "draft", "name": "Draft payment note", "type": "llm", "output_key": "note"}]}
+
+
+def _m2b_entry(step_id, name, kind, start, seconds, status="completed", **extra):
+    return {"step_id": step_id, "step_name": name, "step_type": kind, "status": status,
+            "started_at": _m2b_at(start), "ended_at": _m2b_at(start + seconds), "duration_seconds": seconds, **extra}
+
+
+_M2B_TRACEBACK = ('RuntimeError: Transform error: Transform failed (exit 1): Traceback (most recent call last):\n'
+                  '  File "/tmp/tmpsmoke/script.py", line 19, in <module>\n'
+                  '    total = round(sum(line.qty * line.unit_price for line in inv.lines), 2)\n'
+                  '                                                          ^^^^^^^^^\n  File "/tmp/tmp')
+_M2B_RUNS = {
+    "run_smoke_m2b_done": {
+        "run_id": "run_smoke_m2b_done", "orchestration_id": "orch_smoke_m2b", "status": "completed",
+        "session_id": None, "started_at": _m2b_at(0), "ended_at": _m2b_at(2), "current_step_id": "write",
+        "waiting_for_human": False, "total_tokens_used": 1440, "total_cost_usd": 0, "tasks": [], "error": None,
+        "step_history": [
+            _m2b_entry("score", "Score suppliers", "agent", 0, 0.6, output_key="scorecard"),
+            _m2b_entry("find", "Find issues", "llm", 0, 0.8, output_key="issues"),
+            _m2b_entry("gather", "Gather", "parallel", 0, 0.9),
+            _m2b_entry("combine", "Combine", "merge", 1, 0.0, output_key="inputs"),
+            _m2b_entry("write", "Write the review", "llm", 1, 0.7, output_key="review")],
+        "shared_state": {"scorecard": "Saltmarsh: 6/10", "issues": "Two late deliveries.",
+                         "inputs": {"a": 1}, "review": "The smoke review for the operations team."}},
+    "run_smoke_m2b_fail": {
+        "run_id": "run_smoke_m2b_fail", "orchestration_id": "orch_smoke_m2b_triage", "status": "failed",
+        "session_id": None, "started_at": _m2b_at(0), "ended_at": _m2b_at(1), "current_step_id": "check",
+        "waiting_for_human": False, "total_tokens_used": 0, "total_cost_usd": 0, "tasks": [],
+        "error": _M2B_TRACEBACK, "shared_state": {},
+        "step_history": [_m2b_entry("check", "Check totals", "transform", 0, 0.4, "failed", error=_M2B_TRACEBACK)]},
+    "run_smoke_m2b_turns": {
+        "run_id": "run_smoke_m2b_turns", "orchestration_id": "orch_smoke_m2b", "status": "failed",
+        "session_id": None, "started_at": _m2b_at(0), "ended_at": _m2b_at(30), "current_step_id": "score",
+        "waiting_for_human": False, "total_tokens_used": 9000, "total_cost_usd": 0.0123, "tasks": [],
+        "error": "Global turn limit (100) exceeded", "shared_state": {}, "step_history": []},
+    "run_smoke_m2b_wait": {
+        "run_id": "run_smoke_m2b_wait", "orchestration_id": "orch_smoke_m2b_triage", "status": "paused",
+        "session_id": None, "started_at": _m2b_at(0), "ended_at": None, "current_step_id": "approve",
+        "waiting_for_human": True, "total_tokens_used": 0, "total_cost_usd": 0, "tasks": [], "error": None,
+        "human_prompt": "Invoice INV-1047 totals **$2,310.00**. Approve payment?",
+        "human_fields": [{"name": "approved", "type": "boolean", "label": "Approve payment"},
+                         {"name": "note", "type": "textarea", "label": "Note for the ledger"}],
+        "shared_state": {"triage": {"total": 2310}},
+        "step_history": [_m2b_entry("check", "Check totals", "transform", 0, 0.5, output_key="triage"),
+                         _m2b_entry("review", "Needs review?", "if_else", 1, 0.0),
+                         {"step_id": "approve", "step_name": "Accounts payable approval", "step_type": "human",
+                          "status": "paused", "started_at": _m2b_at(1)}]},
+}
+_M2B_STREAM = "".join([
+    _frame({"type": "orchestration_start", "run_id": "run_smoke_m2b_done"}, "1"),
+    _frame({"type": "step_start", "orch_step_id": "write", "step_name": "Write the review", "step_type": "llm"}, "2"),
+    _frame({"type": "final", "orch_step_id": "write", "response": "The smoke review for the operations team."}, "3"),
+    _frame({"type": "step_complete", "orch_step_id": "write", "step_name": "Write the review",
+            "duration_seconds": 0.7}, "4"),
+    _frame({"type": "stream_complete"})])
+
+
+def _m2b_summary(run: dict) -> dict:
+    return {k: run.get(k) for k in ("run_id", "orchestration_id", "status", "started_at", "ended_at",
+                                    "current_step_id", "waiting_for_human", "total_cost_usd", "session_id",
+                                    "error")} | {"steps_completed": len(run["step_history"]), "score": None,
+                                                 "score_regression": False}
+
+
+async def _m2b_page(browser, path: str, width=WIDE, runs: dict | None = None, theme: str | None = None):
+    """A page over the stubbed runs. Returns (ctx, page, the /api/orchestrations requests it made)."""
+    runs = runs if runs is not None else _M2B_RUNS
+    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+    if theme:
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+    seen: list[str] = []
+    for orch in (_M2B_REVIEW, _M2B_TRIAGE):
+        await ctx.route(f"**/api/orchestrations/{orch['id']}", _answer(orch))
+    await ctx.route(re.compile(r".*/api/orchestrations(\?.*)?$"), _answer([_M2B_REVIEW, _M2B_TRIAGE]))
+    await ctx.route(re.compile(r".*/api/orchestrations/runs(\?.*)?$"),
+                    _answer([_m2b_summary(r) for r in runs.values()]))
+    for rid, run in runs.items():
+        await ctx.route(f"**/api/orchestrations/runs/{rid}", _answer(run))
+        await ctx.route(f"**/api/orchestrations/runs/{rid}/children", _answer([]))
+        await ctx.route(f"**/api/orchestrations/runs/{rid}/events/stream*",
+                        _answer(_M2B_STREAM, content_type="text/event-stream"))
+    page = await ctx.new_page()
+    page.on("request", lambda r: seen.append(r.method + " " + urllib.parse.urlsplit(r.url).path)
+            if "/api/orchestrations" in r.url else None)
+    await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+    await page.locator("main h1").first.wait_for(timeout=30_000)
+    await asyncio.sleep(SETTLE)
+    return ctx, page, seen
+
+
+@check
+async def check_runslist(browser) -> str:
+    """Runs is a list grouped by day with a path per run (M2b): pills count and filter, a row links to its run's
+    page, a free run reads `$0`, an empty trigger reads Manual, and a failed run names the step it stopped at."""
+    ctx, page, _ = await _m2b_page(browser, "/runs")
+    bad: list[str] = []
+    try:
+        table = page.get_by_role("table", name="Runs")
+        rows = table.locator("a[data-row-open]")
+        if await rows.count() != len(_M2B_RUNS):
+            bad.append(f"{await rows.count()} rows, not {len(_M2B_RUNS)}")
+        failed = page.get_by_role("button", name=re.compile(r"^Failed"))
+        if (await failed.inner_text()).split()[-1] != "2":
+            bad.append(f"the Failed pill reads {await failed.inner_text()!r}")
+        if await table.locator('[role="img"]').count() < len(_M2B_RUNS):
+            bad.append("a row has no path glyph")
+        done = table.locator('[role="row"]', has=page.locator('a[href="/runs/run_smoke_m2b_done"]'))
+        text = await done.inner_text()
+        if "$0" not in text.split() or "Manual" not in text:
+            bad.append(f"the free, manual run reads {text!r}")
+        fail_row = await table.locator('[role="row"]', has=page.locator('a[href="/runs/run_smoke_m2b_fail"]')).inner_text()
+        if "Failed · Check totals" not in fail_row:
+            bad.append(f"the failed run reads {fail_row!r}")
+        await failed.click()
+        await asyncio.sleep(0.4)
+        if await failed.get_attribute("aria-pressed") != "true" or await rows.count() != 2:
+            bad.append(f"Failed shows {await rows.count()} rows")
+        await page.get_by_role("button", name=re.compile(r"^All")).click()
+        await page.get_by_role("searchbox", name="Search runs…").fill("triage")
+        await asyncio.sleep(0.4)
+        if await rows.count() != 2:
+            bad.append(f"searching 'triage' leaves {await rows.count()} rows")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "pills count and filter, search narrows, rows link to /runs/<id>, $0 and Manual, the failed step named"
+
+
+@check
+async def check_runpath(browser) -> str:
+    """A completed run reads as a path (M2b): the followed line, a timeline of real starts with a Parallel's
+    branches indented under it and model calls in the machine colour, a step that opens to its output, the
+    Result first under What it produced — and the page asks only for the run, its workflow, its nested runs and
+    its events."""
+    ctx, page, seen = await _m2b_page(browser, "/runs/run_smoke_m2b_done")
+    bad: list[str] = []
+    try:
+        if (await page.locator("main h1").first.inner_text()).strip() != "Smoke supplier review":
+            bad.append("the title is not the workflow")
+        line = "Followed the saved workflow: 5 of 5 steps, in order."
+        if not await page.get_by_text(line).count():
+            bad.append(f"no '{line}'")
+        timeline = page.get_by_role("table", name="Steps on a timeline")
+        rows = timeline.locator(':scope > [role="rowgroup"]')
+        if await rows.count() != 5:
+            bad.append(f"{await rows.count()} timeline rows, not 5")
+        order = [t.split("\n")[0].strip() for t in await rows.all_inner_texts()]
+        if order[:1] != ["Gather"] or "Combine" not in order or order.index("Combine") < 3:
+            bad.append(f"the timeline reads {order}")
+        colours = await page.evaluate("""() => {
+            const cs = getComputedStyle(document.documentElement);
+            const bars = [...document.querySelectorAll('[aria-label="Steps on a timeline"] [role=cell] > span.absolute.top-1')];
+            const probe = document.createElement('i'); document.body.append(probe);
+            const resolve = (v) => { probe.style.color = v; return getComputedStyle(probe).color; };
+            const out = { machine: resolve(cs.getPropertyValue('--machine')), bars: bars.map(b => getComputedStyle(b).backgroundColor) };
+            probe.remove(); return out; }""")
+        if colours["bars"].count(colours["machine"]) != 3:
+            bad.append(f"{colours['bars'].count(colours['machine'])} bars in the machine colour, not the 3 model calls")
+        indented = await timeline.locator(".border-l").count()
+        if indented != 2:
+            bad.append(f"{indented} rows indented under the Parallel, not 2")
+        await page.get_by_role("button", name="Show output of Write the review").click()
+        await asyncio.sleep(0.3)
+        if not await timeline.get_by_text("The smoke review for the operations team.").count():
+            bad.append("opening a step does not show its output")
+        produced = await page.locator("main ul").first.locator("li").first.inner_text()
+        if not produced.startswith("review") or "Result" not in produced:
+            bad.append(f"What it produced starts with {produced[:40]!r}")
+        allowed = {"GET /api/orchestrations/runs/run_smoke_m2b_done", "GET /api/orchestrations/orch_smoke_m2b",
+                   "GET /api/orchestrations/runs/run_smoke_m2b_done/children",
+                   "GET /api/orchestrations/runs/run_smoke_m2b_done/events/stream"}
+        extra = sorted(set(seen) - allowed)
+        if extra:
+            bad.append(f"the page asked for {extra}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "followed line, timeline with branches indented and model bars cyan, a step opens, Result first, 4 reads"
+
+
+@check
+async def check_runfailure(browser) -> str:
+    """A failed run leads with one plain sentence and the fix (M2b): the Python step's line, Open in editor and
+    Replay, and its traceback only behind Technical details; a run-level limit says it in words too."""
+    ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_fail")
+    bad: list[str] = []
+    try:
+        card = page.get_by_role("region", name="Why this run failed")
+        said = (await card.locator("h2").inner_text()).strip()
+        if said != "Check totals’s Python code raised an error on line 19.":
+            bad.append(f"the failure reads {said!r}")
+        trace = page.get_by_text("Traceback (most recent call last)")
+        if await trace.count() and await trace.first.is_visible():
+            bad.append("the traceback shows before Technical details is opened")
+        editor = card.get_by_role("link", name="Open in editor")
+        if await editor.get_attribute("href") != "/workflows?run=run_smoke_m2b_fail":
+            bad.append(f"Open in editor goes to {await editor.get_attribute('href')}")
+        if not await card.get_by_role("button", name="Replay").count():
+            bad.append("the card offers no Replay")
+        await card.locator("summary", has_text="Technical details").click()
+        await asyncio.sleep(0.3)
+        if not await trace.first.is_visible():
+            bad.append("Technical details does not hold the traceback")
+        if not await page.get_by_text("Stopped at step 1 of 4: Check totals.").count():
+            bad.append("no 'Stopped at step 1 of 4'")
+        await page.goto(f"{APP}/runs/run_smoke_m2b_turns", wait_until="domcontentloaded")
+        await page.get_by_role("region", name="Why this run failed").wait_for(timeout=20_000)
+        said = (await page.get_by_role("region", name="Why this run failed").locator("h2").inner_text()).strip()
+        if said != "This run used all 100 of its turns.":
+            bad.append(f"the turn limit reads {said!r}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the plain sentence and its fix lead; the traceback waits behind Technical details; the turn limit in words"
+
+
+@check
+async def check_runanswer(browser) -> str:
+    """A waiting run is answered on its page (M2b): its steps as a stepper with the waiting step marked, the
+    step's fields, and Send answer posts them keyed by name; the page then reads the run on, and the card goes."""
+    runs = json.loads(json.dumps(_M2B_RUNS))
+    answered = json.loads(json.dumps(runs["run_smoke_m2b_wait"]))
+    answered.update(status="completed", waiting_for_human=False, human_prompt=None, ended_at=_m2b_at(4))
+    answered["step_history"][-1].update(status="completed", ended_at=_m2b_at(3), duration_seconds=2.0)
+    sent: list[dict] = []
+    ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_wait", runs=runs)
+    bad: list[str] = []
+    try:
+        async def human(route):
+            sent.append(json.loads(route.request.post_data or "{}"))
+            await route.fulfill(status=200, content_type="text/event-stream", body=_frame({"type": "done"}))
+        await ctx.route("**/api/orchestrations/runs/run_smoke_m2b_wait/human-input", human)
+        steps = page.get_by_role("list", name="Steps")
+        state = await steps.locator("li").nth(2).inner_text()
+        if "Accounts payable approval" not in state or "Needs input" not in state:
+            bad.append(f"the third step reads {state!r}")
+        if "Not reached" not in await steps.locator("li").nth(3).inner_text():
+            bad.append("the step after the question is not 'Not reached'")
+        card = page.get_by_role("region", name="Waiting for a person")
+        await card.get_by_role("checkbox", name="Approve payment").click()
+        await card.get_by_role("textbox", name="Note for the ledger").fill("Paid on Friday")
+        # The page reads the answered run from here on.
+        await ctx.route("**/api/orchestrations/runs/run_smoke_m2b_wait", _answer(answered))
+        await card.get_by_role("button", name="Send answer").click()
+        await page.get_by_text("Answer sent — the run is resuming.").wait_for(timeout=10_000)
+        if sent != [{"response": {"approved": True, "note": "Paid on Friday"}}]:
+            bad.append(f"the answer posted {sent}")
+        try:
+            await card.wait_for(state="detached", timeout=10_000)
+        except Exception:
+            bad.append("the question stayed up after it was answered")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the stepper marks the waiting step; the fields post keyed by name; the page reads the run on"
+
+
+
+@check
+async def check_runcontrast(browser) -> str:
+    """The runs list and the run page meet AA in both themes (M2b): the facts, the followed line on its tint, the
+    failure card with Technical details open, the question's card, an opened step, the stepper and the log."""
+    bad: list[str] = []
+    shots = (("/runs", None), ("/runs/run_smoke_m2b_done", "Show output of Write the review"),
+             ("/runs/run_smoke_m2b_fail", "Technical details"), ("/runs/run_smoke_m2b_wait", None),
+             ("/runs/run_smoke_m2b_turns", None))
+    for theme in ("light", "dark"):
+        for path, open_first in shots:
+            ctx, page, _ = await _m2b_page(browser, path, width=(WIDE[0], 2200), theme=theme)
+            try:
+                if open_first == "Technical details":
+                    await page.locator("summary", has_text="Technical details").click()
+                elif open_first:
+                    await page.get_by_role("button", name=open_first).click()
+                await asyncio.sleep(0.6)
+                for row in await page.evaluate(CONTRAST):
+                    if any(row["fg"] == fg and row["bg"] == bg for fg, bg, _ in CONTRAST_WAIVED):
+                        continue
+                    bad.append(f"{theme} {path}: {row['ratio']}:1 (needs {row['need']}) "
+                               f"{row['fg']} on {row['bg']} — {row['txt'][:24]!r}")
+            finally:
+                await ctx.close()
+    if bad:
+        raise AssertionError(f"{len(bad)} below AA: " + "; ".join(bad[:8]))
+    return f"{len(shots)} run screens in both themes, every text at AA"
 
 
 async def main() -> int:
