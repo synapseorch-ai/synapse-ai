@@ -1,13 +1,10 @@
 import { Dashboard } from '@/components/app/Dashboard';
-import { Screen } from '@/components/ui';
-import { navEntryFor } from '@/lib/nav';
+import { AppScreen } from '@/components/app/AppScreen';
 
 export default function DashboardPage() {
-    const nav = navEntryFor('dashboard')!;
-
     return (
-        <Screen title={nav.label} description={nav.blurb}>
+        <AppScreen id="dashboard">
             <Dashboard />
-        </Screen>
+        </AppScreen>
     );
 }

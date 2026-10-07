@@ -12,6 +12,7 @@ import { fetchAllSettingsData } from '@/store/settingsSlice';
 
 import type { Tab } from './settings/types';
 import { LinkButton, Screen } from '@/components/ui';
+import { SettingsNav } from '@/components/app/SettingsNav';
 import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 import { AUTH_CHANGED_EVENT, readAuthStatus } from '@/lib/auth';
 import { KNOWLEDGE_SWITCHED_EVENT } from '@/lib/knowledge';
@@ -517,8 +518,10 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     return (
         <SavedSecretsContext.Provider value={{ secrets: secretState, remove: removeSecret }}>
             <Screen
+                eyebrow="Settings"
                 title={nav.label}
                 description={nav.blurb}
+                aside={<SettingsNav />}
                 /* The close control is rendered here rather than being a prop
                    on `Screen`: leaving the section is a fact about Settings,
                    not about page frames in general, and the kit's Screen is

@@ -54,6 +54,7 @@ export {
   titleClass,
   type Tone,
 } from "./text";
+export { PageFrame, PageFrameHeader, type PageWidth } from "./page-frame";
 export { Screen, type ScreenWidth } from "./screen";
 export { PageHeaderSlot, PageHeaderSlotProvider } from "./page-header-slot";
 

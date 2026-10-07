@@ -1,13 +1,10 @@
 import { RunsScreen } from '@/components/runs/RunsScreen';
-import { Screen } from '@/components/ui';
-import { navEntryFor } from '@/lib/nav';
+import { AppScreen } from '@/components/app/AppScreen';
 
 export default function RunsPage() {
-    const nav = navEntryFor('runs')!;
-
     return (
-        <Screen title={nav.label} description={nav.blurb} width="wide">
+        <AppScreen id="runs" width="wide">
             <RunsScreen />
-        </Screen>
+        </AppScreen>
     );
 }

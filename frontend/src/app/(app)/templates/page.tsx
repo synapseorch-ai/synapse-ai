@@ -1,13 +1,10 @@
 import { TemplatesScreen } from '@/components/templates/TemplatesScreen';
-import { Screen } from '@/components/ui';
-import { navEntryFor } from '@/lib/nav';
+import { AppScreen } from '@/components/app/AppScreen';
 
 export default function TemplatesPage() {
-    const nav = navEntryFor('templates')!;
-
     return (
-        <Screen title={nav.label} description={nav.blurb}>
+        <AppScreen id="templates">
             <TemplatesScreen />
-        </Screen>
+        </AppScreen>
     );
 }

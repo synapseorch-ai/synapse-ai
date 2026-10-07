@@ -41,6 +41,9 @@ export const sectionClass = "text-section text-text";
 /**
  * The `<h1>` block at the top of a screen, with its actions on the right.
  *
+ * The title is the page title of the type scale (`titleClass`, 28px; 24px on a
+ * phone), since M1a — it was 20px, the same as everything else.
+ *
  * The shell's slot (the help "?") leads the right-hand cluster, so the page's
  * own actions — a primary button, Settings' close — keep the far right. The
  * cluster renders even with no actions, since the slot still needs a place, and
@@ -51,12 +54,19 @@ export function PageHeader({
   title,
   description,
   actions,
+  eyebrow,
   children,
   className,
 }: {
   title: React.ReactNode;
   description?: React.ReactNode;
   actions?: React.ReactNode;
+  /**
+   * The small line above the title: where the page lives. `null` draws the
+   * line empty, which is how `PageFrame` keeps every title at one height;
+   * leaving it out draws no line at all.
+   */
+  eyebrow?: React.ReactNode;
   /** Sits above the title — a back link, a breadcrumb. */
   children?: React.ReactNode;
   className?: string;
@@ -64,18 +74,21 @@ export function PageHeader({
   return (
     <div className={className}>
       {children && <div className="mb-3">{children}</div>}
+      {eyebrow !== undefined && (
+        <div className="mb-1 flex h-5 items-center gap-1.5 text-xs font-medium text-text-faint">{eyebrow}</div>
+      )}
+      {/* The actions share the title's row, not the description's: beside the
+          whole text block they wrapped under a long description on a phone. */}
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight text-text">{title}</h1>
-          {description && (
-            <p className="mt-1 max-w-2xl text-sm leading-relaxed text-text-muted">{description}</p>
-          )}
-        </div>
+        <h1 className={cn(titleClass, "min-w-0 max-sm:text-2xl")}>{title}</h1>
         <div className="flex shrink-0 flex-wrap items-center gap-2 empty:hidden">
           <PageHeaderSlot />
           {actions}
         </div>
       </div>
+      {description && (
+        <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-text-muted">{description}</p>
+      )}
     </div>
   );
 }

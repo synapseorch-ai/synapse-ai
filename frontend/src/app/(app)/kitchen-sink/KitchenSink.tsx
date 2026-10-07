@@ -52,7 +52,7 @@ import {
   Modal,
   Mono,
   Muted,
-  PageHeader,
+  PageFrame,
   RowMenu,
   SearchInput,
   Section,
@@ -144,24 +144,23 @@ export function KitchenSink() {
 
   return (
     <TooltipProvider>
-      {/* The shell's <main> is `overflow-hidden` and every other screen brings
-          its own scroller (the kit's `Screen`). This page does not use `Screen`
-          — it is demonstrating the primitives, header included — so it has to
-          own the scroller itself, or 3,498px of it is simply unreachable. */}
-      <div className="h-full overflow-y-auto">
-        <div className="mx-auto w-full max-w-[88rem] space-y-8 px-8 py-7">
-        <PageHeader
-          title="Kitchen sink"
-          description="Every primitive in the design system, in the states you cannot reach by clicking around the product."
-          actions={
-            <Button
-              variant="secondary"
-              onClick={() => switchTheme(setMode, theme === "dark" ? "light" : "dark")}
-            >
-              Switch to {theme === "dark" ? "light" : "dark"}
-            </Button>
-          }
-        />
+      {/* The page frame, like every other screen (M1a): it brings the
+          scroller the shell's `overflow-hidden` <main> needs, and the title sits
+          where every other page's does. */}
+      <PageFrame
+        eyebrow="Design system"
+        title="Kitchen sink"
+        description="Every primitive in the design system, in the states you cannot reach by clicking around the product."
+        width="wide"
+        actions={
+          <Button
+            variant="secondary"
+            onClick={() => switchTheme(setMode, theme === "dark" ? "light" : "dark")}
+          >
+            Switch to {theme === "dark" ? "light" : "dark"}
+          </Button>
+        }
+      >
 
         <Card title="Buttons" description="Hover each one: the cursor must become a pointer.">
           <CardBody className="space-y-5">
@@ -539,8 +538,7 @@ export function KitchenSink() {
           tone={toast.tone}
           onDismiss={() => setToast((t) => ({ ...t, message: "" }))}
         />
-        </div>
-      </div>
+      </PageFrame>
     </TooltipProvider>
   );
 }

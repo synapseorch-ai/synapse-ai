@@ -1,6 +1,5 @@
 import { VaultTab } from '@/components/settings/VaultTab';
-import { Screen } from '@/components/ui';
-import { navEntryFor } from '@/lib/nav';
+import { AppScreen } from '@/components/app/AppScreen';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,11 +10,10 @@ export default async function VaultPage(props: {
     // server and passed down, as the orchestrations page reads `?run=`.
     const searchParams = await props.searchParams;
     const initialPath = typeof searchParams.path === 'string' ? searchParams.path : undefined;
-    const nav = navEntryFor('vault')!;
 
     return (
-        <Screen title={nav.label} description={nav.blurb} bleed>
+        <AppScreen id="vault" bleed>
             <VaultTab initialPath={initialPath} />
-        </Screen>
+        </AppScreen>
     );
 }

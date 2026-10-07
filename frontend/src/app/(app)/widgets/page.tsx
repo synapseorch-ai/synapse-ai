@@ -1,6 +1,5 @@
 import { WidgetsTab } from '@/components/settings/WidgetsTab';
-import { Screen } from '@/components/ui';
-import { navEntryFor } from '@/lib/nav';
+import { AppScreen } from '@/components/app/AppScreen';
 
 /*
  * Widgets: an agent on someone's website, moved out of Settings into the
@@ -8,11 +7,9 @@ import { navEntryFor } from '@/lib/nav';
  * /settings/widgets redirects here.
  */
 export default function WidgetsPage() {
-    const nav = navEntryFor('widgets')!;
-
     return (
-        <Screen title={nav.label} description={nav.blurb}>
+        <AppScreen id="widgets">
             <WidgetsTab />
-        </Screen>
+        </AppScreen>
     );
 }

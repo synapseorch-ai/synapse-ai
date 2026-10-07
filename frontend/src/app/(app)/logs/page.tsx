@@ -1,13 +1,10 @@
 import { LogsTab } from '@/components/settings/LogsTab';
-import { Screen } from '@/components/ui';
-import { navEntryFor } from '@/lib/nav';
+import { AppScreen } from '@/components/app/AppScreen';
 
 export default function LogsPage() {
-    const nav = navEntryFor('logs')!;
-
     return (
-        <Screen title={nav.label} description={nav.blurb} bleed>
+        <AppScreen id="logs" bleed>
             <LogsTab />
-        </Screen>
+        </AppScreen>
     );
 }

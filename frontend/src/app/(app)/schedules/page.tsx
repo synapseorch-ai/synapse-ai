@@ -1,13 +1,10 @@
 import { SchedulesTab } from '@/components/settings/SchedulesTab';
-import { Screen } from '@/components/ui';
-import { navEntryFor } from '@/lib/nav';
+import { AppScreen } from '@/components/app/AppScreen';
 
 export default function SchedulesPage() {
-    const nav = navEntryFor('schedules')!;
-
     return (
-        <Screen title={nav.label} description={nav.blurb} bleed>
+        <AppScreen id="schedules" bleed>
             <SchedulesTab />
-        </Screen>
+        </AppScreen>
     );
 }

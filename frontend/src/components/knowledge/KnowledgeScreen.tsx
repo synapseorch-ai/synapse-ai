@@ -146,11 +146,11 @@ export function KnowledgeScreen() {
     };
 
     if (enabled === null) {
-        return <Screen title="Knowledge"><div className="flex justify-center py-12"><Spinner /></div></Screen>;
+        return <Screen eyebrow="Build" title="Knowledge"><div className="flex justify-center py-12"><Spinner /></div></Screen>;
     }
     if (!enabled) {
         return (
-            <Screen title="Knowledge" description="Agents that answer from your documents, with sources.">
+            <Screen eyebrow="Build" title="Knowledge" description="Agents that answer from your documents, with sources.">
                 <EmptyState title="Knowledge is off in this workspace">
                     {offHint ?? 'Knowledge is not switched on here yet.'}
                 </EmptyState>
@@ -160,6 +160,7 @@ export function KnowledgeScreen() {
 
     return (
         <Screen
+            eyebrow="Build"
             title="Knowledge"
             description="Vault folders made searchable. Every file in a knowledge base's folder is read and indexed."
             width="wide"

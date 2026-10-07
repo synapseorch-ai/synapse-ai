@@ -1,6 +1,5 @@
 import { OrchestrationTab } from '@/components/settings/OrchestrationTab';
-import { Screen } from '@/components/ui';
-import { navEntryFor } from '@/lib/nav';
+import { AppScreen } from '@/components/app/AppScreen';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,12 +13,10 @@ export default async function WorkflowsPage(props: {
     const searchParams = await props.searchParams;
     const runId = typeof searchParams.run === 'string' ? searchParams.run : undefined;
     const orchId = typeof searchParams.id === 'string' ? searchParams.id : undefined;
-    const nav = navEntryFor('orchestrations')!;
-
 
     return (
-        <Screen title={nav.label} description={nav.blurb} bleed>
+        <AppScreen id="orchestrations" bleed>
             <OrchestrationTab initialRunId={runId} initialOrchId={orchId} />
-        </Screen>
+        </AppScreen>
     );
 }

@@ -1,15 +1,12 @@
 import { SkillsScreen } from '@/components/settings/SkillsScreen';
-import { Screen } from '@/components/ui';
-import { navEntryFor } from '@/lib/nav';
+import { AppScreen } from '@/components/app/AppScreen';
 
 export const dynamic = 'force-dynamic';
 
 export default function SkillsPage() {
-    const nav = navEntryFor('skills')!;
-
     return (
-        <Screen title={nav.label} description={nav.blurb}>
+        <AppScreen id="skills">
             <SkillsScreen />
-        </Screen>
+        </AppScreen>
     );
 }

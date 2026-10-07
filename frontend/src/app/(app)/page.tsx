@@ -12,14 +12,13 @@ import { HumanStepAnswer } from '@/components/HumanStepAnswer';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
-import { Markdown, Spinner } from '@/components/ui';
+import { Markdown, PageFrameHeader, Spinner } from '@/components/ui';
 
 import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
-import { HelpButton } from '@/components/help';
 
 // ─── LLM Thought Collapsible ────────────────────────────────────────────────
 type ThoughtEntry =
@@ -2542,29 +2541,30 @@ export default function Home() {
       )}
 
       <div className="flex-1 flex flex-col w-full border-r border-zinc-800 relative">
-        {/* Header */}
-        <header className="h-14 shrink-0 border-b border-border bg-surface px-3 md:px-6 z-10">
-          <div className='w-full md:max-w-5xl mx-auto h-full flex items-center justify-between gap-2'>
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div
+        {/* The page frame's header (M1a): chat's own header used to be a 56px
+            bar with the agent's name as its title, centred in 5xl, so the title
+            sat nowhere near any other page's. Now it is "Chat", where every
+            title is, and the agent it talks to — with the model's state — is
+            the line under it. The "?" comes from the shell's slot. */}
+        <PageFrameHeader
+          bleed
+          eyebrow="Build"
+          title="Chat"
+          description={
+            <span className="flex min-w-0 items-center gap-2">
+              <span
                 className={cn(
                   "size-2 shrink-0 rounded-full",
                   systemStatus?.model_ready === true ? "bg-success animate-pulse"
                     : systemStatus?.model_ready === false ? "bg-warning" : "bg-zinc-600",
                 )}
                 title={systemStatus?.model_problem || undefined}
-              ></div>
-              <h1
-                className="min-w-0 truncate text-sm font-semibold tracking-tight text-text"
-                title={agentName}
-              >
-                {agentName}
-              </h1>
-            </div>
+              />
+              <span className="min-w-0 truncate" title={agentName}>{agentName}</span>
+            </span>
+          }
+          actions={
             <div className="flex items-center">
-              {/* The "?" (H1). This header is chat's own, not the kit's
-                  PageHeader, so the shell's slot does not reach it. */}
-              <HelpButton className="mr-2 lg:mr-4" />
               {/* Mode & Model Info — or, for a workflow agent, its size (U64) */}
               {workflowId ? (
                 <div
@@ -2635,11 +2635,9 @@ export default function Home() {
               >
                 <History className="h-4 w-4" />
               </button>
-
             </div>
-          </div>
-
-        </header>
+          }
+        />
 
         {/* Running / paused orchestrations — click through to the live run view */}
         <ActiveRunsBanner />
