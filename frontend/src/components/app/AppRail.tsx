@@ -219,8 +219,10 @@ export function AppRail({
             </div>
 
             {/* Reached from every page, so they stand above the hubs rather
-                than inside one. */}
-            <div className="shrink-0 space-y-1 px-2 pb-2">
+                than inside one. 12px apart, not the hubs' 4px: two controls,
+                not two rows of one list (Naveen, M1b) — the same 12px as from
+                Build with AI down to Home. */}
+            <div className="shrink-0 space-y-3 px-2 pb-2">
                 {onJump && (
                     <button
                         type="button"
