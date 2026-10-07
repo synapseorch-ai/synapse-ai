@@ -1,31 +1,31 @@
 'use client';
 /*
- * Runs: every run of a workflow, newest first (D209, M1a).
+ * Runs: every run of a workflow, newest first, grouped by day (D209, M1a; the
+ * list itself is M2b's shared `RunList`).
  *
- * Until M1a the only table of runs sat on the Workflows landing, behind its
- * Active / Recent / All runs tabs, and "Runs & Logs" held the log viewer alone.
- * This page shows the same table with the same three views and the same
- * fetches; a run opens on the canvas through the address the landing already
- * keeps (`/workflows?run=<id>`). The log viewer is Logs, the tab beside this one.
+ * The pills (All, Needs you, Running, Queued, Failed, Completed, Cancelled) take
+ * the place of the Active / Recent / All runs views; Active is Running and
+ * Needs you, and Today's group at the top is Recent. The same two reads as
+ * before: the latest runs every 5 s, so a live run moves, and the latest 100
+ * every 10 s, which the counts are of. A row opens the run's page,
+ * `/runs/<id>`; the log viewer is Logs, the tab beside this one.
  */
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 
-import { cn } from '@/lib/utils';
-import { RunsTable, isLiveRun, type RunSummary, type RunsTableWorkflow } from './RunsTable';
+import { RunList } from '@/components/run';
+import { ossRunRow } from '@/lib/runHost';
+import type { Orchestration } from '@/types/orchestration';
 
-type View = 'active' | 'recent' | 'all';
+import type { RunSummary } from './summary';
+
+const ALL = 100;
 
 export function RunsScreen() {
-    const router = useRouter();
-    const [workflows, setWorkflows] = useState<RunsTableWorkflow[]>([]);
+    const [workflows, setWorkflows] = useState<Orchestration[]>([]);
     const [schedules, setSchedules] = useState<{ id: string; name: string }[]>([]);
-    const [activeRuns, setActiveRuns] = useState<RunSummary[]>([]);
-    const [pastRuns, setPastRuns] = useState<RunSummary[]>([]);
-    const [allRuns, setAllRuns] = useState<RunSummary[]>([]);
-    // Until someone picks a view it follows the work, as the landing's tabs do:
-    // Active while something is running or paused, All runs otherwise.
-    const [chosen, setView] = useState<View | null>(null);
+    const [recent, setRecent] = useState<RunSummary[]>([]);
+    const [all, setAll] = useState<RunSummary[]>([]);
+    const [loaded, setLoaded] = useState(false);
 
     useEffect(() => {
         fetch('/api/orchestrations').then(r => r.json()).then(data => {
@@ -37,76 +37,49 @@ export function RunsScreen() {
         }).catch(() => {});
     }, []);
 
-    // The same 5 s poll as the landing's: what is live, and what finished lately.
+    // What is live, and what finished lately.
     useEffect(() => {
         const read = () => fetch('/api/orchestrations/runs')
             .then(r => r.json())
-            .then(data => {
-                if (Array.isArray(data)) {
-                    setActiveRuns(data.filter(isLiveRun));
-                    setPastRuns(data);
-                }
-            })
+            .then(data => { if (Array.isArray(data)) setRecent(data); })
             .catch(() => {});
         read();
         const interval = setInterval(read, 5000);
         return () => clearInterval(interval);
     }, []);
 
-    const view: View = chosen ?? (activeRuns.length > 0 ? 'active' : 'all');
-
-    // The heavier list (up to 100 checkpoints) only while it is shown, every 10 s.
+    // The latest hundred, which the pills count.
     useEffect(() => {
-        if (view !== 'all') return;
-        const read = () => fetch('/api/orchestrations/runs?limit=100')
+        const read = () => fetch(`/api/orchestrations/runs?limit=${ALL}`)
             .then(r => r.json())
-            .then(d => { if (Array.isArray(d)) setAllRuns(d); })
-            .catch(() => {});
+            .then(d => { if (Array.isArray(d)) setAll(d); })
+            .catch(() => {})
+            .finally(() => setLoaded(true));
         read();
         const interval = setInterval(read, 10000);
         return () => clearInterval(interval);
-    }, [view]);
+    }, []);
 
-    const views: { id: View; label: string; count: number | null }[] = [
-        { id: 'active', label: 'Active', count: activeRuns.length },
-        { id: 'recent', label: 'Recent', count: null },
-        { id: 'all', label: 'All runs', count: null },
-    ];
-    const open = (run: RunSummary) => router.push(`/workflows?run=${encodeURIComponent(run.run_id)}`);
+    // The hundred, with the fresher reads of the newest laid over them.
+    const rows = useMemo(() => {
+        const byId = new Map(all.map((r) => [r.run_id, r]));
+        for (const r of recent) byId.set(r.run_id, r);
+        return [...byId.values()]
+            .sort((a, b) => String(b.started_at ?? '').localeCompare(String(a.started_at ?? '')))
+            .map((r) => ossRunRow(r, workflows, schedules));
+    }, [all, recent, workflows, schedules]);
 
     return (
-        <div className="space-y-4">
-            <div role="group" aria-label="Show runs" className="flex w-fit items-center gap-1 rounded-md bg-surface-2 p-1">
-                {views.map(v => (
-                    <button
-                        key={v.id}
-                        type="button"
-                        aria-pressed={view === v.id}
-                        onClick={() => setView(v.id)}
-                        className={cn(
-                            'flex h-7 items-center gap-1.5 rounded px-3 text-xs font-medium transition-colors',
-                            view === v.id ? 'bg-bg text-text shadow-sm' : 'text-text-muted hover:text-text',
-                        )}
-                    >
-                        {v.label}
-                        {v.count ? (
-                            <span className="rounded-full bg-machine-subtle px-1.5 text-2xs text-accent-ink">{v.count}</span>
-                        ) : null}
-                    </button>
-                ))}
-            </div>
-            {view === 'active' && (
-                <RunsTable rows={activeRuns} empty="No active runs — start one from Workflows."
-                    workflows={workflows} schedules={schedules} onOpen={open} />
-            )}
-            {view === 'recent' && (
-                <RunsTable rows={pastRuns.filter(r => !isLiveRun(r)).slice(0, 10)} empty="No finished runs yet."
-                    workflows={workflows} schedules={schedules} onOpen={open} />
-            )}
-            {view === 'all' && (
-                <RunsTable rows={allRuns.length > 0 ? allRuns : pastRuns} empty="No runs recorded yet."
-                    workflows={workflows} schedules={schedules} onOpen={open} />
-            )}
-        </div>
+        <RunList
+            rows={rows}
+            workflows={workflows}
+            hrefOf={(row) => `/runs/${encodeURIComponent(row.id)}`}
+            caption={all.length >= ALL ? `The latest ${ALL} runs.` : undefined}
+            empty={
+                <p className="px-2.5 py-10 text-center text-sm text-text-faint">
+                    {loaded ? 'No runs recorded yet. Start one from Workflows.' : 'Reading runs…'}
+                </p>
+            }
+        />
     );
 }

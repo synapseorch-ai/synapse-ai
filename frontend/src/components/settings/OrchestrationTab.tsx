@@ -27,7 +27,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
-import { RunsTable, isLiveRun, runStatusMeta, type RunSummary } from '@/components/runs/RunsTable';
+import { isLiveRun, runStatusMeta, type RunSummary } from '@/components/runs/summary';
+import { RunList, type RunRow } from '@/components/run';
+import { ossRunRow } from '@/lib/runHost';
 
 type ToolCallLogEntry = { kind: 'tool_call'; tool_name: string; args: Record<string, any>; step_name?: string };
 type ToolResultLogEntry = { kind: 'tool_result'; tool_name: string; preview: string };
@@ -550,6 +552,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         // adding them to the deps array would be a temporal-dead-zone read during render.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [orchestrations]);
+
+    // A row of the landing's run tables (the shared list, M2b) opens the run here, on the canvas.
+    const openLandingRun = (row: RunRow) => restoreRun({ run_id: row.id, orchestration_id: row.workflowId, status: row.status });
 
     // --- Select orchestration ---
     const selectOrchestration = useCallback((id: string | null) => {
@@ -1871,32 +1876,35 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                         )}
 
                         {landingTab === 'active' && (
-                            <RunsTable
-                                rows={activeRuns}
-                                empty="No active runs — start one from the Orchestrations tab."
+                            <RunList
+                                rows={activeRuns.map(r => ossRunRow(r, orchestrations, schedules))}
                                 workflows={orchestrations}
-                                schedules={schedules}
-                                onOpen={restoreRun}
+                                filters={false}
+                                search={false}
+                                onOpen={openLandingRun}
+                                empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No active runs — start one from the Orchestrations tab.</p>}
                             />
                         )}
 
                         {landingTab === 'recent' && (
-                            <RunsTable
-                                rows={pastRuns.filter(r => !isLiveRun(r)).slice(0, 10)}
-                                empty="No finished runs yet."
+                            <RunList
+                                rows={pastRuns.filter(r => !isLiveRun(r)).slice(0, 10).map(r => ossRunRow(r, orchestrations, schedules))}
                                 workflows={orchestrations}
-                                schedules={schedules}
-                                onOpen={restoreRun}
+                                filters={false}
+                                search={false}
+                                onOpen={openLandingRun}
+                                empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No finished runs yet.</p>}
                             />
                         )}
 
                         {landingTab === 'all' && (
-                            <RunsTable
-                                rows={allRuns.length > 0 ? allRuns : pastRuns}
-                                empty="No runs recorded yet."
+                            <RunList
+                                rows={(allRuns.length > 0 ? allRuns : pastRuns).map(r => ossRunRow(r, orchestrations, schedules))}
                                 workflows={orchestrations}
-                                schedules={schedules}
-                                onOpen={restoreRun}
+                                filters={false}
+                                search={false}
+                                onOpen={openLandingRun}
+                                empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No runs recorded yet.</p>}
                             />
                         )}
                     </div>
@@ -2245,6 +2253,17 @@ function BottomPanel({
                         </span>
                     )}
                 </button>
+                {/* The run's own page (M2b): its path, why it failed, what it produced.
+                    A plain link, not a client one, so unsaved edits still get the
+                    browser's leave prompt (the draft's `beforeunload` guard). */}
+                {runId && (
+                    <a
+                        href={`/runs/${encodeURIComponent(runId)}`}
+                        className="ml-auto mr-3 inline-flex items-center gap-1 self-center rounded-sm text-xs text-accent-ink hover:underline"
+                    >
+                        <ExternalLink size={11} aria-hidden /> Open run page
+                    </a>
+                )}
             </div>
 
             <div ref={scrollRef} onScroll={onPanelScroll} className="p-4 flex-1 overflow-y-auto min-h-0">
