@@ -126,16 +126,16 @@ export function RunStrip({
                 <FileText className="size-3.5" aria-hidden /> Run Log
                 {runStatus !== 'idle' && <span className={cn('size-2 rounded-full', DOT[runStatus] ?? 'bg-danger')} aria-hidden />}
             </button>
+            {/* An icon only (Naveen, M3a-1 review); its name and tooltip keep the words and the count. */}
             <button
                 type="button"
                 aria-pressed={drawer === 'recent'}
                 onClick={() => toggle('recent')}
-                className={cn(buttonStyles({ variant: 'ghost', size: 'sm' }), drawer === 'recent' && 'bg-surface-2 text-text')}
+                aria-label={`Recent Runs${pastRunCount > 0 ? ` (${pastRunCount})` : ''}`}
+                title={`Recent Runs${pastRunCount > 0 ? ` (${pastRunCount})` : ''}`}
+                className={cn(buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: true }), drawer === 'recent' && 'bg-surface-2 text-text')}
             >
-                <History className="size-3.5" aria-hidden /> Recent Runs
-                {pastRunCount > 0 && (
-                    <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-2xs text-text-muted">{pastRunCount}</span>
-                )}
+                <History className="size-4" aria-hidden />
             </button>
 
             <Modal
