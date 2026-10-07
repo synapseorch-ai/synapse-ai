@@ -99,7 +99,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const statusFrame: Record<string, string> = {
         pending: 'border-border-strong',
         running: 'border-accent shadow-[0_0_0_3px_var(--ring)] animate-pulse',
-        paused: 'border-warning shadow-[0_0_12px_-2px_var(--warning)]',
+        paused: 'border-person shadow-[0_0_12px_-2px_var(--person)]',
         completed: 'border-success',
         failed: 'border-danger',
     };
@@ -134,7 +134,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             {(errorCount > 0 || warningCount > 0) && (
                 <span
                     className={`absolute -right-2 -top-2 z-10 flex size-[18px] items-center justify-center rounded-full border border-[var(--bg)] text-[10px] font-semibold ${
-                        errorCount > 0 ? 'bg-danger text-danger-fg' : 'bg-warning text-black'
+                        errorCount > 0 ? 'bg-danger text-danger-fg' : 'bg-warning text-bg'
                     }`}
                     title={(issues || []).map((i) => i.message).join('\n')}
                 >
@@ -217,7 +217,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                 ))
             ) : step.type === 'loop' ? (
                 <>
-                    <LabelledHandle id="body" top={35} color="var(--warning)" label="body" />
+                    <LabelledHandle id="body" top={35} color="var(--flow-loop)" label="body" />
                     <LabelledHandle id="done" top={65} color="var(--success)" label="done" />
                 </>
             ) : step.type === 'if_else' ? (
@@ -250,7 +250,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                     id="limit"
                     title="When it reaches the limit"
                     className="!size-2.5 !border-2 !border-[var(--bg)]"
-                    style={{ backgroundColor: 'var(--warning)' }}
+                    style={{ backgroundColor: 'var(--flow-loop)' }}
                 />
             )}
         </div>

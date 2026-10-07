@@ -152,7 +152,7 @@ function StatusBadge({ status }: { status: string }) {
         completed: 'text-success bg-success/10',
         running: 'text-accent bg-accent/10',
         failed: 'text-danger bg-danger/10',
-        paused: 'text-warning bg-warning/10',
+        paused: 'text-person-ink bg-person-subtle',
         cancelled: 'text-text-muted bg-surface-2',
     };
     return (
@@ -939,7 +939,7 @@ export function ScaleTab() {
                                         </div>
                                     )}
                                     {searchRunDetail.waiting_for_human && (
-                                        <div className="col-span-2 flex items-start gap-2 p-2 bg-warning-subtle border border-warning/40 text-warning rounded-md">
+                                        <div className="col-span-2 flex items-start gap-2 p-2 bg-person-subtle border border-person/40 text-person-ink rounded-md">
                                             <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                                             <span className="text-2xs">Waiting for human input{searchRunDetail.human_prompt ? `: ${searchRunDetail.human_prompt}` : ''}</span>
                                         </div>

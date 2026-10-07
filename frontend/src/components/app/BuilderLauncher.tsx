@@ -49,7 +49,7 @@ export function BuilderLauncher() {
                         <span
                             className={cn(
                                 'absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full',
-                                waiting ? 'bg-warning' : 'bg-accent',
+                                waiting ? 'bg-person' : 'bg-machine',
                             )}
                             aria-hidden
                         />

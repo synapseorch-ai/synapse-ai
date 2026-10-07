@@ -145,12 +145,12 @@ function HumanPromptCard({ content, onStop, open }: { content: string; onStop?: 
     return (
         <div className={cn(
             'overflow-hidden rounded-lg border',
-            open ? 'border-warning/40 bg-warning-subtle/40' : 'border-border bg-surface-2/40',
+            open ? 'border-person/40 bg-person-subtle/40' : 'border-border bg-surface-2/40',
         )}>
-            <div className={cn('border-b px-3 py-1.5', open ? 'border-warning/30' : 'border-border')}>
+            <div className={cn('border-b px-3 py-1.5', open ? 'border-person/30' : 'border-border')}>
                 <span className={cn(
                     'font-code text-[9px] uppercase tracking-widest',
-                    open ? 'text-warning' : 'text-text-faint',
+                    open ? 'text-person-ink' : 'text-text-faint',
                 )}>
                     {open ? 'Needs your answer' : 'Asked'}
                 </span>
@@ -170,7 +170,7 @@ function HumanPromptCard({ content, onStop, open }: { content: string; onStop?: 
                 </button>
             )}
             {onStop && (
-                <div className="flex items-center justify-end border-t border-warning/30 px-3 py-1.5">
+                <div className="flex items-center justify-end border-t border-person/30 px-3 py-1.5">
                     <button
                         type="button"
                         onClick={onStop}

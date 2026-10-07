@@ -160,7 +160,7 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
                 target: step.on_exhausted_step_id,
                 link: { kind: 'limit' },
                 label: 'at limit',
-                color: 'var(--warning)',
+                color: 'var(--flow-loop)',
                 dashed: true,
             }));
         }
@@ -251,7 +251,7 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
                     sourceHandle: 'body',
                     target: bodyIds[0],
                     link: { kind: 'loop_body' },
-                    color: 'var(--warning)',
+                    color: 'var(--flow-loop)',
                     dashed: true,
                 }));
                 // Intra-body sequential edges — implicit, not deletable
@@ -261,7 +261,7 @@ function stepsToEdges(steps: StepConfig[], editable = true): Edge[] {
                         source: bodyIds[i],
                         target: bodyIds[i + 1],
                         link: { kind: 'seq' },
-                        color: 'var(--warning)',
+                        color: 'var(--flow-loop)',
                         dashed: true,
                         thin: true,
                     }));

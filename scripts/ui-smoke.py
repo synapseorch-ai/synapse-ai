@@ -3566,7 +3566,7 @@ async def check_stepreason(browser) -> str:
 
 QUESTION_FRAME = """(sid) => {
   const card = document.querySelector(`.react-flow__node[data-id="${sid}"] > div`);
-  return card ? (card.className.match(/border-(warning|success|danger|accent|border-strong)/) || [card.className])[0] : null;
+  return card ? (card.className.match(/border-(person|warning|success|danger|accent|border-strong)/) || [card.className])[0] : null;
 }"""
 
 
@@ -3593,12 +3593,12 @@ async def check_cancelquestion(browser) -> str:
         await page.get_by_text("Waiting for your input").first.wait_for(timeout=60_000)
         await asyncio.sleep(0.5)
         run_id = await page.evaluate("() => (document.body.innerText.match(/Started run (\\S+)/) || [])[1] || null")
-        if await page.evaluate(QUESTION_FRAME, asking) != "border-warning":
+        if await page.evaluate(QUESTION_FRAME, asking) != "border-person":
             raise AssertionError("the question never showed as waiting, so this checks nothing")
 
         await page.get_by_role("button", name="Cancel", exact=True).click()
         await asyncio.sleep(2.0)
-        if await page.evaluate(QUESTION_FRAME, asking) == "border-warning":
+        if await page.evaluate(QUESTION_FRAME, asking) == "border-person":
             raise AssertionError("the step that asked still shows as waiting after the cancel")
         mine = [n for n in api("/api/notifications")["notifications"] if n.get("run_id") == run_id]
         asked = [n for n in mine if n.get("kind") == "human_input"]
@@ -3611,7 +3611,7 @@ async def check_cancelquestion(browser) -> str:
         await asyncio.sleep(SETTLE + 4.0)
         if await page.get_by_text("Waiting for your input").count():
             raise AssertionError("reopened from its link, the cancelled run asks again")
-        if await page.evaluate(QUESTION_FRAME, asking) == "border-warning":
+        if await page.evaluate(QUESTION_FRAME, asking) == "border-person":
             raise AssertionError("reopened, the step that asked shows as waiting")
         return "a cancelled run's question is closed on its step, in the bell (as cancelled) and reopened"
     finally:
@@ -4479,7 +4479,7 @@ async def check_duplicateurl(browser) -> str:
 NODE_FRAMES = """() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map(n => {
   const cls = (n.querySelector(':scope > div') || {}).className || '';
   return [n.getAttribute('data-id'),
-          (cls.match(/border-(warning|success|danger|accent|border-strong)/) || ['?'])[0]
+          (cls.match(/border-(person|warning|success|danger|accent|border-strong)/) || ['?'])[0]
           + (/animate-pulse/.test(cls) ? '+pulse' : '')];
 }))"""
 
