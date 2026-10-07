@@ -3,6 +3,7 @@ import { useState } from 'react';
 import * as RPopover from '@radix-ui/react-popover';
 import { Bell, CheckCircle2, AlertCircle, PauseCircle, ShieldAlert } from 'lucide-react';
 import { useNotifications, type RunNotification } from './NotificationProvider';
+import { answerToolApproval } from './ToolApproval';
 import { plainText } from '@/lib/plainText';
 
 /** How a resolved item ended, as its row says it. */
@@ -26,18 +27,10 @@ function ApprovalItem({ n }: { n: RunNotification }) {
         setBusy(true);
         setError('');
         try {
-            const res = await fetch(`/api/schedules/${encodeURIComponent(n.data?.schedule_id)}/approve`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ approve, approval_id: n.data?.approval_id }),
-            });
-            if (!res.ok) {
-                const detail = (await res.json().catch(() => ({}))).detail;
-                setError(typeof detail === 'string' ? detail : 'That answer did not go through.');
-            }
             // Success needs nothing here: the server re-sends this item resolved.
-        } catch {
-            setError('That answer did not go through.');
+            await answerToolApproval(n, approve);
+        } catch (e) {
+            setError(e instanceof Error ? e.message : 'That answer did not go through.');
         } finally {
             setBusy(false);
         }

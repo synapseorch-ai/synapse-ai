@@ -1,10 +1,6 @@
 import { Dashboard } from '@/components/app/Dashboard';
-import { AppScreen } from '@/components/app/AppScreen';
 
+/** Home. The page draws its own frame: its head is today's date, a greeting and how things stand (M2a). */
 export default function DashboardPage() {
-    return (
-        <AppScreen id="dashboard">
-            <Dashboard />
-        </AppScreen>
-    );
+    return <Dashboard />;
 }

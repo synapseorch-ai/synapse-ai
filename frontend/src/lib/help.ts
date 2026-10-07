@@ -34,15 +34,15 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     // ── Overview ────────────────────────────────────────────────────────────
     dashboard: {
         title: 'Home',
-        summary: 'A snapshot of the workspace: workflow runs that are live, what your model calls have cost, what you have built, and the latest runs.',
+        summary: 'What needs you first, then how the week went: runs waiting on an answer, the week’s figures and runs, what is coming up, and what your model calls have cost.',
         steps: [
-            'Check “Active now” for runs that are running or paused, and click one to open it.',
-            'Read “Total spend”, “Requests”, “Tokens” and “Cache saved”, totalled over every recorded model call.',
-            'Use “Spend by model” to see which models cost most; “Add one” sets a missing price in Usage.',
+            'Answer what is under “Needs you” right there: approve or decline a run’s question, or a scheduled agent’s tool call. “Open run” shows the whole run.',
+            'Read the strip: what is running now, what waits on you, and how many runs failed or completed in the last seven days. Each bar below is one run of the week.',
+            'Open a run from “Active now” or “Recent runs”, or click “All runs” for every run; “Coming up” lists the next scheduled runs.',
+            'Read “Total spend”, “Requests”, “Tokens” and “Cache saved” over every recorded model call, and “Spend by model” for which models cost most; “Add one” sets a missing price.',
             'Click a row under “Workspace” to go to your workflows, agents, schedules or apps.',
-            'Open a run from “Recent runs”, or click “All runs” for every run; each run’s full log is in Runs › Logs.',
         ],
-        media: { id: 'home/oss-dashboard', alt: 'The Home page: an Active now card, tiles for spend, requests, tokens and cache savings, spend by model, and recent runs.' },
+        media: { id: 'home/oss-dashboard', alt: 'The Home page: a greeting, a run waiting for approval under Needs you, the week’s figures and runs, recent runs and what is coming up.' },
         guide: '/guides/start/how-it-fits',
     },
     runs: {

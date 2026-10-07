@@ -15,11 +15,19 @@ import { hubOf } from '@/lib/nav';
 import { AppHubTabs } from './AppHubTabs';
 
 export function AppScreen({
-    id, actions, bleed, width, children,
+    id, actions, bleed, width, eyebrow, title, description, children,
 }: {
     /** The page's nav id (`orchestrations`, `logs`…). */
     id: string;
     actions?: React.ReactNode;
+    /**
+     * Words of the page's own in place of its nav entry's, for a page that
+     * speaks to the reader (Home: today's date, a greeting, how things stand).
+     * The menu keeps the entry's name.
+     */
+    eyebrow?: React.ReactNode;
+    title?: React.ReactNode;
+    description?: React.ReactNode;
     bleed?: boolean;
     width?: PageWidth;
     children: React.ReactNode;
@@ -30,9 +38,9 @@ export function AppScreen({
     const tabbed = hub.tabs.length > 1;
     return (
         <PageFrame
-            eyebrow={group ?? 'Overview'}
-            title={tabbed ? hub.label : entry.label}
-            description={entry.blurb}
+            eyebrow={eyebrow ?? group ?? 'Overview'}
+            title={title ?? (tabbed ? hub.label : entry.label)}
+            description={description ?? entry.blurb}
             tabs={tabbed ? <AppHubTabs hubId={hub.id} current={entry.href} /> : undefined}
             actions={actions}
             bleed={bleed}

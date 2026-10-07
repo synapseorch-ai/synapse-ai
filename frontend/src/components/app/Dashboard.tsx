@@ -1,36 +1,46 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /*
- * The overview: what is happening now, what it has cost, and what is in here.
+ * Home (M2a; UX1's approval-first Home): what needs the reader first, then how
+ * the week went, then everything the overview always showed.
  *
- * Built from the design system rather than hand-rolled, so it reads as the same
- * product as the cloud console: `Card`, `Stat`, `StatusBadge`, `EmptyState`.
+ * - The head speaks to the reader: today's date, a greeting, and one line on
+ *   how things stand. The menu still calls the page Home.
+ * - "Needs you": every run paused at a human step, answered in place with the
+ *   run page's own card (the same request, fields and refusals), and every
+ *   scheduled agent's tool call waiting for approval, with the bell's request.
+ * - The week as a strip of four figures and a bar per run; recent runs with
+ *   their path; the next scheduled runs.
+ * - Then what this page held before (D204: nothing is dropped): Active now,
+ *   spend, requests, tokens and cache savings, spend by model, and the
+ *   workspace's counts.
  *
- * Deliberately not chart-heavy. Cost, requests, tokens and savings are single
- * headline numbers, so they are stat tiles rather than plots. The one plot is
- * spend by model, which is a magnitude comparison across a handful of named
- * things — a single-series horizontal bar list, so one hue, values
- * direct-labelled, and no legend to decode.
+ * Colour only for meaning (D202): amber a person, cyan the machine at work,
+ * red a failure, success quiet. No boxes around sections: the approval card is
+ * the one object on the page.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { AlertTriangle, Blocks, Bot, Clock, MessagesSquare, Workflow } from 'lucide-react';
+
+import { AppScreen } from '@/components/app/AppScreen';
+import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
+import { NOTIFICATION_EVENT, useNotifications } from '@/components/notifications/NotificationProvider';
+import { ToolApprovalActions } from '@/components/notifications/ToolApproval';
 import {
-    Activity, ArrowRight, Blocks, Bot, Clock, Coins, DollarSign, Hash, Workflow,
-} from 'lucide-react';
-
-import { Card, CardBody, EmptyState, Stat, StatusBadge, TextLink } from '@/components/ui';
-import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
-import { NOTIFICATION_EVENT } from '@/components/notifications/NotificationProvider';
+    ComingUp, firstName, greeting, HomeSection, HomeStats, MAX_CARDS, NeedsYou, RecentRuns, RunHostProvider, RunWeek,
+    statusLine, today, upcoming, weekRuns, weekStats, useClock, type RunRecord, type RunRow, type ToolCall,
+    type WaitingBrief,
+} from '@/components/run';
+import type { RunSummary } from '@/components/runs/summary';
+import { Button, LinkButton, Mark, StatStrip, TextLink } from '@/components/ui';
 import { usdCompact } from '@/lib/money';
+import { plainText } from '@/lib/plainText';
+import { OSS_RUN_HOST, ossRunRecord, ossRunRow } from '@/lib/runHost';
+import type { Orchestration } from '@/types/orchestration';
 
-type Run = {
-    run_id: string;
-    orchestration_id: string;
-    status: string;
-    started_at: string | null;
-    waiting_for_human?: boolean;
-};
+/** The runs Home counts: the latest 200, the most the list route gives. */
+const RUNS_READ = 200;
 
 /** `priced`: whether the rate card has the model (U62). */
 type ModelStat = { model: string; estimated_cost: number; provider?: string; priced?: boolean };
@@ -43,77 +53,150 @@ type Summary = {
     by_model: ModelStat[];
 };
 
+type Schedule = {
+    id: string; name?: string; enabled?: boolean; next_run_at?: string | null; target_type?: string; target_id?: string;
+};
+
 const compact = (n: number) =>
     n >= 1e9 ? `${(n / 1e9).toFixed(1)}B`
         : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M`
             : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K`
                 : String(n);
 
-function since(iso: string | null): string {
-    if (!iso) return '—';
-    const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-    if (secs < 60) return `${Math.floor(secs)}s`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m`;
-    if (secs < 86400) return `${Math.floor(secs / 3600)}h`;
-    return `${Math.floor(secs / 86400)}d`;
-}
+const runHref = (id: string) => `/runs/${encodeURIComponent(id)}`;
+const isWaiting = (r: RunSummary) => r.status === 'paused' && Boolean(r.waiting_for_human);
+/** A waiting run's record is read again only when its question may have changed. */
+const keyOf = (r: RunSummary) => `${r.run_id}:${r.current_step_id ?? ''}:${r.steps_completed ?? 0}`;
 
 export function Dashboard() {
-    const router = useRouter();
-    const [runs, setRuns] = useState<Run[]>([]);
+    const clock = useClock();
+    const { open: openBuilder } = useBuilder();
+    const { notifications } = useNotifications();
+    const [runs, setRuns] = useState<RunSummary[]>([]);
+    const [runsLoaded, setRunsLoaded] = useState(false);
     const [summary, setSummary] = useState<Summary | null>(null);
-    const [counts, setCounts] = useState({ orchestrations: 0, agents: 0, schedules: 0, schedulesOn: 0, mcp: 0 });
-    const [orchNames, setOrchNames] = useState<Record<string, string>>({});
+    const [workflows, setWorkflows] = useState<Orchestration[]>([]);
+    const [agents, setAgents] = useState<{ id: string; name?: string }[]>([]);
+    const [schedules, setSchedules] = useState<Schedule[]>([]);
+    const [mcpCount, setMcpCount] = useState(0);
+    const [name, setName] = useState<string | null>(null);
     const [loaded, setLoaded] = useState(false);
+    /** Each waiting run's record, as its run page reads it; `null` when it could not be read. */
+    const [records, setRecords] = useState<Record<string, { key: string; data: any | null }>>({});
+    const reading = useRef(new Set<string>());
 
     const refreshRuns = useCallback(() => {
-        fetch('/api/orchestrations/runs')
+        fetch(`/api/orchestrations/runs?limit=${RUNS_READ}`)
             .then(r => r.json())
             .then(d => { if (Array.isArray(d)) setRuns(d); })
-            .catch(() => { });
+            .catch(() => { })
+            .finally(() => setRunsLoaded(true));
     }, []);
 
-    useEffect(() => {
-        refreshRuns();
-        const interval = setInterval(refreshRuns, 10000);
-        const onVisible = () => { if (document.visibilityState === 'visible') refreshRuns(); };
-        document.addEventListener('visibilitychange', onVisible);
-        window.addEventListener(NOTIFICATION_EVENT, refreshRuns);
-        // The AI builder can add an agent or an orchestration from any screen,
-        // and these are counts of exactly those.
-        window.addEventListener(RESOURCE_SAVED_EVENT, refreshRuns);
-        return () => {
-            clearInterval(interval);
-            document.removeEventListener('visibilitychange', onVisible);
-            window.removeEventListener(NOTIFICATION_EVENT, refreshRuns);
-            window.removeEventListener(RESOURCE_SAVED_EVENT, refreshRuns);
-        };
-    }, [refreshRuns]);
-
-    useEffect(() => {
-        const j = (url: string) => fetch(url).then(r => r.json()).catch(() => null);
+    const refreshCounts = useCallback(() => {
+        const j = (url: string) => fetch(url).then(r => (r.ok ? r.json() : null)).catch(() => null);
         Promise.all([
             j('/api/usage/summary'), j('/api/orchestrations'), j('/api/agents'),
-            j('/api/schedules'), j('/api/mcp/servers'),
-        ]).then(([usage, orch, agents, schedules, mcp]) => {
-            if (usage) setSummary(usage);
+            j('/api/schedules'), j('/api/mcp/servers'), j('/api/personal-details'),
+        ]).then(([usage, orch, agentList, scheduleList, mcp, me]) => {
             const list = (v: any) => (Array.isArray(v) ? v : Array.isArray(v?.servers) ? v.servers : []);
-            const sched = list(schedules);
-            setOrchNames(Object.fromEntries(list(orch).map((o: any) => [o.id, o.name])));
-            setCounts({
-                orchestrations: list(orch).length,
-                agents: list(agents).length,
-                schedules: sched.length,
-                schedulesOn: sched.filter((s: any) => s.enabled !== false).length,
-                mcp: list(mcp).length,
-            });
+            if (usage) setSummary(usage);
+            setWorkflows(list(orch));
+            setAgents(list(agentList));
+            setSchedules(list(scheduleList));
+            setMcpCount(list(mcp).length);
+            setName(firstName(me?.first_name));
             setLoaded(true);
         });
     }, []);
 
-    const live = runs.filter(r => r.status === 'running' || r.status === 'paused');
-    const recent = [...runs]
-        .sort((a, b) => (b.started_at ?? '').localeCompare(a.started_at ?? ''))
+    useEffect(() => {
+        refreshRuns();
+        refreshCounts();
+        const interval = setInterval(refreshRuns, 10000);
+        const onVisible = () => { if (document.visibilityState === 'visible') refreshRuns(); };
+        // The AI builder can add an agent or a workflow from any screen, and
+        // the counts are of exactly those.
+        const onSaved = () => { refreshRuns(); refreshCounts(); };
+        document.addEventListener('visibilitychange', onVisible);
+        window.addEventListener(NOTIFICATION_EVENT, refreshRuns);
+        window.addEventListener(RESOURCE_SAVED_EVENT, onSaved);
+        return () => {
+            clearInterval(interval);
+            document.removeEventListener('visibilitychange', onVisible);
+            window.removeEventListener(NOTIFICATION_EVENT, refreshRuns);
+            window.removeEventListener(RESOURCE_SAVED_EVENT, onSaved);
+        };
+    }, [refreshRuns, refreshCounts]);
+
+    // Oldest wait first: the one that has held a run up longest leads.
+    const waiting = useMemo(
+        () => runs.filter(isWaiting).sort((a, b) => String(a.started_at ?? '').localeCompare(String(b.started_at ?? ''))),
+        [runs],
+    );
+
+    // Read the record of each run answered in place, once per question.
+    useEffect(() => {
+        for (const r of waiting.slice(0, MAX_CARDS)) {
+            const key = keyOf(r);
+            if (records[r.run_id]?.key === key || reading.current.has(key)) continue;
+            reading.current.add(key);
+            fetch(`/api/orchestrations/runs/${encodeURIComponent(r.run_id)}`)
+                .then(res => (res.ok ? res.json() : null))
+                .catch(() => null)
+                .then(data => setRecords(cur => ({ ...cur, [r.run_id]: { key, data } })))
+                .finally(() => reading.current.delete(key));
+        }
+    }, [waiting, records]);
+
+    const scheduleNames = useMemo(() => schedules.map(s => ({ id: s.id, name: s.name ?? s.id })), [schedules]);
+    const rows: RunRow[] = useMemo(
+        () => runs.map(r => ossRunRow(r, workflows, scheduleNames)),
+        [runs, workflows, scheduleNames],
+    );
+    const byWorkflow = useMemo(() => new Map(workflows.map(w => [w.id, w])), [workflows]);
+
+    // Needs you: the first few runs as cards, the rest (and any whose record would not read) as rows.
+    const cards: RunRecord[] = [];
+    const more: WaitingBrief[] = [];
+    waiting.forEach((r, i) => {
+        const data = records[r.run_id]?.data;
+        const record = data ? ossRunRecord(data, byWorkflow.get(r.orchestration_id) ?? null, scheduleNames) : null;
+        if (i < MAX_CARDS && record && record.status === 'paused' && record.humanPrompt) cards.push(record);
+        else if (i >= MAX_CARDS || records[r.run_id]) {
+            more.push({
+                id: r.run_id,
+                workflowName: byWorkflow.get(r.orchestration_id)?.name ?? null,
+                prompt: record?.humanPrompt ?? null,
+                since: r.started_at ?? null,
+            });
+        }
+    });
+    const tools: ToolCall[] = notifications
+        .filter(n => n.kind === 'tool_approval' && !n.resolved)
+        .map(n => ({
+            id: String(n.id),
+            title: n.title,
+            body: n.body ? plainText(n.body) : null,
+            at: new Date(n.ts * 1000).toISOString(),
+            actions: <ToolApprovalActions n={n} />,
+        }));
+
+    const week = useMemo(() => weekRuns(rows, clock.now), [rows, clock.now]);
+    const stats = weekStats(week);
+    // Two hundred runs that all started this week: the week holds more than Home read.
+    const capped = runs.length >= RUNS_READ && week.length === rows.length;
+    const waitingCount = waiting.length + tools.length;
+    const pausedSince = cards
+        .map(c => [...c.history].reverse().find(h => h.status === 'paused')?.started_at)
+        .concat(waiting.slice(cards.length).map(r => r.started_at ?? undefined))
+        .filter((s): s is string => Boolean(s))
+        .sort()[0] ?? null;
+    const next = upcoming(schedules, s => targetName(s, workflows, agents));
+
+    const live = rows.filter(r => r.status === 'running' || r.status === 'paused');
+    const recent = [...rows]
+        .sort((a, b) => String(b.startedAt ?? '').localeCompare(String(a.startedAt ?? '')))
         .slice(0, 6);
 
     const models = (summary?.by_model ?? [])
@@ -124,106 +207,153 @@ export function Dashboard() {
     // Models the rate card does not have read "$0" as if free, and fell off the
     // top six by cost (U62). A local Ollama model is free, so it is not counted.
     const unpricedCount = (summary?.by_model ?? []).filter(m => m.priced === false && m.provider !== 'ollama').length;
+    const schedulesOn = schedules.filter(s => s.enabled !== false).length;
 
-    const runRow = (run: Run, tone: string) => (
-        <button
-            onClick={() => router.push(`/workflows?run=${encodeURIComponent(run.run_id)}`)}
-            className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-surface-2"
-        >
-            <span className="w-32 shrink-0">
-                <StatusBadge status={run.status} waitingForHuman={run.waiting_for_human} />
-            </span>
-            <span className={`min-w-0 flex-1 truncate text-sm ${tone}`}>
-                {orchNames[run.orchestration_id] ?? run.orchestration_id}
-            </span>
-            <span className="shrink-0 text-2xs tabular-nums text-text-faint">{since(run.started_at)}</span>
-            <ArrowRight className="size-3.5 shrink-0 text-text-faint" aria-hidden />
-        </button>
-    );
+    // Until mounted the clock has no "now": the lines are held empty, at their height, so nothing moves.
+    const blank = ' ';
 
     return (
-        <div className="space-y-6">
-            <Card
-                title="Active now"
-                actions={live.length > 0
-                    ? <TextLink href="/runs">All runs</TextLink>
-                    : undefined}
-            >
-                {live.length === 0 ? (
-                    <EmptyState title="Nothing running">
-                        Start one from <TextLink href="/workflows">Workflows</TextLink>.
-                    </EmptyState>
-                ) : (
-                    <CardBody>
-                        <ul className="space-y-1">
-                            {live.map(run => <li key={run.run_id}>{runRow(run, 'text-text')}</li>)}
-                        </ul>
-                    </CardBody>
-                )}
-            </Card>
+        <AppScreen
+            id="dashboard"
+            width="wide"
+            eyebrow={<span suppressHydrationWarning>{today(clock) ?? blank}</span>}
+            title={<span suppressHydrationWarning>{greeting(clock, name) ?? blank}</span>}
+            description={runsLoaded ? statusLine({ waiting: waitingCount, runs: stats.runs, failed: stats.failed }) : blank}
+            actions={
+                <>
+                    <LinkButton href="/">
+                        <MessagesSquare className="size-4" aria-hidden />
+                        Open chat
+                    </LinkButton>
+                    <Button onClick={() => openBuilder()}>
+                        <Mark size={20} compact={false} />
+                        Build with AI
+                    </Button>
+                </>
+            }
+        >
+            <div className="grid gap-7">
+                <RunHostProvider value={OSS_RUN_HOST}>
+                    <NeedsYou runs={cards} more={more} tools={tools} hrefOf={runHref} onChanged={refreshRuns} />
+                </RunHostProvider>
 
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                <Stat icon={DollarSign} label="Total spend" value={summary ? usdCompact(summary.total_cost) : '—'} hint="all recorded LLM calls" />
-                <Stat icon={Activity} label="Requests" value={summary ? summary.total_requests.toLocaleString() : '—'} />
-                <Stat icon={Hash} label="Tokens" value={summary ? compact(summary.total_tokens) : '—'} />
-                <Stat icon={Coins} label="Cache saved" value={summary ? usdCompact(summary.total_estimated_savings ?? 0) : '—'} hint="vs uncached pricing" />
-            </div>
+                <HomeStats
+                    running={rows.filter(r => r.status === 'running').length}
+                    nextRun={next[0]?.at ?? null}
+                    waiting={waitingCount}
+                    waitingSince={pausedSince}
+                    failed={stats.failed}
+                    failedSub={stats.lastFailure
+                        ? <Link href={runHref(stats.lastFailure.id)} className="text-accent-ink hover:underline">{stats.lastFailure.workflowName ?? 'Deleted workflow'}</Link>
+                        : undefined}
+                    completed={stats.completed}
+                    runs={stats.runs}
+                    capped={capped}
+                    clock={clock}
+                />
 
-            <div className="grid gap-6 lg:grid-cols-2">
-                {/* One series, so one hue and no legend: the row label is the
-                    identity and the value is direct-labelled beside it. */}
-                <Card title="Spend by model" actions={<TextLink href="/usage">Usage</TextLink>}>
-                    {models.length === 0 ? (
-                        <EmptyState title="No usage recorded yet" />
-                    ) : (
-                        <CardBody>
-                            <ul className="space-y-3">
-                                {models.map(m => (
-                                    <li key={m.model} title={`${m.model} — ${usdCompact(m.estimated_cost)}`}>
-                                        <div className="mb-1.5 flex items-baseline justify-between gap-3">
-                                            <span className="min-w-0 truncate text-sm text-text-muted">{m.model}</span>
-                                            {m.priced === false && m.provider !== 'ollama' ? (
-                                                <span className="shrink-0 text-sm text-amber-500">No price</span>
-                                            ) : (
-                                                <span className="shrink-0 text-sm tabular-nums text-text">
-                                                    {usdCompact(m.estimated_cost)}
-                                                </span>
-                                            )}
-                                        </div>
-                                        <div className="h-2 w-full rounded-[4px] bg-surface-2">
-                                            <div
-                                                className="h-2 rounded-r-md-[4px] bg-accent"
-                                                style={{ width: `${maxCost > 0 ? Math.max(2, (m.estimated_cost / maxCost) * 100) : 0}%` }}
-                                            />
-                                        </div>
-                                    </li>
-                                ))}
-                            </ul>
-                            {unpricedCount > 0 && (
-                                <p className="mt-4 text-xs text-text-muted">
-                                    {unpricedCount} {unpricedCount === 1 ? 'model has' : 'models have'} no price, so
-                                    {unpricedCount === 1 ? ' its' : ' their'} spend reads $0.{' '}
-                                    <TextLink href="/usage#pricing">Add one</TextLink>
-                                </p>
-                            )}
-                        </CardBody>
-                    )}
-                </Card>
+                <HomeSection id="active" title="Active now" link={live.length > 0 ? { href: '/runs', label: 'All runs' } : undefined}>
+                    <RecentRuns
+                        live
+                        label="Active now"
+                        rows={live}
+                        workflows={workflows}
+                        hrefOf={row => runHref(row.id)}
+                        empty={
+                            <p className="m-0 text-sm text-text-muted">
+                                <span className="font-medium text-text">Nothing running.</span>{' '}
+                                Start one from <TextLink href="/workflows">Workflows</TextLink>.
+                            </p>
+                        }
+                    />
+                </HomeSection>
 
-                <Card title="Workspace">
-                    <CardBody>
-                        <ul className="divide-y divide-border">
+                <RunWeek rows={week} hrefOf={row => runHref(row.id)} clock={clock} />
+
+                <div className="grid gap-7 min-[1100px]:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+                    <HomeSection id="recent" title="Recent runs" link={{ href: '/runs', label: 'All runs' }}>
+                        <RecentRuns
+                            rows={recent}
+                            workflows={workflows}
+                            hrefOf={row => runHref(row.id)}
+                            empty={<p className="m-0 text-sm text-text-muted">No runs yet</p>}
+                        />
+                    </HomeSection>
+                    <HomeSection id="next" title="Coming up" link={{ href: '/schedules', label: 'Schedules' }}>
+                        <ComingUp items={next} clock={clock} />
+                    </HomeSection>
+                </div>
+
+                <HomeSection id="spend" title="Spend and usage" link={{ href: '/usage', label: 'Usage' }}>
+                    <StatStrip
+                        size="sm"
+                        label="Every recorded model call"
+                        cells={[
+                            { label: 'Total spend', value: summary ? usdCompact(summary.total_cost) : '—', sub: 'all recorded LLM calls' },
+                            { label: 'Requests', value: summary ? summary.total_requests.toLocaleString() : '—' },
+                            { label: 'Tokens', value: summary ? compact(summary.total_tokens) : '—' },
+                            { label: 'Cache saved', value: summary ? usdCompact(summary.total_estimated_savings ?? 0) : '—', sub: 'vs uncached pricing' },
+                        ]}
+                    />
+                </HomeSection>
+
+                <div className="grid gap-7 lg:grid-cols-2">
+                    {/* One series, so one hue and no legend: the row label is the
+                        identity and the value is direct-labelled beside it. */}
+                    <HomeSection id="models" title="Spend by model" link={{ href: '/usage', label: 'Usage' }}>
+                        {models.length === 0 ? (
+                            <p className="m-0 text-sm text-text-muted">No usage recorded yet</p>
+                        ) : (
+                            <div>
+                                <ul className="m-0 list-none space-y-3 p-0">
+                                    {models.map(m => (
+                                        <li key={m.model} title={`${m.model} — ${usdCompact(m.estimated_cost)}`}>
+                                            <div className="mb-1.5 flex items-baseline justify-between gap-3">
+                                                <span className="min-w-0 truncate text-sm text-text-muted">{m.model}</span>
+                                                {m.priced === false && m.provider !== 'ollama' ? (
+                                                    <span className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-text">
+                                                        <AlertTriangle className="size-3.5" aria-hidden />
+                                                        No price
+                                                    </span>
+                                                ) : (
+                                                    <span className="shrink-0 text-sm tabular-nums text-text">
+                                                        {usdCompact(m.estimated_cost)}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="h-2 w-full rounded-[4px] bg-surface-2">
+                                                <div
+                                                    className="h-2 rounded-[4px] bg-machine"
+                                                    style={{ width: `${maxCost > 0 ? Math.max(2, (m.estimated_cost / maxCost) * 100) : 0}%` }}
+                                                />
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                                {unpricedCount > 0 && (
+                                    <p className="mb-0 mt-4 text-xs text-text-muted">
+                                        {unpricedCount} {unpricedCount === 1 ? 'model has' : 'models have'} no price, so
+                                        {unpricedCount === 1 ? ' its' : ' their'} spend reads $0.{' '}
+                                        <TextLink href="/usage#pricing">Add one</TextLink>
+                                    </p>
+                                )}
+                            </div>
+                        )}
+                    </HomeSection>
+
+                    <HomeSection id="workspace" title="Workspace">
+                        <ul className="m-0 list-none divide-y divide-border border-y border-border p-0">
                             {[
-                                { icon: Workflow, label: 'Workflows', href: '/workflows', value: counts.orchestrations },
-                                { icon: Bot, label: 'Agents', href: '/agents', value: counts.agents },
+                                { icon: Workflow, label: 'Workflows', href: '/workflows', value: workflows.length },
+                                { icon: Bot, label: 'Agents', href: '/agents', value: agents.length },
                                 {
-                                    icon: Clock, label: 'Schedules', href: '/schedules', value: counts.schedules,
-                                    sub: counts.schedules > 0 ? `${counts.schedulesOn} enabled` : undefined,
+                                    icon: Clock, label: 'Schedules', href: '/schedules', value: schedules.length,
+                                    sub: schedules.length > 0 ? `${schedulesOn} enabled` : undefined,
                                 },
-                                { icon: Blocks, label: 'Apps', href: '/apps', value: counts.mcp },
+                                { icon: Blocks, label: 'Apps', href: '/apps', value: mcpCount },
                             ].map(row => (
                                 <li key={row.href}>
-                                    <Link href={row.href} className="flex items-center gap-3 py-2.5 transition-colors hover:text-text">
+                                    <Link href={row.href} className="flex items-center gap-3 px-1 py-2.5 transition-colors hover:text-text">
                                         <row.icon className="size-4 shrink-0 text-text-faint" aria-hidden />
                                         <span className="flex-1 text-sm text-text-muted">{row.label}</span>
                                         {row.sub && <span className="text-2xs text-text-faint">{row.sub}</span>}
@@ -234,21 +364,17 @@ export function Dashboard() {
                                 </li>
                             ))}
                         </ul>
-                    </CardBody>
-                </Card>
+                    </HomeSection>
+                </div>
             </div>
-
-            <Card title="Recent runs" actions={<TextLink href="/runs">All runs</TextLink>}>
-                {recent.length === 0 ? (
-                    <EmptyState title="No runs yet" />
-                ) : (
-                    <CardBody>
-                        <ul className="divide-y divide-border">
-                            {recent.map(run => <li key={run.run_id}>{runRow(run, 'text-text-muted')}</li>)}
-                        </ul>
-                    </CardBody>
-                )}
-            </Card>
-        </div>
+        </AppScreen>
     );
+}
+
+/** What a schedule runs, by name. */
+function targetName(s: Schedule, workflows: Orchestration[], agents: { id: string; name?: string }[]): string | null {
+    if (!s.target_id) return null;
+    if (s.target_type === 'orchestration') return workflows.find(w => w.id === s.target_id)?.name ?? null;
+    if (s.target_type === 'agent') return agents.find(a => a.id === s.target_id)?.name ?? null;
+    return null;
 }
