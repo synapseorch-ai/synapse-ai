@@ -58,9 +58,10 @@ export type NavHub = {
 export type NavHubGroup = { group: string | null; hubs: NavHub[] };
 
 /**
- * The rail: eight hubs (D209), the same in both products. Home and Runs watch,
- * Build is what you author, Connect is what agents reach through and where they
- * meet people. Settings is rendered separately at the foot.
+ * The rail: D209's hubs, the same in both products. Home and Runs watch, Build
+ * is what you author, Connect is what agents reach through and where they meet
+ * people. The Vault stands on its own (Naveen, M1b): agents, Knowledge and
+ * workflows all use it. Settings is rendered separately at the foot.
  */
 export const HUB_NAV: NavHubGroup[] = [
     {
@@ -127,11 +128,17 @@ export const HUB_NAV: NavHubGroup[] = [
                         id: 'skills', label: 'Skills', href: '/skills', icon: BookOpen,
                         blurb: 'Reusable instruction packages agents load on demand.',
                     },
-                    {
-                        id: 'vault', label: 'Vault', href: '/vault', icon: Vault,
-                        blurb: 'Knowledge files and skills agents reference with @[path] in their prompts.',
-                    },
                 ],
+            },
+            {
+                // Its own place, not a tab of Agents (Naveen, M1b): agents read the
+                // Vault, workflows write their outputs to it, and every knowledge
+                // base is one of its folders.
+                id: 'vault', label: 'Vault', icon: Vault,
+                tabs: [{
+                    id: 'vault', label: 'Vault', href: '/vault', icon: Vault,
+                    blurb: 'Knowledge files and skills agents reference with @[path] in their prompts.',
+                }],
             },
             {
                 id: 'knowledge', label: 'Knowledge', icon: Library,

@@ -20,10 +20,10 @@ export const HELP_FALLBACK = 'app';
 export const HELP_TOPICS: Record<string, HelpTopic> = {
     app: {
         title: 'Getting around',
-        summary: 'The menu on the left has eight items. Pages that belong together are tabs under one of them: Runs holds Logs, Evals and Usage, for one.',
+        summary: 'The menu on the left has nine items. Pages that belong together are tabs under one of them: Runs holds Logs, Evals and Usage, for one.',
         steps: [
             'Use Home and Runs to see what is running, what ran, what it said and what it cost.',
-            'Under Build, make Workflows (with Schedules and Templates), Agents (with Skills and Vault), Knowledge when it is on, and Chat.',
+            'Under Build, make Workflows (with Schedules and Templates) and Agents (with Skills), keep files in the Vault, search them with Knowledge when it is on, and Chat.',
             'Under Connect, give agents Apps and Tools to call, and Channels and Widgets to meet people on.',
             'Press Ctrl+K (⌘K on a Mac), or click “Jump to…”, to go to any page or tab by name.',
             'Click “Build with AI” in the menu, or the round button at the bottom right, to build with AI from any page; Settings sits at the foot.',

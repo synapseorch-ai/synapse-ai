@@ -1,7 +1,7 @@
 "use client";
 /*
- * The persistent left rail: eight hubs (D209), on the frame colour beside the
- * page's sheet.
+ * The persistent left rail: D209's hubs with the Vault on its own (M1b), on the
+ * frame colour beside the page's sheet.
  *
  * Every hub comes from HUB_NAV; there is no second copy of the list. A hub
  * stands for its tabs: it links to the first one shown and lights up on any of

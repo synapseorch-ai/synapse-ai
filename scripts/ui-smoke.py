@@ -6832,7 +6832,7 @@ async def check_help_pages(browser) -> str:
 HUB_TABS = {
     "Runs": [("/runs", "Runs"), ("/logs", "Logs"), ("/evals", "Evals"), ("/usage", "Usage")],
     "Workflows": [("/workflows", "Workflows"), ("/schedules", "Schedules"), ("/templates", "Templates")],
-    "Agents": [("/agents", "Agents"), ("/skills", "Skills"), ("/vault", "Vault")],
+    "Agents": [("/agents", "Agents"), ("/skills", "Skills")],
     "Apps": [("/apps", "Apps"), ("/tools", "Tools")],
     "Channels": [("/channels", "Channels"), ("/widgets", "Widgets")],
 }
