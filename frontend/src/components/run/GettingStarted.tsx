@@ -65,7 +65,7 @@ export function GettingStarted({ steps, actions, onDismiss, describe, foldable =
 
     if (foldable && opened !== '1') {
         return (
-            <section aria-labelledby="home-start" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 rounded-[14px] border border-border bg-surface py-2.5 pl-[18px] pr-2.5">
+            <section aria-labelledby="home-start" className="relative flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 rounded-[14px] border border-border bg-surface py-2.5 pl-[18px] pr-2.5">
                 <h2 id="home-start" className="m-0 text-sm font-semibold text-text">Getting started</h2>
                 {dots}
                 <span className="text-xs tabular-nums text-text-faint">{doneCount} of {needed.length}</span>
@@ -79,7 +79,7 @@ export function GettingStarted({ steps, actions, onDismiss, describe, foldable =
     }
 
     return (
-        <section aria-labelledby="home-start" className="grid min-w-0 gap-4 rounded-[14px] border border-border bg-surface px-[22px] py-5 shadow-elevated">
+        <section aria-labelledby="home-start" className="relative grid min-w-0 gap-4 rounded-[14px] border border-border bg-surface px-[22px] py-5 shadow-elevated">
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
                 <h2 id="home-start" className={sectionClass}>Getting started</h2>
                 <div className="flex items-center gap-3">

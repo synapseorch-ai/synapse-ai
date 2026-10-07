@@ -48,7 +48,9 @@ export function RunWeek({ rows, hrefOf, clock, total }: {
         .map((b) => `${counts[b]} ${WORD[b]}`)
         .join(', ');
     return (
-        <div className="grid gap-2">
+        // `relative`: the sentence for a screen reader is absolutely placed, and without a positioned
+        // ancestor it would be placed against the document and stretch it (ui-smoke's `layout`).
+        <div className="relative grid gap-2">
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-text-faint">
                 <span>{shown.length === all ? `Last ${shown.length} ${shown.length === 1 ? 'run' : 'runs'}` : `The latest ${shown.length} of ${all} runs`}, oldest first</span>
                 <span aria-hidden className="flex flex-wrap items-center gap-x-3 gap-y-1">
