@@ -15,12 +15,20 @@
  * enters the next through a hole in *both*. An earlier version put the exit at
  * the next layer's gap instead, and signals visibly cut through solid arc.
  *
+ * Every picture of the mark comes from here too, never by hand: the tab icon,
+ * the installed app icons, the mail header and the link preview, in each repo
+ * that ships one (see FILES).
+ *
  *   node scripts/gen-brand.mjs            # write every artifact
+ *   node scripts/gen-brand.mjs --cloud ../synapse-ai-pro-v1 --site ../site
+ *                                         # ... and those repos' own pictures
  *   node scripts/gen-brand.mjs --print    # just print the path data
+ *   node scripts/gen-brand.mjs --audit    # check the geometry's one rule
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -36,7 +44,6 @@ const OUTER = 9.3, INNER = 3.5;  // outermost and innermost layer radii
 const STROKE = 1.4;
 const CORE = 1.3;                // the core disc every signal is absorbed into
 const GAP_ARC = 6.4;             // target gap length, before clamping
-const ACCENT = "#6bb4bd";
 
 // The loader. Uniform period and evenly spaced releases: one signal enters
 // every PERIOD/SIGNALS seconds, so the flow reads as a steady conveyor.
@@ -47,6 +54,28 @@ const PERIOD = 4.2, SIGNALS = 6;
 const COMPACT_PERIOD = 3.6, COMPACT_SIGNALS = 3;
 const COMPACT = { radii: [9.1, 5.0], stroke: 1.8, core: 1.7, step: 140 };
 const SPIN = 48;                 // seconds per revolution of the whole assembly
+
+/* ── Colour ─────────────────────────────────────────────────────────────────
+   In the product the mark is `currentColor` and takes the theme's accent, so
+   nothing here reaches it. These are for the *pictures* of the mark, which can
+   neither inherit a colour nor know the ground they land on: a browser tab may
+   be white or charcoal, a mail client light or dark. So every picture is the
+   cyan mark on a deep navy tile, one image that reads the same on every
+   ground. Only the static SVG exports, which sit on whatever page embeds them,
+   carry the light theme's accent instead.                                    */
+
+const COLOUR = {
+  cyan: "#45cffc",      // the mark in every picture of it (the dark theme's accent)
+  navy: "#03213a",      // the tile: oklch(0.24 0.06 248), which reads navy, not black
+  cerulean: "#0f71b0",  // the light theme's accent, for the SVG exports
+  white: "#ffffff",     // the knocked-out export
+};
+// The tile's corner radius in grid units. A tab icon's is 3px at 16; an
+// installed icon is full-bleed because the OS applies its own mask.
+const TILE_RX = { tab: 4.5, mail: 5, app: 0 };
+// The mark's box inside a tile. Its outer ring then spans 60% of the tile,
+// inside Android's maskable safe zone.
+const IN_TILE = 0.72;
 
 /* ── Primitives ─────────────────────────────────────────────────────────── */
 
@@ -206,8 +235,17 @@ function markSvg(g, { colour = "currentColor", withBeads = true } = {}) {
   ].join("");
 }
 
-const wrap = (body, colour) =>
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID} ${GRID}" fill="none">${body}</svg>`;
+/**
+ * A picture of the mark: one fixed colour, on a tile or not. `scale` shrinks
+ * the mark inside its tile; `size` is the drawn size, so a raster knows how
+ * many pixels it is rendering.
+ */
+function picture({ g, paint, tile, rx = 0, scale = 1 }, size = GRID) {
+  let body = markSvg(g, { colour: paint });
+  if (scale !== 1) body = `<g transform="translate(${C} ${C}) scale(${scale}) translate(${-C} ${-C})">${body}</g>`;
+  const ground = tile ? `<rect width="${GRID}" height="${GRID}" rx="${rx}" fill="${tile}"/>` : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID} ${GRID}" width="${size}" height="${size}">${ground}${body}</svg>`;
+}
 
 const artifacts = {};
 artifacts.markFull = markSvg(full);
@@ -417,43 +455,159 @@ ${artifacts.motion}`;
 writeFileSync(join(ROOT, "frontend/src/app/brand-motion.css"), css);
 console.log("wrote frontend/src/app/brand-motion.css");
 
-/* Static SVG exports. These carry a real colour because they are used where
-   `currentColor` has nothing to inherit from — a README, an OG card, an
-   uploaded avatar. The React component keeps `currentColor`. */
-const outSvg = join(ROOT, "frontend/public/logo.svg");
-mkdirSync(dirname(outSvg), { recursive: true });
-writeFileSync(outSvg, wrap(markSvg(full, { colour: ACCENT }), ACCENT) + "\n");
-writeFileSync(join(ROOT, "frontend/public/logo-mono.svg"),
-  wrap(markSvg(full, { colour: "#ffffff" }), "#ffffff") + "\n");
-writeFileSync(join(ROOT, "frontend/public/logo-compact.svg"),
-  wrap(markSvg(compact, { colour: ACCENT }), ACCENT) + "\n");
-console.log("wrote frontend/public/logo.svg, logo-mono.svg, logo-compact.svg");
+/* ── Pictures ──────────────────────────────────────────────────────────────
+   Every file that pictures the mark, in every repo that ships one. This repo's
+   are always written; `--cloud <repo>` and `--site <repo>` add theirs. Cloud's
+   web app takes this repo's app icons and SVG exports through its own sync
+   script, so its list holds only what is cloud's alone.
 
-/* Rasters. A favicon cannot inherit a colour and cannot know the browser's
-   theme, so it ships as the accent mark on a transparent ground — legible on
-   both the light and dark tab strips, unlike a mark that assumes one of them.
-   
-   THE FAVICON USES THE COMPACT GEOMETRY, NOT THE FULL MARK. A browser scales
-   one file down to 16px, and at that size the full mark's three layers merge
-   into a disc — rendered and looked at, not assumed. The compact form is the
-   same construction with one layer dropped, so the tab and the app still show
-   recognisably the same mark. */
-const sharp = (await import(join(ROOT, "frontend/node_modules/sharp/lib/index.js"))).default;
-const png = async (size, path, { pad = 0, g = full } = {}) => {
-  const inner = size - pad * 2;
-  const svg = Buffer.from(wrap(markSvg(g, { colour: ACCENT }), ACCENT));
-  const img = await sharp(svg, { density: 1200 }).resize(inner, inner).png().toBuffer();
-  const out = pad
-    ? await sharp({ create: { width: size, height: size, channels: 4, background: { r: 9, g: 9, b: 11, alpha: 1 } } })
-        .composite([{ input: img, top: pad, left: pad }]).png().toBuffer()
-    : img;
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, out);
-  console.log(`wrote ${path.replace(ROOT + "/", "")} (${size}px, ${out.length} B)`);
+   THE TAB ICON USES THE COMPACT GEOMETRY, NOT THE FULL MARK. At 16px the full
+   mark's three layers merge into a disc, and three dots read as congested even
+   at 32 (rendered and looked at, not assumed). The compact form is the same
+   construction with one layer dropped, so the tab and the app still show
+   recognisably the same mark. An installed icon and the mail header have room
+   for the full one.                                                          */
+
+const TAB = { g: compact, paint: COLOUR.cyan, tile: COLOUR.navy, rx: TILE_RX.tab };
+const APP = { g: full, paint: COLOUR.cyan, tile: COLOUR.navy, rx: TILE_RX.app, scale: IN_TILE };
+const MAIL = { g: full, paint: COLOUR.cyan, tile: COLOUR.navy, rx: TILE_RX.mail, scale: IN_TILE };
+const ICO_SIZES = [16, 32, 48];
+
+const FILES = {
+  oss: [
+    // carry a real colour: a README or an avatar has no `currentColor` to give
+    ["frontend/public/logo.svg", { kind: "svg", g: full, paint: COLOUR.cerulean }],
+    ["frontend/public/logo-compact.svg", { kind: "svg", g: compact, paint: COLOUR.cerulean }],
+    ["frontend/public/logo-mono.svg", { kind: "svg", g: full, paint: COLOUR.white }],
+    ["frontend/public/logo-tile.svg", { kind: "svg", ...MAIL }],
+    // the tab: Chrome draws the ICO's own 16 and 32 frames, not the 512 below
+    ["frontend/src/app/favicon.ico", { kind: "ico", ...TAB }],
+    ["frontend/src/app/icon.png", { kind: "png", ...APP, size: 512 }],
+    ["frontend/src/app/apple-icon.png", { kind: "png", ...APP, size: 180 }],
+  ],
+  cloud: [
+    // the mail header: 28 CSS px, served at 4x
+    ["web/public/email/mark.png", { kind: "png", ...MAIL, size: 112 }],
+  ],
+  site: [
+    ["public/favicon.ico", { kind: "ico", ...TAB }],
+    // the same two-dot drawing at every size, so a browser may scale it freely
+    ["src/app/icon.svg", { kind: "svg", ...TAB }],
+    ["public/synapseorch-mark.png", { kind: "png", ...APP, size: 512 }],
+    ["public/apple-icon.png", { kind: "png", ...APP, size: 180 }],
+    ["public/og-image.png", { kind: "og" }],
+  ],
+};
+// How each repo is recognised, so a wrong path fails before anything is written.
+const MARKER = { cloud: "web/package.json", site: "src/app/layout.tsx" };
+
+/* The link preview: 1200 x 630 on navy, the mark at 300px centred in a 460px
+   column, then the name, the line and the domain. The type is placed by its
+   baseline and set in Inter from the font committed beside this script
+   (`brand/`), so the card comes out the same on any machine. The variable TTF,
+   not the WOFF2: sharp's text engine cannot read WOFF2. The weight is given
+   here; the optical size follows the type size by itself. */
+const OG = {
+  width: 1200,
+  height: 630,
+  column: 460,
+  mark: 300,
+  lines: [
+    { text: "SynapseOrch", x: 460, baseline: 286, size: 92, weight: 650, fill: "#f0f4f8" },
+    { text: "AI automation without the surprises.", x: 462, baseline: 355, size: 38, weight: 400, fill: "#bcc2c7" },
+    { text: "synapseorch.com", x: 462, baseline: 424, size: 24, weight: 500, fill: COLOUR.cyan },
+  ],
 };
 
-await png(512, join(ROOT, "frontend/src/app/icon.png"), { g: compact });
-// Apple pads and squares the icon itself and never honours transparency, so
-// this one gets the dark ground baked in rather than a black rectangle later.
-// 180px is ample room, so it carries the full mark.
-await png(180, join(ROOT, "frontend/src/app/apple-icon.png"), { pad: 26, g: full });
+function arg(name) {
+  const i = process.argv.findIndex((a) => a === `--${name}` || a.startsWith(`--${name}=`));
+  if (i < 0) return null;
+  const v = process.argv[i].includes("=") ? process.argv[i].split("=")[1] : process.argv[i + 1];
+  if (!v) throw new Error(`--${name} needs the repo's path`);
+  return resolve(v);
+}
+const repos = [["oss", ROOT]];
+for (const name of ["cloud", "site"]) {
+  const dir = arg(name);
+  if (!dir) continue;
+  if (!existsSync(join(dir, MARKER[name]))) throw new Error(`--${name} ${dir}: no ${MARKER[name]} there`);
+  repos.push([name, dir]);
+}
+
+// fontconfig is read once, on first use, so this must precede sharp: the only
+// face the link preview may find is the committed one.
+const fonts = mkdtempSync(join(tmpdir(), "gen-brand-"));
+writeFileSync(join(fonts, "fonts.conf"), `<?xml version="1.0"?>
+<fontconfig><dir>${join(HERE, "brand")}</dir><cachedir>${join(fonts, "cache")}</cachedir></fontconfig>
+`);
+process.env.FONTCONFIG_FILE = join(fonts, "fonts.conf");
+const sharp = (await import(join(ROOT, "frontend/node_modules/sharp/lib/index.js"))).default;
+
+/** Drawn at 8x and resampled down, so every size gets the same antialiasing. */
+const raster = (spec, size) =>
+  sharp(Buffer.from(picture(spec, size)), { density: 72 * 8 }).resize(size, size).png().toBuffer();
+
+/** One PNG frame per size, each drawn at its own size rather than one scaled. */
+async function ico(spec) {
+  const frames = await Promise.all(ICO_SIZES.map((s) => raster(spec, s)));
+  const head = Buffer.alloc(6 + 16 * frames.length);
+  head.writeUInt16LE(1, 2);                        // type: icon
+  head.writeUInt16LE(frames.length, 4);
+  let offset = head.length;
+  frames.forEach((png, i) => {
+    const e = 6 + 16 * i, s = ICO_SIZES[i];
+    head.writeUInt8(s, e);
+    head.writeUInt8(s, e + 1);
+    head.writeUInt16LE(1, e + 4);                  // colour planes
+    head.writeUInt16LE(32, e + 6);                 // bits per pixel
+    head.writeUInt32LE(png.length, e + 8);
+    head.writeUInt32LE(offset, e + 12);
+    offset += png.length;
+  });
+  return Buffer.concat([head, ...frames]);
+}
+
+const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+
+async function og() {
+  const { width: W, height: H, mark: M } = OG;
+  // The mark is laid on the navy here, straight alpha rounded to the nearest
+  // level, not by sharp's compositor: its premultiplied arithmetic leaves about
+  // 3,000 edge pixels a level away from the reference image L1 approved.
+  const mark = await sharp(Buffer.from(picture({ g: full, paint: COLOUR.cyan }, M)), { density: 72 * 8 })
+    .resize(M, M).raw().toBuffer();
+  const navy = rgb(COLOUR.navy), left = (OG.column - M) / 2, top = (H - M) / 2;
+  const px = Buffer.alloc(W * H * 3);
+  for (let i = 0; i < W * H; i++) px.set(navy, i * 3);
+  for (let y = 0; y < M; y++) {
+    for (let x = 0; x < M; x++) {
+      const s = (y * M + x) * 4, d = ((top + y) * W + left + x) * 3, a = mark[s + 3];
+      for (let c = 0; c < 3; c++) px[d + c] = Math.floor((mark[s + c] * a + navy[c] * (255 - a) + 127) / 255);
+    }
+  }
+  const text = OG.lines.map((l) =>
+    `<text x="${l.x}" y="${l.baseline}" font-family="Inter Variable" font-size="${l.size}" font-weight="${l.weight}" fill="${l.fill}">${l.text}</text>`);
+  return sharp(px, { raw: { width: W, height: H, channels: 3 } })
+    .composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${text.join("")}</svg>`) }])
+    .png()
+    .toBuffer();
+}
+
+const render = (spec) =>
+  spec.kind === "svg" ? Buffer.from(picture(spec) + "\n")
+  : spec.kind === "ico" ? ico(spec)
+  : spec.kind === "og" ? og()
+  : raster(spec, spec.size);
+
+try {
+  for (const [name, dir] of repos) {
+    for (const [file, spec] of FILES[name]) {
+      const out = await render(spec);
+      mkdirSync(dirname(join(dir, file)), { recursive: true });
+      writeFileSync(join(dir, file), out);
+      console.log(`wrote ${name === "oss" ? "" : name + ": "}${file} (${out.length} B)`);
+    }
+  }
+} finally {
+  rmSync(fonts, { recursive: true, force: true });
+}
