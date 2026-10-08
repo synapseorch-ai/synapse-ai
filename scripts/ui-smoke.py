@@ -3922,10 +3922,11 @@ def _status(ready: bool, problem: str | None = None) -> dict:
 
 
 GREETING = """() => {
-  const label = [...document.querySelectorAll('main span')]
-    .find((s) => /tracking-\\[0\\.2em\\]/.test(s.className));
+  // The empty chat's agent card (M2c): its name, then the line with its model and its state.
+  const name = document.querySelector('main [data-agent-label]');
+  const line = name && name.nextElementSibling;
   return {
-    label: label ? label.textContent : null,
+    label: name ? name.textContent + (line ? ' · ' + line.textContent : '') : null,
     toModels: [...document.querySelectorAll('main a')]
       .filter((a) => a.getAttribute('href') === '/settings/models').length,
   };
@@ -4357,7 +4358,8 @@ window.fetch = function (input, init) {
         problems = []
         label = empty["label"]
         # One line, and no wider than its 36rem: the label spanned the whole pane.
-        if not label or label["left"] < 0 or label["right"] - label["left"] > 600 or label["height"] > 30:
+        # One line: since M2c the name is the agent card's 24px heading (32px a line; two would be 64).
+        if not label or label["left"] < 0 or label["right"] - label["left"] > 600 or label["height"] > 40:
             problems.append(f"the empty state's label spans {label} in a {empty['vw']}px window")
         pane = answered["pane"]
         if not pane or pane["scroll"] > pane["client"] + 1:
