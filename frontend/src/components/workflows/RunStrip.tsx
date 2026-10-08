@@ -7,9 +7,11 @@
  * runs still going are a menu here; the list keeps its banner.
  *
  * Answer opens the question where it is answered now, the setup card of the
- * step that asked (M3a-2); the dialog it used to open is gone.
+ * step that asked (M3a-2); the dialog it used to open is gone. The strip keeps
+ * to one line (Naveen, M3a-2 review): the run's state, the run's page and the
+ * other runs going are icons, each with its words as its name and tooltip.
  */
-import { ExternalLink, FileText, History, Radio, RotateCcw } from 'lucide-react';
+import { Ban, CircleCheck, CircleX, ExternalLink, FileText, History, Radio, RotateCcw } from 'lucide-react';
 import { Button, Menu, MenuItem, Spinner, buttonStyles } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import type { RunSummary } from '@/components/runs/summary';
@@ -78,9 +80,11 @@ export function RunStrip({
             {runId && (
                 <a
                     href={`/runs/${encodeURIComponent(runId)}`}
-                    className="inline-flex items-center gap-1 rounded-sm px-1 text-xs text-accent-ink hover:underline"
+                    aria-label="Open run page"
+                    title="Open run page"
+                    className={cn(buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: true }), 'text-accent-ink')}
                 >
-                    <ExternalLink className="size-3" aria-hidden /> Open run page
+                    <ExternalLink className="size-3.5" aria-hidden />
                 </a>
             )}
 
@@ -88,8 +92,13 @@ export function RunStrip({
                 <Menu
                     side="top"
                     trigger={
-                        <button type="button" className={cn(buttonStyles({ variant: 'ghost', size: 'sm' }), 'gap-1.5')}>
-                            <Radio className="size-3.5 text-machine" aria-hidden /> {activeRuns.length} active
+                        <button
+                            type="button"
+                            aria-label={`${activeRuns.length} active`}
+                            title={`${activeRuns.length} other ${activeRuns.length === 1 ? 'run' : 'runs'} going`}
+                            className={cn(buttonStyles({ variant: 'ghost', size: 'sm' }), 'gap-1 px-2 tabular-nums')}
+                        >
+                            <Radio className="size-3.5 text-machine" aria-hidden /> {activeRuns.length}
                         </button>
                     }
                 >
@@ -135,6 +144,7 @@ const DOT: Record<string, string> = {
     cancelled: 'bg-text-faint',
 };
 
+/** The run's state as an icon, its word its name and tooltip; while running, what the model is doing beside it. */
 function RunState({ runStatus, liveActivity }: { runStatus: string; liveActivity: string | null }) {
     if (runStatus === 'idle') return null;
     const words: Record<string, string> = {
@@ -144,16 +154,22 @@ function RunState({ runStatus, liveActivity }: { runStatus: string; liveActivity
         failed: 'Failed',
         cancelled: 'Cancelled',
     };
+    const word = words[runStatus] ?? runStatus;
+    const icon = runStatus === 'running'
+        ? <Spinner size={16} className="shrink-0 text-machine" />
+        : runStatus === 'completed'
+            ? <CircleCheck className="size-4 shrink-0 text-success" aria-hidden />
+            : runStatus === 'cancelled'
+                ? <Ban className="size-4 shrink-0 text-text-faint" aria-hidden />
+                : runStatus === 'paused'
+                    ? <span className="size-2 shrink-0 rounded-full bg-person" aria-hidden />
+                    : <CircleX className="size-4 shrink-0 text-danger" aria-hidden />;
     return (
-        // An auto basis, so a narrow strip (the setup card open beside it) wraps
-        // the buttons to a second row instead of shrinking this under its words.
-        <span className="flex min-w-0 flex-[1_1_auto] items-center gap-2 text-sm" role="status">
-            {runStatus === 'running'
-                ? <Spinner size={16} className="shrink-0 text-machine" />
-                : <span className={cn('size-2 shrink-0 rounded-full', DOT[runStatus] ?? 'bg-danger')} aria-hidden />}
-            <span className={cn('shrink-0 font-medium', runStatus === 'failed' ? 'text-danger' : 'text-text')}>
-                {words[runStatus] ?? runStatus}
-            </span>
+        // An auto basis, so a narrow strip wraps rather than shrinking this under
+        // what it says; with the state an icon it rarely has to.
+        <span className="relative flex min-w-0 flex-[1_1_auto] items-center gap-2 text-sm" role="status" title={word}>
+            {icon}
+            <span className="sr-only">{word}</span>
             {/* What the model is doing right now (the Run Log's live line). */}
             {runStatus === 'running' && liveActivity && (
                 <span className="min-w-0 truncate text-xs text-text-faint">{liveActivity}</span>

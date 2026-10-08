@@ -375,6 +375,10 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // the editor lives on /evals.
     const [rubrics, setRubrics] = useState<Array<{ id: string; name: string }>>([]);
     const [pastRuns, setPastRuns] = useState<RunSummary[]>([]);
+    // Recent Runs on the canvas list this workflow's runs only (Naveen, M3a-2
+    // review). The poll above holds the newest 20 of every workflow, so opening
+    // the list also reads the newest 100 once — the landing's All runs read.
+    const [moreRuns, setMoreRuns] = useState<RunSummary[]>([]);
     // Landing dashboard: which table is shown when no orchestration is open.
     const [schedules, setSchedules] = useState<Array<{ id: string; name: string }>>([]);
     const [landingTab, setLandingTab] = useState<'orchestrations' | 'active' | 'recent' | 'all'>('orchestrations');
@@ -1351,6 +1355,25 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         />
     ) : null;
 
+    // This workflow's runs, newest first: the poll's, and the wider read's while the list is open.
+    const workflowRuns = useMemo(() => {
+        if (!draft) return [];
+        const byId = new Map<string, RunSummary>();
+        for (const r of [...pastRuns, ...moreRuns]) {
+            if (r.orchestration_id === draft.id && !byId.has(r.run_id)) byId.set(r.run_id, r);
+        }
+        return [...byId.values()].sort((a, b) => (b.started_at ?? '').localeCompare(a.started_at ?? ''));
+    }, [draft, pastRuns, moreRuns]);
+    useEffect(() => {
+        if (runDrawer !== 'recent') return;
+        let live = true;
+        fetch('/api/orchestrations/runs?limit=100')
+            .then(r => (r.ok ? r.json() : []))
+            .then(rows => { if (live && Array.isArray(rows)) setMoreRuns(rows); })
+            .catch(() => { /* the poll's rows stand */ });
+        return () => { live = false; };
+    }, [runDrawer]);
+
     // Last run on the steps: the run on the canvas — as it goes, then as its end
     // records it — or, with none, the workflow's newest run, read once when the
     // toggle is pressed (the read the run page and Recent Runs make).
@@ -1370,7 +1393,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     const showLastRun = async (on: boolean) => {
         setLastRunShown(on);
         if (!on || runOnCanvas || !draft) return;
-        const newest = pastRuns.find(r => r.orchestration_id === draft.id);
+        const newest = workflowRuns[0];
         if (!newest) {
             setLastRunShown(false);
             showToast('No recent run of this workflow — run it, or open one from Recent Runs.', 'warning');
@@ -1862,7 +1885,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                     onResumeRun={resumeRun}
                                     drawer={runDrawer}
                                     onDrawer={setRunDrawer}
-                                    pastRunCount={pastRuns.length}
+                                    pastRunCount={workflowRuns.length}
                                     activeRuns={activeRuns.filter(r => r.run_id !== runId)}
                                     workflowName={(id) => orchestrations.find(o => o.id === id)?.name ?? id}
                                     onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
@@ -1880,7 +1903,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                         runId={runId}
                                         humanPrompt={humanPrompt}
                                         orchestrationNames={Object.fromEntries(orchestrations.map(o => [o.id, o.name]))}
-                                        pastRuns={pastRuns}
+                                        pastRuns={workflowRuns}
                                         onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
                                     />
                                 ),
