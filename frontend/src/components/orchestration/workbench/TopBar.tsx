@@ -247,7 +247,8 @@ function RunNow({ onRun, blocked, phone, runInput }: {
         onRun();
     };
     return (
-        <div className="flex items-center">
+        // Stretched, so the chevron takes Run now's height: the kit's icon size is 2px shorter.
+        <div className="flex items-stretch">
             <Hint content={hint}>
                 <Button
                     size="sm"
@@ -270,7 +271,7 @@ function RunNow({ onRun, blocked, phone, runInput }: {
                             title="Run with input"
                             className={cn(
                                 buttonStyles({ variant: 'primary', size: 'sm', iconOnly: true }),
-                                'w-6 rounded-l-none border-l border-accent-fg/25',
+                                'h-auto w-6 rounded-l-none border-l border-accent-fg/25',
                                 blocked > 0 && 'opacity-50',
                             )}
                         >

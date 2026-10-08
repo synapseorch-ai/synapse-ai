@@ -191,7 +191,10 @@ export function StateSchemaEditor({ schema, onChange: write, readOnly = false }:
                 // opening it, or save over an AI-builder mistake only a person can judge.
                 const unknownType = declared === null && !!entry.type;
                 return (
-                    <fieldset key={key} disabled={readOnly} className="m-0 flex min-w-0 items-start gap-2 rounded-md border border-border bg-surface-2/40 p-2">
+                    // `mx-0`, not `m-0`: the fieldset's own inline margin goes, and the
+                    // list's gap between keys stays (an `m-0` cancelled it, so the keys'
+                    // borders touched — Naveen, M3a).
+                    <fieldset key={key} disabled={readOnly} className="mx-0 flex min-w-0 items-start gap-2 rounded-md border border-border bg-surface-2/40 p-2">
                         <div className="flex-1 space-y-1.5">
                             <div className="flex gap-2">
                                 <Input
