@@ -58,14 +58,30 @@ export function RunDrawer({
     const liveActivity = log.liveActivity;
     if (runLog.length === 0 && !pinned) setPinned(true); // a new run starts at its foot
 
+    // Where the log last put itself at its foot: only the reader moving above it
+    // stops the following. The log growing, or the drawer reflowing (the setup
+    // card opening beside it narrows it, M3a-2), under a scroll the log made
+    // itself is not the reader leaving the foot.
+    const placed = useRef(0);
     useEffect(() => {
         const el = scrollRef.current;
-        if (el && pinned && view === 'run') el.scrollTop = el.scrollHeight;
+        if (el && pinned && view === 'run') {
+            el.scrollTop = el.scrollHeight;
+            placed.current = el.scrollTop;
+        }
     }, [runLog, log.tasks, pinned, view]);
 
     const onScroll = () => {
         const el = scrollRef.current;
-        if (el && view === 'run') setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
+        if (!el || view !== 'run') return;
+        const atFoot = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        if (!atFoot && pinned && el.scrollTop >= placed.current - 2) {
+            el.scrollTop = el.scrollHeight;
+            placed.current = el.scrollTop;
+            return;
+        }
+        if (atFoot) placed.current = el.scrollTop;
+        setPinned(atFoot);
     };
 
     return (
