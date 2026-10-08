@@ -56,9 +56,14 @@ export function KnowledgeBasePicker({ value, onChange, bases, variant = 'chips',
     );
     if (variant === 'switches') {
         return (
-            <div className="space-y-1">
+            <div className="space-y-2">
                 {!hideLabel && <Label className="block">Knowledge bases</Label>}
-                {empty && <div className="py-2">{empty}</div>}
+                {bases.length === 0 && gone.length === 0 && (
+                    <p className="text-sm text-text-muted">
+                        No knowledge bases yet — create one on the{' '}
+                        <Link href="/knowledge" className="underline">Knowledge</Link> page.
+                    </p>
+                )}
                 {bases.length > 0 && (
                     <ul className="divide-y divide-border">
                         {bases.map(kb => {
@@ -83,7 +88,11 @@ export function KnowledgeBasePicker({ value, onChange, bases, variant = 'chips',
                     </ul>
                 )}
                 {removed.length > 0 && <div className="flex flex-wrap gap-2 pt-1">{removed}</div>}
-                {help}
+                <p className="text-2xs text-text-faint">
+                    The agent searches these with <span className="font-mono">search_knowledge</span> and cites the
+                    passages it uses. Up to {MAX_KNOWLEDGE_BASES}. A widget&apos;s visitors reach only bases open to
+                    visitors, and only when the widget allows the tool.
+                </p>
             </div>
         );
     }

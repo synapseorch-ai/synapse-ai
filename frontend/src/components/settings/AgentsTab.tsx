@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Bot, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, MessageSquare, ExternalLink, CheckCircle, XCircle, Square, PanelRightOpen, Image as ImageIcon } from 'lucide-react';
-import { Button, Checkbox, Combobox, Drawer, ErrorNote, Input, Label, MarkdownEditor, SearchInput, Select, Spinner, Switch } from '@/components/ui';
+import { Button, Checkbox, Combobox, Drawer, ErrorNote, Input, Label, MarkdownEditor, Modal, SearchInput, Section, Select, Spinner, Switch } from '@/components/ui';
 import Link from 'next/link';
 import { matchesQuery } from '@/lib/search';
 import { humanizeToolName } from '@/lib/toolNames';
@@ -61,6 +61,9 @@ interface AgentsTabProps {
     /** The test chat's column is open (wide screens); the person's choice, remembered. */
     testOpen: boolean;
     setTestOpen: (open: boolean) => void;
+    /** "Build with AI" for one agent: opened from New agent's menu (M2d, Naveen). */
+    aiBuilderOpen: boolean;
+    setAiBuilderOpen: (open: boolean) => void;
 }
 
 import React, { useState, useEffect } from 'react';
@@ -70,7 +73,7 @@ export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
     draftAgent, setDraftAgent, loadDraftAgent, guard, availableCapabilities, loadingCapabilities = false, customTools,
     onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, reasoningOffMinimum, defaultModel, workspaceEffort, loadingAgents = false,
-    dirty, onDiscard, agentStatus, testOpen, setTestOpen,
+    dirty, onDiscard, agentStatus, testOpen, setTestOpen, aiBuilderOpen, setAiBuilderOpen,
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const [repos, setRepos] = useState<any[]>([]);
@@ -97,7 +100,7 @@ export const AgentsTab = ({
     const [widgets, setWidgets] = useState<any[]>([]);
     const [isSaving, setIsSaving] = useState(false);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'error' } | null>(null);
-    const [aiBuilderOpen, setAiBuilderOpen] = useState(false);
+    const [toolQuery, setToolQuery] = useState('');
     const [aiBuilderDesc, setAiBuilderDesc] = useState('');
     const [agentQuery, setAgentQuery] = useState('');
     const [isBuilding, setIsBuilding] = useState(false);
@@ -422,48 +425,8 @@ export const AgentsTab = ({
 
             {/* ── The list ─────────────────────────────────────────────── */}
             <aside aria-label="Your agents" className="flex max-h-[40vh] shrink-0 flex-col border-b border-border md:max-h-none md:w-64 md:border-b-0 md:border-r">
-                <div className="flex items-center gap-2 px-3 pb-2 pt-3">
-                    <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => setAiBuilderOpen(v => !v)}
-                        aria-expanded={aiBuilderOpen}
-                        aria-label="Build Agent with AI"
-                        title="Build Agent with AI"
-                        className="w-full justify-start"
-                    >
-                        <Sparkles className="size-4 text-machine" aria-hidden /> Build with AI
-                    </Button>
-                </div>
-
-                {aiBuilderOpen && (
-                    <div className="mx-3 mb-3 space-y-2 rounded-lg border border-border bg-surface-2 p-3">
-                        <p id="agent-ai-builder-label" className="text-xs font-medium text-text">Build with AI</p>
-                        <textarea
-                            aria-labelledby="agent-ai-builder-label"
-                            value={aiBuilderDesc}
-                            onChange={e => setAiBuilderDesc(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); guard(() => { void buildAgentWithAI(); }); } }}
-                            placeholder="Describe what this agent should do... e.g. 'A customer support agent that searches our knowledge base'"
-                            rows={3}
-                            className="w-full resize-none rounded-md border border-border bg-surface p-2 text-xs text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
-                        />
-                        <Button
-                            size="sm"
-                            // The built agent replaces the open draft, so this is a switch too.
-                            onClick={() => guard(() => { void buildAgentWithAI(); })}
-                            disabled={isBuilding || !aiBuilderDesc.trim()}
-                            className="w-full"
-                        >
-                            {isBuilding
-                                ? <><Spinner size={12} /> BUILDING…</>
-                                : <><Sparkles className="size-3" aria-hidden /> CREATE AGENT</>}
-                        </Button>
-                    </div>
-                )}
-
                 {Array.isArray(agents) && agents.length > 4 && (
-                    <div className="px-3 pb-2">
+                    <div className="px-3 pb-2 pt-3">
                         <SearchInput
                             value={agentQuery}
                             onChange={setAgentQuery}
@@ -472,7 +435,7 @@ export const AgentsTab = ({
                     </div>
                 )}
 
-                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-3 modern-scrollbar">
+                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 py-3 modern-scrollbar">
                     {loadingAgents && agents.length === 0 && (
                         <div className="flex items-center gap-2 px-2 py-4 text-sm text-text-faint">
                             <Spinner size={16} />
@@ -547,11 +510,49 @@ export const AgentsTab = ({
                 </div>
             </aside>
 
+            {/* One agent from a description (POST /api/agents/build): New agent's
+                menu opens it (M2d). The rail's Build with AI is the workflow builder. */}
+            <Modal
+                open={aiBuilderOpen}
+                onClose={() => setAiBuilderOpen(false)}
+                title="Build with AI"
+                description="Describe the agent; the AI picks its tools and writes its instructions, and it opens here."
+                footer={(
+                    <>
+                        <Button variant="secondary" onClick={() => setAiBuilderOpen(false)}>Cancel</Button>
+                        <Button
+                            // The built agent replaces the open draft, so this is a switch too.
+                            onClick={() => guard(() => { void buildAgentWithAI(); })}
+                            disabled={isBuilding || !aiBuilderDesc.trim()}
+                        >
+                            {isBuilding
+                                ? <><Spinner size={12} /> BUILDING…</>
+                                : <><Sparkles className="size-3.5" aria-hidden /> CREATE AGENT</>}
+                        </Button>
+                    </>
+                )}
+            >
+                <label id="agent-ai-builder-label" htmlFor="agent-ai-builder" className="sr-only">Build with AI</label>
+                <textarea
+                    id="agent-ai-builder"
+                    aria-labelledby="agent-ai-builder-label"
+                    value={aiBuilderDesc}
+                    onChange={e => setAiBuilderDesc(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); guard(() => { void buildAgentWithAI(); }); } }}
+                    placeholder="Describe what this agent should do... e.g. 'A customer support agent that searches our knowledge base'"
+                    rows={4}
+                    autoFocus
+                    className="w-full resize-none rounded-md border border-border bg-surface p-3 text-sm text-text placeholder:text-text-faint focus:border-accent focus:outline-none"
+                />
+            </Modal>
+
             {/* ── The setup ────────────────────────────────────────────── */}
             <div className="@container flex min-h-0 min-w-0 flex-1 flex-col">
                 {draftAgent ? (<>
-                    <div className="min-h-0 flex-1 overflow-y-auto modern-scrollbar">
-                        <div className="max-w-4xl px-4 pb-10 pt-5 md:px-8">
+                    {/* `relative`: the setup's screen-reader-only labels position against
+                        it, not the document, which they would stretch (M2a's trap). */}
+                    <div className="relative min-h-0 flex-1 overflow-y-auto modern-scrollbar">
+                        <div className="px-4 pb-10 pt-5 md:px-8">
                             {/* ── Orchestration agents are read-only here ─────────── */}
                             {draftAgent.type === 'orchestrator' ? (
                                 <div className="flex min-h-[360px] flex-col items-center justify-center gap-5 text-center">
@@ -579,10 +580,7 @@ export const AgentsTab = ({
                                 </div>
                             ) : (<>
                                 {/* The agent: who it is */}
-                                <div className="flex items-start gap-4">
-                                    <span aria-hidden className="mt-6 flex size-11 shrink-0 items-center justify-center rounded-xl bg-machine-subtle text-machine">
-                                        <Bot className="size-5" />
-                                    </span>
+                                <div className="flex items-end gap-3">
                                     <div className="grid min-w-0 flex-1 gap-3 @xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
                                         <div className="space-y-1">
                                             <Label htmlFor="age-draftagent-name" className="block">Name</Label>
@@ -602,14 +600,14 @@ export const AgentsTab = ({
                                             />
                                         </div>
                                     </div>
-                                    <Button variant="secondary" size="sm" className="mt-6 shrink-0 lg:hidden" onClick={() => setTestDrawer(true)}>
+                                    <Button variant="secondary" className="shrink-0 lg:hidden" onClick={() => setTestDrawer(true)}>
                                         Try it
                                     </Button>
                                 </div>
-                                {isNew && <p className="mt-2 pl-[60px] text-xs text-text-faint">New agent: not saved yet.</p>}
+                                {isNew && <p className="mt-2 text-xs text-text-faint">New agent: not saved yet.</p>}
 
                                 {/* Sub-tab row */}
-                                <div role="tablist" aria-label="Agent" className="-mx-1 mt-5 flex gap-1 overflow-x-auto border-b border-border">
+                                <div role="tablist" aria-label="Agent" className="mt-5 flex flex-wrap items-center gap-1.5">
                                     {tabs.map(t => (
                                         <button
                                             key={t.id}
@@ -622,9 +620,12 @@ export const AgentsTab = ({
                                                 // want the same fetch.
                                                 if ((t.id === 'messaging' || t.id === 'usedby') && savedId) loadChannels(savedId);
                                             }}
+                                            // The Runs page's pills (Naveen, M2d).
                                             className={cn(
-                                                '-mb-px whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium transition-colors',
-                                                agentSubTab === t.id ? 'border-text text-text' : 'border-transparent text-text-faint hover:text-text',
+                                                'inline-flex h-[30px] shrink-0 items-center whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors',
+                                                agentSubTab === t.id
+                                                    ? 'border-transparent bg-text text-bg'
+                                                    : 'border-border text-text-muted hover:border-border-strong hover:text-text',
                                             )}
                                         >
                                             {t.label}
@@ -634,7 +635,7 @@ export const AgentsTab = ({
 
                                 {/* ── Setup ─────────────────────────────────────── */}
                                 {agentSubTab === 'config' && (
-                                    <div role="tabpanel" aria-label="Setup">
+                                    <div role="tabpanel" aria-label="Setup" className="mt-2">
                                         <SetupSection id="setup-model" title="Model">
                                             <div className="grid gap-x-6 gap-y-4 @xl:grid-cols-2">
                                                 <div className="space-y-1">
@@ -759,28 +760,7 @@ export const AgentsTab = ({
                                         </SetupSection>
 
                                         <SetupSection id="setup-instructions" title="Instructions">
-                                            {/* The kit's markdown editor. `global` because a system
-                                                prompt fills in `{{ global.key }}` and nothing else; the
-                                                vault's `@` rides the same suggestion list. */}
-                                            <div className="space-y-1">
-                                                <Label htmlFor="agent-system-prompt" className="sr-only">Instructions</Label>
-                                                <MarkdownEditor
-                                                    key={draftAgent.id || 'new'}
-                                                    id="agent-system-prompt"
-                                                    rows={14}
-                                                    profile="global"
-                                                    mentions={vaultMentions}
-                                                    value={draftAgent.system_prompt || ''}
-                                                    onChange={system_prompt => setDraftAgent({ ...draftAgent, system_prompt })}
-                                                    placeholder="You are a helpful assistant. Type {{ for a variable, @ for a vault file…"
-                                                    previewEmpty="No system prompt yet."
-                                                />
-                                                <p className="text-xs text-text-faint">
-                                                    Type <code className="font-code">{'{{'}</code> for a variable — <code className="font-code">{'{{ global.key }}'}</code> is filled in each time the agent runs.
-                                                </p>
-                                            </div>
-
-                                            {/* Prompt Generator */}
+                                            {/* Prompt Generator — above the editor, because it writes what goes in it (Naveen, M2d). */}
                                             <div className="space-y-2 rounded-lg border border-border bg-surface-2/50 p-3">
                                                 <Label htmlFor="agn-prompt-description" className="flex items-center gap-1.5">
                                                     <Sparkles className="size-3.5 text-machine" aria-hidden /> AI Prompt Writer
@@ -815,6 +795,27 @@ export const AgentsTab = ({
                                                     </ErrorNote>
                                                 )}
                                             </div>
+                                            {/* The kit's markdown editor. `global` because a system
+                                                prompt fills in `{{ global.key }}` and nothing else; the
+                                                vault's `@` rides the same suggestion list. */}
+                                            <div className="space-y-1">
+                                                <Label htmlFor="agent-system-prompt" className="sr-only">Instructions</Label>
+                                                <MarkdownEditor
+                                                    key={draftAgent.id || 'new'}
+                                                    id="agent-system-prompt"
+                                                    rows={14}
+                                                    profile="global"
+                                                    mentions={vaultMentions}
+                                                    value={draftAgent.system_prompt || ''}
+                                                    onChange={system_prompt => setDraftAgent({ ...draftAgent, system_prompt })}
+                                                    placeholder="You are a helpful assistant. Type {{ for a variable, @ for a vault file…"
+                                                    previewEmpty="No system prompt yet."
+                                                />
+                                                <p className="text-xs text-text-faint">
+                                                    Type <code className="font-code">{'{{'}</code> for a variable — <code className="font-code">{'{{ global.key }}'}</code> is filled in each time the agent runs.
+                                                </p>
+                                            </div>
+
                                         </SetupSection>
 
                                         <SetupSection id="setup-tools" title="Tools">
@@ -924,12 +925,30 @@ export const AgentsTab = ({
                                                         ...(AUTO_TOOLS_BY_TYPE.all_types || []),
                                                         ...(AUTO_TOOLS_BY_TYPE[agentType] || []),
                                                     ]);
-                                                    return (
-                                                        <div className="grid items-start gap-3 @2xl:grid-cols-2">
-                                                            {availableCapabilities.map((cap: any) => {
-                                                                const toolDetails: { name: string, description: string }[] = cap.toolDetails || cap.tools.map((t: string) => ({ name: t, description: '' }));
-                                                                const hasMultipleTools = toolDetails.length > 1;
-                                                                const isExpanded = expandedCaps.has(cap.id);
+                                                    // One line per group (Naveen, M2d: the section was too tall);
+                                                    // a group's description on hover and in its opened list. A
+                                                    // search once there are more than 8, as cloud's editor has.
+                                                    const q = toolQuery.trim();
+                                                    const detailsOf = (cap: any): { name: string, description: string }[] =>
+                                                        cap.toolDetails || cap.tools.map((t: string) => ({ name: t, description: '' }));
+                                                    const shown = availableCapabilities
+                                                        .map((cap: any) => ({
+                                                            cap,
+                                                            groupHit: !q || matchesQuery(q, cap.label, cap.description, cap.server),
+                                                            tools: detailsOf(cap).filter(t => !q || matchesQuery(q, t.name, humanizeToolName(t.name), t.description)),
+                                                        }))
+                                                        .filter((x: any) => x.groupHit || x.tools.length > 0);
+                                                    return (<>
+                                                        {availableCapabilities.length > 8 && (
+                                                            <SearchInput value={toolQuery} onChange={setToolQuery} placeholder="Search tools…" className="max-w-sm" />
+                                                        )}
+                                                        {q && shown.length === 0 && <p className="text-sm text-text-faint">Nothing matches that.</p>}
+                                                        <div className="grid items-start gap-2 @2xl:grid-cols-2">
+                                                            {shown.map(({ cap, groupHit, tools: matched }: any) => {
+                                                                const toolDetails: { name: string, description: string }[] = q && !groupHit ? matched : detailsOf(cap);
+                                                                const hasMultipleTools = detailsOf(cap).length > 1;
+                                                                // A search opens the groups it found tools in.
+                                                                const isExpanded = expandedCaps.has(cap.id) || (!!q && !groupHit);
                                                                 const isAutoGroup = cap.tools.every((t: string) => autoTools.has(t));
                                                                 const enabledCount = cap.tools.filter((t: string) =>
                                                                     isAutoGroup || draftAgent.tools.includes("all") || draftAgent.tools.includes(t)
@@ -957,13 +976,13 @@ export const AgentsTab = ({
                                                                             one ticks the whole group, the other opens it. A group of one
                                                                             is that one tool, so it is a switch (M2d). */}
                                                                         {isAutoGroup ? (
-                                                                            <div className="flex items-center gap-2 px-3 py-2.5">
+                                                                            <div className="flex items-center gap-2 px-3 py-2" title={`Included by default for ${agentType} agents`}>
                                                                                 <Lock className="size-3 shrink-0 text-text-faint" aria-hidden />
                                                                                 <span className="flex-1 truncate text-sm font-medium text-text">{cap.label}</span>
                                                                                 <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-2xs text-text-muted">DEFAULT</span>
                                                                             </div>
                                                                         ) : hasMultipleTools ? (
-                                                                            <div className="flex items-center gap-2.5 px-3 py-2.5">
+                                                                            <div className="flex items-center gap-2.5 px-3 py-2" title={cap.description || undefined}>
                                                                                 <Checkbox
                                                                                     checked={allGroupEnabled ? true : someEnabled ? 'indeterminate' : false}
                                                                                     onChange={() => toggleGroupTools(cap)}
@@ -985,7 +1004,7 @@ export const AgentsTab = ({
                                                                                 </button>
                                                                             </div>
                                                                         ) : (
-                                                                            <label className="flex cursor-pointer items-center gap-2.5 px-3 py-2.5">
+                                                                            <label className="flex cursor-pointer items-center gap-2.5 px-3 py-2" title={cap.description || undefined}>
                                                                                 <span className="flex-1 truncate text-sm font-medium text-text">{cap.label}</span>
                                                                                 {badges}
                                                                                 <Switch
@@ -996,14 +1015,9 @@ export const AgentsTab = ({
                                                                             </label>
                                                                         )}
 
-                                                                        {!isExpanded && (
-                                                                            <p className="line-clamp-2 px-3 pb-2.5 text-xs text-text-faint">
-                                                                                {isAutoGroup ? `Included by default for ${agentType} agents` : cap.description}
-                                                                            </p>
-                                                                        )}
-
                                                                         {isExpanded && hasMultipleTools && !isAutoGroup && (
                                                                             <div className="max-h-[260px] divide-y divide-border overflow-y-auto border-t border-border px-3">
+                                                                                {cap.description && <p className="py-2 text-xs text-text-faint">{cap.description}</p>}
                                                                                 {toolDetails.map((tool: { name: string, description: string }) => {
                                                                                     const isToolAuto = autoTools.has(tool.name);
                                                                                     const isToolEnabled = isToolAuto || draftAgent.tools.includes("all") || draftAgent.tools.includes(tool.name);
@@ -1045,7 +1059,7 @@ export const AgentsTab = ({
                                                                 );
                                                             })}
                                                         </div>
-                                                    );
+                                                    </>);
                                                 })()}
                                             </div>
                                             )}
@@ -1053,8 +1067,8 @@ export const AgentsTab = ({
                                             {draftAgent.type === 'code' && (
                                                 <div className="space-y-1">
                                                     <Label className="block">Linked Repositories</Label>
-                                                    <div className="flex min-h-[50px] flex-wrap gap-2 rounded-lg border border-border bg-surface p-3">
-                                                        {repos.length === 0 && <span className="text-xs text-text-faint">No repositories indexed yet.</span>}
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {repos.length === 0 && <span className="text-sm text-text-muted">No repositories indexed yet.</span>}
                                                         {repos.map(repo => {
                                                             const isLinked = draftAgent.repos?.includes(repo.id);
                                                             return (
@@ -1084,8 +1098,8 @@ export const AgentsTab = ({
                                             {draftAgent.type === 'code' && (
                                                 <div className="space-y-1">
                                                     <Label className="block">Linked Databases</Label>
-                                                    <div className="flex min-h-[50px] flex-wrap gap-2 rounded-lg border border-border bg-surface p-3">
-                                                        {dbConfigs.length === 0 && <span className="text-xs text-text-faint">No databases configured yet.</span>}
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {dbConfigs.length === 0 && <span className="text-sm text-text-muted">No databases configured yet.</span>}
                                                         {dbConfigs.map((db: any) => {
                                                             const isLinked = draftAgent.db_configs?.includes(db.id);
                                                             return (
@@ -1115,48 +1129,50 @@ export const AgentsTab = ({
                                             {/* Tool policy — what the agent may DO with the tools above.
                                                 The list is about which tools it holds; this is about what
                                                 a call costs. Enforced in core/tool_policy.py. */}
-                                            <div className="space-y-1 pt-2">
-                                                <Label className="block">Tool Policy</Label>
-                                                <p className="-mt-1 mb-2 text-xs text-text-faint">
-                                                    Decided by what a tool does, not by its name — so a destructive call can wait
-                                                    for a person without taking the tool away from the agent.
-                                                </p>
+                                            {/* Folded (Naveen, M2d); the closed row still says what is set. */}
+                                            <Section
+                                                title="Tool Policy"
+                                                description="Decided by what a tool does, not by its name — so a destructive call can wait for a person without taking the tool away from the agent."
+                                                summary={policySummary(draftAgent.tool_policy || {})}
+                                                className="mt-2"
+                                            >
                                                 <ToolPolicyFields
                                                     value={draftAgent.tool_policy || {}}
                                                     onChange={(next) => setDraftAgent({ ...draftAgent, tool_policy: next })}
                                                     inheritFrom={policyDefaults}
                                                 />
-                                                {(() => {
-                                                    const gating = gatingCategories(draftAgent.tool_policy || {}, policyDefaults);
-                                                    const bound = widgets.filter((w: any) => w.agent_id === draftAgent.id);
-                                                    if (gating.length === 0 || bound.length === 0) return null;
-                                                    const names = bound.map((w: any) => w.name || 'Untitled widget').join(', ');
-                                                    const asked = gating
-                                                        .map(id => POLICY_CATEGORIES.find(c => c.id === id)?.clause)
-                                                        .filter(Boolean)
-                                                        .join(', or ');
-                                                    return (
-                                                        <div className="mt-3 rounded-md border border-warning/50 bg-warning-subtle p-3">
-                                                            <p className="text-xs text-text">
-                                                                <span className="font-semibold">{bound.length === 1 ? 'A chat widget publishes' : 'Chat widgets publish'} this agent</span>{' '}
-                                                                ({names}). A visitor there is not a member of this workspace and cannot
-                                                                answer an approval, so a call to {asked} will end their turn with a note
-                                                                asking them to get in touch. Saving is fine — but nobody will be asked.
-                                                            </p>
-                                                        </div>
-                                                    );
-                                                })()}
-                                            </div>
+                                            </Section>
+                                            {/* Outside the fold: a warning is never folded away. */}
+                                            {(() => {
+                                                const gating = gatingCategories(draftAgent.tool_policy || {}, policyDefaults);
+                                                const bound = widgets.filter((w: any) => w.agent_id === draftAgent.id);
+                                                if (gating.length === 0 || bound.length === 0) return null;
+                                                const names = bound.map((w: any) => w.name || 'Untitled widget').join(', ');
+                                                const asked = gating
+                                                    .map(id => POLICY_CATEGORIES.find(c => c.id === id)?.clause)
+                                                    .filter(Boolean)
+                                                    .join(', or ');
+                                                return (
+                                                    <div className="rounded-md border border-warning/50 bg-warning-subtle p-3">
+                                                        <p className="text-xs text-text">
+                                                            <span className="font-semibold">{bound.length === 1 ? 'A chat widget publishes' : 'Chat widgets publish'} this agent</span>{' '}
+                                                            ({names}). A visitor there is not a member of this workspace and cannot
+                                                            answer an approval, so a call to {asked} will end their turn with a note
+                                                            asking them to get in touch. Saving is fine — but nobody will be asked.
+                                                        </p>
+                                                    </div>
+                                                );
+                                            })()}
                                         </SetupSection>
 
                                         <SetupSection id="setup-skills" title="Skills and knowledge">
                                             {/* Skills — roster in the prompt, bodies on demand via load_skill */}
-                                            <div className="space-y-1">
+                                            <div className="space-y-2">
                                                 <Label className="block">Skills</Label>
-                                                <div className="flex min-h-[50px] flex-wrap gap-2 rounded-lg border border-border bg-surface p-3">
-                                                    {allSkills.filter((s: any) => !s.shadowed).length === 0 && (
-                                                        <span className="text-xs text-text-faint">No skills yet — create one on the Skills page.</span>
-                                                    )}
+                                                {allSkills.filter((s: any) => !s.shadowed).length === 0 && (
+                                                    <p className="text-sm text-text-muted">No skills yet — create one on the Skills page.</p>
+                                                )}
+                                                <div className="flex flex-wrap gap-2 empty:hidden">
                                                     {allSkills.filter((s: any) => !s.shadowed).map((skill: any) => {
                                                         const isSelected = draftAgent.skills?.includes(skill.name);
                                                         return (
@@ -1178,7 +1194,7 @@ export const AgentsTab = ({
                                                         );
                                                     })}
                                                 </div>
-                                                <p className="mt-1 text-xs text-text-faint">A selected skill costs one roster line in the prompt; the agent loads its full instructions with load_skill only when needed.</p>
+                                                <p className="text-2xs text-text-faint">A selected skill costs one roster line in the prompt; the agent loads its full instructions with load_skill only when needed.</p>
                                             </div>
 
                                             {/* Knowledge bases — what this agent answers from, with sources (B1b) */}
@@ -1438,6 +1454,16 @@ export const AgentsTab = ({
         </div>
     );
 };
+
+/** The tool policy in one line, for its folded row: what is set, or that nothing is. */
+function policySummary(policy: ToolPolicy): string {
+    const set = POLICY_CATEGORIES.filter(c => policy[c.id]);
+    if (set.length === 0) return 'Default for all three';
+    const word: Record<string, string> = { allow: 'Allow', confirm: 'Ask first', deny: 'Block' };
+    if (set.length > 1) return `${set.length} of 3 set`;
+    const c = set[0];
+    return `${word[policy[c.id]] ?? policy[c.id]}: ${c.label.toLowerCase()}`;
+}
 
 /** A chip that toggles one item (a repository, a database, a skill). */
 const chip = (selected: boolean) => cn(

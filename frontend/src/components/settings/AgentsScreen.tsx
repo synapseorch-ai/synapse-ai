@@ -17,10 +17,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { useDispatch } from "react-redux";
 
-import { Plus } from "lucide-react";
+import { ChevronDown, Plus, Sparkles } from "lucide-react";
 
 import { AppScreen } from "@/components/app/AppScreen";
-import { Button, ConfirmDialog, Toast, useToast } from "@/components/ui";
+import { Button, ConfirmDialog, Menu, MenuItem, Toast, useToast } from "@/components/ui";
 import type { AppDispatch } from "@/store";
 import { removeAgent } from "@/store/settingsSlice";
 
@@ -117,6 +117,7 @@ export function AgentsScreen() {
 
     // The test chat's column: the person's last choice, else open on a screen
     // wide enough for three columns.
+    const [aiBuilderOpen, setAiBuilderOpen] = useState(false);
     const [testOpen, setTestOpenState] = useState(true);
     useEffect(() => {
         let kept: string | null = null;
@@ -191,9 +192,23 @@ export function AgentsScreen() {
             id="agents"
             bleed
             actions={(
-                <Button size="sm" onClick={newAgent} aria-label="Create New Agent" title="Create New Agent">
-                    <Plus className="size-4" aria-hidden /> New agent
-                </Button>
+                // New agent, and beside it the other way to make one: describe it
+                // and let the AI write it (it was the list's sparkle; Naveen, M2d).
+                <div className="flex items-center">
+                    <Button size="sm" onClick={newAgent} aria-label="Create New Agent" title="Create New Agent" className="rounded-r-none">
+                        <Plus className="size-4" aria-hidden /> New agent
+                    </Button>
+                    <Menu
+                        align="end"
+                        trigger={(
+                            <Button size="sm" iconOnly aria-label="More ways to make an agent" title="More ways to make an agent" className="rounded-l-none border-l border-l-accent-fg/25">
+                                <ChevronDown className="size-4" aria-hidden />
+                            </Button>
+                        )}
+                    >
+                        <MenuItem icon={Sparkles} onSelect={() => setAiBuilderOpen(true)}>Build Agent with AI…</MenuItem>
+                    </Menu>
+                </div>
             )}
         >
             <AgentsTab
@@ -220,6 +235,8 @@ export function AgentsScreen() {
                 agentStatus={agentStatus}
                 testOpen={testOpen}
                 setTestOpen={setTestOpen}
+                aiBuilderOpen={aiBuilderOpen}
+                setAiBuilderOpen={setAiBuilderOpen}
             />
 
             <ConfirmDialog
