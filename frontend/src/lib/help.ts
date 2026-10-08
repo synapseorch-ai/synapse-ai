@@ -26,7 +26,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Under Build, make Workflows (with Schedules and Templates) and Agents (with Skills), keep files in the Vault, search them with Knowledge when it is on, and Chat.',
             'Under Connect, give agents Apps and Tools to call, and Channels and Widgets to meet people on.',
             'Press Ctrl+K (⌘K on a Mac), or click “Jump to…”, to go to any page or tab by name.',
-            'Click “Build with AI” in the menu, or the round button at the bottom right, to build with AI from any page; Settings sits at the foot.',
+            'Click “Build with AI” in the menu to build with AI from any page; on a phone, the mark in the top bar. Settings sits at the foot.',
         ],
         guide: '/guides/start/how-it-fits',
     },
@@ -164,7 +164,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Chat',
         summary: 'Talk to one agent at a time and watch it work: its thinking, the tools it calls and what they return. Conversations are kept for you to pick up again.',
         steps: [
-            'Click “Agents” in the header and pick who to talk to; switching agents starts a new conversation.',
+            'Click the agent’s name at the foot of the message box and pick who to talk to; switching agents starts a new conversation.',
             'Type your message and press Enter; Shift+Enter adds a line, and “Stop” halts the agent.',
             'Attach, paste or drop images when the agent’s model can read them; a workflow agent takes them when one of its steps has “Sees attachments” on.',
             'Click + for a new chat, or the history button to reopen or delete an earlier one.',
