@@ -125,7 +125,6 @@ function Workbench({
     const flowRef = useRef<HTMLDivElement>(null);
     const sheetRef = useRef<HTMLDivElement>(null);
     const dockRef = useRef<HTMLDivElement>(null);
-    const stripRef = useRef<HTMLDivElement>(null);
     const box = useElementBox(rootRef);
     const phone = useMediaQuery(PHONE_QUERY);
     const reduced = useReducedMotion();
@@ -146,7 +145,6 @@ function Workbench({
     const cardOpen = view !== null;
     const sheetBox = useElementBox(sheetRef, cardOpen && phone);
     const dockBox = useElementBox(dockRef);
-    const stripBox = useElementBox(stripRef, !!runStrip);
 
     const [storedWidth, setStoredWidth] = usePersisted<string>(
         'orch-card-width',
@@ -301,11 +299,10 @@ function Workbench({
     const zoomRight = 12 + localInset + (cardSpace ? cardSpace + 12 : 0);
     // The strip runs up to the dock, and wraps to a second row rather than under it.
     const stripMax = phone ? undefined : Math.max(240, dockCentre - (dockBox.width || 320) / 2 - 24);
-    // The drawer opens above the strip, however tall the strip has wrapped.
-    const drawerBottom = (phone ? 56 : 12) + (stripBox.height || 44) + 8;
     const drawerWidth = Math.max(280, Math.min(640, freeWidth - 24));
     const [drawerHeight, setDrawerHeight] = useState(320);
-    const drawerMax = Math.max(120, Math.min(700, box.height - 150));
+    // Clear of the bar above and of a strip that may wrap to two rows below.
+    const drawerMax = Math.max(120, Math.min(700, box.height - (phone ? 260 : 200)));
     const resizeDrawer = (event: React.PointerEvent) => {
         event.preventDefault();
         const startY = event.clientY;
@@ -467,39 +464,46 @@ function Workbench({
                 />
             )}
 
-            {runDrawer?.open && (
+            {/* The run strip at the bottom left, and its drawer above it in one column
+                that grows upward: the drawer can never sit over the strip, however the
+                strip wraps (a measured offset was a frame late when a question arrived). */}
+            {(runStrip || runDrawer?.open) && (
                 <div
-                    data-canvas-chrome="drawer"
-                    className={cn(FLOAT, 'nokey absolute z-20 flex flex-col overflow-hidden rounded-[12px]', phone ? 'inset-x-2' : 'left-3')}
-                    style={phone
-                        ? { bottom: drawerBottom, height: Math.min(drawerHeight, box.height - drawerBottom - 70) }
-                        : { bottom: drawerBottom, width: drawerWidth, height: Math.min(drawerHeight, box.height - drawerBottom - 70) }}
+                    className={cn('nokey pointer-events-none absolute z-20 flex flex-col items-start gap-2', phone ? 'inset-x-2 bottom-[56px]' : 'bottom-3 left-3')}
+                    style={phone ? undefined : { maxWidth: Math.max(stripMax ?? 0, drawerWidth) }}
                 >
-                    <div
-                        role="separator"
-                        aria-orientation="horizontal"
-                        aria-label="Resize the run log"
-                        aria-valuemin={120}
-                        aria-valuemax={drawerMax}
-                        aria-valuenow={drawerHeight}
-                        tabIndex={0}
-                        onPointerDown={resizeDrawer}
-                        onKeyDown={resizeDrawerKey}
-                        className="group flex h-2 shrink-0 cursor-ns-resize items-center justify-center outline-none"
-                    >
-                        <span className="h-[3px] w-9 rounded-full bg-border-strong opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden />
-                    </div>
-                    <div className="flex min-h-0 flex-1 flex-col">{runDrawer.content}</div>
-                </div>
-            )}
-            {runStrip && (
-                <div
-                    ref={stripRef}
-                    data-canvas-chrome="strip"
-                    className={cn('nokey absolute z-10', phone ? 'inset-x-2 bottom-[56px]' : 'bottom-3 left-3')}
-                    style={stripMax ? { maxWidth: stripMax } : undefined}
-                >
-                    {runStrip}
+                    {runDrawer?.open && (
+                        <div
+                            data-canvas-chrome="drawer"
+                            className={cn(FLOAT, 'pointer-events-auto flex flex-col overflow-hidden rounded-[12px]', phone && 'w-full')}
+                            style={{ width: phone ? undefined : drawerWidth, height: Math.min(drawerHeight, drawerMax) }}
+                        >
+                            <div
+                                role="separator"
+                                aria-orientation="horizontal"
+                                aria-label="Resize the run log"
+                                aria-valuemin={120}
+                                aria-valuemax={drawerMax}
+                                aria-valuenow={drawerHeight}
+                                tabIndex={0}
+                                onPointerDown={resizeDrawer}
+                                onKeyDown={resizeDrawerKey}
+                                className="group flex h-2 shrink-0 cursor-ns-resize items-center justify-center outline-none"
+                            >
+                                <span className="h-[3px] w-9 rounded-full bg-border-strong opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" aria-hidden />
+                            </div>
+                            <div className="flex min-h-0 flex-1 flex-col">{runDrawer.content}</div>
+                        </div>
+                    )}
+                    {runStrip && (
+                        <div
+                            data-canvas-chrome="strip"
+                            className={cn('pointer-events-auto', phone && 'w-full')}
+                            style={stripMax ? { maxWidth: stripMax } : undefined}
+                        >
+                            {runStrip}
+                        </div>
+                    )}
                 </div>
             )}
 
