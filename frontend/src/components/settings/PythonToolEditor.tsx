@@ -15,7 +15,8 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { Play, ChevronDown, ChevronUp, Terminal, Package, AlertCircle, CheckCircle2 } from 'lucide-react';
 
-import { CodeEditor, Combobox, Spinner, Tag } from '@/components/ui';
+import { CodeEditor, Combobox, Spinner, Tag, buttonStyles } from '@/components/ui';
+import { cn } from '@/lib/cn';
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 
 export interface PythonDraftTool {
@@ -180,15 +181,15 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
         <div className="flex flex-col gap-5">
 
             {/* ── Info Banner ─────────────────────────────────────────────── */}
-            <div className="bg-zinc-950 border border-accent/40 rounded-sm p-3 space-y-2">
+            <div className="bg-surface-2 border border-border rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-xs font-bold text-accent uppercase tracking-wider">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-text">
                         <Package className="h-3.5 w-3.5" />
                         Python Sandbox
                     </div>
                     <button
                         onClick={() => setShowPackages(v => !v)}
-                        className="text-[10px] text-text-faint hover:text-zinc-300 flex items-center gap-1"
+                        className="text-xs text-text-faint hover:text-text flex items-center gap-1"
                     >
                         {showPackages ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                         {showPackages ? 'Hide' : 'Show'} packages
@@ -199,12 +200,12 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                     Vault files are mounted at <span className="font-mono text-accent">/data/</span>.
                     Arguments are injected as <span className="font-mono text-accent">_args</span> (dict),
                     and the variables it declares as <span className="font-mono text-accent">_globals</span>.
-                    <span className="font-mono text-zinc-400"> print()</span> stdout becomes the tool result.
+                    <span className="font-mono text-text"> print()</span> stdout becomes the tool result.
                 </p>
                 {showPackages && (
-                    <div className="flex flex-wrap gap-1.5 pt-1 border-t border-zinc-800">
+                    <div className="flex flex-wrap gap-1.5 pt-1 border-t border-border">
                         {PACKAGES.map(pkg => (
-                            <span key={pkg} className="text-[10px] font-mono bg-zinc-900 border border-zinc-700 text-zinc-400 px-1.5 py-0.5 rounded-md">
+                            <span key={pkg} className="text-[11px] font-mono bg-surface border border-border text-text-muted px-1.5 py-0.5 rounded-md">
                                 {pkg}
                             </span>
                         ))}
@@ -215,9 +216,9 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
             {/* ── Code Editor ─────────────────────────────────────────────── */}
             <div className="space-y-1">
                 <div className="flex items-center justify-between">
-                    <label className="text-[10px] uppercase font-bold text-text-faint">Python Code</label>
+                    <label className="text-xs font-medium text-text-muted">Python Code</label>
                     {lintWarnings.length > 0 && (
-                        <div className="flex items-center gap-1 text-[10px] text-amber-400">
+                        <div className="flex items-center gap-1 text-xs text-text">
                             <AlertCircle className="h-3 w-3" />
                             {lintWarnings.length} warning{lintWarnings.length > 1 ? 's' : ''}
                         </div>
@@ -235,7 +236,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                 {lintWarnings.length > 0 && (
                     <div className="space-y-1 pt-1">
                         {lintWarnings.map((w, i) => (
-                            <div key={i} className={`flex items-start gap-2 text-[10px] font-mono ${w.severity === 'error' ? 'text-red-400' : 'text-amber-400'}`}>
+                            <div key={i} className={`flex items-start gap-2 text-[10px] font-mono ${w.severity === 'error' ? 'text-danger' : 'text-text'}`}>
                                 <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
                                 <span>Line {w.line}: {w.message}</span>
                             </div>
@@ -246,7 +247,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
 
             {/* ── Input Schema (JSON) ──────────────────────────────────────── */}
             <div className="space-y-1">
-                <label className="text-[10px] uppercase font-bold text-text-faint">Input Schema (JSON)</label>
+                <label className="text-xs font-medium text-text-muted">Input Schema (JSON)</label>
                 <CodeEditor
                     language="json"
                     lint="json"
@@ -261,7 +262,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
 
             {/* ── Declared globals ─────────────────────────────────────────── */}
             <div className="space-y-2">
-                <p id="py-globals-label" className="text-[10px] uppercase font-bold text-text-faint">
+                <p id="py-globals-label" className="text-xs font-medium text-text-muted">
                     Variables this tool can read
                 </p>
                 <p className="text-[11px] text-text-faint leading-relaxed">
@@ -298,9 +299,9 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
             </div>
 
             {/* ── Test Runner ──────────────────────────────────────────────── */}
-            <div className="space-y-2 border-t border-zinc-800 pt-4">
+            <div className="space-y-2 border-t border-border pt-4">
                 <div className="flex items-center justify-between">
-                    <label className="text-[10px] uppercase font-bold text-text-faint flex items-center gap-2">
+                    <label className="text-xs font-medium text-text-muted flex items-center gap-2">
                         <Terminal className="h-3.5 w-3.5" />
                         Test Run
                     </label>
@@ -309,7 +310,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
 
                 <div className="flex gap-2 items-start">
                     <div className="flex-1 space-y-1">
-                        <label className="text-[9px] text-text-faint uppercase tracking-wider">Test Arguments (JSON)</label>
+                        <label className="text-xs text-text-faint">Test Arguments (JSON)</label>
                         <CodeEditor
                             language="json"
                             height={88}
@@ -322,7 +323,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                     <button
                         onClick={handleTestRun}
                         disabled={testLoading || !draft.code.trim()}
-                        className="flex items-center gap-2 px-4 py-2 bg-accent hover:bg-accent-hover disabled:bg-zinc-800 disabled:text-zinc-600 text-accent-fg text-xs font-bold transition-colors mt-4 shrink-0"
+                        className={cn(buttonStyles({ variant: "secondary" }), "mt-4 shrink-0")}
                     >
                         {testLoading
                             ? <><Spinner size={14} /> Running...</>
@@ -332,7 +333,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                 </div>
 
                 {testError && (
-                    <div className="flex items-center gap-2 p-2 bg-red-950/40 border border-red-800 text-red-400 text-[11px] rounded-md">
+                    <div className="flex items-center gap-2 p-2 bg-danger-subtle border border-danger/25 text-danger text-xs rounded-md">
                         <AlertCircle className="h-4 w-4 shrink-0" />
                         {testError}
                     </div>
@@ -343,18 +344,18 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                         {/* Exit code badge */}
                         <div className="flex items-center gap-2">
                             {testResult.exit_code === 0
-                                ? <CheckCircle2 className="h-4 w-4 text-green-500" />
-                                : <AlertCircle className="h-4 w-4 text-red-500" />
+                                ? <CheckCircle2 className="h-4 w-4 text-success" />
+                                : <AlertCircle className="h-4 w-4 text-danger" />
                             }
-                            <span className={`text-[11px] font-bold ${testResult.exit_code === 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            <span className={`text-xs font-semibold ${testResult.exit_code === 0 ? 'text-success' : 'text-danger'}`}>
                                 Exit code: {testResult.exit_code}
                             </span>
                         </div>
 
                         {testResult.stdout && (
                             <div className="space-y-1">
-                                <p className="text-[9px] uppercase tracking-wider text-text-faint">stdout</p>
-                                <pre className="p-3 bg-zinc-950 border border-zinc-800 text-[11px] font-code text-green-300 overflow-auto max-h-48 whitespace-pre-wrap rounded-md">
+                                <p className="text-xs font-medium text-text-faint">stdout</p>
+                                <pre className="p-3 bg-surface-2 border border-border text-[11px] font-code text-text overflow-auto max-h-48 whitespace-pre-wrap rounded-md">
                                     {testResult.stdout}
                                 </pre>
                             </div>
@@ -362,8 +363,8 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
 
                         {testResult.stderr && (
                             <div className="space-y-1">
-                                <p className="text-[9px] uppercase tracking-wider text-text-faint">stderr</p>
-                                <pre className="p-3 bg-zinc-950 border border-red-900/40 text-[11px] font-code text-red-300 overflow-auto max-h-32 whitespace-pre-wrap rounded-md">
+                                <p className="text-xs font-medium text-text-faint">stderr</p>
+                                <pre className="p-3 bg-danger-subtle border border-danger/25 text-[11px] font-code text-danger overflow-auto max-h-32 whitespace-pre-wrap rounded-md">
                                     {testResult.stderr}
                                 </pre>
                             </div>

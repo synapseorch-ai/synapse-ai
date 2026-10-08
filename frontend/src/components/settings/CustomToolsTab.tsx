@@ -1,9 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { Wrench, Plus, Trash, X, ExternalLink, AlertTriangle, CheckCircle2, RefreshCw, Container, Import } from 'lucide-react';
 import { PythonToolEditor, type PythonDraftTool } from './PythonToolEditor';
 import { OpenApiImport } from './OpenApiImport';
-import { Button, CodeEditor, Label, Select, TemplateInput, TemplateScope, schemaArgs } from '@/components/ui';
+import { Badge, Button, buttonStyles, CodeEditor, ConfirmDialog, Label, Select, TemplateInput, TemplateScope, schemaArgs } from '@/components/ui';
+import { AppScreen } from '@/components/app/AppScreen';
 
 interface CustomToolsTabProps {
     customTools: any[];
@@ -100,147 +102,189 @@ export const CustomToolsTab = ({
 
     useEffect(() => { checkDockerStatus(); }, [checkDockerStatus]);
 
-    // ── Get tool type badge ────────────────────────────────────────────────
+    // ── A tool's kind, as a quiet chip ─────────────────────────────────────
     const getToolBadge = (t: any) => {
-        if (t.tool_type === 'python') {
-            return <span className="text-2xs font-bold bg-accent-subtle border border-accent/40 text-accent px-1.5 py-0.5 rounded-md">🐍 PYTHON</span>;
-        }
-        if (t.workflowId || t.url?.includes('webhook')) {
-            return <span className="text-2xs font-bold bg-warning/20 border border-warning/50 text-warning px-1.5 py-0.5 rounded-md">n8n</span>;
-        }
-        return <span className="text-2xs font-bold bg-surface-2 border border-border-strong text-text-muted px-1.5 py-0.5 rounded-md">HTTP</span>;
+        if (t.tool_type === 'python') return <Badge size="sm" tone="machine">Python</Badge>;
+        if (t.workflowId || t.url?.includes('webhook')) return <Badge size="sm">n8n</Badge>;
+        return <Badge size="sm">HTTP · {(t.method || 'POST').toUpperCase()}</Badge>;
     };
 
-    return (
-        <div className="flex flex-col min-h-[600px]">
-            {showImport && !draftTool ? (
-                /* ── OpenAPI Import View ──────────────────────────────────── */
-                <OpenApiImport
-                    onClose={() => setShowImport(false)}
-                    onImported={(tools) => { onImported(tools); setShowImport(false); }}
-                />
-            ) : !draftTool ? (
-                /* ── List View ───────────────────────────────────────────── */
-                <div className="space-y-4">
-                    <div className="flex justify-between items-center">
-                        <div>
-                            <h3 className="text-lg font-bold text-text flex items-center gap-2">
-                                <Wrench className="h-5 w-5" /> Custom Tools
-                            </h3>
-                            <p className="text-text-faint text-sm">
-                                Extend your agent with n8n webhooks, HTTP endpoints, or Python functions.
-                            </p>
-                        </div>
-                        <div className="flex gap-2">
-                            <button
-                                onClick={() => setShowImport(true)}
-                                className="px-3 py-2 bg-surface border border-border-strong text-text-muted font-bold text-xs uppercase flex items-center gap-2 hover:bg-surface-2 hover:text-text transition-colors rounded-md"
-                            >
-                                <Import className="h-4 w-4" /> Import OpenAPI
-                            </button>
-                            <button
-                                onClick={() => {
-                                    const initialInput = { type: 'object', properties: { input: { type: 'string' } } };
-                                    setDraftTool({
-                                        name: '',
-                                        generalName: '',
-                                        description: '',
-                                        url: '',
-                                        method: 'POST',
-                                        inputSchema: initialInput,
-                                        inputSchemaStr: JSON.stringify(initialInput, null, 2),
-                                        outputSchemaStr: '',
-                                        tool_type: 'http',
-                                    });
-                                    setHeaderRows([{ id: 'h1', key: '', value: '' }]);
-                                    setToolBuilderMode('config');
-                                }}
-                                className="px-3 py-2 bg-surface border border-border-strong text-text-muted font-bold text-xs uppercase flex items-center gap-2 hover:bg-surface-2 hover:text-text transition-colors rounded-md"
-                            >
-                                <Plus className="h-4 w-4" /> New Tool
-                            </button>
-                        </div>
-                    </div>
+    // ── Which tool is open (M2f: the list and the editor side by side) ─────
+    const draftFromTool = (t: any) => (t.tool_type === 'python'
+        ? { draft: { ...t, schemaParams: t.schemaParams || [] }, rows: null, mode: 'python' as const }
+        : {
+            draft: {
+                ...t,
+                inputSchemaStr: JSON.stringify(t.inputSchema || {}, null, 2),
+                outputSchemaStr: t.outputSchema ? JSON.stringify(t.outputSchema, null, 2) : '',
+            },
+            rows: (() => {
+                const r = Object.entries(t.headers || {}).map(([k, v], i) => ({ id: `h-${i}`, key: k, value: v as string }));
+                return r.length ? r : [{ id: 'h1', key: '', value: '' }];
+            })(),
+            mode: 'config' as const,
+        });
+    const snapshot = (d: any, rows: unknown) => JSON.stringify([d, rows]);
+    const baseline = useRef<string | null>(null);
+    // The name last opened, so a save (which closes the draft) opens it again.
+    const openName = useRef<string | null>(null);
+    const userClosed = useRef(false);
+    const [pending, setPending] = useState<null | (() => void)>(null);
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {customTools.map((t: any) => (
-                            <div key={t.name} className={`p-4 border hover:border-text-faint transition-all group relative ${t.tool_type === 'python' ? 'bg-accent-subtle border-accent/40 hover:border-accent/40' : 'bg-surface border-border'} rounded-md`}>
-                                <div className="font-bold text-text mb-1 flex items-center gap-2 pr-10">
-                                    <span className="truncate">{t.generalName || t.name}</span>
-                                    {getToolBadge(t)}
-                                </div>
-                                {t.generalName && <div className="text-2xs text-text-faint font-mono mb-1">({t.name})</div>}
-                                <div className="text-xs text-text-faint mb-2 h-8 overflow-hidden">{t.description}</div>
-                                {t.group && groups.find(g => g.id === t.group) && (
-                                    <div className="text-2xs text-accent mb-0.5">{groups.find(g => g.id === t.group)!.name}</div>
-                                )}
-                                {t.tool_type === 'python'
-                                    ? <div className="text-2xs font-mono text-accent">🐍 Python sandboxed function</div>
-                                    : <div className="text-2xs font-mono text-text-faint truncate">{t.url}</div>
-                                }
+    const openTool = (t: any) => {
+        const { draft, rows, mode } = draftFromTool(t);
+        setDraftTool(draft);
+        if (rows) setHeaderRows(rows);
+        setToolBuilderMode(mode);
+        setShowImport(false);
+        openName.current = t.name;
+        userClosed.current = false;
+        baseline.current = snapshot(draft, mode === 'python' ? null : rows);
+    };
+    const startNew = () => {
+        const initialInput = { type: 'object', properties: { input: { type: 'string' } } };
+        const draft = {
+            name: '', generalName: '', description: '', url: '', method: 'POST',
+            inputSchema: initialInput, inputSchemaStr: JSON.stringify(initialInput, null, 2),
+            outputSchemaStr: '', tool_type: 'http',
+        };
+        const rows = [{ id: 'h1', key: '', value: '' }];
+        setDraftTool(draft);
+        setHeaderRows(rows);
+        setToolBuilderMode('config');
+        setShowImport(false);
+        openName.current = null;
+        userClosed.current = false;
+        baseline.current = snapshot(draft, rows);
+    };
+    const closeEditor = () => {
+        userClosed.current = true;
+        openName.current = null;
+        setDraftTool(null);
+        setToolBuilderMode('config');
+    };
+    // Python tools keep no header rows, so they are left out of the comparison.
+    const dirty = !!draftTool && baseline.current !== null
+        && snapshot(draftTool, toolBuilderMode === 'python' ? null : headerRows) !== baseline.current;
+    // Ask before an unsaved edit is dropped, as the agents workbench does.
+    const guard = (next: () => void) => { if (dirty) setPending(() => next); else next(); };
+
+    // A deleted tool that was open closes, and the list's first opens instead.
+    useEffect(() => {
+        if (!draftTool || !openName.current) return;
+        if (customTools.some((t: any) => t.name === openName.current)) return;
+        if (draftTool.name !== openName.current) return; // renamed in the editor: still a draft of it
+        openName.current = null;
+        setDraftTool(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [customTools]);
+
+    // Open the first tool when the page loads, and the saved one after a save.
+    useEffect(() => {
+        if (draftTool || showImport || userClosed.current || !customTools.length) return;
+        const again = openName.current ? customTools.find((t: any) => t.name === openName.current) : null;
+        openTool(again ?? customTools[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [draftTool, showImport, customTools]);
+
+    const actions = (
+        <>
+            <Button variant="secondary" onClick={() => guard(() => { closeEditor(); userClosed.current = true; setShowImport(true); })}>
+                <Import className="size-4" aria-hidden /> Import OpenAPI
+            </Button>
+            <Button variant="secondary" onClick={() => guard(startNew)}>
+                <Plus className="size-4" aria-hidden /> New Tool
+            </Button>
+        </>
+    );
+
+    const list = (
+        <nav aria-label="Tools" className="min-w-0">
+            {customTools.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border px-5 py-10 text-center text-sm text-text-muted">
+                    No custom tools yet. Create an HTTP, n8n webhook, or Python tool.
+                </div>
+            ) : (
+                <ul className="grid gap-0.5" data-tool-list="">
+                    {customTools.map((t: any) => {
+                        const active = !!draftTool && draftTool.name === t.name && openName.current === t.name;
+                        const group = t.group ? groups.find(g => g.id === t.group) : null;
+                        return (
+                            <li key={t.name} data-tool-row={t.name} className="group relative">
+                                <button
+                                    type="button"
+                                    aria-current={active ? 'true' : undefined}
+                                    onClick={() => guard(() => openTool(t))}
+                                    className={`grid w-full gap-1 rounded-lg px-3 py-2.5 pr-10 text-left transition-colors ${active ? 'bg-surface-2 shadow-[inset_0_0_0_1px_var(--border)]' : 'hover:bg-row-hover'}`}
+                                >
+                                    <span className="flex min-w-0 items-center gap-2">
+                                        <span className="truncate text-sm font-semibold text-text">{t.generalName || t.name}</span>
+                                        {getToolBadge(t)}
+                                    </span>
+                                    {t.generalName && <span className="truncate font-mono text-xs text-text-faint">{t.name}</span>}
+                                    {t.description && <span className="line-clamp-2 text-xs text-text-muted">{t.description}</span>}
+                                    {group && <span className="truncate text-xs text-text-faint">{group.name}</span>}
+                                </button>
                                 <button
                                     onClick={() => onDeleteTool(t.name)}
                                     aria-label={`Delete ${t.generalName || t.name}`}
                                     title={`Delete ${t.generalName || t.name}`}
-                                    className="absolute top-2 right-2 p-1 text-text-faint hover:text-danger opacity-0 group-hover:opacity-100"
+                                    className="absolute right-1.5 top-2 inline-flex size-7 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-surface-2 hover:text-danger md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
                                 >
-                                    <Trash className="h-4 w-4" />
+                                    <Trash className="size-4" aria-hidden />
                                 </button>
-                                <button
-                                    onClick={() => {
-                                        if (t.tool_type === 'python') {
-                                            setDraftTool({
-                                                ...t,
-                                                schemaParams: t.schemaParams || [],
-                                            });
-                                            setToolBuilderMode('python');
-                                        } else {
-                                            setDraftTool({
-                                                ...t,
-                                                inputSchemaStr: JSON.stringify(t.inputSchema || {}, null, 2),
-                                                outputSchemaStr: t.outputSchema ? JSON.stringify(t.outputSchema, null, 2) : '',
-                                            });
-                                            const rows = Object.entries(t.headers || {}).map(([k, v], i) => ({
-                                                id: `h-${i}`, key: k, value: v as string
-                                            }));
-                                            setHeaderRows(rows.length ? rows : [{ id: 'h1', key: '', value: '' }]);
-                                            setToolBuilderMode('config');
-                                        }
-                                    }}
-                                    className="absolute bottom-2 right-2 text-2xs text-text-muted hover:text-text font-bold uppercase"
-                                >
-                                    Edit
-                                </button>
-                            </div>
-                        ))}
-                        {customTools.length === 0 && (
-                            <div className="col-span-full py-12 text-center text-text-faint italic text-sm border border-dashed border-border">
-                                No custom tools yet. Create an HTTP, n8n webhook, or Python tool.
-                            </div>
-                        )}
-                    </div>
+                            </li>
+                        );
+                    })}
+                </ul>
+            )}
+        </nav>
+    );
+
+    return (
+        <AppScreen id="custom_tools" width="wide" actions={actions}>
+        <div className="grid gap-6 md:grid-cols-[18.75rem_minmax(0,1fr)] md:gap-8">
+            {list}
+            <div className="min-w-0">
+            {showImport && !draftTool ? (
+                /* ── OpenAPI Import ───────────────────────────────────────── */
+                <OpenApiImport
+                    onClose={() => setShowImport(false)}
+                    onImported={(tools) => { onImported(tools); setShowImport(false); userClosed.current = false; }}
+                />
+            ) : !draftTool ? (
+                <div className="rounded-xl border border-dashed border-border px-6 py-12 text-center">
+                    <Wrench className="mx-auto mb-2 size-8 text-text-faint" aria-hidden />
+                    <p className="text-sm font-medium text-text">{customTools.length ? 'Pick a tool to edit it.' : 'Make your first tool.'}</p>
+                    <p className="mx-auto mt-1 max-w-md text-sm text-text-muted">
+                        Extend your agent with n8n webhooks, HTTP endpoints, or Python functions.
+                    </p>
+                    <div className="mt-4 flex justify-center gap-2">{actions}</div>
                 </div>
             ) : (
                 /* ── Builder View ────────────────────────────────────────── */
-                <div className="flex flex-col h-full">
+                <div className="flex flex-col">
                     {/* Header */}
-                    <div className="flex items-center justify-between mb-4 pb-4 border-b border-border">
-                        <div className="flex items-center gap-4">
+                    <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
+                        <div className="flex min-w-0 items-center gap-3">
                             <button
-                                onClick={() => { setDraftTool(null); setToolBuilderMode('config'); }}
+                                onClick={() => guard(closeEditor)}
                                 aria-label="Close the tool editor"
-                                className="text-text-faint hover:text-text"
+                                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-surface-2 hover:text-text"
                             >
-                                <X className="h-5 w-5" />
+                                <X className="size-4" aria-hidden />
                             </button>
-                            <h3 className="font-bold text-text uppercase tracking-wider">
-                                {draftTool.name ? `Editing: ${draftTool.name}` : 'New Tool Builder'}
-                            </h3>
+                            <h2 className="truncate text-section text-text">
+                                {draftTool.name ? <>Editing: <span className="font-mono">{draftTool.name}</span></> : 'New tool'}
+                            </h2>
+                            {dirty && <span className="text-xs text-text-faint">Unsaved</span>}
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex items-center gap-2">
                             {/* Mode tabs */}
-                            <div className="flex bg-surface border border-border p-1 rounded-md gap-0.5">
+                            <div role="group" aria-label="Tool type" className="inline-flex gap-0.5 rounded-lg bg-surface-2 p-0.5">
                                 <button
+                                    type="button"
+                                    aria-pressed={toolBuilderMode === 'config'}
                                     onClick={() => {
                                         if (draftTool.tool_type === 'python') {
                                             const initialInput = { type: 'object', properties: { input: { type: 'string' } } };
@@ -249,11 +293,13 @@ export const CustomToolsTab = ({
                                         }
                                         setToolBuilderMode('config');
                                     }}
-                                    className={`px-3 py-1 text-xs font-bold rounded-md ${toolBuilderMode === 'config' ? 'bg-surface-2 text-text' : 'text-text-faint hover:text-text'}`}
+                                    className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${toolBuilderMode === 'config' ? 'bg-bg text-text shadow-[0_0_0_1px_var(--border)]' : 'text-text-muted hover:text-text'}`}
                                 >
-                                    CONFIG
+                                    HTTP
                                 </button>
                                 <button
+                                    type="button"
+                                    aria-pressed={toolBuilderMode === 'python'}
                                     onClick={() => {
                                         if (draftTool.tool_type !== 'python') {
                                             const defaultCode = `# _args contains all tool arguments as a Python dict\n# print() stdout becomes the tool result\nimport json\n\nresult = {"output": _args.get("input", "")}\nprint(json.dumps(result))\n`;
@@ -261,17 +307,12 @@ export const CustomToolsTab = ({
                                         }
                                         setToolBuilderMode('python');
                                     }}
-                                    className={`px-3 py-1 text-xs font-bold rounded-md ${toolBuilderMode === 'python' ? 'bg-accent text-accent-fg' : 'text-text-faint hover:text-text'}`}
+                                    className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${toolBuilderMode === 'python' ? 'bg-bg text-text shadow-[0_0_0_1px_var(--border)]' : 'text-text-muted hover:text-text'}`}
                                 >
-                                    🐍 PYTHON
+                                    Python
                                 </button>
                             </div>
-                            <button
-                                onClick={onSaveTool}
-                                className="px-4 py-1.5 bg-accent text-accent-fg text-xs font-bold hover:bg-accent-hover"
-                            >
-                                SAVE
-                            </button>
+                            <Button size="sm" onClick={onSaveTool}>Save</Button>
                         </div>
                     </div>
 
@@ -290,7 +331,7 @@ export const CustomToolsTab = ({
                                     }
                                     setDraftTool(update);
                                 }}
-                                className="w-full bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none placeholder:text-text-faint rounded-md"
+                                className="w-full bg-surface border border-border-strong px-3 py-2 text-sm text-text focus:border-accent focus:outline-none placeholder:text-text-faint rounded-md"
                                 placeholder="e.g. Process Orders"
                             />
                         </div>
@@ -300,7 +341,7 @@ export const CustomToolsTab = ({
                                 type="text"
                                 value={draftTool.name}
                                 onChange={e => setDraftTool({ ...draftTool, name: e.target.value })}
-                                className="w-full bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none font-mono placeholder:text-text-faint rounded-md"
+                                className="w-full bg-surface border border-border-strong px-3 py-2 text-sm text-text focus:border-accent focus:outline-none font-mono placeholder:text-text-faint rounded-md"
                                 placeholder="e.g. process_orders"
                             />
                         </div>
@@ -310,7 +351,7 @@ export const CustomToolsTab = ({
                         <textarea id="cus-drafttool-description"
                             value={draftTool.description}
                             onChange={e => setDraftTool({ ...draftTool, description: e.target.value })}
-                            className="w-full bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none resize-vertical min-h-[80px] rounded-md"
+                            className="w-full bg-surface border border-border-strong px-3 py-2 text-sm text-text focus:border-accent focus:outline-none resize-vertical min-h-[80px] rounded-md"
                             placeholder="What does this tool do? Describe its purpose and critical rules for the AI..."
                         />
                     </div>
@@ -347,7 +388,7 @@ export const CustomToolsTab = ({
                                         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); createGroup(); } }}
                                         aria-label="New group name"
                                         placeholder="New group name…"
-                                        className="w-44 bg-surface border border-border p-2 text-xs text-text focus:border-border-strong focus:outline-none rounded-md"
+                                        className="w-44 bg-surface border border-border-strong px-3 py-2 text-xs text-text focus:border-accent focus:outline-none rounded-md"
                                     />
                                     <Button type="button" variant="secondary" size="sm" onClick={createGroup} disabled={!newGroupName.trim()}>Add</Button>
                                 </div>
@@ -384,7 +425,7 @@ export const CustomToolsTab = ({
                                             href={`${getN8nBaseUrl()}/workflow/${draftTool.workflowId}`}
                                             target="_blank"
                                             rel="noreferrer"
-                                            className="inline-flex items-center gap-1 text-2xs text-[#ff6d5a] hover:text-[#ff8a78] hover:underline mt-1"
+                                            className="inline-flex items-center gap-1 text-2xs text-accent-ink hover:text-accent-hover hover:underline mt-1"
                                         >
                                             Open workflow in n8n <ExternalLink className="h-3 w-3" />
                                         </a>
@@ -408,9 +449,9 @@ export const CustomToolsTab = ({
                                     {!n8nIntegrated && (
                                         <span className="text-2xs text-text-faint">
                                             (you can also{' '}
-                                            <a href="/settings/workspace" className="text-[#ff6d5a] hover:underline">
+                                            <Link href="/settings/workspace" className="text-accent-ink hover:underline">
                                                 integrate n8n workflows
-                                            </a>
+                                            </Link>
                                             )
                                         </span>
                                     )}
@@ -440,7 +481,7 @@ export const CustomToolsTab = ({
                                         : '{{ field }}';
                                     return (
                                         <p className="mt-1 text-2xs text-text-faint leading-relaxed">
-                                            💡 Use <code className="font-code text-text-muted bg-surface px-1 rounded-md">{examples}</code> in the URL to inject input values — type <code className="font-code text-text-muted bg-surface px-1 rounded-md">{'{{'}</code> to pick one.
+                                            Use <code className="font-code text-text-muted bg-surface px-1 rounded-md">{examples}</code> in the URL to inject input values — type <code className="font-code text-text-muted bg-surface px-1 rounded-md">{'{{'}</code> to pick one.
                                             {' '}<code className="font-code text-text-muted bg-surface px-1 rounded-md">{'{{ global.key }}'}</code> works here too.
                                             {' '}GET/DELETE args become query params; POST/PUT go in the body.
                                         </p>
@@ -470,12 +511,9 @@ export const CustomToolsTab = ({
                             <div className="space-y-2 pt-2">
                                 <div className="flex justify-between items-end mb-1">
                                     <Label className="block">Headers</Label>
-                                    <button
-                                        onClick={() => setHeaderRows([...headerRows, { id: `h-${Date.now()}`, key: '', value: '' }])}
-                                        className="text-2xs text-text-muted hover:text-text font-bold bg-surface-2 px-2 py-1 rounded-md transition-colors"
-                                    >
-                                        + ADD HEADER
-                                    </button>
+                                    <Button variant="ghost" size="sm" onClick={() => setHeaderRows([...headerRows, { id: `h-${Date.now()}`, key: '', value: '' }])}>
+                                        <Plus className="size-3.5" aria-hidden /> Add header
+                                    </Button>
                                 </div>
                                 {headerRows.map((row, idx) => (
                                     <div key={row.id} className="flex gap-2 items-center">
@@ -489,7 +527,7 @@ export const CustomToolsTab = ({
                                                 newRows[idx].key = e.target.value;
                                                 setHeaderRows(newRows);
                                             }}
-                                            className="flex-1 bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none font-mono rounded-md"
+                                            className="flex-1 bg-surface border border-border-strong px-3 py-2 text-sm text-text focus:border-accent focus:outline-none font-mono rounded-md"
                                         />
                                         <TemplateInput
                                             profile="tool"
@@ -506,7 +544,7 @@ export const CustomToolsTab = ({
                                         <button
                                             onClick={() => setHeaderRows(headerRows.filter(r => r.id !== row.id))}
                                             aria-label={`Remove header ${idx + 1}`}
-                                            className="p-2 text-text-faint hover:text-danger transition-colors"
+                                            className="inline-flex size-8 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-surface-2 hover:text-danger"
                                         >
                                             <Trash className="h-4 w-4" />
                                         </button>
@@ -545,47 +583,47 @@ export const CustomToolsTab = ({
                                 const allGood = dockerStatus.installed && dockerStatus.running && dockerStatus.image_exists;
                                 if (allGood && !dockerBuildError) {
                                     return (
-                                        <div className="flex items-center gap-2 px-3 py-2 bg-success-subtle border border-success/40 rounded-md text-xs text-success">
+                                        <div className="flex items-center gap-2 px-3 py-2 bg-success-subtle border border-success/25 rounded-lg text-xs text-success">
                                             <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                                             Docker sandbox is ready
-                                            <button onClick={checkDockerStatus} disabled={dockerChecking} className="ml-auto text-success hover:opacity-80 transition-opacity disabled:opacity-50">
+                                            <button onClick={checkDockerStatus} disabled={dockerChecking} aria-label="Check Docker again" className="ml-auto text-success hover:opacity-80 transition-opacity disabled:opacity-50">
                                                 <RefreshCw className={`h-3 w-3 ${dockerChecking ? 'animate-spin' : ''}`} />
                                             </button>
                                         </div>
                                     );
                                 }
                                 return (
-                                    <div className="p-3 bg-warning/20 border border-warning/50 rounded-md space-y-2">
+                                    <div className="p-3 bg-surface-2 border border-border rounded-lg space-y-2">
                                         <div className="flex items-start gap-2">
-                                            <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" />
+                                            <AlertTriangle className="h-4 w-4 text-text shrink-0 mt-0.5" />
                                             <div className="flex-1 space-y-1">
                                                 {!dockerStatus.installed && (
                                                     <>
-                                                        <p className="text-xs font-semibold text-warning">Docker is not installed</p>
-                                                        <p className="text-xs text-warning/80">Python tools run in a Docker sandbox. Install Docker Desktop to use them.</p>
+                                                        <p className="text-xs font-semibold text-text">Docker is not installed</p>
+                                                        <p className="text-xs text-text-muted">Python tools run in a Docker sandbox. Install Docker Desktop to use them.</p>
                                                         <a href="https://docs.docker.com/get-docker/" target="_blank" rel="noreferrer"
-                                                            className="inline-flex items-center gap-1 text-xs text-warning hover:opacity-80 transition-opacity underline">
+                                                            className="inline-flex items-center gap-1 text-xs text-accent-ink hover:text-accent-hover underline">
                                                             Install Docker Desktop <ExternalLink className="h-3 w-3" />
                                                         </a>
                                                     </>
                                                 )}
                                                 {dockerStatus.installed && !dockerStatus.running && (
                                                     <>
-                                                        <p className="text-xs font-semibold text-warning">Docker is not running</p>
-                                                        <p className="text-xs text-warning/80">Start Docker Desktop, then refresh the status.</p>
+                                                        <p className="text-xs font-semibold text-text">Docker is not running</p>
+                                                        <p className="text-xs text-text-muted">Start Docker Desktop, then refresh the status.</p>
                                                     </>
                                                 )}
                                                 {dockerStatus.installed && dockerStatus.running && !dockerStatus.image_exists && (
                                                     <>
-                                                        <p className="text-xs font-semibold text-warning">Python sandbox image not built</p>
-                                                        <p className="text-xs text-warning/80">The sandbox image needs to be built once. This downloads Python and installs packages (~2–3 min).</p>
+                                                        <p className="text-xs font-semibold text-text">Python sandbox image not built</p>
+                                                        <p className="text-xs text-text-muted">The sandbox image needs to be built once. This downloads Python and installs packages (~2–3 min).</p>
                                                     </>
                                                 )}
                                                 {dockerBuildError && (
                                                     <p className="text-xs text-danger font-mono whitespace-pre-wrap mt-1">{dockerBuildError}</p>
                                                 )}
                                             </div>
-                                            <button onClick={checkDockerStatus} disabled={dockerChecking} className="text-warning hover:opacity-80 transition-opacity shrink-0 disabled:opacity-50">
+                                            <button onClick={checkDockerStatus} disabled={dockerChecking} aria-label="Check Docker again" className="text-text-faint hover:text-text transition-colors shrink-0 disabled:opacity-50">
                                                 <RefreshCw className={`h-3.5 w-3.5 ${dockerChecking ? 'animate-spin' : ''}`} />
                                             </button>
                                         </div>
@@ -593,7 +631,7 @@ export const CustomToolsTab = ({
                                             <button
                                                 onClick={buildSandboxImage}
                                                 disabled={dockerBuilding}
-                                                className="flex items-center gap-2 px-3 py-1.5 bg-warning hover:opacity-90 transition-opacity disabled:opacity-50 text-warning-subtle text-xs font-bold transition-colors rounded-md"
+                                                className={buttonStyles({ variant: "secondary", size: "sm" })}
                                             >
                                                 <Container className="h-3.5 w-3.5" />
                                                 {dockerBuilding ? 'Building… (this may take a few minutes)' : 'Build Sandbox Image'}
@@ -610,6 +648,17 @@ export const CustomToolsTab = ({
                     )}
                 </div>
             )}
+            </div>
         </div>
+
+        <ConfirmDialog
+            open={!!pending}
+            onClose={() => setPending(null)}
+            onConfirm={() => { const next = pending; setPending(null); next?.(); }}
+            title="Discard unsaved changes?"
+            description="This tool has edits that are not saved."
+            confirmLabel="Discard"
+        />
+        </AppScreen>
     );
 };
