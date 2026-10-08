@@ -1236,10 +1236,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         error: null,
     } : null;
     const questionKey = `${runId ?? ''}:${questionSeq}`;
-    const approval = waitingRecord ? (
+    // In the step's setup card its header names the step; the dialog's top line does.
+    const approval = (inCard: boolean) => waitingRecord ? (
         <ApprovalCard
             key={questionKey}
             run={waitingRecord}
+            showStep={!inCard}
             onDone={() => { /* the canvas moves on with the run's own events */ }}
             onCancel={cancelRun}
             busy={false}
@@ -1643,7 +1645,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                     knowledgeEnabled={knowledgeEnabled}
                                     knowledgeBases={knowledgeBases}
                                     semanticCacheNote={semanticCacheNote}
-                                    lead={step.id === waitingStep ? approval : undefined}
+                                    lead={step.id === waitingStep ? approval(true) : undefined}
                                 />
                             )}
                             renderSettings={(close) => (
@@ -1741,12 +1743,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                         />
 
                         <Modal
-                            open={answerDialog && !!approval}
+                            open={answerDialog && !!waitingRecord}
                             onClose={() => setAnswerDialog(false)}
                             title="Human input required"
                             size="lg"
                         >
-                            {approval}
+                            {approval(false)}
                         </Modal>
                     </RunHostProvider>
 

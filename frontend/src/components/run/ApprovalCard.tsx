@@ -47,7 +47,8 @@ export type ApprovalDraft = {
 };
 
 export function ApprovalCard({
-    run, onDone, onCancel, busy, openHref, showWorkflow = false, requireAnswer = false, submitOnEnter = false, draft,
+    run, onDone, onCancel, busy, openHref, showWorkflow = false, showStep = true, requireAnswer = false,
+    submitOnEnter = false, draft,
 }: {
     run: RunRecord;
     /** After an answer was taken: the message to show. */
@@ -58,6 +59,8 @@ export function ApprovalCard({
     openHref?: string;
     /** Name the workflow in the card's top line, where the page does not (Home). */
     showWorkflow?: boolean;
+    /** Name the step in the card's top line; off where the step's own header already does (the setup card). */
+    showStep?: boolean;
     /** An empty free-text answer cannot be sent (the workflow editor's rule). */
     requireAnswer?: boolean;
     /** Enter sends the free-text answer; Shift+Enter is a new line. */
@@ -105,7 +108,7 @@ export function ApprovalCard({
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12.5px] text-text-muted">
                 <Badge tone="person">Waiting for a person</Badge>
                 {showWorkflow && <span className="font-medium text-text">{run.workflowName ?? 'Deleted workflow'}</span>}
-                {stepName && <span title={run.currentStepId ?? undefined}>Step {stepName}</span>}
+                {showStep && stepName && <span title={run.currentStepId ?? undefined}>Step {stepName}</span>}
                 {asking?.started_at && <span>· waiting <Took start={asking.started_at} end={null} /></span>}
             </div>
             {run.humanContext && (
