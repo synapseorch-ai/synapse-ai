@@ -104,7 +104,10 @@ export function ApprovalCard({
     const others = decision ? fields.filter((f) => f !== decision) : fields;
 
     return (
-        <section aria-label="Waiting for a person" className="grid gap-3 rounded-[14px] border border-person/40 bg-person-subtle px-[22px] py-5">
+        // One column that may shrink: a grid item is as wide as its longest word,
+        // so a context of unbroken text (a model's `Q8\u202fC7…`) widened the
+        // whole card past its frame and cut the prompt and its buttons (M3b).
+        <section aria-label="Waiting for a person" className="grid grid-cols-[minmax(0,1fr)] gap-3 rounded-[14px] border border-person/40 bg-person-subtle px-[22px] py-5">
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12.5px] text-text-muted">
                 <Badge tone="person">Waiting for a person</Badge>
                 {showWorkflow && <span className="font-medium text-text">{run.workflowName ?? 'Deleted workflow'}</span>}
@@ -119,12 +122,12 @@ export function ApprovalCard({
                             ? <>From <span className="font-code text-text">{run.humanContextKey}</span></>
                             : 'From this run'}
                     </figcaption>
-                    <div className="max-h-64 overflow-y-auto rounded-md border border-border bg-surface p-4">
+                    <div className="max-h-64 overflow-y-auto rounded-md border border-border bg-surface p-4 [overflow-wrap:anywhere]">
                         <Markdown>{run.humanContext}</Markdown>
                     </div>
                 </figure>
             )}
-            <div className="max-w-[62ch] text-[17px] leading-normal tracking-[-0.012em] text-text">
+            <div className="max-w-[62ch] text-[17px] leading-normal tracking-[-0.012em] text-text [overflow-wrap:anywhere]">
                 <Markdown>{run.humanPrompt ?? ''}</Markdown>
             </div>
             {(others.length > 0 || !fields.length) && (
