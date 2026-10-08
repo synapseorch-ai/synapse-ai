@@ -298,10 +298,10 @@ function RunNow({ onRun, blocked, phone, runInput }: {
                                 placeholder="Initial input for the orchestration..."
                                 onKeyDown={(e) => { if (e.key === 'Enter') run(); }}
                             />
-                            <p className="mt-1.5 text-xs leading-relaxed text-text-faint">
-                                Run now sends it too. It is not saved with the workflow.
-                            </p>
-                            <div className="mt-3 flex justify-end">
+                            <div className="mt-2.5 flex items-center justify-between gap-3">
+                                <span className="text-xs text-text-faint">
+                                    <kbd className="rounded border border-border px-1 font-mono text-2xs">Enter</kbd> to run
+                                </span>
                                 <Button size="sm" variant="primary" onClick={run} aria-disabled={blocked > 0 || undefined}>
                                     <Play className="size-3.5" aria-hidden /> Run
                                 </Button>
