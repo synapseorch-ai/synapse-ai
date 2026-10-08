@@ -59,13 +59,15 @@ export function KnowledgeBasePicker({ value, onChange, bases, variant = 'chips',
             <div className="space-y-2">
                 {!hideLabel && <Label className="block">Knowledge bases</Label>}
                 {bases.length === 0 && gone.length === 0 && (
-                    <p className="text-sm text-text-muted">
-                        No knowledge bases yet — create one on the{' '}
-                        <Link href="/knowledge" className="underline">Knowledge</Link> page.
+                    <p className="flex min-h-12 items-center rounded-lg border border-border bg-surface px-3 py-2.5 text-sm text-text-muted">
+                        <span>
+                            No knowledge bases yet — create one on the{' '}
+                            <Link href="/knowledge" className="underline">Knowledge</Link> page.
+                        </span>
                     </p>
                 )}
                 {bases.length > 0 && (
-                    <ul className="divide-y divide-border">
+                    <ul className="divide-y divide-border rounded-lg border border-border bg-surface px-3">
                         {bases.map(kb => {
                             const selected = value.includes(kb.id);
                             const notes = [kb.description, kb.status !== 'active' ? 'Switched off: not searched' : '',

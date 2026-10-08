@@ -698,54 +698,41 @@ export const AgentsTab = ({
                                             {(reasoningCapable ?? []).includes(draftAgent.model || defaultModel || '') && (
                                                 <div className="space-y-1">
                                                     <Label className="block">Reasoning</Label>
-                                                    <div className="flex max-w-xl gap-1">
-                                                        {/* No Off where the model has none: an Off that
-                                                            quietly runs as Low is the "set and ignored"
-                                                            reading this control exists to avoid (F65). */}
-                                                        {(() => {
-                                                            const withoutOff = (reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '');
-                                                            // What an agent with no effort of its own runs at (F99): the
-                                                            // workspace's setting, else the engine's default — Low for the
-                                                            // Claude CLI (F65), Medium for the rest. It was drawn as Medium
-                                                            // whatever ran. Off shows as Low where the model has none.
-                                                            // The CLI by its prefix, not by "has no Off": a Gemini 3 Pro
-                                                            // and a Claude 5 have no Off either (F269), and with nothing
-                                                            // set they run at Medium.
-                                                            const cli = (draftAgent.model || defaultModel || '').startsWith('cli.');
-                                                            const set = (workspaceEffort || '').trim().toLowerCase();
-                                                            const inherited = ['off', 'low', 'medium', 'high'].includes(set)
-                                                                ? (set === 'off' && withoutOff ? 'low' : set)
-                                                                : (cli ? 'low' : 'medium');
-                                                            const stored = draftAgent.reasoning_effort || null;
-                                                            const shown = stored === 'off' && withoutOff ? 'low' : stored;
-                                                            // `null`, not undefined: a stored agent reads back `null`, and
-                                                            // the unsaved-changes guard compares JSON (F73).
-                                                            const options: { value: string | null; label: string }[] = [
-                                                                { value: null, label: `Default · ${inherited}` },
-                                                                ...(withoutOff ? ['low', 'medium', 'high'] : ['off', 'low', 'medium', 'high'])
-                                                                    .map(level => ({ value: level, label: level })),
-                                                            ];
-                                                            return options.map(({ value, label }) => {
-                                                                const active = shown === value;
-                                                                return (
-                                                                    <button
-                                                                        key={value ?? 'default'}
-                                                                        type="button"
-                                                                        onClick={() => setDraftAgent({ ...draftAgent, reasoning_effort: value })}
-                                                                        aria-pressed={active}
-                                                                        className={cn(
-                                                                            'flex-1 rounded-md border px-2 py-1.5 text-xs capitalize transition-colors',
-                                                                            active
-                                                                                ? 'border-accent bg-accent-subtle font-medium text-text'
-                                                                                : 'border-border bg-surface text-text-muted hover:border-border-strong hover:text-text',
-                                                                        )}
-                                                                    >
-                                                                        {label}
-                                                                    </button>
-                                                                );
-                                                            });
-                                                        })()}
-                                                    </div>
+                                                    {/* A dropdown (Naveen, M2d); it was a row of buttons. No Off
+                                                        where the model has none: an Off that quietly runs as Low is
+                                                        the "set and ignored" reading this control exists to avoid (F65). */}
+                                                    {(() => {
+                                                        const withoutOff = (reasoningWithoutOff ?? []).includes(draftAgent.model || defaultModel || '');
+                                                        // What an agent with no effort of its own runs at (F99): the
+                                                        // workspace's setting, else the engine's default — Low for the
+                                                        // Claude CLI (F65), Medium for the rest. Off shows as Low where
+                                                        // the model has none. The CLI by its prefix, not by "has no Off":
+                                                        // a Gemini 3 Pro and a Claude 5 have no Off either (F269), and
+                                                        // with nothing set they run at Medium.
+                                                        const cli = (draftAgent.model || defaultModel || '').startsWith('cli.');
+                                                        const set = (workspaceEffort || '').trim().toLowerCase();
+                                                        const inherited = ['off', 'low', 'medium', 'high'].includes(set)
+                                                            ? (set === 'off' && withoutOff ? 'low' : set)
+                                                            : (cli ? 'low' : 'medium');
+                                                        const stored = draftAgent.reasoning_effort || null;
+                                                        const shown = stored === 'off' && withoutOff ? 'low' : stored;
+                                                        const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
+                                                        return (
+                                                            <Select
+                                                                className="max-w-xs"
+                                                                aria-label="Reasoning"
+                                                                value={shown ?? '__default__'}
+                                                                // `null`, not undefined, for the default: a stored agent reads
+                                                                // back `null`, and the unsaved-changes guard compares JSON (F73).
+                                                                onChange={v => setDraftAgent({ ...draftAgent, reasoning_effort: v === '__default__' ? null : v })}
+                                                                options={[
+                                                                    { value: '__default__', label: `Default · ${cap(inherited)}` },
+                                                                    ...(withoutOff ? ['low', 'medium', 'high'] : ['off', 'low', 'medium', 'high'])
+                                                                        .map(level => ({ value: level, label: cap(level) })),
+                                                                ]}
+                                                            />
+                                                        );
+                                                    })()}
                                                     <p className="mt-1 text-xs text-text-faint">How much this model thinks before it answers. Higher costs more and takes longer; thinking tokens are billed as output.</p>
                                                     {/* What Off does on this model, served by the models
                                                         endpoint rather than restated here (F269). */}
@@ -943,6 +930,8 @@ export const AgentsTab = ({
                                                             <SearchInput value={toolQuery} onChange={setToolQuery} placeholder="Search tools…" className="max-w-sm" />
                                                         )}
                                                         {q && shown.length === 0 && <p className="text-sm text-text-faint">Nothing matches that.</p>}
+                                                        {/* A fixed height that scrolls, so the section stays short (Naveen, M2d). */}
+                                                        <div className="max-h-[440px] overflow-y-auto rounded-lg border border-border bg-surface-2/40 p-2 modern-scrollbar">
                                                         <div className="grid items-start gap-2 @2xl:grid-cols-2">
                                                             {shown.map(({ cap, groupHit, tools: matched }: any) => {
                                                                 const toolDetails: { name: string, description: string }[] = q && !groupHit ? matched : detailsOf(cap);
@@ -1015,8 +1004,14 @@ export const AgentsTab = ({
                                                                             </label>
                                                                         )}
 
+                                                                        {!isExpanded && (
+                                                                            <p className="-mt-1 line-clamp-2 px-3 pb-2 text-xs text-text-faint">
+                                                                                {isAutoGroup ? `Included by default for ${agentType} agents` : cap.description}
+                                                                            </p>
+                                                                        )}
+
                                                                         {isExpanded && hasMultipleTools && !isAutoGroup && (
-                                                                            <div className="max-h-[260px] divide-y divide-border overflow-y-auto border-t border-border px-3">
+                                                                            <div className="divide-y divide-border border-t border-border px-3">
                                                                                 {cap.description && <p className="py-2 text-xs text-text-faint">{cap.description}</p>}
                                                                                 {toolDetails.map((tool: { name: string, description: string }) => {
                                                                                     const isToolAuto = autoTools.has(tool.name);
@@ -1059,6 +1054,7 @@ export const AgentsTab = ({
                                                                 );
                                                             })}
                                                         </div>
+                                                        </div>
                                                     </>);
                                                 })()}
                                             </div>
@@ -1067,7 +1063,7 @@ export const AgentsTab = ({
                                             {draftAgent.type === 'code' && (
                                                 <div className="space-y-1">
                                                     <Label className="block">Linked Repositories</Label>
-                                                    <div className="flex flex-wrap gap-2">
+                                                    <div className={boxed}>
                                                         {repos.length === 0 && <span className="text-sm text-text-muted">No repositories indexed yet.</span>}
                                                         {repos.map(repo => {
                                                             const isLinked = draftAgent.repos?.includes(repo.id);
@@ -1098,7 +1094,7 @@ export const AgentsTab = ({
                                             {draftAgent.type === 'code' && (
                                                 <div className="space-y-1">
                                                     <Label className="block">Linked Databases</Label>
-                                                    <div className="flex flex-wrap gap-2">
+                                                    <div className={boxed}>
                                                         {dbConfigs.length === 0 && <span className="text-sm text-text-muted">No databases configured yet.</span>}
                                                         {dbConfigs.map((db: any) => {
                                                             const isLinked = draftAgent.db_configs?.includes(db.id);
@@ -1169,10 +1165,10 @@ export const AgentsTab = ({
                                             {/* Skills — roster in the prompt, bodies on demand via load_skill */}
                                             <div className="space-y-2">
                                                 <Label className="block">Skills</Label>
-                                                {allSkills.filter((s: any) => !s.shadowed).length === 0 && (
-                                                    <p className="text-sm text-text-muted">No skills yet — create one on the Skills page.</p>
-                                                )}
-                                                <div className="flex flex-wrap gap-2 empty:hidden">
+                                                <div className={boxed}>
+                                                    {allSkills.filter((s: any) => !s.shadowed).length === 0 && (
+                                                        <span className="text-sm text-text-muted">No skills yet — create one on the Skills page.</span>
+                                                    )}
                                                     {allSkills.filter((s: any) => !s.shadowed).map((skill: any) => {
                                                         const isSelected = draftAgent.skills?.includes(skill.name);
                                                         return (
@@ -1464,6 +1460,9 @@ function policySummary(policy: ToolPolicy): string {
     const c = set[0];
     return `${word[policy[c.id]] ?? policy[c.id]}: ${c.label.toLowerCase()}`;
 }
+
+/** The box a row of chips sits in, with even room above and below whether it holds chips or a note. */
+const boxed = 'flex min-h-12 flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2.5';
 
 /** A chip that toggles one item (a repository, a database, a skill). */
 const chip = (selected: boolean) => cn(
