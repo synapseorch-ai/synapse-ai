@@ -243,8 +243,9 @@ export const CustomToolsTab = ({
 
     return (
         <AppScreen id="custom_tools" width="wide" actions={actions}>
-        <div className="grid gap-6 md:grid-cols-[18.75rem_minmax(0,1fr)] md:gap-8">
-            {list}
+        {/* With no tool yet there is nothing to list: one empty state, full width. */}
+        <div className={customTools.length || draftTool || showImport ? 'grid gap-6 md:grid-cols-[18.75rem_minmax(0,1fr)] md:gap-8' : ''}>
+            {(customTools.length > 0 || !!draftTool || showImport) && list}
             <div className="min-w-0">
             {showImport && !draftTool ? (
                 /* ── OpenAPI Import ───────────────────────────────────────── */
