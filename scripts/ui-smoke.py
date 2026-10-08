@@ -1690,6 +1690,24 @@ async def check_guardrails(browser) -> str:
 
 # ── reasoning effort ─────────────────────────────────────────────────────────
 
+async def _reasoning_levels(page):
+    """The agent editor's Reasoning choices and which one is shown, or None.
+
+    A dropdown since M2d (Naveen): the shown level is the trigger's text, the
+    choices are its options. Read in the same shape the button row gave —
+    `[{name, pressed}]`, lowercase names — so the checks below say what they
+    always said.
+    """
+    trigger = page.get_by_role("combobox", name="Reasoning")
+    if not await trigger.count():
+        return None
+    shown = (await trigger.first.inner_text()).strip().lower()
+    await trigger.first.click()
+    await asyncio.sleep(0.4)
+    names = [(t or "").strip().lower() for t in await page.get_by_role("option").all_inner_texts()]
+    await page.keyboard.press("Escape")
+    return [{"name": n, "pressed": "true" if n == shown else "false"} for n in names]
+
 @check
 async def check_effort(browser) -> str:
     """A Claude CLI agent's reasoning effort can be set, and offers no false Off.
@@ -1718,13 +1736,7 @@ async def check_effort(browser) -> str:
         await asyncio.sleep(SETTLE)
         await page.get_by_text("UI smoke CLI", exact=True).first.click()
         await asyncio.sleep(1.0)
-        levels = await page.evaluate("""() => {
-          const label = [...document.querySelectorAll('label, span, p')]
-            .find(e => (e.textContent || '').trim() === 'Reasoning');
-          if (!label) return null;
-          return [...label.parentElement.querySelectorAll('button')].map(b => ({
-            name: (b.textContent || '').trim().toLowerCase(), pressed: b.getAttribute('aria-pressed')}));
-        }""")
+        levels = await _reasoning_levels(page)
     finally:
         await ctx.close()
         try:
@@ -1827,13 +1839,7 @@ async def check_effortdefault(browser) -> str:
         await asyncio.sleep(SETTLE)
         await page.get_by_text("UI smoke default effort", exact=True).first.click()
         await asyncio.sleep(1.0)
-        levels = await page.evaluate("""() => {
-          const label = [...document.querySelectorAll('label, span, p')]
-            .find(e => (e.textContent || '').trim() === 'Reasoning');
-          if (!label) return null;
-          return [...label.parentElement.querySelectorAll('button')].map(b => ({
-            name: (b.textContent || '').trim().toLowerCase(), pressed: b.getAttribute('aria-pressed')}));
-        }""")
+        levels = await _reasoning_levels(page)
     finally:
         await ctx.close()
         try:
@@ -4681,12 +4687,13 @@ async def check_keyrows(browser) -> str:
 
 @check
 async def check_agenttools(browser) -> str:
-    """An agent's tools are checkboxes a keyboard can tick, and "all" can be narrowed (F184, F235).
+    """An agent's tools are controls a keyboard can toggle, and "all" can be narrowed (F184, F235).
 
     The Capabilities cards were `div`s with a click handler: no role, no state,
     out of the tab order, and nothing else in the product gives an agent tools.
     Beside that, with the agent on "all" a group's box could never be turned
-    off: it re-added the group's names next to "all".
+    off: it re-added the group's names next to "all". Since M2d a group of one
+    tool (Time & Date) is a switch; a group of several keeps its checkbox.
     """
     aid = f"agent_uismoke_tools_{int(time.time())}"
     name = f"Tools {aid[-6:]}"
@@ -4702,9 +4709,11 @@ async def check_agenttools(browser) -> str:
         await page.wait_for_function(
             "(n) => [...document.querySelectorAll('input')].some(i => i.value === n)", arg=name, timeout=20_000)
         await asyncio.sleep(1.0)
-        box = page.get_by_role("checkbox", name="Time & Date", exact=True)
+        box = page.get_by_role("switch", name="Time & Date", exact=True)
         if not await box.count():
-            raise AssertionError("a Capabilities card is not a checkbox")
+            raise AssertionError("a one-tool group (Time & Date) is not a switch")
+        if not await page.locator('section[aria-labelledby="setup-tools"]').get_by_role("checkbox").count():
+            raise AssertionError("no group of several tools has its checkbox")
         if await box.get_attribute("aria-checked") != "true":
             raise AssertionError("on an agent with every tool, Time & Date does not read as ticked")
         await box.focus()
@@ -4724,7 +4733,7 @@ async def check_agenttools(browser) -> str:
         await asyncio.sleep(0.4)
         if await expander.get_attribute("aria-expanded") != "true":
             raise AssertionError("Enter on a group's expander does not open it")
-        return "tool groups and their tools are checkboxes a keyboard ticks, and \"all\" narrows"
+        return "tool groups (checkboxes) and tools (switches) toggle from the keyboard, and \"all\" narrows"
     finally:
         await ctx.close()
         try:
@@ -8838,6 +8847,245 @@ async def check_waitingrow(browser) -> str:
         raise AssertionError("; ".join(bad))
     return "the row counts one; its drawer answers with the run page's request; a phone shows it beside the bell"
 
+
+
+# ── the agents workbench (M2d, D211) ─────────────────────────────────────────
+
+#: A test turn's stream, answered in the browser: a tool call, its result, the answer.
+AGENT_TEST_SSE = "".join(f"id: t-{i}\ndata: {json.dumps(e)}\n\n" for i, e in enumerate([
+    {"type": "thinking", "message": "Analyzing your request…"},
+    {"type": "tool_execution", "tool_name": "search_knowledge", "args": {"query": "uismoke"}},
+    {"type": "tool_result", "tool_name": "search_knowledge", "preview": "2 passages"},
+    {"type": "response", "content": "The uismoke answer."},
+    {"type": "done"},
+]))
+
+#: The page's height against the window's: a workbench that scrolls only inside its columns.
+PAGE_FITS = "() => document.scrollingElement.scrollHeight <= innerHeight + 1"
+
+
+async def _workbench(browser, aid: str, width=WIDE, test_open: str | None = "1"):
+    """A page on the Agents workbench with `aid` open (through `?id=`), and the requests it makes."""
+    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+    if test_open is not None:
+        # Only when nothing is kept yet: a reload must read what the page itself stored.
+        await ctx.add_init_script(
+            f"try {{ if (localStorage.getItem('synapseAgentTestOpen') === null) "
+            f"localStorage.setItem('synapseAgentTestOpen', '{test_open}'); }} catch (e) {{}}")
+    page = await ctx.new_page()
+    seen: list[dict] = []
+    page.on("request", lambda r: seen.append({"url": r.url, "method": r.method, "body": r.post_data}))
+    await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
+    await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
+    await asyncio.sleep(SETTLE)
+    return ctx, page, seen
+
+
+@check
+async def check_agentsopen(browser) -> str:
+    """The Agents page opens on an agent, never on "Nothing selected" (M2d, UX1's finding), and fits the window:
+    the list, the setup and the test chat scroll inside themselves, the page does not (Naveen saw it scroll past)."""
+    stamp = int(time.time())
+    ids = [f"agent_uismoke_open_{stamp}_{n}" for n in "ab"]
+    for n, aid in zip("AB", ids):
+        api("/api/agents", "POST", _agent(aid, f"Open {n} {stamp}"))
+    bad: list[str] = []
+    try:
+        for width in (WIDE, PHONE):
+            ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+                await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
+                await asyncio.sleep(SETTLE)
+                if not await page.locator('aside[aria-label="Your agents"] button[aria-current="true"]').count():
+                    bad.append(f"{width[0]}px: no agent is open")
+                if not await page.locator("#age-draftagent-name").input_value():
+                    bad.append(f"{width[0]}px: the open agent has no name in its field")
+                if await page.get_by_text(re.compile("Select an agent|Nothing selected")).count():
+                    bad.append(f"{width[0]}px: the pane says nothing is selected")
+                if await page.get_by_role("tab", name="Setup").get_attribute("aria-selected") != "true":
+                    bad.append(f"{width[0]}px: Setup is not the open tab")
+                if not await page.evaluate(PAGE_FITS):
+                    bad.append(f"{width[0]}px: the page is taller than the window")
+            finally:
+                await ctx.close()
+    finally:
+        for aid in ids:
+            try:
+                api(f"/api/agents/{aid}", "DELETE")
+            except Exception:
+                pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "opens on its first agent at 1440 and 400, Setup open, and the page fits the window"
+
+
+@check
+async def check_agentsavebar(browser) -> str:
+    """The Save bar shows only while there is something to save; Discard asks and puts the agent back; Save posts
+    once and the bar goes (M2d; the guard is F73's)."""
+    aid = f"agent_uismoke_savebar_{int(time.time())}"
+    api("/api/agents", "POST", _agent(aid, f"Save bar {aid[-6:]}"))
+    ctx, page, seen = await _workbench(browser, aid)
+    bad: list[str] = []
+    try:
+        save = page.get_by_role("button", name="Save agent", exact=True)
+        if await save.count():
+            bad.append("the Save bar shows with nothing to save")
+        desc = page.get_by_label("Description", exact=True)
+        before = await desc.input_value()
+        await desc.fill("edited by ui-smoke")
+        await asyncio.sleep(0.4)
+        if not await save.count() or not await page.get_by_text("Unsaved changes.").count():
+            bad.append("an edit shows no Save bar")
+        await page.get_by_role("button", name="Discard", exact=True).click()
+        dialog = page.get_by_role("dialog")
+        await dialog.wait_for(timeout=5_000)
+        await dialog.get_by_role("button", name=re.compile("discard", re.I)).first.click()
+        await asyncio.sleep(0.6)
+        if await desc.input_value() != before:
+            bad.append("Discard did not put the description back")
+        if await save.count():
+            bad.append("the Save bar stays after Discard")
+        await desc.fill("saved by ui-smoke")
+        await asyncio.sleep(0.3)
+        posts_before = len([r for r in seen if r["method"] == "POST" and r["url"].endswith("/api/agents")])
+        await save.click()
+        await asyncio.sleep(1.5)
+        posts = len([r for r in seen if r["method"] == "POST" and r["url"].endswith("/api/agents")]) - posts_before
+        if posts != 1:
+            bad.append(f"Save posted the agent {posts} times")
+        if await save.count():
+            bad.append("the Save bar stays after Save")
+        stored = next((a for a in api("/api/agents") if a["id"] == aid), {})
+        if stored.get("description") != "saved by ui-smoke":
+            bad.append(f"the stored description is {stored.get('description')!r}")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "no bar until an edit; Discard asks and restores; Save posts once and the bar goes"
+
+
+@check
+async def check_agenttest(browser) -> str:
+    """The workbench's test chat talks to the saved agent (D211): a turn posts the agent's id on a conversation of
+    its own, never switches chat's agent, and shows its tool as a chip; with unsaved edits it says so, and Save and
+    test saves first; Clear starts a new conversation. The stream is answered in the browser."""
+    aid = f"agent_uismoke_test_{int(time.time())}"
+    name = f"Test {aid[-6:]}"
+    api("/api/agents", "POST", _agent(aid, name))
+    ctx, page, seen = await _workbench(browser, aid)
+    await page.route("**/api/chat/stream", lambda r: r.fulfill(
+        status=200, headers={"content-type": "text/event-stream"}, body=AGENT_TEST_SSE))
+    bad: list[str] = []
+    try:
+        panel = page.locator(f'section[aria-label="Try {name}"]')
+        box = panel.get_by_role("textbox", name=f"Message {name}")
+        await box.wait_for(timeout=10_000)
+
+        async def ask(text: str) -> dict:
+            await box.fill(text)
+            await box.press("Enter")
+            await panel.get_by_text("The uismoke answer.").last.wait_for(timeout=10_000)
+            posts = [r for r in seen if r["url"].endswith("/api/chat/stream")]
+            return json.loads(posts[-1]["body"] or "{}")
+
+        first = await ask("first question")
+        if first.get("agent_id") != aid or not first.get("session_id"):
+            bad.append(f"the turn posted {first}")
+        if not await panel.get_by_role("button", name=re.compile("search_knowledge")).count():
+            bad.append("no tool chip for the turn's call")
+        if [r for r in seen if "/api/agents/active" in r["url"]]:
+            bad.append("testing switched chat's agent (/api/agents/active)")
+
+        await page.get_by_label("Description", exact=True).fill("unsaved by ui-smoke")
+        notice = panel.get_by_text("Testing the saved version.")
+        if not await notice.count():
+            bad.append("unsaved edits do not say the test uses the saved version")
+        else:
+            n = len([r for r in seen if r["method"] == "POST" and r["url"].endswith("/api/agents")])
+            await panel.get_by_role("button", name="Save and test").click()
+            await asyncio.sleep(1.5)
+            if len([r for r in seen if r["method"] == "POST" and r["url"].endswith("/api/agents")]) != n + 1:
+                bad.append("Save and test did not save the agent once")
+            if await notice.count():
+                bad.append("the notice stays after Save and test")
+
+        await panel.get_by_role("button", name="Clear the test").click()
+        await asyncio.sleep(0.4)
+        if await panel.get_by_text("first question").count():
+            bad.append("Clear left the conversation")
+        second = await ask("second question")
+        if second.get("session_id") == first.get("session_id"):
+            bad.append("Clear did not start a new conversation")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the saved agent's id on its own conversation, a tool chip, no agent switch; Save and test; Clear is new"
+
+
+@check
+async def check_agenttestcollapse(browser) -> str:
+    """The test chat collapses and the setup takes its room, remembered across a reload (D211); on a phone it opens
+    in a drawer from Try it."""
+    aid = f"agent_uismoke_collapse_{int(time.time())}"
+    name = f"Collapse {aid[-6:]}"
+    api("/api/agents", "POST", _agent(aid, name))
+    bad: list[str] = []
+    try:
+        ctx, page, _ = await _workbench(browser, aid)
+        try:
+            setup = page.locator("#age-draftagent-name")
+            wide_before = (await setup.bounding_box())["width"]
+            await page.get_by_role("button", name="Hide the test").click()
+            await asyncio.sleep(0.6)
+            if await page.locator(f'section[aria-label="Try {name}"]').count():
+                bad.append("the panel stays after Hide the test")
+            strip = page.get_by_role("button", name=f"Try {name}")
+            if not await strip.count():
+                bad.append("no strip to bring the panel back")
+            if (await setup.bounding_box())["width"] <= wide_before:
+                bad.append("the setup did not take the panel's room")
+            # Again by `?id=`: the page drops it from the address once read, so a bare reload opens the first agent.
+            await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
+            await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            if await page.locator(f'section[aria-label="Try {name}"]').count():
+                bad.append("a reload forgot that the panel was hidden")
+            await page.get_by_role("button", name=f"Try {name}").click()
+            await asyncio.sleep(0.6)
+            if not await page.locator(f'section[aria-label="Try {name}"]').count():
+                bad.append("the strip does not bring the panel back")
+        finally:
+            await ctx.close()
+        ctx, page, _ = await _workbench(browser, aid, width=PHONE, test_open=None)
+        try:
+            await page.get_by_role("button", name="Try it").click()
+            dialog = page.get_by_role("dialog", name="Test chat")
+            await dialog.wait_for(timeout=5_000)
+            if not await dialog.get_by_role("textbox", name=f"Message {name}").count():
+                bad.append("the phone's drawer has no message box")
+        finally:
+            await ctx.close()
+    finally:
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "Hide the test widens the setup and is remembered; the strip brings it back; a phone's Try it opens the drawer"
 
 
 async def main() -> int:
