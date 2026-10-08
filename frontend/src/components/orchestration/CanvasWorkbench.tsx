@@ -79,6 +79,13 @@ export interface CanvasWorkbenchProps {
     history: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
     save: { dirty: boolean; saving: boolean; onSave: () => void };
     onBack: () => void;
+    /**
+     * A person who may look but not change anything (cloud's viewer): no edits on
+     * the graph, no step toolbar, no dock tools, and the bar keeps only what reads
+     * (Back, the switcher, Workflow settings, Last run, help, ⋯). The product's
+     * `renderStep` and `renderSettings` render their own fields read-only.
+     */
+    readOnly?: boolean;
     /** Beside the name: switch to another workflow. */
     switcher?: React.ReactNode;
     /** The ⋯ menu's entries after Workflow settings. */
@@ -93,8 +100,8 @@ export interface CanvasWorkbenchProps {
         stepErrors?: Record<string, string>;
         onRun: () => void;
         onStop: () => void;
-        /** The run's input, behind Run now's chevron. */
-        input?: { value: string; onChange: (value: string) => void };
+        /** The run's input, behind Run now's chevron; `note`, a line under it (what the text becomes). */
+        input?: { value: string; onChange: (value: string) => void; note?: string };
         /** Which run is on the canvas: a new value starts its signals afresh (a new run, a reopened one). */
         runKey?: string | number;
         /**
@@ -149,7 +156,7 @@ function subscribeCoarse(onChange: () => void) {
 
 function Workbench({
     orchestration, onChange, agents, knowledgeEnabled = false, selectedStepId, onSelectStep,
-    renderStep, renderSettings, stepActions, history, save, onBack, switcher, menu, onChangeWithAI,
+    renderStep, renderSettings, stepActions, history, save, onBack, readOnly = false, switcher, menu, onChangeWithAI,
     insetRight = 0, run, runStrip, runDrawer, lastRun,
 }: CanvasWorkbenchProps) {
     // The canvas is the page: the shell hides the page header and folds the menu (D204).
@@ -164,7 +171,15 @@ function Workbench({
     const phone = useMediaQuery(PHONE_QUERY);
     const reduced = useReducedMotion();
     const coarsePointer = useSyncExternalStore(subscribeCoarse, () => window.matchMedia(COARSE).matches, () => false);
-    const flags = canvasFlags({ readOnly: false, showPalette: false, coarsePointer });
+    // A viewer's canvas is still the page: read-only drops every edit, but keeps
+    // the wheel, the drag-to-pan, the zoom floor and the steps' focus that a
+    // preview inside a scrolling page gives up.
+    const flags = useMemo(() => {
+        const base = canvasFlags({ readOnly, showPalette: false, coarsePointer });
+        return readOnly
+            ? { ...base, nodesFocusable: true, zoomOnScroll: true, preventScrolling: true, panOnDrag: true, minZoom: 0.2 }
+            : base;
+    }, [readOnly, coarsePointer]);
 
     // ── The card: a step's setup, or the workflow's settings ──────────────
     const selectedStep = orchestration.steps.find((s) => s.id === selectedStepId) ?? null;
@@ -343,7 +358,7 @@ function Workbench({
         () => stepCommandGroups({ onAdd: (t: StepType) => { addStep(t); }, hiddenTypes, grouped: false })[0],
         [addStep, hiddenTypes],
     );
-    useRegisterCommands('canvas-steps', appGroup);
+    useRegisterCommands('canvas-steps', readOnly ? null : appGroup);
 
     // ── The step toolbar hides while a step is dragged ────────────────────
     const [dragging, setDragging] = useState(false);
@@ -452,7 +467,7 @@ function Workbench({
                     )}
                     <NodeToolbar
                         nodeId={selectedStepId ?? undefined}
-                        isVisible={!!selectedStepId && !dragging}
+                        isVisible={!!selectedStepId && !dragging && !readOnly}
                         position={Position.Top}
                         offset={10}
                         className="nokey nodrag nopan"
@@ -478,6 +493,7 @@ function Workbench({
                 name={orchestration.name}
                 onRename={(name) => onChange({ ...orchestration, name })}
                 onBack={onBack}
+                readOnly={readOnly}
                 switcher={switcher}
                 dirty={save.dirty}
                 saving={save.saving}
@@ -516,7 +532,7 @@ function Workbench({
                 </SetupCard>
             )}
 
-            <Dock
+            {!readOnly && <Dock
                 boxRef={dockRef}
                 left={dockCentre}
                 phone={phone}
@@ -528,7 +544,7 @@ function Workbench({
                 redo={history.redo}
                 canUndo={history.canUndo}
                 canRedo={history.canRedo}
-            />
+            />}
             {!(phone && cardOpen) && (
                 <ZoomCluster
                     right={phone ? 8 : zoomRight}

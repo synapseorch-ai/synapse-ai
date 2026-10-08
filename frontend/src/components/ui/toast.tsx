@@ -5,6 +5,8 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 
+import { useIsCanvasMode } from "./canvas-mode";
+
 /**
  * Transient confirmation.
  *
@@ -43,6 +45,10 @@ export function Toast({
     const timer = setTimeout(onDismiss, 4000);
     return () => clearTimeout(timer);
   }, [message, onDismiss]);
+  // On a canvas the bottom row is the canvas's (the dock, the run strip, zoom):
+  // the toast comes down from the top, centred under the bar, as the shell's
+  // notification toasts do there (M3a).
+  const canvas = useIsCanvasMode();
 
   if (!message) return null;
 
@@ -54,7 +60,8 @@ export function Toast({
       className={cn(
         // `bottom-20`, not `bottom-5`: high enough to clear a composer's Send at
         // the bottom of chat (the corner launcher it once cleared is retired, M2c).
-        "fixed bottom-20 right-5 z-50 flex items-center gap-2.5 rounded-lg border px-4 py-2.5 text-sm shadow-elevated",
+        "fixed z-50 flex items-center gap-2.5 rounded-lg border px-4 py-2.5 text-sm shadow-elevated",
+        canvas ? "left-1/2 top-[104px] -translate-x-1/2 md:top-[70px]" : "bottom-20 right-5",
         chip,
       )}
     >

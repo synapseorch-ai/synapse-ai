@@ -17,7 +17,7 @@ import type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase } from './typ
 export const FLOAT = 'rounded-[10px] border border-border bg-surface shadow-elevated';
 
 export function TopBar({
-    name, onRename, onBack, switcher,
+    name, onRename, onBack, readOnly = false, switcher,
     dirty, saving, onSave,
     issues, onIssue,
     onChangeWithAI,
@@ -28,6 +28,8 @@ export function TopBar({
     name: string;
     onRename: (name: string) => void;
     onBack: () => void;
+    /** A viewer: the name is text, and nothing that saves, runs or changes the workflow shows. */
+    readOnly?: boolean;
     switcher?: React.ReactNode;
     dirty: boolean;
     saving: boolean;
@@ -41,7 +43,7 @@ export function TopBar({
     /** Errors that stop a run: Run now looks disabled and says how many. */
     blocked: number;
     /** The run's input, behind Run now's chevron. Run now sends it as it stands, empty or not. */
-    runInput?: { value: string; onChange: (value: string) => void };
+    runInput?: { value: string; onChange: (value: string) => void; note?: string };
     /** Last run: show each step's time from the last run on the steps (M3a-2). */
     lastRun?: { shown: boolean; onShow: (shown: boolean) => void; loading?: boolean };
     menu: WorkbenchMenuItem[];
@@ -74,7 +76,13 @@ export function TopBar({
                     <ArrowLeft className="size-4" aria-hidden />
                 </button>
                 <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden />
-                {/* Always a field, as it was: type to rename, and ⌘S inside it saves the name. */}
+                {/* Always a field, as it was: type to rename, and ⌘S inside it saves the name.
+                    A viewer reads it as text. */}
+                {readOnly ? (
+                    <span className="max-w-[min(300px,34vw)] truncate px-2 text-sm font-semibold tracking-[-0.01em] text-text" translate="no">
+                        {name || 'Untitled workflow'}
+                    </span>
+                ) : (
                 <input
                     aria-label="Orchestration name"
                     placeholder="Orchestration name"
@@ -87,7 +95,9 @@ export function TopBar({
                     )}
                     data-no-focus-ring
                 />
+                )}
                 {switcher}
+                {!readOnly && <>
                 <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden />
                 {!phone && (
                     <span className="hidden whitespace-nowrap px-1 text-xs text-text-faint lg:inline" aria-live="polite">
@@ -107,11 +117,12 @@ export function TopBar({
                     {!phone && 'Save'}
                     {dirty && <span className="size-1.5 rounded-full bg-accent" aria-label="Unsaved changes" />}
                 </Button>
+                </>}
             </div>
 
             {/* Right: what to check, Change with AI, Run now or Stop, help, ⋯ */}
             <div data-canvas-chrome="bar" className={cn(FLOAT, 'pointer-events-auto flex h-10 shrink-0 items-center gap-1 p-1 md:h-[42px]')}>
-                {ordered.length > 0 && !live && (
+                {ordered.length > 0 && !live && !readOnly && (
                     <Menu
                         align="end"
                         trigger={
@@ -179,7 +190,7 @@ export function TopBar({
                         {!compact && 'Last run'}
                     </button>
                 )}
-                {onChangeWithAI && !phone && (
+                {onChangeWithAI && !phone && !readOnly && (
                     <Button
                         size="sm"
                         variant="ghost"
@@ -192,7 +203,7 @@ export function TopBar({
                         {!compact && 'Change with AI'}
                     </Button>
                 )}
-                {live ? (
+                {readOnly ? null : live ? (
                     <Button size="sm" variant="secondary" onClick={onStop}>
                         <Square className="size-3.5" aria-hidden /> Stop
                     </Button>
@@ -219,7 +230,7 @@ export function TopBar({
                     }
                 >
                     <MenuItem icon={SlidersHorizontal} onSelect={onOpenSettings}>Workflow settings</MenuItem>
-                    {phone && onChangeWithAI && <MenuItem icon={MarkIcon} onSelect={onChangeWithAI}>Change with AI</MenuItem>}
+                    {phone && onChangeWithAI && !readOnly && <MenuItem icon={MarkIcon} onSelect={onChangeWithAI}>Change with AI</MenuItem>}
                     {phone && lastRun && (
                         <MenuItem icon={Clock} onSelect={() => lastRun.onShow(!lastRun.shown)}>
                             {lastRun.shown ? 'Hide last run' : 'Show last run'}
@@ -259,7 +270,7 @@ function RunNow({ onRun, blocked, phone, runInput }: {
     onRun: () => void;
     blocked: number;
     phone: boolean;
-    runInput?: { value: string; onChange: (value: string) => void };
+    runInput?: { value: string; onChange: (value: string) => void; note?: string };
 }) {
     const [open, setOpen] = useState(false);
     const text = runInput?.value.trim() ?? '';
@@ -331,6 +342,9 @@ function RunNow({ onRun, blocked, phone, runInput }: {
                                     }
                                 }}
                             />
+                            {runInput.note && (
+                                <p className="mt-2 text-xs leading-relaxed text-text-muted">{runInput.note}</p>
+                            )}
                             <div className="mt-2.5 flex items-center justify-between gap-3">
                                 <span className="text-xs text-text-faint">
                                     <kbd className="rounded border border-border px-1 font-mono text-2xs">Enter</kbd> to run,{' '}
