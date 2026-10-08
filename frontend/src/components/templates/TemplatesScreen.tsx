@@ -27,7 +27,7 @@ export function TemplatesScreen() {
     const [bundle, setBundle] = useState<any>(null);
     const back = useCallback(() => setBundle(null), []);
 
-    if (!bundle) return <ExamplesView onLoadBundle={setBundle} />;
+    if (!bundle) return <ExamplesView onLoadBundle={setBundle} showHeading={false} />;
 
     return (
         <div className="space-y-6">
