@@ -4,24 +4,47 @@
  * tabs under the old canvas, above the run strip. The log follows its newest
  * line while the reader is at its foot (F127), stops when they scroll up, and
  * "Jump to latest" starts it again.
+ *
+ * The log is the run screens' own (M3a-2): `LogLine` draws each entry as the
+ * run page and cloud's builder panel do, the plan is their `TaskChecklist` at
+ * the log's foot, and the nested runs their `NestedRuns`, read from the same
+ * `/children` as before and named from the workflows already loaded.
  */
 import { useEffect, useRef, useState } from 'react';
 import { ArrowDown, X } from 'lucide-react';
 import { IconButton, Spinner } from '@/components/ui';
+import { LogLine, NestedRuns, TaskChecklist, type NestedRun, type RunLogState, type StepResultEntry } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
-import { NestedRuns, RunLogEntries, type LogEntry } from './runLog';
 import type { RunDrawerView } from './RunStrip';
 
+/** The runs nested directly under this run — one per run of a nested step (F251). */
+function NestedRunsOf({ runId, refreshKey, names }: { runId: string; refreshKey: string; names: Record<string, string> }) {
+    const [children, setChildren] = useState<NestedRun[]>([]);
+    useEffect(() => {
+        let live = true;
+        fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}/children`)
+            .then(r => (r.ok ? r.json() : []))
+            .then(rows => { if (live) setChildren(Array.isArray(rows) ? rows : []); })
+            .catch(() => { if (live) setChildren([]); });
+        return () => { live = false; };
+    }, [runId, refreshKey]);
+    return (
+        <NestedRuns
+            runs={children.map((c) => ({ ...c, orchestration_name: c.orchestration_name ?? names[c.orchestration_id] ?? null }))}
+        />
+    );
+}
+
 export function RunDrawer({
-    view, onClose, runStatus, liveActivity, runLog, onOpenResponseModal, runId, humanPrompt, orchestrationNames,
+    view, onClose, runStatus, log, onOpenResponseModal, runId, humanPrompt, orchestrationNames,
     pastRuns, onRestoreRun,
 }: {
     view: RunDrawerView;
     onClose: () => void;
     runStatus: string;
-    liveActivity: string | null;
-    runLog: LogEntry[];
-    onOpenResponseModal: (entry: { step_name: string; step_type?: string; content: string }) => void;
+    /** The run's log, its plan and what the model is doing now (`applyRunEvent`'s state). */
+    log: RunLogState;
+    onOpenResponseModal: (entry: StepResultEntry) => void;
     runId: string | null;
     humanPrompt: string | null;
     /** Orchestration names by id, to name a nested run (F251). */
@@ -31,12 +54,14 @@ export function RunDrawer({
 }) {
     const scrollRef = useRef<HTMLDivElement>(null);
     const [pinned, setPinned] = useState(true);
+    const runLog = log.entries;
+    const liveActivity = log.liveActivity;
     if (runLog.length === 0 && !pinned) setPinned(true); // a new run starts at its foot
 
     useEffect(() => {
         const el = scrollRef.current;
         if (el && pinned && view === 'run') el.scrollTop = el.scrollHeight;
-    }, [runLog, pinned, view]);
+    }, [runLog, log.tasks, pinned, view]);
 
     const onScroll = () => {
         const el = scrollRef.current;
@@ -92,10 +117,21 @@ export function RunDrawer({
                             </div>
                         )}
 
-                        <RunLogEntries runLog={runLog} onOpenResponseModal={onOpenResponseModal} />
+                        <div data-run-log="" className="space-y-0.5 font-code text-[11px] leading-relaxed text-text-muted">
+                            {runLog.length === 0 ? (
+                                <div className="italic text-text-faint">No run output yet. Click Run now to start.</div>
+                            ) : (
+                                runLog.map((entry, i) => <LogLine key={i} entry={entry} onOpen={onOpenResponseModal} />)
+                            )}
+                        </div>
+
+                        {/* The plan, as one list where the action is (it was re-drawn at the log's tail). */}
+                        {log.tasks.length > 0 && (
+                            <TaskChecklist tasks={log.tasks} className="rounded-md border border-border bg-surface-2/40 px-3 py-2" />
+                        )}
 
                         {runId && (
-                            <NestedRuns
+                            <NestedRunsOf
                                 runId={runId}
                                 refreshKey={`${runStatus}:${runLog.length > 0}`}
                                 names={orchestrationNames}

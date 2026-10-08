@@ -26,7 +26,7 @@ export { RunActivity } from './RunActivity';
 export { RunDetail } from './RunDetail';
 export { RUN_DOT, RunList, RUN_FILTERS, StatusLine, type RunFilter, type RunSort } from './RunList';
 export {
-    applyRunEvent, emptyRunLog, LogLine, MAX_LOG_LINES, degradedWords, line,
+    appendRunLog, applyRunEvent, emptyRunLog, LogLine, MAX_LOG_LINES, degradedWords, line,
     type LineEntry, type LineTone, type LogEntry, type ProseEntry, type RetrievalEntry, type RunLogState,
     type StepResultEntry, type ToolCallEntry, type ToolResultEntry,
 } from './RunLogView';

@@ -26,12 +26,11 @@ import { useHelpTopic } from '@/components/help';
 import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
 import { isLiveRun, runStatusMeta, type RunSummary } from '@/components/runs/summary';
-import { RunList, type RunRow } from '@/components/run';
-import { ossRunRow } from '@/lib/runHost';
 import {
-    line, ResponseModal, type LogEntry, type ReasoningLogEntry, type RetrievalLogEntry, type StepResultLogEntry,
-    type TasksLogEntry, type ThoughtLogEntry, type ToolCallLogEntry, type ToolResultLogEntry,
-} from '@/components/workflows/runLog';
+    appendRunLog, applyRunEvent, emptyRunLog, RunList, type RunLogState, type RunRow, type StepResultEntry,
+} from '@/components/run';
+import { ossRunRow } from '@/lib/runHost';
+import { ResponseModal } from '@/components/workflows/runLog';
 import { RunDrawer } from '@/components/workflows/RunDrawer';
 import { RunStrip, type RunDrawerView } from '@/components/workflows/RunStrip';
 
@@ -72,6 +71,9 @@ const isCancel = (event: { type?: string; error?: unknown }) =>
     event?.type === 'orchestration_error' && event.error === 'Cancelled';
 
 const CANCELLED_LINE = '[Cancelled]';
+
+/** The log with nothing going on: what the model was doing has stopped. */
+const settleActivity = (log: RunLogState): RunLogState => (log.liveActivity === null ? log : { ...log, liveActivity: null });
 
 const EMPTY_ORCHESTRATION: Orchestration = {
     id: '',
@@ -219,7 +221,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     const [runStepErrors, setRunStepErrors] = useState<Record<string, string>>({});
     const [runId, setRunId] = useState<string | null>(null);
     const [runInput, setRunInput] = useState('');
-    const [runLog, setRunLog] = useState<LogEntry[]>([]);
+    // The run log, the plan and what the model is doing right now: the run
+    // screens' `RunLogState`, folded by their `applyRunEvent` (M3a-2).
+    const [runLog, setRunLog] = useState<RunLogState>(emptyRunLog);
     const [humanPrompt, setHumanPrompt] = useState<string | null>(null);
     // What the question is about (the step's first input key with a value, or
     // the newest step output) and the key it came from, so its box can say what
@@ -245,11 +249,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // Highest journal event id seen on the reattach stream (`id:` lines) — a
     // reconnect resumes with ?after=<this> instead of replaying everything.
     const lastEventIdRef = useRef(0);
-    // One-line "what the model is doing right now" indicator for the Run Log.
-    const [liveActivity, setLiveActivity] = useState<string | null>(null);
-    // Map of orch_step_id -> pending step result (supports parallel branches)
-    const pendingStepResultRef = useRef<Map<string, { step_name: string; step_type: 'agent' | 'llm' | 'print' | 'extract_json'; content: string }>>(new Map());
-    const [responseModal, setResponseModal] = useState<{ step_name: string; step_type?: string; content: string } | null>(null);
+    const [responseModal, setResponseModal] = useState<StepResultEntry | null>(null);
     // The open canvas's run drawer (M3a): the Run Log or Recent Runs, or shut.
     // A run started, resumed or reopened opens it on the log, where its lines arrive.
     const [runDrawer, setRunDrawer] = useState<RunDrawerView | null>(null);
@@ -426,7 +426,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
             setRunStatus(recorded);
         }
         if (!hasJournal) {
-            setRunLog(['[This run predates event journaling — showing checkpoint status only.]']);
+            setRunLog(appendRunLog(emptyRunLog(), '[This run predates event journaling — showing checkpoint status only.]'));
             if (runInfo.status === 'running') {
                 reattachRun(runInfo.run_id, { silent: true });
             }
@@ -447,7 +447,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         setRunStepStatuses({});
         setRunStepErrors({});
         historyErrorsRef.current = {};
-        setRunLog([]);
+        setRunLog(emptyRunLog());
         setHumanPrompt(null);
         if (id) {
             const orch = orchestrations.find(o => o.id === id);
@@ -492,7 +492,6 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         abortRef.current = null;
         currentRunIdRef.current = null;  // stops streamRunJournal's tail loop
         setRunId(null);
-        setLiveActivity(null);
         selectOrchestration(null);
     }, [selectOrchestration]);
 
@@ -735,7 +734,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 if (lastEventIdRef.current === 0) {
                     // Full replay rebuilds the log from scratch — identical to
                     // having watched the run live, with no duplicated entries.
-                    setRunLog([]);
+                    setRunLog(emptyRunLog());
                 }
                 attempts = 0;
                 const reader = res.body.getReader();
@@ -773,7 +772,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 const intentional = e?.name === 'AbortError' && controller.signal.reason !== 'recover';
                 if (intentional) return true;
                 if (++attempts > 20) {
-                    setRunLog(prev => [...prev, '[Reconnect failed — see Active Runs to rejoin]']);
+                    setRunLog(prev => appendRunLog(prev, '[Reconnect failed — see Active Runs to rejoin]'));
                     return true;
                 }
                 await new Promise<void>(r => setTimeout(r, Math.min(3000, 500 * attempts)));
@@ -787,7 +786,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // Journal replay is the primary path; polling remains only for runs that
     // predate event journaling.
     const reattachRun = useCallback(async (rid: string | null, opts?: { silent?: boolean }) => {
-        if (!rid) { setRunStatus('failed'); setRunLog(prev => [...prev, '[Connection lost]']); return; }
+        if (!rid) { setRunStatus('failed'); setRunLog(prev => appendRunLog(prev, '[Connection lost]')); return; }
         if (reattachActiveRef.current) return;       // already reconnecting
         reattachActiveRef.current = true;
         try {
@@ -803,7 +802,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // Legacy fallback: track a pre-journal run to completion by polling its
     // step-boundary checkpoint.
     const pollRunStatus = useCallback(async (rid: string, opts?: { silent?: boolean }) => {
-        if (!opts?.silent) setRunLog(prev => [...prev, '[Connection lost — reconnecting to run…]']);
+        if (!opts?.silent) setRunLog(prev => appendRunLog(prev, '[Connection lost — reconnecting to run…]'));
         const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
         const deadline = Date.now() + 10 * 60 * 1000; // give up after 10 min
         let notFound = 0; // tolerate brief 404 windows at run start/end before giving up
@@ -816,7 +815,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     if (res.status === 404) {
                         if (++notFound >= 3) {
                             setRunStatus('failed');
-                            setRunLog(prev => [...prev, '[Reconnect failed — run not found]']);
+                            setRunLog(prev => appendRunLog(prev, '[Reconnect failed — run not found]'));
                             return;
                         }
                         await sleep(3000); continue;
@@ -845,7 +844,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                         setHumanFields(fieldList(data.human_fields));
                         setHumanValues(initialHumanValues(fieldList(data.human_fields)));
                     }
-                    setRunLog(prev => [...prev, '[Reconnected — run is waiting for your input]']);
+                    setRunLog(prev => appendRunLog(prev, '[Reconnected — run is waiting for your input]'));
                     return;
                 }
                 // Terminal: completed / failed / cancelled
@@ -853,10 +852,10 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 setRunStatus(final);
                 setHumanPrompt(null);
                 setHumanContext(null);
-                setRunLog(prev => [...prev, `[Reconnected — run ${data.status}]`]);
+                setRunLog(prev => appendRunLog(prev, `[Reconnected — run ${data.status}]`));
                 return;
             }
-            setRunLog(prev => [...prev, '[Reconnect timed out — see Active Runs to rejoin]']);
+            setRunLog(prev => appendRunLog(prev, '[Reconnect timed out — see Active Runs to rejoin]'));
         }
     }, []);
 
@@ -885,7 +884,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
             }
             if (!res.ok || !res.body) {
                 setRunStatus('failed');
-                setRunLog(prev => [...prev, `[HTTP ${res.status}]`]);
+                setRunLog(prev => appendRunLog(prev, `[HTTP ${res.status}]`));
                 return;
             }
 
@@ -948,9 +947,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         setRunStepErrors({});
         historyErrorsRef.current = {};
         setRunStatus('running');
-        setRunLog([]);
+        setRunLog(emptyRunLog());
         setHumanPrompt(null);
-        setLiveActivity(null);
         lastEventIdRef.current = 0;  // fresh run, fresh journal
         setRunDrawer('run');
 
@@ -963,59 +961,31 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // abort the feed there — the server signals the real end with
     // `stream_complete`. Aborting on the live POST stream stays correct.
     const handleSSEEvent = (data: any, fromJournal = false) => {
+        // The log is the run screens' own reducer (M3a-2): the lines, the step
+        // results, the plan and the live activity are read the same way here as
+        // on the run pages and in cloud's builder panel. A step's failure is told
+        // in its own words — the event's reason, else the reopened run's record
+        // (F195) — and a cancel says "[Cancelled]" once, as this editor always has.
+        if (data.type === 'step_error') {
+            data = { ...data, reason: failureReason(data, historyErrorsRef.current) };
+        }
+        if (isCancel(data) && !data.nested_run_id) {
+            setRunLog(prev => {
+                const quiet = settleActivity(prev);
+                return quiet.entries[quiet.entries.length - 1] === CANCELLED_LINE ? quiet : appendRunLog(quiet, CANCELLED_LINE);
+            });
+        } else {
+            setRunLog(prev => applyRunEvent(prev, data));
+        }
+
         // A nested run's own step events arrive under the step that called it
         // (F251): they are logged with both names and never move that step's
         // card — a child's step ending used to read as the parent step's.
-        const handleNestedStepEvent = (data: any) => {
-            const where = `${data.step_name} › ${data.nested_step_name || 'a nested step'}`;
-            const key = `${data.nested_run_id}:${data.nested_step_id || ''}`;
-            switch (data.type) {
-                case 'step_start':
-                    setRunLog(prev => [...prev, line('start', `${where} (${data.step_type})`)]);
-                    if (['agent', 'llm', 'print', 'extract_json'].includes(data.step_type)) {
-                        pendingStepResultRef.current.set(key, { step_name: where, step_type: data.step_type, content: '' });
-                    }
-                    break;
-                case 'step_complete': {
-                    const pending = pendingStepResultRef.current.get(key);
-                    setRunLog(prev => {
-                        const next = [...prev, line('ok', `${where} completed (${data.duration_seconds?.toFixed(1)}s)`)];
-                        if (pending && pending.content.trim()) {
-                            next.splice(next.length - 1, 0, {
-                                kind: 'step_result',
-                                step_name: pending.step_name,
-                                step_type: pending.step_type,
-                                content: pending.content.trim(),
-                            } as StepResultLogEntry);
-                        }
-                        return next;
-                    });
-                    pendingStepResultRef.current.delete(key);
-                    break;
-                }
-                case 'step_error':
-                    setRunLog(prev => [...prev, line('error', `${where}: ${failureReason(data, historyErrorsRef.current)}`)]);
-                    pendingStepResultRef.current.delete(key);
-                    break;
-                case 'final':
-                    if (data.intent !== 'orchestration' && data.response && pendingStepResultRef.current.has(key)) {
-                        pendingStepResultRef.current.get(key)!.content = data.response;
-                    }
-                    break;
-                default:
-                    // The child's own task list and its own end: the parent's step
-                    // reports how it went.
-                    break;
-            }
-        };
-        if (data.nested_run_id && NESTED_STEP_EVENTS.has(data.type)) {
-            handleNestedStepEvent(data);
-            return;
-        }
+        if (data.nested_run_id && NESTED_STEP_EVENTS.has(data.type)) return;
+
         switch (data.type) {
             case 'orchestration_start':
                 setRunId(data.run_id);
-                setRunLog(prev => [...prev, line('muted', `Started run ${data.run_id}`)]);
                 break;
 
             case 'step_start': {
@@ -1046,176 +1016,23 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     delete next[data.orch_step_id];
                     return next;
                 });
-                setRunLog(prev => [...prev, line('start', `${data.step_name} (${data.step_type})`)]);
-                // Begin tracking response for agent/llm/print/extract_json steps, keyed by step id
-                if (data.step_type === 'agent' || data.step_type === 'llm' || data.step_type === 'print' || data.step_type === 'extract_json') {
-                    pendingStepResultRef.current.set(data.orch_step_id, {
-                        step_name: data.step_name,
-                        step_type: data.step_type as 'agent' | 'llm' | 'print' | 'extract_json',
-                        content: '',
-                    });
-                } else {
-                    pendingStepResultRef.current.delete(data.orch_step_id);
-                }
                 break;
             }
 
-            case 'step_complete': {
-                setLiveActivity(null);
+            case 'step_complete':
                 setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'completed' }));
-                const pendingForStep = pendingStepResultRef.current.get(data.orch_step_id);
-                setRunLog(prev => {
-                    const next = [...prev, line('ok', `${data.step_name} completed (${data.duration_seconds?.toFixed(1)}s)`)];
-                    if (pendingForStep && pendingForStep.content.trim()) {
-                        next.splice(next.length - 1, 0, {
-                            kind: 'step_result',
-                            step_name: pendingForStep.step_name,
-                            step_type: pendingForStep.step_type,
-                            content: pendingForStep.content.trim(),
-                        } as StepResultLogEntry);
-                    }
-                    return next;
-                });
-                pendingStepResultRef.current.delete(data.orch_step_id);
                 break;
-            }
 
-            case 'step_error': {
-                // The event's `error` is a sanitised sentence; the reason is the
-                // step's own words, which a member reading this log is owed (F195).
-                const reason = failureReason(data, historyErrorsRef.current);
-                setLiveActivity(null);
+            case 'step_error':
                 setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'failed' }));
-                setRunStepErrors(prev => ({ ...prev, [data.orch_step_id]: reason }));
-                setRunLog(prev => [...prev, line('error', `Step error: ${reason}`)]);
-                pendingStepResultRef.current.delete(data.orch_step_id);
-                break;
-            }
-
-            case 'llm_reasoning':
-                if (data.reasoning) {
-                    setLiveActivity(`reasoning · ${String(data.reasoning).split('\n')[0].slice(0, 140)}`);
-                    setRunLog(prev => [...prev, {
-                        kind: 'reasoning',
-                        step_name: data.step_name,
-                        content: String(data.reasoning),
-                    } as ReasoningLogEntry]);
-                }
-                break;
-
-            case 'llm_thought':
-                if (data.thought) {
-                    setRunLog(prev => [...prev, {
-                        kind: 'thought',
-                        step_name: data.step_name,
-                        content: String(data.thought),
-                    } as ThoughtLogEntry]);
-                }
-                break;
-
-            case 'thinking':
-                // Chatty progress line ("Analyzing...", "Delegating to X...") —
-                // shown as the live activity indicator, not appended to the log.
-                if (data.message) setLiveActivity(`thinking · ${data.message}`);
-                break;
-
-            case 'status':
-                if (data.message) setRunLog(prev => [...prev, line('info', data.message)]);
-                break;
-
-            case 'step_warning':
-                setRunLog(prev => [...prev, line('warn', data.message || 'Step warning')]);
-                break;
-
-            case 'context_compact':
-                setRunLog(prev => [...prev,
-                    line('compact', `Context compacted (${data.chars_before ?? '?'} → ${data.chars_after ?? '?'} chars)`)]);
-                break;
-
-            case 'final': {
-                // Capture the full final response keyed by step id
-                const response = data.response || '';
-                const stepId = data.orch_step_id || '';
-                if (stepId && pendingStepResultRef.current.has(stepId) && response) {
-                    pendingStepResultRef.current.get(stepId)!.content = response;
-                }
-                break;
-            }
-
-            case 'evaluator_decision': {
-                // The evaluator step's own event: the route the model picked.
-                // It answered to `routing_decision` before, which carries
-                // neither of these fields — so this line read
-                // `Evaluator routed → undefined` on every evaluator run.
-                const picked = String(data.tool_name || '').replace(/^route_/, '');
-                const why = (data.arguments as Record<string, unknown> | undefined)?.reasoning;
-                setRunLog(prev => [...prev, line('flow',
-                    `Evaluator chose ${picked || '(no route)'}${why ? ` (${why})` : ''}`)]);
-                break;
-            }
-
-            case 'routing_decision': {
-                // One router event, three routing step types; `step_type` says
-                // which. Absent means an archived run from before the rename,
-                // when only the evaluator used this name.
-                const st = data.step_type as string | undefined;
-                // An evaluator has already said where it went, in its own
-                // `evaluator_decision` line: printing the router's too wrote
-                // every decision twice (U66). The step's line is the one that
-                // is always there — when its label is not in the route map the
-                // router says nothing at all.
-                if (st === 'evaluator') break;
-                const routed = st === 'if_else'
-                    ? `Branch: ${data.decision ?? 'false'} → ${data.target_step_id || 'end'}`
-                    : st === 'switch'
-                        ? `Branch: case ${data.decision ?? 'default'} → ${data.target_step_id || 'end'}`
-                        : `Evaluator routed → ${data.decision}${data.reasoning ? ` (${data.reasoning})` : ''}`;
-                setRunLog(prev => [...prev, line('flow', routed)]);
-                break;
-            }
-
-            // The step's own events. The router used to share these names with
-            // a payload that had no field in common; it emits `routing_decision`
-            // now. The second arm stays for runs archived before the rename.
-            case 'if_decision':
-                setRunLog(prev => [...prev, line('flow', data.condition !== undefined
-                    ? `If/Else: ${data.condition} → ${data.result}`
-                    : `Branch: ${data.decision ?? 'false'} → ${data.target_step_id || 'end'}`)]);
-                break;
-
-            case 'switch_decision':
-                setRunLog(prev => [...prev, line('flow', data.expression !== undefined
-                    ? `Switch: ${data.expression} = "${data.value}" → ${data.matched_case ?? 'default'}`
-                    : `Branch: case ${data.matched_case ?? 'default'} → ${data.target_step_id || 'end'}`)]);
-                break;
-
-            case 'parallel_start':
-                setRunLog(prev => [...prev, line('parallel', `Parallel: running ${data.branch_count} branches`)]);
-                break;
-
-            case 'branch_start':
-                setRunLog(prev => [...prev, line('branch', `Branch ${(data.branch_index ?? 0) + 1}/${data.branch_count}`)]);
-                break;
-
-            case 'parallel_complete':
-                setRunLog(prev => [...prev, line('parallel', `Parallel: all ${data.branch_count} branches done`)]);
-                break;
-
-            case 'loop_iteration':
-                setRunLog(prev => [...prev, line('loop', `Loop iteration ${data.iteration}/${data.total}`)]);
-                break;
-
-            case 'merge_complete':
-                setRunLog(prev => [...prev, line('merge', `Merged ${data.input_count} inputs (${data.strategy})`)]);
+                setRunStepErrors(prev => ({ ...prev, [data.orch_step_id]: data.reason }));
                 break;
 
             case 'orchestration_end':
                 if (data.orch_step_id) setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'completed' }));
-                setRunLog(prev => [...prev, line('end', 'End node reached')]);
                 break;
 
             case 'human_input_required':
-                setLiveActivity(null);
                 setRunStatus('paused');
                 if (data.orch_step_id) {
                     askedStepRef.current = data.orch_step_id;
@@ -1227,20 +1044,13 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     : null);
                 setHumanFields(fieldList(data.fields));
                 setHumanValues(initialHumanValues(fieldList(data.fields)));
-                setRunLog(prev => [...prev, line('pause', 'Waiting for human input…')]);
-                break;
-
-            case 'loop_limit_reached':
-                setRunLog(prev => [...prev, line('loop', `Loop limit reached for step ${data.orch_step_id} (${data.iterations} iterations)`)]);
                 break;
 
             case 'orchestration_complete':
-                setLiveActivity(null);
                 setHumanPrompt(null);
                 setHumanContext(null);
                 setRunStatus(data.status === 'completed' ? 'completed' : 'failed');
                 setRunStepStatuses(prev => settleRun(prev, data.status === 'completed' ? 'completed' : 'failed'));
-                setRunLog(prev => [...prev, line(data.status === 'completed' ? 'ok' : 'error', `Done — status: ${data.status}`)]);
                 if (!fromJournal) {
                     abortRef.current?.abort();
                     abortRef.current = null;
@@ -1248,18 +1058,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 break;
 
             case 'orchestration_error':
-                setLiveActivity(null);
                 setHumanPrompt(null);
                 setHumanContext(null);
                 if (isCancel(data)) {
                     // Not a failure. The tab that cancelled has said so already.
                     setRunStatus('cancelled');
                     setRunStepStatuses(prev => settleRun(prev, 'cancelled'));
-                    setRunLog(prev => prev[prev.length - 1] === CANCELLED_LINE ? prev : [...prev, CANCELLED_LINE]);
                 } else {
                     setRunStatus('failed');
                     setRunStepStatuses(prev => settleRun(prev, 'failed'));
-                    setRunLog(prev => [...prev, line('error', `Error: ${data.error}`)]);
                 }
                 if (!fromJournal) {
                     abortRef.current?.abort();
@@ -1267,92 +1074,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 }
                 break;
 
-            case 'tool_execution':
-                // update_tasks renders as the live checklist (tasks_updated) —
-                // the raw call/result pair would only be noise around it.
-                if (data.tool_name === 'update_tasks') {
-                    setLiveActivity('tasks · updating plan');
-                    break;
-                }
-                setLiveActivity(`tool · ${data.tool_name}`);
-                setRunLog(prev => [...prev, {
-                    kind: 'tool_call',
-                    tool_name: data.tool_name,
-                    args: data.args || {},
-                    step_name: data.step_name,
-                } as ToolCallLogEntry]);
-                break;
-
-            case 'tool_result':
-                if (data.tool_name === 'update_tasks') break;
-                setRunLog(prev => [...prev, {
-                    kind: 'tool_result',
-                    tool_name: data.tool_name,
-                    preview: data.preview || '',
-                } as ToolResultLogEntry]);
-                break;
-
-            case 'tasks_updated': {
-                // One live checklist: the task list is run-global state, so the
-                // previous snapshot is superseded — re-render it at the tail,
-                // where the action is (journal replay reproduces the same walk).
-                const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-                setRunLog(prev => [
-                    ...prev.filter(e => typeof e === 'string' || e.kind !== 'tasks'),
-                    { kind: 'tasks', step_name: data.step_name, tasks } as TasksLogEntry,
-                ]);
-                break;
-            }
-
-            case 'knowledge_retrieve':
-                setRunLog(prev => [...prev, {
-                    kind: 'retrieval',
-                    step_name: data.step_name,
-                    query_id: data.query_id,
-                    hit_count: data.hit_count ?? 0,
-                    cost_usd: data.cost_usd ?? 0,
-                    degraded: Array.isArray(data.degraded) ? data.degraded : [],
-                } as RetrievalLogEntry]);
-                break;
-
-            case 'knowledge_ingest': {
-                const docs: { status?: string }[] = Array.isArray(data.documents) ? data.documents : [];
-                const byStatus = new Map<string, number>();
-                for (const d of docs) byStatus.set(d.status || 'unknown', (byStatus.get(d.status || 'unknown') || 0) + 1);
-                const statuses = [...byStatus].map(([status, n]) => `${n} ${status}`).join(', ');
-                setRunLog(prev => [...prev, line('info',
-                    `Ingest · ${data.step_name || ''}: ${docs.length} record${docs.length !== 1 ? 's' : ''} → ${data.kb_id || ''}${statuses ? ` · ${statuses}` : ''}`)]);
-                break;
-            }
-
-            case 'tasks_incomplete': {
-                const n = Array.isArray(data.tasks) ? data.tasks.length : 0;
-                setRunLog(prev => [...prev, line('warn', `Step ended with ${n} open task${n !== 1 ? 's' : ''}`)]);
-                break;
-            }
-
-            case 'token_usage':
-                // Silently track
-                break;
-
             default:
-                // chunk events are accumulated in pendingStepResultRef (via 'final'),
-                // so we only show a live streaming indicator if there's no pending capture
-                if (data.type === 'chunk' && data.content && !pendingStepResultRef.current) {
-                    setRunLog(prev => {
-                        const last = prev[prev.length - 1];
-                        if (last && typeof last === 'string' && last.startsWith('  ')) {
-                            return [...prev.slice(0, -1), last + data.content];
-                        }
-                        return [...prev, '  ' + data.content];
-                    });
-                }
+                // Everything else is the log's alone.
                 break;
         }
     };
 
     const cancelRun = async () => {
-        setLiveActivity(null);
+        setRunLog(settleActivity);
         abortRef.current?.abort();
         abortRef.current = null;
         if (runId) {
@@ -1362,7 +1091,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         }
         setRunStatus('cancelled');
         setRunStepStatuses(prev => settleRun(prev, 'cancelled'));
-        setRunLog(prev => [...prev, CANCELLED_LINE]);
+        setRunLog(prev => appendRunLog(prev, CANCELLED_LINE));
     };
 
     const submitHumanInput = async () => {
@@ -1375,7 +1104,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
             for (const k in next) { if (next[k] === 'paused') next[k] = 'running'; }
             return next;
         });
-        setRunLog(prev => [...prev, `Human response submitted`]);
+        setRunLog(prev => appendRunLog(prev, `Human response submitted`));
         const response = humanFields.length ? humanAnswer(humanFields, humanValues) : humanResponse;
         setHumanResponse('');
 
@@ -1385,7 +1114,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
             // keeps this line in the log; a replay from 0 would rebuild it.
             const message = await refusedAnswerMessage(res);
             showToast(message, 'warning');
-            setRunLog(prev => [...prev, `[${message}]`]);
+            setRunLog(prev => appendRunLog(prev, `[${message}]`));
             if (res.status === 404) { setRunStatus('failed'); return; }
             const hasJournal = await streamRunJournal(runId, lastEventIdRef.current);
             if (!hasJournal) await pollRunStatus(runId, { silent: true });
@@ -1396,7 +1125,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         if (!runId) return;
         setRunStatus('running');
         setRunDrawer('run');
-        setRunLog(prev => [...prev, '[Resuming from where run stopped...]']);
+        setRunLog(prev => appendRunLog(prev, '[Resuming from where run stopped...]'));
         streamSSE(`/api/orchestrations/runs/${runId}/resume`, {});
     };
 
@@ -1828,7 +1557,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                         runStrip={
                             <RunStrip
                                 runStatus={runStatus}
-                                liveActivity={liveActivity}
+                                liveActivity={runLog.liveActivity}
                                 runId={runId}
                                 humanPrompt={humanPrompt}
                                 humanContext={humanContext}
@@ -1854,8 +1583,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                     view={runDrawer}
                                     onClose={() => setRunDrawer(null)}
                                     runStatus={runStatus}
-                                    liveActivity={liveActivity}
-                                    runLog={runLog}
+                                    log={runLog}
                                     onOpenResponseModal={setResponseModal}
                                     runId={runId}
                                     humanPrompt={humanPrompt}

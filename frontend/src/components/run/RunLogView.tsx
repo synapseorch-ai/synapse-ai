@@ -138,6 +138,15 @@ function append(entries: LogEntry[], entry: LogEntry): LogEntry[] {
 }
 
 /**
+ * A line the product writes itself, not the engine: OSS's editor says
+ * "Human response submitted", "[Cancelled]", "[Connection lost]" and the like
+ * into the same log, under the same cap.
+ */
+export function appendRunLog(state: RunLogState, entry: LogEntry): RunLogState {
+  return { ...state, entries: append(state.entries, entry) };
+}
+
+/**
  * One engine event folded into the log. Pure: same events in, same log out,
  * whether they arrived over SSE a second ago or out of an S3 archive.
  *
@@ -169,6 +178,8 @@ function applyNestedStepEvent(state: RunLogState, data: any, where: string): Run
       return { ...state, pending: next, entries: append(entries, line("start", `${where} (${data.step_type})`)) };
     }
     case "final": {
+      // The nested run's own end (its whole result) is not a step's answer.
+      if (data.intent === "orchestration") return state;
       const held = pending.get(key);
       if (!held || !data.response) return state;
       const next = new Map(pending);
@@ -306,6 +317,12 @@ export function applyRunEvent(state: RunLogState, data: any): RunLogState {
       // never evaluated. Absent `step_type` is an archived run from before the
       // rename, when only the evaluator used this name.
       const st = data.step_type as string | undefined;
+      // An evaluator has already said where it went, in its own
+      // `evaluator_decision` line: printing the router's too wrote every
+      // decision twice (U66, OSS's editor; cloud's builder panel and run pages
+      // printed both until M3a-2). The step's line is the one that is always
+      // there — when its label is not in the route map the router says nothing.
+      if (st === "evaluator") return state;
       if (st === "if_else")
         return add(line("flow", `Branch: ${data.decision ?? "false"} → ${data.target_step_id || "end"}`));
       if (st === "switch")
