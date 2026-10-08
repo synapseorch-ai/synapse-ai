@@ -236,6 +236,15 @@ async def check_runbar(browser) -> str:
                     ".some(b => /Waiting for your input/.test(b.innerText || ''))"
                 ):
                     break
+            # The question opens in its step's setup card by itself (M3a-2): on a
+            # phone that is the bottom sheet, over the strip. The strip's Answer is
+            # what brings it back once it is put away, so it is measured with the
+            # sheet closed.
+            await asyncio.sleep(1.0)
+            grip = page.get_by_role("button", name="Drag down to close, or press to close")
+            if await grip.count():
+                await grip.click()
+                await asyncio.sleep(0.8)
             verdict = await page.evaluate(
                 """() => {
                   const bar = [...document.querySelectorAll('button')]
@@ -2719,6 +2728,328 @@ async def check_canvasleave(browser) -> str:
     return "an edited workflow asks before Back or a link drops it; an untouched one leaves quietly"
 
 
+# ── the live run on the canvas (M3a-2) ───────────────────────────────────────
+
+def signal_orchestration(oid: str) -> dict:
+    """A model step, a Parallel with a model branch and a two-step logic branch, then a Merge (M3a-2)."""
+    s = lambda k: f"{oid}_{k}"  # noqa: E731
+    steps = [
+        {"id": s("a"), "name": "Draft", "type": "llm", "prompt_template": "Say hi", "output_key": "draft",
+         "next_step_id": s("p"), "position_x": 0, "position_y": 150},
+        {"id": s("p"), "name": "Split", "type": "parallel", "parallel_branches": [[s("b")], [s("c"), s("d")]],
+         "next_step_id": s("m"), "position_x": 280, "position_y": 150},
+        {"id": s("b"), "name": "Left", "type": "llm", "prompt_template": "Left", "output_key": "left",
+         "position_x": 560, "position_y": 0},
+        {"id": s("c"), "name": "Right", "type": "print", "print_content": "right", "output_key": "right",
+         "position_x": 560, "position_y": 300},
+        {"id": s("d"), "name": "After right", "type": "print", "print_content": "after", "output_key": "after",
+         "position_x": 840, "position_y": 300},
+        {"id": s("m"), "name": "Join", "type": "merge", "merge_strategy": "dict", "input_keys": ["left", "right"],
+         "output_key": "joined", "position_x": 1120, "position_y": 150},
+    ]
+    return {"id": oid, "name": "ui-smoke signals", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+            "steps": steps, "entry_step_id": steps[0]["id"], "state_schema": {}, "trigger": "manual"}
+
+
+#: A step's run state as its frame paints it: the first status class among the frame's borders (M3a-2's
+#: running colours by role included).
+FRAME_CLASS = r"""(sid) => {
+  const c = document.querySelector(`.react-flow__node[data-id="${sid}"] > div`);
+  return c ? (c.className.match(/border-(machine|text-muted|person|success|danger|border-strong)/) || [null])[0] : null;
+}"""
+
+#: One connection's live state: lit (the machine's colour), and its signal dot (mounted, and visible now).
+EDGE_STATE = r"""(eid) => {
+  const g = document.querySelector(`.react-flow__edge[data-id="${eid}"]`);
+  if (!g) return null;
+  const path = g.querySelector('.react-flow__edge-path');
+  const dot = g.querySelector('circle[data-signal-dot]');
+  return {lit: (path && path.getAttribute('style') || '').includes('--machine'),
+          mounted: !!dot, dot: !!dot && dot.getAttribute('visibility') === 'visible'};
+}"""
+
+
+async def _edge_seen(page, eid: str, seconds: float = 1.6) -> dict:
+    """Watch one connection for a while: was it lit, and did a dot travel it."""
+    seen = {"lit": False, "dot": False}
+    end = time.time() + seconds
+    while time.time() < end:
+        st = await page.evaluate(EDGE_STATE, eid)
+        if st:
+            seen["lit"] = seen["lit"] or st["lit"]
+            seen["dot"] = seen["dot"] or st["dot"]
+        await asyncio.sleep(0.04)
+    return seen
+
+
+@check
+async def check_runsignal(browser) -> str:
+    """The run plays on the canvas: the working step glows by role, and a signal travels the way the run came (M3a-2).
+
+    D211's signature moment, driven by the stream alone: a step's start sends a
+    dot down the connection it came along — from the step that finished, from a
+    Parallel to its branches and from it again to the join — and the connection
+    stays lit while the run is live. A model step working is cyan, a logic step
+    a neutral ring. A failed branch step stays failed when its step_complete
+    follows (Naveen's call at M3a-2). With reduced motion nothing travels and
+    the same connections light in place; when the run ends they go grey. The
+    run's stream is stubbed, one event at a time: no engine, no model.
+    """
+    oid = f"orch_uismoke_signal_{int(time.time())}"
+    api("/api/orchestrations", "POST", signal_orchestration(oid))
+    s = lambda k: f"{oid}_{k}"  # noqa: E731
+    a_p, p_b, p_c = f"{s('a')}->{s('p')}", f"{s('p')}->par->{s('b')}", f"{s('p')}->par->{s('c')}"
+    c_d, p_m = f"par_{s('p')}_{s('c')}->{s('d')}", f"{s('p')}->{s('m')}"
+    problems: list[str] = []
+
+    async def push(page, *events):
+        for e in events:
+            await page.evaluate("(e) => window.__run.raw(e)", e)
+
+    def start(k, kind):
+        return {"type": "step_start", "orch_step_id": s(k), "step_name": k, "step_type": kind}
+
+    def done(k):
+        return {"type": "step_complete", "orch_step_id": s(k), "step_name": k, "duration_seconds": 0.4}
+
+    try:
+        for reduced in (False, True):
+            ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]},
+                                            reduced_motion="reduce" if reduced else "no-preference")
+            await ctx.add_init_script(RUNLOG_STUB)
+            page = await ctx.new_page()
+            mode = "reduced motion" if reduced else "motion"
+            try:
+                await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+                await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+                await asyncio.sleep(SETTLE)
+                await page.get_by_role("button", name="Run now", exact=True).click()
+                for _ in range(50):
+                    if await page.evaluate("() => !!window.__run.raw"):
+                        break
+                    await asyncio.sleep(0.1)
+                await push(page, {"type": "orchestration_start", "run_id": f"run_smoke_signal_{int(reduced)}"},
+                           start("a", "llm"))
+                await asyncio.sleep(0.5)
+                frame = await page.evaluate(FRAME_CLASS, s("a"))
+                if frame != "border-machine":
+                    problems.append(f"{mode}: a model step working shows {frame}, not cyan")
+                if not await page.locator(f'.react-flow__node[data-id="{s("a")}"] [data-run-pill=running]').count():
+                    problems.append(f"{mode}: the working step does not say Working")
+
+                await push(page, done("a"), start("p", "parallel"))
+                ap = await _edge_seen(page, a_p)
+                await push(page, start("b", "llm"), start("c", "print"))
+                pb, pc = await asyncio.gather(_edge_seen(page, p_b), _edge_seen(page, p_c))
+                split = await page.evaluate(FRAME_CLASS, s("p"))
+                if split != "border-text-muted":
+                    problems.append(f"{mode}: a Parallel working shows {split}, not a neutral frame")
+                await push(page, {"type": "step_error", "orch_step_id": s("b"), "error": "boom", "reason": "boom"},
+                           done("b"))
+                await asyncio.sleep(0.4)
+                left = await page.evaluate(FRAME_CLASS, s("b"))
+                if left != "border-danger":
+                    problems.append(f"{mode}: a failed branch step followed by its step_complete shows {left}, not failed")
+                await push(page, done("c"), start("d", "print"))
+                cd = await _edge_seen(page, c_d)
+                await push(page, done("d"), done("p"), start("m", "merge"))
+                pm = await _edge_seen(page, p_m)
+                for name, seen in (("Draft → Split", ap), ("Split → Left", pb), ("Split → Right", pc),
+                                   ("Right → After right", cd), ("Split → Join", pm)):
+                    if not seen["lit"]:
+                        problems.append(f"{mode}: {name} never lit")
+                    if reduced and seen["dot"]:
+                        problems.append(f"{mode}: a signal travelled {name}")
+                    if not reduced and not seen["dot"]:
+                        problems.append(f"{mode}: no signal travelled {name}")
+                stray = await page.evaluate(EDGE_STATE, f"{s('p')}->{s('m')}")
+                if not stray or not stray["lit"]:
+                    problems.append(f"{mode}: the join's connection is not lit while the run is live")
+                await push(page, done("m"), {"type": "orchestration_complete", "run_id": "x", "status": "completed"})
+                await asyncio.sleep(0.6)
+                after = [await page.evaluate(EDGE_STATE, e) for e in (a_p, p_b, p_m)]
+                if any(st and st["lit"] for st in after):
+                    problems.append(f"{mode}: connections stay lit after the run ended")
+            finally:
+                await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("a working model step glows cyan, a Parallel neutral; signals travel each way the run came and the "
+            "connections stay lit while it is live; reduced motion lights in place; a failed branch step stays failed")
+
+
+def ask_orchestration(oid: str, fields: list | None = None) -> dict:
+    """A Print, then a person asked (with `fields`, or in words), then a Print: model-free (M3a-2)."""
+    ask = {"id": f"{oid}_ask", "name": "Ask", "type": "human", "human_prompt": "Anything to add?",
+           "next_step_id": f"{oid}_z", "output_key": "extra", "position_x": 300, "position_y": 0}
+    if fields:
+        ask["human_fields"] = fields
+    return {
+        "id": oid, "name": "ui-smoke ask", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_a",
+        "steps": [
+            {"id": f"{oid}_a", "name": "Prepare", "type": "print", "print_content": "ready", "output_key": "ready",
+             "next_step_id": f"{oid}_ask", "position_x": 0, "position_y": 0},
+            ask,
+            {"id": f"{oid}_z", "name": "Finish", "type": "print", "print_content": "done", "output_key": "fin",
+             "next_step_id": None, "position_x": 600, "position_y": 0},
+        ],
+    }
+
+
+CARD_QUESTION = "[data-canvas-chrome='card'] section[aria-label='Waiting for a person']"
+
+
+@check
+async def check_runcard(browser) -> str:
+    """The question a run waits on is answered in its step's setup card, which opens by itself (M3a-2).
+
+    D204's "the approval is answered in the card": no click opens it. The
+    editor's rule holds there (Naveen's item 7): an empty answer in words is
+    not sent, by the button or by Enter (the old dialog's Enter sent it anyway).
+    Enter sends a typed answer; a lone Yes / No is its label's button (D218).
+    Each answer is read off the wire, and each run completes. Model-free.
+    """
+    problems: list[str] = []
+    for fields, label in ((None, None), ([{"name": "approved", "type": "boolean", "label": "Approve?"}], "Approve")):
+        oid = f"orch_uismoke_card_{int(time.time())}_{1 if fields else 0}"
+        api("/api/orchestrations", "POST", ask_orchestration(oid, fields))
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        page = await ctx.new_page()
+        sent: list = []
+        page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}").get("response"))
+                if r.method == "POST" and "/human-input" in r.url else None)
+        try:
+            await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+            await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            await page.get_by_role("button", name="Run now", exact=True).click()
+            card = page.locator(CARD_QUESTION)
+            try:
+                await card.wait_for(timeout=30_000)
+            except Exception:
+                problems.append(f"{'fields' if fields else 'words'}: the card did not open on the question by itself")
+                continue
+            if fields:
+                await card.get_by_role("button", name=label, exact=True).click()
+                want = {"approved": True}
+            else:
+                send = card.get_by_role("button", name="Send answer", exact=True)
+                if not await send.is_disabled():
+                    problems.append("words: Send answer is enabled with nothing typed")
+                box = card.get_by_role("textbox", name="Your answer")
+                await box.focus()
+                await page.keyboard.press("Enter")
+                await asyncio.sleep(1.0)
+                if sent:
+                    problems.append(f"words: Enter on an empty answer sent {sent}")
+                await box.fill("ok from ui-smoke")
+                await page.keyboard.press("Enter")
+                want = "ok from ui-smoke"
+            await page.get_by_text("Done — status: completed").first.wait_for(timeout=30_000)
+            if sent != [want]:
+                problems.append(f"{'fields' if fields else 'words'}: the answers sent were {sent}, not [{want!r}]")
+        except Exception as e:
+            problems.append(f"{'fields' if fields else 'words'}: {type(e).__name__}: {str(e).splitlines()[0][:120]}")
+        finally:
+            await ctx.close()
+            drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "the card opens on the question by itself; empty words are not sent; Enter and a lone Yes / No answer it"
+
+
+def branch_orchestration(oid: str) -> dict:
+    """A Print, an If/Else that always takes its true road, a Print on each road: one is never reached (M3a-2)."""
+    s = lambda k: f"{oid}_{k}"  # noqa: E731
+    return {
+        "id": oid, "name": "ui-smoke last run", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": s("a"),
+        "steps": [
+            {"id": s("a"), "name": "First", "type": "print", "print_content": "one", "output_key": "one",
+             "next_step_id": s("if"), "position_x": 0, "position_y": 100},
+            {"id": s("if"), "name": "Which way", "type": "if_else", "if_condition": "1 == 1",
+             "if_true_step_id": s("yes"), "if_false_step_id": s("no"), "position_x": 280, "position_y": 100},
+            {"id": s("yes"), "name": "Taken", "type": "print", "print_content": "yes", "output_key": "yes",
+             "next_step_id": None, "position_x": 560, "position_y": 0},
+            {"id": s("no"), "name": "Not taken", "type": "print", "print_content": "no", "output_key": "no",
+             "next_step_id": None, "position_x": 560, "position_y": 220},
+        ],
+    }
+
+
+@check
+async def check_lastrun(browser) -> str:
+    """Each step shows how it went and its time from the last run (M3a-2).
+
+    As a run finishes on the canvas, each step it ran says done and its time;
+    one it never reached is dimmed. Reopened from its link, the same, from its
+    journal and the record its reopening already reads. On a fresh visit with no run on the canvas, the
+    bar's Last run reads the workflow's newest run once (one GET of its record:
+    Naveen's call) and shows the same. Model-free.
+    """
+    oid = f"orch_uismoke_lastrun_{int(time.time())}"
+    api("/api/orchestrations", "POST", branch_orchestration(oid))
+    s = lambda k: f"{oid}_{k}"  # noqa: E731
+    pills = r"""(ids) => ids.map((id) => {
+      const n = document.querySelector(`.react-flow__node[data-id="${id}"]`);
+      const pill = n && n.querySelector('[data-run-pill]');
+      const frame = n && n.querySelector(':scope > div');
+      return {pill: pill ? pill.getAttribute('data-run-pill') : null,
+              dim: !!frame && /(^|\s)opacity-55(\s|$)/.test(frame.className)};
+    })"""
+    ids = [s("a"), s("if"), s("yes"), s("no")]
+    problems: list[str] = []
+    try:
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+            await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            await page.get_by_role("button", name="Run now", exact=True).click()
+            await page.get_by_text("Done — status: completed").first.wait_for(timeout=30_000)
+            await asyncio.sleep(1.0)
+            run_id = await page.evaluate("() => (document.body.innerText.match(/Started run (\\S+)/) || [])[1] || null")
+            live = await page.evaluate(pills, ids)
+            if [p["pill"] for p in live[:3]] != ["done"] * 3:
+                problems.append(f"after the run, the steps it ran show {[p['pill'] for p in live[:3]]}")
+            if not live[3]["dim"] or live[3]["pill"]:
+                problems.append(f"the step the run never reached shows {live[3]}")
+
+            reads: list[str] = []
+            page.on("request", lambda r: reads.append(r.url) if r.method == "GET" and run_id and r.url.endswith(f"/api/orchestrations/runs/{run_id}") else None)
+            await page.goto(f"{APP}/workflows?run={run_id}", wait_until="domcontentloaded")
+            await page.get_by_text("Done — status: completed").first.wait_for(timeout=30_000)
+            await asyncio.sleep(1.0)
+            again = await page.evaluate(pills, ids)
+            if [p["pill"] for p in again[:3]] != ["done"] * 3 or not again[3]["dim"]:
+                problems.append(f"reopened from its link, the steps show {again}")
+
+            await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+            await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE + 1.0)
+            if any(p["pill"] for p in await page.evaluate(pills, ids)):
+                problems.append("a fresh visit shows times before Last run is pressed")
+            before = len(reads)
+            await page.get_by_role("button", name="Last run", exact=True).click()
+            await asyncio.sleep(2.0)
+            fresh = await page.evaluate(pills, ids)
+            if [p["pill"] for p in fresh[:3]] != ["done"] * 3 or not fresh[3]["dim"]:
+                problems.append(f"Last run on a fresh visit shows {fresh}")
+            if len(reads) - before != 1:
+                problems.append(f"Last run read the run's record {len(reads) - before} times, not once")
+        finally:
+            await ctx.close()
+    finally:
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "each step shows its time as the run ends, reopened, and from Last run with one read; an unreached step is dimmed"
+
+
 @check
 async def check_ctrls(browser) -> str:
     """Ctrl+S saves from inside a field, and the browser's "Save page" never opens.
@@ -2979,7 +3310,9 @@ async def check_humanfields(browser) -> str:
         for field, text in zip(HUMAN_FIELDS, shown):
             if not text:
                 problems.append(f"the editor shows {field['type']!r} as a blank type")
-        # The orchestration screen: run it, answer it, read what went out.
+        # The orchestration screen: run it, answer it, read what went out. Since
+        # M3a-2 the question is answered in the waiting step's setup card (D204),
+        # where the lone Yes / No is its label's button (D218), not a checkbox.
         await page.keyboard.press("Escape")
         await page.get_by_role("button", name="Run now", exact=True).click()
         for _ in range(25):
@@ -2988,10 +3321,11 @@ async def check_humanfields(browser) -> str:
                 break
         await page.get_by_text("Waiting for your input").first.click()
         await asyncio.sleep(0.6)
-        dialog = page.get_by_role("dialog")
+        card = page.locator(CARD_QUESTION)
         try:
-            await fill_human_fields(dialog)
-            await dialog.get_by_role("button", name="Submit", exact=True).click()
+            await card.get_by_role("textbox", name="Notes", exact=True).fill(HUMAN_ANSWER["notes"])
+            await card.get_by_role("textbox", name="When", exact=True).fill(HUMAN_ANSWER["when"])
+            await card.get_by_role("button", name="Approved", exact=True).click()
             await asyncio.sleep(1.5)
             got = sent[-1].get("response") if sent else None
             if got != HUMAN_ANSWER:
@@ -5083,10 +5417,11 @@ async def check_resumesettle(browser) -> str:
         await page.get_by_text("Waiting for your input").first.wait_for(timeout=60_000)
         await asyncio.sleep(0.5)
         run_id = await page.evaluate("() => (document.body.innerText.match(/Started run (\\S+)/) || [])[1] || null")
+        # The strip's Answer opens the question in the step's setup card (M3a-2).
         await page.get_by_text("Waiting for your input").first.click()
         await asyncio.sleep(0.8)
-        await page.get_by_role("textbox", name="Your answer").fill("yes")
-        await page.get_by_role("button", name="Submit", exact=True).click()
+        await page.locator(CARD_QUESTION).get_by_role("textbox", name="Your answer").fill("yes")
+        await page.locator(CARD_QUESTION).get_by_role("button", name="Send answer", exact=True).click()
         await page.get_by_text("Done — status: completed").first.wait_for(timeout=60_000)
         await asyncio.sleep(1.5)
         live = await page.evaluate(NODE_FRAMES)
@@ -6069,7 +6404,7 @@ def judged_question_orchestration(oid: str) -> dict:
 
 @check
 async def check_humancontext(browser) -> str:
-    """The answer dialog says what its context box holds, and names every field (U65).
+    """The question's card says what its context box holds, and names every field (U65).
 
     Under the title sat a box reading "pass" (the previous step's output, an
     evaluator's label) with nothing saying what it was. The question now names
@@ -6089,7 +6424,8 @@ async def check_humancontext(browser) -> str:
         strip = page.get_by_role("button", name=re.compile("Waiting for your input"))
         await strip.wait_for(timeout=30_000)
         await strip.click()
-        dialog = page.get_by_role("dialog", name="Human input required")
+        # Answered in the waiting step's setup card since M3a-2 (the dialog's place).
+        dialog = page.locator(CARD_QUESTION)
         await dialog.wait_for(timeout=5_000)
         await asyncio.sleep(0.5)
         caption = await dialog.evaluate(
