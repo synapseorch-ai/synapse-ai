@@ -326,7 +326,8 @@ function TimePill({ time }: { time: NonNullable<StepNodeData['lastRun']> }) {
     const lead = time.state === 'done'
         ? <Check className="size-3 text-success" aria-hidden />
         : time.state === 'failed'
-            ? <X className="size-3 text-danger" aria-hidden />
+            // The stroke, not the text colour: on a step, danger-inked text is its failure reason (F195).
+            ? <X className="size-3 stroke-danger" aria-hidden />
             : time.state === 'waiting'
                 ? <span className="size-1.5 rounded-full bg-person" aria-hidden />
                 : null;
