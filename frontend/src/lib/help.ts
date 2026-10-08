@@ -190,7 +190,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Templates',
         summary: 'Ready-made packs of agents, workflows and MCP servers. You see everything a pack holds before anything is imported.',
         steps: [
-            'Click “Preview & Import” on a pack to see what it brings.',
+            'Each pack shows its workflows step by step, and says when you approve before one finishes. Click “Preview & Import” to see what it brings.',
             'Untick anything you do not want; what the rest needs is kept.',
             'Click “Import Now”, or “Configure Secrets →” when servers or tools need secret values.',
             'Find what it imported under Workflows, Agents and Apps; “All templates” goes back without importing.',
@@ -203,20 +203,20 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Tools',
         summary: 'HTTP, n8n and Python tools your agents can call. Each has a name, a description the model reads to decide when to use it, and a schema for its arguments.',
         steps: [
-            'Click “New Tool”, name it, and write a “Description (For AI)” saying when the model should use it.',
+            'Click a tool in the list to edit it beside the list, or click “New Tool”, name it, and write a “Description (For AI)” saying when the model should use it.',
             'For HTTP, choose a method, enter the URL and list its arguments in “Input Schema (JSON)”.',
             'For n8n, connect it in Settings → Integrations first, then pick the workflow under “n8n Workflow”.',
             'For Python, write code that prints its result on the Python tab and try it with “Run”; it needs Docker.',
             'Click “Save”, then tick the tool under “Capabilities (Tools)” in Agents. “Import OpenAPI” makes tools from an API spec.',
         ],
-        media: { id: 'tools/list', alt: 'Tools: custom tools as cards, each with an HTTP, n8n or Python badge, under Import OpenAPI and New Tool.' },
+        media: { id: 'tools/list', alt: 'Tools: custom tools in a list, each with an HTTP, n8n or Python badge, beside the open tool’s editor.' },
         guide: '/guides/start/tools',
     },
     mcp_servers: {
         title: 'Apps',
         summary: 'Connect Model Context Protocol servers, and their tools are offered to your agents. A local server is a command this machine runs; a remote one is reached by URL.',
         steps: [
-            'Choose “Local (stdio)” or “Remote (URL)”, and click a preset to fill in the form, or fill it in yourself.',
+            'Google Workspace is connected in Integrations; the card at the top goes there. For a server, choose “Local (stdio)” or “Remote (URL)”, and click a preset to fill in the form, or fill it in yourself.',
             'Enter a “Display Label” and a “Unique ID”; for a local server, its command, arguments and environment.',
             'For a remote server, enter the “Server URL”; leave the token empty to sign in with OAuth instead.',
             'Click “Connect Server”, then tick its tools under “Capabilities (Tools)” in Agents.',

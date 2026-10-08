@@ -1296,8 +1296,8 @@ async def check_toolglobals(browser) -> str:
 
         await page.goto(f"{APP}/tools", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
-        card = page.locator("div.group", has_text=GLOBALS_TOOL["generalName"]).first
-        await card.get_by_role("button", name=re.compile(r"^edit$", re.I)).click()
+        # The list beside the editor (M2f): a row opens its tool.
+        await page.locator(f'[data-tool-row="{GLOBALS_TOOL["name"]}"] > button').first.click()
         await asyncio.sleep(1.5)
         # "(not set)" is appended on an instance that has no such variable.
         shown = await page.get_by_role("button", name=re.compile(r"^Remove UISMOKE_KEY")).count()
@@ -1628,10 +1628,12 @@ async def check_mcppresets(browser) -> str:
     try:
         await page.goto(f"{APP}/apps", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
-        opener = page.get_by_role("button", name=re.compile(r"^(add|new|connect)", re.I)).first
-        if await opener.count():
-            await opener.click()
-            await asyncio.sleep(0.8)
+        # The add form is on the page (M2f); an older layout opened it first.
+        if not await page.get_by_role("button", name=re.compile(r"Remote \(URL\)")).count():
+            opener = page.get_by_role("button", name=re.compile(r"^(add|new)", re.I)).first
+            if await opener.count():
+                await opener.click()
+                await asyncio.sleep(0.8)
         await page.get_by_role("button", name=re.compile(r"Remote \(URL\)")).first.click()
         await asyncio.sleep(0.5)
         token = page.locator("#mcp-token")
@@ -1790,7 +1792,7 @@ async def check_mcpplaceholder(browser) -> str:
         await asyncio.sleep(SETTLE + 1.0)
         rows = await page.evaluate("""(names) => names.map(n => {
           const tag = [...document.querySelectorAll('span')].find(s => (s.textContent || '').trim() === n);
-          const row = tag && tag.closest('div.group');
+          const row = tag && tag.closest('[data-mcp-row]');
           return row ? row.innerText : null;
         })""", list(servers))
     finally:
@@ -5603,6 +5605,173 @@ async def check_badgecontrast(browser) -> str:
 
 
 @check
+async def check_templatepath(browser) -> str:
+    """Each template pack shows its workflows' paths by role, and says when a person approves (M2f, D211).
+
+    UX1 found Templates a wall of text. Each pack's card now draws one path per
+    workflow it holds, from the pack's bundle, and a workflow with a Human step
+    says "You approve before it finishes" in the person ink.
+    """
+    packs = api("/api/examples")
+    want_paths = want_person = 0
+    for pack in packs:
+        if not pack.get("orchestration_count"):
+            continue
+        for o in api(f"/api/examples/{pack['id']}").get("orchestrations", []):
+            want_paths += 1
+            want_person += any(st.get("type") == "human" for st in o.get("steps", []))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/templates", wait_until="domcontentloaded")
+        await page.locator("[data-step-path]").first.wait_for(timeout=20_000)
+        await asyncio.sleep(SETTLE)
+        got = await page.evaluate(r"""() => {
+          const paths = [...document.querySelectorAll('[data-step-path]')];
+          const flags = [...document.querySelectorAll('main span')].filter(s => s.textContent.trim() === 'You approve before it finishes');
+          const ink = getComputedStyle(document.documentElement).getPropertyValue('--person-ink').trim();
+          const probe = document.createElement('span'); probe.style.color = ink; document.body.appendChild(probe);
+          const inkRgb = getComputedStyle(probe).color; probe.remove();
+          return { paths: paths.length, labelled: paths.filter(p => /^\d+ steps?/.test(p.getAttribute('aria-label') || '')).length,
+                   flags: flags.length, inked: flags.filter(f => getComputedStyle(f).color === inkRgb).length };
+        }""")
+    finally:
+        await ctx.close()
+    bad = []
+    if got["paths"] != want_paths:
+        bad.append(f"{got['paths']} paths drawn for {want_paths} workflows")
+    if got["labelled"] != got["paths"]:
+        bad.append("a path has no words for a screen reader")
+    if got["flags"] != want_person:
+        bad.append(f"{got['flags']} 'You approve' notes for {want_person} workflows with a person")
+    if got["inked"] != got["flags"]:
+        bad.append("a 'You approve' note is not in the person ink")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return f"{want_paths} workflow paths, {want_person} marked as approved by a person"
+
+
+@check
+async def check_appmark(browser) -> str:
+    """An app's letter tile follows the theme and its letter meets AA (M2f).
+
+    The tile was a fixed hsl(… 45% 22%) that stayed dark on white (UX1). It
+    takes its lightness from --tile-* now: pale on light, deep on dark.
+    """
+    servers = [{"name": f"uismoke_tile{i}", "label": label, "server_type": "remote", "status": "connected",
+                "url": "http://127.0.0.2:9/mcp", "token_set": False}
+               for i, label in enumerate(("Atlas", "Bramble", "Cobalt", "Dune", "Ember", "Fjord"))]
+    bad: list[str] = []
+    seen = 0
+    for theme in ("light", "dark"):
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+        async def fulfil(route):
+            if route.request.method != "GET":
+                return await route.continue_()
+            await route.fulfill(status=200, content_type="application/json", body=json.dumps(servers))
+        await ctx.route("**/api/mcp/servers", fulfil)
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/apps", wait_until="domcontentloaded")
+            await page.locator('[data-mcp-row] [data-app-tile]').first.wait_for(timeout=20_000)
+            await asyncio.sleep(1.0)
+            tiles = await page.evaluate(r"""() => {
+              const lum = (c) => { const m = c.match(/[\d.]+/g).map(Number); const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+                return 0.2126 * f(m[0]) + 0.7152 * f(m[1]) + 0.0722 * f(m[2]); };
+              const toRgb = (c) => { const x = document.createElement('canvas').getContext('2d'); x.fillStyle = c; x.fillRect(0, 0, 1, 1);
+                const d = x.getImageData(0, 0, 1, 1).data; return `rgb(${d[0]}, ${d[1]}, ${d[2]})`; };
+              return [...document.querySelectorAll('[data-mcp-row] [data-app-tile]')].map(t => {
+                const cs = getComputedStyle(t); const bg = lum(toRgb(cs.backgroundColor)), fg = lum(toRgb(cs.color));
+                const [hi, lo] = bg > fg ? [bg, fg] : [fg, bg];
+                return { txt: t.textContent, bg, ratio: Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100 };
+              });
+            }""")
+        finally:
+            await ctx.close()
+        seen += len(tiles)
+        for t in tiles:
+            if t["ratio"] < 4.5:
+                bad.append(f"{theme} {t['txt']}: {t['ratio']}:1")
+            if theme == "light" and t["bg"] < 0.6:
+                bad.append(f"light {t['txt']}: a dark tile on white")
+            if theme == "dark" and t["bg"] > 0.2:
+                bad.append(f"dark {t['txt']}: a pale tile on dark")
+    if not seen:
+        raise AssertionError("no letter tile rendered, so this checks nothing")
+    if bad:
+        raise AssertionError(f"{len(bad)} tiles — " + "; ".join(bad[:6]))
+    return f"{seen} letter tiles follow the theme and meet AA"
+
+
+@check
+async def check_googlecard(browser) -> str:
+    """Apps leads with Google Workspace, which goes to Integrations (M2f, Naveen's call)."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/apps", wait_until="domcontentloaded")
+        card = page.locator("[data-google-card]")
+        await card.get_by_role("link").first.wait_for(timeout=20_000)
+        href = await card.get_by_role("link").first.get_attribute("href")
+        first = await page.evaluate("() => { const c = document.querySelector('[data-google-card]'); const m = document.querySelector('main [data-mcp-list], main h2#mcp-connected-title');"
+                                    " return !!(c && m && (c.compareDocumentPosition(m) & Node.DOCUMENT_POSITION_FOLLOWING)); }")
+    finally:
+        await ctx.close()
+    if href != "/settings/workspace":
+        raise AssertionError(f"the Google card leads to {href!r}, not Integrations")
+    if not first:
+        raise AssertionError("the Google card is not above the servers")
+    return "the Google Workspace card leads Apps and goes to Integrations"
+
+
+@check
+async def check_toolsopen(browser) -> str:
+    """Tools opens its first tool beside the list, and the page fits at 1600 and 400 (M2f).
+
+    UX1 found the detail pane opening on nothing. The list and the editor sit
+    side by side now, and the first tool opens by itself.
+    """
+    tools = [{"name": "uismoke_alpha", "generalName": "Smoke alpha", "description": "first", "tool_type": "http",
+              "url": "http://127.0.0.2:9/a", "method": "GET", "inputSchema": {"type": "object", "properties": {}}},
+             {"name": "uismoke_beta", "generalName": "Smoke beta", "description": "second", "tool_type": "http",
+              "url": "http://127.0.0.2:9/b", "method": "POST", "inputSchema": {"type": "object", "properties": {}}}]
+    bad: list[str] = []
+    for width, height in (WIDE, PHONE):
+        ctx = await browser.new_context(viewport={"width": width, "height": height})
+        async def fulfil(route):
+            if route.request.method != "GET":
+                return await route.continue_()
+            await route.fulfill(status=200, content_type="application/json", body=json.dumps(tools))
+        await ctx.route("**/api/tools/custom", fulfil)
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/tools", wait_until="domcontentloaded")
+            try:
+                await page.get_by_role("heading", name=re.compile(r"Editing: uismoke_alpha")).wait_for(timeout=20_000)
+            except Exception:
+                bad.append(f"{width}: the first tool did not open")
+                continue
+            current = await page.locator('[data-tool-row] > button[aria-current="true"]').count()
+            if current != 1:
+                bad.append(f"{width}: {current} rows marked open")
+            # Opening the second keeps the editor beside the list, with no question (nothing edited).
+            await page.locator('[data-tool-row="uismoke_beta"] > button').click()
+            try:
+                await page.get_by_role("heading", name=re.compile(r"Editing: uismoke_beta")).wait_for(timeout=5_000)
+            except Exception:
+                bad.append(f"{width}: a row did not open its tool")
+            fits = await page.evaluate("() => document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+            if not fits:
+                bad.append(f"{width}: the page scrolls sideways")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the first tool opens beside the list, a row opens its tool, and the page fits at both widths"
+
+
+@check
 async def check_evalsactions(browser) -> str:
     """Evals does what it says: a backfill button, an honest run confirm, Stop that clears (F204).
 
@@ -6890,8 +7059,7 @@ async def _send_and_fail(page):
 
 
 async def _python_test(page):
-    await page.locator("div.group", has_text="Smoke python tool").first \
-        .get_by_role("button", name=re.compile("^edit$", re.I)).click()
+    await page.locator('[data-tool-row] > button', has_text="Smoke python tool").first.click()
     await page.get_by_role("button", name="Run", exact=True).click()
 
 
