@@ -45,6 +45,13 @@ export interface BuilderMessage {
     toolPreview?: string;
     routingDecision?: string;
     saved?: SavedResource;
+    /**
+     * A `human_prompt`'s step: which of the builder's questions it is (its plan,
+     * a change, or a clarifying question), so the panel can draw a plan as a
+     * card. `contextKey` is the live event's own word for the same thing.
+     */
+    stepId?: string | null;
+    contextKey?: string | null;
 }
 
 export interface BuilderState {
@@ -205,6 +212,8 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
                 {
                     role: 'assistant', content: String(event.prompt ?? ''), kind: 'human_prompt',
                     key: `human-${event.orch_step_id ?? ''}-${seq}`,
+                    stepId: event.orch_step_id ?? null,
+                    contextKey: event.context_key ?? null,
                 },
             );
 

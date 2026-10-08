@@ -42,7 +42,10 @@ export function reattachedState(conversation: OpenConversation, welcome: Builder
     });
     const asked = conversation.pending;
     if (asked) {
-        messages.push({ role: 'assistant', content: asked.prompt, kind: 'human_prompt', key: `back-asked-${asked.run_id}` });
+        messages.push({
+            role: 'assistant', content: asked.prompt, kind: 'human_prompt', key: `back-asked-${asked.run_id}`,
+            stepId: asked.step_id,
+        });
     }
     return {
         messages,
