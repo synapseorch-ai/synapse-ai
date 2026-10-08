@@ -173,31 +173,6 @@ export function GuardrailsFields({ draft, onChange, rubrics, readOnly }: {
     );
 }
 
-/** The run's input: sent as the run's message by Run now (and by Enter here). Not saved with the workflow. */
-export function RunInputField({ value, onChange, onRun, disabled }: {
-    value: string;
-    onChange: (value: string) => void;
-    onRun: () => void;
-    disabled?: boolean;
-}) {
-    return (
-        <div className="space-y-1.5">
-            <Input
-                aria-label="Initial input for this run"
-                aria-describedby="orch-run-input-hint"
-                size="sm"
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-                placeholder="Initial input for the orchestration..."
-                onKeyDown={(e) => { if (e.key === 'Enter' && !disabled) onRun(); }}
-            />
-            <p id="orch-run-input-hint" className="text-xs leading-relaxed text-text-faint">
-                Run now sends this as the run&apos;s input. It is not saved with the workflow.
-            </p>
-        </div>
-    );
-}
-
 /** A schedule as the editor already has it (`/api/schedules`); only what this list shows. */
 export type WorkflowSchedule = {
     id: string;

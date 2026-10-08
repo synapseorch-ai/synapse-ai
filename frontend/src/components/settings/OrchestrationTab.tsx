@@ -16,7 +16,7 @@ import { CanvasWorkbench } from '../orchestration/CanvasWorkbench';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
 import {
-    DescriptionField, GuardrailsFields, RunInputField, SchedulesList, SettingsSection, WorkflowSettingsPanel,
+    DescriptionField, GuardrailsFields, SchedulesList, SettingsSection, WorkflowSettingsPanel,
 } from '../orchestration/WorkflowSettings';
 import { humanAnswer, initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
@@ -1776,9 +1776,6 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                 <SettingsSection title="Description">
                                     <DescriptionField draft={draft} onChange={setDraft} />
                                 </SettingsSection>
-                                <SettingsSection title="Run input">
-                                    <RunInputField value={runInput} onChange={setRunInput} onRun={startRun} />
-                                </SettingsSection>
                                 <SettingsSection title="Schedules">
                                     <SchedulesList schedules={schedules} workflowId={draft.id} href="/schedules" />
                                 </SettingsSection>
@@ -1826,6 +1823,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                             stepErrors: runStepErrors,
                             onRun: startRun,
                             onStop: cancelRun,
+                            input: { value: runInput, onChange: setRunInput },
                         }}
                         runStrip={
                             <RunStrip

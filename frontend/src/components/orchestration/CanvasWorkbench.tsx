@@ -88,6 +88,8 @@ export interface CanvasWorkbenchProps {
         stepErrors?: Record<string, string>;
         onRun: () => void;
         onStop: () => void;
+        /** The run's input, behind Run now's chevron. */
+        input?: { value: string; onChange: (value: string) => void };
     };
     /** The run strip's content, at the bottom left. */
     runStrip?: React.ReactNode;
@@ -413,6 +415,7 @@ function Workbench({
                 onRun={run.onRun}
                 onStop={run.onStop}
                 blocked={validation.errorCount}
+                runInput={run.input}
                 menu={menu}
                 onOpenSettings={openSettings}
                 settingsOpen={view === 'settings'}

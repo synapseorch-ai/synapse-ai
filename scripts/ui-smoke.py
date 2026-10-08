@@ -2475,9 +2475,9 @@ async def check_canvasfold(browser) -> str:
 async def check_workflowsettings(browser) -> str:
     """Workflow settings hold every field the panels under the old canvas had (D204).
 
-    Description, the run's input, State schema and Guardrails (Max Total Turns,
-    Timeout, strict state types, Result, Score runs against) moved into the
-    card; each still saves.
+    Description, State schema and Guardrails (Max Total Turns, Timeout, strict
+    state types, Result, Score runs against) moved into the card; each still
+    saves. The run's input is Run now's (runinput).
     """
     oid = f"orch_uismoke_wfs_{int(time.time())}"
     api("/api/orchestrations", "POST", laid_out_orchestration(oid, 2))
@@ -2494,7 +2494,7 @@ async def check_workflowsettings(browser) -> str:
         await page.get_by_role("button", name="Workflow settings", exact=True).click()
         await asyncio.sleep(0.6)
         panel = page.get_by_role("region", name="Workflow settings")
-        for role, name in [("textbox", "Orchestration description"), ("textbox", "Initial input for this run"),
+        for role, name in [("textbox", "Orchestration description"),
                            ("spinbutton", "Max Total Turns"), ("spinbutton", "Timeout (minutes)"),
                            ("checkbox", "Stop on a state type mismatch"), ("combobox", "Result"),
                            ("combobox", "Score runs against"), ("button", "Add key")]:
@@ -2517,7 +2517,46 @@ async def check_workflowsettings(browser) -> str:
         drop_fixture(oid)
     if problems:
         raise AssertionError("; ".join(problems))
-    return "Workflow settings hold the description, run input, state and every guardrail, and they save"
+    return "Workflow settings hold the description, state and every guardrail, and they save"
+
+
+@check
+async def check_runinput(browser) -> str:
+    """Run now's chevron holds the run's input, and Run now runs with or without one (Naveen, M3a).
+
+    The input sat under the old canvas, on the Run Log tab; on the open canvas it
+    is behind Run now's chevron, and Run now sends it as it stands. Read from the
+    run's own POST, not the screen.
+    """
+    oid = f"orch_uismoke_input_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, "ui-smoke run input"))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    sent: list[str | None] = []
+    page.on("request", lambda r: sent.append(json.loads(r.post_data or "{}").get("message"))
+            if r.method == "POST" and r.url.endswith(f"/api/orchestrations/{oid}/run") else None)
+    problems = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Run now", exact=True).click()
+        await asyncio.sleep(2.5)
+        await page.get_by_role("button", name="Run with input").click()
+        field = page.get_by_role("textbox", name="Initial input for this run")
+        await field.fill("hello from ui-smoke")
+        await field.press("Enter")
+        await asyncio.sleep(2.5)
+        if sent[:2] != ["", "hello from ui-smoke"]:
+            problems.append(f"the runs sent {sent!r}, not an empty input and then the typed one")
+        if await field.count():
+            problems.append("the input stayed open after Enter ran")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "Run now runs with no input, and the chevron's input is what the next run gets"
 
 
 @check

@@ -4,9 +4,11 @@
  * state on the left; what to check, Change with AI, Run now or Stop, help and
  * ⋯ on the right. Two floating groups over the canvas, not a header.
  */
-import { AlertTriangle, ArrowLeft, MoreHorizontal, Play, Save, SlidersHorizontal, Square } from 'lucide-react';
+import { useState } from 'react';
+import * as RPopover from '@radix-ui/react-popover';
+import { AlertTriangle, ArrowLeft, ChevronDown, MoreHorizontal, Play, Save, SlidersHorizontal, Square } from 'lucide-react';
 import {
-    Button, Hint, Mark, Menu, MenuItem, MenuLabel, MenuSeparator, PageHeaderSlot, Spinner, buttonStyles,
+    Button, Hint, Input, Mark, Menu, MenuItem, MenuLabel, MenuSeparator, PageHeaderSlot, Spinner, buttonStyles,
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase } from './types';
@@ -19,7 +21,7 @@ export function TopBar({
     dirty, saving, onSave,
     issues, onIssue,
     onChangeWithAI,
-    phase, onRun, onStop, blocked,
+    phase, onRun, onStop, blocked, runInput,
     menu, onOpenSettings, settingsOpen,
     phone, compact, insetRight,
 }: {
@@ -38,6 +40,8 @@ export function TopBar({
     onStop: () => void;
     /** Errors that stop a run: Run now looks disabled and says how many. */
     blocked: number;
+    /** The run's input, behind Run now's chevron. Run now sends it as it stands, empty or not. */
+    runInput?: { value: string; onChange: (value: string) => void };
     menu: WorkbenchMenuItem[];
     onOpenSettings: () => void;
     settingsOpen: boolean;
@@ -174,19 +178,12 @@ export function TopBar({
                         <Square className="size-3.5" aria-hidden /> Stop
                     </Button>
                 ) : (
-                    <Hint content={blocked > 0 ? `Fix ${blocked} problem${blocked === 1 ? '' : 's'} first` : null}>
-                        <Button
-                            size="sm"
-                            variant="primary"
-                            onClick={onRun}
-                            aria-disabled={blocked > 0 || undefined}
-                            // One name at every width: a phone shows the shorter word.
-                            aria-label={phone ? 'Run now' : undefined}
-                            className={blocked > 0 ? 'opacity-50' : undefined}
-                        >
-                            <Play className="size-3.5" aria-hidden /> {phone ? 'Run' : 'Run now'}
-                        </Button>
-                    </Hint>
+                    <RunNow
+                        onRun={onRun}
+                        blocked={blocked}
+                        phone={phone}
+                        runInput={runInput}
+                    />
                 )}
                 <PageHeaderSlot />
                 <Menu
@@ -227,4 +224,91 @@ function MenuEntry({ item }: { item: WorkbenchMenuItem }) {
 /** The mark at a menu icon's size; below 20 px it takes its two-dot form, as everywhere (D213). */
 function MarkIcon({ className }: { className?: string }) {
     return <Mark size={16} className={cn('text-accent', className)} />;
+}
+
+/**
+ * Run now, split (Naveen, M3a-1 review): the button runs at once with the input
+ * as it stands — none is fine — and the chevron beside it opens the input, with
+ * a Run of its own. The input sat under the old canvas, on the Run Log tab.
+ */
+function RunNow({ onRun, blocked, phone, runInput }: {
+    onRun: () => void;
+    blocked: number;
+    phone: boolean;
+    runInput?: { value: string; onChange: (value: string) => void };
+}) {
+    const [open, setOpen] = useState(false);
+    const text = runInput?.value.trim() ?? '';
+    const hint = blocked > 0
+        ? `Fix ${blocked} problem${blocked === 1 ? '' : 's'} first`
+        : text ? `Runs with “${text.length > 60 ? `${text.slice(0, 60)}…` : text}”` : null;
+    const run = () => {
+        setOpen(false);
+        onRun();
+    };
+    return (
+        <div className="flex items-center">
+            <Hint content={hint}>
+                <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={onRun}
+                    aria-disabled={blocked > 0 || undefined}
+                    // One name at every width: a phone shows the shorter word.
+                    aria-label={phone ? 'Run now' : undefined}
+                    className={cn(runInput && 'rounded-r-none', blocked > 0 && 'opacity-50')}
+                >
+                    <Play className="size-3.5" aria-hidden /> {phone ? 'Run' : 'Run now'}
+                </Button>
+            </Hint>
+            {runInput && (
+                <RPopover.Root open={open} onOpenChange={setOpen}>
+                    <RPopover.Trigger asChild>
+                        <button
+                            type="button"
+                            aria-label="Run with input"
+                            title="Run with input"
+                            className={cn(
+                                buttonStyles({ variant: 'primary', size: 'sm', iconOnly: true }),
+                                'w-6 rounded-l-none border-l border-accent-fg/25',
+                                blocked > 0 && 'opacity-50',
+                            )}
+                        >
+                            <ChevronDown className="size-3.5" aria-hidden />
+                        </button>
+                    </RPopover.Trigger>
+                    <RPopover.Portal>
+                        <RPopover.Content
+                            align="end"
+                            sideOffset={8}
+                            collisionPadding={8}
+                            className="nokey z-50 w-80 max-w-[calc(100vw-16px)] rounded-lg border border-border-strong bg-surface p-3 shadow-elevated"
+                        >
+                            <label htmlFor="workbench-run-input" className="mb-1.5 block text-sm font-medium text-text">
+                                Input for this run
+                            </label>
+                            <Input
+                                id="workbench-run-input"
+                                aria-label="Initial input for this run"
+                                size="sm"
+                                autoFocus
+                                value={runInput.value}
+                                onChange={(e) => runInput.onChange(e.target.value)}
+                                placeholder="Initial input for the orchestration..."
+                                onKeyDown={(e) => { if (e.key === 'Enter') run(); }}
+                            />
+                            <p className="mt-1.5 text-xs leading-relaxed text-text-faint">
+                                Run now sends it too. It is not saved with the workflow.
+                            </p>
+                            <div className="mt-3 flex justify-end">
+                                <Button size="sm" variant="primary" onClick={run} aria-disabled={blocked > 0 || undefined}>
+                                    <Play className="size-3.5" aria-hidden /> Run
+                                </Button>
+                            </div>
+                        </RPopover.Content>
+                    </RPopover.Portal>
+                </RPopover.Root>
+            )}
+        </div>
+    );
 }
