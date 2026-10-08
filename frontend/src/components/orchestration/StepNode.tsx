@@ -7,7 +7,9 @@ import { STEP_TYPE_META } from '@/types/orchestration';
 import type { StepConfig, StepIssue, StepType } from '@/types/orchestration';
 import { cn } from '@/lib/cn';
 import { reasonHeadline } from '@/lib/runErrors';
+import { Spinner } from '@/components/ui';
 import { StepIcon } from '../run/StepIcon';
+import { roleOf } from './roles';
 
 /**
  * A connection's handle and its word. Every handle is the same quiet grey: the
@@ -93,22 +95,33 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const runError: string | undefined = runStatus === 'failed' ? data.runError : undefined;
     const agentName: string | undefined = data.agentName;
     const issues: StepIssue[] | undefined = data.issues;
+    // The open canvas shows how the run stands in words on the step too (M3a-2).
+    const runDetail = data.runDetail === true;
     const meta = STEP_TYPE_META[step.type as StepType];
     if (!meta) return null;
+    const role = roleOf(step.type);
 
     // Run state paints the frame; selection paints the ring. Both are tokens,
-    // so the card is legible on either theme.
+    // so the card is legible on either theme. A working step glows by who does
+    // the work (D211): cyan for a model, a neutral ring for logic — a Parallel
+    // or a Loop stays working through its whole body — and amber for a person.
+    // A step waiting on a person also pulses (the overlay below), unless the
+    // reader asked for less motion. Nothing on the frame itself animates.
     const statusFrame: Record<string, string> = {
         pending: 'border-border-strong',
-        running: 'border-accent animate-pulse',
+        running: role === 'model' ? 'border-machine' : role === 'person' ? 'border-person' : 'border-text-muted',
         paused: 'border-person',
         completed: 'border-success',
         failed: 'border-danger',
     };
     // Kept apart from the frame so `cn` lets a status glow win over the resting shadow.
     const statusShadow: Record<string, string> = {
-        running: 'shadow-[0_0_0_3px_var(--ring)]',
-        paused: 'shadow-[0_0_12px_-2px_var(--person)]',
+        running: role === 'model'
+            ? 'shadow-[0_0_0_3px_color-mix(in_oklab,var(--machine)_24%,transparent),0_0_24px_-4px_var(--machine)]'
+            : role === 'person'
+                ? 'shadow-[0_0_0_3px_color-mix(in_oklab,var(--person)_30%,transparent)]'
+                : 'shadow-[0_0_0_3px_color-mix(in_oklab,var(--text-muted)_22%,transparent)]',
+        paused: 'shadow-[0_0_0_3px_color-mix(in_oklab,var(--person)_30%,transparent)]',
     };
     const frame = runStatus
         ? statusFrame[runStatus] || 'border-border-strong'
@@ -145,6 +158,13 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             )}
             style={{ minHeight }}
         >
+            {/* Waiting on a person: an amber ring that breathes, and holds still with reduced motion. */}
+            {runStatus === 'paused' && (
+                <span
+                    aria-hidden
+                    className="pointer-events-none absolute -inset-[6px] rounded-[16px] border-2 border-person/70 motion-safe:animate-pulse"
+                />
+            )}
             {/* Issue badge — errors take precedence over warnings */}
             {(errorCount > 0 || warningCount > 0) && (
                 <span
@@ -249,6 +269,27 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             ) : (
                 <Handle type="source" position={Position.Right} className="!size-2.5 !border-2 !border-[var(--bg)] !bg-text-faint" />
             )}
+            {/* How the run stands, on the open canvas: a pill on the bottom edge, placed
+                over the border so the step's size — and its handles — never move. */}
+            {runDetail && (runStatus === 'running' || runStatus === 'paused') && (
+                <span
+                    data-run-pill={runStatus}
+                    className="pointer-events-none absolute -bottom-[9px] right-3 inline-flex h-[18px] items-center gap-1 rounded-full border border-border bg-surface px-1.5 text-[10.5px] font-medium leading-none text-text-muted"
+                >
+                    {runStatus === 'running' ? (
+                        <>
+                            <Spinner size={11} className={role === 'model' ? 'text-machine' : 'text-text-muted'} />
+                            Working
+                        </>
+                    ) : (
+                        <>
+                            <span className="size-1.5 rounded-full bg-person" aria-hidden />
+                            <span className="text-person-ink">Needs you</span>
+                        </>
+                    )}
+                </span>
+            )}
+
             {/* Where a route to this step goes at its Max iterations (F248), when it names one. */}
             {step.type !== 'end' && step.on_exhausted_step_id && (
                 <Handle

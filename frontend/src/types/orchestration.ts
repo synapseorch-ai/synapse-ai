@@ -212,6 +212,8 @@ export interface StepNodeData {
     runStatus?: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
     /** Why the step failed in the run on screen, in its own words (F195). */
     runError?: string;
+    /** The open canvas: the step says in words how the run stands (Working, Needs you), not only in its frame. */
+    runDetail?: boolean;
     issues?: StepIssue[];
     [key: string]: unknown;
 }

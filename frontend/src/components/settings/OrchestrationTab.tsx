@@ -72,6 +72,9 @@ const isCancel = (event: { type?: string; error?: unknown }) =>
 
 const CANCELLED_LINE = '[Cancelled]';
 
+/** How long a reopened run's journal stays quiet before its replay counts as caught up (M3a-2). */
+const REPLAY_QUIET_MS = 300;
+
 /** The log with nothing going on: what the model was doing has stopped. */
 const settleActivity = (log: RunLogState): RunLogState => (log.liveActivity === null ? log : { ...log, liveActivity: null });
 
@@ -220,6 +223,20 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // Why each failed step failed, in its own words (F195): shown on its card and in the run log.
     const [runStepErrors, setRunStepErrors] = useState<Record<string, string>>({});
     const [runId, setRunId] = useState<string | null>(null);
+    // The live run on the canvas (M3a-2): the steps in the order they started
+    // (each start sends a signal down the connection it came along), which run
+    // they belong to, and whether a reopened run's journal is still catching up —
+    // its history lights in place and nothing travels until it has.
+    const trailRef = useRef<string[]>([]);
+    const [trail, setTrail] = useState<readonly string[]>([]);
+    const [runKey, setRunKey] = useState(0);
+    const [replaying, setReplaying] = useState(false);
+    const startTrail = useCallback((replay: boolean) => {
+        trailRef.current = [];
+        setTrail(trailRef.current);
+        setRunKey(k => k + 1);
+        setReplaying(replay);
+    }, []);
     const [runInput, setRunInput] = useState('');
     // The run log, the plan and what the model is doing right now: the run
     // screens' `RunLogState`, folded by their `applyRunEvent` (M3a-2).
@@ -388,6 +405,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         askedStepRef.current = null;
         historyErrorsRef.current = {};
         setRunStepErrors({});
+        startTrail(true);
 
         // Restore step statuses + human-input state from the persisted checkpoint
         // so the canvas is meaningful before (and in case of a pre-journal run,
@@ -449,13 +467,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         historyErrorsRef.current = {};
         setRunLog(emptyRunLog());
         setHumanPrompt(null);
+        startTrail(false);
         if (id) {
             const orch = orchestrations.find(o => o.id === id);
             replaceDraft(orch ? { ...orch } : null, { saved: true });
         } else {
             replaceDraft(null);
         }
-    }, [orchestrations, replaceDraft]);
+    }, [orchestrations, replaceDraft, startTrail]);
 
     // --- Back to the landing dashboard ---
     // Detaches this browser from the run's event stream; the run itself keeps
@@ -735,14 +754,24 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     // Full replay rebuilds the log from scratch — identical to
                     // having watched the run live, with no duplicated entries.
                     setRunLog(emptyRunLog());
+                    // And the canvas's trail: the replayed starts light in place.
+                    trailRef.current = [];
+                    setTrail(trailRef.current);
+                    setReplaying(true);
                 }
                 attempts = 0;
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
+                // The journal replays in a burst, then goes quiet until the run
+                // moves: a quiet moment is when the replay has caught up and the
+                // canvas's signals may travel again.
+                let quiet = setTimeout(() => setReplaying(false), REPLAY_QUIET_MS);
                 while (true) {
                     const { done, value } = await readWithStallTimeout(reader, controller);
                     if (done) break;
+                    clearTimeout(quiet);
+                    quiet = setTimeout(() => setReplaying(false), REPLAY_QUIET_MS);
                     lastChunkAtRef.current = Date.now();
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
@@ -944,6 +973,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         draft.steps.forEach(s => { statuses[s.id] = 'pending'; });
         setRunStepStatuses(statuses);
         askedStepRef.current = null;
+        startTrail(false);
         setRunStepErrors({});
         historyErrorsRef.current = {};
         setRunStatus('running');
@@ -1001,6 +1031,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     // it (F190). Live, on a replay, and after a refused answer alike.
                     const asked = askedStepRef.current;
                     if (asked && asked !== data.orch_step_id) askedStepRef.current = null;
+                    // A new start on the canvas's trail; the step that asked picking up
+                    // again after its answer (a tool call's approval) is not one.
+                    if (asked !== data.orch_step_id) {
+                        trailRef.current = [...trailRef.current, data.orch_step_id];
+                        setTrail(trailRef.current);
+                    }
                     setRunStepStatuses(prev => {
                         const next: Record<string, RunStepStatus> = { ...prev, [data.orch_step_id]: 'running' };
                         if (asked && asked !== data.orch_step_id && (prev[asked] === 'paused' || prev[asked] === 'running')) {
@@ -1020,7 +1056,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
             }
 
             case 'step_complete':
-                setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'completed' }));
+                // A step in a Parallel branch or a Loop body that failed is still
+                // followed by its step_complete: it stays failed, not green.
+                setRunStepStatuses(prev => (prev[data.orch_step_id] === 'failed'
+                    ? prev
+                    : { ...prev, [data.orch_step_id]: 'completed' }));
                 break;
 
             case 'step_error':
@@ -1553,6 +1593,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                             onRun: startRun,
                             onStop: cancelRun,
                             input: { value: runInput, onChange: setRunInput },
+                            runKey,
+                            trail,
+                            replaying,
                         }}
                         runStrip={
                             <RunStrip

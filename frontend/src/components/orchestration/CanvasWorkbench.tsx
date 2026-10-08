@@ -11,6 +11,9 @@
  * - a toolbar over the selected step; a dock (Add step, Tidy up, Undo, Redo);
  *   zoom and Fit at the bottom right, with a minimap that is off until asked for
  * - the run strip at the bottom left, opening the run's log above it
+ * - the live run on the graph (D211, M3a-2): the working step glows by who does
+ *   the work, a step waiting on a person pulses amber, and a signal travels the
+ *   connection each step came along (`workbench/signals.ts`, `SignalEdge`)
  *
  * Built once, in the synced folder: OSS's editor uses it now and cloud's in
  * M3b. The workbench owns the layout and the canvas's behaviour; each product
@@ -46,6 +49,7 @@ import {
 } from './workbench/geometry';
 import { useElementBox, useMediaQuery, useReducedMotion } from './workbench/hooks';
 import { SetupCard } from './workbench/SetupCard';
+import { signalEdgeTypes, useRunEdges } from './workbench/signals';
 import { stepCommandGroups } from './workbench/stepCommands';
 import { FLOAT, TopBar } from './workbench/TopBar';
 import type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase } from './workbench/types';
@@ -90,6 +94,16 @@ export interface CanvasWorkbenchProps {
         onStop: () => void;
         /** The run's input, behind Run now's chevron. */
         input?: { value: string; onChange: (value: string) => void };
+        /** Which run is on the canvas: a new value starts its signals afresh (a new run, a reopened one). */
+        runKey?: string | number;
+        /**
+         * The step ids in the order they started this run, one entry per top-level
+         * `step_start` (a paused step picking up again is not a new start). Each start
+         * sends a signal down the connection it came along.
+         */
+        trail?: readonly string[];
+        /** A reopened run's journal is still catching up: its history lights in place, nothing travels. */
+        replaying?: boolean;
     };
     /** The run strip's content, at the bottom left. */
     runStrip?: React.ReactNode;
@@ -193,9 +207,20 @@ function Workbench({
         onUpdateOrchestration: onChange,
         runStepStatuses: run.stepStatuses,
         runStepErrors: run.stepErrors,
+        runDetail: true,
         flags,
         fit,
         wrapperRef: flowRef,
+    });
+
+    // The live run on the connections: lit while the run is going or waiting,
+    // signals travelling once it is past any replay and motion is allowed.
+    const runLive = run.phase === 'running' || run.phase === 'paused';
+    const edges = useRunEdges(graph.edges, {
+        trail: run.trail,
+        live: runLive,
+        travel: runLive && !run.replaying && !reduced,
+        runKey: run.runKey,
     });
 
     // The selected step slides into view if the card or the bar would cover it.
@@ -340,7 +365,7 @@ function Workbench({
             >
                 <ReactFlow
                     nodes={graph.nodes}
-                    edges={graph.edges}
+                    edges={edges}
                     onNodesChange={graph.onNodesChange}
                     onEdgesChange={graph.onEdgesChange}
                     onConnect={graph.onConnect}
@@ -363,6 +388,7 @@ function Workbench({
                     nodesFocusable={flags.nodesFocusable}
                     edgesFocusable={flags.edgesFocusable}
                     nodeTypes={nodeTypes}
+                    edgeTypes={signalEdgeTypes}
                     zoomOnScroll={flags.zoomOnScroll}
                     preventScrolling={flags.preventScrolling}
                     panOnDrag={flags.panOnDrag}
