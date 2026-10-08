@@ -1297,7 +1297,7 @@ async def check_toolglobals(browser) -> str:
         await page.goto(f"{APP}/tools", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
         # The list beside the editor (M2f): a row opens its tool.
-        await page.locator(f'[data-tool-row="{GLOBALS_TOOL["name"]}"] > button').first.click()
+        await page.locator(f'[data-tool-row="{GLOBALS_TOOL["name"]}"] > button:first-child').first.click()
         await asyncio.sleep(1.5)
         # "(not set)" is appended on an instance that has no such variable.
         shown = await page.get_by_role("button", name=re.compile(r"^Remove UISMOKE_KEY")).count()
@@ -5756,7 +5756,7 @@ async def check_toolsopen(browser) -> str:
             if current != 1:
                 bad.append(f"{width}: {current} rows marked open")
             # Opening the second keeps the editor beside the list, with no question (nothing edited).
-            await page.locator('[data-tool-row="uismoke_beta"] > button').click()
+            await page.locator('[data-tool-row="uismoke_beta"] > button:first-child').click()
             try:
                 await page.get_by_role("heading", name=re.compile(r"Editing: uismoke_beta")).wait_for(timeout=5_000)
             except Exception:
@@ -7059,7 +7059,7 @@ async def _send_and_fail(page):
 
 
 async def _python_test(page):
-    await page.locator('[data-tool-row] > button', has_text="Smoke python tool").first.click()
+    await page.locator('[data-tool-row] > button:first-child', has_text="Smoke python tool").first.click()
     await page.get_by_role("button", name="Run", exact=True).click()
 
 
