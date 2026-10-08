@@ -331,8 +331,10 @@ function Workbench({
                     // xyflow blurs a step on Escape: put the focus back on it, where the
                     // keyboard was, now that its card has closed.
                     const node = (event.target as HTMLElement).closest?.('.react-flow__node');
+                    // It blurs in a frame of its own, and a focus in that same frame does
+                    // not hold, so this waits until just after it.
                     if (event.key === 'Escape' && node === event.target) {
-                        window.requestAnimationFrame(() => (node as HTMLElement).focus());
+                        window.requestAnimationFrame(() => window.setTimeout(() => (node as HTMLElement).focus(), 30));
                     }
                 }}
             >

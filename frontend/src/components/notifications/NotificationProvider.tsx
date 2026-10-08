@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { CheckCircle2, AlertCircle, LogIn, PauseCircle, X } from 'lucide-react';
 import { readWithStallTimeout } from '@/lib/sse';
 import { plainText } from '@/lib/plainText';
+import { useIsCanvasMode } from '@/components/ui';
 
 export type RunNotification = {
     id: number;
@@ -52,6 +53,7 @@ export const NOTIFICATION_EVENT = 'synapse-notification';
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
     const router = useRouter();
+    const canvas = useIsCanvasMode();
     const [notifications, setNotifications] = useState<RunNotification[]>([]);
     const [seenId, setSeenId] = useState(0);
     const [toasts, setToasts] = useState<Toast[]>([]);
@@ -228,8 +230,13 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             {children}
             {/* Toast host — app-wide, stacked bottom-right, clearing the AI
                 builder's launcher below it. Two things cannot own that corner,
-                and the launcher is the one the user goes looking for. */}
-            <div className="fixed bottom-20 right-6 z-[9999] flex flex-col gap-2 items-end pointer-events-none">
+                and the launcher is the one the user goes looking for. On an open
+                canvas that corner and the bottom row are the canvas's (zoom, the
+                dock, the run strip with its Answer), so toasts come down from the
+                top, centred under its bar (M3a: on a phone a toast covered Answer). */}
+            <div className={canvas
+                ? 'fixed left-1/2 top-[104px] z-[9999] flex -translate-x-1/2 flex-col items-center gap-2 pointer-events-none md:top-[70px]'
+                : 'fixed bottom-20 right-6 z-[9999] flex flex-col gap-2 items-end pointer-events-none'}>
                 {signedOut && (
                     <div
                         role="status"
