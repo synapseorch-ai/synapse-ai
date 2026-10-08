@@ -4207,15 +4207,17 @@ async def check_agentmenu(browser) -> str:
             await page.keyboard.press("Enter")
             await asyncio.sleep(0.8)
             switched = await page.evaluate("() => window.__switches")
+            # The switcher is the composer's pill since M2c, so look in the whole page, past the pill itself.
             hidden_rows = await page.evaluate(
-                "() => [...document.querySelectorAll('header button')]"
+                "() => [...document.querySelectorAll('main button')]"
+                ".filter(b => !/^agents/i.test(b.getAttribute('aria-label') || ''))"
                 ".filter(b => /^(Alpha|Beta)/.test(b.innerText.trim())).length")
         finally:
             await ctx.close()
         if switched[-1:] != [{"agent_id": "agent_beta"}]:
             raise AssertionError(f"at {width[0]}px choosing Beta sent {switched}")
         if hidden_rows:
-            raise AssertionError(f"at {width[0]}px the closed switcher leaves {hidden_rows} agent rows in the header")
+            raise AssertionError(f"at {width[0]}px the closed switcher leaves {hidden_rows} agent rows on the page")
     return "a named button at both widths; Enter opens it, Enter on an agent switches to it"
 
 
@@ -4275,12 +4277,12 @@ async def check_newchatrace(browser) -> str:
 
 LAYOUT_WIDTHS = """() => {
   const pane = document.querySelector('main .overflow-y-auto');
-  const label = [...document.querySelectorAll('main span')].find((s) => /tracking-\\[0\\.2em\\]/.test(s.className));
-  const tag = [...document.querySelectorAll('main div')].find((d) => /-top-3/.test(d.className) && /tracking-wider/.test(d.className));
+  const label = document.querySelector('main [data-agent-label]');
+  const tag = document.querySelector('main [data-answer-name]');
   const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return {left: r.left, right: r.right, height: r.height, text: el.textContent.slice(0, 30)}; };
   return {
     pane: pane ? {scroll: pane.scrollWidth, client: pane.clientWidth, right: pane.getBoundingClientRect().right} : null,
-    label: box(label), tag: box(tag), bubble: box(tag && tag.parentElement), vw: innerWidth,
+    label: box(label), tag: box(tag), bubble: box(tag && tag.closest('[data-answer]')), vw: innerWidth,
   };
 }"""
 
@@ -6203,7 +6205,8 @@ async def check_workflowheader(browser) -> str:
     try:
         header = ""
         for _ in range(30):
-            header = await page.evaluate("() => document.querySelector('main header, header')?.innerText || ''")
+            # The composer's model slot since M2c (it was the page header's right side).
+            header = await page.evaluate("() => document.querySelector('[data-composer-model]')?.innerText || ''")
             if re.search(r"workflow\s*·\s*3 steps", header, re.I):
                 break
             await asyncio.sleep(0.2)
@@ -8570,3 +8573,71 @@ async def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))
+
+
+# ── M2c: one composer for chat and the builder; the plan as a card ───────────
+
+COMPOSER_PROBE = """() => {
+  const form = document.querySelector('main form');
+  if (!form) return null;
+  const send = form.querySelector('button[type="submit"]');
+  const stop = [...form.querySelectorAll('button')].find((b) => b.getAttribute('aria-label') === 'Stop the agent');
+  const hint = [...document.querySelectorAll('main span')].find((s) => s.textContent === 'Enter to send · Shift+Enter for a new line');
+  const r = (el) => { if (!el) return null; const b = el.getBoundingClientRect(); return {x: Math.round(b.left), y: Math.round(b.top), w: Math.round(b.width)}; };
+  return {
+    pill: !!form.querySelector('button[aria-label^="Agents"]'),
+    attach: !!form.querySelector('button[aria-label="Attach images"]'),
+    textareas: form.querySelectorAll('textarea').length,
+    send: send ? {name: send.getAttribute('aria-label'), at: r(send)} : null,
+    stop: stop ? {at: r(stop)} : null,
+    hint: hint ? getComputedStyle(hint).visibility : null,
+    overflow: form.scrollWidth > form.clientWidth + 1,
+  };
+}"""
+
+
+@check
+async def check_composer(browser) -> str:
+    """Chat's composer is one field (M2c): the agent's pill, Attach, the model and Send inside one box, at 1440 and
+    400 px. Shift+Enter is a new line and Enter sends; the keys' hint goes after the first message; while the turn
+    streams Stop stands where Send was; the answer's tools show as a chip without a reload."""
+    bad: list[str] = []
+    for width in (WIDE, PHONE):
+        ctx, page = await _chat_page(browser, f"uismoke-composer-{width[0]}", width=width)
+        try:
+            before = await page.evaluate(COMPOSER_PROBE)
+            if not before or not (before["pill"] and before["attach"] and before["textareas"] == 1 and before["send"]):
+                bad.append(f"{width[0]}px: the field holds {before}")
+                continue
+            if before["send"]["name"] != "Send" or before["overflow"]:
+                bad.append(f"{width[0]}px: Send is {before['send']}, overflow {before['overflow']}")
+            if width == WIDE and before["hint"] != "visible":
+                bad.append(f"the hint is {before['hint']} before the first message")
+            box = page.locator("main textarea").last
+            await box.fill("first line")
+            await box.press("Shift+Enter")
+            await box.type("second line")
+            if "\n" not in await box.input_value() or [c for c in await page.evaluate("() => window.__calls") if "/api/chat/stream" in c["url"]]:
+                bad.append(f"{width[0]}px: Shift+Enter did not make a new line, or it sent")
+            await box.press("Enter")
+            await _stream_open(page, "post")
+            await asyncio.sleep(0.8)  # the hint fades over 500 ms
+            during = await page.evaluate(COMPOSER_PROBE)
+            if not during["stop"] or abs(during["stop"]["at"]["x"] - before["send"]["at"]["x"]) > 2:
+                bad.append(f"{width[0]}px: Stop is {during['stop']}, Send was at {before['send']['at']}")
+            if width == WIDE and during["hint"] != "hidden":
+                bad.append(f"the hint is still {during['hint']} after the first message")
+            frames = [
+                _frame({"type": "tool_execution", "tool_name": "web_search", "args": {"q": "uismoke"}}, "c-1"),
+                _frame({"type": "tool_result", "tool_name": "web_search", "preview": "two results"}, "c-2"),
+                _frame({"type": "response", "content": "Found it.", "intent": "chat"}, "c-3"),
+                _frame({"type": "done"}, "c-4"),
+            ]
+            await page.evaluate("(fs) => fs.forEach((f) => window.__streams.post.push(f))", frames)
+            if not await _on_screen(page, "Tools used · 1"):
+                bad.append(f"{width[0]}px: no tool chip under a live answer")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "one field at 1440 and 400; Shift+Enter a new line, Enter sends; Stop in Send's place; the hint goes; a live tool chip"

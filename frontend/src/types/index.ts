@@ -76,6 +76,10 @@ export interface Message {
     // B1b), and the labels it used that no search in its turn produced.
     citations?: KnowledgeCitation[];
     unresolvedCitations?: string[];
+    // The tools the answer's turn called, gathered from its live events, so a
+    // turn shows its tool chip before a reload as well as after (M2c). A
+    // reopened turn has the same list, saved, in `data.calls`.
+    toolCalls?: { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; reason?: string }[];
 }
 
 export interface SystemStatus {

@@ -32,7 +32,7 @@ export function ImageThumbnails({ images }: { images: string[] }) {
               <img
                 src={img}
                 alt=""
-                className="h-[4.5rem] w-[4.5rem] object-cover border border-zinc-700/60 rounded-xl hover:border-zinc-400 hover:scale-[1.03] hover:shadow-lg transition-all"
+                className="h-[4.5rem] w-[4.5rem] rounded-xl border border-border object-cover transition-all hover:scale-[1.03] hover:border-border-strong hover:shadow-elevated"
               />
             </button>
           </div>

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, useId } from 'react';
-import { Send, Bot, User, Terminal, Plus, Server, ChevronDown, ChevronRight, Zap, GitBranch, CheckCircle2, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Square, Pencil, RotateCcw, Search} from 'lucide-react';
+import { Bot, User, Plus, Server, ChevronDown, ChevronRight, GitBranch, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Pencil, RotateCcw, Search, Square } from 'lucide-react';
 import * as RPopover from '@radix-ui/react-popover';
 import { Command } from 'cmdk';
 
@@ -12,7 +12,9 @@ import { HumanStepAnswer } from '@/components/HumanStepAnswer';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
-import { Markdown, PageFrameHeader, Spinner } from '@/components/ui';
+import { Button, IconButton, Markdown, PageFrameHeader } from '@/components/ui';
+import { AgentAvatar, AgentTurn, Composer, composerPillClass, PillAvatar, RunChip, UserBubble } from '@/components/assistant';
+import { StepIcon } from '@/components/run';
 
 import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
@@ -90,27 +92,29 @@ function ThoughtCollapsible({ thoughts, stepName }: { thoughts: string[]; stepNa
   if (parsedThoughts.length === 0) return null;
 
   return (
-    <div className="mt-2 border border-zinc-700 rounded-sm overflow-hidden w-0 min-w-full">
+    <div className="w-0 min-w-full overflow-hidden rounded-lg border border-border">
       <button
+        type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-mono text-zinc-300 hover:text-zinc-100 hover:bg-zinc-900/60 bg-zinc-900/30 transition-colors"
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 bg-surface px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text"
       >
-        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span className="uppercase tracking-wider">
+        {open ? <ChevronDown className="h-3 w-3" aria-hidden /> : <ChevronRight className="h-3 w-3" aria-hidden />}
+        <span>
           💭 Reasoning {stepName ? `· ${stepName}` : ''} ({parsedThoughts.length} turn{parsedThoughts.length > 1 ? 's' : ''})
         </span>
       </button>
       {open && (
-        <div className="border-t border-zinc-800 bg-zinc-950/60 divide-y divide-zinc-900">
+        <div className="divide-y divide-border border-t border-border bg-surface-2">
           {parsedThoughts.map((entry, i) => (
-            <div key={i} className="px-3 py-2 text-[12px] font-mono leading-5">
+            <div key={i} className="px-3 py-2 text-[13px] leading-6">
               {parsedThoughts.length > 1 && (
-                <span className="text-text-faint text-[10px] mr-2">Turn {i + 1}</span>
+                <span className="mr-2 text-2xs text-text-faint">Turn {i + 1}</span>
               )}
               {entry.type === 'tool_call' ? (
-                <span className="text-text-faint">→ Called: {entry.toolName}</span>
+                <span className="text-text-faint">→ Called: <span className="font-code" translate="no">{entry.toolName}</span></span>
               ) : (
-                <span className="text-zinc-400 whitespace-pre-wrap break-words">{entry.text}</span>
+                <span className="whitespace-pre-wrap break-words text-text-muted">{entry.text}</span>
               )}
             </div>
           ))}
@@ -128,25 +132,27 @@ function ReasoningCollapsible({ reasoning, stepName }: { reasoning: string[]; st
   const blocks = reasoning.map(r => r.trim()).filter(Boolean);
   if (blocks.length === 0) return null;
   return (
-    <div className="mt-2 border border-indigo-900/40 rounded-sm overflow-hidden w-0 min-w-full">
+    <div className="w-0 min-w-full overflow-hidden rounded-lg border border-border">
       <button
+        type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-mono text-indigo-300 hover:text-indigo-100 hover:bg-indigo-950/40 bg-indigo-950/20 transition-colors"
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 bg-surface px-3 py-1.5 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text"
       >
-        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <Brain className="h-3 w-3" />
-        <span className="uppercase tracking-wider">
+        {open ? <ChevronDown className="h-3 w-3" aria-hidden /> : <ChevronRight className="h-3 w-3" aria-hidden />}
+        <Brain className="h-3 w-3 text-machine" aria-hidden />
+        <span>
           Thinking {stepName ? `· ${stepName}` : ''} ({blocks.length} turn{blocks.length > 1 ? 's' : ''})
         </span>
       </button>
       {open && (
-        <div className="border-t border-indigo-900/30 bg-indigo-950/10 divide-y divide-indigo-900/20">
+        <div className="divide-y divide-border border-t border-border bg-surface-2">
           {blocks.map((block, i) => (
-            <div key={i} className="px-3 py-2 text-[12px] font-mono italic leading-5">
+            <div key={i} className="px-3 py-2 text-[13px] italic leading-6">
               {blocks.length > 1 && (
-                <span className="text-text-faint text-[10px] not-italic mr-2">Turn {i + 1}</span>
+                <span className="mr-2 text-2xs not-italic text-text-faint">Turn {i + 1}</span>
               )}
-              <span className="text-indigo-300/80 whitespace-pre-wrap break-words">{block}</span>
+              <span className="whitespace-pre-wrap break-words text-text-muted">{block}</span>
             </div>
           ))}
         </div>
@@ -156,21 +162,18 @@ function ReasoningCollapsible({ reasoning, stepName }: { reasoning: string[]; st
 }
 
 // ─── Orchestration Step Divider ──────────────────────────────────────────────
+// The step's own icon on its role's ground (cyan a model, grey logic, amber a
+// person), as the canvas and the run page draw it.
 function StepDivider({ stepName, stepType }: { stepName: string; stepType?: string }) {
-  const typeIcon: Record<string, string> = {
-    agent: '🤖', evaluator: '🔀', parallel: '⚡', merge: '🔗',
-    loop: '🔄', human: '👤', transform: '⚙️', end: '🏁', retrieve: '🔎', ingest: '📥',
-  };
-  const icon = typeIcon[stepType || ''] ?? '▶';
   return (
-    <div className="flex items-center gap-3 my-1 px-1">
-      <div className="h-px flex-1 bg-gradient-to-r from-transparent to-zinc-800" />
-      <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-widest text-text-faint shrink-0">
-        <span>{icon}</span>
-        <span>{stepName}</span>
-        {stepType && <span className="text-text-faint">· {stepType}</span>}
+    <div className="my-1 flex items-center gap-3">
+      <div className="h-px flex-1 bg-border" />
+      <div className="flex shrink-0 items-center gap-2 text-xs text-text-faint">
+        {stepType ? <StepIcon type={stepType} className="size-5" /> : <span aria-hidden>▶</span>}
+        <span className="text-text-muted">{stepName}</span>
+        {stepType && <span>· {stepType}</span>}
       </div>
-      <div className="h-px flex-1 bg-gradient-to-l from-transparent to-zinc-800" />
+      <div className="h-px flex-1 bg-border" />
     </div>
   );
 }
@@ -178,16 +181,32 @@ function StepDivider({ stepName, stepType }: { stepName: string; stepType?: stri
 // ─── Orchestration Info Banner ───────────────────────────────────────────────
 function OrchBanner({ content, variant }: { content: string; variant: 'start' | 'complete' | 'error' }) {
   const styles: Record<string, string> = {
-    start: 'border-accent/40 bg-accent-subtle text-accent',
-    complete: 'border-emerald-900/50 bg-emerald-950/20 text-emerald-400',
-    error: 'border-red-900/50 bg-red-950/20 text-red-400',
+    start: 'border-border bg-machine-subtle text-accent-ink',
+    complete: 'border-border bg-surface text-text-muted',
+    error: 'border-danger/40 bg-danger-subtle text-danger',
   };
   return (
-    <div className="flex justify-center my-2">
-      <div className={cn('border px-5 py-1.5 text-[11px] font-mono uppercase tracking-widest rounded-sm', styles[variant])}>
+    <div className="my-2 flex justify-center">
+      <div className={cn('rounded-full border px-4 py-1 text-xs', styles[variant])}>
         {content}
       </div>
     </div>
+  );
+}
+
+/** Copy an answer: the button under it, named for a screen reader as well as the pointer. */
+function CopyAnswer({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+      aria-label="Copy response"
+      title="Copy response"
+      className="self-start rounded-md p-1 text-text-faint opacity-0 transition-opacity hover:bg-surface-2 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+    >
+      {copied ? <Check className="h-3.5 w-3.5" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
+    </button>
   );
 }
 
@@ -198,148 +217,102 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
 }) {
   // Fallback chain: content → data.content → data.result → empty
   const displayContent = msg.content || (msg.data as any)?.content || (msg.data as any)?.result || '';
-  const [copied, setCopied] = useState(false);
   const anchor = `src-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   return (
-    <div className="flex gap-3 max-w-4xl">
-      <div className="h-7 w-7 shrink-0 flex items-center justify-center border border-accent/40 bg-accent-subtle text-accent mt-1 rounded-sm">
-        <Bot className="h-3.5 w-3.5" />
-      </div>
-      <div className="flex flex-col flex-1 min-w-0 gap-2">
-        {msg.stepName && (
-          <div className="text-[10px] uppercase tracking-widest text-accent/70 font-mono">
-            {msg.stepName}
-          </div>
-        )}
-        {msg.reasoning && msg.reasoning.length > 0 && (
-          <ReasoningCollapsible reasoning={msg.reasoning} stepName={msg.stepName} />
-        )}
-        {(msg.data as { answerBelow?: boolean } | undefined)?.answerBelow ? (
-          // Its output is the workflow's answer, drawn once, below (U67).
-          <p className="text-[12px] text-text-faint">Its output is the answer below.</p>
-        ) : (
-        <div className="p-3 text-[14px] leading-7 border border-accent/40 bg-accent-subtle relative font-sans rounded-sm group">
-          <Markdown>{linkLabels(displayContent, msg.citations, anchor)}</Markdown>
-          <button
-            onClick={() => { navigator.clipboard.writeText(displayContent); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-accent-subtle hover:bg-accent/20 text-accent-ink hover:text-accent-hover"
-            title="Copy response"
-          >
-            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-          </button>
+    <AgentTurn avatar={<AgentAvatar className="bg-machine-subtle text-accent-ink"><Bot className="h-3.5 w-3.5" aria-hidden /></AgentAvatar>} className="group">
+      {msg.stepName && (
+        <div className="text-xs font-medium text-text-faint">{msg.stepName}</div>
+      )}
+      {msg.reasoning && msg.reasoning.length > 0 && (
+        <ReasoningCollapsible reasoning={msg.reasoning} stepName={msg.stepName} />
+      )}
+      {(msg.data as { answerBelow?: boolean } | undefined)?.answerBelow ? (
+        // Its output is the workflow's answer, drawn once, below (U67).
+        <p className="text-[13px] text-text-faint">Its output is the answer below.</p>
+      ) : (
+        <div className="flex min-w-0 flex-col gap-1 rounded-xl bg-surface-2 px-4 py-3">
+          <Markdown className="text-[15px] leading-relaxed">{linkLabels(displayContent, msg.citations, anchor)}</Markdown>
+          <CopyAnswer text={displayContent} />
         </div>
-        )}
-        <KnowledgeSources citations={msg.citations} unresolved={msg.unresolvedCitations} anchor={anchor} />
-        {/* Thoughts */}
-        {msg.thoughts && msg.thoughts.length > 0 && (
-          <ThoughtCollapsible thoughts={msg.thoughts} stepName={msg.stepName} />
-        )}
-        {/* Intent-based UI */}
-        <div className="w-full pl-1">
-          {msg.intent === 'collect_data' && msg.data && (
-            <CollectDataForm data={msg.data} onSubmit={onCollectDataSubmit} />
-          )}
-        </div>
-      </div>
-    </div>
+      )}
+      <KnowledgeSources citations={msg.citations} unresolved={msg.unresolvedCitations} anchor={anchor} />
+      {/* Thoughts */}
+      {msg.thoughts && msg.thoughts.length > 0 && (
+        <ThoughtCollapsible thoughts={msg.thoughts} stepName={msg.stepName} />
+      )}
+      {/* Intent-based UI */}
+      {msg.intent === 'collect_data' && msg.data && (
+        <CollectDataForm data={msg.data} onSubmit={onCollectDataSubmit} />
+      )}
+    </AgentTurn>
   );
 }
 
-// ─── Assistant Message Bubble ────────────────────────────────────────────────
+// ─── Assistant Message ───────────────────────────────────────────────────────
+// The answer as text beside the agent, with no box around it; what ran on the
+// way is a quiet chip under it, and its Sources are chips too (M2c).
 function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }) {
-  const [copied, setCopied] = useState(false);
   const anchor = `src-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const calls = (msg.toolCalls ?? (Array.isArray(msg.data?.calls) ? msg.data.calls : [])) as SavedCall[];
   return (
-    // The 288px floor keeps a short answer from looking like a chip, and only
-    // from `sm` up: a phone has less than that beside the avatar, so every
-    // answer ran 45px out of the pane at 360px.
-    <div className="flex flex-col self-start sm:min-w-72 max-w-full min-w-0 gap-2">
+    <div data-answer className="flex min-w-0 max-w-full flex-col gap-2.5">
+      {msg.intent && (
+        // One line, whatever the name: at three lines this tag covered the
+        // answer it labels (F217).
+        <div data-answer-name className="max-w-full truncate text-xs font-medium text-text-faint" title={agentName}>
+          {agentName}
+        </div>
+      )}
       {msg.reasoning && msg.reasoning.length > 0 && (
         <ReasoningCollapsible reasoning={msg.reasoning} />
       )}
-      <div className={cn(
-        "text-[15px] leading-7 border relative font-sans px-4 pb-4 bg-zinc-900/50 border-zinc-800 text-zinc-100 w-full group",
-        msg.intent ? "pt-6" : "pt-4"
-      )}>
-        {msg.intent && (
-          // One line, whatever the name: at three lines this tag covered the
-          // answer it labels (F217).
-          <div
-            className="absolute -top-3 left-2 max-w-[calc(100%-1rem)] truncate bg-zinc-950 border border-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-400 font-mono rounded-md"
-            title={agentName}
-          >
-            {agentName}
-          </div>
-        )}
-        <Markdown>{linkLabels(msg.content, msg.citations, anchor)}</Markdown>
-        {msg.images && msg.images.length > 0 && <ImageThumbnails images={msg.images} />}
-        <button
-          onClick={() => { navigator.clipboard.writeText(msg.content); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-          className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md bg-zinc-800/60 hover:bg-zinc-700/80 text-text-faint hover:text-zinc-200"
-          title="Copy response"
-        >
-          {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-        </button>
-      </div>
+      <Markdown className="text-[15px] leading-relaxed">{linkLabels(msg.content, msg.citations, anchor)}</Markdown>
+      {msg.images && msg.images.length > 0 && <ImageThumbnails images={msg.images} />}
+      {calls.length > 0 && <ToolsUsed calls={calls} />}
       <KnowledgeSources citations={msg.citations} unresolved={msg.unresolvedCitations} anchor={anchor} />
       {msg.thoughts && msg.thoughts.length > 0 && (
         <ThoughtCollapsible thoughts={msg.thoughts} />
       )}
       {msg.refused && msg.refused.length > 0 && (
         // What this turn did not run (U68): the answer above may say it was done.
-        <ul className="space-y-0.5 text-xs text-amber-500" aria-label="Calls not run">
+        <ul className="space-y-0.5 text-xs text-warning" aria-label="Calls not run">
           {msg.refused.map((r, i) => (
-            <li key={i}>
-              Not run: <span className="font-code" translate="no">{r.tool}</span>{r.reason ? ` — ${r.reason}` : ''}
+            <li key={i} className="flex gap-1.5">
+              <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+              <span>Not run: <span className="font-code" translate="no">{r.tool}</span>{r.reason ? ` — ${r.reason}` : ''}</span>
             </li>
           ))}
         </ul>
       )}
-      {Array.isArray(msg.data?.calls) && msg.data.calls.length > 0 && (
-        <ToolsUsed calls={msg.data.calls as SavedCall[]} />
-      )}
+      <CopyAnswer text={msg.content} />
     </div>
   );
 }
 
 /**
- * The tools a reopened answer used (U60), from the calls its turn saved (F242):
- * each with its arguments and the start of what it returned. The live panels
- * are built from the stream, which a reopened page does not have; the calls
- * are what the conversation keeps (its thinking and reasoning too, since U60's
- * second step, drawn in their own panels).
+ * The tools an answer used, as one quiet chip that opens to each call: its
+ * arguments and the start of what it returned. A reopened answer has them from
+ * the calls its turn saved (F242, U60); a live one from the events it streamed.
  */
 function ToolsUsed({ calls }: { calls: SavedCall[] }) {
-  const [open, setOpen] = useState(false);
   const refused = calls.filter(c => c.refused).length;
   return (
-    <div className="text-xs">
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        aria-expanded={open}
-        className="flex items-center gap-1.5 text-text-faint hover:text-zinc-300 transition-colors"
-      >
-        {open ? <ChevronDown className="h-3 w-3" aria-hidden /> : <ChevronRight className="h-3 w-3" aria-hidden />}
-        <Wrench className="h-3 w-3" aria-hidden />
-        <span>
-          Tools used · {calls.length}
-          {refused > 0 && <span className="text-amber-500"> · {refused} not run</span>}
-        </span>
-      </button>
-      {open && (
-        <ul className="mt-2 space-y-2 border-l border-zinc-800 pl-3">
+    <RunChip
+      icon={<Wrench className="h-3.5 w-3.5" />}
+      label={<>Tools used · {calls.length}{refused > 0 && <span className="text-warning"> · {refused} not run</span>}</>}
+      detail={(
+        <ul className="space-y-2 border-l border-border pl-3 text-xs">
           {calls.map((call, i) => {
             const args = call.args && Object.keys(call.args).length > 0 ? JSON.stringify(call.args) : '';
             return (
               <li key={i} className="min-w-0">
                 <div className="flex items-baseline gap-2">
-                  <span className="font-code text-zinc-300" translate="no">{call.tool}</span>
-                  {call.refused && <span className="text-amber-500">not run{call.reason ? ` — ${call.reason}` : ''}</span>}
+                  <span className="font-code text-text" translate="no">{call.tool}</span>
+                  {call.refused && <span className="text-warning">not run{call.reason ? ` — ${call.reason}` : ''}</span>}
                 </div>
-                {args && <div className="truncate font-code text-[11px] text-text-faint" title={args}>{args}</div>}
+                {args && <div className="truncate font-code text-2xs text-text-faint" title={args}>{args}</div>}
                 {call.result && (
-                  <div className="line-clamp-2 whitespace-pre-wrap break-words text-[11px] text-text-faint">
+                  <div className="line-clamp-2 whitespace-pre-wrap break-words text-2xs text-text-faint">
                     {call.result.slice(0, 300)}
                   </div>
                 )}
@@ -348,7 +321,7 @@ function ToolsUsed({ calls }: { calls: SavedCall[] }) {
           })}
         </ul>
       )}
-    </div>
+    />
   );
 }
 
@@ -356,7 +329,7 @@ function ToolsUsed({ calls }: { calls: SavedCall[] }) {
 function ImageNoteChip({ notes }: { notes: { type: string }[] }) {
   const kinds = [...new Set(notes.map(n => (n.type || 'image').replace(/^image\//, '').toUpperCase()))].join(', ');
   return (
-    <div className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-zinc-700/60 px-2 py-1 text-[11px] text-text-faint">
+    <div className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-text-faint">
       <Paperclip className="h-3 w-3" aria-hidden />
       {notes.length} image{notes.length === 1 ? '' : 's'} ({kinds}) — not kept after the turn
     </div>
@@ -456,52 +429,40 @@ function formatRelativeTime(iso: string | null): string {
 // ─── Tip data ────────────────────────────────────────────────────────────────
 const TIPS = [
   {
-    icon: <Cpu className="h-5 w-5 text-accent" />,
+    icon: <Cpu className="h-5 w-5" />,
     tag: 'Build Agents',
     title: 'Create specialized AI agents',
     desc: 'Design agents with custom system prompts, tools, and models. Each agent can be fine-tuned for a specific domain or task like research, coding, or analysis.',
-    accent: 'from-accent/10 to-transparent border-accent/40',
-    tagColor: 'text-accent bg-accent-subtle border-accent/40',
   },
   {
-    icon: <Wrench className="h-5 w-5 text-sky-400" />,
+    icon: <Wrench className="h-5 w-5" />,
     tag: 'Custom Tools',
     title: 'Extend with custom tools',
     desc: 'Add Python functions, n8n workflows, or custom APIs as tools your agents can call — web search, database queries, file operations — anything your workflow needs.',
-    accent: 'from-sky-500/10 to-transparent border-sky-800/40',
-    tagColor: 'text-sky-400 bg-sky-950/60 border-sky-800/50',
   },
   {
-    icon: <GitBranch className="h-5 w-5 text-emerald-400" />,
+    icon: <GitBranch className="h-5 w-5" />,
     tag: 'Orchestration',
     title: 'Orchestrate multi-agent flows',
     desc: 'Chain agents together with sequential, parallel, or loop patterns. Build complex pipelines where each agent handles a specialized stage.',
-    accent: 'from-emerald-500/10 to-transparent border-emerald-800/40',
-    tagColor: 'text-emerald-400 bg-emerald-950/60 border-emerald-800/50',
   },
   {
-    icon: <Network className="h-5 w-5 text-amber-400" />,
+    icon: <Network className="h-5 w-5" />,
     tag: 'MCP Servers',
     title: 'Connect MCP servers',
     desc: 'Integrate any MCP (Model Context Protocol) server to supercharge your agents with external knowledge, file systems, browsers, and third-party services.',
-    accent: 'from-amber-500/10 to-transparent border-amber-800/40',
-    tagColor: 'text-amber-400 bg-amber-950/60 border-amber-800/50',
   },
   {
-    icon: <CalendarClock className="h-5 w-5 text-rose-400" />,
+    icon: <CalendarClock className="h-5 w-5" />,
     tag: 'Schedules',
     title: 'Automate with schedules',
     desc: 'Set up cron-based schedules to run your agents automatically. Perfect for daily reports, periodic data syncs, or recurring agentic tasks.',
-    accent: 'from-rose-500/10 to-transparent border-rose-800/40',
-    tagColor: 'text-rose-400 bg-rose-950/60 border-rose-800/50',
   },
   {
-    icon: <Sparkles className="h-5 w-5 text-accent" />,
+    icon: <Sparkles className="h-5 w-5" />,
     tag: 'Pro Tips',
-    title: 'Get the most from Synapse AI',
+    title: 'Get the most from SynapseOrch',
     desc: 'Attach images for vision tasks, switch agents mid-conversation, or orchestrate complex multi-step workflows — all from one chat interface.',
-    accent: 'from-accent/10 to-transparent border-accent/40',
-    tagColor: 'text-accent bg-accent-subtle border-accent/40',
   },
 ];
 
@@ -532,26 +493,24 @@ function ToolApprovalCard({
   const expired = !answered && (movedPast || msg.data?.expired === true);
 
   return (
-    <div className="flex gap-4 max-w-4xl">
-      <div className="h-8 w-8 shrink-0 flex items-center justify-center border border-amber-700/50 bg-amber-950/30 text-amber-400 rounded-md">
-        <AlertCircle className="h-4 w-4" />
-      </div>
-      <div className="flex-1 min-w-0 p-4 border border-amber-900/40 bg-amber-950/10 relative font-sans rounded-md">
-        <div className="absolute -top-3 left-2 bg-zinc-950 border border-amber-900/50 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-500 font-mono rounded-md">
+    <AgentTurn avatar={<AgentAvatar className="bg-person-subtle text-person-ink"><AlertCircle className="h-4 w-4" aria-hidden /></AgentAvatar>}>
+      <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-person/60 bg-surface px-4 py-3.5">
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-person-ink">
+          <span aria-hidden className="size-2 rounded-full bg-person" />
           Permission needed
-        </div>
-        <Markdown className="text-[15px] leading-7">{msg.content}</Markdown>
+        </span>
+        <Markdown className="text-[15px] leading-relaxed">{msg.content}</Markdown>
 
         {args && Object.keys(args).length > 0 && (
-          <pre className="mt-3 p-3 bg-zinc-950 border border-zinc-800 rounded-md text-[12px] font-code text-zinc-300 overflow-x-auto">
+          <pre className="overflow-x-auto rounded-lg border border-border bg-surface-2 p-3 font-code text-xs text-text">
             {JSON.stringify(args, null, 2)}
           </pre>
         )}
 
         {answered ? (
-          <p className="mt-3 text-[12px] text-text-faint">Answered.</p>
+          <p className="text-[13px] text-text-faint">Answered.</p>
         ) : expired ? (
-          <p className="mt-3 text-[12px] text-text-faint">
+          <p className="text-[13px] text-text-faint">
             {why === MOVED_ON ? 'You moved on — this was not run.' : `Not run — ${why}.`}
           </p>
         ) : (
@@ -562,33 +521,35 @@ function ToolApprovalCard({
               aria-label="Reason for refusing"
               placeholder="Why not? (optional — the agent reads this and works around it)"
               disabled={disabled}
-              className="mt-3 w-full bg-zinc-950 border border-zinc-800 px-3 py-2 text-[13px] text-zinc-200 placeholder:text-zinc-600 rounded-md focus:border-amber-700/60 focus:outline-none disabled:opacity-50"
+              className="w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-text placeholder:text-text-faint disabled:opacity-50"
             />
-            <div className="flex gap-2 mt-3">
-              <button
+            <div className="flex flex-wrap gap-2">
+              <Button
                 type="button"
+                variant="person"
+                size="sm"
                 disabled={disabled}
                 onClick={() => { setAnswered(true); onDecide(true, ''); }}
-                className="px-3 py-1.5 bg-accent text-accent-fg text-[11px] font-semibold uppercase tracking-wider rounded-md hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 Allow once
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="secondary"
+                size="sm"
                 disabled={disabled}
                 onClick={() => { setAnswered(true); onDecide(false, reason); }}
-                className="px-3 py-1.5 border border-zinc-700 text-zinc-300 text-[11px] font-semibold uppercase tracking-wider rounded-md hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 Refuse
-              </button>
+              </Button>
             </div>
-            <p className="mt-2 text-[11px] text-text-faint">
+            <p className="text-xs text-text-faint">
               Allowing applies to this call and these arguments only.
             </p>
           </>
         )}
       </div>
-    </div>
+    </AgentTurn>
   );
 }
 
@@ -603,29 +564,36 @@ function ToolApprovalCard({
  * Picking closes it.
  */
 function AgentPicker({
-  agents, activeId, onPick,
+  agents, activeId, activeName, onPick,
 }: {
   agents: [string, { name: string; status: string } | string][];
   activeId: string | null | undefined;
+  /** The agent this conversation talks to, shown on the pill. */
+  activeName: string;
   onPick: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
     <RPopover.Root open={open} onOpenChange={setOpen}>
+      {/* The composer's pill (M2c): the agent this conversation talks to.
+          Named "Agents: …" — the list it opens is the agents. */}
       <RPopover.Trigger
-        className="flex items-center gap-1.5 self-stretch border-r border-border px-2 sm:px-4 text-zinc-400 hover:bg-surface-2 hover:text-zinc-200 data-[state=open]:bg-surface-2 data-[state=open]:text-zinc-200 transition-colors"
+        type="button"
+        aria-label={`Agents: ${activeName}`}
+        className={cn(composerPillClass, 'data-[state=open]:bg-row-hover')}
       >
-        <Bot className="h-4 w-4 sm:hidden" aria-hidden />
-        <span className="sr-only sm:not-sr-only text-xs font-bold tracking-widest uppercase">Agents</span>
-        <ChevronDown className="hidden sm:block h-3 w-3" aria-hidden />
+        <PillAvatar><Bot className="h-3 w-3" /></PillAvatar>
+        <span className="min-w-0 truncate" title={activeName}>{activeName}</span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-faint" aria-hidden />
       </RPopover.Trigger>
       <RPopover.Portal>
         <RPopover.Content
-          align="end"
+          align="start"
+          side="top"
           sideOffset={6}
           collisionPadding={8}
           aria-label="Agents"
-          className="z-50 flex w-72 max-w-[calc(100vw-16px)] max-h-[min(28rem,var(--radix-popover-content-available-height))] flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-xl"
+          className="z-50 flex w-72 max-w-[calc(100vw-16px)] max-h-[min(28rem,var(--radix-popover-content-available-height))] flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-elevated"
         >
           <Command loop className="flex min-h-0 flex-col">
             <div className="flex items-center gap-2 border-b border-border px-3">
@@ -654,11 +622,11 @@ function AgentPicker({
                     onSelect={() => { setOpen(false); onPick(id); }}
                     className="relative flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-text outline-none data-[selected=true]:bg-surface-2"
                   >
-                    <div className={cn('h-1.5 w-1.5 shrink-0 rounded-full', status === 'online' ? 'bg-green-500' : 'bg-red-500')} aria-hidden />
+                    <div className={cn('h-1.5 w-1.5 shrink-0 rounded-full', status === 'online' ? 'bg-success' : 'bg-danger')} aria-hidden />
                     <span className="min-w-0 flex-1 truncate" title={name}>{name}</span>
                     {isActive && (
                       <>
-                        <Check className="size-4 shrink-0 text-accent" aria-hidden />
+                        <Check className="size-4 shrink-0 text-accent-ink" aria-hidden />
                         <span className="sr-only">(current)</span>
                       </>
                     )}
@@ -712,28 +680,25 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
   ];
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-full px-4 pb-36 pt-6 md:pb-41 md:pt-10 2xl:pb-36 select-none">
+    <div className="flex min-h-full select-none flex-col items-center justify-center px-4 pb-44 pt-6 md:pb-48 md:pt-10 2xl:pb-44">
       {/* ── Welcome Examples Banner (12-day, session-dismissible) ── */}
       {showExamplesBanner && (
-        <div className="w-full max-w-2xl mb-8 relative overflow-hidden rounded-sm border border-accent/40 bg-accent-subtle bg-gradient-to-br from-accent/15 to-transparent backdrop-blur-sm shadow-lg shadow-accent/20">
-          {/* Subtle animated shimmer */}
-          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-accent/5 to-transparent -skew-x-12 pointer-events-none" />
-          <div className="relative px-4 py-3 flex flex-col gap-2.5">
+        <div className="mb-8 w-full max-w-2xl rounded-xl border border-border bg-accent-subtle px-4 py-3">
+          <div className="flex flex-col gap-2.5">
             {/* Top row: icon + headline + close */}
             <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                <div className="p-1.5 rounded-sm bg-accent/20 border border-accent/30 shrink-0">
-                  <Sparkles className="h-3.5 w-3.5 text-accent" />
-                </div>
+              <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                <Sparkles className="h-4 w-4 shrink-0 text-accent-ink" aria-hidden />
                 <div className="min-w-0 flex-1">
-                  <p className="text-[12px] font-bold text-text tracking-wide">Get started in seconds</p>
-                  <p className="text-[11px] text-accent font-mono break-words">Pre-built agents, orchestrations &amp; MCP servers — ready to explore</p>
+                  <p className="text-sm font-semibold text-text">Get started in seconds</p>
+                  <p className="break-words text-[13px] text-text-muted">Pre-built agents, orchestrations &amp; MCP servers — ready to explore</p>
                 </div>
               </div>
               <button
                 id="examples-banner-close"
+                type="button"
                 onClick={onDismissBanner}
-                className="p-1 text-accent hover:text-accent-hover transition-colors cursor-pointer shrink-0 mt-0.5"
+                className="mt-0.5 shrink-0 cursor-pointer rounded-md p-1 text-text-muted transition-colors hover:bg-surface hover:text-text"
                 aria-label="Dismiss banner"
               >
                 <X className="h-3.5 w-3.5" />
@@ -741,21 +706,23 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
             </div>
             {/* Bottom row: teaser pills + CTA */}
             <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-              <div className="flex items-center gap-1.5 flex-wrap justify-center sm:justify-start">
+              <div className="flex flex-wrap items-center justify-center gap-1.5 sm:justify-start">
                 {['Web research agent', 'Multi-step orchestration', 'MCP Servers'].map(label => (
-                  <span key={label} className="px-2 py-0.5 text-[10px] font-mono text-accent-ink bg-accent-subtle border border-accent/40 rounded-sm">
+                  <span key={label} className="rounded-full border border-border bg-surface px-2.5 py-0.5 text-xs text-text-muted">
                     {label}
                   </span>
                 ))}
-                <span className="text-[10px] font-mono text-accent">+ more →</span>
+                <span className="text-xs text-accent-ink">+ more →</span>
               </div>
-              <button
+              <Button
                 id="examples-banner-link"
+                type="button"
+                size="sm"
                 onClick={() => onNavigate('/templates')}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-accent hover:bg-accent-hover active:bg-accent text-accent-fg transition-colors rounded-sm cursor-pointer shrink-0 w-full sm:w-auto shadow-sm shadow-accent/20"
+                className="w-full shrink-0 sm:w-auto"
               >
-                <Sparkles className="h-3 w-3" /> Browse Examples
-              </button>
+                <Sparkles className="h-3.5 w-3.5" aria-hidden /> Browse Examples
+              </Button>
             </div>
           </div>
         </div>
@@ -766,14 +733,13 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
           message that then failed with an HTTP library's text (F182). */}
       <div className="mb-2 flex max-w-[min(36rem,100%)] items-center gap-2">
         <div className={cn(
-          "h-1.5 w-1.5 shrink-0 rounded-full",
-          modelReady === true ? "bg-green-400 shadow-[0_0_8px_#4ade80] animate-pulse"
-            : modelReady === false ? "bg-warning" : "bg-zinc-600",
+          "h-2 w-2 shrink-0 rounded-full",
+          modelReady === true ? "bg-success" : modelReady === false ? "bg-warning" : "bg-text-faint",
         )} />
-        {/* Truncated, with the whole name on hover: letter-spaced capitals ran
-            a long name 1,742 px wide, off both edges of the page (F217). */}
-        <span className="flex min-w-0 text-[11px] font-mono uppercase tracking-[0.2em] text-text-faint">
-          <span className="min-w-0 truncate" title={agentName}>{agentName}</span>
+        {/* Truncated, with the whole name on hover: a long name ran 1,742 px
+            wide, off both edges of the page (F217). */}
+        <span data-agent-label className="flex min-w-0 text-[13px] text-text-muted">
+          <span className="min-w-0 truncate font-medium" title={agentName}>{agentName}</span>
           {modelReady !== undefined && (
             <span className="shrink-0">{modelReady ? '\u00a0· Ready' : isWorkflow ? '\u00a0· A step is not ready' : '\u00a0· Model not ready'}</span>
           )}
@@ -782,42 +748,42 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
       {modelReady === false && modelProblem && (
         <p className="mb-4 max-w-md text-center text-[13px] leading-relaxed text-text-muted">
           <WithCode text={modelProblem} />{' '}
-          <Link href={MODELS_SETTINGS} className="whitespace-nowrap font-medium text-accent underline-offset-2 hover:underline">
+          <Link href={MODELS_SETTINGS} className="whitespace-nowrap font-medium text-accent-ink underline-offset-2 hover:underline">
             Open Settings → Models
           </Link>
         </p>
       )}
-      <h2 className="text-3xl md:text-4xl font-bold text-zinc-100 tracking-tight mb-1 text-center">
-        What can I help you Achieve?
+      <h2 className="mb-1 text-center text-3xl font-semibold tracking-tight text-text md:text-4xl">
+        What can I help you achieve?
       </h2>
-      <p className="text-text-faint text-sm mb-10 text-center font-mono">
-        Synapse AI — Agents that work together to get things done
+      <p className="mb-10 text-center text-sm text-text-muted">
+        SynapseOrch — Agents that work together to get things done
       </p>
 
       {/* Tips Carousel */}
       <div
-        className="w-full max-w-xl mb-10"
+        className="mb-10 w-full max-w-xl"
         onMouseEnter={() => setIsPaused(true)}
         onMouseLeave={() => setIsPaused(false)}
       >
         {/* Card */}
         <div
           key={activeIdx}
-          className={`tip-card-animate relative overflow-hidden border rounded-sm p-5 bg-gradient-to-br ${TIPS[activeIdx].accent}`}
+          className="tip-card-animate relative overflow-hidden rounded-xl border border-border bg-surface p-5"
           style={{ minHeight: 108 }}
         >
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 shrink-0">{TIPS[activeIdx].icon}</div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className={`text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded-sm border ${TIPS[activeIdx].tagColor}`}>
+            <div className="mt-0.5 shrink-0 text-text-faint">{TIPS[activeIdx].icon}</div>
+            <div className="min-w-0 flex-1">
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-text-muted">
                   {TIPS[activeIdx].tag}
                 </span>
               </div>
-              <div className="text-[14px] font-semibold text-zinc-100 mb-1 leading-snug">
+              <div className="mb-1 text-[15px] font-semibold leading-snug text-text">
                 {TIPS[activeIdx].title}
               </div>
-              <p className="text-[12.5px] text-zinc-400 leading-relaxed">
+              <p className="text-[13px] leading-relaxed text-text-muted">
                 {TIPS[activeIdx].desc}
               </p>
             </div>
@@ -825,26 +791,28 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
         </div>
 
         {/* Dot indicators */}
-        <div className="flex items-center justify-center gap-1.5 mt-3">
+        <div className="mt-3 flex items-center justify-center gap-1.5">
           {TIPS.map((tip, i) => (
             <button
               key={i}
+              type="button"
               aria-label={`Show tip ${i + 1}: ${tip.title}`}
               aria-current={i === activeIdx}
               onClick={() => { setActiveIdx(i); setIsPaused(true); setTimeout(() => setIsPaused(false), 6000); }}
-              className={`transition-all duration-300 rounded-full cursor-pointer ${i === activeIdx ? 'w-5 h-1.5 bg-zinc-300' : 'w-1.5 h-1.5 bg-zinc-700 hover:bg-accent-hover0'}`}
+              className={`cursor-pointer rounded-full transition-all duration-300 ${i === activeIdx ? 'h-1.5 w-5 bg-text-muted' : 'h-1.5 w-1.5 bg-border-strong hover:bg-text-faint'}`}
             />
           ))}
         </div>
       </div>
 
       {/* Quick action pills — navigate to settings */}
-      <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+      <div className="flex max-w-lg flex-wrap justify-center gap-2">
         {PILLS.map(({ label, path, icon: Icon }) => (
           <button
             key={label}
+            type="button"
             onClick={() => onNavigate(path)}
-            className="flex items-center gap-1.5 rounded-md border border-border bg-surface/70 px-3 py-1.5 text-sm text-text-muted transition-all hover:border-border-strong hover:bg-surface-2/80 hover:text-text cursor-pointer"
+            className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 text-sm text-text-muted transition-colors hover:border-border-strong hover:text-text"
           >
             <Icon className="h-3.5 w-3.5" />
             {label}
@@ -944,6 +912,9 @@ export default function Home() {
   const lastThoughtRef = useRef<string | null>(null);
   /** The turn's calls that were not run (U68), shown under its answer. */
   const refusedRef = useRef<{ tool: string; reason: string }[]>([]);
+  /** The turn's own tool calls as they streamed, for the chip under its answer (M2c) — what a reopened
+   *  turn reads from its saved `calls`. The agent's own, not a delegate's or a workflow step's. */
+  const liveCallsRef = useRef<NonNullable<Message['toolCalls']>>([]);
   /** The answer's Sources (`knowledge_citations`, B1b), drawn under the answer that follows;
    *  a workflow step's under that step's result. */
   const sourcesRef = useRef<{ citations: KnowledgeCitation[]; unresolvedCitations: string[] } | null>(null);
@@ -1568,6 +1539,7 @@ export default function Home() {
     lastCursorRef.current = null;
     lastThoughtRef.current = null;
     refusedRef.current = [];
+    liveCallsRef.current = [];
     sourcesRef.current = null;
     const controller = new AbortController();
     sseAbortRef.current = controller;
@@ -1648,6 +1620,7 @@ export default function Home() {
     lastToolRef.current = null;
     lastThoughtRef.current = null;
     refusedRef.current = [];
+    liveCallsRef.current = [];
     sourcesRef.current = null;
     stepSourcesRef.current = {};
     try {
@@ -1756,6 +1729,10 @@ export default function Home() {
 
       case 'tool_execution': {
         lastToolRef.current = data.tool_name as string;
+        if (!data.orch_step_id && !data.delegate_from) {
+          const args = data.args && typeof data.args === 'object' ? data.args as Record<string, unknown> : null;
+          liveCallsRef.current = [...liveCallsRef.current, { tool: String(data.tool_name), args, result: '' }];
+        }
         const toolDisplayName = (data.tool_name as string)
           .replace(/_/g, ' ')
           .replace(/\b\w/g, (l: string) => l.toUpperCase());
@@ -1768,6 +1745,20 @@ export default function Home() {
 
       case 'tool_result': {
         const rawToolName = data.tool_name as string || 'Tool';
+        if (!data.orch_step_id && !data.delegate_from) {
+          // The newest call to this tool still without its result.
+          const calls = liveCallsRef.current;
+          const at = calls.findLastIndex(c => c.tool === rawToolName && !c.result && !c.refused);
+          if (at !== -1) {
+            const next = [...calls];
+            next[at] = {
+              ...next[at],
+              result: String(data.preview ?? ''),
+              ...(data.refused ? { refused: true, reason: String(data.reason ?? '') } : {}),
+            };
+            liveCallsRef.current = next;
+          }
+        }
         // Only update the indicator if this result is for the tool currently
         // shown. A wrapper tool finishing (e.g. delegate_to_agent) after a
         // sub-agent ran its own tools must NOT overwrite the sub-agent's last
@@ -1846,6 +1837,8 @@ export default function Home() {
         const capturedReasoning = [...pendingReasoningRef.current];
         const refused = refusedRef.current;
         refusedRef.current = [];
+        const toolCalls = liveCallsRef.current;
+        liveCallsRef.current = [];
         const sources = sourcesRef.current;
         sourcesRef.current = null;
         setMessages(prev => [...answerOnce(prev, data.content as string), {
@@ -1857,6 +1850,7 @@ export default function Home() {
           thoughts: capturedThoughts,
           reasoning: capturedReasoning,
           ...(refused.length > 0 ? { refused } : {}),
+          ...(toolCalls.length > 0 ? { toolCalls } : {}),
           ...(sources ?? {}),
         }]);
         pendingThoughtsRef.current = [];
@@ -1893,6 +1887,8 @@ export default function Home() {
           const capturedReasoning = [...pendingReasoningRef.current];
           const refused = refusedRef.current;
           refusedRef.current = [];
+          const toolCalls = liveCallsRef.current;
+          liveCallsRef.current = [];
           const sources = sourcesRef.current;
           sourcesRef.current = null;
           setMessages(prev => [...answerOnce(prev, data.response as string), {
@@ -1904,6 +1900,7 @@ export default function Home() {
             thoughts: capturedThoughts,
             reasoning: capturedReasoning,
             ...(refused.length > 0 ? { refused } : {}),
+            ...(toolCalls.length > 0 ? { toolCalls } : {}),
             ...(sources ?? {}),
           }]);
           pendingThoughtsRef.current = [];
@@ -2272,7 +2269,7 @@ export default function Home() {
       );
     }
 
-    // ── Sub-agent result (purple accent bubble) ──
+    // ── A workflow step's result ──
     if (msg.msgType === 'agent_step_result') {
       return (
         <AgentStepResult
@@ -2286,8 +2283,8 @@ export default function Home() {
     // ── A quiet line: something the loop did, not something anyone said ──
     if (msg.msgType === 'note') {
       return (
-        <div key={idx} className="flex items-center gap-2 max-w-4xl py-0.5 pl-11 text-[11px] text-text-faint font-sans">
-          <span className="h-px w-4 bg-zinc-800 shrink-0" aria-hidden />
+        <div key={idx} className="flex items-center gap-2 py-0.5 pl-10 text-xs text-text-faint">
+          <span className="h-px w-4 shrink-0 bg-border" aria-hidden />
           <span className="min-w-0 break-words">{msg.content}</span>
         </div>
       );
@@ -2311,145 +2308,126 @@ export default function Home() {
     // ── Human input required ──
     if (msg.msgType === 'human_input_required') {
       return (
-        <div key={idx} className="flex gap-4 max-w-4xl">
-          <div className="h-8 w-8 shrink-0 flex items-center justify-center border border-amber-700/50 bg-amber-950/30 text-amber-400 rounded-md">
-            <User className="h-4 w-4" />
-          </div>
-          <div className="flex flex-col flex-1 min-w-0 gap-3">
-            <div className="p-4 text-[15px] leading-7 border border-amber-900/40 bg-amber-950/10 relative font-sans rounded-md">
-              <div className="absolute -top-3 left-2 bg-zinc-950 border border-amber-900/50 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-500 font-mono rounded-md">
-                Human Input Required
+        <AgentTurn key={idx} avatar={<AgentAvatar className="bg-person-subtle text-person-ink"><User className="h-4 w-4" aria-hidden /></AgentAvatar>}>
+          <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-person/60 bg-surface px-4 py-3.5">
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-person-ink">
+              <span aria-hidden className="size-2 rounded-full bg-person" />
+              Human Input Required
+            </span>
+            <Markdown className="text-[15px] leading-relaxed">{msg.content}</Markdown>
+            {Array.isArray(msg.data?.fields) && msg.data.fields.length > 0 ? (
+              <HumanStepAnswer
+                fields={msg.data.fields}
+                onSubmit={(answer) => handleHumanInputSubmit(msg.data?.run_id, msg.data?.orch_step_id, answer)}
+              />
+            ) : (
+              <CollectDataForm
+                data={{ ...msg.data, fields: [] }}
+                onSubmit={(values) => handleHumanInputSubmit(msg.data?.run_id, msg.data?.orch_step_id, values)}
+              />
+            )}
+            {msg.data?.channel_id && (
+              <div className="text-xs text-text-faint">
+                📲 Notification sent to messaging channel
               </div>
-              <Markdown className="mb-4">{msg.content}</Markdown>
-              {Array.isArray(msg.data?.fields) && msg.data.fields.length > 0 ? (
-                <HumanStepAnswer
-                  fields={msg.data.fields}
-                  onSubmit={(answer) => handleHumanInputSubmit(msg.data?.run_id, msg.data?.orch_step_id, answer)}
-                />
-              ) : (
-                <CollectDataForm
-                  data={{ ...msg.data, fields: [] }}
-                  onSubmit={(values) => handleHumanInputSubmit(msg.data?.run_id, msg.data?.orch_step_id, values)}
-                />
-              )}
-              {msg.data?.channel_id && (
-                <div className="mt-2 text-[11px] text-text-faint font-mono">
-                  📲 Notification sent to messaging channel
-                </div>
-              )}
-            </div>
+            )}
           </div>
-        </div>
+        </AgentTurn>
       );
     }
 
-    // ── Regular user / assistant message ──
+    // ── Your message ──
+    if (msg.role === 'user') {
+      return (
+        <UserBubble
+          key={idx}
+          actions={
+            // Rewrite this question. Focusable, so it can be reached without a
+            // pointer, and only on the *last* question — editing an earlier one
+            // would drop every answer after it, a bigger action than a pencil implies.
+            !isLoading && idx === messages.length - 2 ? (
+              <button
+                type="button"
+                onClick={() => handleEditMessage(idx)}
+                aria-label="Edit this message and send it again"
+                title="Edit and send again"
+                className="rounded-md p-1.5 text-text-faint opacity-0 transition-opacity hover:bg-surface-2 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+              >
+                <Pencil className="h-3.5 w-3.5" aria-hidden />
+              </button>
+            ) : undefined
+          }
+        >
+          <Markdown className="text-[15px] leading-relaxed">{msg.content}</Markdown>
+          {!msg.images?.length && Array.isArray(msg.data?.imageNotes) && msg.data.imageNotes.length > 0 && (
+            <ImageNoteChip notes={msg.data.imageNotes as { type: string }[]} />
+          )}
+          {msg.images && msg.images.length > 0 && <ImageThumbnails images={msg.images} />}
+        </UserBubble>
+      );
+    }
+
+    // ── The agent's answer ──
     return (
-      <div key={idx} className={cn(
-        "flex gap-4",
-        msg.role === 'assistant' ? "max-w-4xl" : "max-w-3xl",
-        msg.role === 'user' ? "ml-auto flex-row-reverse" : ""
-      )}>
-        <div className={cn(
-          "h-8 w-8 shrink-0 flex items-center justify-center border",
-          msg.role === 'user' ? "bg-white border-white text-black" : "bg-black border-zinc-700 text-zinc-400"
-        )}>
-          {msg.role === 'user' ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
-        </div>
-
-        <div className={cn(
-          "flex flex-col flex-1 min-w-0 gap-2",
-          msg.role === 'assistant' && msg.intent ? "mt-2" : ""
-        )}>
-          {msg.role === 'user' ? (
-            /* ── User bubble ── */
-            <div className="group p-4 bg-zinc-900 border border-zinc-800 text-zinc-100 text-[15px] leading-7 relative font-sans self-end max-w-[80%] rounded-md">
-              {/* Rewrite this question.
-
-                  Kept out of the hover-only pattern that hides the image
-                  remove button: this one is focusable, so it can be reached
-                  without a pointer. It only shows on the *last* question —
-                  editing an earlier one would drop every answer after it,
-                  which is a bigger action than a pencil implies. */}
-              {!isLoading && idx === messages.length - 2 && (
-                <button
-                  type="button"
-                  onClick={() => handleEditMessage(idx)}
-                  aria-label="Edit this message and send it again"
-                  title="Edit and send again"
-                  className={cn(
-                    "absolute -left-9 top-3 p-1.5 rounded-md text-text-faint transition-all",
-                    "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-                    "hover:text-zinc-300 hover:bg-zinc-800",
-                  )}
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </button>
-              )}
-              <Markdown>{msg.content}</Markdown>
-              {!msg.images?.length && Array.isArray(msg.data?.imageNotes) && msg.data.imageNotes.length > 0 && (
-                <ImageNoteChip notes={msg.data.imageNotes as { type: string }[]} />
-              )}
-              {msg.images && msg.images.length > 0 && <ImageThumbnails images={msg.images} />}
-            </div>
-          ) : (
-            <AssistantBubble msg={msg} agentName={agentName} />
-          )}
-
-          {/* Dynamic UI based on Intent - Rendered Outside Bubble */}
-          {msg.role === 'assistant' && (
-            <div className="w-full mt-2 pl-1">
-              {msg.intent === 'render_local_file' && (
-                <div className="mt-4 p-4 bg-zinc-950 border border-zinc-800 font-mono text-xs whitespace-pre-wrap max-h-96 overflow-auto text-zinc-300 rounded-md">
-                  {msg.data.content}
-                </div>
-              )}
-              {msg.intent === 'collect_data' && msg.data && (
-                <CollectDataForm data={msg.data} onSubmit={handleCollectDataSubmit} />
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+      <AgentTurn key={idx} className="group" avatar={<AgentAvatar><Bot className="h-4 w-4" aria-hidden /></AgentAvatar>}>
+        <AssistantBubble msg={msg} agentName={agentName} />
+        {/* Dynamic UI based on Intent - Rendered Outside the answer */}
+        {msg.intent === 'render_local_file' && (
+          <div className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-surface-2 p-4 font-code text-xs text-text">
+            {msg.data.content}
+          </div>
+        )}
+        {msg.intent === 'collect_data' && msg.data && (
+          <CollectDataForm data={msg.data} onSubmit={handleCollectDataSubmit} />
+        )}
+      </AgentTurn>
     );
   };
 
+  // The keys, under the composer, until the conversation has a first message (UX1: the hint never went away).
+  const firstMessageSent = messages.some(m => m.role === 'user');
+  const provider = systemStatus?.provider
+    ? systemStatus.provider.charAt(0).toUpperCase() + systemStatus.provider.slice(1)
+    : null;
+
   return (
-    <div className="flex h-full min-h-0 overflow-hidden font-mono">
+    <div className="flex h-full min-h-0 overflow-hidden">
 
       {/* ── History Drawer ────────────────────────────────────────────────── */}
       {isHistoryOpen && (
         <div className="fixed inset-0 z-50 flex">
           {/* Backdrop */}
           <div
-            className="absolute inset-0 bg-scrim/60 backdrop-blur-sm cursor-pointer"
+            className="absolute inset-0 cursor-pointer bg-scrim/60 backdrop-blur-sm"
             onClick={() => setIsHistoryOpen(false)}
           />
           {/* Panel */}
-          <div role="dialog" aria-label="Chat history" className="relative z-10 w-80 max-w-full h-full bg-zinc-950 border-r border-zinc-800 flex flex-col shadow-2xl">
+          <div role="dialog" aria-label="Chat history" className="relative z-10 flex h-full w-80 max-w-full flex-col border-r border-border bg-surface shadow-elevated">
             {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 shrink-0">
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
               <div className="flex items-center gap-2">
-                <History className="h-4 w-4 text-zinc-400" />
-                <span className="text-xs font-bold uppercase tracking-widest text-zinc-300">Chat History</span>
+                <History className="h-4 w-4 text-text-faint" aria-hidden />
+                <span className="text-sm font-semibold text-text">Chat History</span>
               </div>
               <div className="flex items-center gap-1">
                 <button
+                  type="button"
                   onClick={fetchSessions}
                   disabled={sessionsLoading}
-                  className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-400 hover:text-white transition-colors"
+                  className="rounded-md p-1.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text"
                   title="Refresh sessions"
                 >
                   <RefreshCw className={cn("h-3.5 w-3.5", sessionsLoading && "animate-spin")} />
                 </button>
                 <button
+                  type="button"
                   onClick={() => setIsHistoryOpen(false)}
                   aria-label="Close chat history"
                   title="Close chat history"
                   // Focus lands in the drawer on open, so a keyboard is not left
                   // behind it on the page (F236).
                   autoFocus
-                  className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-400 hover:text-white transition-colors"
+                  className="rounded-md p-1.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text"
                 >
                   <X className="h-3.5 w-3.5" aria-hidden />
                 </button>
@@ -2457,12 +2435,12 @@ export default function Home() {
             </div>
 
             {/* Session List */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar">
+            <div className="custom-scrollbar flex-1 overflow-y-auto">
               {sessionsLoading && sessions.length === 0 && (
-                <div className="flex items-center justify-center py-10 text-text-faint text-xs">Loading...</div>
+                <div className="flex items-center justify-center py-10 text-xs text-text-faint">Loading...</div>
               )}
               {!sessionsLoading && sessions.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-10 gap-2">
+                <div className="flex flex-col items-center justify-center gap-2 py-10">
                   <Clock className="h-8 w-8 text-text-faint" />
                   <span className="text-xs text-text-faint">No chat history yet</span>
                 </div>
@@ -2473,13 +2451,13 @@ export default function Home() {
                 <div
                   key={`${s.agent_id}_${s.session_id}`}
                   className={cn(
-                    "group relative border-b border-zinc-900 hover:bg-zinc-900/60 transition-colors",
-                    isOpenConversation(s) && "bg-zinc-900"
+                    "group relative border-b border-border transition-colors hover:bg-row-hover",
+                    isOpenConversation(s) && "bg-surface-2"
                   )}
                 >
                   {/* Active indicator */}
                   {isOpenConversation(s) && (
-                    <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-white" />
+                    <div className="absolute bottom-0 left-0 top-0 w-0.5 bg-accent" />
                   )}
                   <button
                     type="button"
@@ -2487,36 +2465,36 @@ export default function Home() {
                     aria-current={isOpenConversation(s) ? 'true' : undefined}
                     className="block w-full px-4 py-3 pr-9 text-left"
                   >
-                    <span className="flex items-start justify-between gap-2 mb-1">
+                    <span className="mb-1 flex items-start justify-between gap-2">
                       {/* The agent's name, not its id in capitals (U59). The id
                           stays for an agent that has since been deleted, and
                           as the tooltip. */}
                       <span
-                        className="text-[10px] uppercase tracking-wider text-text-faint truncate"
+                        className="truncate text-xs font-medium text-text-faint"
                         title={s.agent_id || 'default'}
                       >
                         {systemStatus?.agents?.[s.agent_id]?.name || s.agent_id || 'default'}
                       </span>
-                      <span className="text-[10px] text-text-faint font-mono shrink-0">
+                      <span className="shrink-0 text-xs text-text-faint">
                         {formatRelativeTime(s.last_updated)}
                       </span>
                     </span>
-                    <span className="block text-[12px] text-zinc-300 leading-5 line-clamp-2">
+                    <span className="block line-clamp-2 text-[13px] leading-5 text-text">
                       {s.first_user_message || '(no messages)'}
                     </span>
                     {s.last_response && (
-                      <span className="block text-[11px] text-text-faint mt-1 truncate">
+                      <span className="mt-1 block truncate text-xs text-text-faint">
                         ↩ {s.last_response.slice(0, 80)}{s.last_response.length > 80 ? '…' : ''}
                       </span>
                     )}
-                    <span className="block text-[10px] text-text-faint mt-1 font-mono">
+                    <span className="mt-1 block text-xs text-text-faint">
                       {s.turn_count} turn{s.turn_count !== 1 ? 's' : ''}
                     </span>
                   </button>
                   <button
                     type="button"
                     onClick={(e) => handleDeleteSession(e, s)}
-                    className="absolute top-2.5 right-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 p-0.5 hover:text-red-400 text-text-faint transition-all"
+                    className="absolute right-3 top-2.5 rounded-md p-0.5 text-text-faint opacity-0 transition-all hover:text-danger group-focus-within:opacity-100 group-hover:opacity-100"
                     aria-label={`Delete the conversation "${(s.first_user_message || 'no messages').slice(0, 40)}"`}
                     title="Delete session"
                   >
@@ -2527,25 +2505,27 @@ export default function Home() {
             </div>
 
             {/* Footer — new chat shortcut */}
-            <div className="px-4 py-3 border-t border-zinc-800 shrink-0">
-              <button
+            <div className="shrink-0 border-t border-border px-4 py-3">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
                 onClick={() => { setIsHistoryOpen(false); handleNewChat(); }}
-                className="w-full flex items-center justify-center gap-2 py-2 border border-zinc-700 hover:border-zinc-500 text-zinc-400 hover:text-white text-xs uppercase tracking-widest transition-colors"
+                className="w-full"
               >
-                <Plus className="h-3.5 w-3.5" />
+                <Plus className="h-3.5 w-3.5" aria-hidden />
                 New Chat
-              </button>
+              </Button>
             </div>
           </div>
         </div>
       )}
 
-      <div className="flex-1 flex flex-col w-full border-r border-zinc-800 relative">
-        {/* The page frame's header (M1a): chat's own header used to be a 56px
-            bar with the agent's name as its title, centred in 5xl, so the title
-            sat nowhere near any other page's. Now it is "Chat", where every
-            title is, and the agent it talks to — with the model's state — is
-            the line under it. The "?" comes from the shell's slot. */}
+      <div className="relative flex w-full flex-1 flex-col">
+        {/* The page frame's header (M1a): "Chat", where every title is, and the
+            agent it talks to — with the model's state — on the line under it.
+            The agent itself is picked in the composer, which also says which
+            model answers (M2c). The "?" comes from the shell's slot. */}
         <PageFrameHeader
           bleed
           eyebrow="Build"
@@ -2555,8 +2535,8 @@ export default function Home() {
               <span
                 className={cn(
                   "size-2 shrink-0 rounded-full",
-                  systemStatus?.model_ready === true ? "bg-success animate-pulse"
-                    : systemStatus?.model_ready === false ? "bg-warning" : "bg-zinc-600",
+                  systemStatus?.model_ready === true ? "bg-success"
+                    : systemStatus?.model_ready === false ? "bg-warning" : "bg-text-faint",
                 )}
                 title={systemStatus?.model_problem || undefined}
               />
@@ -2564,77 +2544,9 @@ export default function Home() {
             </span>
           }
           actions={
-            <div className="flex items-center">
-              {/* Mode & Model Info — or, for a workflow agent, its size (U64) */}
-              {workflowId ? (
-                <div
-                  className="hidden lg:flex items-center gap-2 text-xs text-text-muted uppercase tracking-wider border-r border-border pr-4"
-                  title="A workflow: each step runs on the model set on it"
-                >
-                  <span className="text-zinc-200">Workflow</span>
-                  {workflowStepCount !== null && (
-                    <span>· {workflowStepCount} {workflowStepCount === 1 ? 'step' : 'steps'}</span>
-                  )}
-                </div>
-              ) : (
-                <div className="hidden lg:flex items-center gap-4 text-xs text-text-muted uppercase tracking-wider border-r border-border pr-4">
-                  <div className="flex items-center gap-2">
-                    <span className="text-zinc-400">Provider:</span>
-                    <span className={cn("font-bold",
-                      systemStatus?.provider === 'ollama' ? "text-green-400" :
-                        systemStatus?.provider === 'gemini' ? "text-blue-400" :
-                          systemStatus?.provider === 'anthropic' ? "text-amber-400" :
-                            systemStatus?.provider === 'openai' ? "text-emerald-400" :
-                              systemStatus?.provider === 'anthropic_cli' ? "text-amber-300" :
-                                systemStatus?.provider === 'gemini_cli' ? "text-blue-300" :
-                                  systemStatus?.provider === 'codex_cli' ? "text-zinc-300" :
-                                    "text-accent"
-                    )}>
-                      {systemStatus?.provider ? systemStatus.provider.charAt(0).toUpperCase() + systemStatus.provider.slice(1) : 'Loading...'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-zinc-400 shrink-0">Model:</span>
-                    <span
-                      className="text-zinc-200 truncate max-w-[120px] lg:max-w-[180px]"
-                      title={systemStatus?.model || undefined}
-                    >
-                      {systemStatus?.model || 'Loading...'}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* The agent switcher. It was a <div> whose list opened on hover:
-                  no keyboard or touch path, hidden below `sm`, and its rows
-                  stayed in the tab order while invisible (F185); then the kit's
-                  menu, which could not scroll (F271). It opens on click, Enter
-                  or Space, filters as you type, walks with the arrow keys,
-                  closes on Escape or a pick and hands focus back. Native-builder
-                  machinery agents (ids `agent_native_builder…`) are not listed. */}
-              <AgentPicker
-                agents={systemStatus?.agents
-                  ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
-                  : []}
-                activeId={systemStatus?.active_agent_id}
-                onPick={handleSwitchAgent}
-              />
-
-              <button
-                onClick={handleNewChat}
-                className="p-2 ml-2 hover:bg-zinc-900 rounded-md text-zinc-400 hover:text-white transition-colors"
-                title="New Chat"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-
-              <button
-                onClick={handleOpenHistory}
-                className="p-2 hover:bg-zinc-900 rounded-md text-zinc-400 hover:text-white transition-colors"
-                title="Chat History"
-              >
-                <History className="h-4 w-4" />
-              </button>
+            <div className="flex items-center gap-1">
+              <IconButton icon={Plus} label="New Chat" onClick={handleNewChat} />
+              <IconButton icon={History} label="Chat History" onClick={handleOpenHistory} />
             </div>
           }
         />
@@ -2643,7 +2555,7 @@ export default function Home() {
         <ActiveRunsBanner />
 
         {/* Chat Area */}
-        <div className="flex-1 overflow-y-auto scroll-smooth custom-scrollbar relative">
+        <div className="custom-scrollbar relative flex-1 overflow-y-auto scroll-smooth">
 
           {messages.length === 0 && !isLoading ? (
             /* ── Welcome Screen ── */
@@ -2658,44 +2570,23 @@ export default function Home() {
               onDismissBanner={() => setShowExamplesBanner(false)}
             />
           ) : (
-            <div className="p-3 pb-40 md:p-6 md:pb-41 2xl:pb-36">
-              <div className="w-full md:max-w-5xl mx-auto space-y-6">
+            <div className="px-4 pb-48 pt-6 md:px-6 md:pb-52 2xl:pb-44">
+              <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
                 {messages.map((msg, idx) => renderMessage(msg, idx))}
 
-                {/* Loading Indicator */}
+                {/* Working: the mark in the avatar's slot, at the avatar's size,
+                    and the activity in words beside it. */}
                 {isLoading && (
-                  <div className="flex gap-4 max-w-3xl items-start">
-                    {/* The mark is the avatar while the agent is working: one
-                        symbol carrying the motion, at the size the robot tile
-                        used to be, rather than a bot inside a spinning ring. */}
-                    <Spinner size={32} className="mt-0.5 shrink-0 text-machine" label="Working" />
-
-                    <div className="flex flex-col gap-1">
-                      <div className="flex items-baseline gap-0.5">
-                        <span className="text-sm text-zinc-300 font-medium">
-                          {streamingActivity || 'Processing'}
-                        </span>
-                        {!isThinking && (
-                          <span className="flex gap-0.5 items-end pb-0.5 ml-0.5">
-                            <span className="inline-block w-0.5 h-0.5 bg-accent rounded-full animate-bounce" style={{ animationDelay: '0ms', animationDuration: '1s' }}></span>
-                            <span className="inline-block w-0.5 h-0.5 bg-accent rounded-full animate-bounce" style={{ animationDelay: '150ms', animationDuration: '1s' }}></span>
-                            <span className="inline-block w-0.5 h-0.5 bg-accent rounded-full animate-bounce" style={{ animationDelay: '300ms', animationDuration: '1s' }}></span>
-                          </span>
-                        )}
-                      </div>
-
+                  <AgentTurn working>
+                    <div className="flex flex-col gap-1 pt-0.5">
+                      <span className="text-sm text-text-muted">
+                        {streamingActivity || 'Processing'}
+                      </span>
                       {isThinking && (
-                        <div className="flex items-baseline gap-0.5 max-w-2xl">
-                          <span className="text-xs text-text-faint font-mono truncate">💭 {thinkingPreview || 'Thinking'}</span>
-                          <span className="flex gap-0.5 items-end pb-0.5 ml-0.5">
-                            <span className="inline-block w-0.5 h-0.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '0ms', animationDuration: '1s' }}></span>
-                            <span className="inline-block w-0.5 h-0.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '150ms', animationDuration: '1s' }}></span>
-                            <span className="inline-block w-0.5 h-0.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '300ms', animationDuration: '1s' }}></span>
-                          </span>
-                        </div>
+                        <span className="max-w-2xl truncate text-xs text-text-faint">💭 {thinkingPreview || 'Thinking'}</span>
                       )}
                     </div>
-                  </div>
+                  </AgentTurn>
                 )}
 
                 <div ref={messagesEndRef} />
@@ -2712,31 +2603,27 @@ export default function Home() {
             opened the builder (F181). Lifted below `2xl`, the nearest named
             breakpoint; the lists above carry the same extra room so their
             last line is not hidden. */}
-        <div className="absolute bottom-0 left-0 right-0 px-3 pb-11 pt-6 md:px-6 md:pt-6 md:pb-11 2xl:pb-6 bg-gradient-to-t from-bg via-bg to-transparent">
-          <div className="w-full md:max-w-5xl mx-auto">
-            {/* The turn ended without an answer.
-
-                Until now this was the end of the road: the transcript simply
-                stopped, and trying again meant retyping the question. The bar
-                says which of the two things happened, because they read very
-                differently — one is the product failing, the other is the
-                person deciding. */}
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-bg via-bg to-transparent px-3 pb-11 pt-6 md:px-6 2xl:pb-5">
+          <div className="mx-auto w-full max-w-3xl">
+            {/* The turn ended without an answer: the bar says which of the two
+                things happened, because they read very differently — one is the
+                product failing, the other is the person deciding. */}
             {turnOutcome && !isLoading && (
               <div className={cn(
                 // Wraps: at phone width the actions go under the sentence
                 // rather than squeezing it to nothing.
-                "flex flex-wrap items-center gap-x-3 gap-y-2 mb-3 px-3 py-2.5 border text-xs rounded-md",
+                "mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3 py-2.5 text-xs",
                 turnOutcome.kind === 'failed'
-                  ? "border-red-900/50 bg-red-950/20 text-red-300"
-                  : "border-zinc-800 bg-zinc-950/80 text-zinc-400",
+                  ? "border-danger/40 bg-danger-subtle text-text"
+                  : "border-border bg-surface text-text-muted",
               )}>
                 {turnOutcome.kind === 'failed'
-                  ? <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                  ? <AlertCircle className="h-3.5 w-3.5 shrink-0 text-danger" />
                   : <Square className="h-3 w-3 shrink-0 fill-current" />}
                 {/* Clamped, not truncated: the provider's own words are the
                     useful part, and a one-line cut kept only the start. */}
                 <span
-                  className="min-w-[12rem] flex-1 font-sans break-words line-clamp-3"
+                  className="line-clamp-3 min-w-[12rem] flex-1 break-words"
                   title={turnOutcome.kind === 'failed' ? turnOutcome.message : undefined}
                 >
                   {turnOutcome.kind === 'failed'
@@ -2749,140 +2636,89 @@ export default function Home() {
                   {turnOutcome.kind === 'failed' && turnOutcome.model && (
                     <Link
                       href={MODELS_SETTINGS}
-                      className="shrink-0 font-medium text-text underline underline-offset-2 hover:text-accent"
+                      className="shrink-0 font-medium text-text underline underline-offset-2 hover:text-accent-ink"
                     >
                       Settings → Models
                     </Link>
                   )}
-                  <button
-                    type="button"
-                    onClick={handleRetry}
-                    className={cn(
-                      "shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-colors",
-                      "border-border-strong text-text hover:bg-row-hover hover:border-accent",
-                    )}
-                  >
-                    <RotateCcw className="h-3 w-3" />
+                  <Button type="button" variant="secondary" size="sm" onClick={handleRetry}>
+                    <RotateCcw className="h-3 w-3" aria-hidden />
                     Try again
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTurnOutcome(null)}
-                    aria-label="Dismiss"
-                    className="shrink-0 p-1 rounded-md text-text-faint hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                  </Button>
+                  <IconButton icon={X} label="Dismiss" size="sm" onClick={() => setTurnOutcome(null)} />
                 </div>
               </div>
             )}
 
             {/* Rewriting a question, rather than asking a new one. */}
             {editingIndex !== null && (
-              <div className="flex items-center gap-3 mb-3 px-3 py-2.5 border border-accent/40 bg-accent/5 text-xs text-text rounded-md">
-                <Pencil className="h-3.5 w-3.5 shrink-0 text-accent" />
-                <span className="min-w-0 flex-1 font-sans">
+              <div className="mb-3 flex items-center gap-3 rounded-lg border border-border bg-accent-subtle px-3 py-2.5 text-xs text-text">
+                <Pencil className="h-3.5 w-3.5 shrink-0 text-accent-ink" aria-hidden />
+                <span className="min-w-0 flex-1">
                   Editing your message. Sending replaces it and drops the replies below it.
                 </span>
-                <button
+                <Button
                   type="button"
+                  variant="secondary"
+                  size="sm"
                   onClick={() => { setEditingIndex(null); setInput(''); }}
-                  className="shrink-0 px-2.5 py-1 rounded-md border border-border-strong text-text-muted hover:bg-row-hover hover:text-text transition-colors"
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
             )}
-
             <AttachmentError error={attachments.error} onDismiss={attachments.dismissError} />
-            <form
-              onSubmit={handleSubmit}
-              className="flex flex-col border border-border-strong bg-surface shadow-2xl focus-within:border-accent focus-within:ring-2 focus-within:ring-[var(--ring)] transition-all p-1.5 rounded-md"
-              {...attachments.dropHandlers}
-            >
-              {/* Inside the border, not floating above it: they belong to the
-                  message being written, and a bar above the composer read as a
-                  notification about them. */}
-              <AttachmentChips images={attachedImages} onRemove={attachments.remove} />
-
-              <div className="flex items-end gap-1.5">
-              <div className="pl-4 pr-2 py-4 text-text-faint shrink-0">
-                <Terminal className={cn("h-4 w-4", isLoading ? "animate-pulse text-green-500" : "")} />
-              </div>
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  // Auto-resize
-                  const ta = e.target;
-                  ta.style.height = 'auto';
-                  ta.style.height = Math.min(ta.scrollHeight, 180) + 'px';
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    // Typing ahead is allowed; sending a second turn on top of
-                    // a running one is not — `handleSubmit` returns early, and
-                    // the draft is kept rather than swallowed.
-                    if (input.trim() || attachedImages.length > 0) {
-                      handleSubmit(e as unknown as React.FormEvent);
-                    }
-                  }
-                  if (e.key === 'Escape' && editingIndex !== null) {
-                    setEditingIndex(null);
-                    setInput('');
-                  }
-                }}
-                {...attachments.pasteHandlers}
-                placeholder={isLoading ? "Agent is working — type your next message…" : "Enter command…"}
-                title="Shift+Enter for a new line"
-                // The <form> above owns the focus ring for this control.
-                data-no-focus-ring
-                className="flex-1 bg-transparent py-3 pr-2 text-[15px] focus:outline-none font-mono text-zinc-100 placeholder:text-zinc-500 resize-none min-h-[44px] max-h-[200px] leading-relaxed"
-                rows={1}
-                autoFocus
-              />
-              <AttachButton
-                onFiles={attachments.accept}
-                count={attachedImages.length}
-                disabledReason={attachRefusal}
-                className="p-2.5 self-end mb-1 relative top-[1px]"
-              />
-              {/* The one button, in whichever job the moment calls for.
-
-                  Two buttons would mean one of them is always dead, and the
-                  live one moves — so Stop lands where the eye already is,
-                  which is where Execute was a second ago. */}
-              {isLoading ? (
-                <button
-                  type="button"
-                  onClick={handleStop}
-                  title="Stop the agent"
-                  className="px-4 py-2 bg-surface-2 text-text font-semibold text-[11px] uppercase tracking-wider border border-border-strong hover:bg-row-hover hover:border-accent transition-all self-end mb-1 shrink-0 flex items-center gap-1.5 justify-center rounded-md"
-                >
-                  <Square className="h-3 w-3 fill-current" />
-                  <span className="hidden md:inline">Stop</span>
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  // Named at every width: below md it is an icon alone (F181).
-                  aria-label={editingIndex !== null ? 'Resend' : 'Execute'}
-                  disabled={!input.trim() && attachedImages.length === 0}
-                  className="px-4 py-2 bg-accent text-accent-fg font-semibold text-[11px] uppercase tracking-wider border border-transparent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all self-end mb-1 shrink-0 flex items-center justify-center rounded-md"
-                >
-                  <span className="hidden md:inline">{editingIndex !== null ? 'Resend' : 'Execute'}</span>
-                  <Send className="h-4 w-4 md:hidden" />
-                </button>
+            <Composer
+              value={input}
+              onChange={setInput}
+              // Typing ahead is allowed; sending a second turn on top of a running
+              // one is not — `handleSubmit` returns early, and the draft is kept.
+              onSend={() => handleSubmit({ preventDefault() {} } as unknown as React.FormEvent)}
+              canSend={Boolean(input.trim()) || attachedImages.length > 0}
+              sendLabel={editingIndex !== null ? 'Resend' : 'Send'}
+              busy={isLoading}
+              onStop={handleStop}
+              stopLabel="Stop the agent"
+              placeholder={isLoading ? 'Agent is working — type your next message…' : `Message ${agentName}…`}
+              label={`Message ${agentName}`}
+              autoFocus
+              textareaRef={textareaRef}
+              onEscape={editingIndex !== null ? () => { setEditingIndex(null); setInput(''); } : undefined}
+              dropHandlers={attachments.dropHandlers}
+              pasteHandlers={attachments.pasteHandlers}
+              top={<AttachmentChips images={attachedImages} onRemove={attachments.remove} />}
+              pill={(
+                // Native-builder machinery agents (ids `agent_native_builder…`) are not listed.
+                <AgentPicker
+                  agents={systemStatus?.agents
+                    ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
+                    : []}
+                  activeId={systemStatus?.active_agent_id}
+                  activeName={agentName}
+                  onPick={handleSwitchAgent}
+                />
               )}
-              </div>
-            </form>
-            <div className="text-center mt-2">
-              <p className="text-xs text-text-faint uppercase tracking-widest font-mono">
-                Synapses that connect agents
-              </p>
-            </div>
+              attach={(
+                <AttachButton
+                  onFiles={attachments.accept}
+                  count={attachedImages.length}
+                  disabledReason={attachRefusal}
+                  className="rounded-md p-1.5"
+                />
+              )}
+              model={workflowId ? (
+                // A workflow: each step runs on the model set on it (U64).
+                <span className="truncate" title="A workflow: each step runs on the model set on it">
+                  Workflow{workflowStepCount !== null && <> · {workflowStepCount} {workflowStepCount === 1 ? 'step' : 'steps'}</>}
+                </span>
+              ) : systemStatus ? (
+                <span className="truncate" title={[provider, systemStatus.model].filter(Boolean).join(' · ')}>
+                  {provider && <span className="hidden sm:inline">{provider} · </span>}{systemStatus.model || 'Loading...'}
+                </span>
+              ) : null}
+              hint="Enter to send · Shift+Enter for a new line"
+              showHint={!firstMessageSent}
+            />
           </div>
         </div>
       </div>

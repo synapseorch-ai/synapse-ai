@@ -147,7 +147,7 @@ export function Composer({
                     {pill && <div className="flex min-w-0 shrink items-center">{pill}</div>}
                     {attach}
                     <span className="min-w-0 flex-1" />
-                    {model && <div className="flex min-w-0 shrink items-center justify-end gap-1 text-xs text-text-faint">{model}</div>}
+                    {model && <div data-composer-model className="flex min-w-0 shrink items-center justify-end gap-1 text-xs text-text-faint">{model}</div>}
                     {busy ? (
                         <button
                             type="button"
