@@ -124,6 +124,8 @@ export type RunRecord = {
     humanFields: import('../orchestration/humanFields').HumanField[] | null;
     /** What the question is about (OSS sends it), shown above it. */
     humanContext?: string | null;
+    /** The state key that context came from, when known: it captions the box (U65). */
+    humanContextKey?: string | null;
     /** Why a failed or cancelled run stopped (the engine's `failure_reason`). */
     error: string | null;
     /** Per-step spend, by step id (cloud). */

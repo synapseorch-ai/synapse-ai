@@ -91,6 +91,12 @@ interface StepConfigPanelProps {
      * (`CanvasWorkbench`, M3a), which owns the width; everything inside is the same.
      */
     frame?: 'docked' | 'card';
+    /**
+     * What leads the step's body, above its issues and fields: the open canvas
+     * puts the question a run is waiting on here, when this is the step that
+     * asked (M3a-2), so it is answered where the step is set up.
+     */
+    lead?: React.ReactNode;
 }
 
 // The engine asks the runner for the internet (`Network.INTERNET` in the
@@ -112,7 +118,7 @@ export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
     availableModels, orchestration, showVaultHints = true, canRunCode = true,
     codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, semanticCacheNote = SELF_HOSTED_SEMANTIC_NOTE, readOnly = false,
-    knowledgeEnabled = false, knowledgeBases, frame = 'docked',
+    knowledgeEnabled = false, knowledgeBases, frame = 'docked', lead,
 }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => {
         if (!readOnly) onUpdate({ ...step, ...patch });
@@ -210,6 +216,8 @@ export function StepConfigPanel({
             </div>
 
             <div className="flex-1 space-y-4 overflow-y-auto p-4">
+                {lead}
+
                 {/* Issues for this step */}
                 {issues.length > 0 && (
                     <div className="space-y-1.5">

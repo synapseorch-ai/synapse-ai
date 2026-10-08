@@ -1,8 +1,8 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useEffectEvent, useCallback, useRef, useSyncExternalStore } from 'react';
+import { useState, useEffect, useEffectEvent, useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 import { Plus, Trash, Copy, Radio, Bot } from 'lucide-react';
-import { Combobox, ConfirmDialog, Mark, SearchInput } from '@/components/ui';
+import { Combobox, ConfirmDialog, Mark, Modal, SearchInput } from '@/components/ui';
 import { useRouter } from 'next/navigation';
 import { matchesQuery } from '@/lib/search';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
@@ -18,7 +18,7 @@ import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
 import {
     DescriptionField, GuardrailsFields, SchedulesList, SettingsSection, WorkflowSettingsPanel,
 } from '../orchestration/WorkflowSettings';
-import { humanAnswer, initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
+import { initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
 import type { KnowledgeBaseOption } from '../orchestration/panel/shared';
 import { knowledgeApi, useKnowledgeEnabled } from '@/lib/knowledge';
@@ -27,9 +27,10 @@ import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
 import { isLiveRun, runStatusMeta, type RunSummary } from '@/components/runs/summary';
 import {
-    appendRunLog, applyRunEvent, emptyRunLog, RunList, type RunLogState, type RunRow, type StepResultEntry,
+    appendRunLog, applyRunEvent, ApprovalCard, emptyRunLog, RunHostProvider, RunList,
+    type RunHost, type RunLogState, type RunRecord, type RunRow, type StepResultEntry,
 } from '@/components/run';
-import { ossRunRow } from '@/lib/runHost';
+import { OSS_RUN_HOST, ossRunRow } from '@/lib/runHost';
 import { ResponseModal } from '@/components/workflows/runLog';
 import { RunDrawer } from '@/components/workflows/RunDrawer';
 import { RunStrip, type RunDrawerView } from '@/components/workflows/RunStrip';
@@ -247,6 +248,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // it is (U65); a question from before the key was sent says "this run".
     const [humanContext, setHumanContext] = useState<{ text: string; key: string | null } | null>(null);
     const [humanResponse, setHumanResponse] = useState('');
+    // The step a person's answer is waiting on, which question this is (a loop
+    // can ask the same step again), and since when it has waited, when the run's
+    // record says (a reopened run): the setup card answers it there (M3a-2).
+    const [waitingStep, setWaitingStep] = useState<string | null>(null);
+    const [questionSeq, setQuestionSeq] = useState(0);
+    const [waitingSince, setWaitingSince] = useState<string | null>(null);
+    // Answer on a question whose step is not on this canvas: the same card, in a dialog.
+    const [answerDialog, setAnswerDialog] = useState(false);
     // The step's declared fields, when it has any — answered as a form keyed by
     // name, like every other place a human step is answered (F75). Set with the
     // prompt at each place a question arrives; ignored while there is none.
@@ -426,7 +435,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     setHumanContext(data.human_context ? { text: String(data.human_context), key: null } : null);
                     setHumanFields(fieldList(data.human_fields));
                     setHumanValues(initialHumanValues(fieldList(data.human_fields)));
+                    // The journal's question names its step; a run from before the
+                    // journal has only its record's current step.
+                    setWaitingStep(data.current_step_id ?? null);
+                    setQuestionSeq(n => n + 1);
                 }
+                const asked = Array.isArray(data.step_history)
+                    ? [...data.step_history].reverse().find((h: any) => h?.status === 'paused')
+                    : null;
+                setWaitingSince(data.waiting_for_human && asked?.started_at ? String(asked.started_at) : null);
             }
         } catch { /* ignore */ }
 
@@ -872,6 +889,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                         setHumanContext(data.human_context ? { text: String(data.human_context), key: null } : null);
                         setHumanFields(fieldList(data.human_fields));
                         setHumanValues(initialHumanValues(fieldList(data.human_fields)));
+                        setWaitingStep(data.current_step_id ?? null);
+                        setQuestionSeq(n => n + 1);
                     }
                     setRunLog(prev => appendRunLog(prev, '[Reconnected — run is waiting for your input]'));
                     return;
@@ -894,6 +913,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         body: Record<string, any>,
         /** A caller that can say why its request was refused, and what now. */
         onRefused?: (res: Response) => Promise<void>,
+        /** The request was taken: called once the response says so, before its stream is read. */
+        onOpen?: () => void,
     ) => {
         const controller = new AbortController();
         abortRef.current?.abort();  // e.g. close a reattach tail before resuming
@@ -916,6 +937,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 setRunLog(prev => appendRunLog(prev, `[HTTP ${res.status}]`));
                 return;
             }
+            onOpen?.();
 
             const reader = res.body.getReader();
             const decoder = new TextDecoder();
@@ -979,6 +1001,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         setRunStatus('running');
         setRunLog(emptyRunLog());
         setHumanPrompt(null);
+        setWaitingStep(null);
+        setWaitingSince(null);
         lastEventIdRef.current = 0;  // fresh run, fresh journal
         setRunDrawer('run');
 
@@ -1078,6 +1102,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     askedStepRef.current = data.orch_step_id;
                     setRunStepStatuses(prev => ({ ...prev, [data.orch_step_id]: 'paused' }));
                 }
+                setWaitingStep(data.orch_step_id ?? null);
+                setQuestionSeq(n => n + 1);
+                // A question asked now has waited no time; a replayed one keeps
+                // the record's start, read when the run was reopened.
+                if (!fromJournal) setWaitingSince(null);
                 setHumanPrompt(data.prompt || 'Please provide input:');
                 setHumanContext(data.agent_context
                     ? { text: String(data.agent_context), key: data.context_key || null }
@@ -1134,31 +1163,106 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         setRunLog(prev => appendRunLog(prev, CANCELLED_LINE));
     };
 
-    const submitHumanInput = async () => {
-        if (!runId) return;
-        setHumanPrompt(null);
-        setHumanContext(null);
-        setRunStatus('running');
-        setRunStepStatuses(prev => {
-            const next = { ...prev };
-            for (const k in next) { if (next[k] === 'paused') next[k] = 'running'; }
-            return next;
+    // The answer from the setup card (`ApprovalCard` through the run host's
+    // `answer`, M3a-2): the mapping of the step's fields, or the text. It resolves
+    // once the server has taken it, and only then does the canvas move on; a
+    // refusal rejects with its reason, which the card says, and the question stays.
+    const submitHumanInput = (response: string | HumanValues | Record<string, unknown>): Promise<string> =>
+        new Promise((resolve, reject) => {
+            const rid = runId;
+            if (!rid) { reject(new Error('No run is waiting for an answer.')); return; }
+            let settled = false;
+            void streamSSE(`/api/orchestrations/runs/${rid}/human-input`, { response }, async (res) => {
+                // Refused (F215): most often someone else answered first. Say so,
+                // then follow the run on from the last event this tab saw, which
+                // keeps this line in the log; a replay from 0 would rebuild it.
+                const message = await refusedAnswerMessage(res);
+                settled = true;
+                reject(new Error(message));
+                setRunLog(prev => appendRunLog(prev, `[${message}]`));
+                if (res.status === 404) { setRunStatus('failed'); return; }
+                const hasJournal = await streamRunJournal(rid, lastEventIdRef.current);
+                if (!hasJournal) await pollRunStatus(rid, { silent: true });
+            }, () => {
+                settled = true;
+                setHumanPrompt(null);
+                setHumanContext(null);
+                setRunStatus('running');
+                setRunStepStatuses(prev => {
+                    const next = { ...prev };
+                    for (const k in next) { if (next[k] === 'paused') next[k] = 'running'; }
+                    return next;
+                });
+                setRunLog(prev => appendRunLog(prev, `Human response submitted`));
+                setHumanResponse('');
+                setAnswerDialog(false);
+                resolve('Answer sent — the run is resuming.');
+            }).then(() => {
+                if (!settled) reject(new Error('The answer could not be sent. Try again.'));
+            });
         });
-        setRunLog(prev => appendRunLog(prev, `Human response submitted`));
-        const response = humanFields.length ? humanAnswer(humanFields, humanValues) : humanResponse;
-        setHumanResponse('');
 
-        streamSSE(`/api/orchestrations/runs/${runId}/human-input`, { response }, async (res) => {
-            // Refused (F215): most often someone else answered first. Say so,
-            // then follow the run on from the last event this tab saw, which
-            // keeps this line in the log; a replay from 0 would rebuild it.
-            const message = await refusedAnswerMessage(res);
-            showToast(message, 'warning');
-            setRunLog(prev => appendRunLog(prev, `[${message}]`));
-            if (res.status === 404) { setRunStatus('failed'); return; }
-            const hasJournal = await streamRunJournal(runId, lastEventIdRef.current);
-            if (!hasJournal) await pollRunStatus(runId, { silent: true });
-        });
+    // The setup card answers through the run screens' own host: OSS's, with the
+    // answer going the editor's way (its stream follows the run on from there).
+    const submitRef = useRef(submitHumanInput);
+    useEffect(() => { submitRef.current = submitHumanInput; });
+    const runHost = useMemo<RunHost>(() => ({
+        ...OSS_RUN_HOST,
+        answer: (_runId, response) => submitRef.current(response),
+    }), []);
+
+    // The question as the card reads it: the waiting step by name, since when it
+    // has waited when the run's record says, the prompt, its fields and context.
+    const waitingStepName = waitingStep ? (draft?.steps.find(s => s.id === waitingStep)?.name ?? waitingStep) : null;
+    const asking = runStatus === 'paused' && !!humanPrompt && !!runId && !!waitingStep;
+    const waitingRecord: RunRecord | null = asking ? {
+        id: runId!,
+        workflowId: draft?.id ?? '',
+        workflowName: draft?.name ?? null,
+        status: 'paused',
+        waitingForHuman: true,
+        startedAt: null,
+        endedAt: null,
+        currentStepId: waitingStep,
+        tokens: null,
+        costUsd: null,
+        history: [{ step_id: waitingStep!, step_name: waitingStepName ?? undefined, status: 'paused', started_at: waitingSince ?? undefined }],
+        sharedState: {},
+        tasks: [],
+        humanPrompt,
+        humanFields,
+        humanContext: humanContext?.text ?? null,
+        humanContextKey: humanContext?.key ?? null,
+        error: null,
+    } : null;
+    const questionKey = `${runId ?? ''}:${questionSeq}`;
+    const approval = waitingRecord ? (
+        <ApprovalCard
+            key={questionKey}
+            run={waitingRecord}
+            onDone={() => { /* the canvas moves on with the run's own events */ }}
+            onCancel={cancelRun}
+            busy={false}
+            requireAnswer
+            submitOnEnter
+            draft={{ text: humanResponse, onText: setHumanResponse, values: humanValues, onValues: setHumanValues }}
+        />
+    ) : null;
+
+    // The run strip's Answer: the card on the step that asked, the question at
+    // its top and its first field ready — or, when that step is not on this
+    // canvas, the same card in a dialog.
+    const answerNow = () => {
+        if (waitingStep && draft?.steps.some(s => s.id === waitingStep)) {
+            setSelectedStepId(waitingStep);
+            window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+                const question = document.querySelector<HTMLElement>('[data-canvas-chrome="card"] section[aria-label="Waiting for a person"]');
+                question?.scrollIntoView({ block: 'start' });
+                question?.querySelector<HTMLElement>('textarea, input, select')?.focus();
+            }));
+        } else {
+            setAnswerDialog(true);
+        }
     };
 
     const resumeRun = async () => {
@@ -1515,128 +1619,136 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 // dock, the panels' into the card's Workflow settings, the run log's
                 // into the run strip and drawer.
                 <div className="relative min-h-0 flex-1">
-                    <CanvasWorkbench
-                        orchestration={draft}
-                        onChange={updateOrchestration}
-                        agents={agents}
-                        knowledgeEnabled={knowledgeEnabled}
-                        selectedStepId={selectedStepId}
-                        onSelectStep={setSelectedStepId}
-                        renderStep={(step) => (
-                            <StepConfigPanel
-                                frame="card"
-                                step={step}
-                                agents={agents}
-                                allStepIds={allStepIds}
-                                onUpdate={updateStep}
-                                onDelete={() => deleteStep(step.id)}
-                                onClose={() => setSelectedStepId(null)}
-                                isEntry={draft.entry_step_id === step.id}
-                                onSetEntry={() => setEntryPoint(step.id)}
-                                availableModels={availableModels}
-                                orchestration={draft}
-                                knowledgeEnabled={knowledgeEnabled}
-                                knowledgeBases={knowledgeBases}
-                                semanticCacheNote={semanticCacheNote}
-                            />
-                        )}
-                        renderSettings={(close) => (
-                            <WorkflowSettingsPanel name={draft.name} onClose={close}>
-                                <SettingsSection title="Description">
-                                    <DescriptionField draft={draft} onChange={setDraft} />
-                                </SettingsSection>
-                                <SettingsSection title="Schedules">
-                                    <SchedulesList schedules={schedules} workflowId={draft.id} href="/schedules" />
-                                </SettingsSection>
-                                {/* Its own heading and Add key, as in the State Schema tab. */}
-                                <StateSchemaEditor
-                                    schema={draft.state_schema}
-                                    onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
+                    <RunHostProvider value={runHost}>
+                        <CanvasWorkbench
+                            orchestration={draft}
+                            onChange={updateOrchestration}
+                            agents={agents}
+                            knowledgeEnabled={knowledgeEnabled}
+                            selectedStepId={selectedStepId}
+                            onSelectStep={setSelectedStepId}
+                            renderStep={(step) => (
+                                <StepConfigPanel
+                                    frame="card"
+                                    step={step}
+                                    agents={agents}
+                                    allStepIds={allStepIds}
+                                    onUpdate={updateStep}
+                                    onDelete={() => deleteStep(step.id)}
+                                    onClose={() => setSelectedStepId(null)}
+                                    isEntry={draft.entry_step_id === step.id}
+                                    onSetEntry={() => setEntryPoint(step.id)}
+                                    availableModels={availableModels}
+                                    orchestration={draft}
+                                    knowledgeEnabled={knowledgeEnabled}
+                                    knowledgeBases={knowledgeBases}
+                                    semanticCacheNote={semanticCacheNote}
+                                    lead={step.id === waitingStep ? approval : undefined}
                                 />
-                                <SettingsSection title="Guardrails">
-                                    <GuardrailsFields draft={draft} onChange={setDraft} rubrics={rubrics} />
-                                </SettingsSection>
-                            </WorkflowSettingsPanel>
-                        )}
-                        stepActions={{
-                            duplicate: duplicateStep,
-                            setEntry: setEntryPoint,
-                            remove: deleteStep,
-                        }}
-                        history={{ undo, redo, canUndo, canRedo }}
-                        save={{ dirty, saving, onSave: handleSave }}
-                        onBack={() => guardLeave(backToList)}
-                        switcher={
-                            <Combobox
-                                trigger="icon"
-                                value={selectedOrchId || undefined}
-                                onChange={(id: string) => guardLeave(() => selectOrchestration(id || null))}
-                                placeholder="Select orchestration…"
-                                searchPlaceholder="Search orchestrations…"
-                                aria-label="Orchestration"
-                                size="sm"
-                                options={orchestrations.map(o => ({ value: o.id, label: o.name }))}
-                            />
-                        }
-                        menu={[
-                            { id: 'new', label: 'New orchestration', icon: Plus, onSelect: () => guardLeave(createNew), separatorBefore: true },
-                            { id: 'deploy', label: 'Deploy as Agent', icon: Bot, onSelect: handleDeploy },
-                            { id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: handleDuplicate, disabled: saving },
-                            { id: 'delete', label: 'Delete', icon: Trash, onSelect: handleDelete, danger: true, separatorBefore: true },
-                        ]}
-                        onChangeWithAI={() => openBuilder({ currentOrchestrationId: realOrchId })}
-                        insetRight={builderInset}
-                        run={{
-                            phase: runStatus,
-                            stepStatuses: runStepStatuses,
-                            stepErrors: runStepErrors,
-                            onRun: startRun,
-                            onStop: cancelRun,
-                            input: { value: runInput, onChange: setRunInput },
-                            runKey,
-                            trail,
-                            replaying,
-                        }}
-                        runStrip={
-                            <RunStrip
-                                runStatus={runStatus}
-                                liveActivity={runLog.liveActivity}
-                                runId={runId}
-                                humanPrompt={humanPrompt}
-                                humanContext={humanContext}
-                                humanResponse={humanResponse}
-                                setHumanResponse={setHumanResponse}
-                                humanFields={humanFields}
-                                humanValues={humanValues}
-                                setHumanValues={setHumanValues}
-                                onSubmitHuman={submitHumanInput}
-                                onResumeRun={resumeRun}
-                                drawer={runDrawer}
-                                onDrawer={setRunDrawer}
-                                pastRunCount={pastRuns.length}
-                                activeRuns={activeRuns.filter(r => r.run_id !== runId)}
-                                workflowName={(id) => orchestrations.find(o => o.id === id)?.name ?? id}
-                                onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
-                            />
-                        }
-                        runDrawer={runDrawer ? {
-                            open: true,
-                            content: (
-                                <RunDrawer
-                                    view={runDrawer}
-                                    onClose={() => setRunDrawer(null)}
+                            )}
+                            renderSettings={(close) => (
+                                <WorkflowSettingsPanel name={draft.name} onClose={close}>
+                                    <SettingsSection title="Description">
+                                        <DescriptionField draft={draft} onChange={setDraft} />
+                                    </SettingsSection>
+                                    <SettingsSection title="Schedules">
+                                        <SchedulesList schedules={schedules} workflowId={draft.id} href="/schedules" />
+                                    </SettingsSection>
+                                    {/* Its own heading and Add key, as in the State Schema tab. */}
+                                    <StateSchemaEditor
+                                        schema={draft.state_schema}
+                                        onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
+                                    />
+                                    <SettingsSection title="Guardrails">
+                                        <GuardrailsFields draft={draft} onChange={setDraft} rubrics={rubrics} />
+                                    </SettingsSection>
+                                </WorkflowSettingsPanel>
+                            )}
+                            stepActions={{
+                                duplicate: duplicateStep,
+                                setEntry: setEntryPoint,
+                                remove: deleteStep,
+                            }}
+                            history={{ undo, redo, canUndo, canRedo }}
+                            save={{ dirty, saving, onSave: handleSave }}
+                            onBack={() => guardLeave(backToList)}
+                            switcher={
+                                <Combobox
+                                    trigger="icon"
+                                    value={selectedOrchId || undefined}
+                                    onChange={(id: string) => guardLeave(() => selectOrchestration(id || null))}
+                                    placeholder="Select orchestration…"
+                                    searchPlaceholder="Search orchestrations…"
+                                    aria-label="Orchestration"
+                                    size="sm"
+                                    options={orchestrations.map(o => ({ value: o.id, label: o.name }))}
+                                />
+                            }
+                            menu={[
+                                { id: 'new', label: 'New orchestration', icon: Plus, onSelect: () => guardLeave(createNew), separatorBefore: true },
+                                { id: 'deploy', label: 'Deploy as Agent', icon: Bot, onSelect: handleDeploy },
+                                { id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: handleDuplicate, disabled: saving },
+                                { id: 'delete', label: 'Delete', icon: Trash, onSelect: handleDelete, danger: true, separatorBefore: true },
+                            ]}
+                            onChangeWithAI={() => openBuilder({ currentOrchestrationId: realOrchId })}
+                            insetRight={builderInset}
+                            run={{
+                                phase: runStatus,
+                                stepStatuses: runStepStatuses,
+                                stepErrors: runStepErrors,
+                                onRun: startRun,
+                                onStop: cancelRun,
+                                input: { value: runInput, onChange: setRunInput },
+                                runKey,
+                                trail,
+                                replaying,
+                                waitingStepId: asking && !replaying ? waitingStep : null,
+                                questionKey,
+                            }}
+                            runStrip={
+                                <RunStrip
                                     runStatus={runStatus}
-                                    log={runLog}
-                                    onOpenResponseModal={setResponseModal}
+                                    liveActivity={runLog.liveActivity}
                                     runId={runId}
                                     humanPrompt={humanPrompt}
-                                    orchestrationNames={Object.fromEntries(orchestrations.map(o => [o.id, o.name]))}
-                                    pastRuns={pastRuns}
+                                    onAnswer={answerNow}
+                                    onResumeRun={resumeRun}
+                                    drawer={runDrawer}
+                                    onDrawer={setRunDrawer}
+                                    pastRunCount={pastRuns.length}
+                                    activeRuns={activeRuns.filter(r => r.run_id !== runId)}
+                                    workflowName={(id) => orchestrations.find(o => o.id === id)?.name ?? id}
                                     onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
                                 />
-                            ),
-                        } : undefined}
-                    />
+                            }
+                            runDrawer={runDrawer ? {
+                                open: true,
+                                content: (
+                                    <RunDrawer
+                                        view={runDrawer}
+                                        onClose={() => setRunDrawer(null)}
+                                        runStatus={runStatus}
+                                        log={runLog}
+                                        onOpenResponseModal={setResponseModal}
+                                        runId={runId}
+                                        humanPrompt={humanPrompt}
+                                        orchestrationNames={Object.fromEntries(orchestrations.map(o => [o.id, o.name]))}
+                                        pastRuns={pastRuns}
+                                        onRestoreRun={(run) => guardLeave(() => restoreRun(run))}
+                                    />
+                                ),
+                            } : undefined}
+                        />
+
+                        <Modal
+                            open={answerDialog && !!approval}
+                            onClose={() => setAnswerDialog(false)}
+                            title="Human input required"
+                            size="lg"
+                        >
+                            {approval}
+                        </Modal>
+                    </RunHostProvider>
 
                     {/* Response detail modal */}
                     {responseModal && (

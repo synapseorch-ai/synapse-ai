@@ -20,6 +20,12 @@
  * any, a bare string when it did not — what the engine's `resume()` takes
  * (F75). An empty answer can be sent, as on cloud's card before it. A refusal
  * (someone answered first) is said in the card.
+ *
+ * The workflow editor answers in its setup card (M3a-2) with its own rules:
+ * `requireAnswer` (an empty free-text answer is not sent, by button or by key —
+ * Naveen's item 7), `submitOnEnter` (Enter sends, Shift+Enter is a new line, the
+ * box grows with its lines) and `draft` (the editor keeps what was typed, so an
+ * answer left half-written is still there when the card opens again).
  */
 import Link from 'next/link';
 import { useState } from 'react';
@@ -33,7 +39,16 @@ import { useRunHost } from './host';
 import { decisionField, type RunRecord } from './model';
 import { Took } from './When';
 
-export function ApprovalCard({ run, onDone, onCancel, busy, openHref, showWorkflow = false }: {
+export type ApprovalDraft = {
+    text: string;
+    onText: (text: string) => void;
+    values: HumanValues;
+    onValues: (values: HumanValues) => void;
+};
+
+export function ApprovalCard({
+    run, onDone, onCancel, busy, openHref, showWorkflow = false, requireAnswer = false, submitOnEnter = false, draft,
+}: {
     run: RunRecord;
     /** After an answer was taken: the message to show. */
     onDone: (message: string) => void;
@@ -43,12 +58,22 @@ export function ApprovalCard({ run, onDone, onCancel, busy, openHref, showWorkfl
     openHref?: string;
     /** Name the workflow in the card's top line, where the page does not (Home). */
     showWorkflow?: boolean;
+    /** An empty free-text answer cannot be sent (the workflow editor's rule). */
+    requireAnswer?: boolean;
+    /** Enter sends the free-text answer; Shift+Enter is a new line. */
+    submitOnEnter?: boolean;
+    /** The answer as typed, held by the page, so it outlives the card. */
+    draft?: ApprovalDraft;
 }) {
     const host = useRunHost();
     const fields = Array.isArray(run.humanFields) ? run.humanFields : [];
     const decision = decisionField(fields);
-    const [values, setValues] = useState<HumanValues>(() => initialHumanValues(fields));
-    const [text, setText] = useState('');
+    const [ownValues, setOwnValues] = useState<HumanValues>(() => initialHumanValues(fields));
+    const [ownText, setOwnText] = useState('');
+    const values = draft ? draft.values : ownValues;
+    const setValues = draft ? draft.onValues : setOwnValues;
+    const text = draft ? draft.text : ownText;
+    const setText = draft ? draft.onText : setOwnText;
     const [sending, setSending] = useState<null | 'send' | 'yes' | 'no'>(null);
     const [error, setError] = useState('');
     const asking = [...run.history].reverse().find((h) => h.status === 'paused');
@@ -69,6 +94,8 @@ export function ApprovalCard({ run, onDone, onCancel, busy, openHref, showWorkfl
     }
 
     const locked = busy || sending !== null;
+    // Nothing to send: free text, and none typed, where the page asks for some.
+    const empty = requireAnswer && !fields.length && !text.trim();
     // The flag's label as a button: "Approve payment", not "Approve payment?".
     const yesLabel = decision ? humanFieldLabel(decision).replace(/\s*\?+\s*$/, '') : '';
     const others = decision ? fields.filter((f) => f !== decision) : fields;
@@ -83,7 +110,12 @@ export function ApprovalCard({ run, onDone, onCancel, busy, openHref, showWorkfl
             </div>
             {run.humanContext && (
                 <figure className="m-0">
-                    <figcaption className="mb-1.5 text-xs text-text-muted">From this run</figcaption>
+                    {/* Captioned with the state key it came from, when the run says (U65). */}
+                    <figcaption className="mb-1.5 text-xs text-text-muted">
+                        {run.humanContextKey
+                            ? <>From <span className="font-code text-text">{run.humanContextKey}</span></>
+                            : 'From this run'}
+                    </figcaption>
                     <div className="max-h-64 overflow-y-auto rounded-md border border-border bg-surface p-4">
                         <Markdown>{run.humanContext}</Markdown>
                     </div>
@@ -97,12 +129,27 @@ export function ApprovalCard({ run, onDone, onCancel, busy, openHref, showWorkfl
                     {fields.length ? (
                         <HumanFieldsForm fields={others} values={values} onChange={setValues} idPrefix={`run-${run.id}-field`} />
                     ) : (
-                        <Field label="Your answer">
+                        <Field
+                            label="Your answer"
+                            hint={submitOnEnter ? (
+                                <>
+                                    <kbd className="rounded border border-border px-1 font-mono text-2xs">Enter</kbd> to send,{' '}
+                                    <kbd className="rounded border border-border px-1 font-mono text-2xs">Shift Enter</kbd> for a new line
+                                </>
+                            ) : undefined}
+                        >
                             <Textarea
-                                rows={3}
+                                rows={submitOnEnter ? 2 : 3}
                                 value={text}
                                 onChange={(e) => setText(e.target.value)}
                                 placeholder="Type the answer this step is waiting for"
+                                className={submitOnEnter ? 'field-sizing-content max-h-48 min-h-[3.25rem] resize-none' : undefined}
+                                onKeyDown={submitOnEnter ? (e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                                        e.preventDefault();
+                                        if (!locked && !empty) void send('send');
+                                    }
+                                } : undefined}
                             />
                         </Field>
                     )}
@@ -122,7 +169,7 @@ export function ApprovalCard({ run, onDone, onCancel, busy, openHref, showWorkfl
                         </Button>
                     </>
                 ) : (
-                    <Button variant="person" onClick={() => send('send')} loading={sending === 'send'} disabled={locked}>
+                    <Button variant="person" onClick={() => send('send')} loading={sending === 'send'} disabled={locked || empty}>
                         Send answer
                     </Button>
                 )}

@@ -2,18 +2,16 @@
 /**
  * The open canvas's run strip (M3a): where the run stands, at the canvas's
  * bottom left. It holds what the Run Log tab under the old canvas held around
- * the log: the waiting question's Answer and its dialog, Resume from failure,
- * the run's own page, and the buttons that open the log and the recent runs
- * above it. Other runs still going are a menu here; the list keeps its banner.
+ * the log: the waiting question's Answer, Resume from failure, the run's own
+ * page, and the buttons that open the log and the recent runs above it. Other
+ * runs still going are a menu here; the list keeps its banner.
+ *
+ * Answer opens the question where it is answered now, the setup card of the
+ * step that asked (M3a-2); the dialog it used to open is gone.
  */
-import { useState } from 'react';
 import { ExternalLink, FileText, History, Radio, RotateCcw } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { Button, Markdown, Menu, MenuItem, Modal, Spinner, buttonStyles } from '@/components/ui';
+import { Button, Menu, MenuItem, Spinner, buttonStyles } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
-import type { HumanField, HumanValues } from '../orchestration/humanFields';
 import type { RunSummary } from '@/components/runs/summary';
 
 export type RunDrawerView = 'run' | 'recent';
@@ -21,21 +19,15 @@ export type RunDrawerView = 'run' | 'recent';
 const FLOAT = 'rounded-[12px] border border-border bg-surface shadow-elevated';
 
 export function RunStrip({
-    runStatus, liveActivity, runId,
-    humanPrompt, humanContext, humanResponse, setHumanResponse, humanFields, humanValues, setHumanValues, onSubmitHuman,
+    runStatus, liveActivity, runId, humanPrompt, onAnswer,
     onResumeRun, drawer, onDrawer, pastRunCount, activeRuns, workflowName, onRestoreRun,
 }: {
     runStatus: string;
     liveActivity: string | null;
     runId: string | null;
     humanPrompt: string | null;
-    humanContext: { text: string; key: string | null } | null;
-    humanResponse: string;
-    setHumanResponse: (v: string) => void;
-    humanFields: HumanField[];
-    humanValues: HumanValues;
-    setHumanValues: (v: HumanValues) => void;
-    onSubmitHuman: () => void;
+    /** Take the person to the question: the waiting step's setup card. */
+    onAnswer: () => void;
     onResumeRun: () => void;
     /** Which view the drawer shows, or null when it is shut. */
     drawer: RunDrawerView | null;
@@ -46,15 +38,6 @@ export function RunStrip({
     workflowName: (id: string) => string;
     onRestoreRun: (run: RunSummary) => void;
 }) {
-    // A fresh question closes a stale dialog: adjusted while rendering, as the
-    // bottom panel did, rather than in an effect.
-    const [humanModalOpen, setHumanModalOpen] = useState(false);
-    const [seenPrompt, setSeenPrompt] = useState(humanPrompt);
-    if (seenPrompt !== humanPrompt) {
-        setSeenPrompt(humanPrompt);
-        setHumanModalOpen(false);
-    }
-
     // Paused as well as asking (F141): a cancelled run kept its prompt, and the
     // Answer it offered was refused with a 409.
     const waiting = !!humanPrompt && runStatus === 'paused';
@@ -68,7 +51,7 @@ export function RunStrip({
             {waiting ? (
                 <button
                     type="button"
-                    onClick={() => setHumanModalOpen(true)}
+                    onClick={onAnswer}
                     className="group -ml-1.5 flex min-w-0 flex-[1_1_18rem] items-center gap-2 overflow-hidden rounded-lg border border-person/50 bg-person-subtle py-1.5 pl-2.5 pr-1.5 text-left transition-colors hover:border-person"
                 >
                     <span className="relative flex size-2 shrink-0">
@@ -141,58 +124,6 @@ export function RunStrip({
                 <History className="size-4" aria-hidden />
             </button>
 
-            <Modal
-                open={waiting && humanModalOpen}
-                onClose={() => setHumanModalOpen(false)}
-                title="Human input required"
-                size="lg"
-                footer={
-                    <>
-                        <Button variant="secondary" onClick={() => setHumanModalOpen(false)}>Later</Button>
-                        <Button onClick={onSubmitHuman} disabled={!humanFields.length && !humanResponse.trim()}>Submit</Button>
-                    </>
-                }
-            >
-                <div className="space-y-3">
-                    {humanContext && (
-                        // Labelled with the state key it came from: a bare
-                        // "pass" under the title said nothing (U65).
-                        <figure>
-                            <figcaption className="mb-1.5 text-xs text-text-muted">
-                                {humanContext.key
-                                    ? <>From <span className="font-code text-text">{humanContext.key}</span></>
-                                    : 'From this run'}
-                            </figcaption>
-                            <div className="max-h-[45vh] overflow-y-auto rounded-md border border-border bg-surface-2 p-4">
-                                <Markdown>{humanContext.text}</Markdown>
-                            </div>
-                        </figure>
-                    )}
-                    <div className="text-sm leading-relaxed text-amber-300">
-                        <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            components={{
-                                p: ({ children }) => <p className="mb-0">{children}</p>,
-                                a: ({ href, children }) => <a href={href} className="text-amber-200 underline" target="_blank" rel="noreferrer">{children}</a>,
-                                strong: ({ children }) => <strong className="font-semibold text-amber-200">{children}</strong>,
-                            }}
-                        >{humanPrompt ?? ''}</ReactMarkdown>
-                    </div>
-                    {humanFields.length > 0 ? (
-                        <HumanFieldsForm fields={humanFields} values={humanValues} onChange={setHumanValues} idPrefix="orch-answer" />
-                    ) : (
-                        <input
-                            autoFocus
-                            aria-label="Your answer"
-                            className="w-full rounded-md border border-amber-700/40 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 outline-none transition-colors placeholder:text-zinc-500 focus:border-amber-500"
-                            value={humanResponse}
-                            onChange={(e) => setHumanResponse(e.target.value)}
-                            placeholder="Your response…"
-                            onKeyDown={(e) => { if (e.key === 'Enter') onSubmitHuman(); }}
-                        />
-                    )}
-                </div>
-            </Modal>
         </div>
     );
 }

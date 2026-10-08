@@ -4,7 +4,7 @@
  * supplies a `RunHost` (`host.tsx`) and maps its API rows onto `model.ts`'s
  * shapes; nothing in this folder reads an API.
  */
-export { ApprovalCard } from './ApprovalCard';
+export { ApprovalCard, type ApprovalDraft } from './ApprovalCard';
 export { ComingUp, upcoming, type StartWays, type Upcoming } from './ComingUp';
 export { explainFailure, parentRunId, type Explained, type FixKind } from './failures';
 export { FailureCard, failureOf } from './FailureCard';

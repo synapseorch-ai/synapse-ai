@@ -104,6 +104,13 @@ export interface CanvasWorkbenchProps {
         trail?: readonly string[];
         /** A reopened run's journal is still catching up: its history lights in place, nothing travels. */
         replaying?: boolean;
+        /**
+         * The step a person's answer is waiting on. Its card opens by itself, once
+         * per question, where the product's `renderStep` shows the question (M3a-2).
+         */
+        waitingStepId?: string | null;
+        /** Which question is open: a new one opens the card again, even on the same step (a loop asks each time round). */
+        questionKey?: string | number;
     };
     /** The run strip's content, at the bottom left. */
     runStrip?: React.ReactNode;
@@ -222,6 +229,20 @@ function Workbench({
         travel: runLive && !run.replaying && !reduced,
         runKey: run.runKey,
     });
+
+    // A question opens its step's card by itself, once. Not while the person is
+    // working in the card on something else: the run strip's Answer says it, and
+    // takes them there when they are ready.
+    const waitingStepId = run.waitingStepId ?? null;
+    const questionKey = waitingStepId ? `${run.questionKey ?? ''}:${waitingStepId}` : null;
+    const openedFor = useRef<string | null>(null);
+    useEffect(() => {
+        if (!questionKey || !waitingStepId || openedFor.current === questionKey) return;
+        openedFor.current = questionKey;
+        const card = rootRef.current?.querySelector('[data-canvas-chrome="card"]');
+        const busy = !!card && card.contains(document.activeElement) && selectedStepId !== waitingStepId;
+        if (!busy && orchestration.steps.some((s) => s.id === waitingStepId)) onSelectStep(waitingStepId);
+    }, [questionKey, waitingStepId, selectedStepId, orchestration.steps, onSelectStep]);
 
     // The selected step slides into view if the card or the bar would cover it.
     useEffect(() => {
