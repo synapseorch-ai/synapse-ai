@@ -46,6 +46,7 @@ export function Combobox<T extends string = string>({
   className,
   size = "md",
   trigger = "field",
+  leading,
   "aria-label": ariaLabel,
   "aria-describedby": ariaDescribedBy,
 }: {
@@ -62,8 +63,12 @@ export function Combobox<T extends string = string>({
    * `field` (the default) shows the choice in a select-shaped box. `icon` is a
    * square chevron beside something that already shows the choice — the open
    * canvas's name — and its list takes a fixed width. Name it with `aria-label`.
+   * `pill` is a rounded chip that shows the choice inside a composer's bar (the
+   * agent, the builder's model); its list takes the same fixed width.
    */
-  trigger?: "field" | "icon";
+  trigger?: "field" | "icon" | "pill";
+  /** Drawn before the choice in a `pill` trigger: the agent's tile, say. */
+  leading?: React.ReactNode;
   "aria-label"?: string;
   "aria-describedby"?: string;
 }) {
@@ -95,9 +100,15 @@ export function Combobox<T extends string = string>({
           "group inline-flex items-center justify-between gap-2 text-left",
           !selected && "text-text-faint",
           trigger === "icon" && "size-8 w-8 shrink-0 justify-center border-transparent bg-transparent px-0 py-0 hover:bg-surface-2",
+          trigger === "pill" && cn(
+            "h-7 w-auto min-w-0 max-w-full shrink justify-start gap-1.5 rounded-full border-transparent bg-surface-2 py-0 text-xs font-medium",
+            leading ? "pl-1 pr-2" : "px-2.5",
+            "hover:border-transparent hover:bg-row-hover",
+          ),
           className,
         )}
       >
+        {trigger === "pill" && leading}
         <span className={trigger === "icon" ? "sr-only" : "truncate"}>{selected?.label ?? placeholder}</span>
         <ChevronDown
           className="size-4 shrink-0 text-text-faint transition-transform group-data-[state=open]:rotate-180"
@@ -119,7 +130,7 @@ export function Combobox<T extends string = string>({
             // Match the trigger's width rather than hugging the longest option,
             // which otherwise makes the popup jump as the selection changes. An
             // icon trigger is too narrow to match, so its list has a width of its own.
-            trigger === "icon" ? "w-72 max-w-[calc(100vw-16px)]" : "w-[var(--radix-popover-trigger-width)]",
+            trigger === "field" ? "w-[var(--radix-popover-trigger-width)]" : "w-72 max-w-[calc(100vw-16px)]",
             // Never taller than the space Radix measured to the viewport edge —
             // without this a long list near the bottom of the screen ran off
             // the page instead of scrolling inside itself.
