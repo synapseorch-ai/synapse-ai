@@ -145,7 +145,9 @@ function RunState({ runStatus, liveActivity }: { runStatus: string; liveActivity
         cancelled: 'Cancelled',
     };
     return (
-        <span className="flex min-w-0 flex-1 items-center gap-2 text-sm" role="status">
+        // An auto basis, so a narrow strip (the setup card open beside it) wraps
+        // the buttons to a second row instead of shrinking this under its words.
+        <span className="flex min-w-0 flex-[1_1_auto] items-center gap-2 text-sm" role="status">
             {runStatus === 'running'
                 ? <Spinner size={16} className="shrink-0 text-machine" />
                 : <span className={cn('size-2 shrink-0 rounded-full', DOT[runStatus] ?? 'bg-danger')} aria-hidden />}
