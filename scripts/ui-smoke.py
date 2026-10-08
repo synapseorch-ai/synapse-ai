@@ -356,13 +356,27 @@ PANEL = """() => {
 RUN_ID = "builder_uismoke00"
 
 
+async def _build_with_ai(page):
+    """Open the AI builder as a person does since M2c retired the corner launcher: the menu's Build with AI (below
+    `md`, the phone bar's mark, which has the same name). Returns the button pressed."""
+    buttons = page.get_by_role("button", name=re.compile(r"^Build with AI"))
+    for _ in range(40):
+        for i in range(await buttons.count()):
+            button = buttons.nth(i)
+            if await button.is_visible():
+                await button.click()
+                return button
+        await asyncio.sleep(0.25)
+    raise AssertionError("no visible Build with AI to open the builder with")
+
+
 async def _open_builder(browser, width=WIDE):
     ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
     await ctx.add_init_script(BUILDER_STUB)
     page = await ctx.new_page()
     await page.goto(APP, wait_until="domcontentloaded")
     await asyncio.sleep(SETTLE + 1.0)
-    await page.get_by_role("button", name="Open the AI builder").click()
+    await _build_with_ai(page)
     await asyncio.sleep(0.5)
     await page.locator('aside[aria-label="AI builder"] textarea').fill("build me something")
     # Send is disabled until React has seen the change event `fill` dispatches.
@@ -634,14 +648,16 @@ async def check_layout(browser) -> str:
                 "costs a line of every page and anchors its tooltip there — " + wrappers[0]
             )
 
-        # The launcher's own label, where a person would look for it.
+        # A `Hint`'s tooltip, where a person would look for it. Its subject was the corner launcher until M2c
+        # retired it; the builder's "Start a new conversation" is the `Hint` left in the shell.
         await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
-        # By its name's start: with a builder question waiting it says so (F214).
-        launcher = page.locator('button[aria-label^="Open the AI builder"]')
+        await _build_with_ai(page)
+        await asyncio.sleep(0.6)
+        launcher = page.locator('aside[aria-label="AI builder"] button[aria-label="Start a new conversation"]')
         box = await launcher.bounding_box()
         if box is None:
-            raise AssertionError("no AI-builder launcher on /dashboard")
+            raise AssertionError("no Start a new conversation in the builder on /dashboard")
         await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
         await asyncio.sleep(1.5)
         tip = await page.evaluate(
@@ -657,19 +673,20 @@ async def check_layout(browser) -> str:
         await ctx.close()
 
     if tip is None:
-        raise AssertionError("the launcher offers no tooltip at all")
+        raise AssertionError("Start a new conversation offers no tooltip at all")
     if tip["bottom"] > WIDE[1] or tip["right"] > WIDE[0] or tip["x"] < 0 or tip["y"] < 0:
         raise AssertionError(
             f"the launcher's tooltip {tip['text']!r} is outside the window "
             f"(bottom {round(tip['bottom'])} of {WIDE[1]})"
         )
-    gap = box["x"] - tip["right"]
+    # The nearer side: a tooltip may open on either side of its trigger.
+    gap = min(abs(box["x"] - tip["right"]), abs(tip["x"] - (box["x"] + box["width"])), abs(tip["y"] - (box["y"] + box["height"])), abs(box["y"] - tip["bottom"]))
     if gap > 200:
         raise AssertionError(
             f"the launcher's tooltip {tip['text']!r} opens {round(gap)}px from the button "
             f"it describes — it is anchored to something else"
         )
-    return f"no page scrolls, and the launcher's tooltip opens {round(gap)}px from it"
+    return f"no page scrolls, and a Hint's tooltip opens {round(gap)}px from its button"
 
 
 # ── contrast ─────────────────────────────────────────────────────────────────
@@ -4082,11 +4099,13 @@ async def check_builderreload(browser) -> str:
     }
     ctx, page = await _builder_back(browser, parked)
     try:
-        launcher = page.get_by_role("button", name=re.compile("Open the AI builder"))
-        named = await launcher.get_attribute("aria-label") or ""
+        # The menu's Build with AI says so (the corner launcher did, until M2c retired it).
+        row = page.get_by_role("button", name=re.compile(r"^Build with AI")).first
+        await row.wait_for(timeout=10_000)
+        named = await row.inner_text()
         if "waiting" not in named:
-            raise AssertionError(f"a plan waiting after a reload does not show on the launcher ({named!r})")
-        await launcher.click()
+            raise AssertionError(f"a plan waiting after a reload does not show on Build with AI ({named!r})")
+        await row.click()
         await asyncio.sleep(0.5)
         text = await _panel_text(page)
         for shown in ("a weekly digest of the tickets", "Here is the proposed plan: one step that summarises."):
@@ -4134,7 +4153,7 @@ async def check_builderreload(browser) -> str:
         await asyncio.sleep(0.5)
         if await page.evaluate("() => !!window.__follow.cancelled"):
             raise AssertionError("reading stopped at a question the build had already had answered")
-        await page.get_by_role("button", name=re.compile("Open the AI builder")).click()
+        await _build_with_ai(page)
         await asyncio.sleep(0.5)
         if "Draft the plan" not in await _panel_text(page):
             raise AssertionError("the followed build's progress never reached the panel")
@@ -8579,7 +8598,7 @@ async def check_plancard(browser) -> str:
     bad: list[str] = []
     ctx, page = await _builder_back(browser, _parked(PLAN_QUESTION))
     try:
-        await page.get_by_role("button", name=re.compile("Open the AI builder")).first.click()
+        await _build_with_ai(page)
         card = page.locator('aside[aria-label="AI builder"] section[aria-label="The plan"]')
         await card.wait_for(timeout=10_000)
         rows = card.get_by_role("list", name="Steps").locator("li")
@@ -8619,7 +8638,7 @@ async def check_plancard(browser) -> str:
                                         (change, "step_manage_review", "Go ahead", "Deletes: delete_schedule")):
         ctx, page = await _builder_back(browser, _parked(prompt, step))
         try:
-            await page.get_by_role("button", name=re.compile("Open the AI builder")).first.click()
+            await _build_with_ai(page)
             await asyncio.sleep(0.6)
             panel = await _panel_text(page)
             if words not in panel:
@@ -8646,7 +8665,7 @@ async def check_buildersuggest(browser) -> str:
     ctx, page = await _builder_back(browser, None)
     bad: list[str] = []
     try:
-        await page.get_by_role("button", name=re.compile("Open the AI builder")).first.click()
+        await _build_with_ai(page)
         panel = page.locator('aside[aria-label="AI builder"]')
         chips = panel.get_by_role("list", name="Things to ask for").get_by_role("button")
         await chips.first.wait_for(timeout=10_000)

@@ -13,7 +13,7 @@ import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { Button, IconButton, Markdown, PageFrameHeader } from '@/components/ui';
-import { AgentAvatar, AgentTurn, Composer, composerPillClass, PillAvatar, RunChip, UserBubble } from '@/components/assistant';
+import { AgentAvatar, AgentIntro, AgentTurn, Composer, composerPillClass, PillAvatar, RunChip, UserBubble } from '@/components/assistant';
 import { StepIcon } from '@/components/run';
 
 import { cn } from '@/lib/utils';
@@ -428,46 +428,6 @@ function formatRelativeTime(iso: string | null): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-// ─── Tip data ────────────────────────────────────────────────────────────────
-const TIPS = [
-  {
-    icon: <Cpu className="h-5 w-5" />,
-    tag: 'Build Agents',
-    title: 'Create specialized AI agents',
-    desc: 'Design agents with custom system prompts, tools, and models. Each agent can be fine-tuned for a specific domain or task like research, coding, or analysis.',
-  },
-  {
-    icon: <Wrench className="h-5 w-5" />,
-    tag: 'Custom Tools',
-    title: 'Extend with custom tools',
-    desc: 'Add Python functions, n8n workflows, or custom APIs as tools your agents can call — web search, database queries, file operations — anything your workflow needs.',
-  },
-  {
-    icon: <GitBranch className="h-5 w-5" />,
-    tag: 'Orchestration',
-    title: 'Orchestrate multi-agent flows',
-    desc: 'Chain agents together with sequential, parallel, or loop patterns. Build complex pipelines where each agent handles a specialized stage.',
-  },
-  {
-    icon: <Network className="h-5 w-5" />,
-    tag: 'MCP Servers',
-    title: 'Connect MCP servers',
-    desc: 'Integrate any MCP (Model Context Protocol) server to supercharge your agents with external knowledge, file systems, browsers, and third-party services.',
-  },
-  {
-    icon: <CalendarClock className="h-5 w-5" />,
-    tag: 'Schedules',
-    title: 'Automate with schedules',
-    desc: 'Set up cron-based schedules to run your agents automatically. Perfect for daily reports, periodic data syncs, or recurring agentic tasks.',
-  },
-  {
-    icon: <Sparkles className="h-5 w-5" />,
-    tag: 'Pro Tips',
-    title: 'Get the most from SynapseOrch',
-    desc: 'Attach images for vision tasks, switch agents mid-conversation, or orchestrate complex multi-step workflows — all from one chat interface.',
-  },
-];
-
 // ─── Welcome Screen ──────────────────────────────────────────────────────────
 /**
  * The agent wants to run something the policy will not let it run unasked.
@@ -657,20 +617,19 @@ function WithCode({ text }: { text: string }) {
 /** Where every "the model cannot answer" message points (F182). */
 const MODELS_SETTINGS = '/settings/models';
 
-function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false, onPrompt, onNavigate, showExamplesBanner, onDismissBanner }: { agentName: string; modelReady?: boolean; modelProblem?: string | null; isWorkflow?: boolean; onPrompt: (text: string) => void; onNavigate: (path: string) => void; showExamplesBanner: boolean; onDismissBanner: () => void; }) {
-  const [activeIdx, setActiveIdx] = useState(0);
-  const [isPaused, setIsPaused] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+/** What the empty chat says about the agent: from `/api/agents`, its knowledge named from the bases list. */
+type AgentIntroData = { description: string | null; tools: string[]; knowledge: string[] };
 
-  // Auto-advance carousel
-  useEffect(() => {
-    if (isPaused) return;
-    intervalRef.current = setInterval(() => {
-      setActiveIdx(prev => (prev + 1) % TIPS.length);
-    }, 3500);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [isPaused]);
-
+/**
+ * A new conversation opens on the agent it is with (M2c, Naveen's call; Prototype 2):
+ * its name, model and state, what it is for and what it can use. Below it, quieter,
+ * the examples banner (its first 12 days) and the ways to build more.
+ */
+function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false, model, intro, onNavigate, showExamplesBanner, onDismissBanner }: {
+  agentName: string; modelReady?: boolean; modelProblem?: string | null; isWorkflow?: boolean;
+  model: React.ReactNode; intro: AgentIntroData | null;
+  onNavigate: (path: string) => void; showExamplesBanner: boolean; onDismissBanner: () => void;
+}) {
   // These used to point at /settings/* — the chat page telling you to open
   // Settings in order to use the product.
   const PILLS = [
@@ -681,11 +640,40 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
     { label: 'Schedule a task', path: '/schedules', icon: CalendarClock },
   ];
 
+  // "Ready" is said only once the backend has checked that the model can
+  // answer; it used to be said unconditionally, above a first message that then
+  // failed with an HTTP library's text (F182).
+  const status = modelReady === undefined ? null : (
+    <span className="inline-flex items-center gap-1.5">
+      <span aria-hidden className={cn('size-2 rounded-full', modelReady ? 'bg-success' : 'bg-warning')} />
+      {modelReady ? 'Ready' : isWorkflow ? 'A step is not ready' : 'Model not ready'}
+    </span>
+  );
+
   return (
-    <div className="flex min-h-full select-none flex-col items-center justify-center px-4 pb-44 pt-4 md:pb-48 md:pt-6 2xl:pb-44">
+    <div className="flex min-h-full select-none flex-col items-center justify-center gap-8 px-4 pb-44 pt-6 md:pt-10">
+      <div className="flex w-full flex-col items-center gap-3">
+        <AgentIntro
+          name={agentName}
+          model={model}
+          status={status}
+          description={intro?.description}
+          tools={intro?.tools}
+          knowledge={intro?.knowledge}
+        />
+        {modelReady === false && modelProblem && (
+          <p className="max-w-md text-center text-[13px] leading-relaxed text-text-muted">
+            <WithCode text={modelProblem} />{' '}
+            <Link href={MODELS_SETTINGS} className="whitespace-nowrap font-medium text-accent-ink underline-offset-2 hover:underline">
+              Open Settings → Models
+            </Link>
+          </p>
+        )}
+      </div>
+
       {/* ── Welcome Examples Banner (12-day, session-dismissible) ── */}
       {showExamplesBanner && (
-        <div className="mb-6 w-full max-w-2xl rounded-xl border border-border bg-accent-subtle px-4 py-3">
+        <div className="w-full max-w-2xl rounded-xl border border-border bg-accent-subtle px-4 py-3">
           <div className="flex flex-col gap-2.5">
             {/* Top row: icon + headline + close */}
             <div className="flex items-start justify-between gap-3">
@@ -730,97 +718,20 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
         </div>
       )}
 
-      {/* Greeting. "Ready" is said only once the backend has checked that the
-          model can answer; it used to be said unconditionally, above a first
-          message that then failed with an HTTP library's text (F182). */}
-      <div className="mb-2 flex max-w-[min(36rem,100%)] items-center gap-2">
-        <div className={cn(
-          "h-2 w-2 shrink-0 rounded-full",
-          modelReady === true ? "bg-success" : modelReady === false ? "bg-warning" : "bg-text-faint",
-        )} />
-        {/* Truncated, with the whole name on hover: a long name ran 1,742 px
-            wide, off both edges of the page (F217). */}
-        <span data-agent-label className="flex min-w-0 text-[13px] text-text-muted">
-          <span className="min-w-0 truncate font-medium" title={agentName}>{agentName}</span>
-          {modelReady !== undefined && (
-            <span className="shrink-0">{modelReady ? '\u00a0· Ready' : isWorkflow ? '\u00a0· A step is not ready' : '\u00a0· Model not ready'}</span>
-          )}
-        </span>
-      </div>
-      {modelReady === false && modelProblem && (
-        <p className="mb-4 max-w-md text-center text-[13px] leading-relaxed text-text-muted">
-          <WithCode text={modelProblem} />{' '}
-          <Link href={MODELS_SETTINGS} className="whitespace-nowrap font-medium text-accent-ink underline-offset-2 hover:underline">
-            Open Settings → Models
-          </Link>
-        </p>
-      )}
-      <h2 className="mb-1 text-center text-3xl font-semibold tracking-tight text-text md:text-4xl">
-        What can I help you achieve?
-      </h2>
-      <p className="mb-6 text-center text-sm text-text-muted">
-        SynapseOrch — Agents that work together to get things done
-      </p>
-
-      {/* Tips Carousel */}
-      <div
-        className="mb-6 w-full max-w-xl"
-        onMouseEnter={() => setIsPaused(true)}
-        onMouseLeave={() => setIsPaused(false)}
-      >
-        {/* Card */}
-        <div
-          key={activeIdx}
-          className="tip-card-animate relative overflow-hidden rounded-xl border border-border bg-surface p-5"
-          style={{ minHeight: 108 }}
-        >
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 shrink-0 text-text-faint">{TIPS[activeIdx].icon}</div>
-            <div className="min-w-0 flex-1">
-              <div className="mb-1.5 flex items-center gap-2">
-                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-text-muted">
-                  {TIPS[activeIdx].tag}
-                </span>
-              </div>
-              <div className="mb-1 text-[15px] font-semibold leading-snug text-text">
-                {TIPS[activeIdx].title}
-              </div>
-              <p className="text-[13px] leading-relaxed text-text-muted">
-                {TIPS[activeIdx].desc}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Dot indicators */}
-        <div className="mt-3 flex items-center justify-center gap-1.5">
-          {TIPS.map((tip, i) => (
-            <button
-              key={i}
-              type="button"
-              aria-label={`Show tip ${i + 1}: ${tip.title}`}
-              aria-current={i === activeIdx}
-              onClick={() => { setActiveIdx(i); setIsPaused(true); setTimeout(() => setIsPaused(false), 6000); }}
-              className={`cursor-pointer rounded-full transition-all duration-300 ${i === activeIdx ? 'h-1.5 w-5 bg-text-muted' : 'h-1.5 w-1.5 bg-border-strong hover:bg-text-faint'}`}
-            />
-          ))}
-        </div>
-      </div>
-
-      {/* Quick action pills — navigate to settings */}
-      <div className="flex max-w-3xl flex-wrap justify-center gap-2">
+      {/* The ways to build more, quieter than the agent above them. */}
+      <nav aria-label="Build more" className="flex max-w-3xl flex-wrap justify-center gap-x-1 gap-y-1">
         {PILLS.map(({ label, path, icon: Icon }) => (
           <button
             key={label}
             type="button"
             onClick={() => onNavigate(path)}
-            className="flex cursor-pointer items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 text-sm text-text-muted transition-colors hover:border-border-strong hover:text-text"
+            className="flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] text-text-muted transition-colors hover:bg-surface-2 hover:text-text"
           >
-            <Icon className="h-3.5 w-3.5" />
+            <Icon className="h-3.5 w-3.5" aria-hidden />
             {label}
           </button>
         ))}
-      </div>
+      </nav>
     </div>
   );
 }
@@ -898,6 +809,40 @@ export default function Home() {
     return () => { live = false; };
   }, [workflowId]);
   const workflowStepCount = workflowSteps && workflowSteps.id === workflowId ? workflowSteps.count : null;
+
+  // What the empty chat says about the agent (M2c): its description, tools and
+  // knowledge, from the agents list; its knowledge named from the bases list,
+  // read only when it has any.
+  const [agentDetails, setAgentDetails] = useState<Record<string, { description?: string | null; tools?: string[]; knowledge?: string[] }>>({});
+  const [kbNames, setKbNames] = useState<Record<string, string> | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch('/api/agents')
+      .then(r => (r.ok ? r.json() : null))
+      .then(list => {
+        if (!live || !Array.isArray(list)) return;
+        setAgentDetails(Object.fromEntries(list.map((a: { id: string; description?: string | null; tools?: string[]; knowledge?: string[] }) =>
+          [a.id, { description: a.description, tools: a.tools ?? [], knowledge: a.knowledge ?? [] }])));
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+  const currentDetails = currentAgentId ? agentDetails[currentAgentId] : undefined;
+  const needsKbNames = Boolean(currentDetails?.knowledge?.length) && kbNames === null;
+  useEffect(() => {
+    if (!needsKbNames) return;
+    let live = true;
+    fetch('/api/knowledge/bases')
+      .then(r => (r.ok ? r.json() : []))
+      .then(list => { if (live) setKbNames(Object.fromEntries((Array.isArray(list) ? list : []).map((b: { id: string; name?: string }) => [b.id, b.name || b.id]))); })
+      .catch(() => { if (live) setKbNames({}); });
+    return () => { live = false; };
+  }, [needsKbNames]);
+  const agentIntro: AgentIntroData | null = currentDetails ? {
+    description: currentDetails.description ?? null,
+    tools: currentDetails.tools ?? [],
+    knowledge: (currentDetails.knowledge ?? []).map(id => kbNames?.[id] ?? id),
+  } : null;
 
   // Welcome banner — shown for 12 days from installation date, dismissible per session
   const [showExamplesBanner, setShowExamplesBanner] = useState(false);
@@ -2391,6 +2336,16 @@ export default function Home() {
   const provider = systemStatus?.provider
     ? systemStatus.provider.charAt(0).toUpperCase() + systemStatus.provider.slice(1)
     : null;
+  const modelLabel = workflowId ? (
+    // A workflow: each step runs on the model set on it (U64).
+    <span className="truncate" title="A workflow: each step runs on the model set on it">
+      Workflow{workflowStepCount !== null && <> · {workflowStepCount} {workflowStepCount === 1 ? 'step' : 'steps'}</>}
+    </span>
+  ) : systemStatus ? (
+    <span className="truncate" title={[provider, systemStatus.model].filter(Boolean).join(' · ')}>
+      {provider && <span className="hidden sm:inline">{provider} · </span>}{systemStatus.model || 'Loading...'}
+    </span>
+  ) : null;
 
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
@@ -2566,13 +2521,14 @@ export default function Home() {
               modelReady={systemStatus?.model_ready}
               modelProblem={systemStatus?.model_problem}
               isWorkflow={!!workflowId}
-              onPrompt={(text) => { setInput(text); setTimeout(() => textareaRef.current?.focus(), 50); }}
+              model={modelLabel}
+              intro={agentIntro}
               onNavigate={(path) => router.push(path)}
               showExamplesBanner={showExamplesBanner}
               onDismissBanner={() => setShowExamplesBanner(false)}
             />
           ) : (
-            <div className="px-4 pb-48 pt-6 md:px-6 md:pb-52 2xl:pb-44">
+            <div className="px-4 pb-44 pt-6 md:px-6">
               <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
                 {messages.map((msg, idx) => renderMessage(msg, idx))}
 
@@ -2597,15 +2553,9 @@ export default function Home() {
           )}
         </div>
 
-        {/* Input Area */}
-        {/* Lifted clear of the AI builder's launcher, which owns the bottom-right
-            corner (44px, 20px in, fixed): wherever the composer reaches the
-            right edge — measured up to ~1400px with the rail open — the
-            launcher sat over Send's corner, and at phone width a tap on Send
-            opened the builder (F181). Lifted below `2xl`, the nearest named
-            breakpoint; the lists above carry the same extra room so their
-            last line is not hidden. */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-bg via-bg to-transparent px-3 pb-11 pt-6 md:px-6 2xl:pb-5">
+        {/* Input Area. It used to be lifted clear of the AI builder's corner
+            launcher (F181); the launcher is retired (M2c), so it sits at the bottom. */}
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-bg via-bg to-transparent px-3 pb-4 pt-6 md:px-6 md:pb-5">
           <div className="mx-auto w-full max-w-3xl">
             {/* The turn ended without an answer: the bar says which of the two
                 things happened, because they read very differently — one is the
@@ -2708,16 +2658,7 @@ export default function Home() {
                   className="rounded-md p-1.5"
                 />
               )}
-              model={workflowId ? (
-                // A workflow: each step runs on the model set on it (U64).
-                <span className="truncate" title="A workflow: each step runs on the model set on it">
-                  Workflow{workflowStepCount !== null && <> · {workflowStepCount} {workflowStepCount === 1 ? 'step' : 'steps'}</>}
-                </span>
-              ) : systemStatus ? (
-                <span className="truncate" title={[provider, systemStatus.model].filter(Boolean).join(' · ')}>
-                  {provider && <span className="hidden sm:inline">{provider} · </span>}{systemStatus.model || 'Loading...'}
-                </span>
-              ) : null}
+              model={modelLabel}
               hint="Enter to send · Shift+Enter for a new line"
               showHint={!firstMessageSent}
             />

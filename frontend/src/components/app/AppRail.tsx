@@ -131,8 +131,8 @@ export function AppRail({
     }
     const collapsed = variant === 'side' && (canvas ? !openOnCanvas : collapsedFlag === '1');
     const setCollapsed = (next: '0' | '1') => (canvas ? setOpenOnCanvas(next === '0') : setCollapsedFlag(next));
-    // A question waiting on the person (F214) shows here as well as on the
-    // floating launcher, which is hidden while the panel is open.
+    // A question waiting on the person (F214) shows here: the menu's row is the
+    // way into the builder since the floating launcher was retired (M2c).
     const waiting = state.pending !== null;
     // Runs and tool calls waiting on the person, from the bell's stream (M2c).
     const waitingOnYou = useWaitingOnYou();

@@ -19,7 +19,6 @@ import {
     useCommandShortcutLabel, usePersisted,
 } from '@/components/ui';
 import { AppCommands } from '@/components/app/AppCommands';
-import { BuilderLauncher } from '@/components/app/BuilderLauncher';
 import { BuilderPanel } from '@/components/app/BuilderPanel';
 import { BuilderProvider } from '@/components/app/BuilderProvider';
 import { HelpProvider } from '@/components/help';
@@ -148,7 +147,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             <AppCommands open={jumping} onOpenChange={setJumping} mode={mode} onModeChange={changeMode} />
             </NavFlagsProvider>
             </HelpProvider>
-            <BuilderLauncher />
             <BuilderPanel />
             </BuilderProvider>
             </TemplateSourcesProvider>

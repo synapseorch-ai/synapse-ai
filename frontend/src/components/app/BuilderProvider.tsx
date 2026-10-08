@@ -47,10 +47,15 @@ export const EXIT_MS = 200;
  */
 const STOP_GRACE_MS = 5000;
 
-/** What the builder says before anything else, above the composer. */
-export const BUILDER_INTRO =
-    "I build things in this workspace — agents, orchestrations, tools, skills and schedules. " +
-    "Tell me what you want to happen. I'll show you a plan to approve before I build anything.";
+/**
+ * What the builder says before anything else, above the composer: Prototype 2's
+ * words (M2c, Naveen's call), without "and what it costs" — nothing estimates a
+ * plan's cost yet.
+ */
+export const BUILDER_GREETING = {
+    title: 'What should happen, and when?',
+    text: "Describe a job in plain words. I'll show you a plan to approve before I build anything.",
+} as const;
 
 /**
  * Things to ask for, as suggestions under the empty composer (M2c): a tap puts
@@ -66,7 +71,7 @@ const WELCOME: BuilderMessage = {
     role: 'assistant',
     kind: 'text',
     key: 'welcome',
-    content: BUILDER_INTRO,
+    content: `${BUILDER_GREETING.title} ${BUILDER_GREETING.text}`,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

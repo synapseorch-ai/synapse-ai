@@ -7,6 +7,7 @@
  * API or a product's own modules: each product passes its pickers, its Attach
  * and its answer path in.
  */
+export { AgentIntro } from './AgentIntro';
 export { Composer, composerPillClass, PillAvatar, type ComposerProps } from './Composer';
 export { AgentAvatar, AgentTurn, RunChip, Suggestions, UserBubble } from './messages';
 export { APPROVE_WORD, PlanCard, QUESTION_FOLD, QuestionCard } from './cards';

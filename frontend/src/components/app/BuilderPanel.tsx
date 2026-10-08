@@ -29,7 +29,7 @@ import {
     Suggestions,
     UserBubble,
 } from '@/components/assistant';
-import { BUILDER_EXAMPLES, BUILDER_INTRO, useBuilder } from '@/components/app/BuilderProvider';
+import { BUILDER_EXAMPLES, BUILDER_GREETING, useBuilder } from '@/components/app/BuilderProvider';
 import { HowImBuilt } from '@/components/app/HowImBuilt';
 import {
     AttachButton,
@@ -281,9 +281,10 @@ export function BuilderPanel() {
                         // are suggestions under the empty composer.
                         if (message.key === 'welcome') {
                             return (
-                                <div key="welcome" className="flex flex-col items-center gap-2.5 px-2 pb-1 pt-3 text-center">
+                                <div key="welcome" className="flex flex-col items-center gap-2 px-2 pb-1 pt-4 text-center">
                                     <Mark size={36} compact={false} className="text-accent" aria-hidden />
-                                    <p className="max-w-[46ch] text-sm leading-relaxed text-text-muted">{BUILDER_INTRO}</p>
+                                    <h2 className="mt-1 text-xl font-semibold tracking-tight text-text">{BUILDER_GREETING.title}</h2>
+                                    <p className="max-w-[44ch] text-sm leading-relaxed text-text-muted">{BUILDER_GREETING.text}</p>
                                 </div>
                             );
                         }

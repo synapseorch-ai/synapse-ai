@@ -228,9 +228,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             setBrowserNotificationsEnabled, openRun, openItem,
         }}>
             {children}
-            {/* Toast host — app-wide, stacked bottom-right, clearing the AI
-                builder's launcher below it. Two things cannot own that corner,
-                and the launcher is the one the user goes looking for. On an open
+            {/* Toast host — app-wide, stacked bottom-right, high enough to clear
+                a composer's Send at the bottom of chat. On an open
                 canvas that corner and the bottom row are the canvas's (zoom, the
                 dock, the run strip with its Answer), so toasts come down from the
                 top, centred under its bar (M3a: on a phone a toast covered Answer). */}

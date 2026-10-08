@@ -18,6 +18,7 @@ import { IconButton, Mark } from '@/components/ui';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { hubForPath } from '@/lib/nav';
 import { AppRail, type ThemeMode } from './AppRail';
+import { useBuilder } from './BuilderProvider';
 import { useWaitingOnYou, WaitingOnYouDrawer } from './WaitingOnYou';
 
 const PHONE = '(max-width: 767px)';
@@ -57,6 +58,9 @@ export function PhoneBar({
 
     // What waits on the person, beside the bell (M2c): on a phone the menu's row is a tap away, this is not.
     const waiting = useWaitingOnYou();
+    // The mark opens the AI builder: one tap, as the retired corner launcher was (M2c).
+    const { open: openBuilder, streaming, state } = useBuilder();
+    const builderWaiting = state.pending !== null;
     const [waitingOpen, setWaitingOpen] = useState(false);
 
     const here = hubForPath(pathname)?.hub.label
@@ -92,7 +96,18 @@ export function PhoneBar({
                     </RDialog.Content>
                 </RDialog.Portal>
             </RDialog.Root>
-            <Mark size={20} compact={false} className="shrink-0 text-accent" aria-hidden />
+            <button
+                type="button"
+                onClick={() => openBuilder()}
+                aria-label={builderWaiting ? 'Build with AI (waiting for your answer)' : 'Build with AI'}
+                title="Build with AI"
+                className="relative flex size-9 shrink-0 items-center justify-center rounded-md hover:bg-surface-2"
+            >
+                <Mark size={20} compact={false} className="text-accent" aria-hidden />
+                {(streaming || builderWaiting) && (
+                    <span aria-hidden className={`absolute right-1 top-1 size-2 rounded-full ${builderWaiting ? 'bg-person' : 'bg-machine'}`} />
+                )}
+            </button>
             <span className="min-w-0 truncate text-sm font-semibold tracking-tight text-text">{here}</span>
             {/* One bell in the page at a time: the rail's is hidden on a phone. */}
             {isPhone && (
