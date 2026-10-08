@@ -10,7 +10,7 @@
  * inside, Escape and the scrim close it; it also closes on arriving at a page.
  */
 import * as RDialog from '@radix-ui/react-dialog';
-import { Menu as MenuIcon, X } from 'lucide-react';
+import { Menu as MenuIcon, UserRound, X } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import { useState, useSyncExternalStore } from 'react';
 
@@ -18,6 +18,7 @@ import { IconButton, Mark } from '@/components/ui';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { hubForPath } from '@/lib/nav';
 import { AppRail, type ThemeMode } from './AppRail';
+import { useWaitingOnYou, WaitingOnYouDrawer } from './WaitingOnYou';
 
 const PHONE = '(max-width: 767px)';
 
@@ -53,6 +54,10 @@ export function PhoneBar({
     const [openOn, setOpenOn] = useState<string | null>(null);
     const open = isPhone && openOn === pathname;
     const setOpen = (next: boolean) => setOpenOn(next ? pathname : null);
+
+    // What waits on the person, beside the bell (M2c): on a phone the menu's row is a tap away, this is not.
+    const waiting = useWaitingOnYou();
+    const [waitingOpen, setWaitingOpen] = useState(false);
 
     const here = hubForPath(pathname)?.hub.label
         ?? (pathname.startsWith('/settings') ? 'Settings' : 'SynapseOrch');
@@ -91,10 +96,22 @@ export function PhoneBar({
             <span className="min-w-0 truncate text-sm font-semibold tracking-tight text-text">{here}</span>
             {/* One bell in the page at a time: the rail's is hidden on a phone. */}
             {isPhone && (
-                <div className="ml-auto shrink-0">
+                <div className="ml-auto flex shrink-0 items-center gap-1">
+                    {waiting.count > 0 && (
+                        <button
+                            type="button"
+                            onClick={() => setWaitingOpen(true)}
+                            aria-label={`Waiting on you · ${waiting.count}`}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-person-subtle px-2.5 text-xs font-semibold text-person-ink"
+                        >
+                            <UserRound className="size-3.5" aria-hidden />
+                            {waiting.count > 9 ? '9+' : waiting.count}
+                        </button>
+                    )}
                     <NotificationBell />
                 </div>
             )}
+            {isPhone && <WaitingOnYouDrawer open={waitingOpen} onClose={() => setWaitingOpen(false)} />}
         </div>
     );
 }

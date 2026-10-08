@@ -366,12 +366,14 @@ async def _open_builder(browser, width=WIDE):
     await asyncio.sleep(0.5)
     await page.locator('aside[aria-label="AI builder"] textarea').fill("build me something")
     # Send is disabled until React has seen the change event `fill` dispatches.
-    await page.get_by_role("button", name="Send", exact=True).wait_for()
+    # Inside the builder: chat's composer behind it has a Send of its own since M2c.
+    send = page.locator('aside[aria-label="AI builder"]').get_by_role("button", name="Send", exact=True)
+    await send.wait_for()
     for _ in range(20):
-        if not await page.get_by_role("button", name="Send", exact=True).is_disabled():
+        if not await send.is_disabled():
             break
         await asyncio.sleep(0.1)
-    await page.get_by_role("button", name="Send", exact=True).click()
+    await send.click()
     # The stream's controller exists only once the panel has actually called
     # fetch; pushing a frame before that is a race the panel always wins.
     for _ in range(40):
@@ -4355,8 +4357,9 @@ SEND_HIT = """() => {
   const send = document.querySelector('main form button[type="submit"]');
   if (!send) return {send: false};
   const r = send.getBoundingClientRect();
-  const points = [[r.left + r.width / 2, r.top + r.height / 2], [r.right - 3, r.bottom - 3],
-                  [r.right - 3, r.top + 3], [r.left + 3, r.bottom - 3], [r.left + 3, r.top + 3]];
+  // Inside the circle (Send is round since M2c): the centre and four points at 70% of the radius.
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2, d = r.width * 0.35;
+  const points = [[cx, cy], [cx + d, cy], [cx - d, cy], [cx, cy + d], [cx, cy - d]];
   const covered = points.filter(([x, y]) => {
     const hit = document.elementFromPoint(x, y);
     return !(hit && (hit === send || send.contains(hit)));
@@ -8533,48 +8536,6 @@ async def check_homeways(browser) -> str:
     return "three ways to their pages, the by-hand tip fills the builder, the folded path opens and closes"
 
 
-async def main() -> int:
-    global APP, API
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--app", default=APP)
-    ap.add_argument("--api", default=API)
-    ap.add_argument("--only", action="append", help="run just these checks")
-    args = ap.parse_args()
-
-    APP, API = args.app.rstrip("/"), args.api.rstrip("/")
-    if APP.startswith("http://127.0.0.1"):
-        print("refusing 127.0.0.1: a dev server there never hydrates — use localhost", file=sys.stderr)
-        return 1
-
-    from playwright.async_api import async_playwright
-
-    names = args.only or list(CHECKS)
-    failed = 0
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            executable_path=CHROME if os.path.exists(CHROME) else None,
-            args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu"],
-        )
-        for name in names:
-            fn = CHECKS.get(name)
-            if fn is None:
-                print(f"?? {name}: no such check"); failed += 1; continue
-            started = time.time()
-            try:
-                note = await fn(browser)
-                print(f"ok {name}: {note} ({time.time() - started:.1f}s)")
-            except Exception as exc:                      # a broken check fails alone
-                failed += 1
-                print(f"FAIL {name}: {exc}")
-        await browser.close()
-    print(f"\n{len(names) - failed} passed, {failed} failed")
-    return failed
-
-
-if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
-
-
 # ── M2c: one composer for chat and the builder; the plan as a card ───────────
 
 #: A real plan question's shape (the dev stack, 2026-09-23), cut short: the
@@ -8771,3 +8732,131 @@ async def check_composer(browser) -> str:
     if bad:
         raise AssertionError("; ".join(bad))
     return "one field at 1440 and 400; Shift+Enter a new line, Enter sends; Stop in Send's place; the hint goes; a live tool chip"
+
+
+WAITING_RUN = "run_uismoke_waiting"
+
+#: The bell's ring with one run waiting on a person, that run's record, and the runs list with it paused beside one
+#: running; the answer is held in the browser.
+WAITING_STUB = r"""
+window.__answers = [];
+const _waitFetch = window.fetch;
+const _json = (body) => Promise.resolve(new Response(JSON.stringify(body), {status: 200, headers: {'Content-Type': 'application/json'}}));
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || 'GET').toUpperCase();
+  const run = '%(run)s';
+  if (url.includes('/api/notifications/stream')) {
+    return Promise.resolve(new Response(new ReadableStream({start() {}}), {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+  }
+  if (url.includes('/api/notifications')) {
+    return _json({last_id: 9001, notifications: [{id: 9001, ts: Date.now() / 1000 - 600, kind: 'human_input',
+      title: 'Invoice triage needs input', body: 'Approve payment?', run_id: run, data: {}, resolved: false}]});
+  }
+  if (url.endsWith('/api/orchestrations/runs/' + run + '/human-input') && method === 'POST') {
+    window.__answers.push(JSON.parse(String(init.body)));
+    return _json({status: 'resumed'});
+  }
+  if (url.includes('/api/orchestrations/runs/' + run)) {
+    return _json({run_id: run, orchestration_id: 'orch_uismoke_wait', status: 'paused', waiting_for_human: true,
+      current_step_id: 'approve', human_prompt: 'INV-1047 totals $2,310.00. Approve payment?',
+      human_fields: [{name: 'approved', type: 'boolean', label: 'Approve payment?'}, {name: 'note', type: 'text', label: 'Note for the ledger'}],
+      shared_state: {}, step_history: [], started_at: new Date(Date.now() - 600000).toISOString()});
+  }
+  if (/\/api\/orchestrations\/runs(\?|$)/.test(url)) {
+    return _json([{run_id: run, orchestration_id: 'orch_uismoke_wait', status: 'paused', started_at: null},
+                  {run_id: 'run_uismoke_busy', orchestration_id: 'orch_uismoke_busy', status: 'running', started_at: null}]);
+  }
+  return _waitFetch(input, init);
+};
+""" % {"run": WAITING_RUN}
+
+
+@check
+async def check_waitingrow(browser) -> str:
+    """What waits on a person shows from any screen (M2c, Naveen's ask): the menu's amber "Waiting on you" row with
+    its count, which opens Home's Needs you in a drawer, answered there with the run page's own request; beside the
+    bell on a phone. Chat's strip shows only what is running."""
+    bad: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(WAITING_STUB)
+    page = await ctx.new_page()
+    try:
+        await page.goto(APP, wait_until="domcontentloaded")
+        row = page.get_by_role("button", name=re.compile("^Waiting on you")).first
+        await row.wait_for(timeout=15_000)
+        if "1" not in await row.inner_text():
+            bad.append(f"the row reads {await row.inner_text()!r}")
+        strip = await page.evaluate("() => (document.querySelector('main') || document.body).innerText")
+        if "needs input" in strip:
+            bad.append("chat's strip still lists the waiting run")
+        await row.click()
+        drawer = page.get_by_role("dialog", name="Waiting on you")
+        await drawer.wait_for(timeout=10_000)
+        approve = drawer.get_by_role("button", name="Approve payment")
+        await approve.wait_for(timeout=10_000)
+        await approve.click()
+        await asyncio.sleep(0.8)
+        answers = await page.evaluate("() => window.__answers")
+        if len(answers) != 1 or answers[0].get("response", {}).get("approved") is not True:
+            bad.append(f"the drawer answered {answers}")
+    finally:
+        await ctx.close()
+    ctx = await browser.new_context(viewport={"width": PHONE[0], "height": PHONE[1]})
+    await ctx.add_init_script(WAITING_STUB)
+    page = await ctx.new_page()
+    try:
+        await page.goto(APP, wait_until="domcontentloaded")
+        chip = page.get_by_role("button", name="Waiting on you · 1")
+        await chip.first.wait_for(timeout=15_000)
+        if not await chip.first.is_visible():
+            bad.append("no count beside the phone's bell")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the row counts one; its drawer answers with the run page's request; a phone shows it beside the bell"
+
+
+
+async def main() -> int:
+    global APP, API
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--app", default=APP)
+    ap.add_argument("--api", default=API)
+    ap.add_argument("--only", action="append", help="run just these checks")
+    args = ap.parse_args()
+
+    APP, API = args.app.rstrip("/"), args.api.rstrip("/")
+    if APP.startswith("http://127.0.0.1"):
+        print("refusing 127.0.0.1: a dev server there never hydrates — use localhost", file=sys.stderr)
+        return 1
+
+    from playwright.async_api import async_playwright
+
+    names = args.only or list(CHECKS)
+    failed = 0
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            executable_path=CHROME if os.path.exists(CHROME) else None,
+            args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu"],
+        )
+        for name in names:
+            fn = CHECKS.get(name)
+            if fn is None:
+                print(f"?? {name}: no such check"); failed += 1; continue
+            started = time.time()
+            try:
+                note = await fn(browser)
+                print(f"ok {name}: {note} ({time.time() - started:.1f}s)")
+            except Exception as exc:                      # a broken check fails alone
+                failed += 1
+                print(f"FAIL {name}: {exc}")
+        await browser.close()
+    print(f"\n{len(names) - failed} passed, {failed} failed")
+    return failed
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
+

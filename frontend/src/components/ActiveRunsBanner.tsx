@@ -10,10 +10,10 @@ type ActiveRun = {
     started_at: string | null;
 };
 
-// Slim strip at the top of the main chat: orchestrations currently running or
-// waiting for input, clickable through to their live run view
-// (/orchestrations?run=<id>, which replays the event journal and
-// tails it). Renders nothing when there is nothing active.
+// Slim strip at the top of the main chat: orchestrations currently running,
+// clickable through to their live run view (/workflows?run=<id>, which replays
+// the event journal and tails it). Renders nothing when nothing is running. A
+// run waiting for input is the menu's "Waiting on you", on every screen (M2c).
 export function ActiveRunsBanner({ pollMs = 10000 }: { pollMs?: number }) {
     const router = useRouter();
     const [runs, setRuns] = useState<ActiveRun[]>([]);
@@ -24,7 +24,8 @@ export function ActiveRunsBanner({ pollMs = 10000 }: { pollMs?: number }) {
             .then(r => r.json())
             .then(data => {
                 if (!Array.isArray(data)) return;
-                setRuns(data.filter((r: ActiveRun) => r.status === 'running' || r.status === 'paused'));
+                // Running only: a run waiting on a person is the menu's "Waiting on you" (M2c, Naveen's call).
+                setRuns(data.filter((r: ActiveRun) => r.status === 'running'));
             })
             .catch(() => {});
     }, []);

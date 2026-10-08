@@ -19,7 +19,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import {
     BookOpen, LifeBuoy, LogOut, Megaphone, Monitor, Moon, MoreHorizontal, PanelLeftClose,
-    PanelLeftOpen, Search, Settings, Sun,
+    PanelLeftOpen, Search, Settings, Sun, UserRound,
 } from 'lucide-react';
 
 import {
@@ -32,6 +32,7 @@ import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { useBuilder } from './BuilderProvider';
 import { useNavFlags } from './NavFlags';
 import { useNavGuard } from './NavGuard';
+import { useWaitingOnYou, WaitingOnYouDrawer } from './WaitingOnYou';
 import { cn } from '@/lib/utils';
 import type { ThemeMode } from '@/lib/theme';
 
@@ -133,6 +134,18 @@ export function AppRail({
     // A question waiting on the person (F214) shows here as well as on the
     // floating launcher, which is hidden while the panel is open.
     const waiting = state.pending !== null;
+    // Runs and tool calls waiting on the person, from the bell's stream (M2c).
+    const waitingOnYou = useWaitingOnYou();
+    const [waitingOpen, setWaitingOpen] = useState(false);
+    const showWaiting = () => {
+        // On Home the list is already the page's first section.
+        const section = pathname === '/dashboard' ? document.getElementById('home-needs-you') : null;
+        if (section) {
+            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            return;
+        }
+        setWaitingOpen(true);
+    };
 
     // Sign out is offered only where there is a password to sign back in with
     // (F221). Read again when Settings turns login on or off.
@@ -278,7 +291,32 @@ export function AppRail({
                         />
                     )}
                 </button>
+                {/* What waits on a person, from any screen (M2c): amber, and only while something does. */}
+                {waitingOnYou.count > 0 && (
+                    <button
+                        type="button"
+                        onClick={showWaiting}
+                        title={`Waiting on you · ${waitingOnYou.count}`}
+                        className={cn(
+                            ROW, 'w-full bg-person-subtle font-medium text-person-ink',
+                            'hover:bg-[color-mix(in_oklab,var(--person-subtle)_80%,var(--person))]',
+                            collapsed && 'justify-center',
+                        )}
+                    >
+                        <UserRound className="size-4 shrink-0" aria-hidden />
+                        <RowLabel collapsed={collapsed}>Waiting on you</RowLabel>
+                        <span
+                            className={cn(
+                                'rounded-full bg-person px-1.5 text-2xs font-semibold tabular-nums text-person-fg',
+                                collapsed ? 'absolute right-0.5 top-0.5 min-w-4 text-center' : 'ml-auto',
+                            )}
+                        >
+                            {waitingOnYou.count > 9 ? '9+' : waitingOnYou.count}
+                        </span>
+                    </button>
+                )}
             </div>
+            <WaitingOnYouDrawer open={waitingOpen} onClose={() => setWaitingOpen(false)} />
 
             {/* `pt-1`: a scroller clips at its own edge, and the current row's
                 hairline and shadow sit just outside the row — on Home, the first
