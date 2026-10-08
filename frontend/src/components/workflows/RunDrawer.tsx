@@ -117,7 +117,7 @@ export function RunDrawer({
                             </div>
                         )}
 
-                        <div data-run-log="" className="space-y-0.5 font-code text-[11px] leading-relaxed text-text-muted">
+                        <div data-run-log="" className="space-y-0.5 font-mono text-[11px] text-text-muted">
                             {runLog.length === 0 ? (
                                 <div className="italic text-text-faint">No run output yet. Click Run now to start.</div>
                             ) : (
