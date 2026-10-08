@@ -31,6 +31,10 @@
   /* ── Neutrals: navy-tinted graphite ─────────────────────────────────── */
   --frame: #080c10;           /* the ground behind the rail and the sheet */
   --frame-hover: #1a2025;     /* a menu row under the pointer, on the frame (surface-2's value) */
+  /* The menu's own action (Build with AI): teal on the dark frame, as it was. */
+  --frame-action: #012b38;
+  --frame-action-hover: color-mix(in oklab, #012b38 82%, #45cffc);
+  --frame-action-shadow: none;
   --bg: #0d1216;              /* the sheet: the page itself */
   --surface: #13181c;
   --surface-2: #1a2025;
@@ -93,6 +97,12 @@
      text on it 13.1:1, group labels 6.7:1. */
   --frame: #ebf1f7;
   --frame-hover: #dfe8f1;
+  /* Build with AI on the soft-blue frame: a white card with a hairline and a soft
+     shadow (D223, Naveen's pick A), since a pale-blue tint merged into the frame
+     (1.02:1). Its words keep the accent (6.0:1 on white). */
+  --frame-action: #ffffff;
+  --frame-action-hover: #f4f8fc;
+  --frame-action-shadow: 0 0 0 1px #d1d5d8, 0 1px 2px rgb(16 24 40 / 0.06);
   --bg: #ffffff;
   --surface: #ffffff;
   --surface-2: #f1f3f4;

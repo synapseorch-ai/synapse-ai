@@ -271,8 +271,9 @@ export function AppRail({
                     onClick={() => openBuilder()}
                     title="Build with AI"
                     className={cn(
-                        ROW, 'w-full bg-accent-subtle font-medium text-accent-ink',
-                        'hover:bg-[color-mix(in_oklab,var(--accent-subtle)_82%,var(--accent))]',
+                        // The frame's own action (D223): a white card in light, teal in dark.
+                        ROW, 'w-full bg-[var(--frame-action)] font-medium text-accent-ink shadow-[var(--frame-action-shadow)]',
+                        'hover:bg-[var(--frame-action-hover)]',
                         collapsed && 'justify-center',
                     )}
                 >
