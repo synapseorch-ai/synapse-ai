@@ -12,13 +12,24 @@ import {
     CheckCircle2,
     ChevronDown,
     ChevronUp,
-    Send,
-    Square,
     Trash2,
+    Wrench,
     X,
 } from 'lucide-react';
 
-import { useBuilder } from '@/components/app/BuilderProvider';
+import {
+    AgentTurn,
+    Composer,
+    composerPillClass,
+    PillAvatar,
+    PlanCard,
+    QuestionCard,
+    questionKind,
+    RunChip,
+    Suggestions,
+    UserBubble,
+} from '@/components/assistant';
+import { BUILDER_EXAMPLES, BUILDER_INTRO, useBuilder } from '@/components/app/BuilderProvider';
 import { HowImBuilt } from '@/components/app/HowImBuilt';
 import {
     AttachButton,
@@ -26,13 +37,10 @@ import {
     AttachmentError,
     useImageAttachments,
 } from '@/components/app/ImageAttachments';
-import { Combobox, Hint, Mark, Spinner } from '@/components/ui';
+import { Combobox, Hint, Mark, Markdown, Spinner } from '@/components/ui';
 import type { BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
 import { modelOptions, withUnreachable } from '@/lib/models';
-import { renderTextContent } from '@/lib/utils';
-
-const COLLAPSE_THRESHOLD = 600;
 
 /** Empty `sessionModel` means "follow the workspace builder model". */
 const DEFAULT_SENTINEL = '__default__';
@@ -63,9 +71,9 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
             return (
                 <div key={i} className="flex items-center gap-2 py-0.5 pl-1">
                     {done
-                        ? <CheckCircle2 size={12} className="shrink-0 text-success" aria-hidden />
+                        ? <CheckCircle2 size={14} className="shrink-0 text-success" aria-hidden />
                         : <Spinner size={16} className="shrink-0 text-machine" />}
-                    <span className={cn('truncate font-code text-[11px]', done ? 'text-text-faint' : 'text-text-muted')}>
+                    <span className={cn('truncate text-xs', done ? 'text-text-faint' : 'text-text-muted')}>
                         {message.stepName}
                     </span>
                 </div>
@@ -73,16 +81,16 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
         }
         if (message.kind === 'tool_call') {
             return (
-                <div key={i} className="flex items-start gap-2 py-0.5 pl-1">
-                    <span className="mt-0.5 shrink-0 text-[10px] text-accent" aria-hidden>🔧</span>
-                    <details className="min-w-0 flex-1">
-                        <summary className="cursor-pointer list-none truncate font-code text-[11px] text-accent">
-                            {message.toolName?.replace(/_/g, ' ')}
-                        </summary>
-                        <pre className="mt-0.5 max-h-28 overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-surface-2 p-1.5 font-code text-[10px] text-text-muted">
-                            {JSON.stringify(message.toolArgs, null, 2)}
-                        </pre>
-                    </details>
+                <div key={i} className="py-0.5">
+                    <RunChip
+                        icon={<Wrench size={13} />}
+                        label={<span className="font-code">{message.toolName?.replace(/_/g, ' ')}</span>}
+                        detail={(
+                            <pre className="max-h-28 overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-surface-2 p-2 font-code text-2xs text-text-muted">
+                                {JSON.stringify(message.toolArgs, null, 2)}
+                            </pre>
+                        )}
+                    />
                 </div>
             );
         }
@@ -90,7 +98,7 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
             const preview = (message.toolPreview || '').slice(0, 180);
             const truncated = (message.toolPreview || '').length > 180;
             return (
-                <div key={i} className="truncate py-0.5 pl-7 font-code text-[10px] text-text-faint">
+                <div key={i} className="truncate py-0.5 pl-6 font-code text-2xs text-text-faint">
                     ↳ {preview}{truncated ? '…' : ''}
                 </div>
             );
@@ -98,8 +106,8 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
         if (message.kind === 'routing' && message.routingDecision) {
             return (
                 <div key={i} className="flex items-center gap-1.5 py-0.5 pl-1">
-                    <span className="text-[10px] text-text-faint" aria-hidden>→</span>
-                    <span className="font-code text-[10px] text-warning">{message.routingDecision}</span>
+                    <span className="text-xs text-text-faint" aria-hidden>→</span>
+                    <span className="font-code text-2xs text-text-muted">{message.routingDecision}</span>
                 </div>
             );
         }
@@ -113,7 +121,7 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
                 <button
                     type="button"
                     onClick={() => setExpanded((v) => !v)}
-                    className={cn('flex items-center gap-1 pl-1 text-[10px] text-text-faint transition-colors hover:text-text-muted', focusRing)}
+                    className={cn('flex items-center gap-1 pl-1 text-xs text-text-faint transition-colors hover:text-text-muted', focusRing)}
                 >
                     {expanded
                         ? <><ChevronUp size={10} aria-hidden /> hide</>
@@ -121,68 +129,6 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
                 </button>
             )}
             {latest && renderEvent(latest, earlier.length)}
-        </div>
-    );
-}
-
-/**
- * A question the run asked — usually the plan, which runs long.
- *
- * `onStop` on the question still open, and only there. The composer below is
- * for the answer, so the other way out of a question belongs on the question —
- * the same pair the run page's own card offers. Without it a build parked on a
- * question can only be answered, and walking away leaves it paused for good.
- *
- * Only the open question says it needs an answer. Every card used to, answered
- * or not; a conversation brought back by a reload (F214) replays the questions
- * already answered without the answers, and each one read as still waiting.
- */
-function HumanPromptCard({ content, onStop, open }: { content: string; onStop?: () => void; open: boolean }) {
-    const [expanded, setExpanded] = useState(false);
-    const isLong = content.length > COLLAPSE_THRESHOLD;
-    const visible = isLong && !expanded ? `${content.slice(0, COLLAPSE_THRESHOLD)}…` : content;
-
-    return (
-        <div className={cn(
-            'overflow-hidden rounded-lg border',
-            open ? 'border-person/40 bg-person-subtle/40' : 'border-border bg-surface-2/40',
-        )}>
-            <div className={cn('border-b px-3 py-1.5', open ? 'border-person/30' : 'border-border')}>
-                <span className={cn(
-                    'font-code text-[9px] uppercase tracking-widest',
-                    open ? 'text-person-ink' : 'text-text-faint',
-                )}>
-                    {open ? 'Needs your answer' : 'Asked'}
-                </span>
-            </div>
-            <div className="px-3 py-2.5 text-[12px] leading-relaxed text-text">
-                {renderTextContent(visible)}
-            </div>
-            {isLong && (
-                <button
-                    type="button"
-                    onClick={() => setExpanded((v) => !v)}
-                    className={cn('flex w-full items-center justify-center gap-1 border-t border-border py-1.5 text-[10px] text-text-faint transition-colors hover:text-text', focusRing)}
-                >
-                    {expanded
-                        ? <><ChevronUp size={10} aria-hidden /> Show less</>
-                        : <><ChevronDown size={10} aria-hidden /> Show all of it</>}
-                </button>
-            )}
-            {onStop && (
-                <div className="flex items-center justify-end border-t border-person/30 px-3 py-1.5">
-                    <button
-                        type="button"
-                        onClick={onStop}
-                        className={cn(
-                            'rounded-md px-2 py-0.5 text-[11px] text-danger transition-colors hover:bg-danger-subtle',
-                            focusRing,
-                        )}
-                    >
-                        Stop instead
-                    </button>
-                </div>
-            )}
         </div>
     );
 }
@@ -203,6 +149,8 @@ export function BuilderPanel() {
     }
     const [how, setHow] = useState(false);
     const bottomRef = useRef<HTMLDivElement>(null);
+    // The composer's field, for "Change something" and a suggestion to focus.
+    const textarea = useRef<HTMLTextAreaElement>(null);
     const attachments = useImageAttachments();
 
     useEffect(() => {
@@ -257,6 +205,8 @@ export function BuilderPanel() {
     }
     if (buffer.length) groups.push({ type: 'activity', events: buffer });
 
+    const ask = state.pending ? 'Answer the question above…' : 'Describe what you want to happen…';
+    const fresh = state.messages.every((m) => m.key === 'welcome') && !streaming;
     return (
         <>
             <aside
@@ -277,12 +227,12 @@ export function BuilderPanel() {
                     // `overflow-hidden` is what gives the header and the
                     // composer the inner radius, instead of restating it on
                     // three children that would then disagree.
-                    'rounded-xl border border-border-strong bg-surface shadow-2xl',
+                    'rounded-2xl border border-border-strong bg-bg shadow-elevated',
                     'transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
                     entered ? 'translate-x-0 opacity-100' : 'pointer-events-none translate-x-2 opacity-0',
                 )}
             >
-                <header className="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
+                <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
                     <div className="flex items-center gap-2">
                         <Mark size={20} compact={false} className="text-accent" aria-hidden />
                         <span className="text-sm font-semibold text-text">AI Builder</span>
@@ -291,7 +241,7 @@ export function BuilderPanel() {
                         <button
                             type="button"
                             onClick={() => setHow(true)}
-                            className={cn('rounded-md px-2 py-1 text-[11px] text-text-faint transition-colors hover:text-text', focusRing)}
+                            className={cn('rounded-md px-2 py-1 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text', focusRing)}
                         >
                             See how I&rsquo;m built
                         </button>
@@ -300,7 +250,7 @@ export function BuilderPanel() {
                                 type="button"
                                 onClick={newConversation}
                                 aria-label="Start a new conversation"
-                                className={cn('rounded-md p-1 text-text-faint transition-colors hover:text-text', focusRing)}
+                                className={cn('rounded-md p-1.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text', focusRing)}
                             >
                                 <Trash2 size={14} aria-hidden />
                             </button>
@@ -309,183 +259,165 @@ export function BuilderPanel() {
                             type="button"
                             onClick={close}
                             aria-label="Close the AI builder"
-                            className={cn('rounded-md p-1 text-text-faint transition-colors hover:text-text', focusRing)}
+                            className={cn('rounded-md p-1.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text', focusRing)}
                         >
                             <X size={16} aria-hidden />
                         </button>
                     </div>
                 </header>
 
-                <div className="flex-1 space-y-3 overflow-y-auto overscroll-contain px-5 py-4 font-sans">
+                <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 py-5">
                     {groups.map((group, i) => {
                         if (group.type === 'activity') {
                             return (
-                                <ActivityGroup
-                                    key={`activity-${i}`}
-                                    events={group.events}
-                                    isLive={streaming && i === groups.length - 1}
-                                />
+                                <div key={`activity-${i}`} className="pl-10">
+                                    <ActivityGroup events={group.events} isLive={streaming && i === groups.length - 1} />
+                                </div>
                             );
                         }
                         const { message } = group;
 
+                        // The greeting: the mark and what the builder does. Its examples
+                        // are suggestions under the empty composer.
+                        if (message.key === 'welcome') {
+                            return (
+                                <div key="welcome" className="flex flex-col items-center gap-2.5 px-2 pb-1 pt-3 text-center">
+                                    <Mark size={36} compact={false} className="text-accent" aria-hidden />
+                                    <p className="max-w-[46ch] text-sm leading-relaxed text-text-muted">{BUILDER_INTRO}</p>
+                                </div>
+                            );
+                        }
                         if (message.kind === 'banner') {
                             const gone = message.saved?.action === 'deleted';
                             return (
                                 <div
                                     key={message.key}
                                     className={cn(
-                                        'flex items-center gap-2 rounded-lg border px-3 py-2 text-[12px]',
+                                        'ml-10 flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px]',
                                         gone
                                             ? 'border-border bg-surface-2 text-text-muted'
                                             : 'border-success/40 bg-success-subtle text-text',
                                     )}
                                 >
-                                    <CheckCircle2 size={13} className={cn('shrink-0', gone ? 'text-text-faint' : 'text-success')} aria-hidden />
+                                    <CheckCircle2 size={14} className={cn('shrink-0', gone ? 'text-text-faint' : 'text-success')} aria-hidden />
                                     <span className="truncate">{message.content}</span>
                                 </div>
                             );
                         }
                         if (message.kind === 'human_prompt') {
+                            const open = message.key === openQuestionKey;
+                            const kind = questionKind(message.stepId, message.content);
+                            const onStop = open ? () => void stop() : undefined;
                             return (
-                                <HumanPromptCard
-                                    key={message.key}
-                                    content={message.content}
-                                    open={message.key === openQuestionKey}
-                                    onStop={message.key === openQuestionKey ? () => void stop() : undefined}
-                                />
+                                <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                    {kind === 'build' || kind === 'change' ? (
+                                        <PlanCard
+                                            prompt={message.content}
+                                            kind={kind}
+                                            open={open}
+                                            onAnswer={(text) => void send(text, [])}
+                                            onRevise={() => textarea.current?.focus()}
+                                            onStop={onStop}
+                                        />
+                                    ) : (
+                                        <QuestionCard content={message.content} open={open} onStop={onStop} />
+                                    )}
+                                </AgentTurn>
                             );
                         }
                         if (message.role === 'user') {
                             return (
-                                <div key={message.key} className="flex justify-end">
-                                    <div className="max-w-[80%] whitespace-pre-wrap rounded-xl bg-accent px-4 py-2.5 text-sm text-accent-fg">
-                                        {message.content}
-                                    </div>
-                                </div>
+                                <UserBubble key={message.key} density="panel">
+                                    <span className="whitespace-pre-wrap">{message.content}</span>
+                                </UserBubble>
                             );
                         }
                         return (
-                            <div key={message.key} className="flex justify-start">
-                                <div className="max-w-[88%] rounded-xl bg-surface-2 px-4 py-3 text-sm text-text">
-                                    {renderTextContent(message.content)}
-                                </div>
-                            </div>
+                            <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                <Markdown className="text-sm leading-relaxed">{message.content}</Markdown>
+                            </AgentTurn>
                         );
                     })}
 
                     {streaming && state.status && (
-                        <div className="flex items-center gap-2 pl-1">
-                            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" aria-hidden />
-                            <span className="font-code text-[11px] text-text-faint">{state.status}</span>
-                        </div>
+                        // Working: the mark in the avatar's slot, and what it is doing.
+                        <AgentTurn working size={20} density="panel">
+                            <span className="text-xs text-text-muted">{state.status}</span>
+                        </AgentTurn>
                     )}
                     <div ref={bottomRef} />
                 </div>
 
-                <div className="shrink-0 space-y-2.5 border-t border-border px-4 pb-4 pt-3">
+                <div className="shrink-0 space-y-2 border-t border-border bg-bg px-3 pb-3 pt-3">
                     <AttachmentError error={attachments.error} onDismiss={attachments.dismissError} />
-
-                    {/* One bordered box holding the chips and the row, so an
-                        attachment reads as part of the message being written
-                        rather than as a notification above it. */}
-                    <div
-                        className={cn(
-                            'flex flex-col rounded-lg border border-border-strong bg-surface-2',
-                            'transition-colors focus-within:border-accent',
+                    <Composer
+                        density="panel"
+                        value={input}
+                        onChange={setInput}
+                        onSend={submit}
+                        canSend={(Boolean(input.trim()) || attachments.images.length > 0) && !streaming}
+                        sendLabel={state.pending ? 'Send your answer' : 'Send'}
+                        // Only until the run has an id — after that this button is Stop.
+                        sendPending={streaming && !working}
+                        busy={working}
+                        onStop={() => void stop()}
+                        stopLabel="Stop the builder"
+                        stopTitle="Stop"
+                        placeholder={ask}
+                        label="Message the AI builder"
+                        disabled={streaming}
+                        textareaRef={textarea}
+                        dropHandlers={attachments.dropHandlers}
+                        pasteHandlers={attachments.pasteHandlers}
+                        top={<AttachmentChips images={attachments.images} onRemove={attachments.remove} />}
+                        pill={(
+                            <span className={cn(composerPillClass, 'hover:bg-surface-2')}>
+                                <PillAvatar><Mark size={14} className="text-accent" aria-hidden /></PillAvatar>
+                                AI builder
+                            </span>
                         )}
-                        {...attachments.dropHandlers}
-                    >
-                        <AttachmentChips images={attachments.images} onRemove={attachments.remove} />
-                        <div className="flex items-end gap-1">
-                            <textarea
-                                value={input}
-                                onChange={(e) => setInput(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
-                                }}
-                                placeholder={state.pending ? 'Answer the question above…' : 'Describe what you want to happen…'}
-                                rows={2}
-                                disabled={streaming}
-                                aria-label="Message the AI builder"
-                                // The box around this owns the focus ring; see
-                                // `[data-no-focus-ring]` in globals.css.
-                                data-no-focus-ring
-                                {...attachments.pasteHandlers}
-                                className={cn(
-                                    'flex-1 resize-none bg-transparent px-3.5 py-2.5',
-                                    'font-sans text-sm text-text placeholder:text-text-faint',
-                                    'outline-none disabled:opacity-50',
-                                )}
-                            />
+                        attach={(
                             <AttachButton
                                 onFiles={attachments.accept}
                                 count={attachments.images.length}
                                 disabledReason={canAttach ? '' : 'This model cannot read images'}
-                                className="mb-2 p-1.5"
+                                className="rounded-md p-1.5"
                             />
-                            {/* One button, in whichever job the moment calls
-                                for — the chat composer's rule. Two would mean
-                                one of them is always dead. */}
-                            {working ? (
-                                <button
-                                    type="button"
-                                    onClick={() => void stop()}
-                                    aria-label="Stop the builder"
-                                    title="Stop"
-                                    className={cn(
-                                        'mb-1.5 mr-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md',
-                                        'border border-border-strong bg-surface text-text',
-                                        'transition-colors hover:border-text-faint hover:bg-surface-2',
-                                        focusRing,
-                                    )}
-                                >
-                                    <Square size={12} className="fill-current" aria-hidden />
-                                </button>
-                            ) : (
-                                <button
-                                    type="button"
-                                    onClick={submit}
-                                    disabled={(!input.trim() && !attachments.images.length) || streaming}
-                                    aria-label={state.pending ? 'Send your answer' : 'Send'}
-                                    className={cn(
-                                        'mb-1.5 mr-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-accent-fg',
-                                        'transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40',
-                                        focusRing,
-                                    )}
-                                >
-                                    {/* Only until the run has an id — after that
-                                        this button is Stop. */}
-                                    {streaming ? <Spinner size={16} /> : <Send size={15} aria-hidden />}
-                                </button>
-                            )}
-                        </div>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                        <span className="shrink-0 text-[10px] text-text-faint">Model</span>
-                        <Combobox
-                            value={sessionModel || DEFAULT_SENTINEL}
-                            onChange={(v) => setSessionModel(v === DEFAULT_SENTINEL ? '' : v)}
-                            aria-label="Model for this build"
-                            searchPlaceholder="Search models…"
-                            size="sm"
-                            className="max-w-[200px]"
-                            options={modelChoices}
-                        />
-                        {sessionModel && sessionModel !== builderModel && (
-                            <button
-                                type="button"
-                                onClick={() => void saveBuilderModel(sessionModel)}
-                                className={cn('rounded-md px-1.5 py-0.5 text-[10px] text-accent transition-colors hover:text-accent-hover', focusRing)}
-                            >
-                                Set as default
-                            </button>
                         )}
-                        {/* Wraps to three lines and squeezes the picker on a phone-width
-                            card, where it is also the least useful thing on screen. */}
-                        <span className="ml-auto hidden text-[10px] text-text-faint sm:inline">Enter to send · Shift+Enter for a newline</span>
-                    </div>
+                        model={(
+                            <>
+                                {sessionModel && sessionModel !== builderModel && (
+                                    <button
+                                        type="button"
+                                        onClick={() => void saveBuilderModel(sessionModel)}
+                                        className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-xs text-accent-ink transition-colors hover:bg-accent-subtle', focusRing)}
+                                    >
+                                        Set as default
+                                    </button>
+                                )}
+                                <Combobox
+                                    value={sessionModel || DEFAULT_SENTINEL}
+                                    onChange={(v) => setSessionModel(v === DEFAULT_SENTINEL ? '' : v)}
+                                    aria-label="Model for this build"
+                                    searchPlaceholder="Search models…"
+                                    size="sm"
+                                    trigger="pill"
+                                    className="max-w-[200px]"
+                                    options={modelChoices}
+                                />
+                            </>
+                        )}
+                        hint="Enter to send · Shift+Enter for a newline"
+                        showHint={state.messages.every((m) => m.role !== 'user')}
+                    />
+                    {fresh && (
+                        <Suggestions
+                            items={BUILDER_EXAMPLES}
+                            label="Things to ask for"
+                            onPick={(text) => { setInput(text); textarea.current?.focus(); }}
+                            className="pt-1"
+                        />
+                    )}
                 </div>
             </aside>
 

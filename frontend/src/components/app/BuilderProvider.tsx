@@ -47,18 +47,26 @@ export const EXIT_MS = 200;
  */
 const STOP_GRACE_MS = 5000;
 
+/** What the builder says before anything else, above the composer. */
+export const BUILDER_INTRO =
+    "I build things in this workspace — agents, orchestrations, tools, skills and schedules. " +
+    "Tell me what you want to happen. I'll show you a plan to approve before I build anything.";
+
+/**
+ * Things to ask for, as suggestions under the empty composer (M2c): a tap puts
+ * one in the composer, unsent. They were bullets under the greeting.
+ */
+export const BUILDER_EXAMPLES = [
+    "Every weekday at 8, summarise yesterday's support tickets and post it to Slack",
+    'Add a tool that files a ticket in our issue tracker',
+    'Change the research workflow to ask me before it sends anything',
+] as const;
+
 const WELCOME: BuilderMessage = {
     role: 'assistant',
     kind: 'text',
     key: 'welcome',
-    content:
-        "I build things in this workspace — agents, orchestrations, tools, skills and schedules. " +
-        "Tell me what you want to happen. I'll show you a plan to approve before I build anything.\n\n" +
-        // Not italicised. Three italic lines is most of what made this read as
-        // filler rather than as examples you could type.
-        '- "Every weekday at 8, summarise yesterday\'s support tickets and post it to Slack"\n' +
-        '- "Add a tool that files a ticket in our issue tracker"\n' +
-        '- "Change the research workflow to ask me before it sends anything"',
+    content: BUILDER_INTRO,
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -8577,6 +8577,136 @@ if __name__ == "__main__":
 
 # ── M2c: one composer for chat and the builder; the plan as a card ───────────
 
+#: A real plan question's shape (the dev stack, 2026-09-23), cut short: the
+#: builder's lead-in, its rule, then the plan as markdown.
+PLAN_QUESTION = (
+    "Here is the proposed plan. Reply **approve** (or 'ok' / 'looks good' / 'yes') to build it as-is, "
+    "or describe the changes you want and it will be redrafted.\n\n---\n\n"
+    "## Overview\nThis orchestration drafts a weekly update email for Lumen Dental every Friday, summarizing what "
+    "their three competitors published that week. The drafted email is reviewed by a human before being sent.\n\n"
+    "## State schema\n- `current_date` (str): today.\n- `draft_email` (str): the draft.\n\n"
+    "## Steps\n1. **Competitor Research Agent** (agent)\n   - What it does: Researches competitor publications.\n"
+    "   - Type: NEW agent\n\n2. **Email Drafter** (agent)\n   - What it does: Drafts the client email.\n\n"
+    "3. **Human Review** (human)\n   - What it does: Reviews the drafted email before it is sent.\n"
+    "   - Fields collected: `{\"approved\": {\"type\": \"boolean\", \"label\": \"Approve?\"}}`\n\n"
+    "4. **Email Sender** (tool)\n   - Forced tool: Email Sender\n\n5. **end** (end)\n   - Terminates the orchestration.\n\n"
+    "## Agents summary\n### New agents to create\n- **Competitor Research Agent**\n  - name: `Competitor Research Agent`\n"
+    "- **Email Drafter**\n  - name: `Email Drafter`\n\n"
+    "## Flow\n```flow\nCompetitor Research Agent (agent)\n    ↓\nend (end)\n```\n\n"
+    "## Schedule\n- **When**: Every Friday at 9 AM UTC. `0 9 * * 5`\n\n## Open questions\n- None"
+)
+
+
+def _parked(prompt: str, step_id: str = "step_human_review") -> dict:
+    return {
+        "client_session_id": "conv-uismoke-plan", "run_id": RUN_ID, "status": "paused",
+        "turns": [{"user": "a weekly competitor email for Lumen Dental", "assistant": ""}],
+        "pending": {"run_id": RUN_ID, "field": "feedback", "step_id": step_id, "prompt": prompt},
+    }
+
+
+async def _resumes(page) -> list:
+    calls = await page.evaluate("() => window.__calls")
+    return [json.loads(c["body"]) for c in calls if "/api/builder/resume" in c["url"] and c["body"]]
+
+
+@check
+async def check_plancard(browser) -> str:
+    """The builder's plan reads as a card (M2c): numbered steps, each coloured by who does it, and the answers as
+    buttons — Build it sends the word the question asks for, exactly as typing it does, and only once; Change
+    something goes to the composer; a plan the card cannot read is shown as its words with the same answers."""
+    bad: list[str] = []
+    ctx, page = await _builder_back(browser, _parked(PLAN_QUESTION))
+    try:
+        await page.get_by_role("button", name=re.compile("Open the AI builder")).first.click()
+        card = page.locator('aside[aria-label="AI builder"] section[aria-label="The plan"]')
+        await card.wait_for(timeout=10_000)
+        rows = card.get_by_role("list", name="Steps").locator("li")
+        names = [(await rows.nth(i).inner_text()).replace("\n", " ") for i in range(await rows.count())]
+        if len(names) != 5 or "Human Review" not in names[2] or "a person" not in names[2]:
+            bad.append(f"the steps read {names}")
+        if "calls a model" not in names[0] or "Agent" not in names[0]:
+            bad.append(f"the first step reads {names[:1]}")
+        text = await card.inner_text()
+        for words in ("Needs your answer", "Every Friday at 9 AM UTC", "Competitor Research Agent, Email Drafter"):
+            if words not in text:
+                bad.append(f"the card does not say {words!r}")
+        if "Open questions" in text:
+            bad.append("an Open questions box for a plan whose questions are 'None'")
+        await card.get_by_role("button", name="Change something").click()
+        focused = await page.evaluate("() => document.activeElement && document.activeElement.getAttribute('aria-label')")
+        if focused != "Message the AI builder":
+            bad.append(f"Change something left the focus on {focused!r}")
+        if await _resumes(page):
+            bad.append("Change something sent an answer")
+        build = card.get_by_role("button", name="Build it")
+        await build.click()
+        await asyncio.sleep(0.6)
+        sent = await _resumes(page)
+        if sent != [{"run_id": RUN_ID, "response": {"feedback": "approve"}, "images": []}] and \
+                [s.get("response") for s in sent] != [{"feedback": "approve"}]:
+            bad.append(f"Build it sent {sent}")
+    finally:
+        await ctx.close()
+
+    # An unreadable plan, and a change plan.
+    unread = "Here is the proposed plan. Reply **approve** to build it.\n\n---\n\nOne step that summarises the tickets."
+    change = ("Here is what I would do. Reply **approve** (or 'ok' / 'yes' / 'go ahead') and I will do it, or tell me "
+              "what to change.\n\n---\n\n**Plan**\n\n- `update_agent` — shorten the system prompt of Summarizer\n"
+              "- ⚠️ DELETES: `delete_schedule` — the old Monday schedule")
+    for prompt, step, button, words in ((unread, "step_human_review", "Build it", "One step that summarises the tickets."),
+                                        (change, "step_manage_review", "Go ahead", "Deletes: delete_schedule")):
+        ctx, page = await _builder_back(browser, _parked(prompt, step))
+        try:
+            await page.get_by_role("button", name=re.compile("Open the AI builder")).first.click()
+            await asyncio.sleep(0.6)
+            panel = await _panel_text(page)
+            if words not in panel:
+                bad.append(f"{step}: the card does not show {words!r}")
+            go = page.locator('aside[aria-label="AI builder"]').get_by_role("button", name=button)
+            if not await go.count():
+                bad.append(f"{step}: no {button!r}")
+            else:
+                await go.click()
+                await asyncio.sleep(0.5)
+                if [s.get("response") for s in await _resumes(page)] != [{"feedback": "approve"}]:
+                    bad.append(f"{step}: {button} sent {await _resumes(page)}")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the plan's five steps with a person's step amber; Build it and Go ahead send 'approve' once; an unread plan keeps its words"
+
+
+@check
+async def check_buildersuggest(browser) -> str:
+    """An empty builder offers its examples as suggestions under the composer (M2c, they were bullets): a tap puts
+    the words in the composer and sends nothing; the keys' hint shows until the first message."""
+    ctx, page = await _builder_back(browser, None)
+    bad: list[str] = []
+    try:
+        await page.get_by_role("button", name=re.compile("Open the AI builder")).first.click()
+        panel = page.locator('aside[aria-label="AI builder"]')
+        chips = panel.get_by_role("list", name="Things to ask for").get_by_role("button")
+        await chips.first.wait_for(timeout=10_000)
+        if await chips.count() != 3:
+            bad.append(f"{await chips.count()} suggestions")
+        first = (await chips.first.inner_text()).strip()
+        await chips.first.click()
+        value = await panel.locator("textarea").input_value()
+        if value != first:
+            bad.append(f"the composer holds {value!r}, not {first!r}")
+        if [c for c in await page.evaluate("() => window.__calls") if "/api/builder/chat" in c["url"]]:
+            bad.append("a suggestion was sent")
+        if "Enter to send" not in await _panel_text(page):
+            bad.append("no hint before the first message")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "three suggestions; one fills the composer, unsent; the hint shows before the first message"
+
+
 COMPOSER_PROBE = """() => {
   const form = document.querySelector('main form');
   if (!form) return null;
