@@ -359,8 +359,21 @@ export function useWorkflowGraph({
     const deleteKeyCode = keysOnCanvas ? flags.deleteKeyCode : null;
 
     // The orchestration is the source of truth; React Flow's copy exists for
-    // drag interactions. Re-derive whenever the source changes.
-    useEffect(() => { setNodes(computedNodes); }, [computedNodes, setNodes]);
+    // drag interactions. Re-derive whenever the source changes — keeping each
+    // step's measured size: xyflow re-measures a node that arrives without one,
+    // and until it has, it draws none of that node's connections, so every
+    // change of a run's step status blanked every connection for a frame (and
+    // took the live run's signals with it, M3a-2). A real change of size is still
+    // measured: xyflow watches each step's element.
+    useEffect(() => {
+        setNodes((current) => {
+            const measured = new Map(current.map((n) => [n.id, n.measured]));
+            return computedNodes.map((n) => {
+                const size = measured.get(n.id);
+                return size ? { ...n, measured: size } : n;
+            });
+        });
+    }, [computedNodes, setNodes]);
     useEffect(() => { setEdges(computedEdges); }, [computedEdges, setEdges]);
 
     // Refit when switching to a different orchestration — not on every edit.
