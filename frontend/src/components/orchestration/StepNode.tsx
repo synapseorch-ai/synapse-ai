@@ -2,13 +2,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Check, X } from 'lucide-react';
 import { STEP_TYPE_META } from '@/types/orchestration';
-import type { StepConfig, StepIssue, StepType } from '@/types/orchestration';
+import type { StepConfig, StepIssue, StepNodeData, StepType } from '@/types/orchestration';
 import { cn } from '@/lib/cn';
 import { reasonHeadline } from '@/lib/runErrors';
 import { Spinner } from '@/components/ui';
 import { StepIcon } from '../run/StepIcon';
+import { duration, money } from '../run/model';
 import { roleOf } from './roles';
 
 /**
@@ -97,6 +98,8 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const issues: StepIssue[] | undefined = data.issues;
     // The open canvas shows how the run stands in words on the step too (M3a-2).
     const runDetail = data.runDetail === true;
+    const lastRun = data.lastRun as StepNodeData['lastRun'];
+    const live = runStatus === 'running' || runStatus === 'paused';
     const meta = STEP_TYPE_META[step.type as StepType];
     if (!meta) return null;
     const role = roleOf(step.type);
@@ -152,7 +155,8 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             className={cn(
                 'relative min-w-[176px] max-w-[232px] rounded-xl border',
                 frame,
-                'bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.06)] transition-[border-color,box-shadow]',
+                'bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.06)] transition-[border-color,box-shadow,opacity]',
+                data.unreached === true && 'opacity-55',
                 runStatus && statusShadow[runStatus],
                 selected && 'shadow-[0_0_0_3px_var(--ring)]',
             )}
@@ -271,7 +275,10 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             )}
             {/* How the run stands, on the open canvas: a pill on the bottom edge, placed
                 over the border so the step's size — and its handles — never move. */}
-            {runDetail && (runStatus === 'running' || runStatus === 'paused') && (
+            {runDetail && !live && lastRun && lastRun.state !== 'not-reached' && (
+                <TimePill time={lastRun} />
+            )}
+            {runDetail && live && (
                 <span
                     data-run-pill={runStatus}
                     className="pointer-events-none absolute -bottom-[9px] right-3 inline-flex h-[18px] items-center gap-1 rounded-full border border-border bg-surface px-1.5 text-[10.5px] font-medium leading-none text-text-muted"
@@ -302,6 +309,42 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
                 />
             )}
         </div>
+    );
+}
+
+/**
+ * Last run on a step (M3a-2): how it ended and how long it took, with what it
+ * spent where the run prices steps. Over the bottom border, like the live pill.
+ */
+function TimePill({ time }: { time: NonNullable<StepNodeData['lastRun']> }) {
+    const took = time.seconds !== null ? duration(time.seconds) : null;
+    const parts = [
+        time.times ? `${time.times}×` : null,
+        took,
+        time.costUsd !== undefined && time.costUsd !== null ? money(time.costUsd) : null,
+    ].filter(Boolean).join(' · ');
+    const lead = time.state === 'done'
+        ? <Check className="size-3 text-success" aria-hidden />
+        : time.state === 'failed'
+            ? <X className="size-3 text-danger" aria-hidden />
+            : time.state === 'waiting'
+                ? <span className="size-1.5 rounded-full bg-person" aria-hidden />
+                : null;
+    const word = time.state === 'failed' ? 'Failed'
+        : time.state === 'waiting' ? 'Waiting'
+            : time.state === 'cancelled' ? 'Cancelled'
+                : time.state === 'running' ? 'Running'
+                    : 'Done';
+    return (
+        <span
+            data-run-pill={time.state}
+            data-step-seconds={time.seconds ?? undefined}
+            title={`Last run: ${word.toLowerCase()}${parts ? `, ${parts}` : ''}`}
+            className="pointer-events-none absolute -bottom-[9px] right-3 inline-flex h-[18px] items-center gap-1 rounded-full border border-border bg-surface px-1.5 text-[10.5px] font-medium tabular-nums leading-none text-text-muted"
+        >
+            {lead}
+            {parts || word}
+        </span>
     );
 }
 

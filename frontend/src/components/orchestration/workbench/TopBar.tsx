@@ -6,7 +6,7 @@
  */
 import { useState } from 'react';
 import * as RPopover from '@radix-ui/react-popover';
-import { AlertTriangle, ArrowLeft, ChevronDown, MoreHorizontal, Play, Save, SlidersHorizontal, Square } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ChevronDown, Clock, MoreHorizontal, Play, Save, SlidersHorizontal, Square } from 'lucide-react';
 import {
     Button, Hint, Mark, Menu, MenuItem, MenuLabel, MenuSeparator, PageHeaderSlot, Spinner, Textarea, buttonStyles,
 } from '@/components/ui';
@@ -21,7 +21,7 @@ export function TopBar({
     dirty, saving, onSave,
     issues, onIssue,
     onChangeWithAI,
-    phase, onRun, onStop, blocked, runInput,
+    phase, onRun, onStop, blocked, runInput, lastRun,
     menu, onOpenSettings, settingsOpen,
     phone, compact, insetRight,
 }: {
@@ -42,6 +42,8 @@ export function TopBar({
     blocked: number;
     /** The run's input, behind Run now's chevron. Run now sends it as it stands, empty or not. */
     runInput?: { value: string; onChange: (value: string) => void };
+    /** Last run: show each step's time from the last run on the steps (M3a-2). */
+    lastRun?: { shown: boolean; onShow: (shown: boolean) => void; loading?: boolean };
     menu: WorkbenchMenuItem[];
     onOpenSettings: () => void;
     settingsOpen: boolean;
@@ -160,6 +162,23 @@ export function TopBar({
                         {!compact && 'Workflow settings'}
                     </button>
                 )}
+                {lastRun && !phone && (
+                    <button
+                        type="button"
+                        onClick={() => lastRun.onShow(!lastRun.shown)}
+                        aria-pressed={lastRun.shown}
+                        aria-busy={lastRun.loading || undefined}
+                        aria-label={compact ? 'Last run' : undefined}
+                        title="Show each step's time from the last run"
+                        className={cn(
+                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: compact }),
+                            lastRun.shown && 'bg-surface-2 text-text',
+                        )}
+                    >
+                        {lastRun.loading ? <Spinner size={14} /> : <Clock className="size-3.5" aria-hidden />}
+                        {!compact && 'Last run'}
+                    </button>
+                )}
                 {onChangeWithAI && !phone && (
                     <Button
                         size="sm"
@@ -201,6 +220,11 @@ export function TopBar({
                 >
                     <MenuItem icon={SlidersHorizontal} onSelect={onOpenSettings}>Workflow settings</MenuItem>
                     {phone && onChangeWithAI && <MenuItem icon={MarkIcon} onSelect={onChangeWithAI}>Change with AI</MenuItem>}
+                    {phone && lastRun && (
+                        <MenuItem icon={Clock} onSelect={() => lastRun.onShow(!lastRun.shown)}>
+                            {lastRun.shown ? 'Hide last run' : 'Show last run'}
+                        </MenuItem>
+                    )}
                     {menu.map((item) => (
                         <MenuEntry key={item.id} item={item} />
                     ))}

@@ -214,6 +214,10 @@ export interface StepNodeData {
     runError?: string;
     /** The open canvas: the step says in words how the run stands (Working, Needs you), not only in its frame. */
     runDetail?: boolean;
+    /** How the step went in the last run (Last run, M3a-2): `components/run`'s `StepTime`. */
+    lastRun?: { state: string; seconds: number | null; times?: number; costUsd?: number | null };
+    /** The last run, now over, never reached this step: it is dimmed. */
+    unreached?: boolean;
     issues?: StepIssue[];
     [key: string]: unknown;
 }

@@ -27,6 +27,7 @@ import { addStepToGraph, clearEdgeLink, removeStepFromGraph, withInputKey, type 
 import { layoutPositions } from './layout';
 import { validateOrchestration } from './validate';
 import type { Orchestration, StepConfig, StepIssue, StepNodeData, StepType } from '@/types/orchestration';
+import type { StepTime } from '../run/model';
 
 export type RunStepStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed';
 
@@ -45,6 +46,8 @@ function stepsToNodes(
     issuesByStep: Record<string, StepIssue[]>,
     runErrors?: Record<string, string>,
     runDetail?: boolean,
+    stepTimes?: Record<string, StepTime> | null,
+    settled?: boolean,
 ): Node<StepNodeData>[] {
     return steps.map((step) => {
         const agent = agents.find((a: any) => a.id === step.agent_id);
@@ -60,6 +63,8 @@ function stepsToNodes(
                 runStatus: runStatuses?.[step.id] as StepNodeData['runStatus'],
                 runError: runErrors?.[step.id],
                 runDetail,
+                lastRun: stepTimes?.[step.id],
+                unreached: !!settled && stepTimes?.[step.id]?.state === 'not-reached',
                 issues: issuesByStep[step.id],
             },
             selected: step.id === selectedStepId,
@@ -296,6 +301,10 @@ export interface WorkflowGraphOptions {
     runStepErrors?: Record<string, string>;
     /** The open canvas's steps say how the run stands in words too (Working, Needs you); the classic canvas's don't. */
     runDetail?: boolean;
+    /** Last run: each step's state and time, shown on the step (the open canvas, M3a-2). */
+    stepTimes?: Record<string, StepTime> | null;
+    /** The run shown is over: a step it never reached is dimmed. */
+    settled?: boolean;
     flags: CanvasFlags;
     /** Fit the graph in view. Called once per opened orchestration, and after Tidy up with a duration. */
     fit: (duration?: number) => void;
@@ -312,6 +321,8 @@ export function useWorkflowGraph({
     runStepStatuses,
     runStepErrors,
     runDetail,
+    stepTimes,
+    settled,
     flags,
     fit,
     wrapperRef,
@@ -327,8 +338,8 @@ export function useWorkflowGraph({
     );
 
     const computedNodes = useMemo(
-        () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors, runDetail),
-        [orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors, runDetail]
+        () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors, runDetail, stepTimes, settled),
+        [orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors, runDetail, stepTimes, settled]
     );
     const computedEdges = useMemo(
         () => stepsToEdges(orchestration.steps, flags.edits),

@@ -39,6 +39,7 @@ import { Copy, Flag, Trash2 } from 'lucide-react';
 import { CommandPalette, IconButton, useCanvasMode, usePersisted, useRegisterCommands } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { KNOWLEDGE_STEP_TYPES, type Orchestration, type StepConfig, type StepType } from '@/types/orchestration';
+import type { StepTime } from '../run/model';
 import { canvasFlags } from './canvasFlags';
 import { ROLE_FILL, roleOf } from './roles';
 import { nodeTypes, useWorkflowGraph, type RunStepStatus } from './useWorkflowGraph';
@@ -116,6 +117,19 @@ export interface CanvasWorkbenchProps {
     runStrip?: React.ReactNode;
     /** The run's log and recent runs, opened from the strip above it. */
     runDrawer?: { open: boolean; content: React.ReactNode };
+    /**
+     * Last run (D204's bar, M3a-2): each step's state and time — and cost, where
+     * the product prices steps — from the run on the canvas or the workflow's
+     * newest, and the bar's toggle that shows them on the steps.
+     */
+    lastRun?: {
+        /** By step id (`stepTimes` in `components/run`); `null` while there is nothing to show. */
+        steps: Record<string, StepTime> | null;
+        shown: boolean;
+        onShow: (shown: boolean) => void;
+        /** The product is reading the run to show. */
+        loading?: boolean;
+    };
 }
 
 export function CanvasWorkbench(props: CanvasWorkbenchProps) {
@@ -136,7 +150,7 @@ function subscribeCoarse(onChange: () => void) {
 function Workbench({
     orchestration, onChange, agents, knowledgeEnabled = false, selectedStepId, onSelectStep,
     renderStep, renderSettings, stepActions, history, save, onBack, switcher, menu, onChangeWithAI,
-    insetRight = 0, run, runStrip, runDrawer,
+    insetRight = 0, run, runStrip, runDrawer, lastRun,
 }: CanvasWorkbenchProps) {
     // The canvas is the page: the shell hides the page header and folds the menu (D204).
     useCanvasMode(true);
@@ -215,6 +229,8 @@ function Workbench({
         runStepStatuses: run.stepStatuses,
         runStepErrors: run.stepErrors,
         runDetail: true,
+        stepTimes: lastRun?.shown ? lastRun.steps : null,
+        settled: !(run.phase === 'running' || run.phase === 'paused'),
         flags,
         fit,
         wrapperRef: flowRef,
@@ -474,6 +490,7 @@ function Workbench({
                 onStop={run.onStop}
                 blocked={validation.errorCount}
                 runInput={run.input}
+                lastRun={lastRun ? { shown: lastRun.shown, onShow: lastRun.onShow, loading: lastRun.loading } : undefined}
                 menu={menu}
                 onOpenSettings={openSettings}
                 settingsOpen={view === 'settings'}

@@ -500,6 +500,54 @@ export function stepperRows(
     });
 }
 
+// ── Last run, step by step ───────────────────────────────────────────────────
+
+/** How one step went in a run, as the canvas shows it on the step (Last run, M3a-2). */
+export type StepTime = {
+    state: StepState;
+    /** Its time, summed over every time it ran; `null` while it runs or when the run kept none. */
+    seconds: number | null;
+    /** How many times it ran, past one. */
+    times?: number;
+    /** What it spent, where the product prices steps (cloud's `stepUsage`); absent in OSS. */
+    costUsd?: number | null;
+};
+
+/**
+ * Each step's state, time and (where the run has it) cost: the state from the
+ * stepper's rows, the time from each history entry as the timeline reads it (its
+ * `duration_seconds`, else its two timestamps), so the canvas, the run page's
+ * stepper and its waterfall can never disagree. An entry that has neither (a
+ * question answered while the page watched, before the run's end brings its
+ * record) adds nothing rather than a zero. A step the stepper leaves out (End)
+ * has no entry: nothing is known about it.
+ */
+export function stepTimes(
+    run: Pick<RunRecord, 'status' | 'waitingForHuman' | 'currentStepId' | 'history' | 'stepUsage'>,
+    workflow: Orchestration | null | undefined,
+): Record<string, StepTime> {
+    const seconds = new Map<string, number>();
+    for (const h of run.history) {
+        if (h.status === 'running' || h.status === 'paused') continue;
+        const begin = toMs(h.started_at);
+        const end = toMs(h.ended_at);
+        const took = typeof h.duration_seconds === 'number' ? h.duration_seconds
+            : begin !== null && end !== null ? Math.max(0, (end - begin) / 1000) : null;
+        if (took !== null) seconds.set(h.step_id, (seconds.get(h.step_id) ?? 0) + took);
+    }
+    const out: Record<string, StepTime> = {};
+    for (const row of stepperRows(run, workflow)) {
+        const usage = run.stepUsage?.[row.stepId];
+        out[row.stepId] = {
+            state: row.state,
+            seconds: seconds.get(row.stepId) ?? null,
+            ...(row.times ? { times: row.times } : null),
+            ...(usage ? { costUsd: usage.cost_usd } : null),
+        };
+    }
+    return out;
+}
+
 // ── "Followed the saved workflow" ────────────────────────────────────────────
 
 export type Followed = {

@@ -27,10 +27,10 @@ import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
 import { isLiveRun, runStatusMeta, type RunSummary } from '@/components/runs/summary';
 import {
-    appendRunLog, applyRunEvent, ApprovalCard, emptyRunLog, RunHostProvider, RunList,
-    type RunHost, type RunLogState, type RunRecord, type RunRow, type StepResultEntry,
+    appendRunLog, applyRunEvent, ApprovalCard, emptyRunLog, RunHostProvider, RunList, stepTimes,
+    type RunHost, type RunLogState, type RunRecord, type RunRow, type StepExecution, type StepResultEntry,
 } from '@/components/run';
-import { OSS_RUN_HOST, ossRunRow } from '@/lib/runHost';
+import { OSS_RUN_HOST, ossRunRecord, ossRunRow } from '@/lib/runHost';
 import { ResponseModal } from '@/components/workflows/runLog';
 import { RunDrawer } from '@/components/workflows/RunDrawer';
 import { RunStrip, type RunDrawerView } from '@/components/workflows/RunStrip';
@@ -75,6 +75,66 @@ const CANCELLED_LINE = '[Cancelled]';
 
 /** How long a reopened run's journal stays quiet before its replay counts as caught up (M3a-2). */
 const REPLAY_QUIET_MS = 300;
+
+/** The newest entry of a step in a run's history, by its index. */
+function lastEntryOf(history: StepExecution[], stepId: string, status?: string): number {
+    for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].step_id === stepId && (!status || history[i].status === status)) return i;
+    }
+    return -1;
+}
+
+/**
+ * The run on the canvas as its steps went, from its events (Last run, M3a-2):
+ * a start opens a running entry, `step_complete` closes it with the engine's
+ * own duration, an error fails it, a question pauses it and the next start
+ * closes it (a person's step gets no step_complete, F190), and the run's end
+ * brings the whole history from its record. No clock of this browser's is used.
+ */
+function foldHistory(prev: StepExecution[], data: any, asked: string | null): StepExecution[] {
+    const set = (i: number, patch: Partial<StepExecution>) => prev.map((h, j) => (j === i ? { ...h, ...patch } : h));
+    switch (data.type) {
+        case 'step_start': {
+            const id = data.orch_step_id;
+            if (!id) return prev;
+            // The step that asked picking up again after its answer (a tool call's approval).
+            if (asked === id) {
+                const i = lastEntryOf(prev, id, 'paused');
+                return i < 0 ? prev : set(i, { status: 'running' });
+            }
+            let next = prev;
+            if (asked) {
+                const i = lastEntryOf(next, asked, 'paused');
+                if (i >= 0) next = next.map((h, j) => (j === i ? { ...h, status: 'completed' } : h));
+            }
+            return [...next, { step_id: id, step_name: data.step_name, step_type: data.step_type, status: 'running' }];
+        }
+        case 'step_complete': {
+            const i = lastEntryOf(prev, data.orch_step_id, 'running');
+            if (i < 0) return prev;
+            return set(i, { status: 'completed', duration_seconds: typeof data.duration_seconds === 'number' ? data.duration_seconds : undefined });
+        }
+        case 'step_error': {
+            const i = lastEntryOf(prev, data.orch_step_id, 'running');
+            return i < 0 ? prev : set(i, { status: 'failed', error: data.reason ?? data.error ?? null });
+        }
+        case 'human_input_required': {
+            const i = lastEntryOf(prev, data.orch_step_id);
+            return i < 0 ? prev : set(i, { status: 'paused' });
+        }
+        case 'orchestration_complete':
+        case 'orchestration_error': {
+            const to = data.type === 'orchestration_complete' && data.status === 'completed' ? 'completed' : 'cancelled';
+            return prev.some(h => h.status === 'running' || h.status === 'paused')
+                ? prev.map(h => (h.status === 'running' || h.status === 'paused' ? { ...h, status: to } : h))
+                : prev;
+        }
+        case 'final':
+            return data.intent === 'orchestration' && Array.isArray(data.data?.step_history) ? data.data.step_history : prev;
+        default:
+            return prev;
+    }
+}
 
 /** The log with nothing going on: what the model was doing has stopped. */
 const settleActivity = (log: RunLogState): RunLogState => (log.liveActivity === null ? log : { ...log, liveActivity: null });
@@ -224,6 +284,17 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // Why each failed step failed, in its own words (F195): shown on its card and in the run log.
     const [runStepErrors, setRunStepErrors] = useState<Record<string, string>>({});
     const [runId, setRunId] = useState<string | null>(null);
+    // Last run (M3a-2): the run on the canvas as its steps went (`foldHistory`),
+    // and the bar's toggle that shows each step's time. With no run on the canvas
+    // the toggle reads the workflow's newest run once, when pressed.
+    const historyRef = useRef<StepExecution[]>([]);
+    const [runHistory, setRunHistory] = useState<StepExecution[]>([]);
+    const [lastRunShown, setLastRunShown] = useState(false);
+    const [newestRun, setNewestRun] = useState<RunRecord | null>(null);
+    const [newestLoading, setNewestLoading] = useState(false);
+    // The live stream's run has ended: it is let go once the run's end (`final`,
+    // with its whole history) has been read, not before.
+    const endingRef = useRef(false);
     // The live run on the canvas (M3a-2): the steps in the order they started
     // (each start sends a signal down the connection it came along), which run
     // they belong to, and whether a reopened run's journal is still catching up —
@@ -237,6 +308,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         setTrail(trailRef.current);
         setRunKey(k => k + 1);
         setReplaying(replay);
+        historyRef.current = [];
+        setRunHistory(historyRef.current);
+        endingRef.current = false;
     }, []);
     const [runInput, setRunInput] = useState('');
     // The run log, the plan and what the model is doing right now: the run
@@ -415,6 +489,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         historyErrorsRef.current = {};
         setRunStepErrors({});
         startTrail(true);
+        setLastRunShown(true);
 
         // Restore step statuses + human-input state from the persisted checkpoint
         // so the canvas is meaningful before (and in case of a pre-journal run,
@@ -429,6 +504,10 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     setRunStepStatuses(prev => applyStepHistory(prev, data.step_history));
                     historyErrorsRef.current = stepErrorsFrom(data.step_history);
                     setRunStepErrors(historyErrorsRef.current);
+                    // Its steps' times, until its journal replays them (a run from
+                    // before the journal keeps these).
+                    historyRef.current = data.step_history;
+                    setRunHistory(historyRef.current);
                 }
                 if (data.waiting_for_human && data.human_prompt) {
                     setHumanPrompt(data.human_prompt);
@@ -485,6 +564,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         setRunLog(emptyRunLog());
         setHumanPrompt(null);
         startTrail(false);
+        setLastRunShown(false);
+        setNewestRun(null);
         if (id) {
             const orch = orchestrations.find(o => o.id === id);
             replaceDraft(orch ? { ...orch } : null, { saved: true });
@@ -771,10 +852,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                     // Full replay rebuilds the log from scratch — identical to
                     // having watched the run live, with no duplicated entries.
                     setRunLog(emptyRunLog());
-                    // And the canvas's trail: the replayed starts light in place.
+                    // And the canvas's trail and steps: the replayed starts light in place.
                     trailRef.current = [];
                     setTrail(trailRef.current);
                     setReplaying(true);
+                    historyRef.current = [];
+                    setRunHistory(historyRef.current);
                 }
                 attempts = 0;
                 const reader = res.body.getReader();
@@ -996,6 +1079,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         setRunStepStatuses(statuses);
         askedStepRef.current = null;
         startTrail(false);
+        setLastRunShown(true);
         setRunStepErrors({});
         historyErrorsRef.current = {};
         setRunStatus('running');
@@ -1036,6 +1120,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         // (F251): they are logged with both names and never move that step's
         // card — a child's step ending used to read as the parent step's.
         if (data.nested_run_id && NESTED_STEP_EVENTS.has(data.type)) return;
+
+        // The run's steps as they go, for Last run: read before the switch below
+        // clears the step that asked.
+        const folded = foldHistory(historyRef.current, data, askedStepRef.current);
+        if (folded !== historyRef.current) {
+            historyRef.current = folded;
+            setRunHistory(folded);
+        }
 
         switch (data.type) {
             case 'orchestration_start':
@@ -1120,7 +1212,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 setHumanContext(null);
                 setRunStatus(data.status === 'completed' ? 'completed' : 'failed');
                 setRunStepStatuses(prev => settleRun(prev, data.status === 'completed' ? 'completed' : 'failed'));
-                if (!fromJournal) {
+                // The live stream is let go after the run's end has been read: the
+                // `final` that follows carries the run's whole history (Last run).
+                // The server closes the stream after it either way.
+                if (!fromJournal) endingRef.current = true;
+                break;
+
+            case 'final':
+                if (data.intent === 'orchestration' && !fromJournal && endingRef.current) {
+                    endingRef.current = false;
                     abortRef.current?.abort();
                     abortRef.current = null;
                 }
@@ -1250,6 +1350,45 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
             draft={{ text: humanResponse, onText: setHumanResponse, values: humanValues, onValues: setHumanValues }}
         />
     ) : null;
+
+    // Last run on the steps: the run on the canvas — as it goes, then as its end
+    // records it — or, with none, the workflow's newest run, read once when the
+    // toggle is pressed (the read the run page and Recent Runs make).
+    const runOnCanvas = runStatus !== 'idle' && !!runId;
+    const lastSteps = useMemo(() => {
+        if (!draft) return null;
+        if (runOnCanvas) {
+            return stepTimes({
+                status: runStatus,
+                waitingForHuman: runStatus === 'paused' && !!humanPrompt,
+                currentStepId: runStatus === 'paused' ? waitingStep : null,
+                history: runHistory,
+            }, draft);
+        }
+        return newestRun ? stepTimes(newestRun, draft) : null;
+    }, [draft, runOnCanvas, runStatus, humanPrompt, waitingStep, runHistory, newestRun]);
+    const showLastRun = async (on: boolean) => {
+        setLastRunShown(on);
+        if (!on || runOnCanvas || !draft) return;
+        const newest = pastRuns.find(r => r.orchestration_id === draft.id);
+        if (!newest) {
+            setLastRunShown(false);
+            showToast('No recent run of this workflow — run it, or open one from Recent Runs.', 'warning');
+            return;
+        }
+        if (newestRun?.id === newest.run_id) return;
+        setNewestLoading(true);
+        try {
+            const res = await fetch(`/api/orchestrations/runs/${encodeURIComponent(newest.run_id)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            setNewestRun(ossRunRecord(await res.json(), draft, schedules));
+        } catch {
+            setLastRunShown(false);
+            showToast('The last run could not be read. Try again.', 'error');
+        } finally {
+            setNewestLoading(false);
+        }
+    };
 
     // The run strip's Answer: the card on the step that asked, the question at
     // its top and its first field ready — or, when that step is not on this
@@ -1706,6 +1845,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                 replaying,
                                 waitingStepId: asking && !replaying ? waitingStep : null,
                                 questionKey,
+                            }}
+                            lastRun={{
+                                steps: lastSteps,
+                                shown: lastRunShown,
+                                onShow: (on) => { void showLastRun(on); },
+                                loading: newestLoading,
                             }}
                             runStrip={
                                 <RunStrip
