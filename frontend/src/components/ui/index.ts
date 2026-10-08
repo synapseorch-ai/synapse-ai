@@ -76,6 +76,7 @@ export { Drawer } from "./drawer";
 export { HubTabs, type HubTab } from "./hub-tabs";
 export { Menu, MenuItem, MenuLabel, MenuLink, MenuSegment, MenuSeparator, RowMenu } from "./menu";
 export { Select, type SelectOption } from "./select";
+export { Switch } from "./switch";
 export { Combobox, type ComboboxOption } from "./combobox";
 export { StatusBadge, normaliseStatus, type RunStatus } from "./status";
 export { Toast, useToast, type ToastTone } from "./toast";

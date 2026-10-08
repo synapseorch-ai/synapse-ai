@@ -29,6 +29,7 @@ import {
   CardFooter,
   CellStack,
   Checkbox,
+  Switch,
   Combobox,
   ConfirmDialog,
   DataTable,
@@ -254,6 +255,10 @@ export function KitchenSink() {
                 <Checkbox checked="indeterminate" onChange={() => {}} label="Indeterminate" />
                 <Checkbox checked={false} onChange={() => {}} label="Unchecked" />
                 <Checkbox checked={false} onChange={() => {}} label="Disabled" disabled />
+                <Switch checked={checked} onChange={setChecked} label="Switch" />
+                <Switch checked={false} onChange={() => {}} label="Switch off" />
+                <Switch checked onChange={() => {}} label="Switch small" size="sm" />
+                <Switch checked={false} onChange={() => {}} label="Switch disabled" disabled />
               </div>
             </div>
           </CardBody>
