@@ -11,11 +11,12 @@
  * two definition lists the workspace already loads.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Spinner } from '@/components/ui';
+import Link from 'next/link';
+import { Spinner, StatStrip } from '@/components/ui';
 import { usd } from '@/lib/money';
 import { parseStamp } from '@/components/LocalTime';
 import {
-    ScrollText, Coins, Workflow, Clock, MessageSquare, Bot, X,
+    ScrollText, Coins, Workflow, Clock, MessageSquare, Bot, X, PanelTop,
 } from 'lucide-react';
 
 export type ActivityTab = 'runs' | 'metrics' | 'usedby';
@@ -230,29 +231,41 @@ const Section = ({ icon: Icon, title, rows }: { icon: any; title: string; rows: 
     )
 );
 
-function UsedByTab({ agentId, channels, agents }: { agentId: string; channels: any[]; agents: any[] }) {
-    const [orchestrations, setOrchestrations] = useState<any[] | null>(null);
-    const [schedules, setSchedules] = useState<any[] | null>(null);
-
+/**
+ * The workflows and schedules that call this agent: a scan of the two lists the
+ * workspace already serves. Used by the "Used by" tab and by the setup's
+ * "Where it works" (M2d), so both say the same thing.
+ */
+export function useAgentReferences(agentId: string | null) {
+    const [refs, setRefs] = useState<{ id: string; orchestrations: any[]; schedules: any[] } | null>(null);
     useEffect(() => {
+        if (!agentId) return;
+        let live = true;
         Promise.all([
             fetch('/api/orchestrations').then(r => (r.ok ? r.json() : [])).catch(() => []),
             fetch('/api/schedules').then(r => (r.ok ? r.json() : [])).catch(() => []),
         ]).then(([o, s]) => {
-            setOrchestrations(
-                (Array.isArray(o) ? o : []).filter((orch: any) =>
+            if (!live) return;
+            setRefs({
+                id: agentId,
+                orchestrations: (Array.isArray(o) ? o : []).filter((orch: any) =>
                     (orch.steps || []).some((step: any) => step.agent_id === agentId),
                 ),
-            );
-            setSchedules(
-                (Array.isArray(s) ? s : []).filter(
+                schedules: (Array.isArray(s) ? s : []).filter(
                     (sch: any) => sch.target_type === 'agent' && sch.target_id === agentId,
                 ),
-            );
+            });
         });
+        return () => { live = false; };
     }, [agentId]);
+    // Another agent's answer is not this one's: until this agent's arrives, it is loading.
+    return refs && refs.id === agentId ? refs : null;
+}
 
-    if (orchestrations === null || schedules === null) return <Loading />;
+function UsedByTab({ agentId, channels, agents }: { agentId: string; channels: any[]; agents: any[] }) {
+    const refs = useAgentReferences(agentId);
+    if (refs === null) return <Loading />;
+    const { orchestrations, schedules } = refs;
 
     // An agent that delegates to this one dangles just as badly as a step does.
     const delegators = agents.filter(
@@ -315,6 +328,122 @@ function UsedByTab({ agentId, channels, agents }: { agentId: string; channels: a
                 }))}
             />
         </div>
+    );
+}
+
+// ─── The setup's summaries (M2d) ─────────────────────────────────────────────
+
+/** The first moment of this month, in the reader's time. */
+function monthStart(): number {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+}
+
+/** The most calls "This month" reads; past it the cost is a floor, and says so. */
+const MONTH_CALLS = 1000;
+
+/**
+ * This month's runs and cost for one agent, from two reads that already exist:
+ * the agent's run logs and its usage records (newest first). No endpoint sums a
+ * month, so the page does; a month with more calls than one page reads says
+ * "at least".
+ */
+export function ThisMonth({ agentId }: { agentId: string }) {
+    const [month, setMonth] = useState<{ id: string; runs: number; cost: number; capped: boolean } | null>(null);
+    const [failed, setFailed] = useState<string | null>(null);
+    useEffect(() => {
+        let live = true;
+        const since = monthStart();
+        Promise.all([
+            fetch(`/api/logs/agents?agent_id=${encodeURIComponent(agentId)}&limit=500`).then(r => (r.ok ? r.json() : Promise.reject(new Error('runs')))),
+            fetch(`/api/usage/logs?agent_id=${encodeURIComponent(agentId)}&limit=${MONTH_CALLS}`).then(r => (r.ok ? r.json() : Promise.reject(new Error('usage')))),
+        ]).then(([runs, usage]) => {
+            if (!live) return;
+            const inMonth = (stamp?: string | null) => {
+                if (!stamp) return false;
+                const t = parseStamp(stamp).getTime();
+                return !isNaN(t) && t >= since;
+            };
+            const runCount = (Array.isArray(runs) ? runs : []).filter((r: AgentRun) => inMonth(r.started_at)).length;
+            const rows: any[] = Array.isArray(usage?.logs) ? usage.logs : [];
+            const monthRows = rows.filter(r => inMonth(r.timestamp));
+            const cost = monthRows.reduce((sum, r) => sum + (Number(r.estimated_cost) || 0), 0);
+            // A full page whose oldest row is still this month may have more behind it.
+            const capped = rows.length >= MONTH_CALLS && inMonth(rows[rows.length - 1]?.timestamp);
+            setMonth({ id: agentId, runs: runCount, cost, capped });
+        }).catch(() => { if (live) setFailed(agentId); });
+        return () => { live = false; };
+    }, [agentId]);
+
+    if (failed === agentId) return <p className="text-xs text-text-faint">This month&apos;s runs and cost could not be read.</p>;
+    if (!month || month.id !== agentId) return <Loading />;
+    return (
+        <div className="space-y-2">
+            <StatStrip
+                size="sm"
+                label="This month"
+                cells={[
+                    { label: 'Runs', value: month.runs.toLocaleString() },
+                    { label: 'Estimated cost', value: `${month.capped ? '≥ ' : ''}${usd(month.cost)}`, sub: month.capped ? `${MONTH_CALLS.toLocaleString()}+ calls` : undefined },
+                ]}
+            />
+            <p className="text-2xs text-text-faint">
+                Since the 1st, in your time. Costs are estimates from the rate card; the Metrics tab has everything this agent has spent.
+            </p>
+        </div>
+    );
+}
+
+/** One place the agent works, as a link. */
+type Place = { key: string; icon: any; label: string; detail?: string; href: string };
+
+/**
+ * Everywhere this agent answers or is called, as links: chat, its channels, the
+ * widgets that publish it, the workflows and schedules that call it, and the
+ * agents that may hand it work. The "Used by" and "Messaging Channels" tabs
+ * keep the detail.
+ */
+export function WhereItWorks({ agentId, channels, agents, widgets }: {
+    agentId: string;
+    channels: any[];
+    agents: any[];
+    widgets: any[];
+}) {
+    const refs = useAgentReferences(agentId);
+    if (refs === null) return <Loading />;
+    const places: Place[] = [
+        { key: 'chat', icon: MessageSquare, label: 'Chat', detail: 'anyone in this workspace can talk to it', href: '/' },
+        ...channels.map((c: any): Place => ({
+            key: `ch:${c.id}`, icon: MessageSquare, label: c.name || 'Channel', href: '/channels',
+            detail: `${c.platform}${c.agent_ids?.[0] === agentId ? ' · answers by default' : ''}`,
+        })),
+        ...widgets.filter((w: any) => w.agent_id === agentId).map((w: any): Place => ({
+            key: `w:${w.id}`, icon: PanelTop, label: w.name || 'Untitled widget', detail: 'chat widget', href: '/widgets',
+        })),
+        ...refs.orchestrations.map((o: any): Place => ({
+            key: `o:${o.id}`, icon: Workflow, label: o.name || o.id, href: `/workflows?id=${encodeURIComponent(o.id)}`,
+            detail: `${(o.steps || []).filter((st: any) => st.agent_id === agentId).length} step(s) call this agent`,
+        })),
+        ...refs.schedules.map((sch: any): Place => ({
+            key: `s:${sch.id}`, icon: Clock, label: sch.name || sch.id, href: '/schedules',
+            detail: sch.enabled ? 'schedule, enabled' : 'schedule, paused',
+        })),
+        ...agents.filter((a: any) => a.id !== agentId && (a.delegate_agent_ids || []).includes(agentId)).map((a: any): Place => ({
+            key: `a:${a.id}`, icon: Bot, label: a.name || a.id, detail: 'may hand work to this agent', href: `/agents?id=${encodeURIComponent(a.id)}`,
+        })),
+    ];
+    return (
+        <ul className="divide-y divide-border">
+            {places.map(p => (
+                <li key={p.key}>
+                    <Link href={p.href} className="flex items-center gap-3 py-2 text-sm text-text hover:text-accent-ink">
+                        <p.icon className="size-4 shrink-0 text-text-faint" aria-hidden />
+                        <span className="min-w-0 flex-1 truncate">{p.label}</span>
+                        {p.detail && <span className="hidden min-w-0 shrink truncate text-xs text-text-faint sm:inline">{p.detail}</span>}
+                    </Link>
+                </li>
+            ))}
+        </ul>
     );
 }
 

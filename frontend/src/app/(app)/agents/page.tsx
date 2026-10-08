@@ -1,5 +1,4 @@
 import { AgentsScreen } from '@/components/settings/AgentsScreen';
-import { AppScreen } from '@/components/app/AppScreen';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,12 +9,9 @@ export const dynamic = 'force-dynamic';
  *
  * The frame and the title both come from the nav entry (`AppScreen`), as
  * they did when SettingsView wrapped this — so there is still one place the
- * words live.
+ * words live. AgentsScreen draws it: its New agent sits in the header and
+ * answers to the screen's own unsaved-edit question (M2d).
  */
 export default function AgentsPage() {
-    return (
-        <AppScreen id="agents">
-            <AgentsScreen />
-        </AppScreen>
-    );
+    return <AgentsScreen />;
 }
