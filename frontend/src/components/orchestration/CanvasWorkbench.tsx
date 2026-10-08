@@ -323,7 +323,19 @@ function Workbench({
             {/* The page's title, for the outline and for anything that looks for one: the bar shows it as a field. */}
             <h1 className="sr-only">{orchestration.name || 'Untitled workflow'}</h1>
 
-            <div ref={flowRef} className="absolute inset-0" onKeyDown={graph.onCanvasKeyDown}>
+            <div
+                ref={flowRef}
+                className="absolute inset-0"
+                onKeyDown={(event) => {
+                    graph.onCanvasKeyDown(event);
+                    // xyflow blurs a step on Escape: put the focus back on it, where the
+                    // keyboard was, now that its card has closed.
+                    const node = (event.target as HTMLElement).closest?.('.react-flow__node');
+                    if (event.key === 'Escape' && node === event.target) {
+                        window.requestAnimationFrame(() => (node as HTMLElement).focus());
+                    }
+                }}
+            >
                 <ReactFlow
                     nodes={graph.nodes}
                     edges={graph.edges}

@@ -2395,6 +2395,7 @@ async def check_canvasdrop(browser) -> str:
         await page.get_by_role("button", name="Add step", exact=True).click()
         option = page.get_by_role("option", name=re.compile(r"^Print")).first
         await option.wait_for(timeout=5_000)
+        await option.scroll_into_view_if_needed()  # Print is in I/O, the list's last group
         src = await option.bounding_box()
         pane = await page.locator(".react-flow__pane").bounding_box()
         target = (pane["x"] + pane["width"] * 0.3, pane["y"] + pane["height"] * 0.7)
@@ -2496,9 +2497,10 @@ async def check_workflowsettings(browser) -> str:
         panel = page.get_by_role("region", name="Workflow settings")
         for role, name in [("textbox", "Orchestration description"),
                            ("spinbutton", "Max Total Turns"), ("spinbutton", "Timeout (minutes)"),
-                           ("checkbox", "Stop on a state type mismatch"), ("combobox", "Result"),
+                           ("checkbox", re.compile(r"^Stop on a state type mismatch")), ("combobox", "Result"),
                            ("combobox", "Score runs against"), ("button", "Add key")]:
-            if not await panel.get_by_role(role, name=name, exact=True).count():
+            # The checkbox's label holds its explanation too, so its name starts with the words.
+            if not await panel.get_by_role(role, name=name, exact=isinstance(name, str)).count():
                 problems.append(f"no {role} {name!r}")
         await panel.get_by_role("textbox", name="Orchestration description").fill("smoke described")
         await panel.get_by_role("spinbutton", name="Max Total Turns").fill("77")
