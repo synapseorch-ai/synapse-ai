@@ -203,7 +203,7 @@ function CopyAnswer({ text }: { text: string }) {
       onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
       aria-label="Copy response"
       title="Copy response"
-      className="self-start rounded-md p-1 text-text-faint opacity-0 transition-opacity hover:bg-surface-2 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+      className="rounded-md p-1 text-text-faint opacity-0 transition-opacity hover:bg-surface-2 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
     >
       {copied ? <Check className="h-3.5 w-3.5" aria-hidden /> : <Copy className="h-3.5 w-3.5" aria-hidden />}
     </button>
@@ -219,7 +219,11 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
   const displayContent = msg.content || (msg.data as any)?.content || (msg.data as any)?.result || '';
   const anchor = `src-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   return (
-    <AgentTurn avatar={<AgentAvatar className="bg-machine-subtle text-accent-ink"><Bot className="h-3.5 w-3.5" aria-hidden /></AgentAvatar>} className="group">
+    <AgentTurn
+      avatar={<AgentAvatar className="bg-machine-subtle text-accent-ink"><Bot className="h-3.5 w-3.5" aria-hidden /></AgentAvatar>}
+      aside={(msg.data as { answerBelow?: boolean } | undefined)?.answerBelow ? undefined : <CopyAnswer text={displayContent} />}
+      className="group"
+    >
       {msg.stepName && (
         <div className="text-xs font-medium text-text-faint">{msg.stepName}</div>
       )}
@@ -230,9 +234,8 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
         // Its output is the workflow's answer, drawn once, below (U67).
         <p className="text-[13px] text-text-faint">Its output is the answer below.</p>
       ) : (
-        <div className="flex min-w-0 flex-col gap-1 rounded-xl bg-surface-2 px-4 py-3">
+        <div className="min-w-0 rounded-xl bg-surface-2 px-4 py-3">
           <Markdown className="text-[15px] leading-relaxed">{linkLabels(displayContent, msg.citations, anchor)}</Markdown>
-          <CopyAnswer text={displayContent} />
         </div>
       )}
       <KnowledgeSources citations={msg.citations} unresolved={msg.unresolvedCitations} anchor={anchor} />
@@ -284,7 +287,6 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
           ))}
         </ul>
       )}
-      <CopyAnswer text={msg.content} />
     </div>
   );
 }
@@ -680,10 +682,10 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
   ];
 
   return (
-    <div className="flex min-h-full select-none flex-col items-center justify-center px-4 pb-44 pt-6 md:pb-48 md:pt-10 2xl:pb-44">
+    <div className="flex min-h-full select-none flex-col items-center justify-center px-4 pb-44 pt-4 md:pb-48 md:pt-6 2xl:pb-44">
       {/* ── Welcome Examples Banner (12-day, session-dismissible) ── */}
       {showExamplesBanner && (
-        <div className="mb-8 w-full max-w-2xl rounded-xl border border-border bg-accent-subtle px-4 py-3">
+        <div className="mb-6 w-full max-w-2xl rounded-xl border border-border bg-accent-subtle px-4 py-3">
           <div className="flex flex-col gap-2.5">
             {/* Top row: icon + headline + close */}
             <div className="flex items-start justify-between gap-3">
@@ -756,13 +758,13 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
       <h2 className="mb-1 text-center text-3xl font-semibold tracking-tight text-text md:text-4xl">
         What can I help you achieve?
       </h2>
-      <p className="mb-10 text-center text-sm text-text-muted">
+      <p className="mb-6 text-center text-sm text-text-muted">
         SynapseOrch — Agents that work together to get things done
       </p>
 
       {/* Tips Carousel */}
       <div
-        className="mb-10 w-full max-w-xl"
+        className="mb-6 w-full max-w-xl"
         onMouseEnter={() => setIsPaused(true)}
         onMouseLeave={() => setIsPaused(false)}
       >
@@ -806,7 +808,7 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
       </div>
 
       {/* Quick action pills — navigate to settings */}
-      <div className="flex max-w-lg flex-wrap justify-center gap-2">
+      <div className="flex max-w-3xl flex-wrap justify-center gap-2">
         {PILLS.map(({ label, path, icon: Icon }) => (
           <button
             key={label}
@@ -2369,7 +2371,7 @@ export default function Home() {
 
     // ── The agent's answer ──
     return (
-      <AgentTurn key={idx} className="group" avatar={<AgentAvatar><Bot className="h-4 w-4" aria-hidden /></AgentAvatar>}>
+      <AgentTurn key={idx} className="group" avatar={<AgentAvatar><Bot className="h-4 w-4" aria-hidden /></AgentAvatar>} aside={<CopyAnswer text={msg.content} />}>
         <AssistantBubble msg={msg} agentName={agentName} />
         {/* Dynamic UI based on Intent - Rendered Outside the answer */}
         {msg.intent === 'render_local_file' && (

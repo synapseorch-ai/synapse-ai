@@ -203,7 +203,7 @@ export function Composer({
  * `Combobox trigger="pill"`. A static pill ("AI builder") uses it too.
  */
 export const composerPillClass = cn(
-    'inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-surface-2 pl-1 pr-2.5 text-xs font-medium text-text',
+    'inline-flex h-7 min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full bg-surface-2 pl-1 pr-2.5 text-xs font-medium text-text',
     'transition-colors hover:bg-row-hover',
 );
 

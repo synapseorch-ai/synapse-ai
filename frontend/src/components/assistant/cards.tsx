@@ -211,23 +211,25 @@ export function PlanCard({
                             Stop instead
                         </Button>
                     )}
-                    <span className="flex-1" />
-                    <Button type="button" variant="secondary" size="sm" disabled={sent} onClick={onRevise}>
-                        Change something
-                    </Button>
-                    <Button
-                        type="button"
-                        size="sm"
-                        disabled={sent}
-                        onClick={() => {
-                            // Once: a second press would answer a run that has already moved on.
-                            setSent(true);
-                            onAnswer(APPROVE_WORD);
-                        }}
-                    >
-                        <Check className="size-4" aria-hidden />
-                        {kind === 'change' ? 'Go ahead' : 'Build it'}
-                    </Button>
+                    {/* The two answers stay together, on the right, when the row wraps. */}
+                    <div className="ml-auto flex flex-wrap justify-end gap-2">
+                        <Button type="button" variant="secondary" size="sm" disabled={sent} onClick={onRevise}>
+                            Change something
+                        </Button>
+                        <Button
+                            type="button"
+                            size="sm"
+                            disabled={sent}
+                            onClick={() => {
+                                // Once: a second press would answer a run that has already moved on.
+                                setSent(true);
+                                onAnswer(APPROVE_WORD);
+                            }}
+                        >
+                            <Check className="size-4" aria-hidden />
+                            {kind === 'change' ? 'Go ahead' : 'Build it'}
+                        </Button>
+                    </div>
                 </div>
             )}
         </Frame>

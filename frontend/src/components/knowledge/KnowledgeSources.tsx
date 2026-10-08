@@ -91,7 +91,7 @@ function SourceChip({ citation: c, anchor }: { citation: KnowledgeCitation; anch
             className={cn(
                 'flex min-w-0 max-w-full flex-col rounded-lg border bg-surface scroll-mt-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]',
                 failed ? 'border-border-strong' : 'border-border',
-                open && 'basis-full',
+                open ? 'basis-full' : 'sm:max-w-[22rem]',
             )}
         >
             <div className="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 pr-1">

@@ -29,13 +29,16 @@ export function UserBubble({
     return (
         <div className={cn('group flex min-w-0 flex-col items-end gap-1', className)} {...rest}>
             {attachments}
-            <div className={cn(
-                'max-w-[85%] min-w-0 break-words rounded-2xl rounded-br-md bg-surface-2 px-3.5 py-2.5 leading-relaxed text-text sm:max-w-[78%]',
-                density === 'page' ? 'text-[15px]' : 'text-sm',
-            )}>
-                {children}
+            {/* The actions sit beside the bubble, on its left, so they take no line of their own. */}
+            <div className="flex w-full min-w-0 items-start justify-end gap-1">
+                {actions}
+                <div className={cn(
+                    'max-w-[85%] min-w-0 break-words rounded-2xl rounded-br-md bg-surface-2 px-3.5 py-2.5 leading-relaxed text-text sm:max-w-[78%]',
+                    density === 'page' ? 'text-[15px]' : 'text-sm',
+                )}>
+                    {children}
+                </div>
             </div>
-            {actions}
         </div>
     );
 }
@@ -46,17 +49,22 @@ export function UserBubble({
  * carrying the motion (feedback-app-shell-design, "chat's loading row").
  */
 export function AgentTurn({
-    avatar, working = false, size = 28, density = 'page', children, className, ...rest
+    avatar, working = false, size = 28, density = 'page', aside, children, className, ...rest
 }: React.HTMLAttributes<HTMLDivElement> & {
     avatar?: React.ReactNode;
     working?: boolean;
     size?: number;
     density?: 'page' | 'panel';
+    /** Under the avatar, in its column: the answer's own small actions (Copy), taking no line of their own. */
+    aside?: React.ReactNode;
 }) {
     return (
         <div className={cn('flex min-w-0 items-start gap-3', className)} {...rest}>
-            <span className="flex shrink-0 items-center justify-center" style={{ width: size, height: size }}>
-                {working ? <Spinner size={size} className="text-machine" label="Working" /> : avatar}
+            <span className="flex shrink-0 flex-col items-center gap-1.5" style={{ width: size }}>
+                <span className="flex items-center justify-center" style={{ width: size, height: size }}>
+                    {working ? <Spinner size={size} className="text-machine" label="Working" /> : avatar}
+                </span>
+                {aside}
             </span>
             <div className={cn('flex min-w-0 flex-1 flex-col gap-2.5 leading-relaxed text-text', density === 'page' ? 'text-[15px]' : 'text-sm')}>{children}</div>
         </div>
