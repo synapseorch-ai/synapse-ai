@@ -8,7 +8,7 @@ import { useState } from 'react';
 import * as RPopover from '@radix-ui/react-popover';
 import { AlertTriangle, ArrowLeft, ChevronDown, MoreHorizontal, Play, Save, SlidersHorizontal, Square } from 'lucide-react';
 import {
-    Button, Hint, Input, Mark, Menu, MenuItem, MenuLabel, MenuSeparator, PageHeaderSlot, Spinner, buttonStyles,
+    Button, Hint, Mark, Menu, MenuItem, MenuLabel, MenuSeparator, PageHeaderSlot, Spinner, Textarea, buttonStyles,
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase } from './types';
@@ -283,24 +283,34 @@ function RunNow({ onRun, blocked, phone, runInput }: {
                             align="end"
                             sideOffset={8}
                             collisionPadding={8}
-                            className="nokey z-50 w-80 max-w-[calc(100vw-16px)] rounded-lg border border-border-strong bg-surface p-3 shadow-elevated"
+                            className="nokey z-50 w-96 max-w-[calc(100vw-16px)] rounded-lg border border-border-strong bg-surface p-3 shadow-elevated"
                         >
                             <label htmlFor="workbench-run-input" className="mb-1.5 block text-sm font-medium text-text">
                                 Input for this run
                             </label>
-                            <Input
+                            {/* Grows with its lines (Naveen, M3a-1 review), to about eight, then
+                                scrolls. Enter runs, as the old input did; Shift+Enter is a new line. */}
+                            <Textarea
                                 id="workbench-run-input"
                                 aria-label="Initial input for this run"
                                 size="sm"
+                                rows={2}
                                 autoFocus
                                 value={runInput.value}
                                 onChange={(e) => runInput.onChange(e.target.value)}
                                 placeholder="Initial input for the orchestration..."
-                                onKeyDown={(e) => { if (e.key === 'Enter') run(); }}
+                                className="field-sizing-content max-h-48 min-h-[3.25rem] resize-none"
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                                        e.preventDefault();
+                                        run();
+                                    }
+                                }}
                             />
                             <div className="mt-2.5 flex items-center justify-between gap-3">
                                 <span className="text-xs text-text-faint">
-                                    <kbd className="rounded border border-border px-1 font-mono text-2xs">Enter</kbd> to run
+                                    <kbd className="rounded border border-border px-1 font-mono text-2xs">Enter</kbd> to run,{' '}
+                                    <kbd className="rounded border border-border px-1 font-mono text-2xs">Shift Enter</kbd> for a new line
                                 </span>
                                 <Button size="sm" variant="primary" onClick={run} aria-disabled={blocked > 0 || undefined}>
                                     <Play className="size-3.5" aria-hidden /> Run
