@@ -79,6 +79,8 @@ export function ZoomCluster({
             className={cn(FLOAT, 'nokey absolute bottom-2 z-10 flex items-center gap-0.5 p-1 md:bottom-3')}
             style={{ right }}
         >
+            {/* With little room (a phone, or a narrow canvas beside the card) the minimap
+                and the zoom figure go; zoom in, zoom out and Fit always stay. */}
             {!tight && (
                 <>
                     <button
@@ -95,19 +97,21 @@ export function ZoomCluster({
                         <MapIcon className="size-4" aria-hidden />
                     </button>
                     <span className="mx-1 h-5 w-px bg-border" aria-hidden />
-                    <IconButton label="Zoom out" icon={Minus} size="sm" onClick={zoomOut} />
-                    <button
-                        type="button"
-                        onClick={() => zoomTo(1)}
-                        title="Zoom to 100%"
-                        aria-label={`Zoom ${Math.round(zoom * 100)}%, press for 100%`}
-                        className={cn(buttonStyles({ variant: 'ghost', size: 'sm' }), 'min-w-[3.25rem] justify-center px-1 font-mono text-xs tabular-nums text-text-muted')}
-                    >
-                        {Math.round(zoom * 100)}%
-                    </button>
-                    <IconButton label="Zoom in" icon={Plus} size="sm" onClick={zoomIn} />
                 </>
             )}
+            <IconButton label="Zoom out" icon={Minus} size="sm" onClick={zoomOut} />
+            {!tight && (
+                <button
+                    type="button"
+                    onClick={() => zoomTo(1)}
+                    title="Zoom to 100%"
+                    aria-label={`Zoom ${Math.round(zoom * 100)}%, press for 100%`}
+                    className={cn(buttonStyles({ variant: 'ghost', size: 'sm' }), 'min-w-[3.25rem] justify-center px-1 font-mono text-xs tabular-nums text-text-muted')}
+                >
+                    {Math.round(zoom * 100)}%
+                </button>
+            )}
+            <IconButton label="Zoom in" icon={Plus} size="sm" onClick={zoomIn} />
             <button
                 type="button"
                 onClick={fit}
