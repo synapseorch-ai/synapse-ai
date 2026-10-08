@@ -22,6 +22,7 @@ export {
   type ButtonSize,
   type ButtonVariant,
 } from "./button";
+export { AppMark, tileHue } from "./app-mark";
 export { Badge, Tag, type BadgeTone } from "./badge";
 export { BrandLoader, Mark, Spinner, Wordmark } from "./brand";
 export { Card, CardBody, CardFooter } from "./card";

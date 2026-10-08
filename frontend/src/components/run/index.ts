@@ -37,5 +37,6 @@ export { RunWeek } from './RunWeek';
 export { SharedState } from './SharedState';
 export { OutputValue, StepDetail, UsageLine, hasDetail, outputOf } from './StepDetail';
 export { StepIcon, typeLabel } from './StepIcon';
+export { pathLabel, STEP_PATH_MAX, StepPath, templatePath } from './StepPath';
 export { TaskChecklist } from './TaskChecklist';
 export { TimeOfDay, Took, useClock, When } from './When';
