@@ -30,6 +30,7 @@
 :root[data-theme="dark"] {
   /* ── Neutrals: navy-tinted graphite ─────────────────────────────────── */
   --frame: #080c10;           /* the ground behind the rail and the sheet */
+  --frame-hover: #1a2025;     /* a menu row under the pointer, on the frame (surface-2's value) */
   --bg: #0d1216;              /* the sheet: the page itself */
   --surface: #13181c;
   --surface-2: #1a2025;
@@ -87,7 +88,11 @@
 
 :root[data-theme="light"] {
   /* ── Neutrals: near-white ───────────────────────────────────────────── */
-  --frame: #f5f7f8;
+  /* The frame is a soft blue (D223, Naveen's pick B): the menu and the white
+     sheet read as two grounds, as they do in dark (1.14:1, from 1.07:1). Menu
+     text on it 13.1:1, group labels 6.7:1. */
+  --frame: #ebf1f7;
+  --frame-hover: #dfe8f1;
   --bg: #ffffff;
   --surface: #ffffff;
   --surface-2: #f1f3f4;

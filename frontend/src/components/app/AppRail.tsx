@@ -50,8 +50,8 @@ const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
 
 /** One row: 36px, an icon slot, a label that hides with the rail. */
 const ROW = 'relative flex h-9 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors';
-/** A row at rest on the frame, and under the pointer. */
-const ROW_IDLE = 'text-text-muted hover:bg-surface-2 hover:text-text';
+/** A row at rest on the frame, and under the pointer: the frame's own hover (D223), not a grey on the blue. */
+const ROW_IDLE = 'text-text-muted hover:bg-[var(--frame-hover)] hover:text-text';
 /**
  * The page you are on: a piece of the sheet's ground with a hairline, so the
  * row reads as the same surface as the page it opened (Prototype 4).
@@ -207,7 +207,7 @@ export function AppRail({
                         aria-expanded={false}
                         aria-label="Expand sidebar"
                         title="Expand sidebar"
-                        className="group/expand relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-surface-2"
+                        className="group/expand relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-[var(--frame-hover)]"
                     >
                         <Mark
                             size={20}
@@ -385,7 +385,7 @@ export function AppRail({
                                 title="More"
                                 className={cn(
                                     ROW, ROW_IDLE,
-                                    'data-[state=open]:bg-surface-2 data-[state=open]:text-text',
+                                    'data-[state=open]:bg-[var(--frame-hover)] data-[state=open]:text-text',
                                     collapsed ? 'w-full justify-center' : 'min-w-0 flex-1',
                                 )}
                             >
