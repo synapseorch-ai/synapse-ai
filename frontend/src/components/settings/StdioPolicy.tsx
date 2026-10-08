@@ -12,7 +12,7 @@
 import { useEffect, useState } from "react";
 import { Terminal } from "lucide-react";
 
-import { Button, Input, Label } from "@/components/ui";
+import { Button, Input, Label, Switch } from "@/components/ui";
 
 type Status = { tone: "ok" | "error"; text: string } | null;
 
@@ -85,30 +85,26 @@ export function StdioPolicy() {
     };
 
     return (
-        <section aria-labelledby="stdio-policy-heading" className="space-y-4 border border-border rounded-md p-4">
+        <section aria-labelledby="stdio-policy-heading" className="space-y-4 rounded-xl border border-border bg-surface p-4 sm:p-6">
             <div className="flex items-start justify-between gap-4">
                 <div>
-                    <h4 id="stdio-policy-heading" className="text-sm font-bold text-text flex items-center gap-2">
-                        <Terminal className="h-4 w-4" aria-hidden /> Local (stdio) servers
-                    </h4>
-                    <p className="text-xs text-text-faint mt-1 max-w-prose">
+                    <h2 id="stdio-policy-heading" className="text-section text-text flex items-center gap-2">
+                        <Terminal className="h-4 w-4 text-text-faint" aria-hidden /> Local (stdio) servers
+                    </h2>
+                    <p className="text-sm text-text-muted mt-1 max-w-prose">
                         A local server is a command this backend runs on its own machine. Turn them off if this
                         install can be reached over a network.
                     </p>
                     {scaleMode && (
-                        <p className="text-xs text-warning mt-1">Scale mode is on, which keeps local servers off whatever this says.</p>
+                        <p className="text-xs text-text mt-1">Scale mode is on, which keeps local servers off whatever this says.</p>
                     )}
                 </div>
-                <button
-                    role="switch"
-                    aria-checked={allowed}
-                    aria-label="Allow local (stdio) servers"
+                <Switch
+                    checked={allowed}
+                    onChange={() => { void toggle(); }}
+                    label="Allow local (stdio) servers"
                     disabled={!loaded || saving}
-                    onClick={toggle}
-                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 ${allowed ? "bg-accent" : "bg-surface-2"}`}
-                >
-                    <span className={`inline-block h-4 w-4 transform rounded-full transition-transform ${allowed ? "translate-x-6 bg-accent-fg" : "translate-x-1 bg-text-muted"}`} />
-                </button>
+                />
             </div>
 
             <div className="space-y-2">

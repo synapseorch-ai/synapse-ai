@@ -221,11 +221,9 @@ export function McpServersScreen() {
                 onReconnectServer={handleReconnect}
                 notice={notice}
                 onNotice={show}
-            />
-
-            <div className="mt-8">
+            >
                 <StdioPolicy />
-            </div>
+            </McpServersTab>
 
             <ConfirmDialog
                 open={!!confirmDelete}

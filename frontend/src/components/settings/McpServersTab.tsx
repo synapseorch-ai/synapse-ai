@@ -7,7 +7,9 @@ import {
 import { useDispatch } from 'react-redux';
 import { AppDispatch } from '@/store';
 import { setMcpServers } from '@/store/settingsSlice';
-import { Label, Spinner, type ToastTone } from '@/components/ui';
+import { AppScreen } from '@/components/app/AppScreen';
+import { GoogleWorkspaceCard } from './GoogleWorkspaceCard';
+import { AppMark, Badge, Button, Label, Spinner, type ToastTone } from '@/components/ui';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -50,6 +52,8 @@ interface McpServersTabProps {
     onAddServer: () => void;
     onDeleteServer: (name: string) => void;
     onReconnectServer: (name: string) => void;
+    /** What sits under the form: the stdio policy, the remove dialog. */
+    children?: React.ReactNode;
 }
 
 // ── Presets ────────────────────────────────────────────────────────────────────
@@ -112,33 +116,40 @@ const PLACEHOLDER_TOKENS: Record<string, { preset: string; needs: 'oauth' | 'tok
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
-const StatusBadge = ({ status }: { status?: string }) => {
+/*
+ * A server's state as a dot and words (M2f). Connected is the one that earns a
+ * colour; a sign-in that is needed is a person's job, so amber; connecting is
+ * the product acting; disconnected is quiet.
+ */
+const ServerStatus = ({ status }: { status?: string }) => {
     if (status === 'connecting') return (
-        <span className="flex items-center gap-1 text-2xs bg-accent-subtle text-accent-ink px-1.5 py-0.5 rounded-md border border-accent/30 uppercase">
-            <Spinner size={10} /> Connecting
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-accent-ink">
+            <Spinner size={12} className="text-machine" /> Connecting
         </span>
     );
     if (status === 'connected') return (
-        <span className="flex items-center gap-1 text-2xs bg-success-subtle text-success px-1.5 py-0.5 rounded-md border border-success/30 uppercase">
-            <CheckCircle className="h-2.5 w-2.5" /> Active
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success">
+            <span aria-hidden className="size-2 rounded-full bg-success" /> Connected
         </span>
     );
     if (status === 'reauth_needed') return (
-        <span className="flex items-center gap-1 text-2xs bg-warning/20 text-warning px-1.5 py-0.5 rounded-md border border-warning/30 uppercase">
-            <ShieldAlert className="h-2.5 w-2.5" /> Re-Auth
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-person-ink">
+            <ShieldAlert className="size-3.5" aria-hidden /> Re-Auth
         </span>
     );
     return (
-        <span className="flex items-center gap-1 text-2xs bg-warning/20 text-warning px-1.5 py-0.5 rounded-md border border-warning/30 uppercase">
-            <XCircle className="h-2.5 w-2.5" /> Disconnected
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-text-faint">
+            <span aria-hidden className="size-2 rounded-full border border-text-faint" /> Disconnected
         </span>
     );
 };
 
 const TypePill = ({ type }: { type?: string }) => (
-    type === 'remote'
-        ? <span className="flex items-center gap-1 text-2xs bg-accent-subtle text-accent-ink px-1.5 py-0.5 rounded-md border border-accent/25 uppercase"><Globe className="h-2 w-2" />Remote</span>
-        : <span className="flex items-center gap-1 text-2xs bg-surface-2 text-text-faint px-1.5 py-0.5 rounded-md border border-border-strong uppercase"><Terminal className="h-2 w-2" />Local</span>
+    <Badge size="sm">
+        {type === 'remote'
+            ? <span className="inline-flex items-center gap-1"><Globe className="size-3" aria-hidden />Remote</span>
+            : <span className="inline-flex items-center gap-1"><Terminal className="size-3" aria-hidden />Local</span>}
+    </Badge>
 );
 
 // The kit Toast's tones, in lockstep (components/ui/toast.tsx): the tone is the
@@ -149,32 +160,11 @@ const NOTICE_TONES: Record<ToastTone, { chip: string; icon: React.ElementType; m
     danger: { chip: 'bg-danger-subtle border-danger/40 text-danger', icon: XCircle, mark: 'text-danger' },
 };
 
-const inputCls = "w-full bg-surface border border-border p-2 text-sm text-text focus:border-border-strong focus:outline-none placeholder:text-text-faint";
+const inputCls = "w-full rounded-md bg-surface border border-border-strong px-3 py-2 text-sm text-text focus:border-accent focus:outline-none placeholder:text-text-faint";
 const monoInputCls = `${inputCls} font-mono`;
 
-/**
- * A stable colour per server, hashed from its name — the gallery-tile idea:
- * saturation and lightness fixed, hue the only free variable, so a column of
- * marks reads as one family with the hue doing the distinguishing.
- */
-function tileHue(name: string): number {
-    let hash = 0;
-    for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) % 360;
-    return hash;
-}
-
-function ServerMark({ label }: { label: string }) {
-    const hue = tileHue(label.toLowerCase());
-    return (
-        <span
-            aria-hidden
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-sm font-semibold"
-            style={{ backgroundColor: `hsl(${hue} 45% 22%)`, color: `hsl(${hue} 70% 72%)` }}
-        >
-            {label.charAt(0).toUpperCase()}
-        </span>
-    );
-}
+// A row's quiet icon action: always there for a keyboard (never hover-only).
+const rowAction = "inline-flex size-8 items-center justify-center rounded-md text-text-faint transition-colors hover:bg-surface-2 hover:text-text";
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
@@ -183,7 +173,7 @@ export const McpServersTab = ({
     notice, onNotice,
     pendingServerName, onPendingResolved,
     draftMcpServer, setDraftMcpServer,
-    onAddServer, onDeleteServer, onReconnectServer,
+    onAddServer, onDeleteServer, onReconnectServer, children,
 }: McpServersTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
 
@@ -297,166 +287,156 @@ export const McpServersTab = ({
     };
 
     // ── Render ─────────────────────────────────────────────────────────────────
+    const presets = serverType === 'stdio' ? STDIO_PRESETS : REMOTE_PRESETS;
     return (
-        <div className="space-y-8">
-
-            {/* ── Header ── */}
-            <div className="flex items-start justify-between gap-4">
-                <div>
-                    <h3 className="text-lg font-bold text-text flex items-center gap-2">
-                        <Server className="h-5 w-5" /> External MCP Servers
-                    </h3>
-                    <p className="text-text-faint text-sm mt-1">
-                        Connect local and remote Model Context Protocol servers to extend agent capabilities.
-                    </p>
-                </div>
-                <button
+        <AppScreen
+            id="mcp_servers"
+            width="wide"
+            actions={
+                <Button
+                    variant="secondary"
                     onClick={() => refreshServers()}
                     disabled={isRefreshing}
                     title="Refresh server statuses"
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border-strong text-text-muted hover:border-text-faint hover:text-text rounded-md transition-colors disabled:opacity-50 shrink-0 mt-1"
                 >
-                    <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                    <RefreshCw className={`size-4 ${isRefreshing ? 'animate-spin' : ''}`} aria-hidden />
                     {isRefreshing ? 'Refreshing…' : 'Refresh'}
-                </button>
-            </div>
+                </Button>
+            }
+        >
+        <div className="space-y-8">
+            <GoogleWorkspaceCard />
 
-            {/* ── Inline Toast ── */}
+            {/* ── Inline notice ── */}
             {notice && (
-                <div className={`flex items-start gap-2.5 px-4 py-3 rounded-md border text-xs font-medium animate-in fade-in slide-in-from-top-2 duration-200 ${NOTICE_TONES[notice.tone].chip}`}>
-                    {(() => { const Icon = NOTICE_TONES[notice.tone].icon; return <Icon className={`h-4 w-4 mt-0.5 shrink-0 ${NOTICE_TONES[notice.tone].mark}`} />; })()}
+                <div role="status" className={`flex items-start gap-2.5 px-4 py-3 rounded-lg border text-sm animate-in fade-in slide-in-from-top-2 duration-200 ${NOTICE_TONES[notice.tone].chip}`}>
+                    {(() => { const Icon = NOTICE_TONES[notice.tone].icon; return <Icon className={`h-4 w-4 mt-0.5 shrink-0 ${NOTICE_TONES[notice.tone].mark}`} aria-hidden />; })()}
                     <span className="leading-relaxed">{notice.message}</span>
                 </div>
             )}
 
-            {/* ── Connected Servers List ── */}
-            <div className="space-y-4">
-                <h4 className="text-xs uppercase font-bold text-text-faint tracking-wider">Connected Servers</h4>
+            {/* ── Connected Servers ── */}
+            <section className="space-y-3" aria-labelledby="mcp-connected-title">
+                <h2 id="mcp-connected-title" className="text-section text-text">Connected Servers</h2>
                 {loadingMcp ? (
                     <div className="flex items-center gap-2 text-text-faint text-sm">
-                        <Spinner size={16} /> Loading…
+                        <Spinner size={16} className="text-machine" /> Loading…
                     </div>
                 ) : mcpServers.length === 0 ? (
-                    <div className="p-8 text-center border border-dashed border-border rounded-md bg-surface/30">
-                        <Server className="h-8 w-8 mx-auto text-text-faint mb-2" />
-                        <p className="text-text-faint text-sm">No servers added yet.</p>
-                        <p className="text-text-faint text-xs mt-1">Pick a preset or fill the form below.</p>
+                    <div className="rounded-xl border border-dashed border-border px-6 py-10 text-center">
+                        <Server className="mx-auto mb-2 size-8 text-text-faint" aria-hidden />
+                        <p className="text-sm font-medium text-text">No servers added yet.</p>
+                        <p className="mt-1 text-sm text-text-muted">Pick a preset or fill the form below.</p>
                     </div>
                 ) : (
-                    <div className="grid gap-3">
+                    <ul className="divide-y divide-border border-y border-border" data-mcp-list="">
                         {[...mcpServers]
                             .sort((a, b) => (a.label || a.name).localeCompare(b.label || b.name, undefined, { sensitivity: 'base' }))
-                            .map((server) => (
-                            <div key={server.name} className="flex items-center justify-between p-4 bg-surface border border-border rounded-md group">
-                                <div className="flex items-center gap-3 min-w-0">
-                                <ServerMark label={server.label || server.name} />
-                                <div className="flex flex-col gap-1.5 min-w-0">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                        <span className="font-bold text-text text-sm">{server.label || server.name}</span>
+                            .map((server) => {
+                            const label = server.label || server.name;
+                            // The route names a placeholder rather than serving the token itself (F135).
+                            const tokenName: string | null = server.token_placeholder ?? null;
+                            const placeholder = server.server_type === 'remote' && tokenName ? PLACEHOLDER_TOKENS[tokenName] : undefined;
+                            return (
+                            <li key={server.name} data-mcp-row={server.name} className="group flex items-center gap-3 px-2 py-3 transition-colors hover:bg-row-hover sm:gap-4">
+                                <AppMark name={label} />
+                                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                        <span className="text-sm font-semibold text-text">{label}</span>
                                         {server.label && server.label !== server.name && (
-                                            <span className="text-2xs text-text-faint font-mono">{server.name}</span>
+                                            <span className="text-xs text-text-faint font-mono">{server.name}</span>
                                         )}
                                         <TypePill type={server.server_type} />
-                                        <StatusBadge status={server.status} />
                                     </div>
-                                    <code className="text-2xs text-text-faint font-code truncate">
+                                    <code className="truncate text-xs text-text-faint font-code">
                                         {server.server_type === 'remote'
                                             ? server.url
                                             : `${server.command} ${(server.args || []).join(' ')}`}
                                     </code>
-                                    {(() => {
-                                        // The route names a placeholder rather than serving the
-                                        // token itself (F135).
-                                        const name: string | null = server.token_placeholder ?? null;
-                                        const placeholder = server.server_type === 'remote' && name
-                                            ? PLACEHOLDER_TOKENS[name] : undefined;
-                                        if (!placeholder) return null;
-                                        return (
-                                            <p className="text-2xs text-warning">
-                                                Its token is <code className="font-code">{name}</code>, a
-                                                placeholder an older preset filled in, so it never signs in.{' '}
-                                                {placeholder.needs === 'oauth'
-                                                    ? `Remove it and add it again from the ${placeholder.preset} preset to sign in with OAuth.`
-                                                    : `Remove it and add it again from the ${placeholder.preset} preset with a GitHub personal access token.`}
-                                            </p>
-                                        );
-                                    })()}
-                                </div>
-                                </div>
-                                <div className="flex items-center gap-1 ml-4 shrink-0">
-                                    {server.status === 'connecting' && (
-                                        <span className="p-2"><Spinner size={14} className="text-machine" /></span>
+                                    {placeholder && (
+                                        <p className="text-xs text-text">
+                                            Its token is <code className="font-code">{tokenName}</code>, a
+                                            placeholder an older preset filled in, so it never signs in.{' '}
+                                            {placeholder.needs === 'oauth'
+                                                ? `Remove it and add it again from the ${placeholder.preset} preset to sign in with OAuth.`
+                                                : `Remove it and add it again from the ${placeholder.preset} preset with a GitHub personal access token.`}
+                                        </p>
                                     )}
+                                </div>
+                                <div className="hidden shrink-0 sm:block"><ServerStatus status={server.status} /></div>
+                                <div className="flex shrink-0 items-center gap-0.5">
+                                    <span className="sm:hidden"><ServerStatus status={server.status} /></span>
                                     {server.status === 'reauth_needed' && (
-                                        <button onClick={() => onReconnectServer(server.name)} title="Re-authenticate"
-                                            className="p-2 text-warning hover:bg-surface-2 rounded-md transition-colors">
-                                            <ShieldAlert className="h-3.5 w-3.5" />
+                                        <button onClick={() => onReconnectServer(server.name)} title="Re-authenticate" aria-label={`Re-authenticate ${label}`}
+                                            className={`${rowAction} text-person-ink hover:text-person-ink`}>
+                                            <ShieldAlert className="size-4" aria-hidden />
                                         </button>
                                     )}
                                     {(!server.status || server.status === 'disconnected') && (
-                                        <button onClick={() => onReconnectServer(server.name)} title="Retry connection"
-                                            className="p-2 text-text-faint hover:text-accent hover:bg-surface-2 rounded-md transition-colors">
-                                            <RefreshCw className="h-3.5 w-3.5" />
+                                        <button onClick={() => onReconnectServer(server.name)} title="Retry connection" aria-label={`Retry connection to ${label}`}
+                                            className={rowAction}>
+                                            <RefreshCw className="size-4" aria-hidden />
                                         </button>
                                     )}
                                     {server.status === 'connected' && (
-                                        <button onClick={() => onReconnectServer(server.name)} title="Force reconnect (refresh stale session)"
-                                            className="p-2 text-text-faint hover:text-text hover:bg-surface-2 rounded-md opacity-0 group-hover:opacity-100 transition-all">
-                                            <RefreshCw className="h-3.5 w-3.5" />
+                                        <button onClick={() => onReconnectServer(server.name)} title="Force reconnect (refresh stale session)" aria-label={`Force reconnect ${label}`}
+                                            className={`${rowAction} sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100`}>
+                                            <RefreshCw className="size-4" aria-hidden />
                                         </button>
                                     )}
                                     <button onClick={() => onDeleteServer(server.name)}
-                                        aria-label={`Remove ${server.label || server.name}`}
-                                        title={`Remove ${server.label || server.name}`}
-                                        className="p-2 text-text-faint hover:text-danger hover:bg-surface-2 rounded-md transition-colors">
-                                        <Trash className="h-4 w-4" />
+                                        aria-label={`Remove ${label}`}
+                                        title={`Remove ${label}`}
+                                        className={`${rowAction} hover:text-danger`}>
+                                        <Trash className="size-4" aria-hidden />
                                     </button>
                                 </div>
-                            </div>
-                        ))}
-                    </div>
+                            </li>
+                            );
+                        })}
+                    </ul>
                 )}
-            </div>
+            </section>
 
             {/* ── Add Server Form ── */}
-            <div className="pt-6 border-t border-border space-y-6">
-
-                {/* Type toggle */}
-                <div className="flex items-center gap-1 bg-surface border border-border p-1 w-fit rounded-md">
-                    <button
-                        onClick={() => setServerType('stdio')}
-                        className={`flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold transition-colors ${serverType === 'stdio' ? 'bg-accent text-accent-fg' : 'text-text-faint hover:text-text'}`}
-                    >
-                        <Terminal className="h-3 w-3" /> Local (stdio)
-                    </button>
-                    <button
-                        onClick={() => setServerType('remote')}
-                        className={`flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold transition-colors ${serverType === 'remote' ? 'bg-accent text-accent-fg' : 'text-text-faint hover:text-text'}`}
-                    >
-                        <Globe className="h-3 w-3" /> Remote (URL)
-                    </button>
+            <section className="space-y-6 rounded-xl border border-border bg-surface p-4 sm:p-6" aria-labelledby="mcp-add-title">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 id="mcp-add-title" className="text-section text-text">Connect a server</h2>
+                    {/* Type toggle */}
+                    <div role="group" aria-label="Server type" className="inline-flex gap-0.5 rounded-lg bg-surface-2 p-0.5">
+                        {([['stdio', 'Local (stdio)', Terminal], ['remote', 'Remote (URL)', Globe]] as const).map(([t, text, Icon]) => (
+                            <button
+                                key={t}
+                                type="button"
+                                aria-pressed={serverType === t}
+                                onClick={() => setServerType(t)}
+                                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${serverType === t ? 'bg-bg text-text shadow-[0_0_0_1px_var(--border)]' : 'text-text-muted hover:text-text'}`}
+                            >
+                                <Icon className="size-3.5" aria-hidden /> {text}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
                 {/* ── Presets ── */}
-                <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                        <Zap className="h-3.5 w-3.5 text-text-faint" />
-                        <h4 className="text-xs uppercase font-bold text-text-faint tracking-wider">
-                            {serverType === 'stdio' ? 'Local Presets' : 'Remote Presets'}
-                        </h4>
-                    </div>
+                <div className="space-y-2.5">
+                    <h3 className="flex items-center gap-2 text-xs font-medium text-text-muted">
+                        <Zap className="size-3.5 text-text-faint" aria-hidden />
+                        {serverType === 'stdio' ? 'Local Presets' : 'Remote Presets'}
+                    </h3>
                     <div className="flex flex-wrap gap-2">
-                        {(serverType === 'stdio' ? STDIO_PRESETS : REMOTE_PRESETS).map(p => (
-                            <button key={p.name + p.label} onClick={() => applyPreset(p)}
-                                className="px-3 py-1.5 text-2xs font-medium bg-surface border border-border text-text-muted hover:border-text-faint hover:text-text rounded-md transition-colors">
+                        {presets.map(p => (
+                            <button key={p.name + p.label} type="button" onClick={() => applyPreset(p)}
+                                className="inline-flex items-center gap-2 rounded-full border border-border bg-surface py-1 pl-1 pr-3 text-xs font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text">
+                                <AppMark name={p.label} size="sm" className="size-6 rounded-full text-[11px]" />
                                 {p.label}
                             </button>
                         ))}
                     </div>
-                    <p className="text-2xs text-text-faint">
+                    <p className="text-xs text-text-faint">
                         Find more on the{' '}
                         <a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noopener noreferrer"
-                            className="text-text-muted underline underline-offset-2 hover:text-text transition-colors">
+                            className="text-accent-ink underline underline-offset-2 hover:text-accent-hover transition-colors">
                             MCP servers registry
                         </a>.
                         {serverType === 'remote' && ' Remote servers use native OAuth — no npx required.'}
@@ -466,7 +446,7 @@ export const McpServersTab = ({
                 {/* ── Fields ── */}
                 <div className="space-y-4">
                     {/* Display Label + Unique ID — always shown */}
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
                             <Label htmlFor="mcp-draftmcpserver-label" className="block">Display Label</Label>
                             <input id="mcp-draftmcpserver-label" type="text" value={draftMcpServer.label}
@@ -484,7 +464,7 @@ export const McpServersTab = ({
                     {serverType === 'stdio' ? (
                         /* ── stdio fields ── */
                         <>
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="grid gap-4 sm:grid-cols-2">
                                 <div className="space-y-2">
                                     <Label htmlFor="mcp-draftmcpserver-command" className="block">Command</Label>
                                     <input id="mcp-draftmcpserver-command" type="text" value={draftMcpServer.command}
@@ -503,21 +483,20 @@ export const McpServersTab = ({
                             <div className="space-y-2">
                                 <div className="flex items-center justify-between">
                                     <Label className="block">Environment Variables</Label>
-                                    <button onClick={addEnvVar}
-                                        className="text-2xs font-bold text-text-muted hover:text-text flex items-center gap-1">
-                                        <Plus className="h-3 w-3" /> ADD VAR
-                                    </button>
+                                    <Button variant="ghost" size="sm" onClick={addEnvVar}>
+                                        <Plus className="size-3.5" aria-hidden /> Add variable
+                                    </Button>
                                 </div>
                                 {draftMcpServer.env.map((env, i) => (
                                     <div key={i} className="flex gap-2">
                                         <input type="text" aria-label={`Variable ${i + 1} name`} placeholder="KEY" value={env.key}
                                             onChange={e => updateEnvVar(i, 'key', e.target.value)}
-                                            className="flex-1 bg-surface border border-border p-2 text-xs text-text font-mono focus:border-border-strong focus:outline-none rounded-md" />
+                                            className={`${monoInputCls} flex-1 text-xs`} />
                                         <input type="text" aria-label={`Variable ${i + 1} value`} placeholder="VALUE" value={env.value}
                                             onChange={e => updateEnvVar(i, 'value', e.target.value)}
-                                            className="flex-[2] bg-surface border border-border p-2 text-xs text-text font-mono focus:border-border-strong focus:outline-none rounded-md" />
-                                        <button onClick={() => removeEnvVar(i)} aria-label={`Remove variable ${i + 1}`} className="p-2 text-text-faint hover:text-danger">
-                                            <Trash className="h-4 w-4" />
+                                            className={`${monoInputCls} flex-[2] text-xs`} />
+                                        <button onClick={() => removeEnvVar(i)} aria-label={`Remove variable ${i + 1}`} className={`${rowAction} hover:text-danger`}>
+                                            <Trash className="size-4" aria-hidden />
                                         </button>
                                     </div>
                                 ))}
@@ -531,7 +510,7 @@ export const McpServersTab = ({
                                 <input id="mcp-draftmcpserver-url" type="url" value={draftMcpServer.url}
                                     onChange={e => setDraftMcpServer({ ...draftMcpServer, url: e.target.value })}
                                     className={monoInputCls} placeholder="https://mcp.example.com/mcp" />
-                                <p className="text-2xs text-text-faint">
+                                <p className="text-xs text-text-faint">
                                     Leave the token empty to sign in with OAuth (a browser window opens). Fill it only for a
                                     server that takes a personal access token.
                                 </p>
@@ -554,15 +533,16 @@ export const McpServersTab = ({
                                         type="button"
                                         onClick={() => setTokenVisible(v => !v)}
                                         title={tokenVisible ? 'Hide token' : 'Show token'}
+                                        aria-label={tokenVisible ? 'Hide token' : 'Show token'}
                                         className="absolute right-2 top-1/2 -translate-y-1/2 text-text-faint hover:text-text transition-colors"
                                     >
                                         {tokenVisible
-                                            ? <EyeOff className="h-4 w-4" />
-                                            : <Eye className="h-4 w-4" />}
+                                            ? <EyeOff className="h-4 w-4" aria-hidden />
+                                            : <Eye className="h-4 w-4" aria-hidden />}
                                     </button>
                                 </div>
                                 {appliedPreset && appliedPreset.url === draftMcpServer.url && appliedPreset.auth && (
-                                    <p className="text-2xs text-text-faint leading-relaxed">
+                                    <p className="text-xs text-text-faint leading-relaxed">
                                         {appliedPreset.auth === 'oauth' && <>
                                             {appliedPreset.label} signs you in with OAuth: leave the token empty, and a browser
                                             window opens when you connect.
@@ -571,7 +551,7 @@ export const McpServersTab = ({
                                             {appliedPreset.label} needs a token. {appliedPreset.tokenHint}{' '}
                                             {appliedPreset.tokenUrl && (
                                                 <a href={appliedPreset.tokenUrl} target="_blank" rel="noopener noreferrer"
-                                                    className="text-accent underline underline-offset-2">Create one</a>
+                                                    className="text-accent-ink underline underline-offset-2">Create one</a>
                                             )}
                                         </>}
                                         {appliedPreset.auth === 'none' && <>{appliedPreset.label} needs no account.</>}
@@ -582,16 +562,16 @@ export const McpServersTab = ({
                     )}
                 </div>
 
-                {/* Submit */}
-                <div className="flex justify-end pt-2">
-                    <button onClick={onAddServer} disabled={isConnecting}
-                        className="flex items-center gap-2 px-6 py-2 bg-accent text-accent-fg text-sm font-bold hover:bg-accent-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
-                        {isConnecting
-                            ? <><Spinner size={16} /> Connecting…</>
-                            : 'Connect Server'}
-                    </button>
+                {/* Submit: the page's one primary action */}
+                <div className="flex justify-end">
+                    <Button onClick={onAddServer} disabled={isConnecting} loading={isConnecting}>
+                        {isConnecting ? 'Connecting…' : 'Connect Server'}
+                    </Button>
                 </div>
-            </div>
+            </section>
+
+            {children}
         </div>
+        </AppScreen>
     );
 };
