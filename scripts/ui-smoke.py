@@ -5324,7 +5324,9 @@ async def check_phonetoolbar(browser) -> str:
             raise AssertionError(f"at 360 px these editor controls cannot be tapped: {bad}")
         await page.get_by_role("button", name="More actions").click()
         items = await page.get_by_role("menuitem").all_inner_texts()
-        want = ["Workflow settings", "Change with AI", "New orchestration", "Deploy as Agent", "Duplicate", "Delete"]
+        # Last run is in ⋯ on a phone since M3a-2 (D204's bar; the toggle reads "Show last run" until pressed).
+        want = ["Workflow settings", "Change with AI", "Show last run", "New orchestration", "Deploy as Agent",
+                "Duplicate", "Delete"]
         if [i.strip() for i in items] != want:
             raise AssertionError(f"the ⋯ menu holds {items}, not {want}")
         await page.keyboard.press("Escape")
