@@ -1,13 +1,29 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+
+/*
+ * Workflows › Schedules (M2h): what starts on its own, how often, when it runs
+ * next and how its last run went, as the shared `components/run/ScheduleList`
+ * rows cloud draws too. A schedule opens in a drawer with every field it had in
+ * the half-page form (Naveen, M2h's plan), and how often it runs is said in the
+ * same words as the Workflows list's chips (`scheduleWords` / `cronWords`; the
+ * page's own `describeCron` is retired).
+ *
+ * The last run's status is known for a workflow's schedule: its runs carry the
+ * `schedule_<id>` session (Run now's too), so the runs list (one read of the
+ * newest 200) says how the latest went. An agent's schedule shows only when.
+ */
+import { useCallback, useEffect, useState } from 'react';
+import { Bot, Edit2, Play, Plus, RefreshCw, Trash2, Workflow } from 'lucide-react';
+
 import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
+import { AppScreen } from '@/components/app/AppScreen';
+import { cronWords, lastScheduledRun, ScheduleList, scheduleRow } from '@/components/run';
+import type { RunSummary } from '@/components/runs/summary';
 import {
-    Clock, Plus, Trash2, Edit2, Play, RefreshCw,
-    ChevronDown, ChevronUp, CheckCircle, AlertCircle,
-    ToggleLeft, ToggleRight, Bot, Workflow, Info,
-} from 'lucide-react';
-import { Select } from '@/components/ui';
+    Button, buttonStyles, ConfirmDialog, Drawer, EmptyState, Field, IconButton, Input, Section, Select, Switch,
+    Textarea, Toast, useToast,
+} from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 // -- Types ----------------------------------------------------------------
 
@@ -32,6 +48,8 @@ interface Schedule {
 interface Agent { id: string; name: string; }
 interface Orchestration { id: string; name: string; }
 
+type Form = Omit<Schedule, 'id' | 'created_at' | 'last_run_at' | 'next_run_at'>;
+
 // -- Cron presets ---------------------------------------------------------
 
 const CRON_PRESETS = [
@@ -44,97 +62,11 @@ const CRON_PRESETS = [
     { label: 'Custom expression', buildExpr: () => '' },
 ];
 
-function describeCron(expr: string): string {
-    if (!expr) return '';
-    const parts = expr.trim().split(/\s+/);
-    if (parts.length !== 5) return expr;
-    const [minExpr, hourExpr, domExpr, monExpr, dowExpr] = parts;
-
-    // Time formatting
-    const h = parseInt(hourExpr);
-    const m = parseInt(minExpr);
-    const timeStr = (isNaN(h) || isNaN(m)) 
-        ? `${hourExpr}:${minExpr} UTC` 
-        : `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')} UTC`;
-
-    const getOrdinal = (n: number) => {
-        const s = ["th", "st", "nd", "rd"];
-        const v = n % 100;
-        const index = (v - 20) % 10;
-        return n + (s[index] || s[v] || s[0]);
-    };
-
-    const dowMap: Record<string, string> = { 
-        '0': 'Sunday', '7': 'Sunday', '1': 'Monday', '2': 'Tuesday', 
-        '3': 'Wednesday', '4': 'Thursday', '5': 'Friday', '6': 'Saturday',
-        '1-5': 'weekday'
-    };
-
-    const monMap: Record<string, string> = {
-        '1': 'January', '2': 'February', '3': 'March', '4': 'April',
-        '5': 'May', '6': 'June', '7': 'July', '8': 'August',
-        '9': 'September', '10': 'October', '11': 'November', '12': 'December'
-    };
-
-    const monthName = monMap[monExpr] || '';
-    const dayOfWeek = dowMap[dowExpr];
-    const dom = parseInt(domExpr);
-
-    // 1. Every day everywhere
-    if (domExpr === '*' && monExpr === '*' && dowExpr === '*') {
-        return `Every day at ${timeStr}`;
-    }
-
-    // 2. Just day of month and month (e.g. 0 17 1 1 * -> 1st of January)
-    if (domExpr !== '*' && dowExpr === '*') {
-        if (!isNaN(dom)) {
-            const ofMonth = monthName ? ` of ${monthName}` : ' of every month';
-            return `On the ${getOrdinal(dom)}${ofMonth} at ${timeStr}`;
-        }
-    }
-
-    // 3. Just day of week and month (e.g. 0 17 * 1 1 -> every Monday in January)
-    if (domExpr === '*' && dowExpr !== '*') {
-        if (dayOfWeek) {
-            const inMonth = monthName ? ` in ${monthName}` : '';
-            return `Every ${dayOfWeek}${inMonth} at ${timeStr}`;
-        }
-    }
-
-    // 4. Month only (e.g. 0 17 * 1 * -> every day in January)
-    if (monExpr !== '*' && domExpr === '*' && dowExpr === '*') {
-        return `Every day in ${monthName} at ${timeStr}`;
-    }
-
-    // 5. Day of month OR Day of week (Standard Cron behavior)
-    if (domExpr !== '*' && dowExpr !== '*') {
-        if (!isNaN(dom) && dayOfWeek) {
-            const ofMonth = monthName ? ` of ${monthName}` : ' of every month';
-            const inMonth = monthName ? ` in ${monthName}` : '';
-            return `On the ${getOrdinal(dom)}${ofMonth} or every ${dayOfWeek}${inMonth} at ${timeStr}`;
-        }
-    }
-
-    return expr;
-}
-
-
-
-function describeSchedule(s: Schedule): string {
-    if (s.schedule_type === 'interval') {
-        return `Every ${s.interval_value ?? '?'} ${s.interval_unit ?? 'minutes'}`;
-    }
-    return describeCron(s.cron_expression ?? '');
-}
-
-function fmtTime(iso: string | null | undefined): string {
-    if (!iso) return '—';
-    try { return new Date(iso).toLocaleString(); } catch { return iso; }
-}
+const RUNS_READ = 200;
 
 // -- Empty form -----------------------------------------------------------
 
-function emptyForm(): Omit<Schedule, 'id' | 'created_at' | 'last_run_at' | 'next_run_at'> {
+function emptyForm(): Form {
     return {
         name: '',
         description: '',
@@ -150,50 +82,113 @@ function emptyForm(): Omit<Schedule, 'id' | 'created_at' | 'last_run_at' | 'next
     };
 }
 
+/**
+ * One of a few, as a segmented control: a quiet track with the chosen option on
+ * a raised thumb (Naveen, M2h: a form's choice is a value, not a filter, so it
+ * is not the runs list's dark pill). The thumb is the lighter of the two in both
+ * themes. Arrow keys move the choice, as radios do.
+ */
+function Choice<T extends string>({
+    value, onChange, options, label,
+}: {
+    value: T;
+    onChange: (v: T) => void;
+    options: { value: T; label: string; icon?: React.ReactNode }[];
+    label: string;
+}) {
+    const move = (step: number) => {
+        const i = options.findIndex(o => o.value === value);
+        const next = options[(i + step + options.length) % options.length];
+        onChange(next.value);
+        requestAnimationFrame(() => document.getElementById(`choice-${label}-${next.value}`)?.focus());
+    };
+    return (
+        <div
+            role="radiogroup"
+            aria-label={label}
+            className="inline-flex w-fit items-center gap-0.5 rounded-lg border border-border bg-surface-2 p-0.5 [:root[data-theme=dark]_&]:bg-bg"
+            onKeyDown={e => {
+                if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+                if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+            }}
+        >
+            {options.map(o => {
+                const on = value === o.value;
+                return (
+                    <button
+                        key={o.value}
+                        id={`choice-${label}-${o.value}`}
+                        type="button"
+                        role="radio"
+                        aria-checked={on}
+                        tabIndex={on ? 0 : -1}
+                        onClick={() => onChange(o.value)}
+                        className={cn(
+                            'inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium transition-colors',
+                            on
+                                ? 'bg-bg text-text shadow-[0_1px_2px_rgb(16_24_40/0.12)] ring-1 ring-border-strong [:root[data-theme=dark]_&]:bg-surface-2'
+                                : 'text-text-muted hover:text-text',
+                        )}
+                    >
+                        {o.icon}
+                        {o.label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
 // -- Main component -------------------------------------------------------
 
 export const SchedulesTab = () => {
     const [schedules, setSchedules] = useState<Schedule[]>([]);
     const [agents, setAgents] = useState<Agent[]>([]);
     const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
+    const [runs, setRuns] = useState<RunSummary[]>([]);
     const [loading, setLoading] = useState(false);
+    const [loaded, setLoaded] = useState(false);
     const [showForm, setShowForm] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
-    const [form, setForm] = useState(emptyForm());
+    const [form, setForm] = useState<Form>(emptyForm());
     const [saving, setSaving] = useState(false);
     const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
-    const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+    const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
     const [selectedPresetIdx, setSelectedPresetIdx] = useState(0);
     const [cronHour, setCronHour] = useState(9);
-    const [showInstructions, setShowInstructions] = useState(true);
+    const { toast, show, dismiss } = useToast();
 
-    const showToast = (msg: string, ok = true) => {
-        setToast({ msg, ok });
-        setTimeout(() => setToast(null), 3000);
-    };
+    const showToast = useCallback((msg: string, ok = true) => show(msg, ok ? 'success' : 'danger'), [show]);
 
     const fetchAll = useCallback(async () => {
         setLoading(true);
         try {
-            const [sRes, aRes, oRes] = await Promise.all([
+            const [sRes, aRes, oRes, rRes] = await Promise.all([
                 fetch('/api/schedules'),
                 fetch('/api/agents'),
                 fetch('/api/orchestrations'),
+                fetch(`/api/orchestrations/runs?limit=${RUNS_READ}`).catch(() => null),
             ]);
             if (sRes.ok) setSchedules(await sRes.json());
             if (aRes.ok) setAgents(await aRes.json());
             if (oRes.ok) setOrchestrations(await oRes.json());
+            if (rRes?.ok) {
+                const r = await rRes.json();
+                if (Array.isArray(r)) setRuns(r);
+            }
         } finally {
             setLoading(false);
+            setLoaded(true);
         }
     }, []);
 
     useEffect(() => {
-        fetchAll();
+        void fetchAll();
         // The AI builder reaches this from any screen now, so the
         // list refreshes on the event rather than on a reload.
-        window.addEventListener(RESOURCE_SAVED_EVENT, fetchAll);
-        return () => window.removeEventListener(RESOURCE_SAVED_EVENT, fetchAll);
+        const refresh = () => void fetchAll();
+        window.addEventListener(RESOURCE_SAVED_EVENT, refresh);
+        return () => window.removeEventListener(RESOURCE_SAVED_EVENT, refresh);
     }, [fetchAll]);
 
     // -- Form helpers ---------------------------------------------------
@@ -203,7 +198,6 @@ export const SchedulesTab = () => {
         setForm(emptyForm());
         setSelectedPresetIdx(0);
         setCronHour(9);
-        setShowInstructions(true);
         setShowForm(true);
     }
 
@@ -231,7 +225,6 @@ export const SchedulesTab = () => {
             }
         }
         setSelectedPresetIdx(6); // Custom
-        setShowInstructions(false);
         setShowForm(true);
     }
 
@@ -260,7 +253,7 @@ export const SchedulesTab = () => {
 
     async function saveSchedule() {
         if (!form.name.trim()) { showToast('Name is required', false); return; }
-        if (!form.target_id) { showToast('Please select a target agent or orchestration', false); return; }
+        if (!form.target_id) { showToast('Please select a target agent or workflow', false); return; }
         if (!form.prompt.trim()) { showToast('Prompt is required', false); return; }
         if (form.schedule_type === 'interval' && (!form.interval_value || form.interval_value < 1)) {
             showToast('Interval value must be at least 1', false); return;
@@ -271,7 +264,7 @@ export const SchedulesTab = () => {
 
         setSaving(true);
         try {
-            const payload: any = { ...form };
+            const payload: Partial<Form> = { ...form };
             // Clear irrelevant fields
             if (form.schedule_type === 'interval') {
                 delete payload.cron_expression;
@@ -298,7 +291,9 @@ export const SchedulesTab = () => {
                 showToast(editingId ? 'Schedule updated' : 'Schedule created');
             } else {
                 const err = await res.json().catch(() => ({}));
-                showToast(err.detail || 'Failed to save', false);
+                // A 422's detail is a list of problems: say the first one's words.
+                const detail = Array.isArray(err.detail) ? err.detail[0]?.msg : err.detail;
+                showToast(typeof detail === 'string' && detail ? detail : 'Failed to save', false);
             }
         } finally {
             setSaving(false);
@@ -322,7 +317,7 @@ export const SchedulesTab = () => {
     // -- Delete ---------------------------------------------------------
 
     async function deleteSchedule(id: string) {
-        if (!confirm('Delete this schedule?')) return;
+        setConfirmDelete(null);
         const res = await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
         if (res.ok) {
             setSchedules(prev => prev.filter(s => s.id !== id));
@@ -357,434 +352,320 @@ export const SchedulesTab = () => {
 
     // -- Render ---------------------------------------------------------
 
-    return (
-        <div className="flex flex-col h-full overflow-hidden font-mono">
+    const rows = schedules.map(s => {
+        const run = s.target_type === 'orchestration' ? lastScheduledRun(s.id, runs) : undefined;
+        return scheduleRow(s, targetLabel(s), run ? { status: run.status, waitingForHuman: run.waiting_for_human, runId: run.run_id } : null);
+    });
+    const byId = new Map(schedules.map(s => [s.id, s]));
+    const deleting = confirmDelete ? byId.get(confirmDelete) : undefined;
+    const presetIsCustom = selectedPresetIdx === CRON_PRESETS.length - 1;
+    const label = 'block text-sm font-medium text-text';
 
-            {/* Toast */}
-            {toast && (
-                <div className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 text-sm shadow-lg ${
-                    toast.ok ? 'bg-emerald-900/90 text-emerald-200 border border-emerald-700' : 'bg-red-900/90 text-red-200 border border-red-700'
-                } rounded-md`}>
-                    {toast.ok ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
-                    {toast.msg}
-                </div>
+    const actions = (
+        <>
+            <button
+                type="button"
+                aria-label="Refresh"
+                title="Refresh"
+                onClick={() => void fetchAll()}
+                className={buttonStyles({ variant: 'ghost', size: 'md', iconOnly: true })}
+            >
+                <RefreshCw aria-hidden className={cn('size-4', loading && 'animate-spin')} />
+            </button>
+            <Button onClick={openCreate}>
+                <Plus className="h-4 w-4" aria-hidden />
+                New schedule
+            </Button>
+        </>
+    );
+
+    return (
+        <AppScreen id="schedules" width="wide" actions={actions}>
+            {!loaded && loading ? (
+                <p className="py-10 text-center text-sm text-text-faint">Loading...</p>
+            ) : (
+                <ScheduleList
+                    rows={rows}
+                    onOpen={(row) => { const s = byId.get(row.id); if (s) openEdit(s); }}
+                    runHref={(runId) => `/runs/${encodeURIComponent(runId)}`}
+                    actionsWidth="152px"
+                    actions={(row) => {
+                        const s = byId.get(row.id);
+                        if (!s) return null;
+                        return (
+                            <>
+                                <span className="mr-1 flex items-center" title={s.enabled ? 'Disable' : 'Enable'}>
+                                    <Switch
+                                        size="sm"
+                                        checked={s.enabled}
+                                        onChange={() => void toggleEnabled(s)}
+                                        label={`${s.name} enabled`}
+                                    />
+                                </span>
+                                <IconButton
+                                    label={`Run ${s.name} now`}
+                                    title="Run now"
+                                    icon={Play}
+                                    size="sm"
+                                    disabled={runningIds.has(s.id)}
+                                    className={runningIds.has(s.id) ? 'motion-safe:animate-pulse' : undefined}
+                                    onClick={() => void runNow(s.id)}
+                                />
+                                <IconButton label={`Edit ${s.name}`} title="Edit" icon={Edit2} size="sm" onClick={() => openEdit(s)} />
+                                <IconButton
+                                    label={`Delete ${s.name}`}
+                                    title="Delete"
+                                    icon={Trash2}
+                                    size="sm"
+                                    className="text-text-faint hover:bg-danger-subtle hover:text-danger"
+                                    onClick={() => setConfirmDelete(s.id)}
+                                />
+                            </>
+                        );
+                    }}
+                    empty={
+                        <EmptyState title="No schedules yet">
+                            Click “New schedule” to automate your first agent run.
+                        </EmptyState>
+                    }
+                />
             )}
 
-            {/* Actions. The title and blurb are the <Screen> frame's. */}
-            <div className="px-6 py-3 border-b border-zinc-800 shrink-0 flex items-center justify-end">
-                <div className="flex items-center gap-2">
-                    <button
-                        onClick={fetchAll}
-                        className="p-2 text-text-faint hover:text-white hover:bg-surface-2 transition-colors"
-                        title="Refresh"
+            <Drawer
+                open={showForm}
+                onClose={closeForm}
+                title={editingId ? 'Edit schedule' : 'New schedule'}
+                width="lg"
+                footer={
+                    <>
+                        <Button variant="ghost" onClick={closeForm}>Cancel</Button>
+                        <Button onClick={() => void saveSchedule()} disabled={saving}>
+                            {saving ? 'Saving...' : editingId ? 'Save changes' : 'Create schedule'}
+                        </Button>
+                    </>
+                }
+            >
+                <div className="grid gap-5">
+                    {/* Open for a new schedule, folded when editing one (as before). */}
+                    <Section
+                        key={editingId ?? 'new'}
+                        variant="plain"
+                        title="How to create schedules"
+                        defaultOpen={!editingId}
                     >
-                        <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                    </button>
-                    <button
-                        onClick={openCreate}
-                        className="flex items-center gap-2 px-4 py-2 bg-accent text-accent-fg text-sm font-semibold hover:bg-accent-hover transition-colors"
-                    >
-                        <Plus className="h-4 w-4" />
-                        New Schedule
-                    </button>
-                </div>
-            </div>
-
-            {/* Main content area */}
-            <div className="flex flex-1 overflow-hidden">
-
-                {/* Schedule list */}
-                <div className={`flex flex-col overflow-hidden transition-all ${showForm ? 'w-1/2 border-r border-zinc-800' : 'w-full'}`}>
-                    <div className="flex-1 overflow-y-auto">
-                        {loading && schedules.length === 0 ? (
-                            <div className="flex items-center justify-center h-32 text-text-faint text-xs">Loading...</div>
-                        ) : schedules.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center h-64 gap-4 text-text-faint px-8 text-center">
-                                <Clock className="h-10 w-10" />
-                                <div>
-                                    <p className="text-sm font-semibold text-text-faint">No schedules yet</p>
-                                    <p className="text-xs mt-1">Click &quot;New Schedule&quot; to automate your first agent run</p>
-                                </div>
+                        <div className="grid gap-3 text-[13px] text-text-muted">
+                            <div>
+                                <p className="m-0 font-medium text-text">Interval — run every N minutes/hours/days</p>
+                                <ul className="m-0 mt-1 list-disc space-y-0.5 pl-5">
+                                    <li><span className="text-text">Every 5 minutes</span> — monitor a feed, poll an API</li>
+                                    <li><span className="text-text">Every 2 hours</span> — periodic summaries or reports</li>
+                                    <li><span className="text-text">Every 1 day</span> — daily digest or cleanup tasks</li>
+                                </ul>
+                                <p className="m-0 mt-1.5 text-text-faint">Interval restarts from the last run time. If the server was offline and the schedule is overdue, it runs immediately on restart.</p>
                             </div>
-                        ) : (
-                            <table className="w-full text-xs">
-                                <thead>
-                                    <tr className="border-b border-zinc-800 text-text-faint text-left">
-                                        <th className="px-4 py-3 font-medium">Name</th>
-                                        <th className="px-4 py-3 font-medium">Target</th>
-                                        <th className="px-4 py-3 font-medium">Schedule</th>
-                                        <th className="px-4 py-3 font-medium">Next Run</th>
-                                        <th className="px-4 py-3 font-medium">Last Run</th>
-                                        <th className="px-4 py-3 font-medium text-right">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {schedules.map(s => (
-                                        <tr key={s.id} className="border-b border-zinc-900 hover:bg-row-hover transition-colors group">
-                                            <td className="px-4 py-3">
-                                                <div className="flex items-center gap-2">
-                                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.enabled ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
-                                                    <span className="font-semibold text-white truncate max-w-[140px]" title={s.name}>{s.name}</span>
-                                                </div>
-                                                {s.description && (
-                                                    <p className="text-text-faint truncate max-w-[160px] mt-0.5" title={s.description}>{s.description}</p>
-                                                )}
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <div className="flex items-center gap-1.5 text-zinc-400">
-                                                    {s.target_type === 'agent'
-                                                        ? <Bot className="h-3 w-3 shrink-0 text-sky-400" />
-                                                        : <Workflow className="h-3 w-3 shrink-0 text-accent" />
-                                                    }
-                                                    <span className="truncate max-w-[100px]" title={targetLabel(s)}>{targetLabel(s)}</span>
-                                                </div>
-                                            </td>
-                                            <td className="px-4 py-3 text-zinc-300">{describeSchedule(s)}</td>
-                                            <td className="px-4 py-3 text-text-faint">{fmtTime(s.next_run_at)}</td>
-                                            <td className="px-4 py-3 text-text-faint">{fmtTime(s.last_run_at)}</td>
-                                            <td className="px-4 py-3">
-                                                <div className="flex items-center gap-1 justify-end">
-                                                    {/* Enable/Disable */}
-                                                    <button
-                                                        onClick={() => toggleEnabled(s)}
-                                                        className="p-1.5 text-text-faint hover:text-white transition-colors"
-                                                        title={s.enabled ? 'Disable' : 'Enable'}
-                                                    >
-                                                        {s.enabled
-                                                            ? <ToggleRight className="h-4 w-4 text-emerald-400" />
-                                                            : <ToggleLeft className="h-4 w-4" />
-                                                        }
-                                                    </button>
-                                                    {/* Run Now */}
-                                                    <button
-                                                        onClick={() => runNow(s.id)}
-                                                        disabled={runningIds.has(s.id)}
-                                                        className="p-1.5 text-text-faint hover:text-emerald-400 transition-colors disabled:opacity-40"
-                                                        title="Run Now"
-                                                    >
-                                                        <Play className={`h-3.5 w-3.5 ${runningIds.has(s.id) ? 'animate-pulse' : ''}`} />
-                                                    </button>
-                                                    {/* Edit */}
-                                                    <button
-                                                        onClick={() => openEdit(s)}
-                                                        className="p-1.5 text-text-faint hover:text-white transition-colors"
-                                                        title="Edit"
-                                                    >
-                                                        <Edit2 className="h-3.5 w-3.5" />
-                                                    </button>
-                                                    {/* Delete */}
-                                                    <button
-                                                        onClick={() => deleteSchedule(s.id)}
-                                                        className="p-1.5 text-text-faint hover:text-red-400 transition-colors"
-                                                        title="Delete"
-                                                    >
-                                                        <Trash2 className="h-3.5 w-3.5" />
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        )}
-                    </div>
-                </div>
-
-                {/* Form panel */}
-                {showForm && (
-                    <div className="w-1/2 flex flex-col overflow-hidden">
-                        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 shrink-0">
-                            <h2 className="text-sm font-semibold text-white">
-                                {editingId ? 'Edit Schedule' : 'New Schedule'}
-                            </h2>
-                            <button onClick={closeForm} className="text-text-faint hover:text-white text-xs">✕ Cancel</button>
+                            <div>
+                                <p className="m-0 font-medium text-text">Cron / Fixed time — run at specific times</p>
+                                <ul className="m-0 mt-1 list-disc space-y-0.5 pl-5">
+                                    <li><span className="text-text">Every day at 9 AM</span> — morning standup report</li>
+                                    <li><span className="text-text">Every Monday at 6 PM</span> — weekly digest</li>
+                                    <li><span className="text-text">1st of month</span> — monthly invoice summary</li>
+                                </ul>
+                                <p className="m-0 mt-1.5 text-text-faint">If a run was missed while offline, choose whether to run immediately or skip to the next scheduled time.</p>
+                            </div>
+                            <div>
+                                <p className="m-0 font-medium text-text">Prompt</p>
+                                <p className="m-0 text-text-faint">The prompt is what the agent will receive each time the schedule fires. Think of it as a standing instruction.</p>
+                            </div>
+                            <div>
+                                <p className="m-0 font-medium text-text">Messaging notifications</p>
+                                <p className="m-0 text-text-faint">If the selected agent has a connected messaging channel (Slack, Telegram, etc.), the result is sent there automatically after each run.</p>
+                            </div>
                         </div>
+                    </Section>
 
-                        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+                    <Field label="Name" required>
+                        <Input
+                            id="sched-name"
+                            value={form.name}
+                            onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                            placeholder="e.g. Daily Sales Report"
+                        />
+                    </Field>
 
-                            {/* Instructions */}
-                            <div className="border border-zinc-800 bg-zinc-950 rounded-md">
-                                <button
-                                    onClick={() => setShowInstructions(v => !v)}
-                                    className="w-full flex items-center justify-between px-4 py-3 text-xs text-zinc-400 hover:text-white transition-colors"
-                                >
-                                    <span className="flex items-center gap-2">
-                                        <Info className="h-3.5 w-3.5 text-sky-400" />
-                                        <span className="font-semibold">How to create schedules</span>
-                                    </span>
-                                    {showInstructions ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                                </button>
-                                {showInstructions && (
-                                    <div className="px-4 pb-4 text-xs text-text-faint space-y-3 border-t border-zinc-800">
-                                        <div className="pt-3">
-                                            <p className="text-zinc-300 font-semibold mb-1">Interval — run every N minutes/hours/days</p>
-                                            <ul className="space-y-1 text-text-faint">
-                                                <li>• <span className="text-zinc-400">Every 5 minutes</span> — monitor a feed, poll an API</li>
-                                                <li>• <span className="text-zinc-400">Every 2 hours</span> — periodic summaries or reports</li>
-                                                <li>• <span className="text-zinc-400">Every 1 day</span> — daily digest or cleanup tasks</li>
-                                            </ul>
-                                            <p className="text-text-faint mt-1.5">Interval restarts from the last run time. If the server was offline and the schedule is overdue, it runs immediately on restart.</p>
-                                        </div>
-                                        <div>
-                                            <p className="text-zinc-300 font-semibold mb-1">Cron / Fixed Time — run at specific times</p>
-                                            <ul className="space-y-1 text-text-faint">
-                                                <li>• <span className="text-zinc-400">Every day at 9 AM</span> — morning standup report</li>
-                                                <li>• <span className="text-zinc-400">Every Monday at 6 PM</span> — weekly digest</li>
-                                                <li>• <span className="text-zinc-400">1st of month</span> — monthly invoice summary</li>
-                                            </ul>
-                                            <p className="text-text-faint mt-1.5">If a run was missed while offline, choose whether to run immediately or skip to the next scheduled time.</p>
-                                        </div>
-                                        <div>
-                                            <p className="text-zinc-300 font-semibold mb-1">Prompt</p>
-                                            <p className="text-text-faint">The prompt is what the agent will receive each time the schedule fires. Think of it as a standing instruction.</p>
-                                        </div>
-                                        <div>
-                                            <p className="text-zinc-300 font-semibold mb-1">Messaging notifications</p>
-                                            <p className="text-text-faint">If the selected agent has a connected messaging channel (Slack, Telegram, etc.), the result is sent there automatically after each run.</p>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
+                    <Field label="Description">
+                        <Input
+                            id="sched-description"
+                            value={form.description}
+                            onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                            placeholder="Optional short description"
+                        />
+                    </Field>
 
-                            {/* Name */}
-                            <div>
-                                <label htmlFor="sched-name" className="block text-xs text-zinc-400 mb-1.5 font-semibold">Name <span className="text-red-400">*</span></label>
-                                <input
-                                    id="sched-name"
-                                    value={form.name}
-                                    onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                                    placeholder="e.g. Daily Sales Report"
-                                    className="w-full bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-500 rounded-md"
-                                />
-                            </div>
+                    <div className="grid gap-1.5">
+                        <span className={label}>Run as</span>
+                        <Choice
+                            label="Run as"
+                            value={form.target_type}
+                            onChange={t => setForm(f => ({ ...f, target_type: t, target_id: '' }))}
+                            options={[
+                                { value: 'agent', label: 'Agent', icon: <Bot className="h-3.5 w-3.5" aria-hidden /> },
+                                { value: 'orchestration', label: 'Workflow', icon: <Workflow className="h-3.5 w-3.5" aria-hidden /> },
+                            ]}
+                        />
+                    </div>
 
-                            {/* Description */}
-                            <div>
-                                <label htmlFor="sched-description" className="block text-xs text-zinc-400 mb-1.5 font-semibold">Description</label>
-                                <input
-                                    id="sched-description"
-                                    value={form.description}
-                                    onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                                    placeholder="Optional short description"
-                                    className="w-full bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-500 rounded-md"
-                                />
-                            </div>
+                    <Field label={form.target_type === 'agent' ? 'Agent' : 'Workflow'} required>
+                        <Select
+                            value={form.target_id || undefined}
+                            onChange={v => setForm(f => ({ ...f, target_id: v }))}
+                            placeholder={`Select ${form.target_type === 'agent' ? 'an agent' : 'a workflow'}…`}
+                            aria-label="Target"
+                            options={(form.target_type === 'agent' ? agents : orchestrations)
+                                .map(item => ({ value: item.id, label: item.name }))}
+                        />
+                    </Field>
 
-                            {/* Target type */}
-                            <div>
-                                <label className="block text-xs text-zinc-400 mb-1.5 font-semibold">Run as</label>
-                                <div className="flex gap-2">
-                                    {(['agent', 'orchestration'] as const).map(t => (
-                                        <button
-                                            key={t}
-                                            onClick={() => setForm(f => ({ ...f, target_type: t, target_id: '' }))}
-                                            className={`flex items-center gap-2 px-4 py-2 text-xs font-medium border transition-all ${
-                                                form.target_type === t
-                                                    ? 'border-white bg-accent text-accent-fg'
-                                                    : 'border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500'
-                                            } rounded-md`}
-                                        >
-                                            {t === 'agent' ? <Bot className="h-3.5 w-3.5" /> : <Workflow className="h-3.5 w-3.5" />}
-                                            {t === 'agent' ? 'Agent' : 'Orchestration'}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
+                    <Field label="Prompt" required hint="What should the agent do each time it runs?">
+                        <Textarea
+                            id="sched-prompt"
+                            value={form.prompt}
+                            onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))}
+                            placeholder="e.g. Generate a daily summary of yesterday's sales data and highlight any anomalies."
+                            rows={4}
+                        />
+                    </Field>
 
-                            {/* Target selector */}
-                            <div>
-                                <label className="block text-xs text-zinc-400 mb-1.5 font-semibold">
-                                    {form.target_type === 'agent' ? 'Agent' : 'Orchestration'} <span className="text-red-400">*</span>
-                                </label>
-                                <Select
-                                    value={form.target_id || undefined}
-                                    onChange={v => setForm(f => ({ ...f, target_id: v }))}
-                                    placeholder={`Select ${form.target_type === 'agent' ? 'an agent' : 'an orchestration'}…`}
-                                    aria-label="Target"
-                                    options={(form.target_type === 'agent' ? agents : orchestrations)
-                                        .map(item => ({ value: item.id, label: item.name }))}
-                                />
-                            </div>
+                    <div className="grid gap-1.5">
+                        <span className={label}>Schedule type</span>
+                        <Choice
+                            label="Schedule type"
+                            value={form.schedule_type}
+                            onChange={t => setForm(f => ({ ...f, schedule_type: t }))}
+                            options={[
+                                { value: 'interval', label: 'Interval' },
+                                { value: 'cron', label: 'Fixed time (cron)' },
+                            ]}
+                        />
+                    </div>
 
-                            {/* Prompt */}
-                            <div>
-                                <label htmlFor="sched-prompt" className="block text-xs text-zinc-400 mb-1.5 font-semibold">
-                                    Prompt <span className="text-red-400">*</span>
-                                    <span className="ml-2 font-normal text-text-faint">What should the agent do each time it runs?</span>
-                                </label>
-                                <textarea
-                                    id="sched-prompt"
-                                    value={form.prompt}
-                                    onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))}
-                                    placeholder="e.g. Generate a daily summary of yesterday's sales data and highlight any anomalies."
-                                    rows={4}
-                                    className="w-full bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-500 resize-none rounded-md"
-                                />
-                            </div>
-
-                            {/* Schedule type */}
-                            <div>
-                                <label className="block text-xs text-zinc-400 mb-1.5 font-semibold">Schedule Type</label>
-                                <div className="flex gap-2">
-                                    {(['interval', 'cron'] as const).map(t => (
-                                        <button
-                                            key={t}
-                                            onClick={() => setForm(f => ({ ...f, schedule_type: t }))}
-                                            className={`flex items-center gap-2 px-4 py-2 text-xs font-medium border transition-all ${
-                                                form.schedule_type === t
-                                                    ? 'border-white bg-accent text-accent-fg'
-                                                    : 'border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500'
-                                            } rounded-md`}
-                                        >
-                                            <Clock className="h-3.5 w-3.5" />
-                                            {t === 'interval' ? 'Interval' : 'Fixed Time (Cron)'}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {/* Interval config */}
-                            {form.schedule_type === 'interval' && (
-                                <div className="bg-zinc-900/60 border border-zinc-800 p-4 space-y-3 rounded-md">
-                                    <div className="flex items-center gap-3">
-                                        <span className="text-xs text-zinc-400 shrink-0">Run every</span>
-                                        <input
-                                            aria-label="Run every"
-                                            type="number"
-                                            min={1}
-                                            value={form.interval_value ?? 30}
-                                            onChange={e => setForm(f => ({ ...f, interval_value: parseInt(e.target.value) || 1 }))}
-                                            className="w-20 bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-sm text-white text-center focus:outline-none focus:border-zinc-500 rounded-md"
-                                        />
-                                        <Select
-                                            value={form.interval_unit ?? 'minutes'}
-                                            onChange={v => setForm(f => ({ ...f, interval_unit: v as any }))}
-                                            aria-label="Interval unit"
-                                            className="w-32"
-                                            options={[
-                                                { value: 'minutes', label: 'minutes' },
-                                                { value: 'hours', label: 'hours' },
-                                                { value: 'days', label: 'days' },
-                                            ]}
-                                        />
-                                    </div>
-                                    <p className="text-xs text-text-faint">
-                                        Runs every {form.interval_value ?? '?'} {form.interval_unit ?? 'minutes'} from the last run.
-                                        If overdue after a restart, it runs immediately.
-                                    </p>
-                                </div>
-                            )}
-
-                            {/* Cron config */}
-                            {form.schedule_type === 'cron' && (
-                                <div className="bg-zinc-900/60 border border-zinc-800 p-4 space-y-4 rounded-md">
-                                    {/* Preset picker */}
-                                    <div>
-                                        <label className="block text-xs text-text-faint mb-1.5">Quick preset</label>
-                                        <Select
-                                            value={String(selectedPresetIdx)}
-                                            onChange={v => onPresetChange(parseInt(v, 10))}
-                                            aria-label="Schedule preset"
-                                            options={CRON_PRESETS.map((p, i) => ({ value: String(i), label: p.label }))}
-                                        />
-                                    </div>
-
-                                    {/* Hour picker (when preset has a time component) */}
-                                    {selectedPresetIdx < CRON_PRESETS.length - 1 && (
-                                        <div className="flex items-center gap-3">
-                                            <span className="text-xs text-zinc-400">At hour (UTC)</span>
-                                            <Select
-                                                value={String(cronHour)}
-                                                onChange={v => onCronHourChange(parseInt(v, 10))}
-                                                aria-label="Hour (UTC)"
-                                                className="w-36"
-                                                options={Array.from({ length: 24 }, (_, i) => ({
-                                                    value: String(i),
-                                                    label: `${i.toString().padStart(2, '0')}:00 UTC`,
-                                                }))}
-                                            />
-                                        </div>
-                                    )}
-
-                                    {/* Expression input */}
-                                    <div>
-                                        <label htmlFor="sched-cron" className="block text-xs text-text-faint mb-1.5">
-                                            Cron expression
-                                            <span className="ml-2 text-text-faint">minute hour day-of-month month day-of-week</span>
-                                        </label>
-                                        <input
-                                            id="sched-cron"
-                                            value={form.cron_expression ?? ''}
-                                            onChange={e => setForm(f => ({ ...f, cron_expression: e.target.value }))}
-                                            placeholder="0 9 * * *"
-                                            className="w-full bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-zinc-500 rounded-md"
-                                        />
-                                        {form.cron_expression && (
-                                            <p className="text-xs text-emerald-400 mt-1">{describeCron(form.cron_expression)}</p>
-                                        )}
-                                    </div>
-
-                                    {/* Missed run policy */}
-                                    <div>
-                                        <label className="block text-xs text-text-faint mb-2">If a run was missed while offline</label>
-                                        <div className="space-y-2">
-                                            {[
-                                                { value: 'run_immediately', label: 'Run immediately when server starts', desc: 'Catches up the missed run once, then resumes normal schedule' },
-                                                { value: 'skip', label: 'Skip and wait for the next scheduled time', desc: 'Ignores the missed run, next run fires at the correct future time' },
-                                            ].map(opt => (
-                                                <label key={opt.value} className="flex items-start gap-3 cursor-pointer group">
-                                                    <input
-                                                        type="radio"
-                                                        name="missed_run_policy"
-                                                        value={opt.value}
-                                                        checked={form.missed_run_policy === opt.value}
-                                                        onChange={() => setForm(f => ({ ...f, missed_run_policy: opt.value as any }))}
-                                                        className="mt-0.5 shrink-0"
-                                                    />
-                                                    <div>
-                                                        <p className="text-xs text-zinc-300">{opt.label}</p>
-                                                        <p className="text-[11px] text-text-faint">{opt.desc}</p>
-                                                    </div>
-                                                </label>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Enabled toggle */}
+                    {form.schedule_type === 'interval' && (
+                        <div className="grid gap-2 rounded-md bg-surface-2 p-4">
                             <div className="flex items-center gap-3">
-                                <span className="text-xs text-zinc-400 font-semibold">Enabled</span>
-                                <button
-                                    role="switch"
-                                    aria-checked={form.enabled}
-                                    aria-label="Enabled"
-                                    onClick={() => setForm(f => ({ ...f, enabled: !f.enabled }))}
-                                    className="text-zinc-400 hover:text-white transition-colors"
-                                >
-                                    {form.enabled
-                                        ? <ToggleRight className="h-5 w-5 text-emerald-400" />
-                                        : <ToggleLeft className="h-5 w-5" />
-                                    }
-                                </button>
-                                <span className="text-xs text-text-faint">{form.enabled ? 'Schedule will run automatically' : 'Schedule is paused'}</span>
+                                <span className="shrink-0 text-[13px] text-text-muted">Run every</span>
+                                <Input
+                                    aria-label="Run every"
+                                    type="number"
+                                    min={1}
+                                    value={form.interval_value ?? 30}
+                                    onChange={e => setForm(f => ({ ...f, interval_value: parseInt(e.target.value) || 1 }))}
+                                    className="w-20 text-center"
+                                />
+                                <Select
+                                    value={form.interval_unit ?? 'minutes'}
+                                    onChange={v => setForm(f => ({ ...f, interval_unit: v as Form['interval_unit'] }))}
+                                    aria-label="Interval unit"
+                                    className="w-32"
+                                    options={[
+                                        { value: 'minutes', label: 'minutes' },
+                                        { value: 'hours', label: 'hours' },
+                                        { value: 'days', label: 'days' },
+                                    ]}
+                                />
                             </div>
-
-                            {/* Save button */}
-                            <div className="pt-2 pb-4">
-                                <button
-                                    onClick={saveSchedule}
-                                    disabled={saving}
-                                    className="w-full py-2.5 bg-accent text-accent-fg text-sm font-semibold hover:bg-accent-hover disabled:opacity-50 transition-colors"
-                                >
-                                    {saving ? 'Saving...' : editingId ? 'Save Changes' : 'Create Schedule'}
-                                </button>
-                            </div>
-
+                            <p className="m-0 text-xs text-text-faint">
+                                Runs every {form.interval_value ?? '?'} {form.interval_unit ?? 'minutes'} from the last run.
+                                If overdue after a restart, it runs immediately.
+                            </p>
                         </div>
+                    )}
+
+                    {form.schedule_type === 'cron' && (
+                        <div className="grid gap-4 rounded-md bg-surface-2 p-4">
+                            <Field label="Quick preset">
+                                <Select
+                                    value={String(selectedPresetIdx)}
+                                    onChange={v => onPresetChange(parseInt(v, 10))}
+                                    aria-label="Schedule preset"
+                                    options={CRON_PRESETS.map((p, i) => ({ value: String(i), label: p.label }))}
+                                />
+                            </Field>
+
+                            {/* The hour, when the preset has one. */}
+                            {!presetIsCustom && (
+                                <div className="flex items-center gap-3">
+                                    <span className="text-[13px] text-text-muted">At hour (UTC)</span>
+                                    <Select
+                                        value={String(cronHour)}
+                                        onChange={v => onCronHourChange(parseInt(v, 10))}
+                                        aria-label="Hour (UTC)"
+                                        className="w-36"
+                                        options={Array.from({ length: 24 }, (_, i) => ({
+                                            value: String(i),
+                                            label: `${i.toString().padStart(2, '0')}:00 UTC`,
+                                        }))}
+                                    />
+                                </div>
+                            )}
+
+                            <Field label="Cron expression" hint="minute hour day-of-month month day-of-week">
+                                <Input
+                                    id="sched-cron"
+                                    value={form.cron_expression ?? ''}
+                                    onChange={e => setForm(f => ({ ...f, cron_expression: e.target.value }))}
+                                    placeholder="0 9 * * *"
+                                    className="font-code"
+                                />
+                            </Field>
+                            {form.cron_expression && (
+                                <p data-cron-words className="-mt-2 m-0 text-[13px] font-medium text-text">{cronWords(form.cron_expression)}</p>
+                            )}
+
+                            <fieldset className="m-0 grid gap-2 border-0 p-0">
+                                <legend className="mb-2 text-sm font-medium text-text">If a run was missed while offline</legend>
+                                {[
+                                    { value: 'run_immediately', label: 'Run immediately when server starts', desc: 'Catches up the missed run once, then resumes normal schedule' },
+                                    { value: 'skip', label: 'Skip and wait for the next scheduled time', desc: 'Ignores the missed run, next run fires at the correct future time' },
+                                ].map(opt => (
+                                    <label key={opt.value} className="flex cursor-pointer items-start gap-3">
+                                        <input
+                                            type="radio"
+                                            name="missed_run_policy"
+                                            value={opt.value}
+                                            checked={form.missed_run_policy === opt.value}
+                                            onChange={() => setForm(f => ({ ...f, missed_run_policy: opt.value as Form['missed_run_policy'] }))}
+                                            className="mt-1 shrink-0 accent-[var(--color-accent)]"
+                                        />
+                                        <span>
+                                            <span className="block text-[13px] text-text">{opt.label}</span>
+                                            <span className="block text-xs text-text-faint">{opt.desc}</span>
+                                        </span>
+                                    </label>
+                                ))}
+                            </fieldset>
+                        </div>
+                    )}
+
+                    <div className="flex items-center gap-3">
+                        <span className={label} id="sched-enabled">Enabled</span>
+                        <Switch
+                            checked={form.enabled}
+                            onChange={(on) => setForm(f => ({ ...f, enabled: on }))}
+                            label="Enabled"
+                        />
+                        <span className="text-xs text-text-faint">{form.enabled ? 'Schedule will run automatically' : 'Schedule is paused'}</span>
                     </div>
-                )}
-            </div>
-        </div>
+                </div>
+            </Drawer>
+
+            <ConfirmDialog
+                open={confirmDelete !== null}
+                onClose={() => setConfirmDelete(null)}
+                title="Delete this schedule?"
+                description={deleting ? `“${deleting.name}” stops running. Runs it already started keep their history.` : undefined}
+                confirmLabel="Delete"
+                onConfirm={() => confirmDelete && void deleteSchedule(confirmDelete)}
+            />
+            <Toast message={toast.message} tone={toast.tone} onDismiss={dismiss} />
+        </AppScreen>
     );
 };

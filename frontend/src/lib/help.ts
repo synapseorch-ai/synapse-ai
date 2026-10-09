@@ -178,15 +178,16 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Schedules',
         summary: 'Run an agent or a workflow on its own, every so often or at set times, with a standing prompt.',
         steps: [
-            'Click “New Schedule”, name it, choose “Agent” or “Orchestration” under “Run as”, and pick which one.',
+            'Click “New schedule”, name it, choose “Agent” or “Workflow” under “Run as”, and pick which one.',
             'Write the “Prompt”: the instruction it is given every time the schedule fires.',
-            'Choose “Interval” and how often, or “Fixed Time (Cron)” with a preset and an hour; times are in UTC.',
-            'Leave it enabled and click “Create Schedule”. Each row can be paused, run now, edited or deleted.',
-            'Each run’s log is in Runs › Logs, under “Schedule Logs”.',
+            'Choose “Interval” and how often, or “Fixed time (cron)” with a preset and an hour; times are in UTC, and the words under the expression say when it runs.',
+            'Leave it enabled and click “Create schedule”. Each row shows how often it runs, when it runs next and how its last run went; its switch pauses it, and it can be run now, edited or deleted.',
+            'Each run’s log is in Runs › Logs, under “Schedule logs”.',
         ],
-        media: { id: 'schedules/list', alt: 'Schedules: a table of schedules with their target, timing, next and last run, and the schedule form beside it.' },
+        media: { id: 'schedules/list', alt: 'Schedules: each schedule with what it starts, how often, when it runs next and how its last run went.' },
         guide: '/guides/recipes/schedules-and-channels',
     },
+
 
     templates: {
         title: 'Templates',

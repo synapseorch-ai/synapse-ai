@@ -1,10 +1,6 @@
 import { SchedulesTab } from '@/components/settings/SchedulesTab';
-import { AppScreen } from '@/components/app/AppScreen';
 
+// The tab draws its own frame: Refresh and New schedule sit in the header (M2h).
 export default function SchedulesPage() {
-    return (
-        <AppScreen id="schedules" bleed>
-            <SchedulesTab />
-        </AppScreen>
-    );
+    return <SchedulesTab />;
 }
