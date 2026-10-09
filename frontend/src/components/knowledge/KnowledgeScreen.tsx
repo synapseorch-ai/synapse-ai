@@ -32,15 +32,18 @@
  * models, web sources and Evaluate being served, expiring part URLs) comes from `./host` (D175).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ExternalLink, FolderOpen, Globe, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, Upload } from 'lucide-react';
+import {
+    Database, ExternalLink, FileText, FolderOpen, Globe, Library, Plus, RotateCcw, Search, SlidersHorizontal, Trash2, Upload,
+} from 'lucide-react';
 
 import {
     Badge, Button, ConfirmDialog, Drawer, EmptyState, ErrorNote, Field, IconButton, Input, Label, Modal, Mono,
-    Muted, Screen, Section, Select, Spinner, TBody, TD, TH, THead, TR, Table, TableActions, Textarea, Toast, useToast,
+    Muted, Screen, Section, Select, Spinner, StatStrip, TBody, TD, TH, THead, TR, Table, TableActions, Textarea, Toast, useToast,
     type SelectOption,
 } from '@/components/ui';
 import { useHelpTopic } from '@/components/help';
 import { RetrievalTrace } from '@/components/RetrievalTrace';
+import { when as runWhen } from '@/components/run/model';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
 import {
@@ -56,9 +59,29 @@ import { ProgressBar } from './Progress';
 import { Evaluate } from './KnowledgeEval';
 import { KnowledgeSettings } from './KnowledgeSettings';
 
+/** "Today 7:25 PM", "Mon 5 Oct, 7:25 PM" (UX1's dates, as the run screens print them). Rendered in the browser only. */
 function when(iso: string | null | undefined): string {
-    return iso ? new Date(iso).toLocaleString() : '—';
+    return iso ? runWhen(iso, { now: Date.now() }) : '—';
 }
+
+/** The documents as rows, the runs list's way (M2e, Naveen): a status dot, the file and its line, then the numbers. */
+const DOC_GRID = 'grid items-center gap-x-3.5 px-2.5';
+const DOC_COLS = 'grid-cols-[14px_minmax(0,1fr)] sm:grid-cols-[14px_minmax(0,1fr)_4.5rem_9.5rem]';
+const DOC_COLS_EDIT = 'grid-cols-[14px_minmax(0,1fr)_auto] sm:grid-cols-[14px_minmax(0,1fr)_4.5rem_9.5rem_4.5rem]';
+/** A dot for where a document stands: green indexed, cyan being worked on, red failed, grey resting otherwise. */
+const DOC_DOT: Partial<Record<DocStatus, string>> = {
+    indexed: 'bg-success', partial: 'bg-text-muted', queued: 'bg-machine', parsing: 'bg-machine', indexing: 'bg-machine',
+    failed: 'bg-danger', blocked: 'bg-danger', skipped: 'bg-text-faint', paused: 'bg-text-faint', deleting: 'bg-text-faint',
+};
+
+/** Where a document came from, as the Documents pills group it (M2e): a file, a fetched page, or a record. */
+type SourceKind = 'file' | 'web' | 'record';
+const sourceKind = (d: KnowledgeDocument): SourceKind => (d.source === 'web' ? 'web' : d.source === 'record' ? 'record' : 'file');
+const SOURCES: { value: SourceKind; label: string; icon: typeof FileText }[] = [
+    { value: 'file', label: 'Files', icon: FileText },
+    { value: 'web', label: 'Web pages', icon: Globe },
+    { value: 'record', label: 'Records', icon: Database },
+];
 
 /** A URL as a person reads it: host and path, no scheme. */
 function shortUrl(url: string): string {
@@ -89,15 +112,22 @@ function StatusBadge({ status }: { status: DocStatus }) {
     return <Badge tone={s.tone} dot size="sm">{s.label}</Badge>;
 }
 
-function summary(kb: KnowledgeBase): string {
+function tally(kb: KnowledgeBase) {
     const c = kb.state.counts_by_status;
-    const total = Object.values(c).reduce((a, b) => a + (b ?? 0), 0);
+    return {
+        total: Object.values(c).reduce((a, b) => a + (b ?? 0), 0),
+        working: [...WORKING].reduce((a, s) => a + (c[s] ?? 0), 0),
+        failed: (c.failed ?? 0) + (c.blocked ?? 0),
+    };
+}
+
+function summary(kb: KnowledgeBase): string {
+    const { total, working, failed } = tally(kb);
     if (!total) return 'No documents yet';
     const parts = [count(total, 'document')];
-    const failed = (c.failed ?? 0) + (c.blocked ?? 0);
-    const working = [...WORKING].reduce((a, s) => a + (c[s] ?? 0), 0);
     if (working) parts.push(`${working} in progress`);
     if (failed) parts.push(`${failed} failed`);
+    if (kb.state.month_spend_usd > 0) parts.push(`${formatUsd(kb.state.month_spend_usd)} this month`);
     return parts.join(' · ');
 }
 
@@ -146,11 +176,11 @@ export function KnowledgeScreen() {
     };
 
     if (enabled === null) {
-        return <Screen eyebrow="Build" title="Knowledge"><div className="flex justify-center py-12"><Spinner /></div></Screen>;
+        return <Screen eyebrow="Build" title="Knowledge" width="wide"><div className="flex justify-center py-12"><Spinner /></div></Screen>;
     }
     if (!enabled) {
         return (
-            <Screen eyebrow="Build" title="Knowledge" description="Agents that answer from your documents, with sources.">
+            <Screen eyebrow="Build" title="Knowledge" description="Agents that answer from your documents, with sources." width="wide">
                 <EmptyState title="Knowledge is off in this workspace">
                     {offHint ?? 'Knowledge is not switched on here yet.'}
                 </EmptyState>
@@ -170,15 +200,37 @@ export function KnowledgeScreen() {
             {bases === null ? (
                 <div className="flex justify-center py-12"><Spinner /></div>
             ) : bases.length === 0 ? (
+                <>
                 <EmptyState
                     title="No knowledge bases yet"
                     action={canEdit && <Button onClick={() => setCreating(true)}>New knowledge base</Button>}
                 >
                     A knowledge base is a Vault folder. Pick one, or name a new one, and everything in it is indexed.
                 </EmptyState>
+                    <ol className="mx-auto -mt-4 mb-8 grid px-5 max-w-2xl gap-4 text-left sm:grid-cols-3" aria-label="How a knowledge base works">
+                        {[
+                            [FolderOpen, 'A folder', 'Name a Vault folder, or upload files and add web pages to it.'],
+                            [Library, 'Read and indexed', 'Every file is read, cut into passages and indexed for search.'],
+                            [Search, 'Searched, with sources', 'Agents that use it answer from it and cite what they used.'],
+                        ].map(([Icon, head, body]) => {
+                            const I = Icon as typeof Search;
+                            return (
+                                <li key={head as string} className="flex gap-3">
+                                    <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-2 text-text-muted" aria-hidden>
+                                        <I className="size-4" />
+                                    </span>
+                                    <span className="min-w-0">
+                                        <span className="block text-sm font-medium text-text">{head as string}</span>
+                                        <span className="block text-xs leading-relaxed text-text-muted">{body as string}</span>
+                                    </span>
+                                </li>
+                            );
+                        })}
+                    </ol>
+                </>
             ) : (
-                <div className="grid gap-6 lg:grid-cols-[17rem_1fr]">
-                    <nav aria-label="Knowledge bases" className="space-y-1">
+                <div className="grid gap-6 lg:grid-cols-[17rem_minmax(0,1fr)] lg:gap-8">
+                    <nav aria-label="Knowledge bases" className="space-y-0.5">
                         {bases.map(b => (
                             <button
                                 key={b.id}
@@ -186,15 +238,18 @@ export function KnowledgeScreen() {
                                 onClick={() => setSelected(b.id)}
                                 aria-current={b.id === selected ? 'true' : undefined}
                                 className={cn(
-                                    'w-full rounded-md border px-3 py-2.5 text-left transition-colors',
+                                    'w-full rounded-lg px-3 py-2.5 text-left transition-colors',
                                     b.id === selected
-                                        ? 'border-accent bg-accent-subtle/40'
-                                        : 'border-border hover:bg-surface-2',
+                                        ? 'bg-surface-2 shadow-[inset_0_0_0_1px_var(--border)]'
+                                        : 'hover:bg-surface-2',
                                 )}
                             >
-                                <span className="block truncate text-sm font-medium text-text">{b.name}</span>
-                                <span className="block truncate font-mono text-xs text-text-muted">{b.folder}</span>
-                                <span className="mt-1 block text-xs text-text-faint">
+                                <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-text">
+                                    <Library className="size-4 shrink-0 text-text-faint" aria-hidden />
+                                    <span className="truncate">{b.name}</span>
+                                </span>
+                                <span className="mt-0.5 block truncate font-mono text-xs text-text-muted">{b.folder}</span>
+                                <span className="mt-0.5 block truncate text-xs text-text-faint">
                                     {b.status === 'disabled' ? 'Off · ' : ''}{summary(b)}
                                 </span>
                             </button>
@@ -361,6 +416,9 @@ function BaseDetail({
     const [addingWeb, setAddingWeb] = useState(false);
     const [tick, setTick] = useState(0);
     const [filter, setFilter] = useState<'all' | DocStatus>('all');
+    const [kind, setKind] = useState<'all' | SourceKind>('all');
+    // The served index's top-5 rate from Evaluate's selected question set; null until Evaluate has read one.
+    const [hit5, setHit5] = useState<number | null>(null);
     const [open, setOpen] = useState<string | null>(null);
     const [fetched, setFetched] = useState<KnowledgeDocumentDetail | null>(null);
     const detail = fetched && fetched.id === open ? fetched : null;
@@ -473,21 +531,36 @@ function BaseDetail({
         }
         return options;
     }, [docs]);
+    const kinds = useMemo(() => {
+        const n: Record<SourceKind, number> = { file: 0, web: 0, record: 0 };
+        for (const d of docs ?? []) n[sourceKind(d)] += 1;
+        return n;
+    }, [docs]);
+    const present = SOURCES.filter(k => kinds[k.value] > 0);
     const shown = (docs ?? [])
         .filter(d => filter === 'all' || d.status === filter)
+        .filter(d => kind === 'all' || sourceKind(d) === kind)
         .sort((a, b) => a.path.localeCompare(b.path));
+    const { total, working: inProgress, failed } = tally(kb);
+    const spent = kb.state.month_spend_usd;
+    const cap = kb.budget_monthly_usd;
 
     return (
-        <section aria-label={kb.name} className="min-w-0 space-y-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                    <h2 className="truncate text-base font-semibold text-text">{kb.name}</h2>
-                    <p className="mt-0.5 flex items-center gap-1.5 text-sm text-text-muted">
-                        <FolderOpen className="size-3.5 shrink-0" aria-hidden />
-                        <Mono>{kb.folder}</Mono>
-                        {kb.state.month_spend_usd > 0 && <Muted>· {formatUsd(kb.state.month_spend_usd)} this month</Muted>}
-                    </p>
-                    {kb.description && <p className="mt-1 text-sm text-text-muted">{kb.description}</p>}
+        <section aria-label={kb.name} className="min-w-0 space-y-5">
+            <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+                <div className="flex min-w-0 items-start gap-3.5">
+                    <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-machine-subtle text-machine" aria-hidden>
+                        <Library className="size-5" />
+                    </span>
+                    <div className="min-w-0">
+                        <h2 className="truncate text-xl font-semibold tracking-[-0.02em] text-text">{kb.name}</h2>
+                        <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-sm text-text-muted">
+                            <FolderOpen className="size-3.5 shrink-0" aria-hidden />
+                            <Mono className="truncate">{kb.folder}</Mono>
+                            {kb.status === 'disabled' && <Muted>· Off</Muted>}
+                        </p>
+                        {kb.description && <p className="mt-1 max-w-[70ch] text-sm text-text-muted">{kb.description}</p>}
+                    </div>
                 </div>
                 {host.canEdit && (
                     <div className="flex flex-wrap gap-2">
@@ -509,6 +582,30 @@ function BaseDetail({
                 )}
             </div>
 
+            <div><StatStrip
+                size="sm"
+                label={`${kb.name} at a glance`}
+                cells={[
+                    {
+                        label: 'Documents',
+                        value: total.toLocaleString(),
+                        sub: [inProgress && `${inProgress} in progress`, failed && `${failed} failed`].filter(Boolean).join(' · ') || undefined,
+                        dot: failed ? 'danger' : inProgress ? 'machine' : undefined,
+                    },
+                    {
+                        label: 'This month',
+                        value: formatUsd(spent),
+                        sub: cap != null ? `of a ${formatUsd(cap)} budget` : 'Indexing and searches',
+                        dot: cap != null && spent >= cap ? 'danger' : undefined,
+                    },
+                    {
+                        label: 'Finds the answer',
+                        value: hit5 == null ? '—' : `${Math.round(hit5 * 100)}%`,
+                        sub: hit5 == null ? 'Not measured' : 'In the top 5, last evaluation',
+                    },
+                ]}
+            /></div>
+
             {build && <RebuildLine build={build} onRetry={host.canEdit ? retryRebuild : undefined} />}
 
             {host.canEdit && (
@@ -528,14 +625,17 @@ function BaseDetail({
                         onDragLeave={() => setDragging(false)}
                         onDrop={e => { e.preventDefault(); setDragging(false); send(e.dataTransfer.files); }}
                         className={cn(
-                            'rounded-lg border border-dashed px-4 py-3 text-sm text-text-muted transition-colors',
-                            dragging ? 'border-accent bg-accent-subtle/30' : 'border-border',
+                            'flex items-start gap-2.5 rounded-lg border border-dashed px-3.5 py-2.5 text-sm text-text-muted transition-colors',
+                            dragging ? 'border-accent bg-accent-subtle text-text' : 'border-border bg-surface-2/60',
                         )}
                     >
-                        Drop files here to add them to <span className="font-mono">{kb.folder}</span>. Documents, spreadsheets,
-                        slides, email, web pages and code are read{host.ocr
-                            ? ', and scanned pages and images by OCR.'
-                            : '. Scanned pages and images are not: this install has no OCR.'}
+                        <Upload className="mt-0.5 size-4 shrink-0 text-text-faint" aria-hidden />
+                        <span>
+                            Drop files here to add them to <span className="font-mono">{kb.folder}</span>. Documents, spreadsheets,
+                            slides, email, web pages and code are read{host.ocr
+                                ? ', and scanned pages and images by OCR.'
+                                : '. Scanned pages and images are not: this install has no OCR.'}
+                        </span>
                     </div>
                 </>
             )}
@@ -561,76 +661,120 @@ function BaseDetail({
                 </ul>
             )}
 
-            {host.webSources && kb.web.sources.length > 0 && (
-                <WebSources kb={kb} crawls={crawls} notify={notify} onChanged={() => { refresh(); onChanged(); }} />
-            )}
-
             <TestSearch kb={kb} />
-            <Costs kb={kb} docs={docs} />
-            {host.evaluate && <Evaluate kb={kb} notify={notify} />}
 
-            <div className="flex items-center justify-between gap-3">
-                <Label>{docs ? count(shown.length, 'document') : 'Documents'}</Label>
-                <Select size="sm" value={filter} onChange={setFilter} options={statuses} aria-label="Filter by status" />
+            <div className="mb-0 space-y-3 border-t border-border pb-5 pt-5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <h3 className="text-section text-text">{docs ? count(shown.length, 'document') : 'Documents'}</h3>
+                {present.length > 1 && (
+                    <div role="group" aria-label="Show documents" className="flex flex-wrap items-center gap-1.5">
+                        {[{ value: 'all' as const, label: 'All', n: docs?.length ?? 0, icon: null }, ...present.map(k => ({ ...k, n: kinds[k.value] }))].map(k => (
+                            <button
+                                key={k.value}
+                                type="button"
+                                aria-pressed={kind === k.value}
+                                onClick={() => setKind(k.value)}
+                                className={cn(
+                                    'inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-[13px] font-medium transition-colors',
+                                    kind === k.value
+                                        ? 'border-transparent bg-text text-bg'
+                                        : 'border-border text-text-muted hover:border-border-strong hover:text-text',
+                                )}
+                            >
+                                {k.icon && <k.icon className="size-3.5" aria-hidden />}
+                                {k.label}
+                                <span className="text-[11.5px] tabular-nums opacity-70">{k.n}</span>
+                            </button>
+                        ))}
+                    </div>
+                )}
+                <span className="hidden flex-1 sm:block" />
+                <div className="w-44">
+                    <Select size="sm" value={filter} onChange={setFilter} options={statuses} aria-label="Filter by status" />
+                </div>
             </div>
 
             {docs === null ? (
                 <div className="flex justify-center py-8"><Spinner /></div>
             ) : shown.length === 0 ? (
-                <EmptyState title={docs.length ? 'No documents with this status' : 'No documents yet'}>
+                <EmptyState title={docs.length ? (filter !== 'all' ? 'No documents with this status' : 'No documents of this kind') : 'No documents yet'}>
                     {docs.length || !host.canEdit ? null : 'Upload files, or add them to the folder in the Vault.'}
                 </EmptyState>
             ) : (
-                <Table density="compact" minWidth="36rem">
-                    <THead>
-                        <TR hover={false}>
-                            <TH width="full">File</TH>
-                            <TH width="min">Status</TH>
-                            <TH width="min" align="right">Chunks</TH>
-                            <TH width="min">Updated</TH>
-                            {host.canEdit && <TH width="min"><span className="sr-only">Actions</span></TH>}
-                        </TR>
-                    </THead>
-                    <TBody>
-                        {shown.map(d => (
-                            <TR key={d.id} selected={open === d.id}>
-                                <TD>
+                <div role="table" aria-label="Documents" aria-rowcount={shown.length + 1}>
+                    <div role="row" className={cn(DOC_GRID, host.canEdit ? DOC_COLS_EDIT : DOC_COLS, 'h-8 border-b border-border text-xs font-medium text-text-faint')}>
+                        <span role="columnheader" aria-label="Status" />
+                        <span role="columnheader">File</span>
+                        <span role="columnheader" className="hidden text-right sm:block">Chunks</span>
+                        <span role="columnheader" className="hidden text-right sm:block">Updated</span>
+                        {host.canEdit && <span role="columnheader" aria-label="Actions" />}
+                    </div>
+                    {shown.map(d => {
+                        const path = inBase(d.path, kb.folder);
+                        const Icon = SOURCES.find(k => k.value === sourceKind(d))!.icon;
+                        const status = STATUS[d.status] ?? { label: d.status, tone: 'neutral' as const };
+                        return (
+                            <div
+                                key={d.id}
+                                role="row"
+                                className={cn(
+                                    DOC_GRID, host.canEdit ? DOC_COLS_EDIT : DOC_COLS,
+                                    'relative min-h-[50px] border-b border-border transition-colors hover:bg-row-hover',
+                                    open === d.id && 'bg-row-hover',
+                                    // The row draws the focus ring for its stretched control, as the runs list does.
+                                    'has-[[data-row-open]:focus-visible]:outline has-[[data-row-open]:focus-visible]:outline-2',
+                                    'has-[[data-row-open]:focus-visible]:-outline-offset-2 has-[[data-row-open]:focus-visible]:outline-accent',
+                                )}
+                            >
+                                <span role="cell" className="flex items-center">
+                                    <span aria-hidden className={cn('inline-block size-2 rounded-full', DOC_DOT[d.status] ?? 'bg-text-faint')} />
+                                </span>
+                                <span role="cell" className="min-w-0 py-2">
                                     <button
                                         type="button"
+                                        data-row-open
+                                        data-no-focus-ring
                                         onClick={() => setOpen(d.id)}
-                                        aria-label={`Report for ${inBase(d.path, kb.folder)}`}
-                                        className="block max-w-full truncate text-left font-mono text-xs text-text hover:underline"
+                                        aria-label={`Report for ${path}`}
+                                        title={path}
+                                        className="flex w-full min-w-0 items-center gap-2 text-left text-sm font-medium text-text after:absolute after:inset-0 after:content-['']"
                                     >
-                                        {inBase(d.path, kb.folder)}
+                                        <Icon className="size-3.5 shrink-0 text-text-faint" aria-hidden />
+                                        <span className="truncate">{path}</span>
                                     </button>
-                                    {d.source === 'web' && d.source_url && <WebLink url={d.source_url} className="flex" />}
-                                    {d.status_reason && (
-                                        <span className="block truncate text-xs text-text-faint">
-                                            {REASONS[d.status_reason] ?? d.status_reason}
-                                        </span>
-                                    )}
+                                    <span className="flex min-w-0 items-center gap-1.5 text-xs text-text-faint">
+                                        <span className={cn('shrink-0', status.tone === 'danger' && 'font-medium text-danger')}>{status.label}</span>
+                                        {d.status_reason && <span className="truncate">· {REASONS[d.status_reason] ?? d.status_reason}</span>}
+                                        {d.source === 'web' && d.source_url && (
+                                            <><span aria-hidden>·</span><WebLink url={d.source_url} className="relative z-10 min-w-0" /></>
+                                        )}
+                                    </span>
                                     {d.progress && WORKING.has(d.status) && (
-                                        <DocProgress progress={d.progress} name={inBase(d.path, kb.folder)} />
+                                        <DocProgress progress={d.progress} name={path} />
                                     )}
-                                </TD>
-                                <TD nowrap><StatusBadge status={d.status} /></TD>
-                                <TD align="right" nowrap>{d.chunks ?? '—'}</TD>
-                                <TD nowrap><Muted>{when(d.updated_at)}</Muted></TD>
+                                </span>
+                                <span role="cell" className="hidden whitespace-nowrap text-right text-[13px] tabular-nums text-text-muted sm:block">{d.chunks ?? '—'}</span>
+                                <span role="cell" className="hidden whitespace-nowrap text-right text-[13px] tabular-nums text-text-muted sm:block">{when(d.updated_at)}</span>
                                 {host.canEdit && (
-                                    <TD nowrap>
-                                        <TableActions>
-                                            <IconButton size="sm" label={`Retry ${inBase(d.path, kb.folder)}`} icon={RotateCcw}
-                                                disabled={!RESTING.has(d.status)} onClick={() => retry(d)} />
-                                            <IconButton size="sm" tone="danger" label={`Delete ${inBase(d.path, kb.folder)}`}
-                                                icon={Trash2} disabled={d.status === 'deleting'} onClick={() => setRemoving(d)} />
-                                        </TableActions>
-                                    </TD>
+                                    <span role="cell" className="relative z-10 flex justify-end gap-0.5">
+                                        <IconButton size="sm" label={`Retry ${path}`} icon={RotateCcw}
+                                            disabled={!RESTING.has(d.status)} onClick={() => retry(d)} />
+                                        <IconButton size="sm" tone="danger" label={`Delete ${path}`}
+                                            icon={Trash2} disabled={d.status === 'deleting'} onClick={() => setRemoving(d)} />
+                                    </span>
                                 )}
-                            </TR>
-                        ))}
-                    </TBody>
-                </Table>
+                            </div>
+                        );
+                    })}
+                </div>
             )}
+            </div>
+
+            {host.webSources && kb.web.sources.length > 0 && (
+                <WebSources kb={kb} crawls={crawls} notify={notify} onChanged={() => { refresh(); onChanged(); }} />
+            )}
+            <Costs kb={kb} docs={docs} />
+            {host.evaluate && <Evaluate kb={kb} notify={notify} onScore={setHit5} />}
 
             <ReportDrawer
                 doc={detail}
@@ -855,6 +999,7 @@ function WebSources({
 
     return (
         <Section
+            variant="plain"
             title="Web sources"
             description={kb.web.recrawl_days > 0
                 ? `Fetched again every ${count(kb.web.recrawl_days, 'day')}, respecting each site's robots.txt.`
@@ -986,6 +1131,7 @@ function Costs({ kb, docs }: { kb: KnowledgeBase; docs: KnowledgeDocument[] | nu
 
     return (
         <Section
+            variant="plain"
             title="Costs"
             description="What this knowledge base has cost this month: indexing and searches."
             summary={<Muted>{money(spent)}{cap != null ? ` of ${money(cap)}` : ''} this month</Muted>}
@@ -1062,7 +1208,7 @@ function TestSearch({ kb }: { kb: KnowledgeBase }) {
 
     const trace = result?.trace;
     return (
-        <Section title="Test search" description="Ask what an agent would ask, and see the passages it would get.">
+        <Section variant="plain" defaultOpen title="Test search" description="Ask what an agent would ask, and see the passages it would get.">
             <form onSubmit={run} className="flex gap-2">
                 <Input
                     type="search"
@@ -1097,7 +1243,7 @@ function TestSearch({ kb }: { kb: KnowledgeBase }) {
                                     .filter(Boolean).join(' · ');
                                 return (
                                     <li key={hit.chunk_id} className="flex gap-3 text-sm">
-                                        <span className="font-mono text-xs text-text-faint" translate="no">{hit.label}</span>
+                                        <span className="inline-grid h-[18px] min-w-[22px] shrink-0 place-items-center rounded-[5px] bg-accent-subtle px-1.5 text-[11px] font-semibold text-accent-ink" translate="no">{hit.label}</span>
                                         <div className="min-w-0 flex-1 space-y-1">
                                             <div className="flex flex-wrap items-baseline justify-between gap-x-3">
                                                 <span className="min-w-0 truncate font-mono text-xs text-text">{where}</span>

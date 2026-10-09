@@ -26,7 +26,7 @@ import { RetrievalTrace } from '@/components/RetrievalTrace';
 import { count } from '@/lib/copy';
 import { cn } from '@/lib/cn';
 import {
-    DRAFT_DROPPED, EVAL_KINDS, formatUsd, getQueryTrace, inBase, knowledgeApi,
+    DRAFT_DROPPED, EVAL_KINDS, formatUsd, getQueryTrace, inBase, knowledgeApi, servedHit5,
     type EvalCase, type EvalCaseKind, type EvalConfigResult, type EvalDraft, type EvalEstimate,
     type EvalQuery, type EvalRun, type EvalRunRequest, type EvalRunSummary, type EvalScores, type EvalSet,
     type EvalSetSummary, type KnowledgeBase, type SearchTrace,
@@ -107,7 +107,12 @@ function useEstimate(kbId: string, body: Parameters<typeof knowledgeApi.eval.est
 
 // ── the section ───────────────────────────────────────────────────────────────
 
-export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) {
+export function Evaluate({ kb, notify, onScore }: {
+    kb: KnowledgeBase;
+    notify: Notify;
+    /** The served index's top-5 rate from the selected set's latest run, or null: the base's "Finds the answer" (M2e). */
+    onScore?: (hit5: number | null) => void;
+}) {
     const { canEdit } = useKnowledgeHost();
     const [sets, setSets] = useState<EvalSetSummary[] | null>(null);
     const [setId, setSetId] = useState<string | null>(null);
@@ -198,14 +203,16 @@ export function Evaluate({ kb, notify }: { kb: KnowledgeBase; notify: Notify }) 
         }
     };
 
-    const latest = sets?.find(s => s.id === setId)?.last_run;
-    const served = latest?.results.find(r => r.config === 'served' && r.snapshot_id === latest.snapshots[0]?.snapshot_id);
-    const summary = served?.available
-        ? <Muted>Answer found in the top 5 for {pct(served.scores.hit_at['5'])} of questions</Muted>
+    const latest = sets?.find(s => s.id === setId);
+    const hit5 = latest ? servedHit5(latest) : null;
+    useEffect(() => { onScore?.(hit5); }, [hit5, onScore]);
+    const summary = hit5 != null
+        ? <Muted>Answer found in the top 5 for {pct(hit5)} of questions</Muted>
         : sets?.length ? <Muted>{count(sets.length, 'question set')}</Muted> : undefined;
 
     return (
         <Section
+            variant="plain"
             title="Evaluate"
             description="Test how well this knowledge base finds the answers to questions about its own documents."
             summary={summary}

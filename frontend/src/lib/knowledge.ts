@@ -612,6 +612,17 @@ export type EvalSetSummary = {
     last_run: EvalRunSummary | null;
 };
 export type EvalSet = EvalSetSummary & { cases: EvalCase[] };
+
+/**
+ * How often the index serving now put the answer in its top 5, from a question set's latest run: the base's
+ * "Finds the answer" (M2e). Null when the set has never run, or its run could not score the serving index.
+ */
+export function servedHit5(set: Pick<EvalSetSummary, 'last_run'>): number | null {
+    const run = set.last_run;
+    const served = run?.results.find(r => r.config === 'served' && r.snapshot_id === run.snapshots[0]?.snapshot_id);
+    const hit = served?.available ? served.scores.hit_at['5'] : undefined;
+    return hit == null ? null : hit;
+}
 export type EvalDraft = { kind: EvalCaseKind; question: string; reference_answer: string; evidence: EvalEvidence[]; overlap: number | null };
 export type EvalDrafts = { drafts: EvalDraft[]; model: string; dropped: Record<string, number>; saved: false };
 export type EvalDraftRequest = { model?: string; direct: number; paraphrase: number; multi_hop: number; set_id?: string; seed?: number };

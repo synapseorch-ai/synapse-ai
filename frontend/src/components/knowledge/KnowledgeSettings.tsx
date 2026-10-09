@@ -254,8 +254,8 @@ export function KnowledgeSettings({
                     />
                 </Field>
 
-                <fieldset className="space-y-4">
-                    <legend className="mb-1 text-sm font-semibold text-text">Search</legend>
+                <div className="border-t border-border pt-5"><fieldset className="space-y-4">
+                    <legend className="mb-1 text-section text-text">Search</legend>
                     <Muted className="block">Applies to the next search.</Muted>
                     <div className="grid gap-4 sm:grid-cols-2">
                         <Field label="Passages per search" hint="1–50.">
@@ -309,7 +309,7 @@ export function KnowledgeSettings({
                                 onChange={v => setIn('retrieval', 'max_context_tokens', v ?? 6000)} aria-label="Context limit (tokens)" />
                         </Field>
                     </div>
-                    <Section title="Fusion and candidates" description="How the keyword and meaning searches are combined.">
+                    <Section variant="plain" title="Fusion and candidates" description="How the keyword and meaning searches are combined.">
                         <div className="grid gap-4 sm:grid-cols-2">
                             <Field label="Keyword weight">
                                 <NumberInput value={draft.fusion.weights.lexical ?? 1} min={0} step={0.1}
@@ -329,10 +329,10 @@ export function KnowledgeSettings({
                             </Field>
                         </div>
                     </Section>
-                </fieldset>
+                </fieldset></div>
 
-                <fieldset className="space-y-4">
-                    <legend className="mb-1 text-sm font-semibold text-text">Index</legend>
+                <div className="border-t border-border pt-5"><fieldset className="space-y-4">
+                    <legend className="mb-1 text-section text-text">Index</legend>
                     <Muted className="block">Changing these rebuilds the index.</Muted>
                     <div className="grid gap-4 sm:grid-cols-2">
                         <Field label="Embedding model" hint="Search by meaning. Without one, words only.">
@@ -413,10 +413,10 @@ export function KnowledgeSettings({
                             </Field>
                         )}
                     </div>
-                </fieldset>
+                </fieldset></div>
 
-                <fieldset className="space-y-4">
-                    <legend className="mb-1 text-sm font-semibold text-text">Budget and access</legend>
+                <div className="border-t border-border pt-5"><fieldset className="space-y-4">
+                    <legend className="mb-1 text-section text-text">Budget and access</legend>
                     <Field
                         label="Monthly budget (USD)"
                         hint={`${usd(spent)} spent this month${cap != null ? `; ${usd(Math.max(0, cap - spent))} left` : ''}. At the budget, indexing pauses and searches use words only. Empty: no budget.`}
@@ -431,7 +431,7 @@ export function KnowledgeSettings({
                         </div>
                         <Switch checked={draft.visitor_access} onChange={v => set('visitor_access', v)} label="Visitors may search it" />
                     </div>
-                </fieldset>
+                </fieldset></div>
 
                 {rebuilds && (
                     <div role="status" className="rounded-md border border-border bg-surface-2/50 px-3 py-2.5 text-sm">
