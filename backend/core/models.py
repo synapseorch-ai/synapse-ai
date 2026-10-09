@@ -3,7 +3,7 @@ Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from core.images import checked_images
 
@@ -23,6 +23,10 @@ class ChatRequest(BaseModel):
     # comment and in `[:5]` slices inside each provider's content builder, so
     # a caller reaching the API directly was bounded by nothing at all.
     images: list[str] = []
+    #: A host's own names for `images` (cloud's attachment keys), set by the
+    #: worker that resolved them — never by a caller: a private attribute is
+    #: not a field, so no request body can set it (F395).
+    _image_refs: list[str] | None = PrivateAttr(default=None)
 
     _check_images = checked_images()
 

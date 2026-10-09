@@ -125,12 +125,15 @@ async def run_orchestration_job(
     webhook_secret: str | None = None,
     api_key_id: str | None = None,
     images: list | None = None,
+    image_refs: list | None = None,
 ) -> dict:
     """Pull an orchestration definition from the store, run it, publish events.
 
     `images` are the attachments this run starts with — see
     `WorkerEngineAdapter.run` for why they travel on the engine and never in
-    `initial_state`.
+    `initial_state`. `image_refs` are the enqueuer's own names for them (cloud:
+    its attachment keys), kept on the run in their place for after a pause
+    (F395); without them the run keeps the images in the blob store.
 
     There is deliberately no `tenant_id` parameter. It used to be taken from
     the job payload and written straight onto the run row, which meant any
@@ -236,6 +239,7 @@ async def run_orchestration_job(
                 session_id=session_id,
                 initial_state=initial_state,
                 images=images,
+                image_refs=image_refs,
             )
 
         # Deliver webhook if requested
@@ -610,6 +614,7 @@ async def run_agent_chat_job(
     webhook_url: str | None = None,
     webhook_secret: str | None = None,
     resume_state: dict | None = None,
+    image_refs: list | None = None,
     expand_mentions: bool = False,
     visitor: dict | None = None,
 ) -> dict:
@@ -730,6 +735,9 @@ async def run_agent_chat_job(
             agent_id=agent_id,
             images=images or [],
         )
+        # The enqueuer's names for the images (F395): a workflow agent's run
+        # keeps them, not the images, for after a pause. Never a request field.
+        chat_request._image_refs = list(image_refs or []) or None
         # The last turn-boundary snapshot, and whether this turn stopped to ask
         # a person something. Both are read after `_consume` returns, which is
         # why they are declared out here.

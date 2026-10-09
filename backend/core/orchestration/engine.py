@@ -15,6 +15,7 @@ from core.config import ORCH_GLOBAL_TIMEOUT_MIN
 from core.models_orchestration import Orchestration, OrchestrationRun, StepConfig, StepType
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
+from . import run_images
 from .run_error import failure_reason, run_error, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key
 from .state import SharedState
@@ -172,6 +173,10 @@ class OrchestrationEngine:
         #: per run, checkpointed at every step boundary and fed to the memory
         #: summariser. Fine for a model name, not for 20 MB of image.
         self.images: list[str] = []
+        #: The host's own references for `images` (cloud: chat's attachment
+        #: keys), kept on the run in their place; None keeps the images
+        #: themselves in the blob store (`run_images`, F395).
+        self.image_refs: list[str] | None = None
         #: Who called this run when it runs nested — `{workflow, step, goal}` —
         #: for its model steps' system text (F252). Rides on the engine, not in
         #: shared state, for the reason `images` does; the parent hands it over
@@ -263,6 +268,14 @@ class OrchestrationEngine:
             # Beside the run's time and failure reason — never a state key,
             # which every run view and prompt would carry (F261).
             run.step_progress[ACTIVE_TIME_KEY] = {"turn": dict(self.conversation_turn)}
+        if self.images and self.depth == 0:
+            # Kept for after a pause (F395), by reference: a resume builds a new
+            # engine, and its steps would otherwise see only the answer's images.
+            # A nested run is handed its parent's again on every resume.
+            refs = await run_images.keep(run_id, self.images, self.image_refs)
+            if refs:
+                run.step_progress[ACTIVE_TIME_KEY] = {
+                    **(run.step_progress.get(ACTIVE_TIME_KEY) or {}), run_images.REFS_KEY: refs}
         state = SharedState(run)
 
         # Initial checkpoint: make the run visible to /runs listings and
@@ -718,8 +731,10 @@ class OrchestrationEngine:
         if run.status == "completed":
             # Nothing resumes a completed run, so it has no budget left to
             # count; a finished run leaves no progress behind. A failed or
-            # cancelled one keeps its count for a Replay to judge.
-            run.step_progress.pop(ACTIVE_TIME_KEY, None)
+            # cancelled one keeps its count for a Replay to judge — and its
+            # images (F395).
+            if (run.step_progress.pop(ACTIVE_TIME_KEY, None) or {}).get(run_images.REFS_KEY):
+                await run_images.forget(run.run_id)
         else:
             stamp()
         await state.checkpoint()
@@ -805,7 +820,8 @@ class OrchestrationEngine:
         in-flight step never reached `step_history`, so it re-executes from
         `current_step_id` like a cancelled run's. Only a caller that knows the
         previous attempt is gone may say so — a live run is `running` too.
-        `images` are the attachments the job still carries; nothing persists them.
+        `images` are the attachments the job still carries; the run's own come
+        back from where it kept them (F395), and these join them.
 
         Mid-node continuity: agent/loop/parallel executors checkpoint private
         progress keys in shared_state (_step_progress_*, _loop_progress_*,
@@ -833,7 +849,8 @@ class OrchestrationEngine:
         orch = Orchestration.model_validate(orch_data)
         apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
         engine = cls(orch, server_module)
-        engine.images = list(images or [])
+        kept_refs = (run.step_progress.get(ACTIVE_TIME_KEY) or {}).get(run_images.REFS_KEY)
+        engine.images = run_images.joined(await run_images.load(run_id, kept_refs), images)
         engine.global_variables = await engine._load_global_variables()
         engine.agent_names = await engine._load_agent_names()
 
@@ -859,6 +876,9 @@ class OrchestrationEngine:
         # way the reason it stopped is not this attempt's (F257).
         if not interrupted:
             run.step_progress.pop(ACTIVE_TIME_KEY, None)
+            if kept_refs:
+                # Its images are the run's, not this attempt's (F395).
+                run.step_progress[ACTIVE_TIME_KEY] = {run_images.REFS_KEY: kept_refs}
         else:
             set_run_error(run, None)
 
@@ -884,10 +904,9 @@ class OrchestrationEngine:
         definition — and hands the rest to `resume_paused`, which the fleet's
         adapter calls with the definition it already has.
 
-        `images` are the attachments sent *with the answer*, not the ones the
-        run started with — those are not persisted anywhere, by design, so a
-        step re-entered after a pause sees only what the person attached to
-        their reply.
+        `images` are the attachments sent *with the answer*. The ones the run
+        started with come back from where it kept them (F395, `resume_paused`),
+        and the answer's join them: a step after the pause sees both.
 
         `depth` is the nesting depth of the run being resumed. A parent resuming
         the sub-orchestration it waits on passes its own plus one, so the child
@@ -943,6 +962,11 @@ class OrchestrationEngine:
         # against `timeout_minutes` (F258). Set before a nested sub-run is
         # resumed, so the work it does counts for this run too.
         self._resumed_at = time.time()
+        # The images the run started with, then the answer's (F395). Before a
+        # nested sub-run is resumed, which is handed them through a step that
+        # passes them.
+        kept = (run.step_progress.get(ACTIVE_TIME_KEY) or {}).get(run_images.REFS_KEY)
+        self.images = run_images.joined(await run_images.load(run.run_id, kept), self.images)
         # Answered: no longer waiting on a channel. Written at the next checkpoint;
         # a nested step that pauses again records its channel again.
         run.shared_state.pop(HUMAN_CHANNEL_KEY, None)

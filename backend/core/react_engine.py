@@ -3044,6 +3044,7 @@ async def run_orchestrator_agent(
     run_id: str | None = None,
     with_history: bool = False,
     images: list[str] | None = None,
+    image_refs: list[str] | None = None,
 ):
     """Run an Orchestrator agent's orchestration, yielding the engine's events.
 
@@ -3082,6 +3083,8 @@ async def run_orchestrator_agent(
         orch = Orchestration.model_validate(orch_data)
         engine = OrchestrationEngine(orch, server_module)
         engine.images = list(images or [])
+        # The host's names for them, kept on the run for after a pause (F395).
+        engine.image_refs = list(image_refs) if image_refs else None
         if with_history and session_id:
             # The turn this run owes its conversation (F261). Saved here when
             # the run ends in this request; if a person has to answer first,
@@ -3119,7 +3122,7 @@ async def run_orchestrator_agent(
         yield {"type": "error", "message": f"Orchestration error: {e}"}
 
 
-async def _resume_workflow_run(resume_state: dict, server_module):
+async def _resume_workflow_run(resume_state: dict, server_module, images: list[str] | None = None):
     """Carry on the run a chat's approval answered (F290), yielding its events.
 
     Only while it is still waiting on a person and nothing is running it — an
@@ -3143,7 +3146,8 @@ async def _resume_workflow_run(resume_state: dict, server_module):
         return
     answer = {"approve": bool(call.get("approved")), "reason": call.get("reason") or ""}
     async for event in stream_engine_events(
-        OrchestrationEngine.resume(run_id, answer, server_module), run_id,
+        # The answer's images join the run's own, which it kept (F395).
+        OrchestrationEngine.resume(run_id, answer, server_module, images=images), run_id,
     ):
         yield event
 
@@ -3233,11 +3237,13 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             # An answer to a call the workflow's own run is waiting on (F290):
             # that run carries on. Starting the workflow again left it paused
             # for ever and asked the same question in a second run.
-            source = _resume_workflow_run(resume_state, server_module)
+            source = _resume_workflow_run(resume_state, server_module,
+                                          images=getattr(request, "images", None) or None)
         else:
             source = run_orchestrator_agent(
                 active_agent, user_message, server_module, session_id=session_id, with_history=True,
                 images=getattr(request, "images", None) or None,
+                image_refs=getattr(request, "_image_refs", None),
             )
         async for event in source:
             if event.get("type") == "orchestration_complete" and event.get("status") == "failed":

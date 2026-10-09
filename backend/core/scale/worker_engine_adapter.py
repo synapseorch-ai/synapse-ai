@@ -101,6 +101,7 @@ class WorkerEngineAdapter:
         session_id: str | None = None,
         initial_state: dict | None = None,
         images: list[str] | None = None,
+        image_refs: list[str] | None = None,
     ) -> str:
         """
         Run the orchestration and publish events to Redis.
@@ -118,9 +119,13 @@ class WorkerEngineAdapter:
         The in-process route sets `engine.images` directly, which is why this
         parameter did not exist until something ran a builder conversation on a
         worker instead.
+
+        `image_refs` are the host's own names for them (cloud's attachment
+        keys), which the run keeps for after a pause in their place (F395).
         """
         engine = self._build_engine()
         engine.images = list(images or [])
+        engine.image_refs = list(image_refs) if image_refs else None
         final_status = "completed"
 
         async for event in engine.run(
@@ -162,9 +167,8 @@ class WorkerEngineAdapter:
         process may not have, and it publishes what the engine yields.
 
         `images` are the attachments sent *with the answer*, matching
-        `OrchestrationEngine.resume`. The ones the run started with are not
-        persisted anywhere, by design, so a step re-entered after a pause sees
-        only what the person attached to their reply.
+        `OrchestrationEngine.resume`. The ones the run started with come back
+        in `resume_paused`, from where the run kept them (F395).
         """
         from core.orchestration.state import SharedState
 

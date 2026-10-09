@@ -633,7 +633,10 @@ async def delete_orchestration_log(run_id: str):
     """Delete a specific orchestration log (and its event journal)."""
     from core.orchestration.logger import OrchestrationLogger
     from core.orchestration.journal import FileRunJournal
+    from core.orchestration import run_images
     deleted_journal = FileRunJournal.delete(run_id)
+    # The images it kept for a Replay go with its log (F395).
+    await run_images.forget(run_id)
     if OrchestrationLogger.delete_log(run_id) or deleted_journal:
         return {"status": "deleted", "run_id": run_id}
     raise HTTPException(status_code=404, detail="Log not found")

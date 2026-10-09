@@ -110,7 +110,8 @@ class TestANestedWorkflow:
         assert seen and not any(seen), seen
 
     async def test_a_nested_step_after_a_question_gets_what_was_sent_with_the_answer(self, fake_llm):
-        """Parked runs keep no images (by design): the answer's own reach the child's step."""
+        """The answer's own images reach the child's step (a run started with none keeps none;
+        one started with some keeps them too since F395 — test_a_parked_run_keeps_its_images)."""
         from core.models_orchestration import Orchestration
         from core.orchestration.engine import OrchestrationEngine
 
