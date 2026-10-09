@@ -417,8 +417,11 @@ class WorkerServerModule:
             from core.scale.config import get_scale_config
 
             if get_scale_config().postgres_url:
+                from core.cache import response_cache
                 from core.memory import MemoryStore
                 self.memory_store = MemoryStore()
+                # The step's semantic cache keeps its collections here (F393).
+                response_cache.set_memory_store(self.memory_store)
         except Exception:
             pass
 

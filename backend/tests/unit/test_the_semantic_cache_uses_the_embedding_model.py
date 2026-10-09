@@ -219,3 +219,36 @@ class TestWhatIsEmbedded:
         await _put("s1", "hello", "from two", model="openai.gpt-5")
         assert await _ask("s1", "hello", model="openai.gpt-5-mini") == "from one"
         assert await _ask("s1", "hello", model="openai.gpt-5") == "from two"
+
+
+class TestOnAFleetWorker:
+    """F393: a single-tenant scale worker builds its own `MemoryStore`
+    (`WorkerServerModule._attach_memory_store`), and nothing read it — the cache
+    looked only at `core.server.memory_store`, which only the API process sets.
+    A step's Semantic match was exact-only on every OSS worker ("this process has
+    no vector store")."""
+
+    @pytest.fixture
+    def worker_store(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core import server
+        from core.scale import config as scale_config
+        from core.scale.worker_server_module import WorkerServerModule
+
+        monkeypatch.setattr(server, "memory_store", None, raising=False)
+        monkeypatch.setattr(scale_config, "get_scale_config", lambda: SimpleNamespace(postgres_url="postgresql://w"))
+        module = WorkerServerModule.__new__(WorkerServerModule)
+        module.memory_store = None
+        rc.set_response_cache_backend(None)
+        _forget()
+        module._attach_memory_store()
+        yield module.memory_store
+        rc.set_memory_store(None)
+        _forget()
+
+    async def test_the_workers_own_store_is_the_caches(self, worker_store, embeds, ollama_asked):
+        assert worker_store is not None
+        await _use(EMBED_A)
+        await _put("s1", "What is the capital of France?", "Paris")
+        assert await _ask("s1", "what is the capital of france") == "Paris"

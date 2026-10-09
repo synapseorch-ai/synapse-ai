@@ -189,8 +189,23 @@ def forget_local_state() -> None:
     _embedded.clear()
 
 
+#: A process's own vector store, when it is not the API's: a single-tenant
+#: scale worker builds one (`WorkerServerModule._attach_memory_store`) on its
+#: own module, which nothing read — so Semantic match was exact-only on every
+#: OSS worker (F393). A multi-tenant process sets none: cloud uses `_backend`.
+_memory_store = None
+
+
+def set_memory_store(store) -> None:
+    """Give this process's semantic cache its vector store. None falls back to the API's."""
+    global _memory_store
+    _memory_store = store
+
+
 def _get_memory_store():
-    """Resolve the live MemoryStore from server module (initialised at startup)."""
+    """This process's vector store: a worker's own, else the API's (set at startup)."""
+    if _memory_store is not None:
+        return _memory_store
     try:
         from core import server as _server
         return getattr(_server, "memory_store", None)

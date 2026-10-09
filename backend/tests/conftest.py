@@ -192,6 +192,18 @@ def _isolate_knowledge_seams():
     events.knowledge_observers.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_process_seams():
+    """A worker's vector store (F393) and a host's run images (F395) back to their
+    defaults after each test: building a worker module sets the first."""
+    from core.cache import response_cache
+    from core.orchestration import run_images
+
+    yield
+    response_cache.set_memory_store(None)
+    run_images.set_run_images(None)
+
+
 # ── chat turn isolation (autouse) ────────────────────────────────────────────
 @pytest_asyncio.fixture(autouse=True)
 async def _isolate_chat_turns(_isolate_run_checkpoints):
