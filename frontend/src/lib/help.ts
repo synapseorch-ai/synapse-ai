@@ -256,9 +256,9 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         steps: [
             'Click “Upload files” or drop files on the dashed area. Documents, slides, spreadsheets and code are read; scanned pages are not.',
             'Click “Add web pages”, paste the addresses, and choose pages, sitemaps or whole sites.',
-            'Click a file’s name for its report: what happened at each stage, and any warnings. “Retry” reads it again.',
-            'Open “Test search” and ask what an agent would ask, to see the passages it would get.',
-            'Click “Settings” for the preset, search and budget; “Costs” shows this month’s spend.',
+            'Click a file for its report: what happened at each stage, and any warnings. “Retry” reads it again. “Files”, “Web pages” and “Records” show one kind.',
+            'Under the base’s numbers, ask in “Test search” what an agent would ask, to see the passages it would get.',
+            'Click “Settings” for the preset, search and budget; “Costs” shows this month’s spend, and “Evaluate” how often it finds the answer.',
         ],
         media: { id: 'knowledge/upload', clip: true, alt: 'Files dropped onto a knowledge base, each moving from Queued through Reading and Indexing to Indexed.' },
         guide: '/guides/knowledge/sources',

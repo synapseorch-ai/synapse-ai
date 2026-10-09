@@ -4963,6 +4963,88 @@ async def check_knowledge_dropzone(browser) -> str:
 
 
 @check
+async def check_knowledge_strip(browser) -> str:
+    """A base opens on its numbers (M2e): documents, this month against its budget, and how often its served index
+    finds the answer from the last evaluation; "Not measured" when no question set has run."""
+    async def strip(routes):
+        ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        for pattern, handler in routes:
+            await ctx.route(pattern, handler)
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+            box = page.locator("dl[aria-label='Smoke contracts at a glance']")
+            await box.wait_for(timeout=30_000)
+            await page.wait_for_timeout(1500)       # Evaluate reads its sets, then hands the score up
+            return " ".join((await box.inner_text()).split())
+        finally:
+            await ctx.close()
+
+    measured = await strip(_SMOKE_KB_ROUTES)
+    for want in ("Documents 2", "1 failed", "This month $1.25", "of a $5.00 budget", "Finds the answer 100%"):
+        if want not in measured:
+            raise AssertionError(f"the strip says {measured!r}, not {want!r}")
+    unmeasured = await strip(_SMOKE_KB_ROUTES + [("**/api/knowledge/bases/*/eval/sets", _answer([]))])
+    if "Finds the answer — Not measured" not in unmeasured:
+        raise AssertionError(f"with no question set the strip says {unmeasured!r}")
+    return "documents, this month of its budget, and 100% found (Not measured with no set)"
+
+
+@check
+async def check_knowledge_sources(browser) -> str:
+    """The documents are grouped by where they came from (M2e): pills for files and web pages, each with its count,
+    and a pill shows only the documents of its kind; the status filter stays beside them."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    for pattern, handler in _SMOKE_KB_ROUTES:
+        await ctx.route(pattern, handler)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        pills = page.get_by_role("group", name="Show documents")
+        await pills.wait_for(timeout=30_000)
+        said = " ".join((await pills.inner_text()).split())
+        if said != "All 9 Files 8 Web pages 1":
+            raise AssertionError(f"the pills say {said!r}")
+        await page.get_by_role("combobox", name="Filter by status").wait_for(timeout=5_000)
+        await pills.get_by_role("button", name=re.compile("^Web pages")).click()
+        reports = page.get_by_role("button", name=re.compile("^Report for "))
+        await page.wait_for_function("() => document.querySelectorAll('button[aria-label^=\"Report for \"]').length === 1",
+                                     timeout=5_000)
+        only = await reports.first.get_attribute("aria-label")
+        if "install.md" not in (only or ""):
+            raise AssertionError(f"Web pages shows {only!r}")
+        if await pills.get_by_role("button", name=re.compile("^Web pages")).get_attribute("aria-pressed") != "true":
+            raise AssertionError("the Web pages pill is not marked pressed")
+        return "All 9 · Files 8 · Web pages 1; Web pages shows the one fetched page"
+    finally:
+        await ctx.close()
+
+
+@check
+async def check_knowledge_first(browser) -> str:
+    """The detail never opens empty (UX1): the first base opens by itself, its test search is ready without a click,
+    and the page fits the window on a laptop and a phone."""
+    seen = []
+    for width, height in (WIDE, PHONE):
+        ctx = await browser.new_context(viewport={"width": width, "height": height})
+        for pattern, handler in _SMOKE_KB_ROUTES:
+            await ctx.route(pattern, handler)
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+            await page.get_by_role("heading", name="Smoke contracts", level=2).wait_for(timeout=30_000)
+            if not await page.get_by_role("searchbox", name="Search Smoke contracts").is_visible():
+                raise AssertionError(f"at {width}px the test search is not open")
+            wide = await page.evaluate("() => document.documentElement.scrollWidth - window.innerWidth")
+            if wide > 1:
+                raise AssertionError(f"at {width}px the page scrolls {wide}px sideways")
+            seen.append(str(width))
+        finally:
+            await ctx.close()
+    return f"the first base opens with its search ready at {' and '.join(seen)}px, no sideways scroll"
+
+
+@check
 async def check_knowledge_eval(browser) -> str:
     """A knowledge base's eval (V1, D168): the Run dialog is named, every control in it is named, it prices the
     run before anything starts, and Escape closes it without starting one."""
@@ -7359,7 +7441,7 @@ async def _kb_eval_drafts(page):
 
 
 async def _kb_test_search(page):
-    await page.get_by_role("button", name=re.compile("^Test search")).click()
+    # Test search starts open under the base's numbers (M2e): its field is there without a click.
     await page.get_by_role("searchbox", name="Search Smoke contracts").fill("what does hosting cost?")
     await page.get_by_role("button", name="Search", exact=True).click()
 
