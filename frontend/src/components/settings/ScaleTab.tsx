@@ -425,7 +425,7 @@ kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.13.0/keda
                         <div className="space-y-4">
                             <EnvGroup title="Required" rows={[
                                 ['REDIS_URL', 'redis://host:6379/0  or  redis+cluster://h1:6379,h2:6379'],
-                                ['SCALE_POSTGRES_URL', 'postgresql://user:pass@host:5432/dbname'],
+                                ['SCALE_POSTGRES_URL', 'postgresql://user:pass@db.example.com:5432/dbname'],
                             ]} />
                             <EnvGroup title="Worker tuning" rows={[
                                 ['WORKER_CONCURRENCY', '10 — max parallel jobs per worker'],
