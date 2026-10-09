@@ -45,3 +45,6 @@ export {
     cronWords, lastBucket, matchWorkflow, scheduleWords, sortWorkflows, triggerChip, urgencyOf, workflowRow, WORKFLOW_SORTS,
     type ScheduleLike, type TriggerChip, type WorkflowLastRun, type WorkflowListRow, type WorkflowSort,
 } from './workflowList';
+export { LogHead, LogKinds, LogList, RunWord } from './LogList';
+export { groupLogs, logBucket, logSize, matchLog, type LogGroup, type LogKind, type LogListRow, type LogRun } from './logList';
+export { compactedLines, Transcript } from './Transcript';
