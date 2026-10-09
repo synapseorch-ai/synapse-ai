@@ -25,7 +25,12 @@ async def deploy_as_agent(orch_id: str) -> dict:
     if existing:
         return {"status": "already_deployed", "agent_id": existing["id"]}
 
-    agent_id = f"orch_agent_{orch_id}"
+    # Where the store mints ids (F431), the agent's is minted like any other: a
+    # derived one is an id the caller chose. Where it does not, the derived id
+    # makes two deploys at once one upsert of the same row.
+    from core.store.ids import minter_installed, new_id
+
+    agent_id = new_id("agent") if minter_installed() else f"orch_agent_{orch_id}"
     agent = {
         "id": agent_id,
         "name": orch_data["name"],

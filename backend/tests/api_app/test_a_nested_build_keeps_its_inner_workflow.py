@@ -24,14 +24,18 @@ async def builder():
 
 
 @pytest.fixture
-def ids(monkeypatch):
-    """Ids the script can name before the saver makes them: orch_t1, orch_t2, …"""
+def ids():
+    """Ids the script can name before the saver makes them (orch_t1, agent_t2, orch_t3),
+    through the store's minting, as an embedder installs it (F431)."""
+    from core.store.ids import set_id_minter
+
     counter = itertools.count(1)
-    monkeypatch.setattr("core.builder_tools._random_id", lambda prefix, length=7: f"{prefix}t{next(counter)}")
+    set_id_minter(lambda prefix: f"{prefix}_t{next(counter)}")
+    yield
+    set_id_minter(None)
 
 
-INNER, OUTER = "orch_t1", "orch_t2"
-INNER_AGENT = f"orch_agent_{INNER}"
+INNER, INNER_AGENT, OUTER = "orch_t1", "agent_t2", "orch_t3"
 
 SAVER = [
     tool_call("create_orchestration_skeleton", name="Vendor check", entry_step_id="step_check"),

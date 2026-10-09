@@ -17,6 +17,7 @@ from core.state_types import (
 )
 from core.store import collections
 from core.store.resources import load_mcp_servers
+from core.store.ids import new_id as _mint_id
 
 
 def _random_id(prefix: str, length: int = 7) -> str:
@@ -1556,10 +1557,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         agents = await load_user_agents()
         existing_ids = {a.get("id") for a in agents}
         # Guarantee uniqueness: the id is a primary key, and on cloud it is a
-        # global one. A millisecond timestamp collides under any concurrency.
-        new_id = _random_id("agent_", length=10)
+        # global one, minted the way cloud's routes mint (F431). A millisecond
+        # timestamp collides under any concurrency.
+        new_id = _mint_id("agent", length=10)
         while new_id in existing_ids:
-            new_id = _random_id("agent_", length=10)
+            new_id = _mint_id("agent", length=10)
         agent = {
             "id": new_id,
             "name": args["name"],
@@ -1607,9 +1609,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     errors.append({"index": i, "role": spec.get("role"), "error": too_long})
                     continue
                 # Guarantee uniqueness even when called repeatedly in the same millisecond.
-                new_id = _random_id("agent_", length=10)
+                new_id = _mint_id("agent", length=10)
                 while new_id in existing_ids:
-                    new_id = _random_id("agent_", length=10)
+                    new_id = _mint_id("agent", length=10)
                 existing_ids.add(new_id)
                 agent = {
                     "id": new_id,
@@ -1825,9 +1827,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if (refusal := await _refused("orchestration", 1)) is not None:
             return refusal
         existing_ids = {o.get("id") for o in await load_orchestrations()}
-        orch_id = _random_id("orch_")
+        orch_id = _mint_id("orch")
         while orch_id in existing_ids:
-            orch_id = _random_id("orch_")
+            orch_id = _mint_id("orch")
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         _normalize_state_schema_arg(args)
@@ -1903,9 +1905,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if (refusal := await _refused("orchestration", 1)) is not None:
             return refusal
         existing_ids = {o.get("id") for o in await load_orchestrations()}
-        orch_id = _random_id("orch_")
+        orch_id = _mint_id("orch")
         while orch_id in existing_ids:
-            orch_id = _random_id("orch_")
+            orch_id = _mint_id("orch")
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _normalize_state_schema_arg(args)
         orch = {
@@ -2435,8 +2437,6 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         ]
 
     elif tool_name == "create_schedule":
-        import uuid as _uuid
-
         from pydantic import ValidationError
 
         from core.models_schedule import ScheduleCreate
@@ -2478,7 +2478,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # person reads what it starts with and turns it on — `set_schedule_enabled`
         # when they ask the builder, or the Schedules screen.
         schedule["enabled"] = False
-        schedule["id"] = f"sched_{_uuid.uuid4().hex[:8]}"
+        schedule["id"] = _mint_id("sched", length=8)
         schedule["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         schedule["last_run_at"] = None
         try:

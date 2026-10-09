@@ -103,7 +103,7 @@ class TestIdsAreUnique:
         await S.seed_orchestrations([S.make_orchestration(id="orch_taken")])
         # Force the first draw to collide, so the retry loop is what saves us.
         draws = iter(["orch_taken", "orch_fresh"])
-        monkeypatch.setattr("core.builder_tools._random_id", lambda *a, **k: next(draws))
+        monkeypatch.setattr("core.builder_tools._mint_id", lambda *a, **k: next(draws))
 
         result = await call("create_orchestration", {
             "name": "New", "entry_step_id": "step_1",
@@ -1576,3 +1576,57 @@ class TestTheBuildersAnswerNamesWhatFinishBuildRemoved:
         assert "build_cleanup" in summary["input_keys"]
         assert "{state.build_cleanup}" in summary["prompt_template"]
         assert "never passed validation" in summary["prompt_template"]
+
+
+class TestTheBuilderMintsIdsTheStoresWay:
+    """F431 (C2, D200). The builder minted OSS-shaped ids (`orch_209xwc1`,
+    `orch_agent_orch_209xwc1`) into cloud tables whose `id` is a global key with
+    no org in it, where cloud's routes mint server-side. Every id the builder
+    writes comes from the store's minting, which an embedder installs."""
+
+    @pytest.fixture
+    def minted(self):
+        from core.store.ids import set_id_minter
+
+        handed: list[str] = []
+
+        def mint(prefix: str) -> str:
+            handed.append(f"{prefix}_minted{len(handed) + 1}")
+            return handed[-1]
+
+        set_id_minter(mint)
+        yield handed
+        set_id_minter(None)
+
+    async def test_every_row_the_builder_makes_takes_a_minted_id(self, server, minted):
+        skeleton = await call("create_orchestration_skeleton", {"name": "S", "entry_step_id": "step_end"}, server)
+        whole = await call("create_orchestration", {
+            "name": "W", "entry_step_id": "step_1",
+            "steps_json": json.dumps([{"id": "step_1", "name": "End", "type": "end"}]),
+        }, server)
+        one = await call("create_agent", {"name": "A", "description": "d", "type": "conversational",
+                                          "tools": [], "system_prompt": "p"}, server)
+        many = await call("create_agents", {"agents": [
+            {"role": "r", "name": "B", "description": "d", "type": "conversational", "tools": [],
+             "system_prompt": "p"}]}, server)
+        deployed = await call("deploy_orchestration", {"orch_id": whole["orchestration"]["id"]}, server)
+        schedule = await call("create_schedule", {
+            "name": "Mondays", "target_type": "orchestration", "target_id": whole["orchestration"]["id"],
+            "prompt": "Go", "schedule_type": "interval", "interval_value": 7, "interval_unit": "days",
+        }, server)
+
+        made = [skeleton["orchestration"]["id"], whole["orchestration"]["id"], one["agent"]["id"],
+                many["agents"][0]["id"], deployed["agent_id"], schedule["id"]]
+        assert made == minted
+        assert [m.split("_minted")[0] for m in made] == ["orch", "orch", "agent", "agent", "agent", "sched"]
+
+    async def test_without_a_minter_the_ids_keep_their_shapes(self, server):
+        whole = await call("create_orchestration", {
+            "name": "W", "entry_step_id": "step_1",
+            "steps_json": json.dumps([{"id": "step_1", "name": "End", "type": "end"}]),
+        }, server)
+        orch_id = whole["orchestration"]["id"]
+        deployed = await call("deploy_orchestration", {"orch_id": orch_id}, server)
+        assert orch_id.startswith("orch_") and len(orch_id) == len("orch_") + 7
+        # The derived id keeps a deploy idempotent where nothing mints.
+        assert deployed["agent_id"] == f"orch_agent_{orch_id}"
