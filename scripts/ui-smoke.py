@@ -9707,6 +9707,132 @@ async def check_workflowempty(browser) -> str:
     return "No workflows yet with a template link; the header keeps its three actions"
 
 
+# ── the widget (M2i) ──────────────────────────────────────────────────────────
+
+WIDGET_SHOP = "https://shop.uismoke.example"  # a site of its own; only localhost may be http
+
+
+def _smoke_widget(origins: list[str]) -> dict:
+    """A widget for the checks below, on the agent an existing widget already serves (a publishable one), or on the
+    first agent. The caller deletes it."""
+    widgets = api("/api/widgets")
+    widgets = widgets.get("widgets", widgets) if isinstance(widgets, dict) else widgets
+    agent = next((w["agent_id"] for w in widgets if w.get("agent_id")), None)
+    if not agent:
+        agents = api("/api/agents")
+        agents = agents.get("agents", agents) if isinstance(agents, dict) else agents
+        agent = agents[0]["id"]
+    made = api("/api/widgets", "POST", {"name": "uismoke widget", "agent_id": agent, "allowed_origins": origins,
+                                        "title": "Smoke help", "greeting": "Hi from the smoke test."})
+    return made.get("widget", made)
+
+
+async def _widget_page(browser, key: str, referer: str, scheme: str = "light"):
+    """The widget's own page, opened as a frame on `referer` would open it: the session is minted for that origin."""
+    ctx = await browser.new_context(viewport={"width": 400, "height": 620}, color_scheme=scheme)
+    page = await ctx.new_page()
+    await page.goto(f"{APP}/embed/{key}", referer=referer + "/", wait_until="domcontentloaded")
+    return ctx, page
+
+
+@check
+async def check_widgetcomposer(browser) -> str:
+    """The widget's composer has the product's shape (M2i): one field holding the text and one round button, Send or
+    Stop, both named. Shift+Enter is a new line, an Enter that ends an IME composition never sends, Enter sends, and
+    Stop asks the API to cancel. The chat's stream is stubbed; the session is the real one."""
+    widget = _smoke_widget([WIDGET_SHOP])
+    bad: list[str] = []
+    try:
+        ctx, page = await _widget_page(browser, widget["public_key"], WIDGET_SHOP)
+        try:
+            calls: list[str] = []
+            hold = asyncio.Event()
+
+            async def chat(route):
+                calls.append("chat")
+                if len(calls) > 1:
+                    await hold.wait()  # the second turn stays open, so Stop stands
+                body = 'data: {"type": "response", "content": "Smoke answer."}\n\ndata: {"type": "done"}\n\n'
+                try:
+                    await route.fulfill(status=200, content_type="text/event-stream", body=body)
+                except Exception:  # Stop aborted the held turn's request first
+                    pass
+
+            async def cancel(route):
+                calls.append("cancel")
+                hold.set()
+                await route.fulfill(status=202, content_type="application/json", body="{}")
+
+            await page.route("**/api/widget/chat", chat)
+            await page.route("**/api/widget/cancel", cancel)
+            box = page.get_by_role("textbox", name="Message")
+            await box.wait_for(timeout=15000)
+            shape = await box.evaluate("""(e) => {
+                const field = e.parentElement, send = field.querySelector('button');
+                const r = send.getBoundingClientRect(), f = field.getBoundingClientRect();
+                return {tag: e.tagName, name: send.getAttribute('aria-label'), w: r.width, h: r.height,
+                        round: getComputedStyle(send).borderRadius, inside: r.right <= f.right && r.top >= f.top};
+            }""")
+            if shape["tag"] != "TEXTAREA" or shape["name"] != "Send" or not shape["inside"] \
+                    or abs(shape["w"] - shape["h"]) > 1 or shape["round"] != "50%":
+                bad.append(f"the composer is {shape}")
+            user = page.locator("p[class*='fromUser']")
+            await box.fill("first line")
+            await box.press("Shift+Enter")
+            await box.type("second line")
+            if "\n" not in await box.input_value() or await user.count():
+                bad.append("Shift+Enter did not make a new line, or it sent")
+            await box.evaluate("e => e.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', keyCode: 229, "
+                               "isComposing: true, bubbles: true, cancelable: true}))")
+            await asyncio.sleep(0.3)
+            if await user.count():
+                bad.append("an Enter that ends an IME composition sent the message")
+            await box.press("Enter")
+            await page.get_by_text("Smoke answer.").wait_for(timeout=10000)
+            if await user.count() != 1 or "second line" not in await user.first.inner_text():
+                bad.append(f"Enter sent {await user.count()}")
+            await box.fill("hold on")
+            await page.get_by_role("button", name="Send").click()
+            stop = page.get_by_role("button", name="Stop")
+            await stop.wait_for(timeout=5000)
+            await stop.click()
+            for _ in range(30):
+                if "cancel" in calls:
+                    break
+                await asyncio.sleep(0.1)
+            if "cancel" not in calls:
+                bad.append("Stop never asked the API to cancel")
+            await page.get_by_role("button", name="Send").wait_for(timeout=10000)
+        finally:
+            await ctx.close()
+    finally:
+        api(f"/api/widgets/{widget['id']}", "DELETE")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "one field with a round Send and Stop; Shift+Enter, an IME Enter, Enter and Stop as the product's composer"
+
+
+@check
+async def check_widgetrefused(browser) -> str:
+    """A site not on the widget's list gets the refusal, in words, with no composer (M2i kept the rule as it was)."""
+    widget = _smoke_widget([WIDGET_SHOP])
+    try:
+        ctx, page = await _widget_page(browser, widget["public_key"], "https://elsewhere.uismoke.example")
+        try:
+            alert = page.locator("main[role=alert]")  # Next adds a route announcer, also an alert
+            await alert.wait_for(timeout=15000)
+            text = await alert.inner_text()
+            if "can’t load here" not in text or "elsewhere.uismoke.example" not in text:
+                raise AssertionError(f"the refusal reads {text!r}")
+            if await page.get_by_role("textbox", name="Message").count():
+                raise AssertionError("a refused page still offers the composer")
+        finally:
+            await ctx.close()
+    finally:
+        api(f"/api/widgets/{widget['id']}", "DELETE")
+    return "an unlisted origin is refused, in words"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
