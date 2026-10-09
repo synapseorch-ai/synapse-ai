@@ -50,14 +50,14 @@ export function ScheduleList({
     const gridStyle = { '--cols': cols, '--cols-phone': phoneCols } as React.CSSProperties;
     const grid = 'grid items-center gap-x-4 px-2.5 [grid-template-columns:var(--cols-phone)] lg:[grid-template-columns:var(--cols)]';
 
-    if (rows.length === 0) return <div className={className}>{empty}</div>;
-
     return (
         <div className={cn('grid gap-4', className)}>
+            {/* The search stays with nothing to search, as cloud's list kept it (D204). */}
             <div className="flex min-h-[34px] flex-wrap items-center gap-2">
                 <SearchInput value={query} onChange={setQuery} placeholder="Search schedules…" className="w-full max-w-none sm:w-72" />
                 {toolbar}
             </div>
+            {rows.length === 0 ? empty : (
             <div>
                 <div style={gridStyle} className={cn(grid, 'hidden h-8 border-b border-border text-xs font-medium text-text-faint lg:grid')}>
                     <span aria-hidden>Schedule</span>
@@ -80,6 +80,7 @@ export function ScheduleList({
                     </ul>
                 )}
             </div>
+            )}
         </div>
     );
 }
