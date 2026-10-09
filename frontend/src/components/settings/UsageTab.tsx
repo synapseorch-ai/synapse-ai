@@ -1,12 +1,14 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-    DollarSign, TrendingUp, Zap, BarChart3, RefreshCw, Trash2,
-    ChevronDown, ChevronUp, Clock, Activity, Cpu, Wand2,
-    AlertTriangle, CheckCircle2, Info, Plus, Save, X, Edit2, Check
+    Activity, Check, ChevronDown, Clock, Cpu, Plus, RefreshCw, Save, Shrink, Trash2, Wand2, X, Zap,
 } from 'lucide-react';
-import { Select } from '@/components/ui';
+import {
+    Badge, BarList, Button, ConfirmDialog, controlStyles, EmptyState, ErrorNote, IconButton, Section, Select,
+    Spinner, StatStrip,
+} from '@/components/ui';
+import { cn, focusRing } from '@/lib/cn';
 import { usd } from '@/lib/money';
 import { count } from '@/lib/copy';
 
@@ -114,15 +116,24 @@ interface PricingEntry {
 const PROVIDERS = ['openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'bedrock', 'ollama'] as const;
 type Provider = typeof PROVIDERS[number];
 
-const PROVIDER_META: Record<Provider, { label: string; color: string; dot: string; bg: string; text: string }> = {
-    openai:    { label: 'OpenAI',        color: '#10b981', dot: '#10b981', bg: 'bg-emerald-950/60', text: 'text-emerald-400' },
-    anthropic: { label: 'Anthropic',     color: '#f59e0b', dot: '#f59e0b', bg: 'bg-amber-950/60',   text: 'text-amber-400' },
-    gemini:    { label: 'Gemini',        color: '#3b82f6', dot: '#3b82f6', bg: 'bg-blue-950/60',    text: 'text-blue-400' },
-    grok:      { label: 'xAI Grok',      color: '#a1a1aa', dot: '#a1a1aa', bg: 'bg-zinc-800/60',    text: 'text-zinc-300' },
-    deepseek:  { label: 'DeepSeek',      color: '#8b5cf6', dot: '#8b5cf6', bg: 'bg-accent-subtle',  text: 'text-accent' },
-    bedrock:   { label: 'AWS Bedrock',   color: '#f97316', dot: '#f97316', bg: 'bg-orange-950/60',  text: 'text-orange-400' },
-    ollama:    { label: 'Ollama (Local)', color: '#94a3b8', dot: '#94a3b8', bg: 'bg-slate-800/60',   text: 'text-slate-400' },
+/**
+ * A provider's name. Each one had its own hue for its dot, bar, chip and tab —
+ * seven colours that meant nothing but "a different provider" (UX1). The
+ * bars are one hue now (`BarList`) and a provider is told by its name.
+ */
+const PROVIDER_META: Record<Provider, { label: string }> = {
+    openai: { label: 'OpenAI' },
+    anthropic: { label: 'Anthropic' },
+    gemini: { label: 'Gemini' },
+    grok: { label: 'xAI Grok' },
+    deepseek: { label: 'DeepSeek' },
+    bedrock: { label: 'AWS Bedrock' },
+    ollama: { label: 'Ollama (Local)' },
 };
+
+/** The rows of a table on this page: the runs list's look (M2b, M2e) — hairlines, no box. */
+const TH = 'py-2 pr-3 text-xs font-medium text-text-faint';
+const TD = 'py-2.5 pr-3 tabular-nums';
 
 // -------------------------------------------------------------
 // Helpers
@@ -150,32 +161,26 @@ function fmtTime(ts: string) {
         return new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch { return ts; }
 }
-function detectProvider(model: string): Provider {
-    if (model.startsWith('ollama.')) return 'ollama';
-    if (model.startsWith('gpt') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('o4')) return 'openai';
-    if (model.startsWith('claude')) return 'anthropic';
-    if (model.startsWith('gemini')) return 'gemini';
-    if (model.startsWith('grok')) return 'grok';
-    if (model.startsWith('deepseek')) return 'deepseek';
-    if (model.startsWith('anthropic.') || model.startsWith('amazon.') || model.startsWith('meta.') || model.startsWith('mistral.')) return 'bedrock';
-    return 'ollama';
+
+/**
+ * A cost on this page: `$0` when free, otherwise every digit `usd` keeps — a
+ * model call is priced per million tokens, so a real figure under a cent is the
+ * normal case and must not round to nothing (F41). `—` is "no price".
+ */
+function cost(n: number | null | undefined): string {
+    if (n === null || n === undefined || Number.isNaN(n)) return '—';
+    return n === 0 ? '$0' : usd(n);
 }
 
 // -------------------------------------------------------------
 // Sub-components
 // -------------------------------------------------------------
 function ProviderBadge({ provider }: { provider: string }) {
-    const meta = PROVIDER_META[provider as Provider] ?? PROVIDER_META.ollama;
-    return (
-        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium ${meta.bg} ${meta.text} border border-border`}>
-            <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.dot }} />
-            {provider || 'local'}
-        </span>
-    );
+    return <Badge size="sm">{provider || 'local'}</Badge>;
 }
 
 /**
- * Cache Analytics block — savings overview, per-model hit rate, top runs.
+ * Cache analytics — savings, then per-model reuse and the runs that saved most.
  * Hidden when there's no cache activity yet.
  */
 function CacheDashboard({ summary }: { summary: CacheSummary }) {
@@ -185,148 +190,100 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
     if (summary.total_estimated_savings === 0 && totalReuseTokens === 0 && summary.total_response_cache_hits === 0) {
         return null;
     }
+    const activeModels = summary.by_model.filter(m =>
+        m.estimated_savings > 0 || m.cache_read_tokens > 0 || m.response_cache_hits > 0
+    );
+    const activeRuns = summary.by_run.filter(r =>
+        r.estimated_savings > 0 || r.cache_read_tokens > 0 || r.response_cache_hits > 0
+    );
     return (
-        <div className="bg-zinc-900/60 border border-border p-5 space-y-4 rounded-md">
-            <div className="flex items-center gap-2">
-                <Zap className="w-4 h-4 text-emerald-400" />
-                <h2 className="text-sm font-semibold text-white tracking-wide">Cache Analytics</h2>
-                <span className="text-xs text-text-faint">prompt + response cache savings</span>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <StatCard
-                    icon={DollarSign}
-                    label="Saved"
-                    value={usd(summary.total_estimated_savings)}
-                    sub="vs. full-rate input"
-                    color="#10b981"
-                />
-                <StatCard
-                    icon={Zap}
-                    label="Cache reads"
-                    value={fmtK(summary.total_cache_read_tokens)}
-                    sub="reused prefix tokens"
-                    color="#06b6d4"
-                />
-                <StatCard
-                    icon={TrendingUp}
-                    label="Cache writes"
-                    value={fmtK(summary.total_cache_write_tokens)}
-                    sub="prefix tokens written"
-                    color="#a855f7"
-                />
-                <StatCard
-                    icon={Activity}
-                    label="Response hits"
-                    value={`${summary.total_response_cache_hits} / ${summary.total_requests}`}
-                    sub={`${hitRatePct}% short-circuit rate`}
-                    color="#f59e0b"
-                />
-            </div>
+        <Section variant="plain" collapsible={false} title="Cache analytics" description="Prompt + response cache savings.">
+            <div className="space-y-5">
+                {/* `StatStrip` carries `m-0`, which beats a parent's `space-y` (M2e). */}
+                <div>
+                    <StatStrip
+                        size="sm"
+                        label="Cache analytics"
+                        cells={[
+                            { label: 'Saved', value: cost(summary.total_estimated_savings), sub: 'vs. full-rate input', dot: 'success' },
+                            { label: 'Cache reads', value: fmtK(summary.total_cache_read_tokens), sub: 'reused prefix tokens' },
+                            { label: 'Cache writes', value: fmtK(summary.total_cache_write_tokens), sub: 'prefix tokens written' },
+                            {
+                                label: 'Response hits',
+                                value: `${summary.total_response_cache_hits} / ${summary.total_requests}`,
+                                sub: `${hitRatePct}% short-circuit rate`,
+                            },
+                        ]}
+                    />
+                </div>
 
-            {(() => {
-                const activeModels = summary.by_model.filter(m =>
-                    m.estimated_savings > 0 || m.cache_read_tokens > 0 || m.response_cache_hits > 0
-                );
-                if (activeModels.length === 0) return null;
-                return (
-                    <div className="border border-border divide-y divide-border">
-                        <div className="grid grid-cols-[1fr_90px_90px_120px] gap-2 px-4 py-2 text-[10px] text-text-faint uppercase tracking-wider bg-zinc-950/40">
-                            <span>Model</span>
-                            <span className="text-right">Cache reads</span>
-                            <span className="text-right">Resp hits</span>
-                            <span className="text-right">Saved</span>
-                        </div>
-                        {activeModels.slice(0, 8).map(m => (
-                            <div key={m.model} className="grid grid-cols-[1fr_90px_90px_120px] gap-2 px-4 py-2 text-xs hover:bg-row-hover">
-                                <span className="text-zinc-300 truncate">{m.model}</span>
-                                <span className="text-right text-cyan-400 font-mono">{fmtK(m.cache_read_tokens)}</span>
-                                <span className="text-right text-amber-400 font-mono">{m.response_cache_hits}/{m.requests}</span>
-                                <span className="text-right text-emerald-400 font-mono">{usd(m.estimated_savings)}</span>
-                            </div>
-                        ))}
+                {(activeModels.length > 0 || activeRuns.length > 0) && (
+                    <div className="grid gap-6 lg:grid-cols-2">
+                        {activeModels.length > 0 && (
+                            <table className="w-full text-sm">
+                                <thead>
+                                    <tr className="border-b border-border text-left">
+                                        <th className={cn(TH, 'w-[45%]')}>Model</th>
+                                        <th className={cn(TH, 'text-right')}>Cache reads</th>
+                                        <th className={cn(TH, 'text-right')}>Resp hits</th>
+                                        <th className={cn(TH, 'pr-0 text-right')}>Saved</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {activeModels.slice(0, 8).map(m => (
+                                        <tr key={m.model} className="border-b border-border last:border-0">
+                                            <td className={cn(TD, 'max-w-0 truncate text-text')} title={m.model}>{m.model}</td>
+                                            <td className={cn(TD, 'text-right text-text-muted')}>{fmtK(m.cache_read_tokens)}</td>
+                                            <td className={cn(TD, 'text-right text-text-muted')}>{m.response_cache_hits}/{m.requests}</td>
+                                            <td className={cn(TD, 'pr-0 text-right text-text')}>{cost(m.estimated_savings)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                        {activeRuns.length > 0 && (
+                            <table className="w-full text-sm">
+                                <thead>
+                                    <tr className="border-b border-border text-left">
+                                        <th className={cn(TH, 'w-[55%]')}>Top orchestration runs by savings</th>
+                                        <th className={cn(TH, 'text-right')}>Cache reads</th>
+                                        <th className={cn(TH, 'pr-0 text-right')}>Saved</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {activeRuns.slice(0, 5).map(r => (
+                                        <tr key={r.run_id} className="border-b border-border last:border-0">
+                                            <td className={cn(TD, 'max-w-0 truncate font-code text-xs text-text-muted')} title={r.run_id}>{r.run_id}</td>
+                                            <td className={cn(TD, 'text-right text-text-muted')}>{fmtK(r.cache_read_tokens)}</td>
+                                            <td className={cn(TD, 'pr-0 text-right text-text')}>{cost(r.estimated_savings)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
                     </div>
-                );
-            })()}
-
-            {(() => {
-                const activeRuns = summary.by_run.filter(r =>
-                    r.estimated_savings > 0 || r.cache_read_tokens > 0 || r.response_cache_hits > 0
-                );
-                if (activeRuns.length === 0) return null;
-                return (
-                    <div className="border border-border">
-                        <div className="grid grid-cols-[1fr_90px_120px] gap-2 px-4 py-2 text-[10px] text-text-faint uppercase tracking-wider bg-zinc-950/40 border-b border-border">
-                            <span>Top orchestration runs by savings</span>
-                            <span className="text-right">Cache reads</span>
-                            <span className="text-right">Saved</span>
-                        </div>
-                        {activeRuns.slice(0, 5).map(r => (
-                            <div key={r.run_id} className="grid grid-cols-[1fr_90px_120px] gap-2 px-4 py-2 text-xs hover:bg-row-hover border-b border-border last:border-0 rounded-md">
-                                <span className="text-zinc-400 font-mono truncate">{r.run_id}</span>
-                                <span className="text-right text-cyan-400 font-mono">{fmtK(r.cache_read_tokens)}</span>
-                                <span className="text-right text-emerald-400 font-mono">{usd(r.estimated_savings)}</span>
-                            </div>
-                        ))}
-                    </div>
-                );
-            })()}
-        </div>
+                )}
+            </div>
+        </Section>
     );
 }
 
-function StatCard({ icon: Icon, label, value, sub, color }: {
-    icon: any; label: string; value: string; sub?: string; color: string;
-}) {
-    return (
-        <div className="relative flex flex-col gap-3 p-5 bg-zinc-900/80 border border-border overflow-hidden group hover:border-border-strong transition-all duration-300 rounded-md">
-            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"
-                style={{ background: `radial-gradient(ellipse at top left, ${color}10 0%, transparent 70%)` }} />
-            <div className="flex items-center justify-between">
-                <span className="text-xs text-text-faint font-medium tracking-wider uppercase">{label}</span>
-                <div className="p-2" style={{ background: `${color}18` }}>
-                    <Icon className="w-4 h-4" style={{ color }} />
-                </div>
-            </div>
-            <div>
-                <p className="text-2xl font-bold tracking-tight text-white">{value}</p>
-                {sub && <p className="text-xs text-text-faint mt-0.5">{sub}</p>}
-            </div>
-        </div>
-    );
-}
+/** What a usage row is: the glyph and word the legend explains. */
+type SessionKind = 'system' | 'schedule' | 'orch' | 'chat';
+const KIND: Record<SessionKind, { icon: typeof Zap; word: string; legend: string }> = {
+    chat: { icon: Zap, word: 'chat', legend: 'Chat' },
+    orch: { icon: Activity, word: 'orch', legend: 'Orchestration' },
+    schedule: { icon: Clock, word: 'schedule', legend: 'Schedule' },
+    system: { icon: Wand2, word: 'system', legend: 'System prompt' },
+};
 
-function ModelBar({ stat, maxCost }: { stat: ModelStat; maxCost: number }) {
-    const pct = maxCost > 0 ? (stat.estimated_cost / maxCost) * 100 : 0;
-    const meta = PROVIDER_META[detectProvider(stat.model)] ?? PROVIDER_META.ollama;
-    return (
-        <div className="flex items-center gap-4 py-3 border-b border-border last:border-0 -mx-4 px-4 hover:bg-row-hover transition-colors rounded-md">
-            <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1.5">
-                    <span className="text-sm font-medium text-white truncate">{stat.model}</span>
-                    <ProviderBadge provider={stat.provider} />
-                </div>
-                <div className="h-1 bg-zinc-800 overflow-hidden">
-                    <div className="h-full transition-all duration-700" style={{ width: `${pct}%`, background: meta.dot }} />
-                </div>
-            </div>
-            <div className="flex gap-6 text-right shrink-0">
-                <div><p className="text-xs text-text-faint">Reqs</p><p className="text-sm font-semibold text-white">{stat.requests}</p></div>
-                <div><p className="text-xs text-text-faint">Tokens</p><p className="text-sm font-semibold text-white">{fmtK(stat.total_tokens)}</p></div>
-                <div className="min-w-[70px]"><p className="text-xs text-text-faint">Cost</p>
-                    {/* The figure in text colour, as its neighbours: a provider's dot
-                        colour is not a text colour — Ollama's slate read 2.41:1 on the
-                        light ground (F101). The bar and the dot keep the colour. */}
-                    {unpriced(stat) ? (
-                        <p className="text-sm font-semibold text-amber-500" title="Not on the rate card, so its spend reads $0">
-                            No price · <a href="#pricing" className="underline underline-offset-2 hover:text-amber-400">add one</a>
-                        </p>
-                    ) : (
-                        <p className="text-sm font-semibold text-white">{usd(stat.estimated_cost)}</p>
-                    )}</div>
-            </div>
-        </div>
-    );
-}
+/** The session rows' grid: kind, the session, then the numbers (Turns and Context from `md`/`lg`), and the chevron. */
+const SESSION_COLS = cn(
+    'grid items-center gap-x-4 px-2.5',
+    'grid-cols-[1.25rem_minmax(0,1fr)_4.5rem_5rem_1rem]',
+    'md:grid-cols-[1.25rem_minmax(0,1fr)_3.5rem_4.5rem_5rem_1rem]',
+    'lg:grid-cols-[1.25rem_minmax(0,1fr)_3.5rem_4.5rem_4.5rem_5rem_1rem]',
+);
 
 // Per-session drill-down with per-call context delta
 function SessionRow({ s }: { s: SessionStat }) {
@@ -336,6 +293,10 @@ function SessionRow({ s }: { s: SessionStat }) {
     const isOrch = s.source === 'orchestration' || s.source?.startsWith('orchestration:');
     const isSched = s.source === 'schedule';
     const isSysprompt = s.session_id === 'unknown' && !isSched;
+    const kind: SessionKind = isSysprompt ? 'system' : isSched ? 'schedule' : isOrch ? 'orch' : 'chat';
+    const Icon = KIND[kind].icon;
+    const name = isSysprompt ? 'System prompt generation' : (isOrch || isSched) && s.run_id ? s.run_id : s.session_id;
+    const agents = (isOrch || isSched) ? (s.agents_used?.length ?? 0) : 0;
 
     const loadLogs = useCallback(async () => {
         if (logs.length > 0) return;
@@ -365,93 +326,86 @@ function SessionRow({ s }: { s: SessionStat }) {
         : [];
 
     return (
-        <div className="border border-border mb-2 hover:border-border-strong transition-colors overflow-hidden">
-            <button onClick={toggle}
-                className="w-full flex items-center gap-4 px-4 py-3 text-left hover:bg-row-hover transition-colors">
-                <div className="flex items-center gap-2 shrink-0">
-                    {isSysprompt
-                        ? <Wand2 className="w-3.5 h-3.5 text-accent" />
-                        : isSched
-                            ? <Clock className="w-3.5 h-3.5 text-sky-400" />
-                            : isOrch
-                                ? <Activity className="w-3.5 h-3.5 text-accent" />
-                                : <Zap className="w-3.5 h-3.5 text-emerald-400" />}
-                    <span className={`text-xs px-2 py-0.5 font-medium border ${
-                        isSysprompt
-                            ? 'border-accent/40 text-accent bg-accent-subtle'
-                            : isSched
-                                ? 'border-sky-800/50 text-sky-400 bg-sky-950/40'
-                                : isOrch
-                                    ? 'border-accent/40 text-accent bg-accent-subtle'
-                                    : 'border-emerald-800/50 text-emerald-400 bg-emerald-950/40'
-                    } rounded-md`}>
-                        {isSysprompt ? 'system' : isSched ? 'schedule' : isOrch ? 'orch' : 'chat'}
+        <div role="rowgroup" data-usage-session className="border-b border-border">
+            <div
+                role="row"
+                className={cn(
+                    SESSION_COLS,
+                    'relative min-h-[50px] transition-colors hover:bg-row-hover',
+                    open && 'bg-row-hover',
+                    // The row draws the focus ring for its stretched control, as the runs list does.
+                    'has-[[data-row-open]:focus-visible]:outline has-[[data-row-open]:focus-visible]:outline-2',
+                    'has-[[data-row-open]:focus-visible]:-outline-offset-2 has-[[data-row-open]:focus-visible]:outline-accent',
+                )}
+            >
+                <span role="cell" className="flex items-center">
+                    <Icon className="size-3.5 text-text-faint" aria-label={KIND[kind].legend} />
+                </span>
+                <span role="cell" className="min-w-0 py-2">
+                    <button
+                        type="button"
+                        data-row-open
+                        data-no-focus-ring
+                        onClick={toggle}
+                        aria-expanded={open}
+                        title={name}
+                        className={cn("block w-full min-w-0 truncate text-left text-[13px] text-text after:absolute after:inset-0 after:content-['']", !isSysprompt && 'font-code')}
+                    >
+                        {name}
+                    </button>
+                    <span className="flex min-w-0 items-center gap-1.5 text-xs text-text-faint">
+                        <span className="shrink-0">{KIND[kind].word}</span>
+                        {agents > 0 && <span className="shrink-0">· {agents} agent{agents !== 1 ? 's' : ''}</span>}
+                        {s.models_used.length > 0 && <span className="truncate">· {s.models_used.join(', ')}</span>}
                     </span>
-                </div>
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                    <span className="text-xs text-zinc-400 font-mono truncate">
-                        {isSysprompt ? 'System Prompt Generation' : (isOrch || isSched) && s.run_id ? s.run_id : s.session_id}
-                    </span>
-                    {(isOrch || isSched) && (s.agents_used?.length ?? 0) > 0 && (
-                        <span className={`shrink-0 text-xs px-1.5 py-0.5 border whitespace-nowrap ${
-                            isSched
-                                ? 'text-sky-400 bg-sky-950/40 border-sky-800/30'
-                                : 'text-accent bg-accent-subtle border-accent/40'
-                        } rounded-md`}>
-                            {s.agents_used!.length} agent{s.agents_used!.length !== 1 ? 's' : ''}
-                        </span>
-                    )}
-                </div>
-                <div className="flex items-center gap-5 text-right shrink-0 text-sm">
-                    <div className="hidden md:block"><p className="text-xs text-text-faint">Turns</p><p className="font-semibold text-white">{s.requests}</p></div>
-                    <div className="hidden lg:block"><p className="text-xs text-text-faint">Context</p><p className="font-semibold text-white">{fmtKB(s.context_chars)}</p></div>
-                    <div><p className="text-xs text-text-faint">Tokens</p><p className="font-semibold text-white">{fmtK(s.total_tokens)}</p></div>
-                    <div className="min-w-[70px]"><p className="text-xs text-text-faint">Cost</p>
-                        <p className="font-semibold text-emerald-400">{usd(s.estimated_cost)}</p></div>
-                </div>
-                {open ? <ChevronUp className="w-4 h-4 text-text-faint shrink-0" /> : <ChevronDown className="w-4 h-4 text-text-faint shrink-0" />}
-            </button>
+                </span>
+                <span role="cell" className="hidden text-right text-[13px] tabular-nums text-text-muted md:block">{s.requests}</span>
+                <span role="cell" className="hidden text-right text-[13px] tabular-nums text-text-muted lg:block">{fmtKB(s.context_chars)}</span>
+                <span role="cell" className="text-right text-[13px] tabular-nums text-text-muted">{fmtK(s.total_tokens)}</span>
+                <span role="cell" className="text-right text-[13px] font-medium tabular-nums text-text">{cost(s.estimated_cost)}</span>
+                <span role="cell" className="flex justify-end">
+                    <ChevronDown className={cn('size-4 text-text-faint transition-transform', open && 'rotate-180')} aria-hidden />
+                </span>
+            </div>
 
             {open && (
-                <div className="border-t border-border bg-zinc-950/50">
+                <div className="space-y-4 border-t border-border bg-surface-2/40 px-2.5 py-4">
                     {/* Session metadata */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 px-4 py-3 border-b border-border text-xs">
-                        <div>
-                            <p className="text-text-faint mb-1">{(isOrch || isSched) && (s.agents_used?.length ?? 0) > 1 ? 'Agents' : 'Agent'}</p>
-                            {(isOrch || isSched) && (s.agents_used?.length ?? 0) > 1
-                                ? <div className="flex flex-wrap gap-1">
-                                    {s.agents_used!.map(a => (
-                                        <span key={a} className={`inline-flex items-center gap-1 px-1.5 py-0.5 font-mono truncate max-w-[120px] border ${
-                                            isSched
-                                                ? 'bg-sky-950/50 border-sky-800/30 text-sky-300'
-                                                : 'bg-accent-subtle border-accent/40 text-accent'
-                                        } rounded-md`}>
-                                            <Cpu className="w-2.5 h-2.5 shrink-0" />{a}
-                                        </span>
-                                    ))}
-                                  </div>
-                                : <p className="text-zinc-300 font-mono truncate">{s.agent_id}</p>
-                            }
+                    <dl className="m-0 grid grid-cols-2 gap-4 text-xs md:grid-cols-4">
+                        <div className="min-w-0">
+                            <dt className="mb-1 text-text-faint">{agents > 1 ? 'Agents' : 'Agent'}</dt>
+                            <dd className="m-0">
+                                {agents > 1
+                                    ? <span className="flex flex-wrap gap-1">
+                                        {s.agents_used!.map(a => (
+                                            <Badge key={a} size="sm" className="max-w-[160px]">
+                                                <Cpu className="size-2.5 shrink-0" aria-hidden /><span className="truncate font-code">{a}</span>
+                                            </Badge>
+                                        ))}
+                                      </span>
+                                    : <span className="block truncate font-code text-text-muted">{s.agent_id}</span>}
+                            </dd>
                         </div>
-                        <div><p className="text-text-faint mb-1">Models</p>
-                            <div className="flex flex-wrap gap-1">
-                                {s.models_used.map(m => <span key={m} className="bg-zinc-800 text-zinc-300 px-1.5 py-0.5 text-xs truncate max-w-[100px]">{m}</span>)}
-                            </div>
+                        <div className="min-w-0">
+                            <dt className="mb-1 text-text-faint">Models</dt>
+                            <dd className="m-0 flex flex-wrap gap-1">
+                                {s.models_used.map(m => <Badge key={m} size="sm" className="max-w-[160px]"><span className="truncate">{m}</span></Badge>)}
+                            </dd>
                         </div>
-                        <div><p className="text-text-faint mb-1">In / Out</p><p className="text-zinc-300">{fmtK(s.input_tokens)} / {fmtK(s.output_tokens)}</p></div>
-                        <div><p className="text-text-faint mb-1">Last Active</p><p className="text-zinc-300">{fmtDate(s.last_ts)}</p></div>
-                    </div>
+                        <div><dt className="mb-1 text-text-faint">In / Out</dt><dd className="m-0 tabular-nums text-text-muted">{fmtK(s.input_tokens)} / {fmtK(s.output_tokens)}</dd></div>
+                        <div><dt className="mb-1 text-text-faint">Last active</dt><dd className="m-0 text-text-muted">{fmtDate(s.last_ts)}</dd></div>
+                    </dl>
 
                     {/* Per-turn context breakdown */}
-                    <div className="px-4 pt-3 pb-4">
-                        <p className="text-xs font-semibold text-text-faint uppercase tracking-wider mb-4">Per-Turn Breakdown</p>
+                    <div>
+                        <p className="mb-2 text-xs font-medium text-text-muted">Per-turn breakdown</p>
                         {loadingLogs && (
-                            <div className="flex items-center gap-2 py-4 text-text-faint text-xs">
-                                <RefreshCw className="w-3 h-3 animate-spin" /> Loading turns...
-                            </div>
+                            <p className="flex items-center gap-2 py-3 text-xs text-text-faint">
+                                <Spinner size={12} /> Loading turns...
+                            </p>
                         )}
                         {!loadingLogs && logs.length === 0 && (
-                            <p className="text-text-faint text-xs py-3">No detailed logs found for this session.</p>
+                            <p className="py-3 text-xs text-text-faint">No detailed logs found for this session.</p>
                         )}
                         {!loadingLogs && logs.length > 0 && (
                             <TurnTable
@@ -475,18 +429,18 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
         <div className="overflow-x-auto">
             <table className="w-full text-xs">
                 <thead>
-                    <tr className="border-b border-border">
-                        <th className="text-left py-2 pr-3 pl-3 text-text-faint font-medium">#</th>
-                        <th className="text-left py-2 pr-3 text-text-faint font-medium">Time</th>
-                        <th className="text-left py-2 pr-3 text-text-faint font-medium">Model</th>
-                        <th className="text-left py-2 pr-4 text-text-faint font-medium">Tool</th>
-                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Context</th>
-                        <th className="text-right py-2 pr-3 text-text-faint font-medium">&Delta; Context</th>
-                        <th className="text-right py-2 pr-3 text-text-faint font-medium">In</th>
-                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Out</th>
-                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Latency</th>
-                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Saved</th>
-                        <th className="text-right py-2 pr-3 text-text-faint font-medium">Cost</th>
+                    <tr className="border-b border-border text-left">
+                        <th className={cn(TH, 'pl-1')}>#</th>
+                        <th className={TH}>Time</th>
+                        <th className={TH}>Model</th>
+                        <th className={cn(TH, 'pr-4')}>Tool</th>
+                        <th className={cn(TH, 'text-right')}>Context</th>
+                        <th className={cn(TH, 'text-right')}>&Delta; Context</th>
+                        <th className={cn(TH, 'text-right')}>In</th>
+                        <th className={cn(TH, 'text-right')}>Out</th>
+                        <th className={cn(TH, 'text-right')}>Latency</th>
+                        <th className={cn(TH, 'text-right')}>Saved</th>
+                        <th className={cn(TH, 'text-right')}>Cost</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -508,9 +462,6 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                             const prevAgent = i > 0 ? (sorted[i - 1].agent_id || '') : null;
                             const currentAgent = log.agent_id || '';
                             const agentChanged = showAgentDividers && (i === 0 || currentAgent !== prevAgent);
-                            const isEvaluator = currentAgent.toLowerCase().includes('evaluator');
-                            // Canvas colors: agent=#3b82f6 (blue), evaluator=#10b981 (green)
-                            const dividerColor = isEvaluator ? '#10b981' : '#3b82f6';
                             const callCount = agentCounts[currentAgent] ?? 0;
                             const agentSaved = agentSavings[currentAgent] ?? 0;
                             const cacheRead = log.cache_read_tokens || 0;
@@ -519,51 +470,51 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                             return (
                                 <React.Fragment key={log.globalIdx}>
                                     {agentChanged && (
-                                        <tr className="border-t border-b border-border">
-                                            <td colSpan={COL_COUNT - 2} style={{ background: `${dividerColor}10` }} className="px-3 py-2">
+                                        <tr className="border-y border-border bg-surface-2">
+                                            <td colSpan={COL_COUNT - 2} className="px-1 py-2">
                                                 <span className="flex items-center gap-2">
-                                                    <Cpu className="w-3 h-3 shrink-0" style={{ color: dividerColor }} />
-                                                    <span className="font-mono font-semibold text-xs truncate max-w-[180px]" title={currentAgent} style={{ color: dividerColor }}>
+                                                    <Cpu className="size-3 shrink-0 text-text-faint" aria-hidden />
+                                                    <span className="max-w-[180px] truncate font-code text-xs font-medium text-text" title={currentAgent}>
                                                         {currentAgent}
                                                     </span>
                                                 </span>
                                             </td>
-                                            <td style={{ background: `${dividerColor}10` }} className="py-2 pr-3 text-right text-xs tabular-nums font-medium text-emerald-400">
+                                            <td className="py-2 pr-3 text-right text-xs font-medium tabular-nums text-text-muted">
                                                 {agentSaved > 0 ? usd(agentSaved) : ''}
                                             </td>
-                                            <td style={{ background: `${dividerColor}10`, color: `${dividerColor}bb` }} className="py-2 pr-3 text-right text-xs tabular-nums font-medium">
+                                            <td className="py-2 pr-3 text-right text-xs font-medium tabular-nums text-text-muted">
                                                 {callCount} call{callCount !== 1 ? 's' : ''}
                                             </td>
                                         </tr>
                                     )}
-                                    <tr className="border-b border-border last:border-0 hover:bg-white/[0.02] transition-colors rounded-md">
-                                        <td className="py-2.5 pr-3 pl-3 text-text-faint tabular-nums">{i + 1}</td>
-                                        <td className="py-2.5 pr-3 text-text-faint whitespace-nowrap tabular-nums">{fmtTime(log.timestamp)}</td>
-                                        <td className="py-2.5 pr-3 font-mono max-w-[140px]">
-                                            <span className="text-zinc-300 truncate block" title={log.model}>{log.model}</span>
+                                    <tr className="border-b border-border last:border-0">
+                                        <td className={cn(TD, 'pl-1 text-text-faint')}>{i + 1}</td>
+                                        <td className={cn(TD, 'whitespace-nowrap text-text-faint')}>{fmtTime(log.timestamp)}</td>
+                                        <td className={cn(TD, 'max-w-[140px]')}>
+                                            <span className="block truncate text-text" title={log.model}>{log.model}</span>
                                         </td>
-                                        <td className="py-2.5 pr-4 max-w-[130px]">
+                                        <td className={cn(TD, 'max-w-[130px] pr-4')}>
                                             {log.tool_name
-                                                ? <span className="text-sky-400 font-mono truncate block" title={log.tool_name}>{log.tool_name}</span>
+                                                ? <span className="block truncate font-code text-text-muted" title={log.tool_name}>{log.tool_name}</span>
                                                 : <span className="text-text-faint">—</span>}
                                         </td>
-                                        <td className="py-2.5 pr-3 text-right text-zinc-300 tabular-nums">{fmtKB(log.context_chars)}</td>
-                                        <td className="py-2.5 pr-3 text-right tabular-nums">
-                                            <span className={delta > 0 ? 'text-amber-400 font-medium' : 'text-text-faint'}>
+                                        <td className={cn(TD, 'text-right text-text-muted')}>{fmtKB(log.context_chars)}</td>
+                                        <td className={cn(TD, 'text-right')}>
+                                            <span className={delta > 0 ? 'font-medium text-text' : 'text-text-faint'}>
                                                 {delta > 0 ? `+${fmtKB(delta)}` : '—'}
                                             </span>
                                         </td>
-                                        <td className="py-2.5 pr-3 text-right text-zinc-400 tabular-nums">{fmtK(log.input_tokens)}</td>
-                                        <td className="py-2.5 pr-3 text-right text-zinc-400 tabular-nums">{fmtK(log.output_tokens)}</td>
-                                        <td className="py-2.5 pr-3 text-right text-text-faint tabular-nums">{log.latency_seconds.toFixed(1)}s</td>
-                                        <td className="py-2.5 pr-3 text-right tabular-nums">
+                                        <td className={cn(TD, 'text-right text-text-muted')}>{fmtK(log.input_tokens)}</td>
+                                        <td className={cn(TD, 'text-right text-text-muted')}>{fmtK(log.output_tokens)}</td>
+                                        <td className={cn(TD, 'text-right text-text-faint')}>{log.latency_seconds.toFixed(1)}s</td>
+                                        <td className={cn(TD, 'text-right')}>
                                             {respHit ? (
-                                                <span className="inline-flex items-center gap-1 text-amber-400 font-medium" title="Response cache hit — LLM call skipped">
-                                                    <Zap className="w-3 h-3" />hit
+                                                <span className="inline-flex items-center gap-1 font-medium text-text" title="Response cache hit — LLM call skipped">
+                                                    <Zap className="size-3 text-machine" aria-hidden />hit
                                                 </span>
                                             ) : savings > 0 || cacheRead > 0 ? (
                                                 <span
-                                                    className="text-emerald-400 font-medium"
+                                                    className="font-medium text-text"
                                                     title={cacheRead > 0 ? `${fmtK(cacheRead)} cached tokens reused` : undefined}
                                                 >
                                                     {usd(savings)}
@@ -572,7 +523,7 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
                                                 <span className="text-text-faint">—</span>
                                             )}
                                         </td>
-                                        <td className="py-2.5 pr-3 text-right font-medium tabular-nums text-text">{usd(log.estimated_cost)}</td>
+                                        <td className={cn(TD, 'text-right font-medium text-text')}>{cost(log.estimated_cost)}</td>
                                     </tr>
                                 </React.Fragment>
                             );
@@ -585,30 +536,26 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
 }
 
 function CompactionRow({ log, idx }: { log: IndexedLog; idx: number }) {
-    const stage = log.stage === 'trim' ? 'TRIM' : log.stage === 'llm_summary' ? 'LLM SUMMARY' : (log.stage ?? '').toUpperCase();
+    const stage = log.stage === 'trim' ? 'Trim' : log.stage === 'llm_summary' ? 'LLM summary' : (log.stage ?? '');
     const reductionPct = log.reduction_pct ?? 0;
     const charsBefore = log.chars_before ?? 0;
     const charsAfter = log.chars_after ?? 0;
     return (
-        <tr className="border-b border-cyan-900/30 bg-cyan-950/20 hover:bg-cyan-950/30 transition-colors">
-            <td className="py-2.5 pr-3 pl-3 text-text-faint tabular-nums">{idx + 1}</td>
-            <td className="py-2.5 pr-3 text-text-faint whitespace-nowrap tabular-nums">{fmtTime(log.timestamp)}</td>
-            <td colSpan={2} className="py-2.5 pr-4">
-                <span className="inline-flex items-center gap-1.5 text-cyan-400 font-semibold text-xs">
-                    <span>🗜</span>
+        <tr className="border-b border-border bg-machine-subtle">
+            <td className={cn(TD, 'pl-1 text-text-faint')}>{idx + 1}</td>
+            <td className={cn(TD, 'whitespace-nowrap text-text-faint')}>{fmtTime(log.timestamp)}</td>
+            <td colSpan={2} className={cn(TD, 'pr-4')}>
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-text">
+                    <Shrink className="size-3 text-machine" aria-hidden />
                     context compact
-                    <span className="text-[10px] text-cyan-400 font-normal border border-cyan-800/50 px-1.5 py-0.5 bg-cyan-950/60 rounded-md">{stage}</span>
+                    <Badge size="sm" tone="machine">{stage}</Badge>
                 </span>
             </td>
-            <td className="py-2.5 pr-3 text-right text-text-faint tabular-nums text-xs">{fmtKB(charsAfter)}</td>
-            <td className="py-2.5 pr-3 text-right tabular-nums">
-                <span className="text-emerald-400 font-medium text-xs">-{fmtKB(charsBefore - charsAfter)}</span>
-            </td>
-            <td colSpan={3} className="py-2.5 pr-3 text-right text-cyan-400 font-semibold tabular-nums text-xs">
-                -{reductionPct}%
-            </td>
-            <td className="py-2.5 pr-3 text-right text-text-faint text-xs">—</td>
-            <td className="py-2.5 pr-3 text-right text-text-faint text-xs">—</td>
+            <td className={cn(TD, 'text-right text-text-faint')}>{fmtKB(charsAfter)}</td>
+            <td className={cn(TD, 'text-right font-medium text-text')}>-{fmtKB(charsBefore - charsAfter)}</td>
+            <td colSpan={3} className={cn(TD, 'text-right font-medium text-text')}>-{reductionPct}%</td>
+            <td className={cn(TD, 'text-right text-text-faint')}>—</td>
+            <td className={cn(TD, 'text-right text-text-faint')}>—</td>
         </tr>
     );
 }
@@ -617,6 +564,9 @@ function CompactionRow({ log, idx }: { log: IndexedLog; idx: number }) {
 // Editable Pricing Table
 // -------------------------------------------------------------
 type EditablePricing = Record<string, PricingEntry & { _editing?: boolean; _new?: boolean }>;
+
+/** A price field: the kit's control look at the table's size. */
+const PRICE_INPUT = cn(controlStyles({ size: 'sm' }), 'w-24 text-right tabular-nums');
 
 function PricingEditor({ initialPricing, onSaved }: {
     initialPricing: Record<string, PricingEntry>;
@@ -713,48 +663,45 @@ function PricingEditor({ initialPricing, onSaved }: {
         Object.entries(pricing).filter(([, v]) => provider === 'all' || v.provider === provider);
 
     const providerList = PROVIDERS.filter(p => p !== 'ollama' || Object.values(pricing).some(v => v.provider === 'ollama'));
+    const ROW = 'grid grid-cols-[minmax(0,1fr)_7.5rem_7.5rem_2rem] items-center gap-2 sm:grid-cols-[minmax(0,1fr)_9rem_9rem_2rem]';
 
     return (
-        <div className="border border-border">
-            {/* Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border bg-zinc-900/40">
-                <div className="flex items-center gap-3">
-                    <Info className="w-4 h-4 text-zinc-400" />
-                    <span className="text-sm font-semibold text-white">Pricing Reference</span>
-                    <span className="text-xs text-text-faint">— edit rates used for cost calculation (USD / 1M tokens)</span>
-                </div>
-                <div className="flex items-center gap-3">
-                    {saveMsg && (
-                        <span className={`text-xs ${saveMsg.startsWith('Error') ? 'text-red-400' : 'text-emerald-400'}`}>
-                            {saveMsg}
-                        </span>
-                    )}
-                    {dirty && (
-                        <button onClick={save} disabled={saving}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent text-accent-fg font-semibold hover:bg-accent-hover transition-colors disabled:opacity-50">
-                            {saving ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-                            Save Pricing
-                        </button>
-                    )}
-                </div>
-            </div>
-
-            {/* Provider tabs */}
-            <div className="flex items-center gap-0 border-b border-border overflow-x-auto">
+        <Section
+            id="pricing"
+            variant="plain"
+            collapsible={false}
+            className="scroll-mt-4"
+            title="Pricing reference"
+            description="Edit rates used for cost calculation (USD / 1M tokens)."
+            actions={<>
+                {saveMsg && (
+                    <span role="status" className={cn('text-xs', saveMsg.startsWith('Error') ? 'text-danger' : 'text-text-muted')}>
+                        {saveMsg}
+                    </span>
+                )}
+                {dirty && (
+                    <Button size="sm" onClick={save} loading={saving}>
+                        {!saving && <Save className="size-3.5" aria-hidden />}
+                        Save pricing
+                    </Button>
+                )}
+            </>}
+        >
+            {/* Provider pills */}
+            <div role="group" aria-label="Providers" className="-mx-1 mb-3 flex gap-1 overflow-x-auto px-1 pb-1">
                 {(['all', ...providerList] as (typeof providerList[number] | 'all')[]).map(p => {
                     const isActive = activeProvider === p;
-                    const meta = p === 'all' ? null : PROVIDER_META[p];
                     return (
-                        <button key={p} onClick={() => setActiveProvider(p)}
-                            className={`px-4 py-3 text-xs font-medium whitespace-nowrap border-b-2 transition-colors ${isActive
-                                ? 'border-white text-white'
-                                : 'border-transparent text-text-faint hover:text-zinc-300'}`}>
-                            {meta ? (
-                                <span className="flex items-center gap-1.5">
-                                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.dot }} />
-                                    {meta.label}
-                                </span>
-                            ) : 'All Providers'}
+                        <button key={p} type="button" onClick={() => setActiveProvider(p)}
+                            aria-pressed={isActive}
+                            className={cn(
+                                'shrink-0 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                                focusRing,
+                                isActive
+                                    ? 'border-border-strong bg-surface-2 text-text'
+                                    : 'border-transparent text-text-muted hover:bg-surface-2 hover:text-text',
+                            )}>
+                            {p === 'all' ? 'All providers' : PROVIDER_META[p].label}
                         </button>
                     );
                 })}
@@ -768,23 +715,21 @@ function PricingEditor({ initialPricing, onSaved }: {
                     if (models.length === 0 && addingFor !== provider && activeProvider === 'all') return null;
                     const meta = PROVIDER_META[provider];
                     return (
-                        <div key={provider} className="border-b border-border last:border-0">
+                        <div key={provider} className="mb-4 last:mb-0">
                             {/* Provider header row */}
-                            <div className={`flex items-center justify-between px-5 py-2 ${meta.bg}`}>
-                                <div className="flex items-center gap-2">
-                                    <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.dot }} />
-                                    <span className={`text-xs font-semibold uppercase tracking-wider ${meta.text}`}>{meta.label}</span>
+                            <div className="flex items-center justify-between border-b border-border py-2">
+                                <div className="flex items-baseline gap-2">
+                                    <span className="text-sm font-medium text-text">{meta.label}</span>
                                     <span className="text-xs text-text-faint">({count(models.length, 'model')})</span>
                                 </div>
-                                <button onClick={() => openAddForm(provider)}
-                                    className="flex items-center gap-1 text-xs text-text-faint hover:text-white transition-colors">
-                                    <Plus className="w-3 h-3" /> Add model
-                                </button>
+                                <Button variant="ghost" size="sm" onClick={() => openAddForm(provider)}>
+                                    <Plus className="size-3.5" aria-hidden /> Add model
+                                </Button>
                             </div>
 
                             {/* Column headers */}
                             {models.length > 0 && (
-                                <div className="grid grid-cols-[1fr_130px_130px_36px] gap-2 px-5 py-1.5 text-xs text-text-faint border-b border-border">
+                                <div className={cn(ROW, 'border-b border-border py-1.5 text-xs text-text-faint')}>
                                     <span>Model ID</span>
                                     <span className="text-right">Input / 1M tokens</span>
                                     <span className="text-right">Output / 1M tokens</span>
@@ -794,43 +739,39 @@ function PricingEditor({ initialPricing, onSaved }: {
 
                             {/* Model rows */}
                             {models.map(([model, entry]) => (
-                                <div key={model} className="grid grid-cols-[1fr_130px_130px_36px] gap-2 items-center px-5 py-2.5 border-b border-border last:border-0 hover:bg-row-hover transition-colors rounded-md">
-                                    <span className="text-xs font-mono text-zinc-300 truncate pr-2">
+                                <div key={model} className={cn(ROW, 'border-b border-border py-2 last:border-0')}>
+                                    <span className="truncate pr-2 font-code text-xs text-text" title={model}>
                                         {model}
-                                        {(entry as any)._new && <span className="ml-2 text-emerald-500 text-[10px]">NEW</span>}
+                                        {(entry as any)._new && <Badge size="sm" tone="machine" className="ml-2">New</Badge>}
                                     </span>
-                                    <div className="flex items-center gap-1 justify-end">
-                                        <span className="text-text-faint text-xs">$</span>
+                                    <div className="flex items-center justify-end gap-1">
+                                        <span className="text-xs text-text-faint">$</span>
                                         <input
                                             type="number" min="0" step="0.001"
                                             aria-label={`${model} input price per million tokens`}
                                             value={entry.input_per_1m}
                                             onChange={e => update(model, 'input_per_1m', e.target.value)}
-                                            className="w-20 bg-zinc-800 border border-border text-white text-xs px-2 py-1 text-right focus:outline-none focus:border-border-strong transition-colors rounded-md"
+                                            className={PRICE_INPUT}
                                         />
                                     </div>
-                                    <div className="flex items-center gap-1 justify-end">
-                                        <span className="text-text-faint text-xs">$</span>
+                                    <div className="flex items-center justify-end gap-1">
+                                        <span className="text-xs text-text-faint">$</span>
                                         <input
                                             type="number" min="0" step="0.001"
                                             aria-label={`${model} output price per million tokens`}
                                             value={entry.output_per_1m}
                                             onChange={e => update(model, 'output_per_1m', e.target.value)}
-                                            className="w-20 bg-zinc-800 border border-border text-white text-xs px-2 py-1 text-right focus:outline-none focus:border-border-strong transition-colors rounded-md"
+                                            className={PRICE_INPUT}
                                         />
                                     </div>
-                                    <button onClick={() => removeModel(model)}
-                                        aria-label={`Remove ${model} pricing`}
-                                        title={`Remove ${model} pricing`}
-                                        className="text-text-faint hover:text-red-400 transition-colors flex items-center justify-center">
-                                        <X className="w-3.5 h-3.5" aria-hidden />
-                                    </button>
+                                    <IconButton size="sm" icon={X} label={`Remove ${model} pricing`} className="hover:text-danger"
+                                        onClick={() => removeModel(model)} />
                                 </div>
                             ))}
 
                             {/* Add model form */}
                             {addingFor === provider && (
-                                <div className="grid grid-cols-[1fr_130px_130px_36px] gap-2 items-center px-5 py-3 bg-zinc-900/80 border-t border-border">
+                                <div className={cn(ROW, 'border-t border-border bg-surface-2/50 px-1 py-2.5')}>
                                     {useCustomModel ? (
                                         <input
                                             autoFocus
@@ -839,7 +780,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                                             value={newModel}
                                             onChange={e => setNewModel(e.target.value)}
                                             onKeyDown={e => { if (e.key === 'Escape') { setUseCustomModel(false); setNewModel(''); } }}
-                                            className="bg-zinc-800 border border-border-strong text-white text-xs px-2 py-1.5 focus:outline-none focus:border-accent transition-colors placeholder:text-zinc-600 rounded-md"
+                                            className={controlStyles({ size: 'sm' })}
                                         />
                                     ) : (
                                         <Select
@@ -855,7 +796,7 @@ function PricingEditor({ initialPricing, onSaved }: {
                                             placeholder="Select model…"
                                             aria-label="Model"
                                             size="sm"
-                                            className="w-56"
+                                            className="w-full max-w-56"
                                             options={[
                                                 ...(availableModels[provider] ?? [])
                                                     .filter((m: string) => !pricing[m])
@@ -864,33 +805,29 @@ function PricingEditor({ initialPricing, onSaved }: {
                                             ]}
                                         />
                                     )}
-                                    <div className="flex items-center gap-1 justify-end">
-                                        <span className="text-text-faint text-xs">$</span>
+                                    <div className="flex items-center justify-end gap-1">
+                                        <span className="text-xs text-text-faint">$</span>
                                         <input aria-label="New model input price per million tokens" placeholder="0.000" value={newIn} onChange={e => setNewIn(e.target.value)}
                                             type="number" min="0" step="0.001"
-                                            className="w-20 bg-zinc-800 border border-border-strong text-white text-xs px-2 py-1.5 text-right focus:outline-none focus:border-accent transition-colors placeholder:text-zinc-600 rounded-md"
+                                            className={PRICE_INPUT}
                                         />
                                     </div>
-                                    <div className="flex items-center gap-1 justify-end">
-                                        <span className="text-text-faint text-xs">$</span>
+                                    <div className="flex items-center justify-end gap-1">
+                                        <span className="text-xs text-text-faint">$</span>
                                         <input aria-label="New model output price per million tokens" placeholder="0.000" value={newOut} onChange={e => setNewOut(e.target.value)}
                                             type="number" min="0" step="0.001"
-                                            className="w-20 bg-zinc-800 border border-border-strong text-white text-xs px-2 py-1.5 text-right focus:outline-none focus:border-accent transition-colors placeholder:text-zinc-600 rounded-md"
+                                            className={PRICE_INPUT}
                                         />
                                     </div>
-                                    <button onClick={() => addModel(provider)}
-                                        aria-label={`Add ${meta.label} model`}
-                                        title={`Add ${meta.label} model`}
-                                        className="text-emerald-400 hover:text-emerald-300 transition-colors flex items-center justify-center">
-                                        <Check className="w-4 h-4" aria-hidden />
-                                    </button>
+                                    <IconButton size="sm" icon={Check} label={`Add ${meta.label} model`}
+                                        className="text-accent-ink" onClick={() => addModel(provider)} />
                                 </div>
                             )}
                         </div>
                     );
                 })}
             </div>
-        </div>
+        </Section>
     );
 }
 
@@ -903,6 +840,7 @@ export function UsageTab() {
     const [pricing, setPricing] = useState<Record<string, PricingEntry>>({});
     const [loading, setLoading] = useState(true);
     const [clearing, setClearing] = useState(false);
+    const [confirmClear, setConfirmClear] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [sessionPage, setSessionPage] = useState(0);
     const PAGE_SIZE = 15;
@@ -938,7 +876,7 @@ export function UsageTab() {
     useEffect(() => { load(); }, [load]);
 
     const handleClear = async () => {
-        if (!confirm('Delete all usage logs? This cannot be undone.')) return;
+        setConfirmClear(false);
         setClearing(true);
         try {
             await fetch('/api/usage/logs', { method: 'DELETE' });
@@ -983,174 +921,175 @@ export function UsageTab() {
 
     const finalSessions = filteredSessions;
     const pagedSessions = finalSessions.slice(0, (sessionPage + 1) * PAGE_SIZE);
-    const maxModelCost = Math.max(...(summary?.by_model.map(m => m.estimated_cost) ?? [0]));
+    const has = !!summary && summary.total_requests > 0;
 
     return (
-        <div className="flex-1 overflow-y-auto bg-black text-white font-mono modern-scrollbar">
-            {/* Header */}
-            <div className="sticky top-0 z-10 border-b border-border bg-bg/90 backdrop-blur-sm px-6 md:px-10 py-4">
-                <div className="max-w-6xl mx-auto flex items-center justify-end gap-4">
-                    <div className="flex items-center gap-2">
-                        <button onClick={load} disabled={loading}
-                            className="flex items-center gap-2 px-3 py-2 text-xs border border-border text-zinc-400 hover:text-white hover:border-border-strong transition-all">
-                            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-                            Refresh
-                        </button>
-                        <button onClick={handleClear} disabled={clearing || loading}
-                            className="flex items-center gap-2 px-3 py-2 text-xs border border-red-900/50 text-red-400 hover:border-red-700 hover:text-red-300 transition-all">
-                            <Trash2 className="w-3.5 h-3.5" />
-                            Clear Logs
-                        </button>
-                    </div>
+        <div className="space-y-8">
+            {/* The one figure the page is about, with its two actions (UX1: one hero figure per view). */}
+            <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+                <div data-usage-hero className="min-w-0">
+                    <p className="text-[13px] text-text-muted">Total cost</p>
+                    <p className="text-[40px] font-semibold leading-[1.1] tracking-[-0.035em] tabular-nums text-text">
+                        {summary ? cost(summary.total_cost) : loading ? <span className="inline-block h-10 w-40 animate-pulse rounded-md bg-surface-2 align-middle" /> : '—'}
+                    </p>
+                    <p className="mt-1 text-sm text-text-muted">
+                        Estimated USD across every model call so far, at the rates under Pricing reference.
+                    </p>
+                </div>
+                <div className="flex items-center gap-2">
+                    <Button variant="secondary" size="sm" onClick={load} disabled={loading}>
+                        <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} aria-hidden />
+                        Refresh
+                    </Button>
+                    <Button variant="ghost" size="sm" className="text-danger hover:bg-danger-subtle hover:text-danger"
+                        onClick={() => setConfirmClear(true)} disabled={clearing || loading}>
+                        <Trash2 className="size-3.5" aria-hidden />
+                        Clear logs
+                    </Button>
                 </div>
             </div>
 
-            <div className="max-w-6xl mx-auto px-6 md:px-10 py-8 space-y-8">
+            {error && <ErrorNote>{error}</ErrorNote>}
 
-                {error && (
-                    <div className="flex items-center gap-3 p-4 bg-red-950/40 border border-red-800/40 text-red-300 text-sm rounded-md">
-                        <AlertTriangle className="w-4 h-4 shrink-0" />
-                        {error}
-                    </div>
-                )}
+            {!loading && summary && summary.total_requests === 0 && (
+                <EmptyState title="No usage data yet">Send a chat message to start tracking costs</EmptyState>
+            )}
 
-                {loading && !summary && (
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        {[...Array(4)].map((_, i) => (
-                            <div key={i} className="h-28 bg-zinc-900/80 border border-border animate-pulse rounded-md" />
-                        ))}
-                    </div>
-                )}
-
-                {!loading && summary && summary.total_requests === 0 && (
-                    <div className="flex flex-col items-center justify-center py-20 gap-4 text-center">
-                        <div className="p-4 bg-zinc-900 border border-border rounded-md">
-                            <BarChart3 className="w-8 h-8 text-text-faint" />
-                        </div>
-                        <div>
-                            <p className="text-zinc-400 font-medium">No usage data yet</p>
-                            <p className="text-text-faint text-sm mt-1">Send a chat message to start tracking costs</p>
-                        </div>
-                    </div>
-                )}
-
-                {summary && summary.total_requests > 0 && (
-                    <>
-                        {/* Summary Cards */}
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <StatCard icon={DollarSign} label="Total Cost" value={usd(summary.total_cost)} sub="estimated USD" color="#10b981" />
-                            <StatCard icon={TrendingUp} label="Total Requests" value={summary.total_requests.toLocaleString()} sub="LLM calls" color="#3b82f6" />
-                            <StatCard icon={Zap} label="Input Tokens" value={fmtK(summary.total_input_tokens)} sub="prompt tokens" color="#f59e0b" />
-                            <StatCard icon={Cpu} label="Output Tokens" value={fmtK(summary.total_output_tokens)} sub="completion tokens" color="#8b5cf6" />
-                        </div>
-
-                        {cacheSummary && <CacheDashboard summary={cacheSummary} />}
-
-                        {/* Cost by Model */}
-                        <div className="bg-zinc-900/60 border border-border p-5 rounded-md">
-                            <div className="flex items-center gap-2 mb-5">
-                                <BarChart3 className="w-4 h-4 text-zinc-400" />
-                                <h2 className="text-sm font-semibold text-white tracking-wide">Cost by Model</h2>
-                                <span className="text-xs text-text-faint">sorted by spend</span>
-                            </div>
-                            {summary.by_model.map(stat => (
-                                <ModelBar key={stat.model} stat={stat} maxCost={maxModelCost} />
-                            ))}
-                        </div>
-
-                        {/* Session History -- always visible, includes schedule info */}
-                        <div className="bg-zinc-900/60 border border-border p-5 rounded-md">
-                            {/* Header */}
-                            <div className="flex items-center justify-between mb-4">
-                                <div className="flex items-center gap-2">
-                                    <Clock className="w-4 h-4 text-zinc-400" />
-                                    <h2 className="text-sm font-semibold text-white tracking-wide">Session History</h2>
-                                    <span className="text-xs text-text-faint">{sessions.length} sessions — click to expand per-turn breakdown</span>
-                                </div>
-                                <div className="flex items-center gap-3 text-xs text-text-faint flex-wrap">
-                                    <span className="flex items-center gap-1.5"><Zap className="w-3 h-3 text-emerald-400" /> Chat</span>
-                                    <span className="flex items-center gap-1.5"><Activity className="w-3 h-3 text-accent" /> Orchestration</span>
-                                    <span className="flex items-center gap-1.5"><Clock className="w-3 h-3 text-sky-400" /> Schedule</span>
-                                    <span className="flex items-center gap-1.5"><Wand2 className="w-3 h-3 text-accent" /> System Prompt</span>
-                                </div>
-                            </div>
-
-                            {/* Filter bar */}
-                            <div className="flex items-center gap-3 mb-5 pb-4 border-b border-border">
-                                <span className="text-xs text-text-faint shrink-0">Filter by</span>
-                                <Select
-                                    value={sessionFilter}
-                                    onChange={v => {
-                                        setSessionFilter(v as SessionFilterType);
-                                        setSessionPage(0);
-                                    }}
-                                    aria-label="Session filter"
-                                    size="sm"
-                                    className="w-44"
-                                    options={[
-                                        { value: 'all', label: 'All sessions' },
-                                        { value: 'orchestrations', label: 'Orchestrations' },
-                                        { value: 'agents', label: 'Agents' },
-                                        { value: 'schedules', label: 'Schedules' },
-                                    ]}
-                                />
-
-                                <span className="text-xs text-text-faint ml-auto">
-                                    {finalSessions.length} result{finalSessions.length !== 1 ? 's' : ''}
-                                </span>
-                            </div>
-
-                            {pagedSessions.map((s, i) => <SessionRow key={`${s.session_id}-${s.run_id || ''}-${i}`} s={s} />)}
-
-                            {pagedSessions.length === 0 && (
-                                <div className="flex flex-col items-center justify-center py-10 gap-2 text-text-faint">
-                                    <BarChart3 className="w-6 h-6" />
-                                    <p className="text-xs">No sessions match the selected filter</p>
-                                </div>
-                            )}
-
-                            {(sessionPage + 1) * PAGE_SIZE < finalSessions.length && (
-                                <div className="flex justify-center mt-4 pt-4 border-t border-border">
-                                    <button onClick={() => setSessionPage(p => p + 1)}
-                                        className="px-4 py-2 text-xs border border-border text-zinc-400 hover:text-white hover:border-border-strong transition-all">
-                                        Load More ({finalSessions.length - (sessionPage + 1) * PAGE_SIZE} remaining)
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                    </>
-                )}
-
-                {/* Editable Pricing Table -- always visible. `#pricing` is where an
-                    unpriced model's "add one" leads (U62). */}
-                {Object.keys(pricing).length > 0 && (
-                    <div id="pricing" className="scroll-mt-4">
-                        <PricingEditor
-                            initialPricing={pricing}
-                            onSaved={(next) => {
-                                setPricing(next);
-                                // A price just added clears that model's "No price" (U62).
-                                fetch('/api/usage/summary').then(r => (r.ok ? r.json() : null))
-                                    .then(s => { if (s) setSummary(s); }).catch(() => {});
-                            }}
+            {has && (
+                <>
+                    {/* `StatStrip` carries `m-0`, which beats a parent's `space-y` (M2e). */}
+                    <div>
+                        <StatStrip
+                            label="Usage so far"
+                            cells={[
+                                { label: 'Total requests', value: summary!.total_requests.toLocaleString(), sub: 'LLM calls' },
+                                { label: 'Input tokens', value: fmtK(summary!.total_input_tokens), sub: 'prompt tokens' },
+                                { label: 'Output tokens', value: fmtK(summary!.total_output_tokens), sub: 'completion tokens' },
+                            ]}
                         />
                     </div>
-                )}
 
-                {/* Disclaimer */}
-                <div className="flex items-start gap-3 p-4 bg-zinc-900/40 border border-border text-xs text-text-faint rounded-md">
-                    <CheckCircle2 className="w-4 h-4 text-text-faint shrink-0 mt-0.5" />
-                    <div>
-                        <p className="font-medium text-zinc-400 mb-1">About cost estimates</p>
-                        <p>
-                            Token counts are sourced from API response metadata for OpenAI, Anthropic, Gemini, Grok, and DeepSeek.
-                            Ollama uses its <code className="font-code">eval_count</code> field. AWS Bedrock does not expose token counts directly,
-                            so tokens are estimated from character length (chars ÷ 4) — costs for Bedrock calls may be less accurate.
-                            Edit prices above and click <strong>Save Pricing</strong> to update rates used for future cost calculations.
-                        </p>
-                    </div>
-                </div>
+                    {/* Cost by model: one hue, the figure written at the end of each bar. */}
+                    <Section variant="plain" collapsible={false} title="Cost by model" description="Sorted by spend.">
+                        <BarList
+                            label="Cost by model"
+                            rows={summary!.by_model.map(stat => ({
+                                key: stat.model,
+                                label: <span title={stat.model}>{stat.model}</span>,
+                                sub: <span className="flex min-w-0 items-center gap-1.5"><ProviderBadge provider={stat.provider} /><span className="truncate">{count(stat.requests, 'request')} · {fmtK(stat.total_tokens)} tokens</span></span>,
+                                value: stat.estimated_cost,
+                                display: unpriced(stat) ? (
+                                    <span className="font-medium text-person-ink" title="Not on the rate card, so its spend reads $0">
+                                        No price · <a href="#pricing" className="underline underline-offset-2 hover:text-text">add one</a>
+                                    </span>
+                                ) : cost(stat.estimated_cost),
+                            }))}
+                        />
+                    </Section>
+
+                    {cacheSummary && <CacheDashboard summary={cacheSummary} />}
+
+                    {/* Session history -- always visible, includes schedule info */}
+                    <Section
+                        variant="plain"
+                        collapsible={false}
+                        title="Session history"
+                        description={`${sessions.length} sessions — click to expand per-turn breakdown`}
+                        actions={
+                            <ul aria-label="Legend" className="m-0 flex list-none flex-wrap items-center gap-3 p-0 text-xs text-text-faint">
+                                {(['chat', 'orch', 'schedule', 'system'] as SessionKind[]).map(k => {
+                                    const I = KIND[k].icon;
+                                    return <li key={k} className="flex items-center gap-1.5"><I className="size-3" aria-hidden /> {KIND[k].legend}</li>;
+                                })}
+                            </ul>
+                        }
+                    >
+                        {/* Filter bar */}
+                        <div className="mb-2 flex items-center gap-3">
+                            <span className="shrink-0 text-xs text-text-faint">Filter by</span>
+                            <Select
+                                value={sessionFilter}
+                                onChange={v => {
+                                    setSessionFilter(v as SessionFilterType);
+                                    setSessionPage(0);
+                                }}
+                                aria-label="Session filter"
+                                size="sm"
+                                className="w-44"
+                                options={[
+                                    { value: 'all', label: 'All sessions' },
+                                    { value: 'orchestrations', label: 'Orchestrations' },
+                                    { value: 'agents', label: 'Agents' },
+                                    { value: 'schedules', label: 'Schedules' },
+                                ]}
+                            />
+                            <span className="ml-auto text-xs text-text-faint">
+                                {finalSessions.length} result{finalSessions.length !== 1 ? 's' : ''}
+                            </span>
+                        </div>
+
+                        {pagedSessions.length === 0 ? (
+                            <p className="py-8 text-center text-xs text-text-faint">No sessions match the selected filter</p>
+                        ) : (
+                            <div role="table" aria-label="Session history">
+                                <div role="row" className={cn(SESSION_COLS, 'h-8 border-b border-border text-xs font-medium text-text-faint')}>
+                                    <span role="columnheader" aria-label="Kind" />
+                                    <span role="columnheader">Session</span>
+                                    <span role="columnheader" className="hidden text-right md:block">Turns</span>
+                                    <span role="columnheader" className="hidden text-right lg:block">Context</span>
+                                    <span role="columnheader" className="text-right">Tokens</span>
+                                    <span role="columnheader" className="text-right">Cost</span>
+                                    <span role="columnheader" aria-label="Open" />
+                                </div>
+                                {pagedSessions.map((s, i) => <SessionRow key={`${s.session_id}-${s.run_id || ''}-${i}`} s={s} />)}
+                            </div>
+                        )}
+
+                        {(sessionPage + 1) * PAGE_SIZE < finalSessions.length && (
+                            <div className="mt-4 flex justify-center">
+                                <Button variant="secondary" size="sm" onClick={() => setSessionPage(p => p + 1)}>
+                                    Load more ({finalSessions.length - (sessionPage + 1) * PAGE_SIZE} remaining)
+                                </Button>
+                            </div>
+                        )}
+                    </Section>
+                </>
+            )}
+
+            {/* Editable pricing -- always visible. `#pricing` is where an
+                unpriced model's "add one" leads (U62). */}
+            {Object.keys(pricing).length > 0 && (
+                <PricingEditor
+                    initialPricing={pricing}
+                    onSaved={(next) => {
+                        setPricing(next);
+                        // A price just added clears that model's "No price" (U62).
+                        fetch('/api/usage/summary').then(r => (r.ok ? r.json() : null))
+                            .then(s => { if (s) setSummary(s); }).catch(() => {});
+                    }}
+                />
+            )}
+
+            {/* Disclaimer */}
+            <div className="border-t border-border pt-5 text-xs leading-relaxed text-text-faint">
+                <p className="mb-1 font-medium text-text-muted">About cost estimates</p>
+                <p className="max-w-[72ch]">
+                    Token counts are sourced from API response metadata for OpenAI, Anthropic, Gemini, Grok, and DeepSeek.
+                    Ollama uses its <code className="font-code">eval_count</code> field. AWS Bedrock does not expose token counts directly,
+                    so tokens are estimated from character length (chars ÷ 4) — costs for Bedrock calls may be less accurate.
+                    Edit prices above and click <strong>Save pricing</strong> to update rates used for future cost calculations.
+                </p>
             </div>
+
+            <ConfirmDialog
+                open={confirmClear}
+                onClose={() => setConfirmClear(false)}
+                onConfirm={handleClear}
+                title="Delete all usage logs?"
+                description="This cannot be undone."
+                confirmLabel="Clear logs"
+                busy={clearing}
+            />
         </div>
     );
 }
