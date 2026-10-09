@@ -7212,7 +7212,7 @@ async def check_usage_sessions(browser) -> str:
         await row.click()
         if await row.get_attribute("aria-expanded") != "true":
             raise AssertionError("the row did not open")
-        await page.get_by_text("Per-turn breakdown").wait_for(timeout=5_000)
+        await page.get_by_text("Per-turn breakdown").first.wait_for(timeout=5_000)
         await page.get_by_role("button", name="Load more (5 remaining)").click()
         await page.wait_for_function("() => document.querySelectorAll('[data-usage-session]').length === 20",
                                      timeout=5_000)
@@ -7362,7 +7362,7 @@ async def _openapi_preview(page):
 
 
 async def _paste_credentials(page):
-    await page.get_by_role("button", name=re.compile("Re-upload credentials")).first.click()
+    await page.get_by_role("button", name=re.compile("re-upload credentials", re.I)).first.click()
     await page.get_by_placeholder(re.compile(r'^\{"installed"')).fill(
         '{"installed": {"client_id": "x", "project_id": "y"}}')
 
