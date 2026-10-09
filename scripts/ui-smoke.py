@@ -4651,7 +4651,7 @@ async def check_keyrows(browser) -> str:
             await page.get_by_role("button", name=f"View run {run_id}").wait_for(timeout=20_000)
         except Exception:
             raise AssertionError("a run in the Recent table is not a control a keyboard can reach")
-        await page.get_by_role("button", name=re.compile(r"^Orchestrations")).click()
+        await page.get_by_role("button", name=re.compile(r"^Workflows")).click()
         opener = page.get_by_role("button", name=f"Open {orch_name}")
         try:
             await opener.wait_for(timeout=20_000)
@@ -9336,6 +9336,165 @@ async def check_agenttestcollapse(browser) -> str:
     if bad:
         raise AssertionError("; ".join(bad))
     return "Hide the test widens the setup and is remembered; the strip brings it back; a phone's Try it opens the drawer"
+
+
+def _person_orchestration(oid: str, name: str) -> dict:
+    """A Print step, then a Human step, then End: it asks a person before it finishes (never run here)."""
+    return {
+        "id": oid, "name": name, "description": "Temporary fixture created by scripts/ui-smoke.py (M2k).",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_a",
+        "steps": [
+            {"id": f"{oid}_a", "name": "Note", "type": "print", "print_content": "one",
+             "next_step_id": f"{oid}_ask", "output_key": "one"},
+            {"id": f"{oid}_ask", "name": "Approve", "type": "human", "human_prompt": "OK?",
+             "next_step_id": f"{oid}_end", "output_key": "ok"},
+            {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None},
+        ],
+    }
+
+
+@check
+async def check_workflowlist(browser) -> str:
+    """The Workflows list (M2k): a row per workflow says what starts it, how its last run went (time, duration, cost
+    through `money`) and its steps by role, a person's step named in the path; a schedule's chip is its rhythm in
+    words; the search finds a row; the page fits at 1600 and 400."""
+    stamp = int(time.time())
+    ran, asks = f"orch_uismoke_wfl_{stamp}", f"orch_uismoke_wfa_{stamp}"
+    ran_name, asks_name = f"ui-smoke list ran {stamp}", f"ui-smoke list asks {stamp}"
+    api("/api/orchestrations", "POST", print_orchestration(ran, ran_name))
+    api("/api/orchestrations", "POST", _person_orchestration(asks, asks_name))
+    run_to_end(ran)
+    sched = [{"id": "sch_uismoke_wfl", "name": "Smoke Monday", "enabled": True, "target_type": "orchestration",
+              "target_id": ran, "schedule_type": "cron", "cron_expression": "0 7 * * 1"}]
+    seen = []
+    try:
+        for width, height in (WIDE, PHONE):
+            ctx = await browser.new_context(viewport={"width": width, "height": height})
+            await ctx.route("**/api/schedules", _answer(sched))
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+                await page.get_by_role("button", name=re.compile(r"^Workflows")).click(timeout=30_000)
+                await page.get_by_role("searchbox", name=re.compile("Search workflows")).fill(f"{stamp}")
+                row = page.locator(f"[data-workflow-row='{ran}']")
+                await row.wait_for(timeout=30_000)
+                text = await row.inner_text()
+                for want in ("Mondays 07:00 UTC", "2 steps", "$0"):
+                    if want not in text:
+                        raise AssertionError(f"at {width}px the run row lacks {want!r}: {text!r}")
+                if await row.locator("[data-step-path]").count() != 1:
+                    raise AssertionError("the row has no path of its steps")
+                if "for a person" in (await row.locator("[data-step-path]").get_attribute("aria-label") or ""):
+                    raise AssertionError("a workflow with no person has a person's step in its path")
+                other = page.locator(f"[data-workflow-row='{asks}']")
+                otext = await other.inner_text()
+                for want in ("Manual", "Never run"):
+                    if want not in otext:
+                        raise AssertionError(f"at {width}px the person row lacks {want!r}: {otext!r}")
+                # A person's step is the amber tile; its words are the path's name (Naveen dropped the sentence).
+                label = await other.locator("[data-step-path]").get_attribute("aria-label") or ""
+                if "1 for a person" not in label:
+                    raise AssertionError(f"the person row's path does not say so: {label!r}")
+                if await page.locator("[data-workflow-row]").count() != 2:
+                    raise AssertionError("the search kept rows that do not match")
+                wide = await page.evaluate("() => document.documentElement.scrollWidth - window.innerWidth")
+                if wide > 1:
+                    raise AssertionError(f"at {width}px the page scrolls {wide}px sideways")
+                seen.append(str(width))
+            finally:
+                await ctx.close()
+    finally:
+        drop_fixture(ran)
+        drop_fixture(asks)
+    return f"chip, last run, path and the person line at {' and '.join(seen)}px; the search narrows the list"
+
+
+@check
+async def check_workflowmenu(browser) -> str:
+    """A workflow's row menu (M2k): Duplicate adds the copy to the list without leaving it; Copy ID says so; Delete
+    asks first ("Delete workflow") and the row goes; Enter on the row opens it on the canvas."""
+    stamp = int(time.time())
+    oid, name = f"orch_uismoke_wfm_{stamp}", f"ui-smoke menu {stamp}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, name))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]}, permissions=["clipboard-read", "clipboard-write"])
+    page = await ctx.new_page()
+    copies: list[str] = []
+    try:
+        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile(r"^Workflows")).click(timeout=30_000)
+        await page.get_by_role("searchbox", name=re.compile("Search workflows")).fill(name)
+        await page.get_by_role("button", name=f"Actions for {name}").click(timeout=30_000)
+        await page.get_by_role("menuitem", name="Duplicate").click()
+        copy = page.get_by_role("button", name=f"Open {name} (Copy)")
+        try:
+            await copy.wait_for(timeout=20_000)
+        except Exception:
+            raise AssertionError("Duplicate did not add the copy to the list")
+        if "id=" in page.url:
+            raise AssertionError("Duplicate from the list opened the copy")
+        copies = [o["id"] for o in api("/api/orchestrations") if o.get("name") == f"{name} (Copy)"]
+
+        await page.get_by_role("button", name=f"Actions for {name} (Copy)").click()
+        await page.get_by_role("menuitem", name="Copy ID").click()
+        await page.get_by_text("ID copied.").wait_for(timeout=10_000)
+
+        await page.get_by_role("button", name=f"Actions for {name} (Copy)").click()
+        await page.get_by_role("menuitem", name="Delete").click()
+        await page.get_by_text("Delete workflow").wait_for(timeout=10_000)
+        await page.get_by_role("button", name=re.compile("delete", re.I)).last.click()
+        await copy.wait_for(state="detached", timeout=20_000)
+
+        opener = page.get_by_role("button", name=f"Open {name}", exact=True)
+        await opener.focus()
+        await page.keyboard.press("Enter")
+        await page.locator(".react-flow").wait_for(timeout=30_000)
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+        for c in copies:
+            drop_fixture(c)
+    return "Duplicate stays on the list, Copy ID confirms, Delete asks then removes, Enter opens the canvas"
+
+
+@check
+async def check_workflowsettle(browser) -> str:
+    """The list never says "No workflows yet" while its first read is still out (Naveen, M2k review)."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/orchestrations", _answer([print_orchestration("orch_uismoke_settle", "ui-smoke settle")],
+                                                     hold=2.0))
+    await ctx.route("**/api/orchestrations/runs*", _answer([]))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+        await page.locator("main h1").wait_for(timeout=30_000)
+        await asyncio.sleep(1.0)
+        if await page.get_by_text("No workflows yet").count():
+            raise AssertionError("the empty state shows while the list is still being read")
+        await page.locator("[data-workflow-row='orch_uismoke_settle']").wait_for(timeout=10_000)
+    finally:
+        await ctx.close()
+    return "nothing, then the rows; never the empty state on the way"
+
+
+@check
+async def check_workflowempty(browser) -> str:
+    """With no workflows the list says so and offers a template (M2k), and the header keeps New workflow, Build with
+    AI and Templates."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/orchestrations", _answer([]))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+        await page.get_by_text("No workflows yet").wait_for(timeout=30_000)
+        await page.get_by_role("link", name="Start from a template").wait_for()
+        for name in ("New workflow", "Build with AI"):
+            if not await page.locator("main header").get_by_role("button", name=name).count():
+                raise AssertionError(f"the header lacks {name}")
+        if not await page.locator("main header").get_by_role("link", name="Templates").count():
+            raise AssertionError("the header lacks Templates")
+    finally:
+        await ctx.close()
+    return "No workflows yet with a template link; the header keeps its three actions"
 
 
 async def main() -> int:
