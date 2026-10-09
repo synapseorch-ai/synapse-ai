@@ -72,7 +72,7 @@ async def get_status():
     from core.images import model_can_see_images
     from core.llm_providers import detect_provider_from_model
     from core.model_readiness import model_problem, model_problems
-    from core.orchestration.step_models import attach_verdict, readiness_problem, walk_agent
+    from core.orchestration.step_models import attach_verdict, model_or_none, readiness_problem, walk_agent
     from core.scale.context import resolve_agent, resolve_orchestration
 
     # The builder's own sub-agents are not the workspace's to chat with (F186).
@@ -90,7 +90,8 @@ async def get_status():
         agents_status[a["id"]] = {
             "name": a["name"],
             "status": "online",
-            "can_see_images": model_can_see_images(a.get("model") or default_model),
+            # "default" is the workspace model, as the engine reads it (F397).
+            "can_see_images": model_can_see_images(model_or_none(a.get("model")) or default_model),
             # A workflow agent has no model of its own (each step has one), so
             # the model resolved below is not what it runs on; chat's header
             # says "Workflow · N steps" from these instead (U64).
@@ -109,9 +110,7 @@ async def get_status():
 
     # Resolve active agent's model
     active_agent = next((a for a in user_agents if a["id"] == active_agent_id), None)
-    resolved_model = default_model
-    if active_agent and active_agent.get("model"):
-        resolved_model = active_agent["model"]
+    resolved_model = (model_or_none(active_agent.get("model")) if active_agent else None) or default_model
 
     provider = detect_provider_from_model(resolved_model)
     # Whether that model can answer at all, so the page stops saying "Ready"

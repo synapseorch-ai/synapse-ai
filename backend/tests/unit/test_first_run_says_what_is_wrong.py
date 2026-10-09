@@ -293,3 +293,34 @@ class TestAWorkflowAgentIsJudgedByItsSteps:
         assert len(ollama["asked"]) == 1
         assert "Step 'B' (ollama.llama3)" in status["model_problem"]
         assert "Step 'C' (ollama.qwen)" in status["model_problem"]
+
+
+class TestAnAgentSavedWithDefault:
+    """F397: `"default"` means the workspace model, as the engine reads it.
+
+    `get_status` took an agent's model `"default"` literally: an Ollama lookup
+    for a model named `default` ("Ollama has no model named default"), and
+    Attach asked of `default` — which Ollama's row answers yes to — whatever the
+    workspace model could really do."""
+
+    @pytest.fixture(autouse=True)
+    def _no_active(self, monkeypatch):
+        import core.routes.agents as agents_mod
+        monkeypatch.setattr(agents_mod, "active_agent_id", None)
+
+    async def _seed(self, model):
+        from _fakes import seed as S
+
+        agent = S.make_agent(id="agent_f397", name="Plain", model=model)
+        await S.seed_agents([agent])
+        return agent
+
+    @pytest.mark.parametrize("saved", ["default", "Default ", ""])
+    async def test_it_is_the_workspace_model(self, client, ollama, saved):
+        agent = await self._seed(saved)
+        await client.post("/api/agents/active", json={"agent_id": agent["id"]})
+        status = await _status(client, model="deepseek-chat")
+        assert status["model"] == "deepseek-chat"
+        assert status["provider"] != "ollama"
+        assert status["agents"][agent["id"]]["can_see_images"] is False, "deepseek-chat reads no images"
+        assert "named default" not in (status["model_problem"] or "")
