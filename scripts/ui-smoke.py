@@ -4760,7 +4760,7 @@ async def check_logrows(browser) -> str:
     page = await ctx.new_page()
     try:
         await page.goto(f"{APP}/logs", wait_until="domcontentloaded")
-        tab = page.get_by_role("button", name=re.compile("Orchestration Logs"))
+        tab = page.get_by_role("button", name=re.compile("^Workflow logs"))
         await tab.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
         await tab.click()
@@ -5892,19 +5892,28 @@ async def check_evalsactions(browser) -> str:
         await page.goto(f"{APP}/evals", wait_until="domcontentloaded")
         await page.get_by_text(f"Smoke set {stamp}", exact=True).wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        await page.get_by_role("combobox").first.click()
+        # M2h: a rubric opens on its own scores ("Scores for", its workflows first).
+        await page.get_by_role("button", name=re.compile(f"^Smoke rubric {stamp}")).click()
+        await asyncio.sleep(0.8)
+        detail = page.locator('section[aria-label="Detail"]')
+        await detail.get_by_role("combobox").first.click()
         await page.get_by_role("option", name=f"ui-smoke scored {stamp}").click()
         button = page.get_by_role("button", name=re.compile("score earlier runs", re.I))
         try:
             await button.wait_for(timeout=10_000)
         except Exception:
-            raise AssertionError("an orchestration with a rubric and nothing scored offers no backfill")
+            raise AssertionError("a workflow with a rubric and nothing scored offers no backfill")
         await button.click()
-        await page.get_by_text("Scored 2 of 2 runs.").wait_for(timeout=10_000)
+        try:
+            await page.get_by_text("Scored 2 of 2 runs.").wait_for(timeout=10_000)
+        except Exception:
+            raise AssertionError(f"no 'Scored 2 of 2 runs.' after the backfill ({len(backfills)} sent)")
         if not backfills:
             raise AssertionError("the backfill button sent nothing")
 
-        row = page.get_by_role("button", name=re.compile(f"^Smoke set {stamp}")).locator("xpath=..")
+        # M2h: a golden set opens beside the list, with Run / Stop in its head.
+        await page.get_by_role("button", name=re.compile(f"^Smoke set {stamp}")).click()
+        row = detail
         await row.get_by_role("button", name="Run", exact=True).click()
         await asyncio.sleep(0.8)
         if native:
@@ -5914,7 +5923,10 @@ async def check_evalsactions(browser) -> str:
         if "not be scored" not in text or "judge call" in text:
             raise AssertionError(f"a set with no rubric is confirmed as {text[:160]!r}")
         await dialog.get_by_role("button", name="Run set").click()
-        await row.get_by_role("button", name=re.compile("Stop")).wait_for(timeout=10_000)
+        try:
+            await row.get_by_role("button", name=re.compile("Stop")).wait_for(timeout=10_000)
+        except Exception:
+            raise AssertionError("a running set shows no Stop")
         stopped = False
         for _ in range(30):
             await asyncio.sleep(1.0)
@@ -5922,7 +5934,7 @@ async def check_evalsactions(browser) -> str:
                 stopped = True
                 break
         if not stopped:
-            raise AssertionError("a set run from a collapsed card still shows Stop after it has ended")
+            raise AssertionError("a set still shows Stop after it has ended")
 
         await page.get_by_role("button", name=re.compile(f"^Smoke rubric {stamp}")).click()
         judge = page.get_by_role("button", name="Judge model")
@@ -5967,11 +5979,11 @@ async def check_plurals(browser) -> str:
             raise AssertionError(f"a rubric with one criterion reads {line!r}")
 
         await page.goto(f"{APP}/logs", wait_until="domcontentloaded")
-        tab = page.get_by_role("button", name=re.compile("Orchestration Logs"))
+        tab = page.get_by_role("button", name=re.compile("^Workflow logs"))
         await tab.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
         await tab.click()
-        row = page.get_by_role("button", name=re.compile("^" + re.escape(f"ui-smoke tz {stamp}")))
+        row = page.locator(f'[data-log-row="{run_id}"]')
         await row.wait_for(timeout=20_000)
         await asyncio.sleep(1.0)
         shown = await row.inner_text()
@@ -5979,10 +5991,17 @@ async def check_plurals(browser) -> str:
         if not raw:
             raise AssertionError("the fixture run wrote no log, so this checks nothing")
         if raw in shown:
-            raise AssertionError(f"Runs & Logs prints the log's UTC stamp {raw!r} as it was written")
-        local = await page.evaluate("(s) => new Date(s.replace(' ', 'T') + 'Z').toLocaleString()", raw)
+            raise AssertionError(f"Logs prints the log's UTC stamp {raw!r} as it was written")
+        # M2h: the row says when in UX1's words ("Today 3:30 PM"), the full instant on hover.
+        stamp_at = await row.locator("time").first.get_attribute("datetime")
+        same = await page.evaluate("([a, raw]) => Date.parse(a) === Date.parse(raw.replace(' ', 'T') + 'Z')", [stamp_at, raw])
+        if not same:
+            raise AssertionError(f"the log's time is {stamp_at!r} for {raw} UTC")
+        local = await page.evaluate(
+            "(s) => new Date(s.replace(' ', 'T') + 'Z').toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'})"
+            ".replace(/\\s?[AP]M$/, '')", raw)
         if local not in shown:
-            raise AssertionError(f"Runs & Logs shows {shown!r} for {raw} UTC, not the reader's {local!r}")
+            raise AssertionError(f"Logs shows {shown!r} for {raw} UTC, not the reader's {local!r}")
         if hydration:
             raise AssertionError(f"a local time broke hydration: {hydration[0][:120]}")
         return "counts agree with their nouns, and log and eval times are the reader's"
@@ -7777,7 +7796,7 @@ LIGHT_STATES = (
                                        "prompt": "p", "schedule_type": "interval", "interval_value": 30,
                                        "interval_unit": "minutes", "next_run_at": None, "last_run_at": None}])),
         ("**/api/schedules/sched_smoke/run", _answer({}, methods=("POST",)))],
-     lambda p: p.get_by_role("button", name="Run Now").first.click(), "Schedule triggered successfully"),
+     lambda p: p.get_by_role("button", name="Run Smoke schedule now").first.click(), "Schedule triggered successfully"),
     ("data lab running", "/settings/datalab", [], [
         ("**/api/synthetic/status", _answer({"status": "generating", "completed": 3, "total": 10})),
         ("**/api/synthetic/datasets", _answer([]))], None, "Running: 3/10"),
@@ -9831,6 +9850,184 @@ async def check_widgetrefused(browser) -> str:
     finally:
         api(f"/api/widgets/{widget['id']}", "DELETE")
     return "an unlisted origin is refused, in words"
+
+
+# ── M2h: Logs, Evals and Schedules ───────────────────────────────────────────
+
+_M2H_LOGS = [
+    {"run_id": "run_m2h_b", "orchestration_name": "Smoke failing", "orchestration_id": "orch_m2h", "session_id": "",
+     "started_at": "2026-09-30 10:05:00", "user_input": "second", "file_size_kb": 3.1},
+    {"run_id": "run_m2h_a", "orchestration_name": "Smoke passing", "orchestration_id": "orch_m2h", "session_id": "",
+     "started_at": "2026-09-30 10:00:00", "user_input": "first", "file_size_kb": 2.0},
+]
+_M2H_RUNS = [
+    {"run_id": "run_m2h_b", "orchestration_id": "orch_m2h", "status": "failed", "started_at": "2026-09-30T10:05:00Z",
+     "ended_at": "2026-09-30T10:05:04Z", "total_cost_usd": 0.0012},
+    {"run_id": "run_m2h_a", "orchestration_id": "orch_m2h", "status": "completed", "started_at": "2026-09-30T10:00:00Z",
+     "ended_at": "2026-09-30T10:00:02Z", "total_cost_usd": 0},
+]
+
+
+@check
+async def check_logfirst(browser) -> str:
+    """Logs never opens on an empty pane (M2h): the newest log is open beside the list, and Copy is there."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/logs/agents?*", _answer([{"run_id": "run_m2h_agent", "agent_name": "Smoke agent",
+                                                      "source": "chat", "session_id": "",
+                                                      "started_at": "2026-09-30 10:00:00", "file_size_kb": 1}]))
+    await ctx.route("**/api/logs/agents/run_m2h_agent", _answer("🔄 LLM CALL — TURN 1\nhello\n", content_type="text/plain"))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/logs", wait_until="domcontentloaded")
+        first = page.locator('[data-log-row="run_m2h_agent"] [data-row-open]')
+        await first.wait_for(timeout=30_000)
+        if await first.get_attribute("aria-current") != "true":
+            raise AssertionError("the newest log is not open")
+        await page.get_by_role("button", name="Copy").wait_for(timeout=10_000)
+        if await page.get_by_text("Select a log to view its contents").count():
+            raise AssertionError("the pane still asks for a pick")
+    finally:
+        await ctx.close()
+    return "the newest log is open beside the list, with Copy"
+
+
+@check
+async def check_logstatus(browser) -> str:
+    """A workflow log says how its run went from the runs list (M2h): a failure in words, a finished run quiet,
+    and a log with no run never reads as Failed."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/logs/orchestrations?*", _answer(_M2H_LOGS))
+    await ctx.route("**/api/logs/orchestrations/*", _answer("STEP START\n", content_type="text/plain"))
+    await ctx.route("**/api/orchestrations/runs?*", _answer(_M2H_RUNS))
+    await ctx.route("**/api/logs/agents?*", _answer([{"run_id": "run_m2h_agent", "agent_name": "Smoke agent",
+                                                      "source": "chat", "session_id": "",
+                                                      "started_at": "2026-09-30 10:00:00", "file_size_kb": 1}]))
+    await ctx.route("**/api/logs/agents/*", _answer("hello\n", content_type="text/plain"))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/logs", wait_until="domcontentloaded")
+        agent = page.locator('[data-log-row="run_m2h_agent"]')
+        await agent.wait_for(timeout=30_000)
+        if "Failed" in await agent.inner_text():
+            raise AssertionError("an agent log with no run reads as Failed")
+        await page.get_by_role("button", name=re.compile("^Workflow logs")).click()
+        failing = page.locator('[data-log-row="run_m2h_b"]')
+        await failing.wait_for(timeout=20_000)
+        await page.wait_for_function(
+            "() => document.querySelector('[data-log-row=\"run_m2h_b\"]')?.innerText.includes('Failed')", timeout=10_000)
+        passing = await page.locator('[data-log-row="run_m2h_a"]').inner_text()
+        if "Failed" in passing or "Completed" in passing:
+            raise AssertionError(f"a finished run's log is not quiet: {passing!r}")
+        if "$0" not in passing:
+            raise AssertionError(f"a free run's log does not say $0: {passing!r}")
+    finally:
+        await ctx.close()
+    return "a failed run's log says so, a finished one is quiet with $0, and an agent log reads no status"
+
+
+_M2H_CRITERIA = [{"id": "c1", "name": "Cites the guides"}, {"id": "c2", "name": "Answers the question"}]
+_M2H_RUBRIC = {"id": "rub_m2h", "name": "Smoke quality", "description": "", "version": 1, "criteria": _M2H_CRITERIA,
+               "scale": {"min": 0, "max": 10}, "floor": 6, "drop": 1.5, "baseline_runs": 10, "judge_model": ""}
+
+
+@check
+async def check_evalsfirst(browser) -> str:
+    """Evals opens on its first rubric's scores (M2h): one strip with Passed, the trend and each criterion's bars;
+    never "Nothing selected"."""
+    scores = [{"id": i, "run_id": f"run_{i}", "orchestration_id": "orch_m2h", "rubric_id": "rub_m2h",
+               "rubric_version": 1, "score": v, "per_criterion": {"c1": {"score": v}, "c2": {"score": v - 1}},
+               "per_step": {}, "reasoning": "ok", "judged_at": _NOW, "judge_model": "m", "baseline": None,
+               "regression": v < 6, "rule": "floor" if v < 6 else None} for i, v in enumerate((8.0, 5.0, 9.0, 7.0))]
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/rubrics", _answer([_M2H_RUBRIC]))
+    await ctx.route("**/api/evals/suites", _answer([]))
+    await ctx.route("**/api/orchestrations", _answer([{"id": "orch_m2h", "name": "Smoke workflow", "rubric_id": "rub_m2h",
+                                                        "steps": []}]))
+    await ctx.route("**/api/evals/orchestrations/orch_m2h*", _answer({
+        "scores": scores, "feedback": {}, "rubric": _M2H_RUBRIC,
+        "agreement": {"compared": 0, "agreed": 0, "rate": None}, "regressions": []}))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/evals", wait_until="domcontentloaded")
+        strip = page.locator("[data-eval-strip]")
+        await strip.wait_for(timeout=30_000)
+        text = " ".join((await strip.inner_text()).split())
+        if "Passed" not in text or "75%" not in text:
+            raise AssertionError(f"the strip reads {text!r}")
+        bars = await page.locator("[data-eval-criteria] [data-bar-row]").count()
+        if bars != 2:
+            raise AssertionError(f"{bars} criterion bars for 2 criteria")
+        if not await page.locator("[data-eval-trend] svg").count():
+            raise AssertionError("no trend")
+        if await page.get_by_text("Nothing selected").count():
+            raise AssertionError("the detail opened empty")
+        if await page.locator('[data-eval-rubric="rub_m2h"] button').get_attribute("aria-current") != "true":
+            raise AssertionError("the first rubric is not marked open")
+    finally:
+        await ctx.close()
+    return "the first rubric opens on Latest · Average · Passed · Judge vs people, the trend and its criteria"
+
+
+_M2H_SCHEDULES = [
+    {"id": "sch_m2h_a", "name": "Smoke every two hours", "enabled": True, "created_at": _NOW, "target_type": "orchestration",
+     "target_id": "orch_m2h", "prompt": "go", "schedule_type": "cron", "cron_expression": "0 */2 * * *",
+     "next_run_at": _NOW, "last_run_at": _NOW},
+    {"id": "sch_m2h_b", "name": "Smoke three days", "enabled": False, "created_at": _NOW, "target_type": "agent",
+     "target_id": "agent_x", "prompt": "go", "schedule_type": "cron", "cron_expression": "0 7 * * 1,3,5",
+     "missed_run_policy": "skip", "next_run_at": _NOW, "last_run_at": None},
+]
+
+
+@check
+async def check_schedulewords(browser) -> str:
+    """A schedule says how often in words (M2h, the shared cronWords), Paused when it is off, and how its last
+    run went when that run is known."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/schedules", _answer(_M2H_SCHEDULES))
+    await ctx.route("**/api/orchestrations/runs?*", _answer([{
+        "run_id": "run_m2h_s", "orchestration_id": "orch_m2h", "status": "failed", "session_id": "schedule_sch_m2h_a",
+        "started_at": _NOW, "ended_at": _NOW}]))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/schedules", wait_until="domcontentloaded")
+        a = page.locator('[data-schedule-row="sch_m2h_a"]')
+        await a.wait_for(timeout=30_000)
+        await asyncio.sleep(1.0)
+        a_text = await a.inner_text()
+        b_text = await page.locator('[data-schedule-row="sch_m2h_b"]').inner_text()
+        for want, got in (("Every 2 hours", a_text), ("Failed", a_text), ("Mon, Wed, Fri 07:00 UTC", b_text),
+                          ("Paused", b_text)):
+            if want not in got:
+                raise AssertionError(f"{want!r} not in {got!r}")
+    finally:
+        await ctx.close()
+    return "Every 2 hours with its failed last run; Mon, Wed, Fri 07:00 UTC, Paused"
+
+
+@check
+async def check_scheduledrawer(browser) -> str:
+    """A schedule opens in a drawer with its fields (M2h): Run as as a radio group set to what it runs, Esc closes
+    it, and New schedule opens one with the guide unfolded."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/schedules", _answer(_M2H_SCHEDULES))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/schedules", wait_until="domcontentloaded")
+        await page.get_by_role("button", name="Open Smoke every two hours").click()
+        dialog = page.get_by_role("dialog")
+        await dialog.get_by_role("heading", name="Edit schedule").wait_for(timeout=10_000)
+        workflow = dialog.get_by_role("radiogroup", name="Run as").get_by_role("radio", name="Workflow")
+        if await workflow.get_attribute("aria-checked") != "true":
+            raise AssertionError("Run as does not show the workflow it runs")
+        if await dialog.locator("#sched-cron").input_value() != "0 */2 * * *":
+            raise AssertionError("the drawer lost the expression")
+        await page.keyboard.press("Escape")
+        await dialog.wait_for(state="detached", timeout=5_000)
+        await page.locator("main header").get_by_role("button", name="New schedule").click()
+        await page.get_by_role("dialog").get_by_text("Interval — run every N minutes/hours/days").wait_for(timeout=5_000)
+    finally:
+        await ctx.close()
+    return "the drawer shows the schedule's fields, Esc closes it, and New schedule unfolds the guide"
 
 
 async def main() -> int:
