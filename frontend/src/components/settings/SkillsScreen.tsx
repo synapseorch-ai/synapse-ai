@@ -11,14 +11,20 @@
  * The format is Claude Code's SKILL.md: a name, a one-line description that
  * is always in the agent's prompt, and a markdown body that costs nothing
  * until the agent calls load_skill.
+ *
+ * The list beside the open skill (M2h-2, cloud's model): the first skill opens,
+ * on Preview, so the pane is never empty; New skill opens a blank one in its
+ * place. "Used by" is read from the agents' own skill lists.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
+import { AppScreen } from '@/components/app/AppScreen';
 import { Download, HardDrive, Library, Pencil, Plus, Trash } from "lucide-react";
 
+import { DetailHead, LIST_DETAIL, ListRow, showDetail } from "@/components/run";
 import {
-    Badge, Button, Card, CardBody, ConfirmDialog, EmptyState, Field, IconButton,
-    Input, Label, MarkdownEditor, Modal, Toast, useToast,
+    Badge, Button, ConfirmDialog, EmptyState, Field, IconButton,
+    Input, MarkdownEditor, Modal, SearchInput, Toast, useToast,
 } from "@/components/ui";
 
 type Skill = {
@@ -37,15 +43,27 @@ type Draft = {
     existing: boolean;
 };
 
+/** What is open: a listed skill by `source:name`, or a new one. */
+type Open = { key: string } | { key: "new" };
+
+const keyOf = (s: Skill) => `${s.source}:${s.name}`;
+const BLANK: Draft = { name: "", description: "", body: "", existing: false };
+
 export function SkillsScreen() {
     const { toast, show, dismiss } = useToast();
 
     const [skills, setSkills] = useState<Skill[]>([]);
+    const [agents, setAgents] = useState<{ name: string; skills?: string[] }[]>([]);
     const [loading, setLoading] = useState(true);
-    const [draft, setDraft] = useState<Draft | null>(null);
+    const [query, setQuery] = useState("");
+    const [picked, setPicked] = useState<Open | null>(null);
+    // The open skill's editor, keyed by what it was read for, so a stale read
+    // never lands on another skill (and nothing resets inside an effect).
+    const [read, setRead] = useState<{ key: string; draft: Draft; saved: Draft } | null>(null);
     const [draftBusy, setDraftBusy] = useState(false);
-    const [draftTab, setDraftTab] = useState<"edit" | "preview">("edit");
+    const [draftTab, setDraftTab] = useState<"edit" | "preview">("preview");
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+    const detailRef = useRef<HTMLElement>(null);
 
     // Install-from-CLI state. `cliAvailable` is asked once: a machine without
     // Node should not be offered a button that can only fail.
@@ -79,7 +97,59 @@ export function SkillsScreen() {
             .then((res) => (res.ok ? res.json() : { available: false }))
             .then((data) => setCliAvailable(!!data.available))
             .catch(() => setCliAvailable(false));
+        fetch("/api/agents")
+            .then((res) => (res.ok ? res.json() : []))
+            .then((data) => setAgents(Array.isArray(data) ? data : []))
+            .catch(() => setAgents([]));
     }, []);
+
+    const shown = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        if (!q) return skills;
+        return skills.filter((s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q));
+    }, [skills, query]);
+
+    // UX1: the detail never opens empty. A picked skill that is gone falls back to the first.
+    const openSkill = picked?.key === "new" ? null : skills.find((s) => keyOf(s) === picked?.key) ?? skills[0] ?? null;
+    const openKey = picked?.key === "new" ? "new" : openSkill ? keyOf(openSkill) : null;
+
+    // Read the open skill's body (the list carries none).
+    useEffect(() => {
+        if (!openSkill) return;
+        const key = keyOf(openSkill);
+        if (read?.key === key) return;
+        const ctl = new AbortController();
+        fetch(`/api/skills/${encodeURIComponent(openSkill.name)}`, { signal: ctl.signal })
+            .then(async (res) => {
+                if (!res.ok) return show("Could not load the skill", "danger");
+                const full = await res.json();
+                const draft: Draft = {
+                    name: full.name,
+                    description: full.description,
+                    body: full.body || "",
+                    // A disk skill is edited by creating a library copy that shadows it.
+                    existing: openSkill.source === "library",
+                };
+                setRead({ key, draft, saved: draft });
+            })
+            .catch((e) => { if (e?.name !== "AbortError") show("Could not load the skill", "danger"); });
+        return () => ctl.abort();
+    }, [openSkill, read?.key, show]);
+
+    const draft = openKey === "new"
+        ? (read?.key === "new" ? read.draft : BLANK)
+        : read && read.key === openKey ? read.draft : null;
+    const setDraft = (next: Draft) => setRead((r) => ({ key: openKey ?? "new", draft: next, saved: r?.key === openKey ? r.saved : next }));
+    const dirty = !!read && read.key === openKey && JSON.stringify(read.draft) !== JSON.stringify(read.saved);
+
+    const open = (next: Open, tab: "edit" | "preview") => {
+        setPicked(next);
+        // An existing skill opens on Preview: the common reason to open one is
+        // to read what it tells the agent, not to rewrite it.
+        setDraftTab(tab);
+        if (next.key === "new") setRead({ key: "new", draft: BLANK, saved: BLANK });
+        showDetail(detailRef.current);
+    };
 
     const install = async () => {
         const pkg = installPackage.trim();
@@ -118,32 +188,6 @@ export function SkillsScreen() {
         }
     };
 
-    const openEditor = async (skill?: Skill) => {
-        if (!skill) {
-            setDraftTab("edit");
-            setDraft({ name: "", description: "", body: "", existing: false });
-            return;
-        }
-        // An existing skill opens on Preview: the common reason to open one is
-        // to read what it tells the agent, not to rewrite it.
-        setDraftTab("preview");
-        // The list carries no bodies; fetch the full skill for the editor.
-        try {
-            const res = await fetch(`/api/skills/${encodeURIComponent(skill.name)}`);
-            if (!res.ok) return show("Could not load the skill", "danger");
-            const full = await res.json();
-            setDraft({
-                name: full.name,
-                description: full.description,
-                body: full.body || "",
-                // A disk skill is edited by creating a library copy that shadows it.
-                existing: skill.source === "library",
-            });
-        } catch {
-            show("Could not load the skill", "danger");
-        }
-    };
-
     const saveDraft = async () => {
         if (!draft) return;
         if (!draft.name.trim()) return show("A skill needs a name", "warning");
@@ -167,7 +211,11 @@ export function SkillsScreen() {
                 const detail = (await res.json().catch(() => null))?.detail;
                 return show(detail || "Failed to save the skill", "danger");
             }
-            setDraft(null);
+            // Saved means it is a library skill now: open that one, read again.
+            const key = `library:${draft.name}`;
+            setPicked({ key });
+            setRead(null);
+            setDraftTab("preview");
             show("Skill saved");
             refresh();
         } catch {
@@ -175,6 +223,13 @@ export function SkillsScreen() {
         } finally {
             setDraftBusy(false);
         }
+    };
+
+    const cancel = () => {
+        // A new skill is dropped; a saved one gets its saved words back.
+        if (openKey === "new") { setPicked(null); setRead(null); }
+        else if (read && read.key === openKey) setRead({ ...read, draft: read.saved });
+        setDraftTab("preview");
     };
 
     const deleteSkill = async () => {
@@ -194,140 +249,155 @@ export function SkillsScreen() {
         }
     };
 
-    return (
-        <div className="space-y-4">
-            <div className="flex justify-end gap-2">
-                {cliAvailable && (
-                    <Button
-                        variant="secondary"
-                        onClick={() => { setInstallLog(""); setInstallOpen(true); }}
-                    >
-                        <Download size={14} aria-hidden /> Install from skills.sh
-                    </Button>
-                )}
-                <Button onClick={() => openEditor()}>
-                    <Plus size={14} aria-hidden /> New skill
-                </Button>
-            </div>
+    const usedBy = (name: string) => agents.filter((a) => a.skills?.includes(name)).map((a) => a.name);
+    const editLabel = (s: Skill) => (s.source === "disk" ? "Edit a library copy (shadows the disk file)" : "Edit");
 
-            {loading ? null : skills.length === 0 ? (
+    const actions = (
+        <>
+            {cliAvailable && (
+                <Button
+                    variant="secondary"
+                    onClick={() => { setInstallLog(""); setInstallOpen(true); }}
+                >
+                    <Download size={14} aria-hidden /> Install from skills.sh
+                </Button>
+            )}
+            <Button onClick={() => open({ key: "new" }, "edit")}>
+                <Plus size={14} aria-hidden /> New skill
+            </Button>
+        </>
+    );
+
+    const users = openSkill ? usedBy(openSkill.name) : [];
+
+    return (
+        <AppScreen id="skills" width="wide" actions={actions}>
+            {loading ? null : skills.length === 0 && openKey !== "new" ? (
                 <EmptyState title="No skills yet">
                     A skill is a named set of instructions an agent loads when the task calls
                     for it — its name and description ride the prompt, the body only loads on
                     demand. Create one here, or drop SKILL.md folders into{" "}
-                    <span className="font-mono">.agents/skills/</span> next to the install.
+                    <span className="font-code">.agents/skills/</span> next to the install.
                 </EmptyState>
             ) : (
-                <div className="grid gap-3 sm:grid-cols-2">
-                    {skills.map((skill) => (
-                        <Card key={`${skill.source}:${skill.name}`}>
-                            <CardBody className="space-y-2">
-                                <div className="flex items-start justify-between gap-2">
-                                    <div className="min-w-0">
-                                        <div className="flex items-center gap-2">
-                                            <span className="font-mono text-sm truncate">{skill.name}</span>
-                                            {skill.source === "disk" ? (
-                                                <Badge tone="neutral"><HardDrive size={10} aria-hidden /> Disk</Badge>
+                <div className={LIST_DETAIL}>
+                    <nav aria-label="Skills" className="grid gap-3">
+                        <SearchInput value={query} onChange={setQuery} placeholder="Search skills…" className="max-w-none" />
+                        {shown.length === 0 ? (
+                            <p className="m-0 px-2.5 py-2 text-sm text-text-faint">
+                                {skills.length === 0 ? "No skills yet." : "Nothing matches that."}
+                            </p>
+                        ) : (
+                            <ul className="m-0 list-none border-t border-border p-0">
+                                {shown.map((skill) => (
+                                    <ListRow
+                                        key={keyOf(skill)}
+                                        data={{ "data-skill-row": skill.name }}
+                                        title={skill.name}
+                                        titleClassName="font-code"
+                                        sub={skill.description}
+                                        meta={skill.source === "disk" ? (skill.shadowed ? "Disk · shadowed" : "Disk") : "Library"}
+                                        current={openKey === keyOf(skill)}
+                                        onClick={() => open({ key: keyOf(skill) }, "preview")}
+                                        actions={skill.source === "library" && (
+                                            <IconButton label="Delete" icon={Trash} size="sm" onClick={() => setConfirmDelete(skill.name)} />
+                                        )}
+                                    />
+                                ))}
+                            </ul>
+                        )}
+                    </nav>
+
+                    <section ref={detailRef} aria-label="Skill" className="min-w-0 scroll-mt-4">
+                        {draft && (
+                            <form
+                                className="grid gap-5"
+                                onSubmit={(e) => { e.preventDefault(); saveDraft(); }}
+                            >
+                                <DetailHead
+                                    title={openKey === "new" ? "New skill" : <span className="font-code">{openSkill?.name}</span>}
+                                    sub={openSkill && (
+                                        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                            {openSkill.source === "disk" ? (
+                                                <Badge tone="neutral"><span className="inline-flex items-center gap-1"><HardDrive size={10} aria-hidden />Disk</span></Badge>
                                             ) : (
-                                                <Badge tone="accent"><Library size={10} aria-hidden /> Library</Badge>
+                                                <Badge tone="accent"><span className="inline-flex items-center gap-1"><Library size={10} aria-hidden />Library</span></Badge>
                                             )}
-                                            {skill.shadowed && (
-                                                <Badge tone="warning">Shadowed by a library skill</Badge>
+                                            {openSkill.shadowed && <Badge tone="warning">Shadowed by a library skill</Badge>}
+                                            <span>{users.length ? `Used by ${users.join(", ")}` : "No agent uses it yet"}</span>
+                                            {openSkill.path && (
+                                                <span className="block w-full min-w-0 truncate font-code text-2xs text-text-faint" title={openSkill.path}>{openSkill.path}</span>
                                             )}
-                                        </div>
-                                        <p className="mt-1 text-xs text-zinc-400 line-clamp-2">{skill.description}</p>
-                                        {skill.path && (
-                                            <p className="mt-1 text-[10px] text-text-faint font-mono truncate" title={skill.path}>{skill.path}</p>
-                                        )}
-                                    </div>
-                                    <div className="flex shrink-0 items-center gap-1">
-                                        <IconButton
-                                            label={skill.source === "disk" ? "Edit a library copy (shadows the disk file)" : "Edit"}
-                                            icon={Pencil}
-                                            onClick={() => openEditor(skill)}
-                                        />
-                                        {skill.source === "library" && (
-                                            <IconButton label="Delete" icon={Trash} onClick={() => setConfirmDelete(skill.name)} />
-                                        )}
-                                    </div>
+                                        </span>
+                                    )}
+                                    actions={
+                                        <>
+                                            {openSkill && draftTab === "preview" && (
+                                                <IconButton label={editLabel(openSkill)} icon={Pencil} onClick={() => setDraftTab("edit")} />
+                                            )}
+                                            {openSkill?.source === "library" && (
+                                                <IconButton label="Delete" icon={Trash} onClick={() => setConfirmDelete(openSkill.name)} />
+                                            )}
+                                            {(openKey === "new" || dirty) && (
+                                                <Button type="button" variant="ghost" onClick={cancel}>Cancel</Button>
+                                            )}
+                                            {(openKey === "new" || dirty || draftTab === "edit") && (
+                                                <Button type="submit" disabled={draftBusy}>
+                                                    {draftBusy ? "Saving…" : "Save skill"}
+                                                </Button>
+                                            )}
+                                        </>
+                                    }
+                                />
+                                <p className="m-0 text-[13px] text-text-muted">
+                                    Claude Code&apos;s SKILL.md shape: the description is always in the agent&apos;s prompt; the body loads only when the agent calls load_skill.
+                                </p>
+                                <Field
+                                    label="Name"
+                                    required
+                                    hint={draft.existing ? "Names cannot change in place — agents select skills by name." : <>Lower-case, hyphens for spaces — e.g. <span className="font-code">quarterly-report-format</span></>}
+                                >
+                                    <Input
+                                        value={draft.name}
+                                        onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                                        disabled={draft.existing}
+                                        placeholder="my-skill-name"
+                                    />
+                                </Field>
+                                <Field
+                                    label="Description"
+                                    required
+                                    hint="One line. The agent reads this every turn to decide whether the skill applies — write it for that decision."
+                                >
+                                    <Input
+                                        value={draft.description}
+                                        onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                                        placeholder="When and how to format the weekly market summary"
+                                    />
+                                </Field>
+                                <div className="space-y-1">
+                                    <label htmlFor="skill-body" className="block text-sm font-medium text-text">Instructions (markdown)</label>
+                                    {/* No `{{` suggestions: nothing in a skill body is filled in. The tab
+                                        is controlled because an existing skill opens on Preview. */}
+                                    <MarkdownEditor
+                                        id="skill-body"
+                                        tab={draftTab === "preview" ? "preview" : "write"}
+                                        onTabChange={(next) => setDraftTab(next === "preview" ? "preview" : "edit")}
+                                        value={draft.body}
+                                        onChange={(body) => setDraft({ ...draft, body })}
+                                        textareaClassName="h-[clamp(240px,calc(100vh-460px),640px)] resize-none"
+                                        placeholder={"# My skill\n\nStep-by-step instructions the agent follows once loaded…"}
+                                        previewEmpty="No instructions yet."
+                                    />
+                                    <p className="text-2xs text-text-faint">
+                                        Used as written. Loaded into the agent&apos;s context only when it calls load_skill.
+                                    </p>
                                 </div>
-                            </CardBody>
-                        </Card>
-                    ))}
+                            </form>
+                        )}
+                    </section>
                 </div>
             )}
-
-            <Modal
-                open={!!draft}
-                onClose={() => setDraft(null)}
-                title={draft?.existing ? `Edit skill: ${draft.name}` : "New skill"}
-                description="Claude Code's SKILL.md shape: the description is always in the agent's prompt; the body loads only when the agent calls load_skill."
-                size="lg"
-                footer={
-                    <>
-                        <Button variant="ghost" onClick={() => setDraft(null)}>Cancel</Button>
-                        <Button onClick={saveDraft} disabled={draftBusy}>
-                            {draftBusy ? "Saving…" : "Save skill"}
-                        </Button>
-                    </>
-                }
-            >
-                {draft && (
-                    <div className="space-y-3">
-                        <Field
-                            label="Name"
-                            required
-                            hint={draft.existing ? "Names cannot change in place — agents select skills by name." : <>Lower-case, hyphens for spaces — e.g. <span className="font-mono">quarterly-report-format</span></>}
-                        >
-                            <Input
-                                value={draft.name}
-                                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                                disabled={draft.existing}
-                                placeholder="my-skill-name"
-                            />
-                        </Field>
-                        <Field
-                            label="Description"
-                            required
-                            hint="One line. The agent reads this every turn to decide whether the skill applies — write it for that decision."
-                        >
-                            <Input
-                                value={draft.description}
-                                onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-                                placeholder="When and how to format the weekly market summary"
-                            />
-                        </Field>
-                        {/* Instructions, with the same Preview/Edit affordance the
-                            agent editor's System Prompt uses — one toggle button, and
-                            `renderTextContent`, so both screens render markdown
-                            identically instead of each keeping its own overrides.
-
-                            Both panes share one height, and it is clamped against the
-                            viewport rather than fixed: everything else in the dialog is
-                            ~390px, so the pane absorbing the remainder is what keeps the
-                            modal body from growing its own scrollbar next to the pane's.
-                            Two nested scrollbars was the bug. */}
-                        <div className="space-y-1">
-                            <Label htmlFor="skill-body" className="block">Instructions (markdown)</Label>
-                            {/* No `{{` suggestions: nothing in a skill body is filled in. The tab
-                                is controlled because an existing skill opens on Preview. */}
-                            <MarkdownEditor
-                                id="skill-body"
-                                tab={draftTab === "preview" ? "preview" : "write"}
-                                onTabChange={(next) => setDraftTab(next === "preview" ? "preview" : "edit")}
-                                value={draft.body}
-                                onChange={(body) => setDraft({ ...draft, body })}
-                                textareaClassName="h-[clamp(160px,calc(85vh-390px),320px)] resize-none"
-                                placeholder={"# My skill\n\nStep-by-step instructions the agent follows once loaded…"}
-                                previewEmpty="No instructions yet."
-                            />
-                            <p className="text-2xs text-text-faint">
-                                Used as written. Loaded into the agent&apos;s context only when it calls load_skill.
-                            </p>
-                        </div>
-                    </div>
-                )}
-            </Modal>
 
             <Modal
                 open={installOpen}
@@ -347,7 +417,7 @@ export function SkillsScreen() {
                     <Field
                         label="Package"
                         required
-                        hint={<>From <span className="font-mono">skills.sh</span> — e.g. <span className="font-mono">anthropics/skills</span> or <span className="font-mono">vercel-labs/agent-skills@vercel-react-best-practices</span></>}
+                        hint={<>From <span className="font-code">skills.sh</span> — e.g. <span className="font-code">anthropics/skills</span> or <span className="font-code">vercel-labs/agent-skills@vercel-react-best-practices</span></>}
                     >
                         <Input
                             value={installPackage}
@@ -362,7 +432,7 @@ export function SkillsScreen() {
                         skills you trust — an agent follows them as written.
                     </p>
                     {installLog && (
-                        <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-bg px-3 py-2 font-mono text-2xs text-text-muted">
+                        <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-bg px-3 py-2 font-code text-2xs text-text-muted">
                             {installLog}
                         </pre>
                     )}
@@ -376,13 +446,13 @@ export function SkillsScreen() {
                 title="Delete skill?"
                 description={
                     <>
-                        <span className="font-mono">{confirmDelete}</span> will stop being offered to
+                        <span className="font-code">{confirmDelete}</span> will stop being offered to
                         agents. Agents that selected it keep the name and skip it at run time.
                     </>
                 }
             />
 
             <Toast message={toast.message} tone={toast.tone} onDismiss={dismiss} />
-        </div>
+        </AppScreen>
     );
 }

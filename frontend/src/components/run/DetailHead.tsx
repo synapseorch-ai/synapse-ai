@@ -79,7 +79,7 @@ export function DetailHead({
 }) {
     return (
         <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className={cn('min-w-0', leading && 'flex items-start gap-3')}>
+            <div className={cn('min-w-0 flex-1', leading && 'flex items-start gap-3')}>
                 {leading}
                 <div className="min-w-0">
                     <h2 className="m-0 truncate text-lg font-semibold tracking-[-0.01em] text-text">{title}</h2>
