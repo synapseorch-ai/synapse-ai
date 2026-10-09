@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, UserRound } from "lucide-react";
 import * as React from "react";
 
 import { cn } from "@/lib/cn";
@@ -22,14 +22,24 @@ import { useIsCanvasMode } from "./canvas-mode";
  * It floats, so it sits on the surface with the elevated shadow, and the tone
  * is carried by its icon (UX1): success stays quiet, a warning is a caveat in
  * ordinary text with a warning sign, and only a failure is coloured through.
+ *
+ * `person` is the one warm toast (UX1: amber marks a person): a run that needs
+ * someone — an approval, a question — on the person wash with the person's
+ * mark, so it never reads as a caveat (M2h).
  */
-export type ToastTone = "success" | "warning" | "danger";
+export type ToastTone = "success" | "warning" | "danger" | "person";
 
 const TOAST_TONES: Record<ToastTone, { chip: string; icon: typeof CheckCircle2; mark: string }> = {
   success: { chip: "border-border bg-surface text-text", icon: CheckCircle2, mark: "text-success" },
   warning: { chip: "border-border bg-surface text-text", icon: AlertTriangle, mark: "text-text" },
   danger: { chip: "border-danger/40 bg-danger-subtle text-danger", icon: AlertCircle, mark: "text-danger" },
+  person: { chip: "border-person/50 bg-person-subtle text-text", icon: UserRound, mark: "text-person-ink" },
 };
+
+/** A tone's ground and mark, for a toast host of its own (OSS's notification stack). */
+export function toastLook(tone: ToastTone) {
+  return TOAST_TONES[tone];
+}
 
 export function Toast({
   message,

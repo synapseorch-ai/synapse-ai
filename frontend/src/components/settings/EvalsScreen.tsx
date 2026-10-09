@@ -21,7 +21,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Play, Plus, Sparkles, Square, Target, Trash } from "lucide-react";
 
 import { AppScreen } from "@/components/app/AppScreen";
-import { EvalTrend, useClock, When, type EvalTrendData } from "@/components/run";
+import { DetailHead, EvalTrend, ListRow, useClock, When, type EvalTrendData } from "@/components/run";
 import {
     Button, Combobox, ConfirmDialog, EmptyState, Field, IconButton, Input, Muted, Section, Select,
     Textarea, Toast, useToast,
@@ -282,49 +282,6 @@ export function EvalsScreen() {
             )}
             <Toast message={toast.message} tone={toast.tone} onDismiss={dismiss} />
         </AppScreen>
-    );
-}
-
-/** A row of the list: the name, a quiet line under it, and one figure on the right. */
-function ListRow({
-    title, sub, meta, current, onClick, data,
-}: {
-    title: string;
-    sub: string;
-    meta?: React.ReactNode;
-    current: boolean;
-    onClick: () => void;
-    data: Record<string, string>;
-}) {
-    return (
-        <li {...data} className="m-0">
-            <button
-                type="button"
-                onClick={onClick}
-                aria-current={current ? "true" : undefined}
-                className={cn(
-                    "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 border-b border-border px-2.5 py-2.5 text-left transition-colors",
-                    current ? "bg-surface-2 shadow-[inset_2px_0_0_var(--color-text)]" : "hover:bg-row-hover",
-                )}
-            >
-                <span className="truncate text-sm font-medium text-text">{title}</span>
-                <span className="text-xs tabular-nums text-text-faint">{meta}</span>
-                <span className="col-span-2 truncate text-xs text-text-faint">{sub}</span>
-            </button>
-        </li>
-    );
-}
-
-/** The head over the open rubric or set. */
-function DetailHead({ title, sub, actions }: { title: string; sub?: React.ReactNode; actions?: React.ReactNode }) {
-    return (
-        <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-                <h2 className="m-0 truncate text-lg font-semibold tracking-[-0.01em] text-text">{title}</h2>
-                {sub && <p className="m-0 mt-0.5 text-[13px] text-text-muted">{sub}</p>}
-            </div>
-            {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
-        </div>
     );
 }
 

@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
     Server, Plus, Trash, RefreshCw, CheckCircle, XCircle, AlertCircle, Zap,
-    Terminal, Globe, Eye, EyeOff, ShieldAlert
+    Terminal, Globe, Eye, EyeOff, ShieldAlert, UserRound
 } from 'lucide-react';
 import { useDispatch } from 'react-redux';
 import { AppDispatch } from '@/store';
@@ -158,6 +158,7 @@ const NOTICE_TONES: Record<ToastTone, { chip: string; icon: React.ElementType; m
     success: { chip: 'bg-surface border-border text-text', icon: CheckCircle, mark: 'text-success' },
     warning: { chip: 'bg-surface border-border text-text', icon: AlertCircle, mark: 'text-text' },
     danger: { chip: 'bg-danger-subtle border-danger/40 text-danger', icon: XCircle, mark: 'text-danger' },
+    person: { chip: 'bg-person-subtle border-person/50 text-text', icon: UserRound, mark: 'text-person-ink' },
 };
 
 const inputCls = "w-full rounded-md bg-surface border border-border-strong px-3 py-2 text-sm text-text focus:border-accent focus:outline-none placeholder:text-text-faint";

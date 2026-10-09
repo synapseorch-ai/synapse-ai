@@ -276,7 +276,7 @@ export function KitchenSink() {
               <Button variant="secondary" onClick={() => setDrawer(true)}>
                 Open drawer
               </Button>
-              {(["success", "warning", "danger"] as const).map((tone) => (
+              {(["success", "warning", "danger", "person"] as const).map((tone) => (
                 <Button
                   key={tone}
                   variant={tone === "danger" ? "danger" : "secondary"}
@@ -286,6 +286,7 @@ export function KitchenSink() {
                         success: "Saved.",
                         warning: "Config saved. Use Retry to reconnect.",
                         danger: "Could not reach the server.",
+                        person: "Invoice triage needs your approval",
                       }[tone],
                       tone,
                     })

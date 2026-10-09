@@ -20,7 +20,7 @@ import { AppScreen } from '@/components/app/AppScreen';
 import { cronWords, lastScheduledRun, ScheduleList, scheduleRow } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import {
-    Button, buttonStyles, ConfirmDialog, Drawer, EmptyState, Field, IconButton, Input, Section, Select, Switch,
+    Button, buttonStyles, ConfirmDialog, Drawer, EmptyState, Field, IconButton, Input, Section, Segmented, Select, Switch,
     Textarea, Toast, useToast,
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
@@ -80,63 +80,6 @@ function emptyForm(): Form {
         cron_expression: '0 9 * * *',
         missed_run_policy: 'skip',
     };
-}
-
-/**
- * One of a few, as a segmented control: a quiet track with the chosen option on
- * a raised thumb (Naveen, M2h: a form's choice is a value, not a filter, so it
- * is not the runs list's dark pill). The thumb is the lighter of the two in both
- * themes. Arrow keys move the choice, as radios do.
- */
-function Choice<T extends string>({
-    value, onChange, options, label,
-}: {
-    value: T;
-    onChange: (v: T) => void;
-    options: { value: T; label: string; icon?: React.ReactNode }[];
-    label: string;
-}) {
-    const move = (step: number) => {
-        const i = options.findIndex(o => o.value === value);
-        const next = options[(i + step + options.length) % options.length];
-        onChange(next.value);
-        requestAnimationFrame(() => document.getElementById(`choice-${label}-${next.value}`)?.focus());
-    };
-    return (
-        <div
-            role="radiogroup"
-            aria-label={label}
-            className="inline-flex w-fit items-center gap-0.5 rounded-lg border border-border bg-surface-2 p-0.5 [:root[data-theme=dark]_&]:bg-bg"
-            onKeyDown={e => {
-                if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); move(1); }
-                if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
-            }}
-        >
-            {options.map(o => {
-                const on = value === o.value;
-                return (
-                    <button
-                        key={o.value}
-                        id={`choice-${label}-${o.value}`}
-                        type="button"
-                        role="radio"
-                        aria-checked={on}
-                        tabIndex={on ? 0 : -1}
-                        onClick={() => onChange(o.value)}
-                        className={cn(
-                            'inline-flex h-7 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium transition-colors',
-                            on
-                                ? 'bg-bg text-text shadow-[0_1px_2px_rgb(16_24_40/0.12)] ring-1 ring-border-strong [:root[data-theme=dark]_&]:bg-surface-2'
-                                : 'text-text-muted hover:text-text',
-                        )}
-                    >
-                        {o.icon}
-                        {o.label}
-                    </button>
-                );
-            })}
-        </div>
-    );
 }
 
 // -- Main component -------------------------------------------------------
@@ -503,7 +446,7 @@ export const SchedulesTab = () => {
 
                     <div className="grid gap-1.5">
                         <span className={label}>Run as</span>
-                        <Choice
+                        <Segmented
                             label="Run as"
                             value={form.target_type}
                             onChange={t => setForm(f => ({ ...f, target_type: t, target_id: '' }))}
@@ -537,7 +480,7 @@ export const SchedulesTab = () => {
 
                     <div className="grid gap-1.5">
                         <span className={label}>Schedule type</span>
-                        <Choice
+                        <Segmented
                             label="Schedule type"
                             value={form.schedule_type}
                             onChange={t => setForm(f => ({ ...f, schedule_type: t }))}
