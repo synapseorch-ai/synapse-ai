@@ -48,3 +48,8 @@ export {
 export { LogHead, LogKinds, LogList, RunWord } from './LogList';
 export { groupLogs, logBucket, logSize, matchLog, type LogGroup, type LogKind, type LogListRow, type LogRun } from './logList';
 export { compactedLines, Transcript } from './Transcript';
+export { EvalTrend, ScoreTrend } from './EvalTrend';
+export {
+    average, byCriterion, flagWords, latest, passRate, RUNS_SHOWN, scoreText, weakestStep,
+    type EvalCriterion, type EvalScore, type EvalTrendData,
+} from './evalStats';

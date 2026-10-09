@@ -75,12 +75,15 @@ export type BarRow = {
 };
 
 /**
- * Several things compared on one hue, each bar's length against the largest.
+ * Several things compared on one hue, each bar's length against the largest —
+ * or against `max` when the figures share a scale of their own (a rubric's 0–10).
  * A row is label | bar | figure from `sm`; on a phone the bar drops under the
  * label so the names are not squeezed.
  */
-export function BarList({ rows, label, className }: { rows: BarRow[]; label: string; className?: string }) {
-  const max = rows.reduce((m, r) => Math.max(m, r.value), 0);
+export function BarList({
+  rows, label, max: of, className,
+}: { rows: BarRow[]; label: string; max?: number; className?: string }) {
+  const max = of ?? rows.reduce((m, r) => Math.max(m, r.value), 0);
   return (
     <ul aria-label={label} className={cn("m-0 grid list-none gap-0 p-0", className)}>
       {rows.map(r => (
