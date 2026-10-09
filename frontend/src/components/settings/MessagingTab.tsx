@@ -1,13 +1,15 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { AlertTriangle, FlaskConical, Info, Play, Plus, RefreshCw, Square, Trash } from 'lucide-react';
+import { AppScreen } from '@/components/app/AppScreen';
+import { VisitorToolGroups, type VisitorToolChoice } from '@/components/settings/VisitorToolGroups';
+import { DetailHead, LIST_DETAIL, ListRow, showDetail } from '@/components/run';
 import {
-    MessageSquare, Plus, Trash, Save, Play, Square, FlaskConical,
-    ChevronDown, ChevronRight, AlertTriangle, CheckCircle, XCircle,
-    Info, RefreshCw,
-} from 'lucide-react';
-import { ConfirmationModal } from './ConfirmationModal';
-import { Badge, Checkbox, Select, Spinner, type BadgeTone } from '@/components/ui';
+    Button, Checkbox, ConfirmDialog, EmptyState, ErrorNote, Field, IconButton, Input, Section, Segmented,
+    Select, Toast, useToast, type ToastTone,
+} from '@/components/ui';
+import { cn } from '@/lib/cn';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,16 +41,7 @@ interface Channel {
     visitor_tools?: string[];
 }
 
-/** A tool an assigned agent could let a sender use, with what it does
- *  (`GET /api/widgets/visitor-tools`, the same list the widget editor shows). */
-interface SenderToolChoice { name: string; category: string }
-
-const TOOL_CATEGORY: Record<string, { label: string; tone: BadgeTone }> = {
-    destructive: { label: 'Changes data', tone: 'danger' },
-    open_world: { label: 'Reaches outside', tone: 'warning' },
-    read_only: { label: 'Reads your data', tone: 'warning' },
-    undeclared: { label: 'Does not say what it does', tone: 'warning' },
-};
+type SenderToolChoice = VisitorToolChoice;
 
 type DeliveryMode = 'polling' | 'webhook';
 
@@ -68,12 +61,12 @@ const EMPTY_CHANNEL: Channel = {
 
 // ─── Platform metadata ────────────────────────────────────────────────────────
 
-const PLATFORMS: { id: Platform; label: string; color: string; icon: string }[] = [
-    { id: 'telegram', label: 'Telegram', color: 'text-sky-400 border-sky-800 bg-sky-950/40', icon: '/telegram-icon.svg' },
-    { id: 'discord', label: 'Discord', color: 'text-indigo-400 border-indigo-800 bg-indigo-950/40', icon: '/discord-round-color-icon.svg' },
-    { id: 'slack', label: 'Slack', color: 'text-green-400 border-green-800 bg-green-950/40', icon: '/slack-icon.svg' },
-    { id: 'teams', label: 'Teams', color: 'text-blue-400 border-blue-800 bg-blue-950/40', icon: '/teams.svg' },
-    { id: 'whatsapp', label: 'WhatsApp', color: 'text-emerald-400 border-emerald-800 bg-emerald-950/40', icon: '/whatsapp-color-icon.svg' },
+const PLATFORMS: { id: Platform; label: string; icon: string }[] = [
+    { id: 'telegram', label: 'Telegram', icon: '/telegram-icon.svg' },
+    { id: 'discord', label: 'Discord', icon: '/discord-round-color-icon.svg' },
+    { id: 'slack', label: 'Slack', icon: '/slack-icon.svg' },
+    { id: 'teams', label: 'Teams', icon: '/teams.svg' },
+    { id: 'whatsapp', label: 'WhatsApp', icon: '/whatsapp-color-icon.svg' },
 ];
 
 // ─── Credential field definitions per platform ────────────────────────────────
@@ -82,22 +75,22 @@ const PLATFORMS: { id: Platform; label: string; color: string; icon: string }[] 
  *  delivery with a credential polling never needs, and vice versa (F227). */
 const CREDENTIAL_FIELDS: Record<Platform, { key: string; label: string; placeholder: string; secret?: boolean; note?: string; mode?: DeliveryMode }[]> = {
     telegram: [
-        { key: 'bot_token', label: 'Bot Token', placeholder: '123456:ABC-DEF...', secret: true, note: 'Get from @BotFather on Telegram' },
+        { key: 'bot_token', label: 'Bot token', placeholder: '123456:ABC-DEF...', secret: true, note: 'Get from @BotFather on Telegram' },
     ],
     discord: [
-        { key: 'bot_token', label: 'Bot Token', placeholder: 'MTE...', secret: true, note: 'From Discord Developer Portal → Bot → Token' },
-        { key: 'channel_id', label: 'Restrict to Channel ID (optional)', placeholder: '123456789012345678', note: 'Leave empty to respond in all channels where the bot is mentioned' },
+        { key: 'bot_token', label: 'Bot token', placeholder: 'MTE...', secret: true, note: 'From Discord Developer Portal → Bot → Token' },
+        { key: 'channel_id', label: 'Restrict to channel ID (optional)', placeholder: '123456789012345678', note: 'Leave empty to respond in all channels where the bot is mentioned' },
         { key: 'application_id', label: 'Application ID', placeholder: '123456789012345678', mode: 'webhook', note: 'Developer Portal → General Information. Registers the /ask command' },
-        { key: 'public_key', label: 'Public Key', placeholder: 'a1b2c3…', mode: 'webhook', note: 'Developer Portal → General Information. Verifies each interaction Discord sends' },
+        { key: 'public_key', label: 'Public key', placeholder: 'a1b2c3…', mode: 'webhook', note: 'Developer Portal → General Information. Verifies each interaction Discord sends' },
     ],
     slack: [
-        { key: 'bot_token', label: 'Bot Token (xoxb-...)', placeholder: 'xoxb-...', secret: true, note: 'OAuth & Permissions → Bot Token Scopes' },
-        { key: 'app_token', label: 'App-Level Token (xapp-...)', placeholder: 'xapp-...', secret: true, mode: 'polling', note: 'Enable Socket Mode → generate App-Level Token with connections:write scope' },
-        { key: 'signing_secret', label: 'Signing Secret', placeholder: '', secret: true, mode: 'webhook', note: 'Basic Information → App Credentials. Verifies each delivery Slack sends' },
+        { key: 'bot_token', label: 'Bot token (xoxb-...)', placeholder: 'xoxb-...', secret: true, note: 'OAuth & Permissions → Bot Token Scopes' },
+        { key: 'app_token', label: 'App-level token (xapp-...)', placeholder: 'xapp-...', secret: true, mode: 'polling', note: 'Enable Socket Mode → generate App-Level Token with connections:write scope' },
+        { key: 'signing_secret', label: 'Signing secret', placeholder: '', secret: true, mode: 'webhook', note: 'Basic Information → App Credentials. Verifies each delivery Slack sends' },
     ],
     teams: [
-        { key: 'app_id', label: 'Azure App ID', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', note: 'Azure Bot resource → Configuration → Microsoft App ID' },
-        { key: 'app_password', label: 'App Password / Client Secret', placeholder: '', secret: true, note: 'Azure Bot → Certificates & Secrets' },
+        { key: 'app_id', label: 'Azure app ID', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', note: 'Azure Bot resource → Configuration → Microsoft App ID' },
+        { key: 'app_password', label: 'App password / client secret', placeholder: '', secret: true, note: 'Azure Bot → Certificates & Secrets' },
     ],
     whatsapp: [
         // These are conditionally rendered based on whatsapp_mode — see component
@@ -170,25 +163,26 @@ const SETUP_GUIDES: Record<Platform, { title: string; steps: string[] }> = {
 const credPlaceholder = (draft: Channel, key: string, secret: boolean | undefined, fallback: string) =>
     secret && draft.credentials_set?.[key] ? 'Saved — leave blank to keep' : fallback;
 
-// ─── Status badge ─────────────────────────────────────────────────────────────
+// ─── Status: a quiet dot and a word ───────────────────────────────────────────
 
-const StatusBadge = ({ status, lastError }: { status?: string; lastError?: string | null }) => {
-    if (status === 'running') return (
-        <span className="flex items-center gap-1 text-[10px] font-bold text-green-400 bg-green-950/50 border border-green-900 px-2 py-0.5 rounded-md">
-            <CheckCircle className="h-2.5 w-2.5" /> RUNNING
-        </span>
-    );
-    if (status === 'error') return (
-        <span className="flex items-center gap-1 text-[10px] font-bold text-red-400 bg-red-950/50 border border-red-900 px-2 py-0.5 rounded-md" title={lastError || ''}>
-            <XCircle className="h-2.5 w-2.5" /> ERROR
-        </span>
-    );
+const STATUS: Record<string, { word: string; dot: string }> = {
+    running: { word: 'Running', dot: 'bg-success' },
+    error: { word: 'Error', dot: 'bg-danger' },
+    stopped: { word: 'Stopped', dot: 'bg-text-faint' },
+};
+
+const StatusWord = ({ status, lastError }: { status?: string; lastError?: string | null }) => {
+    const s = STATUS[status ?? 'stopped'] ?? STATUS.stopped;
     return (
-        <span className="flex items-center gap-1 text-[10px] font-bold text-text-faint bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded-md">
-            <Square className="h-2.5 w-2.5" /> STOPPED
+        <span className={cn('inline-flex items-center gap-1.5', status === 'error' && 'text-danger')} title={status === 'error' ? lastError || '' : undefined}>
+            <span className={cn('size-1.5 rounded-full', s.dot)} aria-hidden />
+            {s.word}
         </span>
     );
 };
+
+/** The old toasts led with an emoji for their tone; the kit's toast carries the tone itself. */
+const TONE_OF: Record<string, ToastTone> = { '✅': 'success', '⚠️': 'warning', '❌': 'danger' };
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
@@ -199,8 +193,8 @@ export const MessagingTab = () => {
     const [agents, setAgents] = useState<any[]>([]);
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
-    const [toastMsg, setToastMsg] = useState<string | null>(null);
-    const [guideOpen, setGuideOpen] = useState(false);
+    const { toast, show, dismiss } = useToast();
+    const detailRef = useRef<HTMLElement>(null);
     const [refreshing, setRefreshing] = useState(false);
     const [assigning, setAssigning] = useState(false);
 
@@ -259,7 +253,7 @@ export const MessagingTab = () => {
             await patchSettings({ run_notification_channel_id: channelId });
             showToast(channelId ? 'Run notifications enabled for channel' : 'Run notifications set to in-app only');
         } catch {
-            showToast('Failed to save notification channel');
+            showToast('Failed to save notification channel', 'danger');
         }
     };
     const saveWebhookBase = async () => {
@@ -270,58 +264,61 @@ export const MessagingTab = () => {
             setWebhookBaseDraft(value);
             showToast(value ? 'Webhook address saved' : 'Webhook address cleared');
         } catch {
-            showToast('Failed to save the webhook address');
+            showToast('Failed to save the webhook address', 'danger');
         }
     };
 
-    const showToast = (msg: string) => {
-        setToastMsg(msg);
-        setTimeout(() => setToastMsg(null), 3000);
+    const showToast = (msg: string, tone?: ToastTone) => {
+        const lead = Object.keys(TONE_OF).find(e => msg.startsWith(e));
+        show(lead ? msg.slice(lead.length).trim() : msg, tone ?? (lead ? TONE_OF[lead] : 'success'));
     };
 
-    const fetchChannels = useCallback(async () => {
+    const fetchChannels = useCallback(async (): Promise<Channel[]> => {
         setRefreshing(true);
         try {
             const res = await fetch('/api/messaging/channels');
             if (res.ok) {
                 const data = await res.json();
-                setChannels(Array.isArray(data) ? data : []);
+                const list = Array.isArray(data) ? data : [];
+                setChannels(list);
+                return list;
             }
         } catch {
             // ignore — messaging may not be enabled
         } finally {
             setRefreshing(false);
         }
+        return [];
     }, []);
 
-    useEffect(() => {
-        fetchChannels();
-        fetch('/api/agents').then(r => r.json()).then(d => setAgents(Array.isArray(d) ? d : [])).catch(() => {});
-    }, [fetchChannels]);
-
-    const selectChannel = (ch: Channel) => {
+    const selectChannel = useCallback((ch: Channel) => {
         setSelectedId(ch.id || null);
         setDraft({ ...ch });
-        setGuideOpen(false);
         if (ch.platform === 'whatsapp') {
             setWaMode((ch.credentials?.whatsapp_mode as any) || 'meta_api');
             setWaRiskAck(false);
         }
-    };
+    }, []);
+
+    useEffect(() => {
+        // UX1: never an empty pane — the first channel opens.
+        fetchChannels().then(list => { if (list[0]) selectChannel(list[0]); });
+        fetch('/api/agents').then(r => r.json()).then(d => setAgents(Array.isArray(d) ? d : [])).catch(() => {});
+    }, [fetchChannels, selectChannel]);
 
     const newChannel = () => {
         setSelectedId(null);
         setDraft({ ...EMPTY_CHANNEL });
-        setGuideOpen(false);
         setWaMode('meta_api');
         setWaRiskAck(false);
+        showDetail(detailRef.current);
     };
 
     const saveAndConnect = async () => {
         if (!draft) return;
-        if (!draft.name.trim()) { showToast('Please enter a channel name'); return; }
+        if (!draft.name.trim()) { showToast('Please enter a channel name', 'warning'); return; }
         if (draft.mode === 'webhook' && !webhookBase) {
-            showToast('Set the public webhook address below before using webhook mode');
+            showToast('Set the public webhook address below before using webhook mode', 'warning');
             return;
         }
 
@@ -391,8 +388,12 @@ export const MessagingTab = () => {
         const ch = channels.find(c => c.id === id);
         if (!ch || !ch.id) return;
         await fetch(`/api/messaging/channels/${ch.id}`, { method: 'DELETE' });
-        if (selectedId === ch.id) { setSelectedId(null); setDraft(null); }
-        await fetchChannels();
+        const list = await fetchChannels();
+        // The open one went: the first that is left opens in its place.
+        if (selectedId === ch.id) {
+            if (list[0]) selectChannel(list[0]);
+            else { setSelectedId(null); setDraft(null); }
+        }
     };
 
     /** One whole-list write of the channel's agents. The chips describe a set,
@@ -449,6 +450,7 @@ export const MessagingTab = () => {
 
     const platform = draft?.platform || 'telegram';
     const platformMeta = PLATFORMS.find(p => p.id === platform)!;
+    const capsLabel = 'text-sm font-medium text-text';
     const guide = SETUP_GUIDES[platform];
     /* The join, default first — with the pre-join scalar standing in for a
        channel that has never been assigned through it. */
@@ -464,542 +466,475 @@ export const MessagingTab = () => {
     const senderTools = toolChoices?.key === assignedIds.join(',') ? toolChoices.tools : null;
     const memoryAgents = agentNames(assignedIds.filter(id => agents.find(a => a.id === id)?.memory));
 
+    const agentLine = (ch: Channel) => {
+        const ids = ch.agent_ids?.length ? ch.agent_ids : ch.agent_id ? [ch.agent_id] : [];
+        if (ids.length === 0) return 'no agents';
+        if (ids.length <= 2) return agentNames(ids).join(', ');
+        return `${agentNames(ids)[0]} +${ids.length - 1} more`;
+    };
+    const credInput = (f: { key: string; placeholder: string; secret?: boolean }) => (
+        <Input
+            id={`messaging-cred-${f.key}`}
+            type={f.secret ? 'password' : 'text'}
+            value={draft?.credentials[f.key] || ''}
+            onChange={e => updateCred(f.key, e.target.value)}
+            placeholder={draft ? credPlaceholder(draft, f.key, f.secret, f.placeholder) : f.placeholder}
+            className="font-code"
+        />
+    );
+
     return (
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-10">
-            {/* Toast */}
-            {toastMsg && (
-                <div className="fixed bottom-6 right-6 z-50 bg-zinc-900 border border-zinc-700 text-white text-xs px-4 py-3 shadow-xl animate-in slide-in-from-bottom-4 rounded-md">
-                    {toastMsg}
-                </div>
-            )}
+        <AppScreen
+            id="messaging"
+            width="wide"
+            actions={
+                <>
+                    <IconButton icon={RefreshCw} label="Refresh" onClick={fetchChannels} className={cn(refreshing && '[&_svg]:animate-spin')} />
+                    <Button onClick={newChannel}><Plus className="size-4" aria-hidden /> New channel</Button>
+                </>
+            }
+        >
+            <div className={LIST_DETAIL}>
+                {/* ── The channels, and what holds for all of them ─────────── */}
+                <div className="grid min-w-0 content-start gap-6">
+                    <nav aria-label="Channels">
+                        {channels.length === 0 ? (
+                            <p className="m-0 border-t border-border px-2.5 py-3 text-sm text-text-faint">
+                                No channels configured yet. Use New channel to add one.
+                            </p>
+                        ) : (
+                            <ul className="m-0 list-none border-t border-border p-0">
+                                {channels.map(ch => {
+                                    const pm = PLATFORMS.find(p => p.id === ch.platform);
+                                    return (
+                                        <ListRow
+                                            key={ch.id}
+                                            data={{ 'data-channel-row': ch.id ?? '' }}
+                                            // The icon is decoration: the platform is said once, in words.
+                                            leading={<img src={pm?.icon} alt="" aria-hidden className="size-4 shrink-0 object-contain" />}
+                                            title={<>{ch.name}{pm?.label && <span className="sr-only">, {pm.label}</span>}</>}
+                                            sub={agentLine(ch)}
+                                            meta={<StatusWord status={ch.status} lastError={ch.last_error} />}
+                                            current={selectedId === ch.id}
+                                            onClick={() => { selectChannel(ch); showDetail(detailRef.current); }}
+                                            actions={
+                                                <>
+                                                    <IconButton
+                                                        size="sm"
+                                                        icon={ch.status === 'running' ? Square : Play}
+                                                        label={`${ch.status === 'running' ? 'Stop' : 'Start'} ${ch.name}`}
+                                                        title={ch.status === 'running' ? 'Stop' : 'Start'}
+                                                        onClick={() => toggleEnable(ch)}
+                                                    />
+                                                    <IconButton
+                                                        size="sm"
+                                                        icon={Trash}
+                                                        tone="danger"
+                                                        label={`Delete ${ch.name}`}
+                                                        title="Delete"
+                                                        onClick={() => setConfirmDeleteId(ch.id || null)}
+                                                    />
+                                                </>
+                                            }
+                                        />
+                                    );
+                                })}
+                            </ul>
+                        )}
+                    </nav>
 
-            {/* ── Left: Channel List ─────────────────────────────────── */}
-            <div className="md:col-span-4 border-r border-zinc-800 pr-4 flex flex-col max-h-[calc(100vh-180px)] sticky top-0 self-start">
-                <div className="mb-4 flex justify-between items-center">
-                    <h3 className="text-sm font-bold text-zinc-400">CHANNELS</h3>
-                    <div className="flex gap-1">
-                        <button
-                            onClick={fetchChannels}
-                            title="Refresh"
-                            className="p-1.5 text-text-faint hover:text-white hover:bg-zinc-800 transition-colors"
-                        >
-                            <RefreshCw className={`h-3 w-3 ${refreshing ? 'animate-spin' : ''}`} />
-                        </button>
-                        <button
-                            onClick={newChannel}
-                            className="p-1.5 hover:bg-zinc-800 text-white transition-colors border border-dashed border-zinc-600 hover:border-white rounded-md"
-                            title="New Channel"
-                        >
-                            <Plus className="h-4 w-4" />
-                        </button>
-                    </div>
-                </div>
-
-                <div className="space-y-2 flex-1 overflow-y-auto modern-scrollbar">
-                    {channels.length === 0 && (
-                        <div className="p-6 text-center text-text-faint text-xs border border-dashed border-zinc-800">
-                            <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-20" />
-                            No channels configured yet.<br />Click + to add one.
-                        </div>
-                    )}
-                    {channels.map(ch => {
-                        const pm = PLATFORMS.find(p => p.id === ch.platform);
-                        const isSelected = selectedId === ch.id;
-                        return (
-                            // The row is a button, so a keyboard opens a channel as a click
-                            // does; its quick actions are siblings, shown on focus as well as
-                            // hover, and named (F236).
-                            <div
-                                key={ch.id}
-                                className={`border transition-all group relative
-                                    ${isSelected ? 'bg-zinc-900 border-white' : 'bg-black border-zinc-800 hover:border-zinc-600'} rounded-md`}
+                    <Section title="For every channel" variant="plain" collapsible={false}>
+                        <div className="grid gap-4">
+                            <Field
+                                label="Run notifications"
+                                hint="Mirror orchestration notifications (needs input, completed, failed) to this channel's notify chat."
                             >
-                                <button
-                                    type="button"
-                                    onClick={() => selectChannel(ch)}
-                                    aria-current={isSelected ? 'true' : undefined}
-                                    className="flex w-full items-center gap-3 p-3 pr-24 text-left"
-                                >
-                                    {/* The icon is decoration: inside a button its alt was read out
-                                        beside the name, so the platform is said once, in words. */}
-                                    <span aria-hidden className={`h-8 w-8 flex-shrink-0 flex items-center justify-center border ${pm?.color ?? ''}`}>
-                                        <img src={pm?.icon} alt="" className="h-5 w-5 object-contain" />
-                                    </span>
-                                    <span className="block flex-1 min-w-0">
-                                        <span className="block text-xs font-bold text-white truncate">
-                                            {ch.name}
-                                            {pm?.label && <span className="sr-only">, {pm.label}</span>}
-                                        </span>
-                                        <span className="block text-[10px] text-text-faint truncate">
-                                            {(() => {
-                                                const ids = ch.agent_ids?.length
-                                                    ? ch.agent_ids
-                                                    : ch.agent_id ? [ch.agent_id] : [];
-                                                if (ids.length === 0) return 'no agents';
-                                                if (ids.length <= 2) return agentNames(ids).join(', ');
-                                                return `${agentNames(ids)[0]} +${ids.length - 1} more`;
-                                            })()}
-                                        </span>
-                                    </span>
-                                </button>
-                                <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center">
-                                    {/* Status badge: hidden while the actions show */}
-                                    <div className="group-hover:hidden group-focus-within:hidden flex-shrink-0">
-                                        <StatusBadge status={ch.status} lastError={ch.last_error} />
-                                    </div>
-                                    {/* Quick actions: shown on hover or focus */}
-                                    <div className="hidden group-hover:flex group-focus-within:flex gap-1 flex-shrink-0">
-                                        <button
-                                            type="button"
-                                            onClick={() => toggleEnable(ch)}
-                                            className={`p-1 transition-colors ${ch.status === 'running' ? 'text-orange-400 hover:text-orange-300' : 'text-green-400 hover:text-green-300'}`}
-                                            aria-label={`${ch.status === 'running' ? 'Stop' : 'Start'} ${ch.name}`}
-                                            title={ch.status === 'running' ? 'Stop' : 'Start'}
-                                        >
-                                            {ch.status === 'running' ? <Square className="h-3 w-3" aria-hidden /> : <Play className="h-3 w-3" aria-hidden />}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setConfirmDeleteId(ch.id || null)}
-                                            className="p-1 text-text-faint hover:text-red-400 transition-colors"
-                                            aria-label={`Delete ${ch.name}`}
-                                            title="Delete"
-                                        >
-                                            <Trash className="h-3 w-3" aria-hidden />
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        );
-                    })}
-                </div>
-
-                {/* ── Run notifications channel ─────────────────────── */}
-                <div className="mt-3 pt-3 border-t border-zinc-800">
-                    <label className="text-[10px] font-bold text-text-faint uppercase tracking-wider block mb-1.5">
-                        Run notifications
-                    </label>
-                    <Select
-                        value={notifyChannelId || '__off__'}
-                        onChange={v => saveNotifyChannel(v === '__off__' ? '' : v)}
-                        aria-label="Notification channel"
-                        size="sm"
-                        options={[
-                            { value: '__off__', label: 'Off (in-app only)' },
-                            // `Channel.id` is optional until the row is saved.
-                            ...channels.filter(ch => ch.id).map(ch => ({ value: ch.id as string, label: ch.name })),
-                        ]}
-                    />
-                    <p className="text-[10px] text-text-faint mt-1 leading-relaxed">
-                        Mirror orchestration notifications (needs input, completed, failed)
-                        to this channel&apos;s notify chat.
-                    </p>
-                </div>
-
-                {/* ── Public address for webhook-mode channels ───────── */}
-                <div className="mt-3 pt-3 border-t border-zinc-800">
-                    <label className="text-[10px] font-bold text-text-faint uppercase tracking-wider block mb-1.5">
-                        Webhook address
-                    </label>
-                    <div className="flex gap-1">
-                        <input
-                            type="text"
-                            value={webhookBaseDraft}
-                            onChange={e => setWebhookBaseDraft(e.target.value)}
-                            onBlur={saveWebhookBase}
-                            onKeyDown={e => { if (e.key === 'Enter') saveWebhookBase(); }}
-                            placeholder="https://synapse.example.com"
-                            aria-label="Public webhook base URL"
-                            className="flex-1 min-w-0 bg-zinc-950 border border-zinc-800 px-2 py-1.5 text-[10px] text-white font-mono focus:border-white focus:outline-none rounded-md"
-                        />
-                    </div>
-                    <p className="text-[10px] text-text-faint mt-1 leading-relaxed">
-                        Where platforms deliver messages for channels in webhook mode. A public
-                        HTTPS address of this Synapse app, not its backend port — a tunnel URL works for local testing.
-                    </p>
-                </div>
-            </div>
-
-            {/* ── Right: Editor ──────────────────────────────────────── */}
-            <div className="md:col-span-8 pl-4">
-                {draft ? (
-                    <div className="space-y-6">
-                        {/* Header */}
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                                <div className="h-2 w-2 rounded-full bg-accent" />
-                                {selectedId ? `EDITING: ${draft.name.toUpperCase() || 'CHANNEL'}` : 'NEW CHANNEL'}
-                            </h3>
-                            <div className="flex gap-2">
-                                {selectedId && (
-                                    <button
-                                        onClick={testChannel}
-                                        disabled={testing}
-                                        className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold transition-colors disabled:opacity-50"
-                                    >
-                                        {testing ? <Spinner size={12} /> : <FlaskConical className="h-3 w-3" />}
-                                        TEST
-                                    </button>
-                                )}
-                                <button
-                                    onClick={saveAndConnect}
-                                    disabled={saving}
-                                    className="flex items-center gap-2 px-4 py-1.5 bg-accent text-accent-fg text-xs font-bold hover:bg-accent-hover disabled:opacity-50"
-                                >
-                                    {saving ? <Spinner size={12} /> : <Save className="h-3 w-3" />}
-                                    SAVE & CONNECT
-                                </button>
-                            </div>
+                                <Select
+                                    value={notifyChannelId || '__off__'}
+                                    onChange={v => saveNotifyChannel(v === '__off__' ? '' : v)}
+                                    aria-label="Notification channel"
+                                    size="sm"
+                                    options={[
+                                        { value: '__off__', label: 'Off (in-app only)' },
+                                        // `Channel.id` is optional until the row is saved.
+                                        ...channels.filter(ch => ch.id).map(ch => ({ value: ch.id as string, label: ch.name })),
+                                    ]}
+                                />
+                            </Field>
+                            <Field
+                                label="Webhook address"
+                                hint="Where platforms deliver messages for channels in webhook mode. A public HTTPS address of this Synapse app, not its backend port — a tunnel URL works for local testing."
+                            >
+                                <Input
+                                    size="sm"
+                                    type="text"
+                                    value={webhookBaseDraft}
+                                    onChange={e => setWebhookBaseDraft(e.target.value)}
+                                    onBlur={saveWebhookBase}
+                                    onKeyDown={e => { if (e.key === 'Enter') saveWebhookBase(); }}
+                                    placeholder="https://synapse.example.com"
+                                    aria-label="Public webhook base URL"
+                                    className="font-code"
+                                />
+                            </Field>
                         </div>
+                    </Section>
+                </div>
+
+                {/* ── The open channel ──────────────────────────────────── */}
+                <section ref={detailRef} aria-label="Channel" className="min-w-0 scroll-mt-4">
+                {draft ? (
+                    <div className="grid gap-6">
+                        <DetailHead
+                            leading={<img src={platformMeta.icon} alt="" aria-hidden className="mt-0.5 size-7 shrink-0 object-contain" />}
+                            title={selectedId ? (draft.name || 'Channel') : 'New channel'}
+                            sub={selectedId
+                                ? <span className="inline-flex items-center gap-2">{platformMeta.label} · <StatusWord status={draft.status} lastError={draft.last_error} /></span>
+                                : platformMeta.label}
+                            actions={
+                                <>
+                                    {selectedId && (
+                                        <Button variant="secondary" onClick={testChannel} loading={testing}>
+                                            {!testing && <FlaskConical className="size-4" aria-hidden />} Test
+                                        </Button>
+                                    )}
+                                    <Button onClick={saveAndConnect} loading={saving}>Save &amp; connect</Button>
+                                </>
+                            }
+                        />
+
+                        {draft.last_error && (
+                            <ErrorNote>
+                                <span className="font-medium">Last error</span>
+                                <span className="mt-0.5 block font-code text-xs">{draft.last_error}</span>
+                            </ErrorNote>
+                        )}
 
                         {/* Platform picker */}
-                        <div className="space-y-2">
-                            <label className="text-[10px] font-bold text-text-faint uppercase">Platform</label>
-                            <div className="grid grid-cols-5 gap-2">
-                                {PLATFORMS.map(p => (
-                                    <button
-                                        key={p.id}
-                                        onClick={() => setDraft({ ...EMPTY_CHANNEL, platform: p.id, name: draft.name })}
-                                        className={`flex flex-col items-center gap-1 p-3 border text-xs font-bold transition-all
-                                            ${draft.platform === p.id
-                                                ? `${p.color} border-current`
-                                                : 'bg-black border-zinc-800 text-text-faint hover:border-zinc-600'}`}
-                                    >
-                                        <img src={p.icon} alt={p.label} className="h-6 w-6 object-contain" />
-                                        {p.label}
-                                    </button>
-                                ))}
-                            </div>
+                        <div className="grid gap-1.5">
+                            <span className={capsLabel}>Platform</span>
+                            <Segmented
+                                label="Platform"
+                                value={draft.platform}
+                                onChange={p => setDraft({ ...EMPTY_CHANNEL, platform: p, name: draft.name })}
+                                options={PLATFORMS.map(p => ({
+                                    value: p.id,
+                                    label: p.label,
+                                    icon: <img src={p.icon} alt="" aria-hidden className="size-4 object-contain" />,
+                                }))}
+                            />
                         </div>
 
-                        {/* Common fields */}
-                        <div className="space-y-1">
-                            <label htmlFor="messaging-channel-name" className="text-[10px] font-bold text-text-faint uppercase">Channel Name</label>
-                            <input
+                        <div className="grid gap-1.5">
+                            <label htmlFor="messaging-channel-name" className="block text-sm font-medium text-text">Channel name</label>
+                            <Input
                                 id="messaging-channel-name"
                                 type="text"
                                 value={draft.name}
                                 onChange={e => setDraft({ ...draft, name: e.target.value })}
                                 placeholder="e.g. Support Bot"
-                                className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none rounded-md"
                             />
                         </div>
 
                         {/* ── Agents on this channel ─────────────────────── */}
-                        <div className="space-y-2">
-                            <div>
-                                <label className="text-[10px] font-bold text-text-faint uppercase">Agents</label>
-                                <p className="text-[10px] text-text-faint mt-1 leading-relaxed">
+                        <Section title="Agents" variant="plain" collapsible={false}>
+                            <div className="grid gap-3">
+                                <p className="m-0 text-[13px] text-text-muted">
                                     Who answers messages arriving here. A channel can front several
-                                    agents; the one marked <strong className="text-zinc-300">default</strong> takes
+                                    agents; the one marked <strong className="font-semibold text-text">default</strong> takes
                                     a plain message.
                                 </p>
-                            </div>
-                            {!draft.id ? (
-                                <p className="text-[10px] text-text-faint p-3 border border-dashed border-zinc-800 rounded-md">
-                                    Save the channel first — agents are assigned to it once it exists.
-                                </p>
-                            ) : agents.length === 0 ? (
-                                <p className="text-[10px] text-text-faint p-3 border border-dashed border-zinc-800 rounded-md">
-                                    No agents configured yet. Create one under Settings → Agents.
-                                </p>
-                            ) : (
-                                <>
-                                    <div className="flex flex-wrap gap-2">
-                                        {agents.map(a => {
-                                            const on = assignedIds.includes(a.id);
-                                            const isDefault = assignedIds[0] === a.id;
-                                            return (
-                                                <span key={a.id} className="inline-flex items-center">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => toggleAgent(a.id)}
-                                                        disabled={assigning}
-                                                        aria-pressed={on}
-                                                        className={`px-3 py-1.5 text-xs border transition-colors disabled:opacity-50 rounded-md
-                                                            ${on
-                                                                ? 'bg-accent text-accent-fg border-accent'
-                                                                : 'bg-black border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-white'}
-                                                            ${on && !isDefault ? 'rounded-r-none' : ''}`}
-                                                    >
-                                                        {a.name}
-                                                        {isDefault && (
-                                                            <span className="ml-2 text-[9px] font-bold uppercase opacity-70">default</span>
-                                                        )}
-                                                    </button>
-                                                    {on && !isDefault && (
+                                {!draft.id ? (
+                                    <p className="m-0 rounded-md bg-surface-2 px-3 py-2.5 text-[13px] text-text-muted">
+                                        Save the channel first — agents are assigned to it once it exists.
+                                    </p>
+                                ) : agents.length === 0 ? (
+                                    <p className="m-0 rounded-md bg-surface-2 px-3 py-2.5 text-[13px] text-text-muted">
+                                        No agents configured yet. Create one on the Agents page.
+                                    </p>
+                                ) : (
+                                    <>
+                                        <div className="flex flex-wrap gap-2">
+                                            {agents.map(a => {
+                                                const on = assignedIds.includes(a.id);
+                                                const isDefault = assignedIds[0] === a.id;
+                                                return (
+                                                    <span key={a.id} className="inline-flex items-center">
                                                         <button
                                                             type="button"
-                                                            onClick={() => makeDefault(a.id)}
+                                                            onClick={() => toggleAgent(a.id)}
                                                             disabled={assigning}
-                                                            title={`Make ${a.name} the default agent`}
-                                                            className="px-2 py-1.5 text-[9px] font-bold uppercase border border-l-0 border-accent bg-zinc-900 text-zinc-400 hover:text-white transition-colors disabled:opacity-50 rounded-r-md"
+                                                            aria-pressed={on}
+                                                            className={cn(
+                                                                'inline-flex h-8 items-center rounded-full border px-3 text-[13px] font-medium transition-colors disabled:opacity-50',
+                                                                on
+                                                                    ? 'border-accent bg-accent text-accent-fg'
+                                                                    : 'border-border text-text-muted hover:border-border-strong hover:text-text',
+                                                                on && !isDefault && 'rounded-r-none',
+                                                            )}
                                                         >
-                                                            set default
+                                                            {a.name}
+                                                            {isDefault && (
+                                                                <span className="ml-2 text-2xs font-semibold uppercase opacity-80">default</span>
+                                                            )}
                                                         </button>
-                                                    )}
-                                                </span>
-                                            );
-                                        })}
-                                    </div>
-                                    {assignedIds.length === 0 && (
-                                        <p className="text-[10px] text-amber-400/80">
-                                            Nobody is assigned — this channel will reply saying so instead of answering.
-                                        </p>
-                                    )}
-                                </>
-                            )}
-                        </div>
-
-                        <div className="flex items-start gap-4 p-3 bg-zinc-950 border border-zinc-800 rounded-md">
-                            <input
-                                id="multi-agent-toggle"
-                                type="checkbox"
-                                checked={draft.multi_agent_mode}
-                                onChange={e => setDraft({ ...draft, multi_agent_mode: e.target.checked })}
-                                className="mt-1 accent-[var(--accent)]"
-                            />
-                            <div className="flex-1">
-                                <label htmlFor="multi-agent-toggle" className="text-xs font-bold text-white cursor-pointer block leading-tight">
-                                    Multi-Agent Mode
-                                </label>
-                                <p className="text-[10px] text-text-faint mt-1.5 leading-relaxed">
-                                    When enabled, people in the chat can switch between the agents
-                                    assigned above using <code className="font-code bg-zinc-800 px-1">/agent &lt;name&gt;</code>,
-                                    and list them with <code className="font-code bg-zinc-800 px-1">/agents</code>.
-                                    Only assigned agents are reachable; the default answers until somebody switches.
-                                </p>
-                                {draft.multi_agent_mode && assignedIds.length < 2 && (
-                                    <p className="text-[10px] text-amber-400/80 mt-1.5">
-                                        {assignedIds.length === 1
-                                            ? 'Only one agent is assigned, so there is nothing to switch between yet.'
-                                            : 'No agents are assigned, so there is nothing to switch between yet.'}
-                                    </p>
-                                )}
-                            </div>
-                        </div>
-
-                        {/* ── Who is messaging (F282) ────────────────────── */}
-                        <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-md space-y-3">
-                            <div className="flex items-start gap-4">
-                                <input
-                                    id="senders-are-members"
-                                    type="checkbox"
-                                    checked={sendersAreMembers}
-                                    onChange={e => setDraft({ ...draft, senders_are_members: e.target.checked })}
-                                    className="mt-1 accent-[var(--accent)]"
-                                />
-                                <div className="flex-1">
-                                    <label htmlFor="senders-are-members" className="text-xs font-bold text-white cursor-pointer block leading-tight">
-                                        Everyone who messages this bot is a workspace user
-                                    </label>
-                                    <p className="text-[10px] text-text-faint mt-1.5 leading-relaxed">
-                                        {sendersAreMembers
-                                            ? 'They use the agents as you do: every tool, the agents\' memory, and a reply here can answer a workflow waiting on this channel. Keep it on for a bot only you or your team can reach.'
-                                            : 'They are visitors: the agents use only the tools ticked below, never their memory, and a reply here does not answer a waiting workflow.'}
-                                    </p>
-                                    {sendersAreMembers && ((senderTools?.length ?? 0) > 0 || memoryAgents.length > 0) && (
-                                        <p className="text-[10px] text-amber-400/80 mt-1.5 leading-relaxed">
-                                            Anyone who can message this bot can use
-                                            {(senderTools?.length ?? 0) > 0 && (
-                                                <> {senderTools!.slice(0, 4).map(t => t.name).join(', ')}
-                                                    {senderTools!.length > 4 && ` and ${senderTools!.length - 4} more`}</>
-                                            )}
-                                            {(senderTools?.length ?? 0) > 0 && memoryAgents.length > 0 && ', and'}
-                                            {memoryAgents.length > 0 && ` ${memoryAgents.join(', ')}'s memory`}.
-                                        </p>
-                                    )}
-                                </div>
-                            </div>
-                            {!sendersAreMembers && (
-                                <div className="pl-7">
-                                    <p className="text-[10px] font-bold text-text-faint uppercase mb-1.5">What senders can use</p>
-                                    {!assignedIds.length ? (
-                                        <p className="text-[10px] text-text-faint">Assign an agent to choose its tools.</p>
-                                    ) : senderTools === null ? (
-                                        <p className="text-[10px] text-text-faint">Loading the agents&apos; tools…</p>
-                                    ) : senderTools.length === 0 ? (
-                                        <p className="text-[10px] text-text-faint">These agents have no tools to offer.</p>
-                                    ) : (
-                                        <ul className="space-y-1.5">
-                                            {senderTools.map(tool => {
-                                                const id = `channel-sender-tool-${tool.name}`;
-                                                const ticked = draft.visitor_tools ?? [];
-                                                const category = TOOL_CATEGORY[tool.category] ?? TOOL_CATEGORY.undeclared;
-                                                return (
-                                                    <li key={tool.name} className="flex items-center gap-2">
-                                                        <Checkbox
-                                                            id={id}
-                                                            label={`Senders can use ${tool.name}`}
-                                                            checked={ticked.includes(tool.name)}
-                                                            onChange={on => setDraft({
-                                                                ...draft,
-                                                                visitor_tools: on
-                                                                    ? [...ticked.filter(n => n !== tool.name), tool.name]
-                                                                    : ticked.filter(n => n !== tool.name),
-                                                            })}
-                                                        />
-                                                        <label htmlFor={id} className="text-xs font-code text-white">{tool.name}</label>
-                                                        <Badge tone={category.tone}>{category.label}</Badge>
-                                                    </li>
+                                                        {on && !isDefault && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => makeDefault(a.id)}
+                                                                disabled={assigning}
+                                                                title={`Make ${a.name} the default agent`}
+                                                                className="inline-flex h-8 items-center rounded-r-full border border-l-0 border-accent px-2.5 text-2xs font-semibold uppercase text-text-muted transition-colors hover:text-text disabled:opacity-50"
+                                                            >
+                                                                set default
+                                                            </button>
+                                                        )}
+                                                    </span>
                                                 );
                                             })}
-                                        </ul>
-                                    )}
+                                        </div>
+                                        {assignedIds.length === 0 && (
+                                            <p className="m-0 flex items-start gap-1.5 text-[13px] font-medium text-text">
+                                                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                                                Nobody is assigned — this channel will reply saying so instead of answering.
+                                            </p>
+                                        )}
+                                    </>
+                                )}
+
+                                <div className="flex items-start gap-3 pt-1">
+                                    <Checkbox
+                                        id="multi-agent-toggle"
+                                        label="Multi-agent mode"
+                                        checked={draft.multi_agent_mode}
+                                        onChange={on => setDraft({ ...draft, multi_agent_mode: on })}
+                                        className="mt-0.5"
+                                    />
+                                    <div className="grid flex-1 gap-1">
+                                        <label htmlFor="multi-agent-toggle" className="cursor-pointer text-sm font-medium leading-tight text-text">
+                                            Multi-agent mode
+                                        </label>
+                                        <p className="m-0 text-[13px] text-text-muted">
+                                            When enabled, people in the chat can switch between the agents
+                                            assigned above using <code className="rounded bg-surface-2 px-1 font-code">/agent &lt;name&gt;</code>,
+                                            and list them with <code className="rounded bg-surface-2 px-1 font-code">/agents</code>.
+                                            Only assigned agents are reachable; the default answers until somebody switches.
+                                        </p>
+                                        {draft.multi_agent_mode && assignedIds.length < 2 && (
+                                            <p className="m-0 flex items-start gap-1.5 text-[13px] font-medium text-text">
+                                                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                                                {assignedIds.length === 1
+                                                    ? 'Only one agent is assigned, so there is nothing to switch between yet.'
+                                                    : 'No agents are assigned, so there is nothing to switch between yet.'}
+                                            </p>
+                                        )}
+                                    </div>
                                 </div>
-                            )}
-                        </div>
+                            </div>
+                        </Section>
+
+                        {/* ── Who is messaging (F282) ────────────────────── */}
+                        <Section title="Who messages this bot" variant="plain" collapsible={false}>
+                            <div className="grid gap-3">
+                                <div className="flex items-start gap-3">
+                                    <Checkbox
+                                        id="senders-are-members"
+                                        label="Everyone who messages this bot is a workspace user"
+                                        checked={sendersAreMembers}
+                                        onChange={on => setDraft({ ...draft, senders_are_members: on })}
+                                        className="mt-0.5"
+                                    />
+                                    <div className="grid flex-1 gap-1">
+                                        <label htmlFor="senders-are-members" className="cursor-pointer text-sm font-medium leading-tight text-text">
+                                            Everyone who messages this bot is a workspace user
+                                        </label>
+                                        <p className="m-0 text-[13px] text-text-muted">
+                                            {sendersAreMembers
+                                                ? 'They use the agents as you do: every tool, the agents\' memory, and a reply here can answer a workflow waiting on this channel. Keep it on for a bot only you or your team can reach.'
+                                                : 'They are visitors: the agents use only the tools ticked below, never their memory, and a reply here does not answer a waiting workflow.'}
+                                        </p>
+                                        {sendersAreMembers && ((senderTools?.length ?? 0) > 0 || memoryAgents.length > 0) && (
+                                            <p className="m-0 flex items-start gap-1.5 text-[13px] font-medium text-text">
+                                                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                                                <span>
+                                                    Anyone who can message this bot can use
+                                                    {(senderTools?.length ?? 0) > 0 && (
+                                                        <> {senderTools!.slice(0, 4).map(t => t.name).join(', ')}
+                                                            {senderTools!.length > 4 && ` and ${senderTools!.length - 4} more`}</>
+                                                    )}
+                                                    {(senderTools?.length ?? 0) > 0 && memoryAgents.length > 0 && ', and'}
+                                                    {memoryAgents.length > 0 && ` ${memoryAgents.join(', ')}'s memory`}.
+                                                </span>
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                                {!sendersAreMembers && (
+                                    <div className="grid gap-2 pl-7">
+                                        <span className={capsLabel}>What senders can use</span>
+                                        {!assignedIds.length ? (
+                                            <p className="m-0 text-[13px] text-text-faint">Assign an agent to choose its tools.</p>
+                                        ) : senderTools === null ? (
+                                            <p className="m-0 text-[13px] text-text-faint">Loading the agents&apos; tools…</p>
+                                        ) : senderTools.length === 0 ? (
+                                            <p className="m-0 text-[13px] text-text-faint">These agents have no tools to offer.</p>
+                                        ) : (
+                                            <VisitorToolGroups
+                                                tools={senderTools}
+                                                ticked={draft.visitor_tools ?? []}
+                                                onChange={visitor_tools => setDraft({ ...draft, visitor_tools })}
+                                                idPrefix="channel-sender-tool"
+                                                subject="Senders"
+                                            />
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </Section>
 
                         {/* ── Delivery mode ──────────────────────────────── */}
                         {MODE_CHOICE_PLATFORMS.includes(draft.platform) && (
-                            <div className="space-y-2">
-                                <div>
-                                    <label className="text-[10px] font-bold text-text-faint uppercase">Delivery</label>
-                                    <p className="text-[10px] text-text-faint mt-1 leading-relaxed">
+                            <Section title="Delivery" variant="plain" collapsible={false}>
+                                <div className="grid gap-3">
+                                    <p className="m-0 text-[13px] text-text-muted">
                                         How messages reach Synapse. Polling holds a connection open to the
                                         platform and needs no public address. Webhook holds nothing — the
                                         platform posts to you — which is what a multi-replica deployment
                                         wants, since only one process may poll a bot at a time.
                                     </p>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    {([
-                                        { v: 'polling', label: 'Polling', desc: 'Works anywhere. One process per bot.' },
-                                        { v: 'webhook', label: 'Webhook', desc: 'Needs a public HTTPS address. Survives replicas.' },
-                                    ] as { v: DeliveryMode; label: string; desc: string }[]).map(opt => (
-                                        <button
-                                            key={opt.v}
-                                            onClick={() => setDraft({ ...draft, mode: opt.v })}
-                                            className={`p-3 border text-left text-xs transition-all rounded-md
-                                                ${(draft.mode || 'polling') === opt.v ? 'bg-zinc-900 border-white' : 'bg-black border-zinc-800 hover:border-zinc-600'}`}
-                                        >
-                                            <div className="font-bold text-white">{opt.label}</div>
-                                            <div className="text-text-faint mt-1">{opt.desc}</div>
-                                        </button>
-                                    ))}
-                                </div>
-
-                                {draft.mode === 'webhook' && (
-                                    <div className="space-y-2 p-3 bg-zinc-950 border border-zinc-800 rounded-md">
-                                        {!webhookBase ? (
-                                            <p className="text-[10px] text-amber-400/90">
-                                                Set the public webhook address below before saving — without it
-                                                the channel cannot register with {platformMeta?.label}.
-                                            </p>
-                                        ) : !draft.id ? (
-                                            <p className="text-[10px] text-text-faint">
-                                                The delivery URL appears here once the channel is saved.
-                                            </p>
-                                        ) : (
-                                            <div className="space-y-1">
-                                                <label htmlFor="messaging-delivery-url" className="text-[10px] font-bold text-text-faint uppercase">Delivery URL</label>
-                                                <input
-                                                    id="messaging-delivery-url"
-                                                    readOnly
-                                                    value={webhookUrl}
-                                                    onFocus={e => e.currentTarget.select()}
-                                                    className="w-full bg-black border border-zinc-800 p-2.5 text-[10px] text-zinc-300 font-mono rounded-md"
+                                    {(() => {
+                                        const modes: { value: DeliveryMode; label: string; hint: string }[] = [
+                                            { value: 'polling', label: 'Polling', hint: 'Works anywhere. One process per bot.' },
+                                            { value: 'webhook', label: 'Webhook', hint: 'Needs a public HTTPS address. Survives replicas.' },
+                                        ];
+                                        const current = draft.mode || 'polling';
+                                        return (
+                                            <div className="grid gap-1.5">
+                                                <Segmented
+                                                    label="Delivery"
+                                                    value={current}
+                                                    onChange={v => setDraft({ ...draft, mode: v })}
+                                                    options={modes}
                                                 />
-                                                <p className="text-[9px] text-text-faint">
-                                                    {draft.platform === 'telegram'
-                                                        ? 'Registered with Telegram automatically on Save & Connect.'
-                                                        : `Paste this into your ${platformMeta?.label} app configuration.`}
-                                                </p>
+                                                <p className="m-0 text-xs text-text-faint">{modes.find(m => m.value === current)?.hint}</p>
                                             </div>
-                                        )}
-                                        {draft.platform === 'slack' && (
-                                            <p className="text-[9px] text-text-faint">
-                                                Webhook mode does not need the app-level token (xapp-…) — that is
-                                                Socket Mode&apos;s, and Socket Mode is the polling option.
-                                            </p>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
+                                        );
+                                    })()}
+
+                                    {draft.mode === 'webhook' && (
+                                        <div className="grid gap-2 rounded-md bg-surface-2 p-3">
+                                            {!webhookBase ? (
+                                                <p className="m-0 flex items-start gap-1.5 text-[13px] font-medium text-text">
+                                                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                                                    Set the public webhook address below before saving — without it
+                                                    the channel cannot register with {platformMeta?.label}.
+                                                </p>
+                                            ) : !draft.id ? (
+                                                <p className="m-0 text-[13px] text-text-muted">
+                                                    The delivery URL appears here once the channel is saved.
+                                                </p>
+                                            ) : (
+                                                <div className="grid gap-1.5">
+                                                    <label htmlFor="messaging-delivery-url" className="block text-sm font-medium text-text">Delivery URL</label>
+                                                    <Input
+                                                        id="messaging-delivery-url"
+                                                        readOnly
+                                                        value={webhookUrl}
+                                                        onFocus={e => e.currentTarget.select()}
+                                                        className="font-code text-xs"
+                                                    />
+                                                    <p className="m-0 text-xs text-text-faint">
+                                                        {draft.platform === 'telegram'
+                                                            ? 'Registered with Telegram automatically on Save & Connect.'
+                                                            : `Paste this into your ${platformMeta?.label} app configuration.`}
+                                                    </p>
+                                                </div>
+                                            )}
+                                            {draft.platform === 'slack' && (
+                                                <p className="m-0 text-xs text-text-faint">
+                                                    Webhook mode does not need the app-level token (xapp-…) — that is
+                                                    Socket Mode&apos;s, and Socket Mode is the polling option.
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            </Section>
                         )}
 
                         {/* Platform-specific credentials */}
-                        <div className="space-y-3">
-                            <label className="text-[10px] font-bold text-text-faint uppercase">Credentials — {platformMeta?.label}</label>
-
-                            {/* WhatsApp special UI */}
+                        <Section title={`Credentials — ${platformMeta?.label}`} variant="plain" collapsible={false}>
                             {draft.platform === 'whatsapp' ? (
-                                <div className="space-y-4">
-                                    {/* Mode selector */}
-                                    <div className="grid grid-cols-2 gap-3">
-                                        {[
-                                            { v: 'meta_api', label: '🏢 Business (Meta API)', desc: 'Official. Requires Meta Business account + verified number.' },
-                                            { v: 'unofficial', label: '🛠 Unofficial (Playwright)', desc: 'No business account. Uses WhatsApp Web automation.' },
-                                        ].map(opt => (
-                                            <button
-                                                key={opt.v}
-                                                onClick={() => { setWaMode(opt.v as any); setWaRiskAck(false); }}
-                                                className={`p-3 border text-left text-xs transition-all
-                                                    ${waMode === opt.v ? 'bg-zinc-900 border-white' : 'bg-black border-zinc-800 hover:border-zinc-600'} rounded-md`}
-                                            >
-                                                <div className="font-bold text-white">{opt.label}</div>
-                                                <div className="text-text-faint mt-1">{opt.desc}</div>
-                                            </button>
-                                        ))}
-                                    </div>
+                                <div className="grid gap-4">
+                                    {(() => {
+                                        const modes = [
+                                            { value: 'meta_api' as const, label: 'Business (Meta API)', hint: 'Official. Requires Meta Business account + verified number.' },
+                                            { value: 'unofficial' as const, label: 'Unofficial (Playwright)', hint: 'No business account. Uses WhatsApp Web automation.' },
+                                        ];
+                                        return (
+                                            <div className="grid gap-1.5">
+                                                <Segmented
+                                                    label="WhatsApp mode"
+                                                    value={waMode}
+                                                    onChange={v => { setWaMode(v); setWaRiskAck(false); }}
+                                                    options={modes}
+                                                />
+                                                <p className="m-0 text-xs text-text-faint">{modes.find(m => m.value === waMode)?.hint}</p>
+                                            </div>
+                                        );
+                                    })()}
 
                                     {waMode === 'meta_api' && (
-                                        <div className="space-y-3">
+                                        <div className="grid gap-4">
                                             {[
-                                                { key: 'phone_number_id', label: 'Phone Number ID', placeholder: '123456789012345', secret: false },
-                                                { key: 'access_token', label: 'Access Token', placeholder: 'EAA...', secret: true },
-                                                { key: 'app_secret', label: 'App Secret', placeholder: '', secret: true,
+                                                { key: 'phone_number_id', label: 'Phone number ID', placeholder: '123456789012345', secret: false },
+                                                { key: 'access_token', label: 'Access token', placeholder: 'EAA...', secret: true },
+                                                { key: 'app_secret', label: 'App secret', placeholder: '', secret: true,
                                                   note: 'App settings → Basic. Meta signs every delivery with it; a delivery without a matching signature is refused.' },
-                                                { key: 'verify_token', label: 'Verify Token (your choice)', placeholder: 'synapse_verify', secret: false,
+                                                { key: 'verify_token', label: 'Verify token (your choice)', placeholder: 'synapse_verify', secret: false,
                                                   note: 'Used to verify Meta webhook. Set the same value in your Meta App settings.' },
                                             ].map(f => (
-                                                <div key={f.key} className="space-y-1">
-                                                    <label htmlFor={`messaging-cred-${f.key}`} className="text-[10px] font-bold text-text-faint uppercase">{f.label}</label>
-                                                    <input
-                                                        id={`messaging-cred-${f.key}`}
-                                                        type={f.secret ? 'password' : 'text'}
-                                                        value={draft.credentials[f.key] || ''}
-                                                        onChange={e => updateCred(f.key, e.target.value)}
-                                                        placeholder={credPlaceholder(draft, f.key, f.secret, f.placeholder)}
-                                                        className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none font-mono rounded-md"
-                                                    />
-                                                    {f.note && <p className="text-[9px] text-text-faint">{f.note}</p>}
+                                                <div key={f.key} className="grid gap-1.5">
+                                                    <label htmlFor={`messaging-cred-${f.key}`} className="block text-sm font-medium text-text">{f.label}</label>
+                                                    {credInput(f)}
+                                                    {f.note && <p className="m-0 text-xs text-text-faint">{f.note}</p>}
                                                 </div>
                                             ))}
                                         </div>
                                     )}
 
                                     {waMode === 'unofficial' && (
-                                        <div className="space-y-3">
-                                            <div className="flex gap-2 p-3 bg-amber-950/30 border border-amber-800/50 rounded-md">
-                                                <AlertTriangle className="h-4 w-4 text-amber-400 flex-shrink-0 mt-0.5" />
-                                                <div className="text-[10px] text-amber-300 space-y-1">
-                                                    <p className="font-bold">⚠️ Unofficial Approach — Use at Your Own Risk</p>
-                                                    <p>This mode uses Playwright to drive WhatsApp Web in a browser window. It requires scanning a QR code. It may:</p>
-                                                    <ul className="list-disc pl-4 space-y-0.5">
-                                                        <li>Violate WhatsApp's Terms of Service</li>
+                                        <div className="grid gap-3">
+                                            {/* A person has to decide: the warm ground (UX1, amber is a person). */}
+                                            <div className="flex gap-2.5 rounded-md border border-person/50 bg-person-subtle p-3 text-[13px] text-text">
+                                                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-person-ink" aria-hidden />
+                                                <div className="grid gap-1">
+                                                    <p className="m-0 font-semibold">Unofficial approach — use at your own risk</p>
+                                                    <p className="m-0">This mode uses Playwright to drive WhatsApp Web in a browser window. It requires scanning a QR code. It may:</p>
+                                                    <ul className="m-0 list-disc space-y-0.5 pl-4">
+                                                        <li>Violate WhatsApp&apos;s Terms of Service</li>
                                                         <li>Break when WhatsApp updates their web app</li>
                                                         <li>Result in your number being temporarily banned</li>
                                                     </ul>
-                                                    <p>We recommend using the official Meta Business path instead.</p>
+                                                    <p className="m-0">We recommend using the official Meta Business path instead.</p>
                                                 </div>
                                             </div>
-                                            <div className="flex items-start gap-3 p-3 bg-zinc-950 border border-zinc-800 rounded-md">
-                                                <input
+                                            <div className="flex items-start gap-3">
+                                                <Checkbox
                                                     id="wa-risk-ack"
-                                                    type="checkbox"
+                                                    label="I understand the risks and accept responsibility for using the unofficial path."
                                                     checked={waRiskAck}
-                                                    onChange={e => setWaRiskAck(e.target.checked)}
-                                                    className="mt-1 accent-amber-500"
+                                                    onChange={setWaRiskAck}
+                                                    className="mt-0.5"
                                                 />
-                                                <label htmlFor="wa-risk-ack" className="text-xs text-zinc-300 cursor-pointer leading-tight">
+                                                <label htmlFor="wa-risk-ack" className="cursor-pointer text-sm leading-tight text-text">
                                                     I understand the risks and accept responsibility for using the unofficial path.
                                                 </label>
                                             </div>
                                             {waRiskAck && (
-                                                <div className="p-3 bg-zinc-950 border border-zinc-700 text-[10px] text-zinc-400 space-y-1 rounded-md">
-                                                    <p>After saving & connecting, Synapse will open WhatsApp Web in a Chromium browser window.</p>
-                                                    <p>Scan the QR code shown in the browser to authenticate. The session is saved and persists across restarts.</p>
+                                                <div className="grid gap-1 rounded-md bg-surface-2 p-3 text-[13px] text-text-muted">
+                                                    <p className="m-0">After saving & connecting, Synapse will open WhatsApp Web in a Chromium browser window.</p>
+                                                    <p className="m-0">Scan the QR code shown in the browser to authenticate. The session is saved and persists across restarts.</p>
                                                 </div>
                                             )}
                                         </div>
@@ -1007,81 +942,56 @@ export const MessagingTab = () => {
                                 </div>
                             ) : (
                                 /* Standard credential fields */
-                                <div className="space-y-3">
+                                <div className="grid gap-4">
                                     {CREDENTIAL_FIELDS[draft.platform]?.filter(f => !f.mode || f.mode === (draft.mode || 'polling')).map(f => (
-                                        <div key={f.key} className="space-y-1">
-                                            <label htmlFor={`messaging-cred-${f.key}`} className="text-[10px] font-bold text-text-faint uppercase">{f.label}</label>
-                                            <input
-                                                id={`messaging-cred-${f.key}`}
-                                                type={f.secret ? 'password' : 'text'}
-                                                value={draft.credentials[f.key] || ''}
-                                                onChange={e => updateCred(f.key, e.target.value)}
-                                                placeholder={credPlaceholder(draft, f.key, f.secret, f.placeholder)}
-                                                className="w-full bg-zinc-950 border border-zinc-800 p-3 text-xs text-white focus:border-white focus:outline-none font-mono rounded-md"
-                                            />
+                                        <div key={f.key} className="grid gap-1.5">
+                                            <label htmlFor={`messaging-cred-${f.key}`} className="block text-sm font-medium text-text">{f.label}</label>
+                                            {credInput(f)}
                                             {f.note && (
-                                                <p className="text-[9px] text-text-faint flex items-center gap-1">
-                                                    <Info className="h-2.5 w-2.5" /> {f.note}
+                                                <p className="m-0 flex items-center gap-1 text-xs text-text-faint">
+                                                    <Info className="size-3 shrink-0" aria-hidden /> {f.note}
                                                 </p>
                                             )}
                                         </div>
                                     ))}
                                 </div>
                             )}
-                        </div>
+                        </Section>
 
-                        {/* Setup Guide accordion */}
-                        <div className="border border-zinc-800">
-                            <button
-                                onClick={() => setGuideOpen(g => !g)}
-                                className="w-full flex items-center justify-between px-4 py-3 text-xs font-bold text-zinc-400 hover:text-white hover:bg-zinc-900/50 transition-colors"
-                            >
-                                <span>📖 Setup Guide — {guide.title}</span>
-                                {guideOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                            </button>
-                            {guideOpen && (
-                                <div className="px-4 pb-4 space-y-2 bg-zinc-950/50">
-                                    <ol className="space-y-2">
-                                        {guide.steps.map((s, i) => (
-                                            <li key={i} className="flex gap-2 text-[10px] text-zinc-400">
-                                                <span className="text-text-faint font-bold flex-shrink-0">{s.startsWith('---') ? '' : `${i + 1}.`}</span>
-                                                <span className={s.startsWith('---') ? 'text-text-faint border-t border-zinc-800 w-full pt-1' : ''}>{s}</span>
-                                            </li>
-                                        ))}
-                                    </ol>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Error display */}
-                        {draft.last_error && (
-                            <div className="flex gap-2 p-3 bg-red-950/30 border border-red-900/50 rounded-md">
-                                <XCircle className="h-4 w-4 text-red-400 flex-shrink-0" />
-                                <div>
-                                    <p className="text-xs font-bold text-red-400">Last Error</p>
-                                    <p className="text-[10px] text-red-300 mt-0.5 font-mono">{draft.last_error}</p>
-                                </div>
-                            </div>
-                        )}
+                        {/* Setup guide, folded; it folds again for another channel or platform */}
+                        <Section key={`${selectedId}:${platform}`} title={`Setup guide: ${guide.title}`} variant="plain">
+                            <ol className="m-0 grid list-none gap-2 p-0">
+                                {guide.steps.map((s, i) => (
+                                    <li key={i} className="flex gap-2 text-[13px] text-text-muted">
+                                        <span className="shrink-0 font-semibold text-text-faint">{s.startsWith('---') ? '' : `${i + 1}.`}</span>
+                                        <span className={s.startsWith('---') ? 'w-full border-t border-border pt-1 text-text-faint' : ''}>{s}</span>
+                                    </li>
+                                ))}
+                            </ol>
+                        </Section>
                     </div>
                 ) : (
-                    <div className="h-full flex flex-col items-center justify-center text-text-faint space-y-4 py-20">
-                        <MessageSquare className="h-12 w-12 opacity-20" />
-                        <p className="text-sm">Select a channel or create a new one.</p>
-                    </div>
+                    <EmptyState
+                        title="No channels yet"
+                        action={<Button onClick={newChannel}><Plus className="size-4" aria-hidden /> New channel</Button>}
+                    >
+                        Reach your agents from Telegram, Discord, Slack, Teams or WhatsApp. Select a channel or create a new one.
+                    </EmptyState>
                 )}
+                </section>
             </div>
 
-            <ConfirmationModal
-                isOpen={!!confirmDeleteId}
-                title="Delete Channel"
-                message="Are you sure you want to delete this messaging channel? This will permanently remove its configuration and stop it if it is running."
+            <ConfirmDialog
+                open={!!confirmDeleteId}
+                title="Delete channel?"
+                description="Are you sure you want to delete this messaging channel? This will permanently remove its configuration and stop it if it is running."
                 onConfirm={() => {
                     if (confirmDeleteId) deleteChannel(confirmDeleteId);
                     setConfirmDeleteId(null);
                 }}
                 onClose={() => setConfirmDeleteId(null)}
             />
-        </div>
+            <Toast message={toast.message} tone={toast.tone} onDismiss={dismiss} />
+        </AppScreen>
     );
 };
