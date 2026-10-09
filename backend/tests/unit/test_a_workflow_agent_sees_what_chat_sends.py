@@ -9,14 +9,14 @@ A step that takes attachments now gets what chat sent (or what came with the
 answer); a step that does not gets none. A nested workflow gets them only
 through a step that passes them, and its own steps must take them too.
 """
-import base64
 import types
 
 from _fakes import seed as S
 from tests.unit.test_a_failed_child_fails_its_parent import _human
+from _fakes.images import data_uri, png
 
-PNG = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64).decode()
-PNG2 = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x01" * 64).decode()
+PNG = data_uri(png())
+PNG2 = data_uri(png(2, 2))
 
 
 def _server():

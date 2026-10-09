@@ -10,14 +10,16 @@ the mime came from the data URI's own header and was handed to Anthropic as
 `media_type`.
 """
 import base64
+import io
 
 import pytest
 from pydantic import ValidationError
 
 from core import images as img
 from core.models import ChatRequest
+from _fakes.images import png
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+PNG = png()
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 64
 WEBP = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"\x00" * 64
 
@@ -61,7 +63,7 @@ class TestTheLimits:
             img.validate([uri(big)])
 
     def test_several_that_fit_alone_can_still_be_too_much_together(self):
-        each = b"\x89PNG\r\n\x1a\n" + b"\x00" * (int(4.5 * 1024 * 1024))
+        each = png(pad=int(4.5 * 1024 * 1024))
         with pytest.raises(img.ImageRejected, match="together"):
             img.validate([uri(each)] * 5)
 
@@ -124,3 +126,44 @@ class TestAnImageOnItsOwnIsAMessage:
         from core.llm_providers import _build_openai_image_content
         parts = _build_openai_image_content("what is this", [uri(PNG)])
         assert any(p.get("type") == "text" and p["text"] == "what is this" for p in parts)
+
+
+class TestAnImageSaysHowBigItIs:
+    """`sniff` reads the first bytes only, so a PNG signature and zeros passed as
+    an image and Bedrock refused it after a minute and a half of retries (F410).
+    Every format here states its size in its header; one that does not is damaged."""
+
+    @pytest.mark.parametrize("fmt,kw", [
+        ("PNG", {}), ("GIF", {}), ("JPEG", {}), ("JPEG", {"progressive": True}),
+        ("WEBP", {"lossless": True}), ("WEBP", {"quality": 80}),
+    ])
+    def test_every_kind_is_read(self, fmt, kw):
+        from PIL import Image
+        out = io.BytesIO()
+        Image.new("RGB", (37, 19), "red").save(out, fmt, **kw)
+        assert img.dimensions(out.getvalue()) == (37, 19)
+
+    def test_an_extended_webp_and_animations(self):
+        from PIL import Image
+        out = io.BytesIO()
+        Image.new("RGBA", (37, 19), (1, 2, 3, 128)).save(out, "WEBP", quality=80)
+        assert out.getvalue()[12:16] == b"VP8X" and img.dimensions(out.getvalue()) == (37, 19)
+        frames = [Image.new("P", (40, 30), i) for i in range(3)]
+        out = io.BytesIO()
+        frames[0].save(out, "GIF", save_all=True, append_images=frames[1:])
+        assert img.dimensions(out.getvalue()) == (40, 30)
+
+    @pytest.mark.parametrize("raw", [
+        b"\x89PNG\r\n\x1a\n" + b"\x00" * 512,      # what C2 sent (F410)
+        png()[:20],                                   # cut short in its header
+        b"GIF89a" + b"\x00" * 64,
+        b"\xff\xd8\xff\xe0" + b"\x00" * 64,
+        b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 64,
+    ])
+    def test_one_with_no_size_is_damaged(self, raw):
+        assert img.dimensions(raw) is None
+
+    def test_it_is_refused_with_a_reason(self):
+        with pytest.raises(img.ImageRejected, match="Image 1 could not be read: it says it is a PNG but has no size"):
+            img.validate([uri(b"\x89PNG\r\n\x1a\n" + b"\x00" * 512)])
+

@@ -20,8 +20,9 @@ import pytest
 
 from core.models_orchestration import StepConfig, StepType
 from core.orchestration.context import snapshot_inputs
+from _fakes.images import png
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+PNG = png()
 URI = "data:image/png;base64," + base64.b64encode(PNG).decode()
 
 

@@ -8,7 +8,6 @@ including `resource_saved`, which is the whole point of the change.
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import json
 import time
@@ -17,6 +16,7 @@ import pytest
 
 from _fakes import seed as S
 from core.native_builder import bundle_version, seed_native_builder
+from _fakes.images import data_uri, png
 
 
 def tool_call(tool: str, **args) -> str:
@@ -402,9 +402,7 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
     every checkpoint besides.
     """
 
-    PNG = "data:image/png;base64," + base64.b64encode(
-        b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
-    ).decode()
+    PNG = data_uri(png())
 
     async def test_the_opted_in_step_is_given_them(self, client, builder, fake_llm):
         fake_llm.script([route("answer"), "That is a picture of a cat."])

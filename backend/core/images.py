@@ -61,6 +61,81 @@ def sniff(raw: bytes) -> str | None:
     return None
 
 
+#: JPEG's start-of-frame markers, which carry the size: every SOFn but DHT (C4),
+#: JPG (C8) and DAC (CC), which share the range.
+_JPEG_SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+
+
+def dimensions(raw: bytes) -> tuple[int, int] | None:
+    """An image's width and height read from its header, or None when it has none.
+
+    `sniff` reads the first bytes and nothing after them, so a PNG signature
+    followed by zeros, or a file cut short after its first bytes, passed as an
+    image and reached the provider — Bedrock answered `ValidationException`
+    and the engine retried it for a minute and a half (F410). Every format here
+    says how big it is in its first few hundred bytes; a file that does not is
+    damaged. Not a full decode: a body truncated after a sound header still
+    passes, and the provider's 400 says so.
+    """
+    import struct
+
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        if len(raw) < 24 or raw[12:16] != b"IHDR":
+            return None
+        size = struct.unpack(">II", raw[16:24])
+    elif raw[:6] in (b"GIF87a", b"GIF89a"):
+        if len(raw) < 10:
+            return None
+        size = struct.unpack("<HH", raw[6:10])
+    elif raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        kind, body = raw[12:16], raw[20:]
+        if kind == b"VP8 " and len(body) >= 10 and body[3:6] == b"\x9d\x01\x2a":
+            width, height = struct.unpack("<HH", body[6:10])
+            size = (width & 0x3FFF, height & 0x3FFF)
+        elif kind == b"VP8L" and len(body) >= 5 and body[0] == 0x2F:
+            bits = int.from_bytes(body[1:5], "little")
+            size = ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+        elif kind == b"VP8X" and len(body) >= 10:
+            size = (int.from_bytes(body[4:7], "little") + 1, int.from_bytes(body[7:10], "little") + 1)
+        else:
+            return None
+    elif raw.startswith(b"\xff\xd8"):
+        size = _jpeg_size(raw)
+        if size is None:
+            return None
+    else:
+        return None
+    return size if size[0] > 0 and size[1] > 0 else None
+
+
+def _jpeg_size(raw: bytes) -> tuple[int, int] | None:
+    """Walk JPEG's markers to the first start-of-frame, which holds the size."""
+    at = 2
+    while at + 4 <= len(raw):
+        if raw[at] != 0xFF:
+            return None
+        marker = raw[at + 1]
+        if marker == 0xFF:                      # fill byte before a marker
+            at += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD9:   # standalone: no length
+            at += 2
+            continue
+        if marker == 0xDA:                      # start of scan with no frame before it
+            return None
+        length = int.from_bytes(raw[at + 2:at + 4], "big")
+        if length < 2:
+            return None
+        if marker in _JPEG_SOF:
+            if at + 9 > len(raw):
+                return None
+            height = int.from_bytes(raw[at + 5:at + 7], "big")
+            width = int.from_bytes(raw[at + 7:at + 9], "big")
+            return width, height
+        at += 2 + length
+    return None
+
+
 def parse_data_uri(data_uri: str) -> tuple[str, str]:
     """Split a data URI into (mime, base64), rejecting anything else.
 
@@ -115,6 +190,11 @@ def validate(images: list[str] | None) -> list[str]:
             raise ImageRejected(
                 f"Image {index} is {len(raw) // (1024 * 1024)} MB; the limit is "
                 f"{MAX_BYTES // (1024 * 1024)} MB."
+            )
+        if dimensions(raw) is None:
+            raise ImageRejected(
+                f"Image {index} could not be read: it says it is a {actual.split('/')[1].upper()} "
+                "but has no size in it, so it is damaged or cut short."
             )
         total += len(raw)
 

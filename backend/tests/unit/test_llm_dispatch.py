@@ -101,6 +101,27 @@ class TestCloudDispatch:
         assert err.value.status == 400
         assert err.value.code == _llm_mod.PROVIDER_REFUSED and not err.value.retryable
 
+    async def test_an_image_the_model_cannot_read_is_tried_once(self, monkeypatch):
+        """F410: the gateway answers an image Bedrock could not read with a 400.
+        Through the real retry loop: one request, and the step's reason says what
+        was wrong with the image — not "failed after 5 attempts … HTTP 502"."""
+        body = ('{"error":{"message":"the image could not be read: Unable to process the provided image.",'
+                '"type":"invalid_request_error","code":"image_unreadable"}}')
+        calls = []
+
+        def handler(url, kwargs):
+            calls.append(url)
+            return FakeResponse(status_code=400, text=body)
+
+        install_httpx(monkeypatch, handler)
+        with pytest.raises(_llm_mod.LLMError) as err:
+            await _llm_mod.call_model_gateway("synapse.nova-pro", [{"role": "user", "content": "look"}], "s",
+                                              {"model_gateway_base_url": "http://gw"})
+        assert len(calls) == 1, "a 400 never succeeds on a retry"
+        assert str(err.value) == ("Model gateway refused the call: the image could not be read: "
+                                  "Unable to process the provided image.")
+        assert err.value.status == 400 and not err.value.retryable
+
     async def test_model_gateway_keeps_the_class_its_body_gave(self, monkeypatch):
         """A refusal whose JSON, not its sentence, named the account: still quota."""
         body = '{"error":{"message":"Request refused.","code":"insufficient_quota"}}'
