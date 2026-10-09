@@ -1420,7 +1420,7 @@ async def check_scale(browser) -> str:
 
         await page.get_by_role("button", name=re.compile("deploy docs", re.I)).first.click()
         await asyncio.sleep(0.6)
-        await page.get_by_role("button", name=re.compile("^Environment Variables Reference")).first.click()
+        await page.get_by_role("button", name=re.compile("^Environment variables reference")).first.click()
         await asyncio.sleep(0.6)
         guide = await page.evaluate("() => document.body.innerText")
         if "before sending to DLQ" in guide:
