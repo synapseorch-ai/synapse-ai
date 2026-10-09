@@ -2,9 +2,13 @@
 'use client';
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, Save, Eye, EyeOff, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud, Upload, Library } from 'lucide-react';
-import { renderTextContent } from '@/lib/utils';
-import { Badge, ConfirmDialog, Modal, Spinner, Toast, useToast } from '@/components/ui';
+import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud, Upload, Library } from 'lucide-react';
+import { DetailHead, LIST_DETAIL, showDetail } from '@/components/run';
+import {
+    Badge, Button, ConfirmDialog, EmptyState, ErrorNote, Field, IconButton, Input, MarkdownEditor, Modal, Segmented,
+    Spinner, Textarea, Toast, useToast,
+} from '@/components/ui';
+import { cn } from '@/lib/cn';
 import { DocBadge, useVaultKnowledge, vaultKnowledge, type VaultKnowledge } from '@/components/knowledge/VaultKnowledge';
 import { ACCEPTED, REASONS, uploadToKnowledge, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
 
@@ -60,40 +64,29 @@ function TreeNode({
                 click does (F219); the actions beside it are its siblings, shown
                 whenever the row has focus as well as on hover. */}
             <div
-                className={`group flex items-center gap-1 pr-2 transition-colors rounded-md text-xs
-                    ${isSelected ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/50'}`}
+                className={cn(
+                    'group flex min-h-9 items-center gap-1 rounded-md pr-1.5 text-sm transition-colors',
+                    isSelected ? 'bg-surface-2 text-text shadow-[inset_2px_0_0_var(--color-text)]' : 'text-text-muted hover:bg-row-hover hover:text-text',
+                )}
             >
                 <button
                     type="button"
                     onClick={handleClick}
                     aria-expanded={isFolder ? expanded : undefined}
                     aria-current={isSelected ? 'true' : undefined}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left rounded-md"
+                    className="flex min-h-9 min-w-0 flex-1 items-center gap-1.5 rounded-md text-left"
                     style={{ paddingLeft: `${8 + depth * 16}px` }}
                 >
                     {/* Expand/collapse arrow for folders */}
                     {isFolder ? (
-                        <span className="text-text-faint flex-shrink-0">
-                            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                        <span className="shrink-0 text-text-faint">
+                            {expanded ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
                         </span>
                     ) : (
-                        <span className="w-3 flex-shrink-0" />
+                        <span className="w-3.5 shrink-0" />
                     )}
-
-                    {/* Icon */}
-                    {isFolder ? (
-                        expanded
-                            ? <FolderOpen className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
-                            : <Folder className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
-                    ) : node.ext === '.json' ? (
-                        <FileJson className="h-3.5 w-3.5 text-amber-300 flex-shrink-0" />
-                    ) : node.ext === '.txt' ? (
-                        <AlignLeft className="h-3.5 w-3.5 text-zinc-400 flex-shrink-0" />
-                    ) : (
-                        <FileText className="h-3.5 w-3.5 text-blue-400 flex-shrink-0" />
-                    )}
-
-                    <span className="flex-1 truncate font-mono">{node.name}</span>
+                    <span className="shrink-0 text-text-faint"><FileIcon node={node} open={expanded} /></span>
+                    <span className="flex-1 truncate">{node.name}</span>
                 </button>
 
                 {isFolder && knowledge?.baseAt(node.path) && (
@@ -103,40 +96,21 @@ function TreeNode({
                 )}
                 {!isFolder && knowledge?.docAt(node.path) && <DocBadge doc={knowledge.docAt(node.path)!} />}
 
-                {/* Knowledge: upload into a knowledge base's folder */}
-                {isFolder && knowledge?.baseHolding(node.path) && !knowledge.managed(node.path) && (
-                    <button
-                        type="button"
-                        onClick={() => knowledge.onUpload(node.path, knowledge.baseHolding(node.path)!)}
-                        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-text-faint hover:text-accent transition-all p-0.5 flex-shrink-0"
-                        aria-label={`Upload files to ${node.name}`}
-                        title={`Upload files to ${node.name}`}
-                    >
-                        <Upload className="h-3 w-3" />
-                    </button>
-                )}
-
-                {/* Folder actions: + new file, delete */}
-                {isFolder && !knowledge?.managed(node.path) && (
-                    <button
-                        type="button"
-                        onClick={() => onCreateInFolder(node.path)}
-                        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-text-faint hover:text-emerald-400 transition-all p-0.5 flex-shrink-0"
-                        aria-label={`New file in ${node.name}`}
-                        title={`New file in ${node.name}`}
-                    >
-                        <FilePlus className="h-3 w-3" />
-                    </button>
-                )}
-                <button
-                    type="button"
-                    onClick={() => onDelete(node)}
-                    className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-text-faint hover:text-red-500 transition-opacity p-0.5 flex-shrink-0"
-                    aria-label={`Delete ${node.name}`}
-                    title={`Delete ${node.name}`}
-                >
-                    <Trash2 className="h-3 w-3" />
-                </button>
+                {/* The row's actions: quiet until the row is hovered or focused (always there on a phone). */}
+                <span className="flex shrink-0 items-center md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100">
+                    {isFolder && knowledge?.baseHolding(node.path) && !knowledge.managed(node.path) && (
+                        <IconButton
+                            size="sm"
+                            icon={Upload}
+                            label={`Upload files to ${node.name}`}
+                            onClick={() => knowledge.onUpload(node.path, knowledge.baseHolding(node.path)!)}
+                        />
+                    )}
+                    {isFolder && !knowledge?.managed(node.path) && (
+                        <IconButton size="sm" icon={FilePlus} label={`New file in ${node.name}`} onClick={() => onCreateInFolder(node.path)} />
+                    )}
+                    <IconButton size="sm" icon={Trash2} tone="danger" label={`Delete ${node.name}`} onClick={() => onDelete(node)} />
+                </span>
             </div>
 
             {/* Children */}
@@ -158,14 +132,36 @@ function TreeNode({
             )}
             {isFolder && expanded && (!node.children || node.children.length === 0) && (
                 <div
-                    className="text-[10px] text-text-faint italic"
-                    style={{ paddingLeft: `${8 + (depth + 2) * 16}px`, paddingTop: '4px', paddingBottom: '4px' }}
+                    className="py-1 text-xs italic text-text-faint"
+                    style={{ paddingLeft: `${8 + (depth + 2) * 16}px` }}
                 >
                     Empty folder
                 </div>
             )}
         </div>
     );
+}
+
+/** A file's kind, by its extension: one quiet glyph (colour is for meaning only). */
+function FileIcon({ node, open, className = 'size-3.5' }: { node: VaultNode; open?: boolean; className?: string }) {
+    if (node.type === 'folder') return open ? <FolderOpen className={className} aria-hidden /> : <Folder className={className} aria-hidden />;
+    if (node.ext === '.json') return <FileJson className={className} aria-hidden />;
+    if (node.ext === '.txt') return <AlignLeft className={className} aria-hidden />;
+    return <FileText className={className} aria-hidden />;
+}
+
+const KIND_WORD: Record<string, string> = { '.json': 'JSON', '.txt': 'Plain text' };
+
+/** The first file in the tree, depth first: what opens when nothing is picked (UX1: never an empty pane). */
+function firstFile(nodes: VaultNode[]): VaultNode | null {
+    for (const node of nodes) {
+        if (node.type === 'file') return node;
+    }
+    for (const node of nodes) {
+        const inside = node.children ? firstFile(node.children) : null;
+        if (inside) return inside;
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,77 +199,48 @@ function CreateDialog({
             onClose={onClose}
             size="sm"
             title={type === 'file' ? 'New file' : 'New folder'}
+            footer={
+                <>
+                    <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+                    <Button type="submit" form="vault-create" disabled={!name.trim()}>Create</Button>
+                </>
+            }
         >
-                <form onSubmit={handleSubmit} className="p-4 space-y-4">
-                    {parentPath && (
-                        <p className="text-[10px] text-text-faint font-mono">
-                            Location: <span className="text-zinc-400">/{parentPath}</span>
-                        </p>
-                    )}
+            <form id="vault-create" onSubmit={handleSubmit} className="grid gap-4">
+                {parentPath && (
+                    <p className="m-0 text-xs text-text-faint">
+                        Location: <span className="font-code text-text-muted">/{parentPath}</span>
+                    </p>
+                )}
 
-                    {type === 'file' && (
-                        <div className="flex gap-2">
-                            <button
-                                type="button"
-                                onClick={() => setFileType('md')}
-                                className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-bold border transition-colors ${fileType === 'md' ? 'border-blue-500 bg-blue-950/40 text-blue-400' : 'border-zinc-700 text-text-faint hover:border-zinc-600'} rounded-md`}
-                            >
-                                <FileText className="h-3.5 w-3.5" /> Markdown
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setFileType('json')}
-                                className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-bold border transition-colors ${fileType === 'json' ? 'border-amber-500 bg-amber-950/40 text-amber-400' : 'border-zinc-700 text-text-faint hover:border-zinc-600'} rounded-md`}
-                            >
-                                <FileJson className="h-3.5 w-3.5" /> JSON
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setFileType('txt')}
-                                className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-bold border transition-colors ${fileType === 'txt' ? 'border-zinc-400 bg-zinc-800/60 text-zinc-200' : 'border-zinc-700 text-text-faint hover:border-zinc-600'} rounded-md`}
-                            >
-                                <AlignLeft className="h-3.5 w-3.5" /> Text
-                            </button>
-                        </div>
-                    )}
+                {type === 'file' && (
+                    <Segmented
+                        label="File type"
+                        value={fileType}
+                        onChange={setFileType}
+                        options={[
+                            { value: 'md', label: 'Markdown', icon: <FileText className="size-3.5" aria-hidden /> },
+                            { value: 'json', label: 'JSON', icon: <FileJson className="size-3.5" aria-hidden /> },
+                            { value: 'txt', label: 'Text', icon: <AlignLeft className="size-3.5" aria-hidden /> },
+                        ]}
+                    />
+                )}
 
-                    <div className="space-y-1">
-                        <label htmlFor="vault-type-file-file-name-folder-n" className="text-[10px] font-bold text-text-faint uppercase">
-                            {type === 'file' ? 'File Name' : 'Folder Name'}
-                        </label>
-                        <input
-                            id="vault-type-file-file-name-folder-n"
-                            autoFocus
-                            type="text"
-                            value={name}
-                            onChange={e => setName(e.target.value)}
-                            placeholder={type === 'file' ? `my-document.${fileType}` : 'my-folder'}
-                            className="w-full bg-zinc-900 border border-zinc-700 px-3 py-2 text-xs text-white font-mono focus:border-white focus:outline-none rounded-md"
-                        />
-                        {type === 'file' && (
-                            <p className="text-[9px] text-text-faint">
-                                Extension <span className="text-zinc-400">.{fileType}</span> will be appended automatically if not included.
-                            </p>
-                        )}
-                    </div>
-
-                    <div className="flex gap-2">
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            className="flex-1 py-2 text-xs text-text-faint hover:text-white border border-zinc-700 hover:border-zinc-500 transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            type="submit"
-                            disabled={!name.trim()}
-                            className="flex-1 py-2 text-xs font-bold bg-accent text-accent-fg hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                        >
-                            Create
-                        </button>
-                    </div>
-                </form>
+                <Field
+                    label={type === 'file' ? 'File name' : 'Folder name'}
+                    hint={type === 'file' ? <>Extension <span className="font-code">.{fileType}</span> will be appended automatically if not included.</> : undefined}
+                >
+                    <Input
+                        id="vault-type-file-file-name-folder-n"
+                        autoFocus
+                        type="text"
+                        value={name}
+                        onChange={e => setName(e.target.value)}
+                        placeholder={type === 'file' ? `my-document.${fileType}` : 'my-folder'}
+                        className="font-code"
+                    />
+                </Field>
+            </form>
         </Modal>
     );
 }
@@ -308,8 +275,10 @@ function DeleteConfirm({
 }
 
 // ---------------------------------------------------------------------------
-// JSON Editor with validation
+// Editors: one height, taking the rest of the viewport under the head
 // ---------------------------------------------------------------------------
+
+const EDITOR_HEIGHT = 'h-[clamp(280px,calc(100vh-330px),900px)] resize-none';
 
 function JsonEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
     const [error, setError] = useState<string | null>(null);
@@ -326,89 +295,30 @@ function JsonEditor({ value, onChange }: { value: string; onChange: (v: string) 
     };
 
     return (
-        <div className="flex-1 flex flex-col min-h-0">
-            <textarea
+        <div className="grid gap-2">
+            <Textarea
+                aria-label="File contents"
                 value={value}
                 onChange={handleChange}
                 spellCheck={false}
-                className={`flex-1 min-h-0 w-full bg-zinc-950 p-4 text-xs font-mono text-zinc-200 focus:outline-none resize-none leading-relaxed border-0 ${error ? 'border-b-2 border-red-600/60' : ''} rounded-md`}
-                style={{ fontFamily: 'monospace' }}
+                invalid={!!error}
+                className={cn('font-code text-[13px] leading-relaxed', EDITOR_HEIGHT)}
             />
-            {error && (
-                <div className="px-4 py-1.5 text-[10px] text-red-400 font-mono bg-red-950/30 border-t border-red-900/50 flex-shrink-0">
-                    ⚠ {error}
-                </div>
-            )}
+            {error && <ErrorNote>{error}</ErrorNote>}
         </div>
     );
 }
-
-// ---------------------------------------------------------------------------
-// Markdown Editor + Preview
-// ---------------------------------------------------------------------------
-
-function MarkdownEditor({
-    value,
-    onChange,
-}: {
-    value: string;
-    onChange: (v: string) => void;
-}) {
-    const [showPreview, setShowPreview] = useState(false);
-
-    return (
-        <div className="flex-1 flex flex-col min-h-0">
-            <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 flex-shrink-0">
-                <div className="flex items-center gap-1.5">
-                    <FileText className="h-3.5 w-3.5 text-blue-400" />
-                    <span className="text-[10px] font-bold text-zinc-400 uppercase">Markdown</span>
-                </div>
-                <button
-                    onClick={() => setShowPreview(v => !v)}
-                    className="flex items-center gap-1.5 text-[10px] font-bold text-text-faint hover:text-white transition-colors px-2 py-1"
-                >
-                    {showPreview ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-                    {showPreview ? 'EDIT' : 'PREVIEW'}
-                </button>
-            </div>
-            {showPreview ? (
-                <div className="flex-1 min-h-0 overflow-y-auto p-4 text-sm text-zinc-300 leading-relaxed modern-scrollbar">
-                    {renderTextContent(value || '*Empty file*')}
-                </div>
-            ) : (
-                <textarea
-                    value={value}
-                    onChange={e => onChange(e.target.value)}
-                    spellCheck={false}
-                    className="flex-1 min-h-0 w-full bg-zinc-950 p-4 text-xs font-mono text-zinc-200 focus:outline-none resize-none leading-relaxed border-0 rounded-md"
-                    style={{ fontFamily: 'monospace' }}
-                    placeholder="# Title&#10;&#10;Start writing..."
-                />
-            )}
-        </div>
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Plain Text Editor
-// ---------------------------------------------------------------------------
 
 function PlainTextEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
     return (
-        <div className="flex-1 flex flex-col min-h-0">
-            <div className="flex items-center gap-1.5 px-4 py-2 border-b border-zinc-800 flex-shrink-0">
-                <AlignLeft className="h-3.5 w-3.5 text-zinc-400" />
-                <span className="text-[10px] font-bold text-zinc-400 uppercase">Plain Text</span>
-            </div>
-            <textarea
-                value={value}
-                onChange={e => onChange(e.target.value)}
-                spellCheck={false}
-                className="flex-1 min-h-0 w-full bg-zinc-950 p-4 text-xs font-mono text-zinc-200 focus:outline-none resize-none leading-relaxed border-0 rounded-md"
-                style={{ fontFamily: 'monospace' }}
-                placeholder="Start typing..."
-            />
-        </div>
+        <Textarea
+            aria-label="File contents"
+            value={value}
+            onChange={e => onChange(e.target.value)}
+            spellCheck={false}
+            className={cn('font-code text-[13px] leading-relaxed', EDITOR_HEIGHT)}
+            placeholder="Start typing..."
+        />
     );
 }
 
@@ -424,7 +334,6 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
     const [savedContent, setSavedContent] = useState('');
     const [loadingFile, setLoadingFile] = useState(false);
     const [savingFile, setSavingFile] = useState(false);
-    const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
 
     // Dialogs
     const [createDialog, setCreateDialog] = useState<{ type: 'file' | 'folder'; parentPath: string } | null>(null);
@@ -509,6 +418,11 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
         setLinkedPath(null);
     }, [linkedPath, tree]);
 
+    // UX1: the pane never opens empty. Nothing picked (or the picked file gone)
+    // opens the first file in the tree; a `?path=` link above still wins.
+    const openNode: VaultNode | null = selectedNode?.type === 'file' ? selectedNode : (linkedPath ? null : firstFile(tree));
+    const detailRef = React.useRef<HTMLElement>(null);
+
     // Fetch scale config to show S3 banner when configured
     useEffect(() => {
         fetch('/api/scale/config')
@@ -517,13 +431,16 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
             .catch(() => {});
     }, []);
 
-    // Load file content when a file is selected
+    // Load file content when a file is opened
+    const openPath = openNode?.path ?? null;
+    // A click on a file reads it again, even the open one (its text may have
+    // changed under it, and a keyboard's Enter on it should do something).
+    const [reads, setReads] = useState(0);
     useEffect(() => {
-        if (!selectedNode || selectedNode.type !== 'file') return;
+        if (!openPath) return;
         setLoadingFile(true);
-        setSaveStatus('idle');
         setBinary(false);
-        fetch(`/api/vault/file?path=${encodeURIComponent(selectedNode.path)}&source=${storageSource}`)
+        fetch(`/api/vault/file?path=${encodeURIComponent(openPath)}&source=${storageSource}`)
             .then(r => {
                 // 415: a PDF, an image — nothing an editor can open (F323).
                 if (r.status === 415) setBinary(true);
@@ -539,27 +456,25 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                 setSavedContent('');
             })
             .finally(() => setLoadingFile(false));
-    }, [selectedNode, storageSource]);
+    }, [openPath, storageSource, reads]);
 
     const handleSave = async () => {
-        if (!selectedNode || selectedNode.type !== 'file') return;
+        if (!openNode) return;
         setSavingFile(true);
-        setSaveStatus('idle');
         try {
             const res = await fetch('/api/vault/file', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: selectedNode.path, content: fileContent, source: storageSource }),
+                body: JSON.stringify({ path: openNode.path, content: fileContent, source: storageSource }),
             });
             if (res.ok) {
                 setSavedContent(fileContent);
-                setSaveStatus('saved');
-                setTimeout(() => setSaveStatus('idle'), 2000);
+                show('Saved');
             } else {
-                setSaveStatus('error');
+                show(`Could not save ${openNode.name}`, 'danger');
             }
         } catch {
-            setSaveStatus('error');
+            show(`Could not save ${openNode.name}`, 'danger');
         } finally {
             setSavingFile(false);
         }
@@ -582,9 +497,13 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                 if (createDialog.type === 'file') {
                     setSelectedNode({ name: data.name, path: data.path, type: 'file', ext: data.ext });
                 }
+            } else {
+                const detail = (await res.json().catch(() => null))?.detail;
+                show(typeof detail === 'string' ? detail : `Could not create ${name}`, 'danger');
             }
         } catch (e) {
             console.error('Failed to create', e);
+            show(`Could not create ${name}`, 'danger');
         }
     };
 
@@ -604,97 +523,94 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                     setSavedContent('');
                 }
                 await fetchTree();
+            } else {
+                show(`Could not delete ${deleteTarget.name}`, 'danger');
             }
         } catch (e) {
             console.error('Failed to delete', e);
+            show(`Could not delete ${deleteTarget.name}`, 'danger');
         } finally {
             setDeleteTarget(null);
         }
     };
 
     const isDirty = fileContent !== savedContent;
+    const newAt = (type: 'file' | 'folder') => { setContextFolder(''); setCreateDialog({ type, parentPath: '' }); };
+    const switchSource = (source: 's3' | 'local') => {
+        setStorageSource(source); setSelectedNode(null); setFileContent(''); setSavedContent('');
+    };
+    const docHere = openNode ? knowledge?.docAt(openNode.path) : undefined;
 
     return (
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-            {/* S3 storage banner with source toggle */}
+        <div className="grid gap-5">
+            {/* S3 storage, with the source switch */}
             {s3Bucket && (
-                <div className="flex items-center gap-2 px-4 py-2 bg-zinc-900 border-b border-zinc-800 text-xs text-zinc-400 shrink-0">
-                    <Cloud className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                <div className="flex flex-wrap items-center gap-2 text-[13px] text-text-muted">
+                    <Cloud className="size-4 shrink-0 text-text-faint" aria-hidden />
                     <span>
-                        <span className="text-sky-400 font-semibold">S3 Connected</span>
-                        {' — '}bucket: <span className="font-mono text-zinc-300">{s3Bucket}</span>
+                        <span className="font-medium text-text">S3 connected</span>
+                        {' — '}bucket: <span className="font-code text-text">{s3Bucket}</span>
                     </span>
-                    <div className="ml-auto flex items-center gap-1.5">
-                        <span className="text-[10px] text-text-faint">View:</span>
-                        <button
-                            onClick={() => { setStorageSource('s3'); setSelectedNode(null); setFileContent(''); setSavedContent(''); }}
-                            className={`px-2 py-0.5 text-[10px] font-bold border transition-colors ${storageSource === 's3' ? 'border-sky-500 bg-sky-950/40 text-sky-400' : 'border-zinc-700 text-text-faint hover:border-zinc-600 hover:text-zinc-300'} rounded-md`}
-                        >
-                            S3
-                        </button>
-                        <button
-                            onClick={() => { setStorageSource('local'); setSelectedNode(null); setFileContent(''); setSavedContent(''); }}
-                            className={`px-2 py-0.5 text-[10px] font-bold border transition-colors ${storageSource === 'local' ? 'border-amber-500 bg-amber-950/40 text-amber-400' : 'border-zinc-700 text-text-faint hover:border-zinc-600 hover:text-zinc-300'} rounded-md`}
-                        >
-                            Local
-                        </button>
+                    <div role="group" aria-label="View" className="ml-auto flex items-center gap-1.5">
+                        <span className="text-xs text-text-faint">View:</span>
+                        {(['s3', 'local'] as const).map(source => (
+                            <button
+                                key={source}
+                                type="button"
+                                aria-pressed={storageSource === source}
+                                onClick={() => switchSource(source)}
+                                className={cn(
+                                    'inline-flex h-7 items-center rounded-full border px-3 text-xs font-medium transition-colors',
+                                    storageSource === source
+                                        ? 'border-text bg-text text-bg'
+                                        : 'border-border text-text-muted hover:border-border-strong hover:text-text',
+                                )}
+                            >
+                                {source === 's3' ? 'S3' : 'Local'}
+                            </button>
+                        ))}
                     </div>
                 </div>
             )}
 
-            <div className="flex-1 flex min-h-0 overflow-hidden">
-            {/* Left: Tree sidebar */}
-            <div className="w-64 flex-shrink-0 border-r border-zinc-800 flex flex-col bg-zinc-950">
-                {/* Toolbar */}
-                <div className="flex items-center gap-1 px-3 py-2.5 border-b border-zinc-800">
-                    <span className="text-[10px] font-bold text-text-faint uppercase flex-1">Vault Files</span>
-                    <button
-                        onClick={() => { setContextFolder(''); setCreateDialog({ type: 'folder', parentPath: '' }); }}
-                        title="New Folder"
-                        className="p-1 text-text-faint hover:text-white hover:bg-zinc-800 transition-colors"
-                    >
-                        <FolderPlus className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                        onClick={() => { setContextFolder(''); setCreateDialog({ type: 'file', parentPath: '' }); }}
-                        title="New File"
-                        className="p-1 text-text-faint hover:text-white hover:bg-zinc-800 transition-colors"
-                    >
-                        <FilePlus className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                        onClick={fetchTree}
-                        title="Refresh"
-                        className="p-1 text-text-faint hover:text-white hover:bg-zinc-800 transition-colors"
-                    >
-                        <RefreshCw className="h-3 w-3" />
-                    </button>
+            {!loading && tree.length === 0 ? (
+                <EmptyState
+                    title="Vault is empty"
+                    action={
+                        <div className="flex justify-center gap-2">
+                            <Button variant="secondary" onClick={() => newAt('folder')}><FolderPlus className="size-4" aria-hidden /> New folder</Button>
+                            <Button onClick={() => newAt('file')}><Plus className="size-4" aria-hidden /> New file</Button>
+                        </div>
+                    }
+                >
+                    Create <span className="font-code">.md</span>, <span className="font-code">.json</span>, or <span className="font-code">.txt</span> files
+                    to use as context in agent prompts, and reference them with <span className="font-code">@[path]</span>.
+                </EmptyState>
+            ) : (
+            <div className={LIST_DETAIL}>
+            {/* The tree */}
+            <nav aria-label="Files" className="grid min-w-0 gap-2 lg:sticky lg:top-4">
+                <div className="flex items-center gap-1 border-b border-border pb-2">
+                    <span className="flex-1 text-[13px] font-semibold text-text">Files</span>
+                    <IconButton size="sm" icon={FolderPlus} label="New folder" title="New Folder" onClick={() => newAt('folder')} />
+                    <IconButton size="sm" icon={FilePlus} label="New file" title="New File" onClick={() => newAt('file')} />
+                    <IconButton size="sm" icon={RefreshCw} label="Refresh" onClick={fetchTree} />
                 </div>
 
-                {/* Tree */}
-                <div className="flex-1 overflow-y-auto modern-scrollbar py-1">
+                <div className="max-h-[calc(100vh-17rem)] overflow-y-auto modern-scrollbar max-lg:max-h-80">
                     {loading ? (
-                        <div className="flex items-center gap-2 px-4 py-4 text-text-faint text-xs">
+                        <div className="flex items-center gap-2 px-2 py-4 text-sm text-text-faint" role="status">
                             <Spinner size={14} /> Loading…
-                        </div>
-                    ) : tree.length === 0 ? (
-                        <div className="px-4 py-6 text-center">
-                            <div className="text-text-faint text-xs mb-3">Vault is empty</div>
-                            <button
-                                onClick={() => { setContextFolder(''); setCreateDialog({ type: 'file', parentPath: '' }); }}
-                                className="text-[10px] text-zinc-400 hover:text-white underline"
-                            >
-                                Create your first file →
-                            </button>
                         </div>
                     ) : (
                         tree.map(node => (
                             <TreeNode
                                 key={node.path}
                                 node={node}
-                                selectedPath={selectedNode?.path ?? null}
+                                selectedPath={openNode?.path ?? null}
                                 onSelect={(n) => {
                                     setSelectedNode(n);
+                                    setReads(r => r + 1);
                                     // Set context folder for "new" actions
                                     if (n.type === 'folder') {
                                         setContextFolder(n.path);
@@ -702,6 +618,7 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                                         const parts = n.path.split('/');
                                         setContextFolder(parts.slice(0, -1).join('/'));
                                     }
+                                    showDetail(detailRef.current);
                                 }}
                                 onDelete={setDeleteTarget}
                                 onCreateInFolder={(folderPath) => {
@@ -725,106 +642,78 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                     onChange={e => { if (e.target.files) uploadFiles(e.target.files); e.target.value = ''; }}
                 />
                 {uploading > 0 && (
-                    <div className="flex items-center gap-2 px-3 py-2 border-t border-zinc-800 text-xs text-text-muted" role="status">
+                    <div className="flex items-center gap-2 border-t border-border pt-2 text-xs text-text-muted" role="status">
                         <Spinner size={12} /> Uploading {uploading} file{uploading === 1 ? '' : 's'}…
                     </div>
                 )}
 
-                {/* Bottom hint */}
-                <div className="px-3 py-2 border-t border-zinc-800">
-                    <p className="text-[9px] text-text-faint leading-relaxed">
-                        Files here can be referenced in agent prompts using <span className="font-mono text-text-faint">@[path]</span>
-                    </p>
-                </div>
-            </div>
+                <p className="m-0 border-t border-border pt-2 text-xs leading-relaxed text-text-faint">
+                    Files here can be referenced in agent prompts using <span className="font-code">@[path]</span>
+                </p>
+            </nav>
 
-            {/* Right: Content area */}
-            <div className="flex-1 flex flex-col min-h-0 bg-zinc-950">
-                {selectedNode && selectedNode.type === 'file' ? (
+            {/* The open file */}
+            <section ref={detailRef} aria-label="File" className="grid min-w-0 scroll-mt-4 content-start gap-4">
+                {openNode && (
                     <>
-                        {/* File header */}
-                        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-zinc-800 flex-shrink-0">
-                            {selectedNode.ext === '.json'
-                                ? <FileJson className="h-4 w-4 text-amber-400 flex-shrink-0" />
-                                : selectedNode.ext === '.txt'
-                                    ? <AlignLeft className="h-4 w-4 text-zinc-400 flex-shrink-0" />
-                                    : <FileText className="h-4 w-4 text-blue-400 flex-shrink-0" />
+                        <DetailHead
+                            leading={<span className="mt-1 text-text-faint"><FileIcon node={openNode} className="size-5" /></span>}
+                            title={openNode.name}
+                            sub={<><span>{KIND_WORD[openNode.ext ?? ''] ?? 'Markdown'}</span> · <span className="font-code">{openNode.path}</span></>}
+                            actions={
+                                <>
+                                    {isDirty && (
+                                        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-text-muted">Unsaved</span>
+                                    )}
+                                    <Button onClick={handleSave} disabled={savingFile || !isDirty || binary} loading={savingFile}>
+                                        Save
+                                    </Button>
+                                    <IconButton icon={Trash2} tone="danger" label={`Delete ${openNode.name}`} onClick={() => setDeleteTarget(openNode)} />
+                                </>
                             }
-                            <span className="text-xs font-mono text-zinc-300 flex-1 truncate">{selectedNode.path}</span>
-                            {isDirty && <span className="text-[10px] text-amber-400">unsaved changes</span>}
-                            <button
-                                onClick={handleSave}
-                                disabled={savingFile || !isDirty || binary}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed
-                                    ${saveStatus === 'saved' ? 'bg-emerald-600 text-white' : saveStatus === 'error' ? 'bg-red-600 text-white' : 'bg-accent text-accent-fg hover:bg-accent-hover'}`}
-                            >
-                                {savingFile ? <Spinner size={12} /> : <Save className="h-3 w-3" />}
-                                {saveStatus === 'saved' ? 'SAVED' : saveStatus === 'error' ? 'ERROR' : 'SAVE'}
-                            </button>
-                        </div>
+                        />
 
-                        {knowledge?.docAt(selectedNode.path) && (() => {
-                            const doc = knowledge.docAt(selectedNode.path)!;
-                            const kb = knowledge.baseHolding(selectedNode.path);
+                        {docHere && (() => {
+                            const kb = knowledge?.baseHolding(openNode.path);
                             return (
-                                <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2 text-xs text-text-muted flex-shrink-0">
-                                    <Library className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                                <div className="flex flex-wrap items-center gap-2 text-[13px] text-text-muted">
+                                    <Library className="size-4 shrink-0 text-text-faint" aria-hidden />
                                     <span>In {kb?.name ?? 'a knowledge base'}:</span>
-                                    <DocBadge doc={doc} />
-                                    {doc.status_reason && <span className="truncate">{REASONS[doc.status_reason] ?? doc.status_reason}</span>}
+                                    <DocBadge doc={docHere} />
+                                    {docHere.status_reason && <span className="truncate">{REASONS[docHere.status_reason] ?? docHere.status_reason}</span>}
                                     <Link href="/knowledge" className="ml-auto shrink-0 underline hover:text-text">Open in Knowledge</Link>
                                 </div>
                             );
                         })()}
 
-                        {/* Editor area */}
                         {loadingFile ? (
-                            <div className="flex-1 flex items-center justify-center">
-                                <Spinner size={20} className="text-text-faint" />
+                            <div className="flex items-center gap-2 py-10 text-sm text-text-faint" role="status">
+                                <Spinner size={16} /> Reading…
                             </div>
                         ) : binary ? (
-                            <div className="flex-1 flex flex-col items-center justify-center gap-2 p-8 text-center">
-                                <h3 className="text-sm font-semibold text-text">Not a text file</h3>
-                                <p className="max-w-sm text-xs text-text-muted">
-                                    This file can&apos;t be opened here. Agents can still reference it with @[path].
-                                </p>
-                            </div>
-                        ) : selectedNode.ext === '.json' ? (
-                            <JsonEditor value={fileContent} onChange={setFileContent} />
-                        ) : selectedNode.ext === '.txt' ? (
+                            <EmptyState title="Not a text file">
+                                This file can&apos;t be opened here. Agents can still reference it with @[path].
+                            </EmptyState>
+                        ) : openNode.ext === '.json' ? (
+                            <JsonEditor key={openNode.path} value={fileContent} onChange={setFileContent} />
+                        ) : openNode.ext === '.txt' ? (
                             <PlainTextEditor value={fileContent} onChange={setFileContent} />
                         ) : (
-                            <MarkdownEditor value={fileContent} onChange={setFileContent} />
+                            <MarkdownEditor
+                                key={openNode.path}
+                                aria-label="File contents"
+                                value={fileContent}
+                                onChange={setFileContent}
+                                textareaClassName={EDITOR_HEIGHT}
+                                placeholder={"# Title\n\nStart writing..."}
+                                previewEmpty="Empty file"
+                            />
                         )}
                     </>
-                ) : (
-                    <div className="flex-1 flex flex-col items-center justify-center gap-6 text-center p-8">
-                        <div className="space-y-2">
-                            <div className="h-16 w-16 mx-auto rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-                                <FolderOpen className="h-7 w-7 text-text-faint" />
-                            </div>
-                            <h3 className="text-sm font-bold text-zinc-400">Select a file to edit</h3>
-                            <p className="text-xs text-text-faint max-w-xs">
-                                Use the file explorer on the left to browse your vault. Create <span className="text-zinc-400">.md</span>, <span className="text-zinc-400">.json</span>, or <span className="text-zinc-400">.txt</span> files to use as context in agent prompts.
-                            </p>
-                        </div>
-                        <div className="flex gap-3">
-                            <button
-                                onClick={() => { setContextFolder(''); setCreateDialog({ type: 'folder', parentPath: '' }); }}
-                                className="flex items-center gap-2 px-4 py-2 text-xs font-bold border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors"
-                            >
-                                <FolderPlus className="h-3.5 w-3.5" /> New Folder
-                            </button>
-                            <button
-                                onClick={() => { setContextFolder(''); setCreateDialog({ type: 'file', parentPath: '' }); }}
-                                className="flex items-center gap-2 px-4 py-2 text-xs font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-colors"
-                            >
-                                <Plus className="h-3.5 w-3.5" /> New File
-                            </button>
-                        </div>
-                    </div>
                 )}
+            </section>
             </div>
+            )}
 
             {/* Modals */}
             {createDialog && (
@@ -843,7 +732,6 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                 />
             )}
             <Toast message={toast.message} tone={toast.tone} onDismiss={dismiss} />
-        </div>
         </div>
     );
 }

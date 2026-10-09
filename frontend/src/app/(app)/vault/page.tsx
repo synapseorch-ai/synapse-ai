@@ -12,7 +12,7 @@ export default async function VaultPage(props: {
     const initialPath = typeof searchParams.path === 'string' ? searchParams.path : undefined;
 
     return (
-        <AppScreen id="vault" bleed>
+        <AppScreen id="vault" width="wide">
             <VaultTab initialPath={initialPath} />
         </AppScreen>
     );
