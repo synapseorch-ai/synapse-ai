@@ -67,15 +67,16 @@ export function Section({
       >
         <header
           className={cn(
-            "flex flex-wrap items-start justify-between gap-x-4 gap-y-2",
+            // No wrap: a long description must not push the actions onto a line of their own (M2g).
+            "flex items-start justify-between gap-x-4",
             plain ? "pb-3 pt-5" : "border-b border-border px-5 py-3.5",
           )}
         >
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h2 className={cn("text-text", plain ? sectionClass : "text-sm font-semibold")}>{title}</h2>
             {description && <p className="mt-0.5 text-xs text-text-muted">{description}</p>}
           </div>
-          {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+          {actions && <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{actions}</div>}
         </header>
         <div className={plain ? "pb-5" : "px-5 py-4"}>{children}</div>
       </section>
