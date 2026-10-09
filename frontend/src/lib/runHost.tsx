@@ -7,7 +7,7 @@
  * file; `components/run/` is the same in both.
  */
 import {
-    triggerOf, type NestedRun, type RunHost, type RunRecord, type RunRow, type WorkflowLastRun,
+    triggerOf, type LogRun, type NestedRun, type RunHost, type RunRecord, type RunRow, type WorkflowLastRun,
 } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import { refusedAnswerMessage } from '@/lib/answers';
@@ -174,6 +174,17 @@ export function ossLastRun(run: RunSummary): WorkflowLastRun {
         status: run.status,
         waitingForHuman: Boolean(run.waiting_for_human),
         at: run.started_at ?? null,
+        startedAt: run.started_at ?? null,
+        endedAt: run.ended_at ?? null,
+        costUsd: run.total_cost_usd ?? null,
+    };
+}
+
+/** A run as the Logs tab shows it beside its log (M2h): the log's id is the run's. */
+export function ossLogRun(run: RunSummary): LogRun {
+    return {
+        status: run.status,
+        waitingForHuman: Boolean(run.waiting_for_human),
         startedAt: run.started_at ?? null,
         endedAt: run.ended_at ?? null,
         costUsd: run.total_cost_usd ?? null,

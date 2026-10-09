@@ -1,10 +1,6 @@
 import { LogsTab } from '@/components/settings/LogsTab';
-import { AppScreen } from '@/components/app/AppScreen';
 
+// The tab draws its own frame: its count and Refresh sit in the header (M2h).
 export default function LogsPage() {
-    return (
-        <AppScreen id="logs" bleed>
-            <LogsTab />
-        </AppScreen>
-    );
+    return <LogsTab />;
 }

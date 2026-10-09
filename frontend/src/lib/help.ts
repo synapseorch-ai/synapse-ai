@@ -73,13 +73,13 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Logs',
         summary: 'The full log of every agent, workflow and schedule run, grouped by session, so you can see what a run actually did and in what order.',
         steps: [
-            'Choose “Agent Logs”, “Orchestration Logs” or “Schedule Logs” at the top.',
+            'Choose “Agent logs”, “Workflow logs” or “Schedule logs” at the top; the newest log opens beside the list.',
             'Use “Filter” to show one agent, workflow or schedule; it appears once the list holds more than one.',
-            'Click a log on the left to read it on the right; a run another run started sits beneath it.',
-            'Click “Load More” for older logs, or the refresh button for new ones.',
-            'Deleting a log, from its row, is immediate and cannot be undone.',
+            'A workflow’s log shows how its run went, how long it took and what it cost; a run another run started sits beneath it.',
+            'Use “Transcript sections” to jump to a model call, a step or a tool call, and “Copy” to take the whole log.',
+            'Click “Load more” for older logs, or Refresh for new ones. Deleting a log, from its row, is immediate and cannot be undone.',
         ],
-        media: { id: 'runs/oss-runs-logs', alt: 'Runs & Logs: tabs for agent, orchestration and schedule logs, runs grouped by session on the left and a log on the right.' },
+        media: { id: 'runs/oss-runs-logs', alt: 'Logs: agent, workflow and schedule logs grouped by session on the left, the open log on the right.' },
         guide: '/guides/start/runs',
     },
     evals: {

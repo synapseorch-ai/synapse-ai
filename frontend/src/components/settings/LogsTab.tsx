@@ -1,9 +1,26 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
-import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Trash2, Bot, Workflow, ScrollText, Clock } from 'lucide-react';
-import { Combobox } from '@/components/ui';
-import { LocalTime } from '@/components/LocalTime';
+
+/*
+ * Runs › Logs (M2h): every agent, workflow and schedule log, beside the one
+ * that's open. The rows, the pills and the transcript are the shared
+ * `components/run` pieces cloud draws too; this file reads OSS's listings and
+ * runs and keeps OSS's own controls (the name filter, Load more, Delete).
+ *
+ * A workflow log's id is its run's, so the runs list (one read of the newest
+ * 200) says how each of those runs went, how long it took and what it cost.
+ * Agent logs carry no status in their listing and show none.
+ */
+import { Bot, Clock, RefreshCw, Trash2, Workflow } from 'lucide-react';
+import Link from 'next/link';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import { AppScreen } from '@/components/app/AppScreen';
+import { parseStamp } from '@/components/LocalTime';
+import { LogHead, LogKinds, LogList, Transcript, type LogListRow, type LogRun } from '@/components/run';
+import type { RunSummary } from '@/components/runs/summary';
+import { buttonStyles, Combobox, EmptyState, IconButton } from '@/components/ui';
+import { cn } from '@/lib/cn';
+import { ossLogRun } from '@/lib/runHost';
 
 type LogType = 'agents' | 'orchestrations' | 'schedules';
 
@@ -28,25 +45,59 @@ interface LogSummary {
     file_size_kb?: number;
 }
 
+const KINDS: { id: LogType; label: string; icon: React.ReactNode }[] = [
+    { id: 'agents', label: 'Agent logs', icon: <Bot aria-hidden className="size-3.5" /> },
+    { id: 'orchestrations', label: 'Workflow logs', icon: <Workflow aria-hidden className="size-3.5" /> },
+    { id: 'schedules', label: 'Schedule logs', icon: <Clock aria-hidden className="size-3.5" /> },
+];
+
+const LIMIT = 100;
+const RUNS_READ = 200;
+
+const nameOf = (log: LogSummary, type: LogType) =>
+    type === 'agents' ? (log.agent_name || log.run_id)
+        : type === 'orchestrations' ? (log.orchestration_name || log.run_id)
+            : (log.schedule_name || log.run_id);
+
+const subOf = (log: LogSummary, type: LogType) =>
+    type === 'agents' ? log.source : type === 'orchestrations' ? log.orchestration_id : log.target_type;
+
+/** Written in UTC with no zone (F205): an ISO instant for `When`. */
+const isoOf = (stamp?: string) => {
+    if (!stamp) return null;
+    const d = parseStamp(stamp);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
 export const LogsTab = () => {
     const [logType, setLogType] = useState<LogType>('agents');
     const [logs, setLogs] = useState<LogSummary[]>([]);
+    const [runs, setRuns] = useState<Map<string, LogRun>>(new Map());
     const [selectedId, setSelectedId] = useState<string | null>(null);
-    const [content, setContent] = useState<string | null>(null);
+    // A click on the open log reads it again.
+    const [reads, setReads] = useState(0);
     const [loading, setLoading] = useState(false);
-    const [contentLoading, setContentLoading] = useState(false);
     const [offset, setOffset] = useState(0);
     const [hasMore, setHasMore] = useState(true);
     const [filterById, setFilterById] = useState<string>('all');
-    const LIMIT = 100;
+    const detailRef = useRef<HTMLElement>(null);
+
+    const fetchRuns = useCallback(() => {
+        fetch(`/api/orchestrations/runs?limit=${RUNS_READ}`)
+            .then(r => (r.ok ? r.json() : []))
+            .then((d: RunSummary[]) => {
+                if (Array.isArray(d)) setRuns(new Map(d.map(r => [r.run_id, ossLogRun(r)])));
+            })
+            .catch(() => {});
+    }, []);
 
     const fetchLogs = useCallback(async (isLoadMore = false) => {
         setLoading(true);
         if (!isLoadMore) {
             setSelectedId(null);
-            setContent(null);
             setOffset(0);
             setHasMore(true);
+            fetchRuns();
         }
 
         const currentOffset = isLoadMore ? offset : 0;
@@ -68,313 +119,219 @@ export const LogsTab = () => {
         } finally {
             setLoading(false);
         }
-    }, [logType, offset]);
+    }, [logType, offset, fetchRuns]);
 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => { fetchLogs(); setFilterById('all'); }, [logType]);
 
-    const fetchContent = async (runId: string) => {
-        setSelectedId(runId);
-        setContentLoading(true);
-        setContent(null);
-        try {
-            const res = await fetch(`/api/logs/${logType}/${runId}`);
-            if (res.ok) setContent(await res.text());
-        } finally {
-            setContentLoading(false);
-        }
-    };
-
-    const deleteLog = async (runId: string, e: React.MouseEvent) => {
-        e.stopPropagation();
+    const deleteLog = async (runId: string) => {
         const res = await fetch(`/api/logs/${logType}/${runId}`, { method: 'DELETE' });
         if (res.ok) {
-            if (selectedId === runId) { setSelectedId(null); setContent(null); }
+            if (selectedId === runId) setSelectedId(null);
             setLogs(prev => prev.filter(l => l.run_id !== runId));
         }
     };
 
-    // Under Agents tab: hide logs that were triggered by a schedule
-    // (they appear as agent_logs with source='schedule' but belong in Schedules tab)
-    const visibleLogs = logType === 'agents'
-        ? logs.filter(l => l.source !== 'schedule')
-        : logs;
+    // Under Agents: hide logs a schedule started (they belong under Schedule logs).
+    const visibleLogs = useMemo(
+        () => (logType === 'agents' ? logs.filter(l => l.source !== 'schedule') : logs),
+        [logs, logType],
+    );
 
-    // Unique ID options for secondary dropdown (based on name, not run_id)
-    const uniqueIds: string[] = Array.from(new Set(
-        visibleLogs.map(log =>
-            logType === 'agents' ? (log.agent_name || log.run_id)
-                : logType === 'orchestrations' ? (log.orchestration_name || log.run_id)
-                    : (log.schedule_name || log.run_id)
-        ).filter(Boolean) as string[]
-    ));
+    // The names for the filter (by name, not run id).
+    const uniqueIds: string[] = useMemo(
+        () => Array.from(new Set(visibleLogs.map(log => nameOf(log, logType)).filter(Boolean))),
+        [visibleLogs, logType],
+    );
 
-    // Apply secondary filter
-    const filteredLogs = filterById === 'all' ? visibleLogs : visibleLogs.filter(log => {
-        const name = logType === 'agents' ? (log.agent_name || log.run_id)
-            : logType === 'orchestrations' ? (log.orchestration_name || log.run_id)
-                : (log.schedule_name || log.run_id);
-        return name === filterById;
-    });
+    const rows: LogListRow[] = useMemo(() => {
+        const filteredLogs = filterById === 'all'
+            ? visibleLogs
+            : visibleLogs.filter(log => nameOf(log, logType) === filterById);
 
-    // Group filtered logs by session_id
-    const groupedLogs: Record<string, LogSummary[]> = {};
-    const sessionOrder: string[] = [];
-
-    // A nested run's log goes under the run that started it (F251), right after
-    // it: its id is that run's plus `__…`. It used to be a group of its own,
-    // with no link back — a different session from its parent's, or none.
-    const rootOf = (runId: string) => runId.split('__')[0];
-    const groupOf = (log: LogSummary): string => {
-        const root = rootOf(log.run_id);
-        const rootLog = root !== log.run_id ? filteredLogs.find(l => l.run_id === root) : undefined;
-        const anchor = rootLog ?? log;
-        return anchor.session_id || `nosession_${root}`;
-    };
-    filteredLogs.forEach(log => {
-        const sid = groupOf(log);
-        if (!groupedLogs[sid]) {
-            groupedLogs[sid] = [];
-            sessionOrder.push(sid);
-        }
-        groupedLogs[sid].push(log);
-    });
-    for (const sid of sessionOrder) {
-        const group = groupedLogs[sid];
-        const tops = group.filter(l => rootOf(l.run_id) === l.run_id);
-        const placed = new Set<string>();
-        const ordered: LogSummary[] = [];
-        for (const top of tops) {
-            ordered.push(top);
-            placed.add(top.run_id);
-            group.filter(l => l.run_id !== top.run_id && rootOf(l.run_id) === top.run_id)
-                .sort((a, b) => (a.started_at || '').localeCompare(b.started_at || ''))
-                .forEach(child => { ordered.push(child); placed.add(child.run_id); });
-        }
-        groupedLogs[sid] = [...ordered, ...group.filter(l => !placed.has(l.run_id))];
-    }
-
-    const renderLogContent = (text: string) => {
-        const segments: Array<{ type: 'text' | 'compact'; content: string }> = [];
-        let lastIndex = 0;
-        const re = /={10,}[\s\S]*?CONTEXT COMPACTED[\s\S]*?={10,}/g;
-        let match: RegExpExecArray | null;
-        while ((match = re.exec(text)) !== null) {
-            if (match.index > lastIndex) {
-                segments.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+        // Grouped by session. A nested run's log goes under the run that started
+        // it (F251), right after it: its id is that run's plus `__…`.
+        const groupedLogs: Record<string, LogSummary[]> = {};
+        const sessionOrder: string[] = [];
+        const rootOf = (runId: string) => runId.split('__')[0];
+        const groupOf = (log: LogSummary): string => {
+            const root = rootOf(log.run_id);
+            const rootLog = root !== log.run_id ? filteredLogs.find(l => l.run_id === root) : undefined;
+            const anchor = rootLog ?? log;
+            return anchor.session_id || `nosession_${root}`;
+        };
+        filteredLogs.forEach(log => {
+            const sid = groupOf(log);
+            if (!groupedLogs[sid]) {
+                groupedLogs[sid] = [];
+                sessionOrder.push(sid);
             }
-            segments.push({ type: 'compact', content: match[0] });
-            lastIndex = match.index + match[0].length;
+            groupedLogs[sid].push(log);
+        });
+        const out: LogListRow[] = [];
+        for (const sid of sessionOrder) {
+            const group = groupedLogs[sid];
+            const tops = group.filter(l => rootOf(l.run_id) === l.run_id);
+            const placed = new Set<string>();
+            const ordered: LogSummary[] = [];
+            for (const top of tops) {
+                ordered.push(top);
+                placed.add(top.run_id);
+                group.filter(l => l.run_id !== top.run_id && rootOf(l.run_id) === top.run_id)
+                    .sort((a, b) => (a.started_at || '').localeCompare(b.started_at || ''))
+                    .forEach(child => { ordered.push(child); placed.add(child.run_id); });
+            }
+            const all = [...ordered, ...group.filter(l => !placed.has(l.run_id))];
+            const quote = all.find(l => l.user_input)?.user_input || all.find(l => l.prompt)?.prompt || null;
+            // A session's logs sit under its heading; a run on its own needs none, and
+            // what it was asked takes its second line.
+            const alone = sid.startsWith('nosession_');
+            const head = alone ? undefined : { key: sid, label: `Session: ${sid.slice(-8)}`, quote };
+            for (const log of all) {
+                const own = log.user_input || log.prompt;
+                out.push({
+                    id: log.run_id,
+                    name: nameOf(log, logType),
+                    sub: alone && own ? `“${own}”` : subOf(log, logType) ?? null,
+                    nested: log.run_id.includes('__'),
+                    sizeBytes: log.file_size_kb !== undefined ? log.file_size_kb * 1024 : null,
+                    at: isoOf(log.started_at),
+                    // A workflow's log is its run's; a schedule that started a workflow wrote the run's id too.
+                    run: runs.get(log.run_id) ?? null,
+                    group: head,
+                });
+            }
         }
-        if (lastIndex < text.length) {
-            segments.push({ type: 'text', content: text.slice(lastIndex) });
+        return out;
+    }, [visibleLogs, filterById, logType, runs]);
+
+    // The pane never opens empty: the newest log is open until another is picked.
+    const openRow = rows.find(r => r.id === selectedId) ?? rows[0] ?? null;
+    const openLog = openRow ? logs.find(l => l.run_id === openRow.id) : undefined;
+    const calledBy = logType === 'agents' && openLog?.source?.startsWith('orchestration:')
+        ? openLog.source.slice('orchestration:'.length)
+        : null;
+
+    const open = (row: LogListRow) => {
+        setSelectedId(row.id);
+        setReads(n => n + 1);
+        // Below the two columns the log sits under the list: bring it into view.
+        if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+            requestAnimationFrame(() => detailRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
         }
-        if (segments.length === 0) {
-            return <pre className="font-code text-zinc-300 whitespace-pre-wrap break-words">{text}</pre>;
-        }
-        return segments.map((seg, i) =>
-            seg.type === 'compact' ? (
-                <div key={i} className="my-3 border border-cyan-800/60 bg-cyan-950/30 px-4 py-3 rounded-md">
-                    <pre className="font-code text-cyan-300 whitespace-pre-wrap break-words">{seg.content}</pre>
-                </div>
-            ) : (
-                <pre key={i} className="font-code text-zinc-300 whitespace-pre-wrap break-words">{seg.content}</pre>
-            )
-        );
     };
+
+    const load = useCallback(async (signal: AbortSignal) => {
+        if (!openRow) return '';
+        const res = await fetch(`/api/logs/${logType}/${encodeURIComponent(openRow.id)}`, { signal });
+        if (!res.ok) {
+            throw new Error(res.status === 404 ? 'This log is no longer on disk.' : `The log could not be read (${res.status}).`);
+        }
+        return res.text();
+    }, [logType, openRow]);
+
+    const actions = (
+        <>
+            <span className="text-xs tabular-nums text-text-faint">{logs.length} log{logs.length !== 1 ? 's' : ''}</span>
+            <button
+                type="button"
+                aria-label="Refresh"
+                title="Refresh"
+                onClick={() => fetchLogs()}
+                className={buttonStyles({ variant: 'ghost', size: 'md', iconOnly: true })}
+            >
+                <RefreshCw aria-hidden className={cn('size-4', loading && 'animate-spin')} />
+            </button>
+        </>
+    );
 
     return (
-        <div className="flex flex-col h-full overflow-hidden font-mono">
-
-            {/* Sub-tabs + controls */}
-            <div className="flex items-center gap-2 px-6 py-3 border-b border-border shrink-0">
-                <button
-                    onClick={() => setLogType('agents')}
-                    className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-all ${logType === 'agents'
-                        ? 'bg-accent text-accent-fg'
-                        : 'text-zinc-400 hover:text-white hover:bg-surface-2'
-                        }`}
-                >
-                    <Bot className="h-3.5 w-3.5" />
-                    Agent Logs
-                </button>
-                <button
-                    onClick={() => setLogType('orchestrations')}
-                    className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-all ${logType === 'orchestrations'
-                        ? 'bg-accent text-accent-fg'
-                        : 'text-zinc-400 hover:text-white hover:bg-surface-2'
-                        }`}
-                >
-                    <Workflow className="h-3.5 w-3.5" />
-                    Orchestration Logs
-                </button>
-                <button
-                    onClick={() => setLogType('schedules')}
-                    className={`flex items-center gap-2 px-4 py-2 text-sm font-medium transition-all ${logType === 'schedules'
-                            ? 'bg-accent text-accent-fg'
-                            : 'text-zinc-400 hover:text-white hover:bg-surface-2'
-                        }`}
-                >
-                    <Clock className="h-3.5 w-3.5" />
-                    Schedule Logs
-                </button>
-                <div className="ml-auto flex items-center gap-3">
-                    <span className="text-xs text-text-faint">{logs.length} log{logs.length !== 1 ? 's' : ''}</span>
-                    <button
-                        onClick={() => fetchLogs()}
-                        className="p-2 text-text-faint hover:text-white hover:bg-surface-2 transition-colors"
-                        title="Refresh"
-                    >
-                        <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                    </button>
-                </div>
-            </div>
-
-            {/* Secondary filter -- only shown when there are multiple unique names */}
-            {uniqueIds.length > 1 && (
-                <div className="flex items-center gap-3 px-6 py-2 border-b border-border shrink-0 bg-zinc-900/40">
-                    <span className="text-[11px] text-text-faint shrink-0">Filter</span>
-                    <Combobox
-                        value={filterById}
-                        onChange={setFilterById}
-                        aria-label="Filter by id"
-                        searchPlaceholder="Search…"
-                        size="sm"
-                        className="max-w-[260px]"
-                        options={[
-                            { value: 'all', label: `All ${logType === 'orchestrations' ? 'orchestrations' : logType === 'agents' ? 'agents' : 'schedules'}` },
-                            ...uniqueIds.map(id => ({
-                                value: id,
-                                label: id.length > 40 ? `${id.slice(0, 37)}…` : id,
-                            })),
-                        ]}
-                    />
-                </div>
-            )}
-
-            {/* Two-pane layout */}
-            <div className="flex flex-1 overflow-hidden">
-
-                {/* Left: log list */}
-                <div className="w-80 border-r border-border overflow-y-auto shrink-0 flex flex-col">
-                    {loading && logs.length === 0 ? (
-                        <div className="flex items-center justify-center h-32 text-text-faint text-xs">Loading...</div>
-                    ) : logs.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-40 gap-3 text-text-faint">
-                            <ScrollText className="h-8 w-8" />
-                            <p className="text-xs">No logs yet</p>
+        <AppScreen id="logs" width="wide" actions={actions}>
+            <div className="grid gap-4">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                    <LogKinds kinds={KINDS} current={logType} onChange={setLogType} />
+                    {uniqueIds.length > 1 && (
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-text-faint">Filter</span>
+                            <Combobox
+                                value={filterById}
+                                onChange={setFilterById}
+                                aria-label="Filter by id"
+                                searchPlaceholder="Search…"
+                                size="sm"
+                                className="w-[260px] max-w-full"
+                                options={[
+                                    { value: 'all', label: `All ${logType === 'orchestrations' ? 'workflows' : logType === 'agents' ? 'agents' : 'schedules'}` },
+                                    ...uniqueIds.map(id => ({
+                                        value: id,
+                                        label: id.length > 40 ? `${id.slice(0, 37)}…` : id,
+                                    })),
+                                ]}
+                            />
                         </div>
-                    ) : (
-                        <>
-                            {sessionOrder.map(sid => {
-                                const sessionLogs = groupedLogs[sid];
-                                const sessionInput = sessionLogs.find(l => l.user_input || l.prompt)?.user_input
-                                    || sessionLogs.find(l => l.prompt)?.prompt;
-                                const sessionDisplayName = sid.startsWith('nosession_') ? 'Individual Run' : `Session: ${sid.slice(-8)}`;
+                    )}
+                </div>
 
-                                return (
-                                    <div key={sid} className="border-b border-border last:border-b-0">
-                                        <div className="bg-surface-2 px-4 py-2 border-b border-border flex flex-col gap-0.5">
-                                            <span className="text-[10px] font-bold text-text-faint uppercase tracking-wider">{sessionDisplayName}</span>
-                                            {sessionInput && (
-                                                <span className="text-[10px] text-zinc-400 truncate italic">"{sessionInput}"</span>
-                                            )}
-                                        </div>
-                                        {sessionLogs.map(log => {
-                                            const isSelected = selectedId === log.run_id;
-                                            const nested = log.run_id.includes('__');
-                                            const name = logType === 'agents'
-                                                ? (log.agent_name || log.run_id)
-                                                : logType === 'orchestrations'
-                                                    ? (log.orchestration_name || log.run_id)
-                                                    : (log.schedule_name || log.run_id);
-                                            const subtitle = logType === 'agents'
-                                                ? log.source
-                                                : logType === 'orchestrations'
-                                                    ? log.orchestration_id
-                                                    : log.target_type;
-
-                                            // The row is a button, so a keyboard opens a log as a click
-                                            // does (F191); Delete is its sibling, named for the log and
-                                            // shown whenever the row has focus as well as on hover.
-                                            return (
-                                                <div
-                                                    key={log.run_id}
-                                                    className={`group relative border-b border-border last:border-b-0 transition-colors ${isSelected
-                                                        ? 'bg-surface-2 border-l-2 border-l-white'
-                                                        : 'hover:bg-surface-2 border-l-2 border-l-transparent'
-                                                        }`}
-                                                >
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => fetchContent(log.run_id)}
-                                                        aria-current={isSelected ? 'true' : undefined}
-                                                        className={`flex w-full flex-col gap-1 py-3 pr-9 text-left ${nested ? 'pl-8' : 'pl-4'}`}
-                                                    >
-                                                        <span className="block text-xs text-white font-semibold leading-tight truncate">{name}</span>
-                                                        {nested && (
-                                                            <span className="block text-[10px] text-text-faint truncate">Nested run</span>
-                                                        )}
-                                                        {subtitle && (
-                                                            <span className="block text-[10px] text-text-faint truncate">{subtitle}</span>
-                                                        )}
-                                                        <span className="flex w-full items-center justify-between">
-                                                            {log.started_at && (
-                                                                // Written in UTC with no zone; shown in the reader's time (F205).
-                                                                <LocalTime iso={log.started_at} className="text-[10px] text-text-faint" />
-                                                            )}
-                                                            {log.file_size_kb !== undefined && (
-                                                                <span className="text-[10px] text-text-faint">{log.file_size_kb}KB</span>
-                                                            )}
-                                                        </span>
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={(e) => deleteLog(log.run_id, e)}
-                                                        className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 p-0.5 text-text-faint hover:text-red-400 transition-all"
-                                                        aria-label={`Delete log ${name}`}
-                                                        title="Delete log"
-                                                    >
-                                                        <Trash2 className="h-3 w-3" />
-                                                    </button>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                );
-                            })}
-
-                            {hasMore && (
+                {loading && logs.length === 0 ? (
+                    <p className="py-10 text-center text-sm text-text-faint">Loading...</p>
+                ) : rows.length === 0 ? (
+                    <EmptyState title="No logs yet">
+                        A log is written every time an agent, a workflow or a schedule runs.
+                    </EmptyState>
+                ) : (
+                    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
+                        <LogList
+                            rows={rows}
+                            selected={openRow?.id ?? null}
+                            onOpen={open}
+                            empty={null}
+                            actions={(row) => (
+                                <IconButton
+                                    label={`Delete log ${row.name}`}
+                                    title="Delete log"
+                                    icon={Trash2}
+                                    size="sm"
+                                    className="text-text-faint hover:bg-danger-subtle hover:text-danger"
+                                    onClick={() => deleteLog(row.id)}
+                                />
+                            )}
+                            footer={hasMore && (
                                 <button
+                                    type="button"
                                     onClick={() => fetchLogs(true)}
                                     disabled={loading}
-                                    className="w-full py-4 text-xs text-text-faint hover:text-white hover:bg-surface-2 transition-colors disabled:opacity-50"
+                                    className="w-full py-3 text-[13px] font-medium text-text-muted transition-colors hover:bg-row-hover hover:text-text disabled:opacity-50"
                                 >
-                                    {loading ? 'Loading more...' : 'Load More'}
+                                    {loading ? 'Loading more...' : 'Load more'}
                                 </button>
                             )}
-                        </>
-                    )}
-                </div>
-
-                {/* Right: log content */}
-                <div className="flex-1 overflow-hidden bg-zinc-950">
-                    {contentLoading ? (
-                        <div className="flex items-center justify-center h-full text-text-faint text-xs">
-                            Loading log...
-                        </div>
-                    ) : content ? (
-                        <div className="h-full overflow-auto p-6 font-mono text-[11px] leading-relaxed">
-                            {renderLogContent(content)}
-                        </div>
-                    ) : (
-                        <div className="flex flex-col items-center justify-center h-full gap-3 text-text-faint">
-                            <ScrollText className="h-10 w-10" />
-                            <p className="text-xs">Select a log to view its contents</p>
-                        </div>
-                    )}
-                </div>
-
+                        />
+                        <section
+                            ref={detailRef}
+                            aria-label="Log"
+                            className="min-w-0 scroll-mt-4 space-y-4 lg:sticky lg:top-4"
+                        >
+                            {openRow && (
+                                <>
+                                    <LogHead row={openRow}>
+                                        {calledBy && (
+                                            <>
+                                                <span aria-hidden>·</span>
+                                                <span>Called by <Link href={`/runs/${encodeURIComponent(calledBy)}`} className="text-accent-ink underline-offset-2 hover:underline">this run</Link></span>
+                                            </>
+                                        )}
+                                    </LogHead>
+                                    <Transcript
+                                        id={`${logType}/${openRow.id}#${reads}`}
+                                        load={load}
+                                        bodyClassName="max-h-[calc(100dvh-17rem)] min-h-[16rem]"
+                                    />
+                                </>
+                            )}
+                        </section>
+                    </div>
+                )}
             </div>
-        </div>
+        </AppScreen>
     );
 };
