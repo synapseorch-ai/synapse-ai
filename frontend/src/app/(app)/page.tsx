@@ -736,6 +736,26 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
   );
 }
 
+/**
+ * Why this agent takes no images, or '' when it does. `/api/status` answers it,
+ * since it already resolves each agent's model; a workflow agent's comes from
+ * its steps, with the reason (F313). The button, a drop and a paste share it.
+ */
+function refusalOf(status: SystemStatus | null, agentId: string | null | undefined): string {
+  const info = agentId ? status?.agents?.[agentId] : undefined;
+  if (typeof info !== 'object' || info === null || info.can_see_images !== false) return '';
+  return info.attach_problem || "This agent's model cannot read images";
+}
+
+/** What came off the composer, as the start of the line that says why. */
+function tookOff(count: number): string {
+  return count === 1 ? 'Took the image off this message.' : `Took the ${count} images off this message.`;
+}
+
+function sentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
 function generateSessionId() {
   const c = (globalThis as any).crypto;
   return c?.randomUUID?.() ?? `sess_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -777,11 +797,7 @@ export default function Home() {
   // was a second copy in here of the list of providers that cannot see, and a
   // silent drop every time the two disagreed. A workflow agent's comes from its
   // steps, with the reason (F313). The button, a drop and a paste share it.
-  const attachRefusal = (() => {
-    const info = currentAgentId ? systemStatus?.agents?.[currentAgentId] : undefined;
-    if (typeof info !== 'object' || info === null || info.can_see_images !== false) return '';
-    return info.attach_problem || "This agent's model cannot read images";
-  })();
+  const attachRefusal = refusalOf(systemStatus, currentAgentId);
   // Shared with the AI builder's composer — one validator, one chip strip, one
   // counter, one set of refusal messages.
   const attachments = useImageAttachments(attachRefusal);
@@ -1213,6 +1229,15 @@ export default function Home() {
         }
         setCurrentAgentId(agentId);
 
+        // Images attached for the last agent that this one would not read come
+        // off, and the line under the composer says why (F398): kept, they went
+        // with the next message and were dropped by its provider.
+        const refused = refusalOf(statusData, agentId);
+        if (refused && attachedImages.length > 0) {
+          attachments.clear();
+          attachments.say(`${tookOff(attachedImages.length)} ${sentence(refused)}`);
+        }
+
         // Generate new session for the new agent — isolates context. A turn the
         // old agent is still writing carries on in its own conversation.
         stopReading();
@@ -1236,6 +1261,13 @@ export default function Home() {
     // string "[Images attached]", which the model then read as the question.
     const userMessage = input.trim();
     const imagesToSend = attachedImages.map(img => img.base64);
+    if (attachRefusal && imagesToSend.length > 0) {
+      // Never sent to an agent that would not read them (F398); chat's route
+      // refuses them too (F396). The text stays, to send again without them.
+      attachments.clear();
+      attachments.say(`${tookOff(imagesToSend.length)} ${sentence(attachRefusal)}`);
+      return;
+    }
 
     // Route to human-step resume if there's an unanswered human_input_required in history.
     // A workflow's human step only: a tool approval's card is answered by its
@@ -1250,6 +1282,13 @@ export default function Home() {
       if (!hasReplyAfter) {
         const pendingStep = messages[lastHumanIdx];
         if (pendingStep.data?.run_id) {
+          // An answer carries words only. The images stay for the next message,
+          // and the line says so rather than leaving them looking sent (F437).
+          if (attachedImages.length > 0) {
+            attachments.say(attachedImages.length === 1
+              ? 'Your answer went without the image; it stays here for your next message.'
+              : 'Your answer went without the images; they stay here for your next message.');
+          }
           setInput('');
           if (textareaRef.current) textareaRef.current.style.height = 'auto';
           await handleHumanInputSubmit(pendingStep.data.run_id, pendingStep.data.orch_step_id, { response: userMessage });
@@ -2083,6 +2122,14 @@ export default function Home() {
       });
       if (response.status === 409) {
         throw Object.assign(new Error('A reply is still being written in this conversation.'), { turnRunning: true });
+      }
+      if (response.status === 422) {
+        // Refused before it started — images this agent would not read (F396),
+        // or a body the route will not take. Its sentence is the answer, and
+        // reading the conversation again would find no turn to recover.
+        const detail = await response.json().then((b) => b?.detail, () => null);
+        throw Object.assign(new Error(typeof detail === 'string' && detail ? detail : 'The message was refused.'),
+          { engineError: true });
       }
       if (!response.ok) throw new Error(`SSE request failed: ${response.status}`);
       if (!(await consumeTurnStream(response, controller, newStepState()))) {

@@ -47,6 +47,8 @@ export interface ImageAttachments {
     accept: (files: File[]) => void;
     remove: (index: number) => void;
     clear: () => void;
+    /** Show a line under the chips — what happened to them, said where they are. */
+    say: (message: string) => void;
     dismissError: () => void;
     /** Spread onto whatever element should accept a drop — usually the form. */
     dropHandlers: {
@@ -134,7 +136,7 @@ export function useImageAttachments(refusal?: string): ImageAttachments {
     const dismissError = useCallback(() => setError(null), []);
 
     return {
-        images, error, accept, remove, clear, dismissError,
+        images, error, accept, remove, clear, say: setError, dismissError,
         dropHandlers: {
             onDrop: (e) => {
                 e.preventDefault();
