@@ -1,5 +1,4 @@
 import { OrchestrationTab } from '@/components/settings/OrchestrationTab';
-import { AppScreen } from '@/components/app/AppScreen';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,9 +15,7 @@ export default async function WorkflowsPage(props: {
     // `?new=<n>` (⌘K's New workflow): a blank workflow on the canvas, once per value.
     const newRequest = typeof searchParams.new === 'string' ? searchParams.new : undefined;
 
-    return (
-        <AppScreen id="orchestrations" bleed>
-            <OrchestrationTab initialRunId={runId} initialOrchId={orchId} newRequest={newRequest} />
-        </AppScreen>
-    );
+    // The page draws its own frame (M2k): the list on the wide frame with its
+    // actions in the header, an open workflow bleeding to the edges.
+    return <OrchestrationTab initialRunId={runId} initialOrchId={orchId} newRequest={newRequest} />;
 }

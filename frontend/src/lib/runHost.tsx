@@ -7,7 +7,7 @@
  * file; `components/run/` is the same in both.
  */
 import {
-    triggerOf, type NestedRun, type RunHost, type RunRecord, type RunRow,
+    triggerOf, type NestedRun, type RunHost, type RunRecord, type RunRow, type WorkflowLastRun,
 } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import { refusedAnswerMessage } from '@/lib/answers';
@@ -164,6 +164,19 @@ export function ossRunRow(
         score: run.score ?? null,
         scoreRegression: run.score_regression,
         error: run.error ?? null,
+    };
+}
+
+/** A workflow's newest run, for its row on the Workflows list (M2k). */
+export function ossLastRun(run: RunSummary): WorkflowLastRun {
+    return {
+        id: run.run_id,
+        status: run.status,
+        waitingForHuman: Boolean(run.waiting_for_human),
+        at: run.started_at ?? null,
+        startedAt: run.started_at ?? null,
+        endedAt: run.ended_at ?? null,
+        costUsd: run.total_cost_usd ?? null,
     };
 }
 

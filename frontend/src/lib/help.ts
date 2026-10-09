@@ -112,14 +112,15 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     // ── Build ───────────────────────────────────────────────────────────────
     orchestrations: {
         title: 'Workflows',
-        summary: 'Multi-agent workflows, built on a canvas. This page lists them and their runs; open one to edit it, or start a new one.',
+        summary: 'Your workflows, each a row: what starts it, how its last run went, and its steps by who does the work — a step that asks a person is the amber one. Open one to edit it on the canvas.',
         steps: [
-            'Click “New” for a blank workflow, or “Build with AI” to describe one to the AI builder.',
-            'On the “Orchestrations” tab, click a row or “Open →” to edit it.',
-            'Switch to “Active”, “Recent” or “All runs” for each run’s status, current step, cost and duration.',
-            'Click a run or “View →” to open it with its log; “Needs input” means it is waiting for you.',
+            'Press “New workflow” for a blank canvas, “Build with AI” to describe one to the AI builder, or “Templates” to start from a ready-made one.',
+            'Click a workflow’s row to open it on the canvas; its ⋯ menu duplicates it, copies its ID or deletes it.',
+            'The chip says what starts it — a schedule’s time (in UTC) or Manual — and the row shows its last run’s status, time, duration and cost.',
+            'Search by name or description, or sort by name, steps, last run, trigger or when it was updated.',
+            'Switch to “Active”, “Recent” or “All runs” for runs; click one to open it on its canvas. “Needs input” means it is waiting for you.',
         ],
-        media: { id: 'workflows/list', alt: 'Orchestrations: a toolbar with New and Build with AI above tabs for orchestrations and their runs, and a table of orchestrations.' },
+        media: { id: 'workflows/list', alt: 'Workflows: New workflow, Build with AI and Templates above a list of workflows, each row with its trigger, last run and its steps by role.' },
         guide: '/guides/start/workflows',
     },
     'orchestrations.editor': {

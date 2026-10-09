@@ -1,10 +1,12 @@
 'use client';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useEffectEvent, useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
-import { Plus, Trash, Copy, Radio, Bot } from 'lucide-react';
-import { Combobox, ConfirmDialog, Mark, Modal, SearchInput } from '@/components/ui';
+import { Plus, Trash, Trash2, Copy, Files, LayoutTemplate, Pencil, Radio, Bot } from 'lucide-react';
+import {
+    Button, Combobox, ConfirmDialog, EmptyState, LinkButton, Mark, MenuItem, MenuSeparator, Modal, RowMenu,
+} from '@/components/ui';
+import { AppScreen } from '@/components/app/AppScreen';
 import { useRouter } from 'next/navigation';
-import { matchesQuery } from '@/lib/search';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
 import { validateOrchestration } from '../orchestration/validate';
@@ -16,7 +18,7 @@ import { CanvasWorkbench } from '../orchestration/CanvasWorkbench';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
 import {
-    DescriptionField, GuardrailsFields, SchedulesList, SettingsSection, WorkflowSettingsPanel,
+    DescriptionField, GuardrailsFields, SchedulesList, SettingsSection, WorkflowSettingsPanel, type WorkflowSchedule,
 } from '../orchestration/WorkflowSettings';
 import { initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
@@ -25,12 +27,12 @@ import { knowledgeApi, useKnowledgeEnabled } from '@/lib/knowledge';
 import { useHelpTopic } from '@/components/help';
 import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
-import { isLiveRun, runStatusMeta, type RunSummary } from '@/components/runs/summary';
+import { isLiveRun, type RunSummary } from '@/components/runs/summary';
 import {
-    appendRunLog, applyRunEvent, ApprovalCard, emptyRunLog, RunHostProvider, RunList, stepTimes,
+    appendRunLog, applyRunEvent, ApprovalCard, emptyRunLog, RunHostProvider, RunList, stepTimes, WorkflowList, workflowRow,
     type RunHost, type RunLogState, type RunRecord, type RunRow, type StepExecution, type StepResultEntry,
 } from '@/components/run';
-import { OSS_RUN_HOST, ossRunRecord, ossRunRow } from '@/lib/runHost';
+import { OSS_RUN_HOST, ossLastRun, ossRunRecord, ossRunRow } from '@/lib/runHost';
 import { ResponseModal } from '@/components/workflows/runLog';
 import { RunDrawer } from '@/components/workflows/RunDrawer';
 import { RunStrip, type RunDrawerView } from '@/components/workflows/RunStrip';
@@ -177,7 +179,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
 } = {}) {
     // --- Orchestration list ---
     const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
-    const [orchQuery, setOrchQuery] = useState('');
+    // The list is read in the browser: until the first read answers, it draws
+    // nothing rather than "No workflows yet" for a moment (Naveen, M2k review).
+    const [listLoaded, setListLoaded] = useState(false);
     const [selectedOrchId, setSelectedOrchId] = useState<string | null>(null);
     // The draft with undo/redo, dirty tracking and the unload guard.
     // `setDraft` records history (edits); `replaceDraft` resets it (navigation).
@@ -380,7 +384,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // the list also reads the newest 100 once — the landing's All runs read.
     const [moreRuns, setMoreRuns] = useState<RunSummary[]>([]);
     // Landing dashboard: which table is shown when no orchestration is open.
-    const [schedules, setSchedules] = useState<Array<{ id: string; name: string }>>([]);
+    // Full rows (M2k): the list's trigger chips read their rhythm; runs read their names.
+    const [schedules, setSchedules] = useState<WorkflowSchedule[]>([]);
+    // The list's last run per workflow (M2k): the 5 s poll holds only the newest 20
+    // of every workflow, so the list also reads the newest 200 once it shows.
+    const [listRuns, setListRuns] = useState<RunSummary[]>([]);
     const [landingTab, setLandingTab] = useState<'orchestrations' | 'active' | 'recent' | 'all'>('orchestrations');
     const [allRuns, setAllRuns] = useState<RunSummary[]>([]);
     const autoTabRef = useRef(false);
@@ -389,7 +397,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     useEffect(() => {
         fetch('/api/orchestrations').then(r => r.json()).then(data => {
             setOrchestrations(Array.isArray(data) ? data : []);
-        }).catch(() => {});
+        }).catch(() => {}).finally(() => setListLoaded(true));
 
         fetch('/api/agents').then(r => r.json()).then(data => {
             setAgents(Array.isArray(data) ? data : []);
@@ -454,8 +462,18 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         return () => clearInterval(interval);
     }, [landingTab]);
 
-    const thCls = 'px-4 py-2 text-[10px] font-medium uppercase tracking-wider text-text-faint whitespace-nowrap';
-    const tdCls = 'px-4 py-2.5 text-xs';
+    // The list's own read (M2k), again when a run ends while it shows.
+    const onList = !draft;
+    const liveCount = activeRuns.length;
+    useEffect(() => {
+        if (!onList) return;
+        let live = true;
+        fetch('/api/orchestrations/runs?limit=200')
+            .then(r => r.json())
+            .then(d => { if (live && Array.isArray(d)) setListRuns(d); })
+            .catch(() => {});
+        return () => { live = false; };
+    }, [onList, liveCount]);
 
     // --- Restore a run from the active runs banner / recent runs / deep link ---
     // The run's event journal is replayable, so restoring = hydrate step
@@ -642,12 +660,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     }, [newRequest]);
 
     // --- Duplicate orchestration ---
-    const handleDuplicate = async () => {
-        if (!draft) return;
+    // From the canvas the copy opens; from the list's row menu it joins the list (M2k).
+    const duplicateOrchestration = async (source: Orchestration, open: boolean) => {
 
         // Build old→new step ID map
         const idMap: Record<string, string> = {};
-        for (const step of draft.steps) {
+        for (const step of source.steps) {
             idMap[step.id] = generateStepId();
         }
 
@@ -658,7 +676,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         };
 
         // Clone steps with remapped IDs
-        const clonedSteps: StepConfig[] = draft.steps.map(step => ({
+        const clonedSteps: StepConfig[] = source.steps.map(step => ({
             ...step,
             id: idMap[step.id],
             next_step_id: remap(step.next_step_id) as string | undefined,
@@ -692,12 +710,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
 
         const newId = 'orch_' + Math.random().toString(36).substring(2, 9);
         const clone: Orchestration = {
-            ...draft,
+            ...source,
             id: newId,
-            name: draft.name + ' (Copy)',
+            name: source.name + ' (Copy)',
             steps: clonedSteps,
-            entry_step_id: draft.entry_step_id ? (idMap[draft.entry_step_id] ?? '') : '',
-            state_schema: JSON.parse(JSON.stringify(draft.state_schema ?? {})),
+            entry_step_id: source.entry_step_id ? (idMap[source.entry_step_id] ?? '') : '',
+            state_schema: JSON.parse(JSON.stringify(source.state_schema ?? {})),
             created_at: undefined,
             updated_at: undefined,
         };
@@ -712,9 +730,13 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
             if (res.ok) {
                 const saved = await res.json();
                 setOrchestrations(prev => [...prev, saved]);
-                replaceDraft(saved, { saved: true });
-                setSelectedOrchId(newId);
-                setSelectedStepId(null);
+                if (open) {
+                    replaceDraft(saved, { saved: true });
+                    setSelectedOrchId(newId);
+                    setSelectedStepId(null);
+                } else {
+                    showToast(`Duplicated ${source.name}.`, 'success');
+                }
             } else {
                 showToast('Duplicate failed — the server rejected the copy', 'error');
             }
@@ -723,6 +745,10 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         } finally {
             setSaving(false);
         }
+    };
+
+    const handleDuplicate = () => {
+        if (draft) void duplicateOrchestration(draft, true);
     };
 
     // --- Save orchestration ---
@@ -1563,225 +1589,226 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
         }
     };
 
-    const visibleOrchestrations = orchestrations.filter(
-        o => matchesQuery(orchQuery, o.name, o.description));
+    // One row per workflow (M2k): its newest run from the poll, else from the list's read.
+    const workflowRows = useMemo(() => {
+        const newest = new Map<string, RunSummary>();
+        for (const r of [...pastRuns, ...listRuns]) {
+            if (!newest.has(r.orchestration_id)) newest.set(r.orchestration_id, r);
+        }
+        return orchestrations.map(o => {
+            const run = newest.get(o.id);
+            return workflowRow(o, run ? ossLastRun(run) : null, schedules);
+        });
+    }, [orchestrations, pastRuns, listRuns, schedules]);
+
+    const copyId = async (id: string) => {
+        try {
+            await navigator.clipboard.writeText(id);
+            showToast('ID copied.', 'success');
+        } catch {
+            showToast('Could not copy the ID', 'error');
+        }
+    };
+
+    const toastEl = toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />;
+    const dialogs = (
+        <>
+            <ConfirmDialog
+                open={pendingLeave !== null}
+                onClose={() => setPendingLeave(null)}
+                onConfirm={() => {
+                    const go = pendingLeave;
+                    setPendingLeave(null);
+                    go?.();
+                }}
+                title="Discard unsaved changes?"
+                description={<>Your changes to <strong>{draft?.name || 'this workflow'}</strong> have not been saved.</>}
+                confirmLabel="Discard changes"
+            />
+
+            <ConfirmationModal
+                isOpen={!!confirmDeleteOrchId}
+                title="Delete workflow"
+                message="Are you sure you want to delete this workflow? This action cannot be undone."
+                onConfirm={() => {
+                    confirmDeleteOrchestration();
+                    setConfirmDeleteOrchId(null);
+                }}
+                onClose={() => setConfirmDeleteOrchId(null)}
+            />
+
+            <ConfirmationModal
+                isOpen={builderSavedOrch !== null}
+                title="The builder changed this orchestration"
+                message="You have unsaved edits open. Load the builder's version and lose them, or keep editing yours?"
+                confirmText="Load the builder's version"
+                onConfirm={() => {
+                    const orch = builderSavedOrch;
+                    setBuilderSavedOrch(null);
+                    if (orch) void loadSavedOrchestration(orch);
+                }}
+                onClose={() => setBuilderSavedOrch(null)}
+            />
+
+        </>
+    );
+
+    if (!draft) {
+        const others = activeRuns.filter(r => r.run_id !== runId);
+        const views = [
+            { id: 'orchestrations', label: 'Workflows', count: orchestrations.length, dot: null },
+            { id: 'active', label: 'Active', count: activeRuns.length, dot: 'bg-machine' },
+            { id: 'recent', label: 'Recent', count: null, dot: null },
+            { id: 'all', label: 'All runs', count: null, dot: null },
+        ] as const;
+        // The Workflows list (M2k): the hub's landing. The frame's header holds the
+        // page's actions; the run views M2b drew stay as pills beside the list.
+        return (
+            <AppScreen
+                id="orchestrations"
+                width="wide"
+                actions={
+                    <>
+                        {/* On a phone the two secondary actions are their icons, named; the row must fit 400 px. */}
+                        <LinkButton href="/templates" variant="secondary" aria-label="Templates">
+                            <LayoutTemplate className="size-4" aria-hidden /> <span className="hidden sm:inline">Templates</span>
+                        </LinkButton>
+                        <Button variant="secondary" onClick={() => openBuilder()} aria-label="Build with AI">
+                            <Mark size={20} compact={false} className="-my-0.5" /> <span className="hidden sm:inline">Build with AI</span>
+                        </Button>
+                        <Button onClick={createNew}>
+                            <Plus className="size-4" aria-hidden /> New workflow
+                        </Button>
+                    </>
+                }
+            >
+                {toastEl}
+                <div className="grid gap-5">
+                    {/* Runs that are live now, on any workflow: one click back onto its canvas. */}
+                    {others.length > 0 && (
+                        <div role="group" aria-label="Active runs" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2">
+                            <span className="flex items-center gap-1.5 text-xs text-text-faint">
+                                <Radio size={12} aria-hidden className="text-machine motion-safe:animate-pulse" /> Active runs:
+                            </span>
+                            {others.map(run => {
+                                const orch = orchestrations.find(o => o.id === run.orchestration_id);
+                                return (
+                                    <button
+                                        key={run.run_id}
+                                        type="button"
+                                        onClick={() => restoreRun(run)}
+                                        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-xs transition-colors hover:border-border-strong"
+                                    >
+                                        <span aria-hidden className={`size-1.5 rounded-full ${
+                                            run.status === 'running' ? 'bg-machine motion-safe:animate-pulse' : 'bg-person'
+                                        }`} />
+                                        <span className="text-text">{orch?.name ?? run.orchestration_id}</span>
+                                        <span className="text-text-faint">{run.status === 'paused' ? '· waiting for input' : '· running'}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {/* The list and its run views, as the runs list's pills (M2b). */}
+                    <div role="group" aria-label="Show" className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1 py-0.5 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:p-0">
+                        {views.map(v => (
+                            <button
+                                key={v.id}
+                                type="button"
+                                aria-pressed={landingTab === v.id}
+                                onClick={() => setLandingTab(v.id)}
+                                className={`inline-flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors ${
+                                    landingTab === v.id
+                                        ? 'border-transparent bg-text text-bg'
+                                        : 'border-border text-text-muted hover:border-border-strong hover:text-text'
+                                }`}
+                            >
+                                {v.dot && v.count !== null && v.count > 0 && <span aria-hidden className={`size-2 rounded-full ${v.dot}`} />}
+                                {v.label}
+                                {v.count !== null && v.count > 0 && <span className="text-[11.5px] tabular-nums opacity-70">{v.count}</span>}
+                            </button>
+                        ))}
+                    </div>
+
+                    {landingTab === 'orchestrations' && !listLoaded && (
+                        <div aria-busy="true" aria-label="Loading workflows" className="min-h-40" />
+                    )}
+
+                    {landingTab === 'orchestrations' && listLoaded && (
+                        <WorkflowList
+                            rows={workflowRows}
+                            onOpen={(row) => selectOrchestration(row.id)}
+                            menu={(row) => {
+                                const orch = orchestrations.find(o => o.id === row.id);
+                                return (
+                                    <RowMenu label={`Actions for ${row.name}`}>
+                                        <MenuItem icon={Pencil} onSelect={() => selectOrchestration(row.id)}>Open</MenuItem>
+                                        <MenuItem icon={Files} disabled={saving || !orch} onSelect={() => { if (orch) void duplicateOrchestration(orch, false); }}>Duplicate</MenuItem>
+                                        <MenuItem icon={Copy} onSelect={() => { void copyId(row.id); }}>Copy ID</MenuItem>
+                                        <MenuSeparator />
+                                        <MenuItem icon={Trash2} tone="danger" onSelect={() => setConfirmDeleteOrchId(row.id)}>Delete</MenuItem>
+                                    </RowMenu>
+                                );
+                            }}
+                            empty={
+                                <EmptyState
+                                    title="No workflows yet"
+                                    action={<LinkButton href="/templates" variant="secondary">Start from a template</LinkButton>}
+                                >
+                                    Describe one to the AI builder, start from a template, or make a blank one and wire its steps on the canvas.
+                                </EmptyState>
+                            }
+                        />
+                    )}
+
+                    {landingTab === 'active' && (
+                        <RunList
+                            rows={activeRuns.map(r => ossRunRow(r, orchestrations, schedules))}
+                            workflows={orchestrations}
+                            filters={false}
+                            search={false}
+                            onOpen={openLandingRun}
+                            empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No active runs — start one from the Workflows tab.</p>}
+                        />
+                    )}
+
+                    {landingTab === 'recent' && (
+                        <RunList
+                            rows={pastRuns.filter(r => !isLiveRun(r)).slice(0, 10).map(r => ossRunRow(r, orchestrations, schedules))}
+                            workflows={orchestrations}
+                            filters={false}
+                            search={false}
+                            onOpen={openLandingRun}
+                            empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No finished runs yet.</p>}
+                        />
+                    )}
+
+                    {landingTab === 'all' && (
+                        <RunList
+                            rows={(allRuns.length > 0 ? allRuns : pastRuns).map(r => ossRunRow(r, orchestrations, schedules))}
+                            workflows={orchestrations}
+                            filters={false}
+                            search={false}
+                            onOpen={openLandingRun}
+                            empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No runs recorded yet.</p>}
+                        />
+                    )}
+                </div>
+                {dialogs}
+            </AppScreen>
+        );
+    }
 
     return (
+        <AppScreen id="orchestrations" bleed>
         <div className="flex flex-col h-full relative">
-            {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
-            {/* The list's toolbar: the picker, New and Build with AI. One row from `sm`
-                up (F218). The open canvas has its own floating bar (M3a). */}
-            {!draft && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 border-b border-zinc-800 shrink-0">
-                <div className="flex items-center gap-2 w-full min-w-0 sm:w-auto sm:flex-1">
-                    <Combobox
-                        value={selectedOrchId || undefined}
-                        onChange={(id: string) => selectOrchestration(id || null)}
-                        placeholder="Select orchestration…"
-                        searchPlaceholder="Search orchestrations…"
-                        aria-label="Orchestration"
-                        size="sm"
-                        className="max-w-[240px] min-w-0"
-                        options={orchestrations.map(o => ({ value: o.id, label: o.name }))}
-                    />
-                    <button
-                        onClick={createNew}
-                        aria-label="New orchestration"
-                        className="flex shrink-0 items-center gap-1 px-2 sm:px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white transition-colors"
-                    >
-                        <Plus size={14} aria-hidden /> <span className="hidden sm:inline">New</span>
-                    </button>
-                    <button
-                        onClick={() => openBuilder()}
-                        aria-label="Build with AI"
-                        className="flex shrink-0 items-center gap-1.5 px-2 sm:px-3 py-1.5 text-xs whitespace-nowrap bg-accent hover:bg-accent-hover text-accent-fg transition-colors"
-                    >
-                        <Mark size={20} compact={false} className="-my-0.5" /> <span className="hidden sm:inline">Build with AI</span>
-                    </button>
-                </div>
-            </div>
-            )}
-
-            {/* Active runs banner (the list; the open canvas's run strip has them as a menu) */}
-            {!draft && activeRuns.filter(r => r.run_id !== runId).length > 0 && (
-                <div className="px-4 py-2 border-b border-zinc-800 bg-zinc-900/60 shrink-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs text-text-faint flex items-center gap-1">
-                            <Radio size={11} className="text-blue-400 animate-pulse" /> Active runs:
-                        </span>
-                        {activeRuns.filter(r => r.run_id !== runId).map(run => {
-                            const orch = orchestrations.find(o => o.id === run.orchestration_id);
-                            return (
-                                <button
-                                    key={run.run_id}
-                                    onClick={() => restoreRun(run)}
-                                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 transition-colors rounded-md"
-                                >
-                                    <span className={`w-1.5 h-1.5 rounded-full ${
-                                        run.status === 'running' ? 'bg-blue-400 animate-pulse' : 'bg-yellow-400'
-                                    }`} />
-                                    <span className="text-zinc-300">{orch?.name ?? run.orchestration_id}</span>
-                                    <span className="text-text-faint">{run.status === 'paused' ? '· waiting for input' : '· running'}</span>
-                                </button>
-                            );
-                        })}
-                    </div>
-                </div>
-            )}
-
-            {!draft ? (
-                /* ── Landing dashboard: tabbed tables ────────────────────── */
-                <div className="flex-1 overflow-y-auto modern-scrollbar">
-                    <div className="px-4 pb-8">
-                        {/* Tab bar */}
-                        <div className="flex items-end border-b border-border mb-4">
-                            <div className="flex items-center">
-                                {([
-                                    { id: 'orchestrations', label: 'Orchestrations', count: orchestrations.length },
-                                    { id: 'active', label: 'Active', count: activeRuns.length },
-                                    { id: 'recent', label: 'Recent', count: null },
-                                    { id: 'all', label: 'All runs', count: null },
-                                ] as const).map(t => (
-                                    <button
-                                        key={t.id}
-                                        onClick={() => setLandingTab(t.id)}
-                                        className={`px-4 py-2.5 text-xs font-medium border-b -mb-px transition-colors ${
-                                            landingTab === t.id
-                                                ? 'text-zinc-100 border-zinc-100'
-                                                : 'text-text-faint border-transparent hover:text-zinc-300'
-                                        }`}
-                                    >
-                                        {t.label}
-                                        {t.count !== null && t.count > 0 && (
-                                            <span className={`ml-1.5 px-1.5 py-0.5 text-[10px] ${
-                                                t.id === 'active'
-                                                    ? 'bg-blue-500/20 text-blue-300'
-                                                    : 'bg-surface-2 text-zinc-400'
-                                            }`}>{t.count}</span>
-                                        )}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-
-                        {landingTab === 'orchestrations' && orchestrations.length > 5 && (
-                            <SearchInput
-                                value={orchQuery}
-                                onChange={setOrchQuery}
-                                placeholder="Search orchestrations by name or description…"
-                                className="mb-3 max-w-md"
-                            />
-                        )}
-
-                        {landingTab === 'orchestrations' && (
-                            <div className="border border-border bg-zinc-900/60 rounded-md">
-                                <div className="overflow-x-auto">
-                                    <table className="w-full text-left border-collapse">
-                                        <thead>
-                                            <tr className="border-b border-border bg-zinc-950/40">
-                                                <th className={thCls}>Name</th>
-                                                <th className={thCls}>Description</th>
-                                                <th className={`${thCls} text-right`}>Steps</th>
-                                                <th className={`${thCls} text-right`}>Last run</th>
-                                                <th className={thCls}></th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {visibleOrchestrations.length === 0 ? (
-                                                <tr>
-                                                    <td colSpan={5} className="px-4 py-10 text-center text-xs text-text-faint italic">
-                                                        {orchQuery
-                                                            ? `No orchestrations match “${orchQuery}”.`
-                                                            : 'No orchestrations yet — create one or build with AI.'}
-                                                    </td>
-                                                </tr>
-                                            ) : visibleOrchestrations.map(o => {
-                                                const lastRun = pastRuns.find(r => r.orchestration_id === o.id);
-                                                const lastMeta = lastRun ? runStatusMeta(lastRun) : null;
-                                                return (
-                                                    <tr
-                                                        key={o.id}
-                                                        onClick={() => selectOrchestration(o.id)}
-                                                        className="border-b border-border last:border-b-0 hover:bg-row-hover cursor-pointer transition-colors group"
-                                                    >
-                                                        <td className={`${tdCls} text-zinc-200 font-medium whitespace-nowrap max-w-[240px]`}>
-                                                            <span className="block truncate">{o.name}</span>
-                                                        </td>
-                                                        <td className={`${tdCls} text-text-faint max-w-[380px]`}>
-                                                            <span className="block truncate">{o.description || '—'}</span>
-                                                        </td>
-                                                        <td className={`${tdCls} text-right text-zinc-400 whitespace-nowrap`}>
-                                                            {o.steps.length}
-                                                        </td>
-                                                        <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                                            {lastRun && lastMeta ? (
-                                                                <span className="inline-flex items-center gap-1.5 justify-end">
-                                                                    <span className={`w-1.5 h-1.5 rounded-full ${lastMeta.dot}`} />
-                                                                    <span className="text-text-faint">
-                                                                        {lastRun.started_at ? new Date(lastRun.started_at).toLocaleString() : lastMeta.label}
-                                                                    </span>
-                                                                </span>
-                                                            ) : <span className="text-text-faint">never</span>}
-                                                        </td>
-                                                        <td className={`${tdCls} text-right whitespace-nowrap`}>
-                                                            <button
-                                                                type="button"
-                                                                onClick={(e) => { e.stopPropagation(); selectOrchestration(o.id); }}
-                                                                aria-label={`Open ${o.name}`}
-                                                                className="text-[11px] text-text-faint group-hover:text-zinc-300 hover:text-zinc-100 transition-colors rounded-sm"
-                                                            >
-                                                                Open →
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        )}
-
-                        {landingTab === 'active' && (
-                            <RunList
-                                rows={activeRuns.map(r => ossRunRow(r, orchestrations, schedules))}
-                                workflows={orchestrations}
-                                filters={false}
-                                search={false}
-                                onOpen={openLandingRun}
-                                empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No active runs — start one from the Orchestrations tab.</p>}
-                            />
-                        )}
-
-                        {landingTab === 'recent' && (
-                            <RunList
-                                rows={pastRuns.filter(r => !isLiveRun(r)).slice(0, 10).map(r => ossRunRow(r, orchestrations, schedules))}
-                                workflows={orchestrations}
-                                filters={false}
-                                search={false}
-                                onOpen={openLandingRun}
-                                empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No finished runs yet.</p>}
-                            />
-                        )}
-
-                        {landingTab === 'all' && (
-                            <RunList
-                                rows={(allRuns.length > 0 ? allRuns : pastRuns).map(r => ossRunRow(r, orchestrations, schedules))}
-                                workflows={orchestrations}
-                                filters={false}
-                                search={false}
-                                onOpen={openLandingRun}
-                                empty={<p className="px-2.5 py-10 text-center text-xs italic text-text-faint">No runs recorded yet.</p>}
-                            />
-                        )}
-                    </div>
-                </div>
-            ) : (
-                // The open canvas (Prototype 4, D204): the workflow fills the sheet and
-                // everything else floats over it. Every control of the old editor is
-                // here, moved (M3a's field map): the toolbar's into the bar and the
-                // dock, the panels' into the card's Workflow settings, the run log's
-                // into the run strip and drawer.
+            {toastEl}
+                {/* The open canvas (Prototype 4, D204): the workflow fills the sheet and
+                    everything else floats over it. Every control of the old editor is
+                    here, moved (M3a's field map): the toolbar's into the bar and the
+                    dock, the panels' into the card's Workflow settings, the run log's
+                    into the run strip and drawer. */}
                 <div className="relative min-h-0 flex-1">
                     <RunHostProvider value={runHost}>
                         <CanvasWorkbench
@@ -1930,45 +1957,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                         />
                     )}
                 </div>
-            )}
-
-            <ConfirmDialog
-                open={pendingLeave !== null}
-                onClose={() => setPendingLeave(null)}
-                onConfirm={() => {
-                    const go = pendingLeave;
-                    setPendingLeave(null);
-                    go?.();
-                }}
-                title="Discard unsaved changes?"
-                description={<>Your changes to <strong>{draft?.name || 'this workflow'}</strong> have not been saved.</>}
-                confirmLabel="Discard changes"
-            />
-
-            <ConfirmationModal
-                isOpen={!!confirmDeleteOrchId}
-                title="Delete Orchestration"
-                message="Are you sure you want to delete this orchestration? This action cannot be undone."
-                onConfirm={() => {
-                    confirmDeleteOrchestration();
-                    setConfirmDeleteOrchId(null);
-                }}
-                onClose={() => setConfirmDeleteOrchId(null)}
-            />
-
-            <ConfirmationModal
-                isOpen={builderSavedOrch !== null}
-                title="The builder changed this orchestration"
-                message="You have unsaved edits open. Load the builder's version and lose them, or keep editing yours?"
-                confirmText="Load the builder's version"
-                onConfirm={() => {
-                    const orch = builderSavedOrch;
-                    setBuilderSavedOrch(null);
-                    if (orch) void loadSavedOrchestration(orch);
-                }}
-                onClose={() => setBuilderSavedOrch(null)}
-            />
-
+            {dialogs}
         </div>
+        </AppScreen>
     );
 }
