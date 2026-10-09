@@ -39,11 +39,18 @@ export function pathLabel(types: string[]): string {
     ].filter(Boolean).join(', ');
 }
 
-export function StepPath({ types, max = STEP_PATH_MAX, className }: {
+export function StepPath({ types, max = STEP_PATH_MAX, variant = 'boxed', className }: {
     types: string[];
     max?: number;
+    /**
+     * `boxed` (a template card): the path on its own grey ground, tiles on rings.
+     * `inline` (a row of the Workflows list, M2k): no ground; solid tinted tiles
+     * with no ring, which broke up at a fractional display scale (Naveen).
+     */
+    variant?: 'boxed' | 'inline';
     className?: string;
 }) {
+    const inline = variant === 'inline';
     if (!types.length) return null;
     const shown = types.length > max ? types.slice(0, max - 1) : types;
     const more = types.length - shown.length;
@@ -54,7 +61,11 @@ export function StepPath({ types, max = STEP_PATH_MAX, className }: {
             aria-label={label}
             title={label}
             data-step-path=""
-            className={cn('flex items-center overflow-hidden rounded-lg bg-surface-2 p-3', className)}
+            className={cn(
+                'flex items-center overflow-hidden',
+                inline ? 'w-auto shrink-0' : 'rounded-lg bg-surface-2 p-3',
+                className,
+            )}
         >
             {shown.map((type, i) => (
                 <span key={i} className="contents">
@@ -62,7 +73,8 @@ export function StepPath({ types, max = STEP_PATH_MAX, className }: {
                     <StepIcon
                         type={type}
                         className={cn(
-                            'size-[22px] rounded-md bg-bg shadow-[0_0_0_1px_var(--border)] [&>svg]:size-3',
+                            'size-[22px] rounded-md [&>svg]:size-3',
+                            inline ? 'bg-surface-2' : 'bg-bg shadow-[0_0_0_1px_var(--border)]',
                             roleOf(type) === 'model' && 'text-machine',
                             roleOf(type) === 'logic' && 'text-text-muted',
                             roleOf(type) === 'person' && 'bg-person text-person-fg shadow-none',

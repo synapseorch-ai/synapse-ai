@@ -40,3 +40,8 @@ export { StepIcon, typeLabel } from './StepIcon';
 export { pathLabel, STEP_PATH_MAX, StepPath, templatePath } from './StepPath';
 export { TaskChecklist } from './TaskChecklist';
 export { TimeOfDay, Took, useClock, When } from './When';
+export { WorkflowList } from './WorkflowList';
+export {
+    cronWords, lastBucket, matchWorkflow, scheduleWords, sortWorkflows, triggerChip, urgencyOf, workflowRow, WORKFLOW_SORTS,
+    type ScheduleLike, type TriggerChip, type WorkflowLastRun, type WorkflowListRow, type WorkflowSort,
+} from './workflowList';
