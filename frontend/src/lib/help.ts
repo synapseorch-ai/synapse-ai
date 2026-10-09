@@ -86,15 +86,16 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Evals',
         summary: 'Rubrics say what a good run looks like. A model judges every run of a workflow bound to one and flags regressions; golden sets replay fixed inputs.',
         steps: [
-            'Click “New” beside Rubrics, add criteria with “Add criterion”, set “Floor” and “Drop”, and click “Save rubric”.',
-            'In Workflows, open one and choose the rubric under Guardrails → “Score runs against”, then save it.',
-            'Pick the workflow in “Show scores for” to see its scores and flagged runs, and say whether you agree.',
+            'Click “New rubric”, add criteria with “Add criterion”, set “Floor” and “Drop”, and click “Save rubric”.',
+            'In Workflows, open one, open its workflow settings and choose the rubric under “Score runs against”.',
+            'Open the rubric and pick the workflow in “Scores for”: the latest and average scores, how many passed, each criterion and the scored runs, where you say whether you agree.',
             'If it says “Nothing scored yet”, click “Score earlier runs” to judge runs from before the rubric.',
-            'Under Golden sets, click “New set”, add cases and “Save set”; “Run” tells you the cost before it starts.',
+            'Click “New set” under Golden sets, add cases and “Save set”; “Run” tells you the cost before it starts.',
         ],
-        media: { id: 'evals/rubric', alt: 'Evals: rubrics and golden sets on the left; an orchestration’s scores, trend line and scored runs on the right.' },
+        media: { id: 'evals/rubric', alt: 'Evals: rubrics and golden sets on the left; the open rubric’s scores, trend line, criteria and scored runs on the right.' },
         guide: '/guides/start/evals',
     },
+
     usage: {
         title: 'Usage',
         summary: 'What your model calls have cost: totals, cache savings, cost by model and session, and the price table the estimates come from.',
