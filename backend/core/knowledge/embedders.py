@@ -24,7 +24,8 @@ slices answered (`answered_vectors`), which indexing keeps across a pause so the
 
 **A rate limit is waited out** (PG1) for a document's texts while the indexing pipeline asks for it
 (`pacing.paced`): the slice waits, is halved and is sent again, and the call fails only after ten minutes with nothing
-answered. Each answered slice is counted on the document's progress.
+answered. Each answered slice is counted on the document's progress. **An outage** (a 5xx, a timeout) is tried
+again there too, twice, after 2 s and 8 s (F418); then the document fails `embed_failed` with the reason, retryable.
 
 `llm_providers` is imported inside the functions: cloud's API process imports the seams, and it has no provider
 SDKs to load.
@@ -48,6 +49,11 @@ _log = get_logger(__name__)
 
 #: The pipeline slices its chunks by this; each model's own batch size is applied inside.
 MAX_BATCH = 512
+#: Tries per slice when indexing meets an outage — a 5xx or a timeout, not a rate limit, which is waited out —
+#: and the waits between them (F418), the shape of a rebuild's `snapshots.DOC_ATTEMPTS` / `BACKOFF_S`. A document
+#: used to fail for good on one transient 503 and wait for a person's Retry.
+SLICE_ATTEMPTS = 3
+SLICE_BACKOFF_S: tuple[float, ...] = (2.0, 8.0)
 
 #: Providers whose model runs on the customer's own machine: $0.
 LOCAL_PROVIDERS = frozenset({"ollama", "local_compatible"})
@@ -186,6 +192,7 @@ class ProviderEmbedder:
         waiter = pacing.Waiter(model) if kind == "document" and pacing.is_paced() else None
         tracker = progress.current() if waiter is not None else None
         i, size = 0, step
+        tries = 1
         while i < len(prepared):
             batch = prepared[i:i + size]
             try:
@@ -211,9 +218,23 @@ class ProviderEmbedder:
                         size = max(1, len(batch) // 2)
                         continue
                     exc.charged_microusd = None  # recorded above
+                elif waiter is not None and exc.retryable and tries < SLICE_ATTEMPTS:
+                    # An outage, while indexing asks: the slice is sent again after a short wait (F418). What
+                    # it was charged is recorded alone, as a rate limit's is.
+                    await _record_failed_charge(exc, model=model, provider=provider.id, attribution=attribution,
+                                                profile=profile)
+                    _log.info(f"knowledge: {model} failed a slice ({exc}); trying it again ({tries + 1} of "
+                              f"{SLICE_ATTEMPTS})")
+                    await asyncio.sleep(SLICE_BACKOFF_S[min(tries - 1, len(SLICE_BACKOFF_S) - 1)])
+                    tries += 1
+                    continue
+                elif tries > 1:
+                    exc.charged_microusd = None  # each try's charge recorded as it failed
                 await _record_failed_charge(exc, model=model, provider=provider.id, attribution=attribution,
                                             tokens=tokens, charged=charged, profile=profile)
                 error = _knowledge_error(exc, model)
+                if tries > 1 and isinstance(error, EmbeddingError):
+                    error = EmbeddingError(f"{error} (after {tries} tries)", retryable=error.retryable)
                 # The texts answered before the failure, in order: indexing keeps them across a pause (F345).
                 error.answered_vectors = list(vectors)  # type: ignore[attr-defined]
                 raise error from exc
@@ -227,6 +248,7 @@ class ProviderEmbedder:
                 exc.answered_vectors = list(vectors)  # type: ignore[attr-defined]
                 raise
             vectors.extend(answer.vectors)
+            tries = 1
             tokens += answer.input_tokens or profiles.estimate_tokens(batch)
             if answer.charged_microusd is not None:
                 charged = (charged or 0) + answer.charged_microusd

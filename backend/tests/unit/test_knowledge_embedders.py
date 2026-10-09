@@ -376,3 +376,68 @@ def test_the_new_modules_load_no_provider_sdk_and_no_numpy():
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.strip() == ""
+
+
+# ── an outage while indexing (F418) ────────────────────────────────────────────
+
+class TestAnOutageWhileIndexing:
+    """F418: one transient 503 from the gateway ("retry shortly") failed a document for good at its first
+    attempt — `embed_failed`, `attempts` 1, nothing tried it again but a person's Retry. While indexing asks
+    (`pacing.paced`), the slice is now sent again after a short wait; a search's question never waits."""
+
+    @pytest.fixture
+    def flaky(self, monkeypatch):
+        box = {"fail": 1, "sent": 0, "slept": []}
+
+        async def answer(texts, model, settings, *, input_type=None, dims=None):
+            box["sent"] += 1
+            if box["sent"] <= box["fail"]:
+                raise llm.EmbeddingFailed("model gateway embedding refused: HTTP 503: the platform model did not "
+                                          "answer in time; retry shortly. (model_timeout)", provider="model_gateway",
+                                          status=503)
+            return llm.EmbeddingResponse([[1.0, 0.0] for _ in texts], model, "model_gateway", input_tokens=2)
+
+        async def sleep(seconds):
+            box["slept"].append(seconds)
+
+        monkeypatch.setattr(llm, "embed_batch_ex", answer)
+        monkeypatch.setattr(embedders.asyncio, "sleep", sleep)
+        return box
+
+    async def _indexing(self, model="synapse.titan-embed-v2"):
+        from core.knowledge import pacing
+        with pacing.paced():
+            return await _embed(["a passage"], model)
+
+    async def test_a_blip_is_tried_again_and_the_document_indexes(self, flaky):
+        result = await self._indexing()
+        assert len(result.vectors) == 1 and flaky["sent"] == 2 and flaky["slept"] == [2.0]
+
+    async def test_an_outage_fails_after_three_tries_retryable_with_its_reason(self, flaky):
+        flaky["fail"] = 99
+        with pytest.raises(EmbeddingError) as caught:
+            await self._indexing()
+        assert flaky["sent"] == 3 and flaky["slept"] == [2.0, 8.0]
+        assert caught.value.retryable
+        assert "retry shortly" in str(caught.value) and str(caught.value).endswith("(after 3 tries)")
+
+    async def test_a_question_is_never_kept_waiting(self, flaky):
+        from core.knowledge import pacing
+        with pacing.paced(), pytest.raises(EmbeddingError):
+            await _embed(["a question"], "synapse.titan-embed-v2", kind="query")
+        assert flaky["sent"] == 1 and flaky["slept"] == []
+
+    async def test_outside_indexing_nothing_is_tried_again(self, flaky):
+        with pytest.raises(EmbeddingError):
+            await _embed(["a passage"], "synapse.titan-embed-v2")
+        assert flaky["sent"] == 1
+
+    async def test_a_refusal_is_not_tried_again(self, flaky, monkeypatch):
+        async def refuse(*a, **k):
+            flaky["sent"] += 1
+            raise llm.EmbeddingFailed("HTTP 400: invalid", provider="model_gateway", status=400)
+
+        monkeypatch.setattr(llm, "embed_batch_ex", refuse)
+        with pytest.raises(EmbeddingError) as caught:
+            await self._indexing()
+        assert flaky["sent"] == 1 and not caught.value.retryable
