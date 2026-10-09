@@ -156,10 +156,10 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         steps: [
             'Click “New skill”, then give it a lower-case name and a one-line description of when it applies.',
             'Write the instructions in Markdown, check them under “Preview”, and click “Save skill”.',
-            'Edit a skill from its card; editing a “Disk” skill makes a “Library” copy that takes its place.',
+            'Pick a skill in the list to read it, and click Edit to change it; editing a “Disk” skill makes a “Library” copy that takes its place.',
             'In Agents, tick the skill under Skills on an agent’s “Configuration”, then click “Save Agent”.',
         ],
-        media: { id: 'skills/list', alt: 'Skills: a grid of skill cards, each with its name, a Library or Disk badge and a description.' },
+        media: { id: 'skills/list', alt: 'Skills: the list of skills beside the open one, with its Library or Disk badge, the agents that use it and its instructions.' },
         guide: '/guides/start/agents',
     },
     chat: {
@@ -232,8 +232,8 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Vault',
         summary: 'Files your agents can use when a prompt names them with @[path]. Write Markdown, JSON and text files here, in folders.',
         steps: [
-            'Use the new folder and new file buttons; a file is Markdown, JSON or plain text.',
-            'Select a file to edit it, and click “Save” while it shows unsaved changes.',
+            'Use the new folder and new file buttons above the tree; a file is Markdown, JSON or plain text.',
+            'Pick a file to edit it, and click “Save” while it shows “Unsaved”.',
             'In an agent’s system prompt or a step’s prompt, type @ and pick a file; it goes in as @[path].',
             'With Knowledge on, a folder that is a knowledge base shows a “Knowledge” badge; make one in Knowledge.',
         ],
@@ -346,13 +346,13 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Channels',
         summary: 'Let people reach your agents from Telegram, Discord, Slack, Teams or WhatsApp. Each channel is one bot, answered by the agents you assign to it.',
         steps: [
-            'Click + beside Channels, pick a platform and name the channel.',
+            'Click “New channel”, pick a platform and name the channel.',
             'Fill in the platform’s credentials; its setup guide says where each one comes from.',
             'Click “Save & connect”, then pick the agents that answer it; the default one takes plain messages.',
             'Click “Test” to check it, and pick it under “Run notifications” to hear about workflow runs there.',
             'If messaging is off for this install, no channels load and saving fails.',
         ],
-        media: { id: 'settings/oss-messaging', alt: 'Settings → Messaging: channels and their status on the left, and a channel’s platform, agents and credentials on the right.' },
+        media: { id: 'settings/oss-messaging', alt: 'Channels: the channels and their status on the left, and the open channel’s platform, agents and credentials on the right.' },
         guide: '/guides/recipes/schedules-and-channels',
     },
     widgets: {
@@ -363,9 +363,9 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Under “What visitors can use”, tick only the tools strangers may use; none are ticked to start.',
             'Set the header, greeting, colours and theme; the preview follows as you go.',
             'Click “Save changes” — nothing but a logo is kept until you do.',
-            'Copy the script tag and paste it into the HTML of each allowed site.',
+            'Click “Copy snippet” and paste the script tag into the HTML of each allowed site.',
         ],
-        media: { id: 'settings/oss-widgets', alt: 'Settings → Widgets: a widget’s script tag, allowed sites, visitor tools and branding, beside a live preview.' },
+        media: { id: 'settings/oss-widgets', alt: 'Widgets: the widgets on the left, and the open one’s script tag, allowed sites, visitor tools and branding beside a live preview.' },
         guide: '/guides/recipes/support-bot-widget',
     },
     repos: {

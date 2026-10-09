@@ -7387,10 +7387,12 @@ async def _paste_credentials(page):
 
 
 async def _vault_error(page):
-    await page.get_by_text("note.txt", exact=True).first.click()
+    # The tree's row (M2h-2: the open file's head names it too, and the first file opens by itself).
+    async with page.expect_response(lambda r: "/api/vault/file?" in r.url):
+        await page.get_by_role("button", name="note.txt", exact=True).first.click()
     editor = page.get_by_placeholder("Start typing...")
     # The file's text lands after the editor does; typing first is overwritten
-    # by it, and SAVE stays disabled (a clean file has nothing to save).
+    # by it, and Save stays disabled (a clean file has nothing to save).
     for _ in range(40):
         if await editor.count() and await editor.input_value() == "hello":
             break
@@ -7781,7 +7783,7 @@ LIGHT_STATES = (
         {"id": "ch_smoke_err", "name": "Smoke broken channel", "platform": "telegram", "status": "error",
          "last_error": "Unauthorized: bot token rejected (401)", "agent_ids": [], "multi_agent_mode": False,
          "enabled": True, "credentials": {}}]))],
-     lambda p: p.get_by_role("button", name=re.compile("Smoke broken channel")).first.click(), "Last Error"),
+     lambda p: p.get_by_role("button", name=re.compile("Smoke broken channel")).first.click(), "Last error"),
     ("a compacted log", "/logs", [], [
         ("**/api/logs/agents*", _answer([{"run_id": "run_smoke_log", "agent_name": "Smoke log agent",
                                           "source": "chat", "session_id": "sess_smoke",
@@ -7807,7 +7809,7 @@ LIGHT_STATES = (
                                                    "ext": ".txt"}]})),
         ("**/api/vault/file*", _answer({"content": "hello"})),
         ("**/api/vault/file*", _answer({}, status=500, methods=("PUT",)))],
-     _vault_error, "ERROR"),
+     _vault_error, "Could not save note.txt"),
     ("settings saved toast", "/settings/personal_details", [],
      [("**/api/personal-details", _answer({}, methods=("POST",)))],
      lambda p: p.get_by_role("button", name=re.compile("Save changes")).first.click(), "Personal details saved"),
@@ -10068,6 +10070,156 @@ async def main() -> int:
     return failed
 
 
+@check
+async def check_skillsfirst(browser) -> str:
+    """Skills never opens on an empty pane (M2h-2): the first skill is open beside the list, on Preview, with the
+    agents that use it; New skill opens a blank one in its place."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/skills", _answer([
+        {"name": "smoke-skill", "description": "A smoke skill", "source": "library"},
+        {"name": "smoke-disk", "description": "On disk", "source": "disk", "path": "/x/SKILL.md"}]))
+    await ctx.route("**/api/skills/smoke-skill", _answer({"name": "smoke-skill", "description": "A smoke skill",
+                                                          "body": "# Smoke body"}))
+    await ctx.route("**/api/agents", _answer([{"id": "a1", "name": "Smoke agent", "skills": ["smoke-skill"]}]))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/skills", wait_until="domcontentloaded")
+        first = page.locator('[data-skill-row="smoke-skill"] button').first
+        await first.wait_for(timeout=30_000)
+        if await first.get_attribute("aria-current") != "true":
+            raise AssertionError("the first skill is not open")
+        await page.get_by_role("heading", name="Smoke body").wait_for(timeout=10_000)
+        await page.get_by_text("Used by Smoke agent").wait_for(timeout=5_000)
+        await page.get_by_role("button", name="New skill").first.click()
+        await page.get_by_role("heading", name="New skill").wait_for(timeout=5_000)
+        if await page.get_by_placeholder("my-skill-name").input_value() != "":
+            raise AssertionError("New skill did not open a blank one")
+    finally:
+        await ctx.close()
+    return "the first skill is open on Preview with who uses it; New skill opens a blank one"
+
+
+@check
+async def check_vaultfirst(browser) -> str:
+    """The Vault never opens on an empty pane (M2h-2): the first file is open beside the tree."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/vault/tree*", _answer({"tree": [
+        {"name": "notes", "path": "notes", "type": "folder", "children": [
+            {"name": "a.md", "path": "notes/a.md", "type": "file", "ext": ".md"}]},
+        {"name": "top.txt", "path": "top.txt", "type": "file", "ext": ".txt"}], "source": "local"}))
+    await ctx.route("**/api/vault/file*", _answer({"content": "smoke text"}))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/vault", wait_until="domcontentloaded")
+        row = page.get_by_role("button", name="top.txt", exact=True)
+        await row.wait_for(timeout=30_000)
+        await page.get_by_role("heading", name="top.txt").wait_for(timeout=10_000)
+        if await row.get_attribute("aria-current") != "true":
+            raise AssertionError("the open file is not marked in the tree")
+        if await page.get_by_text("Select a file to edit").count():
+            raise AssertionError("the pane still asks for a pick")
+    finally:
+        await ctx.close()
+    return "the first file is open beside the tree"
+
+
+@check
+async def check_channelsfirst(browser) -> str:
+    """Channels never opens on an empty pane (M2h-2): the first channel is open, its status a quiet word."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/messaging/channels", _answer([
+        {"id": "ch_a", "name": "Smoke first", "platform": "slack", "status": "running", "agent_ids": [],
+         "multi_agent_mode": False, "enabled": True, "credentials": {}},
+        {"id": "ch_b", "name": "Smoke second", "platform": "telegram", "status": "stopped", "agent_ids": [],
+         "multi_agent_mode": False, "enabled": True, "credentials": {}}]))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/channels", wait_until="domcontentloaded")
+        first = page.locator('[data-channel-row="ch_a"] button').first
+        await first.wait_for(timeout=30_000)
+        await page.get_by_role("heading", name="Smoke first").wait_for(timeout=10_000)
+        if await first.get_attribute("aria-current") != "true":
+            raise AssertionError("the first channel is not open")
+        if await page.get_by_text("Select a channel or create a new one.").count():
+            raise AssertionError("the pane still asks for a pick")
+        await page.get_by_role("button", name="New channel").first.click()
+        await page.get_by_role("heading", name="New channel").wait_for(timeout=5_000)
+    finally:
+        await ctx.close()
+    return "the first channel is open; New channel opens a blank one"
+
+
+@check
+async def check_widgetconfirm(browser) -> str:
+    """A widget's Delete and Issue a new key ask in the kit's dialog, and cancelling keeps the editor (M2h-2: they
+    were native confirm()s, and a cancelled Delete still cleared the editor)."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    deleted = []
+    widget = {"id": "w_smoke", "name": "Smoke widget", "agent_id": "a1", "public_key": "pk_smoke",
+              "allowed_origins": ["https://example.com"], "enabled": True, "greeting": "Hi", "accent": "#2563eb",
+              "title": "", "launcher_label": "", "daily_message_cap": 500, "font": "system", "theme": "auto",
+              "header_style": "accent", "launcher": "bubble", "logo": "", "position": "right", "visitor_tools": []}
+
+    async def widgets(route):
+        if route.request.method == "GET":
+            return await route.fulfill(json=[widget])
+        await route.continue_()
+
+    async def one(route):
+        if route.request.method == "DELETE":
+            deleted.append(route.request.url)
+            return await route.fulfill(json={})
+        await route.continue_()
+    await ctx.route("**/api/widgets", widgets)
+    await ctx.route("**/api/widgets/w_smoke", one)
+    await ctx.route("**/api/widgets/visitor-tools*", _answer({"tools": []}))
+    await ctx.route("**/embed/preview/**", _answer("<html></html>", content_type="text/html"))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/widgets", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Smoke widget").wait_for(timeout=30_000)
+        for name in ("Delete", "Issue a new key"):
+            await page.get_by_role("button", name=name, exact=True).first.click()
+            dialog = page.get_by_role("alertdialog").or_(page.get_by_role("dialog"))
+            await dialog.first.wait_for(timeout=5_000)
+            await dialog.first.get_by_role("button", name="Cancel").click()
+            await asyncio.sleep(0.5)
+            if not await page.get_by_role("heading", name="Smoke widget").count():
+                raise AssertionError(f"cancelling {name} closed the editor")
+        if deleted:
+            raise AssertionError("a cancelled Delete still deleted")
+    finally:
+        await ctx.close()
+    return "Delete and Issue a new key ask in a dialog; Cancel keeps the widget open"
+
+
+@check
+async def check_persontoast(browser) -> str:
+    """A run that needs someone toasts on the person wash, not as a warning (M2h-2, UX1: amber is a person)."""
+    live = {"id": 900101, "ts": time.time(), "kind": "human_input", "title": "Smoke flow needs your input",
+            "body": "", "run_id": "run_smoke_person", "data": {}, "resolved": False}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+
+    async def listing(route):
+        await route.fulfill(json={"notifications": [], "last_id": 0})
+
+    async def stream(route):
+        await route.fulfill(status=200, headers={"Content-Type": "text/event-stream"},
+                            body=f"data: {json.dumps(live)}\n\n")
+    await ctx.route("**/api/notifications?after=0*", listing)
+    await ctx.route("**/api/notifications/stream*", stream)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        toast = page.locator(TOASTS).filter(has_text="Smoke flow needs your input")
+        await toast.first.wait_for(timeout=15_000)
+        cls = await toast.first.get_attribute("class") or ""
+        if "bg-person-subtle" not in cls:
+            raise AssertionError(f"the toast is not on the person wash: {cls}")
+    finally:
+        await ctx.close()
+    return "a run that needs someone toasts on the person wash"
+
+
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))
-
