@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud, Upload, Library } from 'lucide-react';
-import { DetailHead, LIST_DETAIL, showDetail } from '@/components/run';
+import { DetailHead, LIST_DETAIL, ROW_CURRENT, showDetail } from '@/components/run';
 import {
     Badge, Button, ConfirmDialog, EmptyState, ErrorNote, Field, IconButton, Input, MarkdownEditor, Modal, Segmented,
     Spinner, Textarea, Toast, useToast,
@@ -35,6 +35,7 @@ function TreeNode({
     onDelete,
     onCreateInFolder,
     knowledge,
+    openPath,
     depth = 0,
 }: {
     node: VaultNode;
@@ -43,9 +44,11 @@ function TreeNode({
     onDelete: (node: VaultNode) => void;
     onCreateInFolder: (folderPath: string) => void;
     knowledge?: VaultKnowledge;
+    /** The open file: only the folders that hold it start open (Naveen, M2h-2: the tree opened everything). */
+    openPath?: string | null;
     depth?: number;
 }) {
-    const [expanded, setExpanded] = useState(depth === 0);
+    const [expanded, setExpanded] = useState(() => !!openPath && openPath.startsWith(`${node.path}/`));
 
     const isSelected = selectedPath === node.path;
     const isFolder = node.type === 'folder';
@@ -66,7 +69,7 @@ function TreeNode({
             <div
                 className={cn(
                     'group flex min-h-9 items-center gap-1 rounded-md pr-1.5 text-sm transition-colors',
-                    isSelected ? 'bg-surface-2 text-text shadow-[inset_2px_0_0_var(--color-text)]' : 'text-text-muted hover:bg-row-hover hover:text-text',
+                    isSelected ? ROW_CURRENT : 'text-text-muted hover:bg-row-hover hover:text-text',
                 )}
             >
                 <button
@@ -125,6 +128,7 @@ function TreeNode({
                             onDelete={onDelete}
                             onCreateInFolder={onCreateInFolder}
                             knowledge={knowledge}
+                            openPath={openPath}
                             depth={depth + 1}
                         />
                     ))}
@@ -628,6 +632,7 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                                     setCreateDialog({ type: 'file', parentPath: folderPath });
                                 }}
                                 knowledge={knowledge}
+                                openPath={openNode?.path ?? null}
                             />
                         ))
                     )}
