@@ -27,7 +27,7 @@
         "created_agents": {"type": "str", "default": "", "description": "Role-to-agent-id mapping of agents created or reused for the plan"},
         "save_decision": {"type": "str", "default": "", "description": "Router result: create or update — picks which saver agent runs"},
         "plan_room": {"type": "dict", "default": {}, "description": "How many orchestrations the plan has room for (-1: no limit) and the sentence refusing one when it has none — set by the embedder (F154)"},
-        "build_cleanup": {"type": "str", "default": "", "description": "What finish_build removed: this run's unvalidated orchestrations (F156)"},
+        "build_cleanup": {"type": "str", "default": "", "description": "What finish_build removed (this run's unvalidated orchestrations, F156) and kept because something runs them (F429)"},
         "final_orch": {"type": "str", "default": "", "description": "The saver's closing reply — DONE, or DONE with the reason it stopped"},
         "summary": {"type": "str", "default": "", "description": "Friendly completion message generated after the orchestration is saved"},
         "clarify_decision": {"type": "str", "default": "", "description": "Router result: clarify (ask the user) or draft (write the plan)"},
@@ -807,7 +807,7 @@
             "name": "Summarise Result",
             "type": "llm",
             "agent_id": null,
-            "prompt_template": "The Synapse AI Builder has just finished. Exactly one of these two is filled in.\n\nOrchestration work — the saver's closing word (DONE, or DONE with the reason it stopped, and a SCHEDULED or NOT SCHEDULED line when the plan asked for a schedule):\n{state.final_orch}\n\nWorkspace changes made:\n{state.manage_result}\n\nWrite a short, friendly 2–3 sentence confirmation for the user, describing whichever one actually happened. If an orchestration was built or changed, name it: plan_draft (the approved plan) names a new one, and current_orchestration_name is the one that was changed — both are in the context below. Say it is ready to use, unless the closing word gives a reason it stopped; then say what did not finish. If a schedule was made, say it was created paused, when it will run once turned on (in UTC), and that they should check what each run starts with and then turn it on under Schedules; if one was asked for and NOT SCHEDULED, say so plainly. For workspace changes, name what was created or changed. Do not mention the empty one.",
+            "prompt_template": "The Synapse AI Builder has just finished. Exactly one of these two is filled in.\n\nOrchestration work — the saver's closing word (DONE, or DONE with the reason it stopped, and a SCHEDULED or NOT SCHEDULED line when the plan asked for a schedule):\n{state.final_orch}\n\nWorkspace changes made:\n{state.manage_result}\n\nWhat the build cleaned up when it finished (empty when nothing new was built):\n{state.build_cleanup}\n\nWrite a short, friendly 2–3 sentence confirmation for the user, describing whichever one actually happened. If an orchestration was built or changed, name it: plan_draft (the approved plan) names a new one, and current_orchestration_name is the one that was changed — both are in the context below. Say it is ready to use, unless the closing word gives a reason it stopped; then say what did not finish. If the clean-up removed any orchestration (removed_names), name each one, say it was removed because it never passed validation, and do not say the build is ready to use. If a schedule was made, say it was created paused, when it will run once turned on (in UTC), and that they should check what each run starts with and then turn it on under Schedules; if one was asked for and NOT SCHEDULED, say so plainly. For workspace changes, name what was created or changed. Do not mention the empty one.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -825,7 +825,8 @@
                 "final_orch",
                 "manage_result",
                 "plan_draft",
-                "current_orchestration_name"
+                "current_orchestration_name",
+                "build_cleanup"
             ],
             "output_key": "summary",
             "forced_tool": null,

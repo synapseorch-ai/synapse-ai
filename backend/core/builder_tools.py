@@ -51,6 +51,43 @@ async def _visible_orchestration(orch_id: str | None) -> dict | None:
     return orch
 
 
+async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[str]]:
+    """The workflows `orch` calls through workflow agents, at any depth, and an issue
+    for each call whose workflow is gone (F429).
+
+    A workflow calls another only through an agent step whose agent runs it, so
+    this is what validating a parent has to validate with it.
+    """
+    from core.store.resources import get_orchestration
+
+    called: list[dict] = []
+    issues: list[str] = []
+    seen = {orch.get("id")}
+    pending = [orch]
+    while pending:
+        current = pending.pop()
+        where = "" if current is orch else f"In the inner workflow '{current.get('name')}' ({current.get('id')}): "
+        for s in current.get("steps") or []:
+            target = agents.get(s.get("agent_id")) or {}
+            child_id = target.get("orchestration_id") if target.get("type") == "orchestrator" else None
+            if not child_id or child_id in seen:
+                continue
+            seen.add(child_id)
+            child = await get_orchestration(child_id)
+            if child is None or child.get("is_active", True) is False:
+                issues.append(
+                    f"{where}Agent step '{s.get('id')}' uses workflow agent '{target.get('id')}', whose "
+                    f"orchestration '{child_id}' does not exist — build it again, deploy_orchestration it, "
+                    f"and use the agent id it returns."
+                )
+                continue
+            if child.get("system"):
+                continue
+            called.append(child)
+            pending.append(child)
+    return called, issues
+
+
 def _tool_name(raw: Any) -> str:
     """A custom tool's name is an identifier the model types into a tool call."""
     name = str(raw or "").strip()
@@ -2125,6 +2162,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         result = await deploy_as_agent(orch["id"])
         if result.get("agent"):
             _emit(events, "agent", "created", result["agent_id"], result["agent"]["name"], result["agent"])
+        # A deployed workflow keeps its build's mark: the parent that calls it
+        # validates it and finishes it, and `finish_build` keeps it regardless (F429).
         return result
 
     elif tool_name == "validate_orchestration":
@@ -2134,30 +2173,62 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # The agents its steps name, so a step whose agent is missing or runs no
         # orchestration is caught here rather than on the first run (F264).
         agents = {a.get("id"): a for a in await load_user_agents() if a.get("id")}
+        # And the workflows it calls, at any depth: a parent passes only with what
+        # it calls, so a nested build is validated, and finished, whole (F429).
+        called, issues = await _workflows_called(orch, agents)
         # And the knowledge bases its Retrieve and Ingest steps name, while Knowledge is on.
         knowledge_on = builder_tool_offered("list_knowledge_bases")
         kbs = None
-        if knowledge_on and any(s.get("type") in KNOWLEDGE_STEP_TYPES for s in orch.get("steps") or []):
+        if knowledge_on and any(s.get("type") in KNOWLEDGE_STEP_TYPES for w in (orch, *called) for s in w.get("steps") or []):
             from core.knowledge import bases
             kbs = {kb.id: kb for kb in await bases.list_bases()}
         verdict = _validate_orchestration(orch, agents=agents, kbs=kbs, knowledge_off=not knowledge_on)
-        if verdict.get("ok") and orch.pop("building_run", None) is not None:
-            await save_orchestration(orch)  # finished: `finish_build` keeps it
+        issues = [*verdict["issues"], *issues]
+        # The inner workflows this build made are checked with it; the workspace's
+        # own, which run today, only have to exist — never refused, never rewritten.
+        run = _current_run.get()
+        ours = [child for child in called if run is not None and child.get("building_run") == run]
+        for child in ours:
+            child_verdict = _validate_orchestration(child, agents=agents, kbs=kbs, knowledge_off=not knowledge_on,
+                                                    allow_dead_ends=True)
+            issues += [f"In the inner workflow '{child.get('name')}' ({child['id']}): {i}"
+                       for i in child_verdict["issues"]]
+        verdict = {**verdict, "ok": not issues, "issues": issues}
+        if verdict["ok"]:
+            for workflow in (orch, *ours):
+                if workflow.pop("building_run", None) is not None:
+                    await save_orchestration(workflow)  # finished: `finish_build` keeps it
         return verdict
 
     elif tool_name == "finish_build":
         # F156: remove what this run's saver started and never validated. Never
-        # another run's, and nothing at all outside a run.
+        # another run's, and nothing at all outside a run. F429: and never what
+        # something still runs — a workflow agent (which is how any other
+        # workflow calls it) or a schedule. That is kept, and said.
         run = _current_run.get()
         removed: list[str] = []
-        if run is not None:
+        removed_names: list[str] = []
+        kept: list[dict] = []
+        mine = [o for o in await load_orchestrations() if o.get("building_run") == run] if run is not None else []
+        if mine:
+            from core.store import schedules as schedule_store
             from core.store.resources import delete_orchestration as _delete_orch
-            for orch in await load_orchestrations():
-                if orch.get("building_run") == run:
-                    await _delete_orch(orch["id"])
-                    _emit(events, "orchestration", "deleted", orch["id"], orch.get("name"))
-                    removed.append(orch["id"])
-        return {"status": "finished", "removed": removed}
+            deployed = {a.get("orchestration_id") for a in await load_user_agents() if a.get("orchestration_id")}
+            scheduled = {s.get("target_id") for s in await schedule_store.load()
+                         if s.get("target_type") == "orchestration"}
+            for orch in mine:
+                reasons = [why for why, holds in (("a workflow agent runs it", orch["id"] in deployed),
+                                                  ("a schedule runs it", orch["id"] in scheduled)) if holds]
+                if reasons:
+                    orch.pop("building_run", None)
+                    await save_orchestration(orch)
+                    kept.append({"id": orch["id"], "name": orch.get("name"), "reason": " and ".join(reasons)})
+                    continue
+                await _delete_orch(orch["id"])
+                _emit(events, "orchestration", "deleted", orch["id"], orch.get("name"))
+                removed.append(orch["id"])
+                removed_names.append(orch.get("name") or orch["id"])
+        return {"status": "finished", "removed": removed, "removed_names": removed_names, "kept": kept}
 
     # ── Custom HTTP tools ────────────────────────────────────────────────────
 
@@ -2577,7 +2648,7 @@ def _knowledge_step_issues(step: dict, kbs: dict | None, knowledge_off: bool) ->
 
 
 def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
-                            knowledge_off: bool = False) -> dict:
+                            knowledge_off: bool = False, allow_dead_ends: bool = False) -> dict:
     """Return {"ok": bool, "issues": [str, ...]} describing wiring problems.
 
     Checks (matches the engine's expectations in core.orchestration.engine):
@@ -2585,7 +2656,8 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
       - no duplicate step ids
       - every next_step_id / route_map target / loop_step_ids entry /
         parallel_branches element resolves to a real step (empty string = end)
-      - every reachable path terminates at an `end`-type step
+      - every reachable path terminates at an `end`-type step (not asked of a
+        workflow another one calls: `allow_dead_ends`, F429)
       - every step's input_keys are written by something: `user_input` /
         `user_query`, some step's `output_key`, a for-each loop's item or
         index key, or `human_response` where a human step exists (a key with
@@ -2893,7 +2965,9 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                 if target and target in by_id:
                     successors.append(target)
             if not successors:
-                if cur not in contained:
+                # A run whose last step finishes completes, End or no End: a called
+                # workflow without one is not refused for it (F429, Naveen).
+                if cur not in contained and not allow_dead_ends:
                     issues.append(
                         f"Step '{cur}' (type={s.get('type')}) has no next_step_id / routes / branches — path dead-ends without reaching an `end` step."
                     )

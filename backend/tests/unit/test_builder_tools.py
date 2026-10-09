@@ -1402,3 +1402,177 @@ class TestABuildThatStopsLeavesNothingBehind:
         assert (await call("finish_build", {}, server))["removed"] == []
         from core.store.resources import get_orchestration
         assert await get_orchestration(made["orchestration"]["id"]) is not None
+
+
+class TestANestedBuildKeepsItsInnerWorkflow:
+    """F429 (C2, D200), S1. A two-level build: the builder made the inner
+    "C2 Vendor check", deployed it, made the outer "C2 Vendor review" calling its
+    workflow agent, and validated only the outer one. `finish_build` then deleted
+    the inner one — it still carried the run's mark — and the outer workflow and
+    its Monday schedule failed with "Sub-orchestration … not found". Validating a
+    parent validates the inner workflows this build made and finishes them with
+    it; the workspace's own only have to exist; a missing End is no fault in an
+    inner workflow (a run ends when its last step does — Naveen); and
+    `finish_build` never deletes what an agent or a schedule points at."""
+
+    async def _skeleton(self, server, run: str, name: str, steps: list[dict]) -> str:
+        made = await call_in_run("create_orchestration_skeleton",
+                                 {"name": name, "entry_step_id": steps[0]["step_id"]}, server, run)
+        orch_id = made["orchestration"]["id"]
+        added = await call_in_run("add_multiple_steps", {"orch_id": orch_id, "steps": steps}, server, run)
+        assert added["status"] == "steps_added", added
+        return orch_id
+
+    async def _inner(self, server, run: str) -> str:
+        return await self._skeleton(server, run, "Vendor check", [
+            {"step_id": "step_check", "name": "Check", "type": "llm", "prompt_template": "Check {state.user_input}",
+             "output_key": "check", "next_step_id": "step_end"},
+            {"step_id": "step_end", "name": "End", "type": "end"},
+        ])
+
+    async def _outer(self, server, run: str, agent_id: str) -> str:
+        return await self._skeleton(server, run, "Vendor review", [
+            {"step_id": "step_call", "name": "Check a vendor", "type": "agent", "agent_id": agent_id,
+             "prompt_template": "Acme", "output_key": "report", "next_step_id": "step_end"},
+            {"step_id": "step_end", "name": "End", "type": "end"},
+        ])
+
+    async def test_the_inner_workflow_of_a_nested_build_survives_finish_build(self, server):
+        from core.store.resources import get_orchestration
+
+        inner = await self._inner(server, "run_n")
+        deployed = await call_in_run("deploy_orchestration", {"orch_id": inner}, server, "run_n")
+        assert deployed["status"] == "deployed", deployed
+        outer = await self._outer(server, "run_n", deployed["agent_id"])
+        assert (await call_in_run("validate_orchestration", {"orch_id": outer}, server, "run_n"))["ok"]
+
+        done = await call_in_run("finish_build", {}, server, "run_n")
+
+        assert done["removed"] == []
+        assert await get_orchestration(inner) is not None
+        assert await get_orchestration(outer) is not None
+
+    async def test_a_deployed_workflow_whose_parent_never_validated_is_still_kept(self, server):
+        from core.store.resources import get_orchestration
+
+        inner = await self._inner(server, "run_m")
+        await call_in_run("deploy_orchestration", {"orch_id": inner}, server, "run_m")
+        # Deploying keeps the build's mark, so the parent that calls it checks it…
+        assert (await get_orchestration(inner)).get("building_run") == "run_m"
+
+        done = await call_in_run("finish_build", {}, server, "run_m")
+
+        # …and `finish_build` keeps it all the same: an agent runs it.
+        assert done["removed"] == []
+        assert [k["id"] for k in done["kept"]] == [inner] and "agent" in done["kept"][0]["reason"]
+        assert "building_run" not in await get_orchestration(inner)
+
+    async def test_an_inner_workflow_without_an_end_step_passes(self, server):
+        inner = await self._skeleton(server, "run_e", "Vendor check", [
+            {"step_id": "step_check", "name": "Check", "type": "llm", "prompt_template": "Check",
+             "output_key": "check"},
+        ])
+        deployed = await call_in_run("deploy_orchestration", {"orch_id": inner}, server, "run_e")
+        outer = await self._outer(server, "run_e", deployed["agent_id"])
+        verdict = await call_in_run("validate_orchestration", {"orch_id": outer}, server, "run_e")
+        assert verdict["ok"], verdict
+
+    async def test_the_workspaces_own_inner_workflow_only_has_to_exist(self, server):
+        from core.store.resources import get_orchestration, save_orchestration
+
+        theirs = S.make_orchestration(id="orch_theirs", name="Theirs", steps=[
+            {"id": "step_1", "name": "Say", "type": "print", "print_content": "hi",
+             "input_keys": ["never_written"], "next_step_id": None}], entry_step_id="step_1")
+        await save_orchestration(theirs)
+        await S.seed_agents([S.make_orchestrator_agent("orch_theirs", id="agent_wf_theirs", name="Theirs")])
+        outer = await self._outer(server, "run_t", "agent_wf_theirs")
+
+        verdict = await call_in_run("validate_orchestration", {"orch_id": outer}, server, "run_t")
+
+        assert verdict["ok"], verdict
+        assert (await get_orchestration("orch_theirs"))["steps"] == theirs["steps"]
+
+    async def test_validating_a_parent_validates_what_it_calls_and_clears_their_marks(self, server):
+        from core.store.resources import get_orchestration
+
+        inner = await self._inner(server, "run_v")
+        # A workflow agent made some other way than `deploy_orchestration`, so the
+        # inner one still carries the run's mark when its parent validates.
+        await S.seed_agents([S.make_orchestrator_agent(inner, id="agent_wf_inner", name="Vendor check")])
+        outer = await self._outer(server, "run_v", "agent_wf_inner")
+        assert (await get_orchestration(inner)).get("building_run") == "run_v"
+
+        verdict = await call_in_run("validate_orchestration", {"orch_id": outer}, server, "run_v")
+
+        assert verdict["ok"], verdict
+        assert "building_run" not in await get_orchestration(inner)
+        assert "building_run" not in await get_orchestration(outer)
+
+    async def test_a_parent_whose_inner_workflow_is_broken_does_not_pass(self, server):
+        from core.store.resources import get_orchestration
+
+        broken = await self._skeleton(server, "run_b2", "Vendor check", [
+            {"step_id": "step_check", "name": "Check", "type": "llm", "prompt_template": "Check",
+             "output_key": "check", "next_step_id": "step_nowhere"},
+        ])
+        await S.seed_agents([S.make_orchestrator_agent(broken, id="agent_wf_broken", name="Vendor check")])
+        outer = await self._outer(server, "run_b2", "agent_wf_broken")
+
+        verdict = await call_in_run("validate_orchestration", {"orch_id": outer}, server, "run_b2")
+
+        assert verdict["ok"] is False
+        inner_issues = [i for i in verdict["issues"] if "inner workflow 'Vendor check'" in i]
+        assert inner_issues and any("step_nowhere" in i for i in inner_issues), verdict
+        # Not passed, so neither is finished: both keep the run's mark.
+        assert (await get_orchestration(outer)).get("building_run") == "run_b2"
+        assert (await get_orchestration(broken)).get("building_run") == "run_b2"
+
+    async def test_a_parent_whose_inner_workflow_is_gone_does_not_pass(self, server):
+        await S.seed_agents([S.make_orchestrator_agent("orch_gone", id="agent_wf_gone", name="Gone")])
+        outer = await self._outer(server, "run_g", "agent_wf_gone")
+        verdict = await call_in_run("validate_orchestration", {"orch_id": outer}, server, "run_g")
+        assert verdict["ok"] is False
+        assert any("orch_gone" in i for i in verdict["issues"]), verdict
+
+    async def test_finish_build_keeps_what_an_agent_or_a_schedule_points_at_and_says_so(self, server):
+        from core.store.resources import get_orchestration
+
+        pointed = await self._inner(server, "run_k")
+        await S.seed_agents([S.make_orchestrator_agent(pointed, id="agent_wf_k", name="Vendor check")])
+        scheduled = await self._skeleton(server, "run_k", "Weekly digest", [
+            {"step_id": "step_end", "name": "End", "type": "end"},
+        ])
+        made = await call_in_run("create_schedule", {
+            "name": "Mondays", "target_type": "orchestration", "target_id": scheduled,
+            "prompt": "Digest", "schedule_type": "interval", "interval_value": 7, "interval_unit": "days",
+        }, server, "run_k")
+        assert made["status"] == "created", made
+        abandoned = (await call_in_run("create_orchestration_skeleton",
+                                       {"name": "Half done", "entry_step_id": "step_a"},
+                                       server, "run_k"))["orchestration"]["id"]
+
+        done = await call_in_run("finish_build", {}, server, "run_k")
+
+        assert done["removed"] == [abandoned]
+        assert done["removed_names"] == ["Half done"]
+        kept = {k["id"]: k for k in done["kept"]}
+        assert set(kept) == {pointed, scheduled}
+        assert "agent" in kept[pointed]["reason"] and "schedule" in kept[scheduled]["reason"]
+        for orch_id in (pointed, scheduled):
+            assert "building_run" not in await get_orchestration(orch_id)
+        assert await get_orchestration(abandoned) is None
+
+
+class TestTheBuildersAnswerNamesWhatFinishBuildRemoved:
+    """F429: the closing answer said "created successfully … ready to use" while
+    `finish_build` had just deleted half the build; the deletion was only a
+    collapsed tool line. The summary step reads what `finish_build` removed."""
+
+    def test_the_summary_step_reads_build_cleanup(self):
+        from core.native_builder import bundled_definitions
+
+        steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+        summary = steps["step_summarize"]
+        assert "build_cleanup" in summary["input_keys"]
+        assert "{state.build_cleanup}" in summary["prompt_template"]
+        assert "never passed validation" in summary["prompt_template"]

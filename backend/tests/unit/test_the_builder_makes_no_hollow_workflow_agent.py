@@ -74,12 +74,14 @@ class TestDeployingAnOrchestration:
 
 
 class TestTheValidatorLooksAtTheAgent:
-    async def _validate(self, agent_id):
+    async def _validate(self, agent_id, *others):
         orch = S.make_orchestration(id="orch_f264v", entry_step_id="call", steps=[
             {"id": "call", "name": "Check facts", "type": "agent", "agent_id": agent_id,
              "prompt_template": "check", "output_key": "checked", "next_step_id": "end"},
             {"id": "end", "name": "End", "type": "end"}])
-        await S.seed_orchestrations([orch])
+        # One seeding: it replaces the list, so a child seeded before it was gone,
+        # which the validator now notices (F429).
+        await S.seed_orchestrations([orch, *others])
         return await call("validate_orchestration", {"orch_id": "orch_f264v"})
 
     async def test_a_hollow_workflow_agent(self):
@@ -92,9 +94,8 @@ class TestTheValidatorLooksAtTheAgent:
         assert not report["ok"] and any("agent_nowhere" in i for i in report["issues"])
 
     async def test_a_deployed_workflow_agent_passes(self):
-        await S.seed_orchestrations([S.make_orchestration(id="orch_child")])
         await S.seed_agents([S.make_orchestrator_agent("orch_child", id="agent_deployed")])
-        report = await self._validate("agent_deployed")
+        report = await self._validate("agent_deployed", S.make_orchestration(id="orch_child"))
         assert report["ok"], report
 
 
