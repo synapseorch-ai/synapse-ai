@@ -1631,6 +1631,7 @@ class TestTheBuilderMintsIdsTheStoresWay:
         # The derived id keeps a deploy idempotent where nothing mints.
         assert deployed["agent_id"] == f"orch_agent_{orch_id}"
 
+
 class TestAToolIsTheWorkspacesByName:
     """F435 (C4). The builder saved a tool with its *name* as its id. Cloud
     keys `tools` on a global `id`, so a second organisation's builder making a
@@ -1687,3 +1688,37 @@ class TestAToolIsTheWorkspacesByName:
         await call("create_http_tool", {"name": "get_weather", "url": "https://a.invalid/"}, server)
         assert await self._rows() == [("get_weather", "get_weather", "https://a.invalid/")]
 
+
+class TestADeployAsksForRoom:
+    """F436 (C4). The builder's `deploy_orchestration` made a workflow agent
+    without asking the plan, where cloud's Deploy route counts it like any
+    agent (F154's posture): a full plan gained an agent through the builder."""
+
+    @pytest.fixture
+    def full(self):
+        from core import builder_tools
+
+        asked = []
+
+        async def check(kind, adding):
+            asked.append((kind, adding))
+            return f"The Free plan includes 3 {kind}s. Delete one, or upgrade."
+
+        builder_tools.set_room_check(check)
+        yield asked
+        builder_tools.set_room_check(None)
+
+    async def test_a_full_plan_refuses_a_new_workflow_agent(self, server, full):
+        await S.seed_orchestrations([S.make_orchestration(id="orch_full", name="Full")])
+        result = await call("deploy_orchestration", {"orch_id": "orch_full"}, server)
+        assert result == {"error": "The Free plan includes 3 agents. Delete one, or upgrade.", "refused": "plan_limit"}
+        assert full == [("agent", 1)]
+        from core.routes.agents import load_user_agents
+        assert await load_user_agents() == []
+
+    async def test_one_already_made_is_answered_without_asking(self, server, full):
+        await S.seed_orchestrations([S.make_orchestration(id="orch_full", name="Full")])
+        await S.seed_agents([S.make_orchestrator_agent("orch_full", id="agent_full_wf")])
+        result = await call("deploy_orchestration", {"orch_id": "orch_full"}, server)
+        assert result == {"status": "already_deployed", "agent_id": "agent_full_wf"}
+        assert full == []

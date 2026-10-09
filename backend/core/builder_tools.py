@@ -2161,6 +2161,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         from core.orchestration.deploy import deploy_as_agent
+        # A new workflow agent is an agent row like any other, and asks for room
+        # first (F436, F154's posture); one already made is only answered.
+        already = any(a.get("orchestration_id") == orch["id"] for a in await load_user_agents())
+        if not already and (refusal := await _refused("agent", 1)) is not None:
+            return refusal
         result = await deploy_as_agent(orch["id"])
         if result.get("agent"):
             _emit(events, "agent", "created", result["agent_id"], result["agent"]["name"], result["agent"])
