@@ -1385,7 +1385,7 @@ async def check_scale(browser) -> str:
             r.fulfill(status=409, content_type="application/json", body=json.dumps({"detail": DLQ_409}))))
         await page.goto(f"{APP}/settings/scale", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
-        sections = ("Redis Connection", "Postgres", "Workers", "Observability")
+        sections = ("Redis connection", "Postgres", "Workers", "Observability")
         for title in sections:
             await page.get_by_role("button", name=re.compile(f"^{title}")).first.click()
             await asyncio.sleep(0.3)
@@ -1491,7 +1491,7 @@ async def check_models(browser) -> str:
             problems.append("it still says Bedrock needs a profile selected")
         if "inference profiles are listed as models" not in text:
             problems.append("nothing says an inference profile is picked as the model")
-        await page.get_by_role("button", name="Save Changes").click()
+        await page.get_by_role("button", name="Save changes").click()
         await asyncio.sleep(2.0)
     finally:
         await ctx.close()
@@ -4816,8 +4816,8 @@ async def check_drawers(browser) -> str:
     page = await ctx.new_page()
     try:
         for path, title, opener in (
-            ("/settings/api_keys", "API Reference", re.compile("view docs", re.I)),
-            ("/settings/scale", "Scale Deployment Guide", re.compile("deploy docs", re.I)),
+            ("/settings/api_keys", "API reference", re.compile("view docs", re.I)),
+            ("/settings/scale", "Scale deployment guide", re.compile("deploy docs", re.I)),
         ):
             await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
             await page.get_by_role("button", name=opener).first.wait_for(timeout=30_000)
@@ -5154,7 +5154,7 @@ async def check_knowledge_switch(browser) -> str:
         if await rail.count():
             raise AssertionError("the rail shows Knowledge while it is off")
         await switch.click()
-        await page.get_by_role("button", name="Save Changes", exact=True).click()
+        await page.get_by_role("button", name="Save changes", exact=True).click()
         await rail.first.wait_for(timeout=15_000)
         if not any(p.get("knowledge_enabled") is True for p in posted):
             raise AssertionError(f"the save did not send knowledge_enabled: true ({posted})")
@@ -5368,7 +5368,7 @@ async def check_streamdocs(browser) -> str:
         await asyncio.sleep(SETTLE)
         await opener.click()
         await asyncio.sleep(0.8)
-        drawer = page.locator(".fixed", has=page.locator("h2", has_text="API Reference")).last
+        drawer = page.locator(".fixed", has=page.locator("h2", has_text="API reference")).last
         shown = {}
         for version in ("V1", "V2"):
             await drawer.get_by_role("button", name=version, exact=True).click()
@@ -5377,7 +5377,7 @@ async def check_streamdocs(browser) -> str:
             # A header is a button around an upper-case title; a closed one has no body after it.
             await drawer.evaluate("""(root) => {
               for (const b of root.querySelectorAll('button')) {
-                if (b.querySelector(':scope > span.uppercase') && !b.nextElementSibling) b.click();
+                if (b.querySelector(':scope > span[data-doc-section]') && !b.nextElementSibling) b.click();
               }
             }""")
             await asyncio.sleep(0.4)
@@ -7106,6 +7106,216 @@ _SMOKE_USAGE = [
         "by_run": [{"run_id": "run_smoke_cache", "requests": 4, "cache_read_tokens": 20000, "cache_write_tokens": 0,
                     "estimated_savings": 0.005, "estimated_cost": 0.02, "response_cache_hits": 0}]})),
 ]
+
+
+# ── M2g: Usage and Settings on the redesign ────────────────────────────────────
+
+#: A raw palette utility in a class list: the redesign puts every colour on a token (UX1, M2g).
+_RAW_COLOUR = re.compile(r"\b(?:bg|text|border|ring|from|to|via|fill|stroke)-(?:zinc|gray|slate|neutral|stone|red|green|"
+                         r"emerald|amber|yellow|blue|sky|cyan|orange|purple|violet|indigo|teal|lime|rose|pink|fuchsia)-\d|"
+                         r"\b(?:bg|text)-(?:white|black)\b")
+
+
+def _usage_sessions(n: int) -> list:
+    return [{"session_id": f"sess_smoke_{i:02d}", "agent_id": "agent_smoke", "requests": 1, "input_tokens": 10,
+             "output_tokens": 5, "total_tokens": 15, "context_chars": 100, "estimated_cost": 0.0001,
+             "models_used": ["anthropic.claude-3-haiku"], "first_ts": _NOW, "last_ts": _NOW, "source": "chat"}
+            for i in range(n)]
+
+
+async def _usage_page(browser, routes, theme="light"):
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+    for pattern, handler in routes:
+        await ctx.route(pattern, handler)
+    page = await ctx.new_page()
+    await page.goto(f"{APP}/usage", wait_until="domcontentloaded")
+    await page.locator("[data-usage-hero]").wait_for(timeout=30_000)
+    await page.wait_for_timeout(800)
+    return ctx, page
+
+
+@check
+async def check_usage_hero(browser) -> str:
+    """Usage leads with one figure (UX1, M2g): Total cost, then the calls and tokens as one strip, not four tiles; its
+    two actions sit beside the figure and Clear logs asks first in the product's own dialog, sending nothing on Cancel."""
+    deletes: list[str] = []
+    ctx, page = await _usage_page(browser, _SMOKE_USAGE)
+    try:
+        page.on("request", lambda r: deletes.append(r.url) if r.method == "DELETE" else None)
+        hero = " ".join((await page.locator("[data-usage-hero]").inner_text()).split())
+        if not hero.startswith("Total cost $0.05"):
+            raise AssertionError(f"the hero says {hero!r}")
+        strip = " ".join((await page.locator("dl[aria-label='Usage so far']").inner_text()).split())
+        for want in ("Total requests 10", "Input tokens 60.0K", "Output tokens 2.0K"):
+            if want not in strip:
+                raise AssertionError(f"the strip says {strip!r}, not {want!r}")
+        await page.get_by_role("button", name="Refresh").wait_for(timeout=5_000)
+        await page.get_by_role("button", name="Clear logs").click()
+        dialog = page.get_by_role("dialog", name="Delete all usage logs?")
+        await dialog.wait_for(timeout=5_000)
+        await dialog.get_by_role("button", name="Cancel").click()
+        await page.wait_for_timeout(500)
+        if deletes:
+            raise AssertionError(f"Cancel still sent {deletes}")
+    finally:
+        await ctx.close()
+    return "Total cost, a strip of requests and tokens, Clear logs asks and Cancel sends nothing"
+
+
+@check
+async def check_usage_bars(browser) -> str:
+    """Cost by model is one hue (`--machine`) with the figure beside each bar (M2g): a provider's own colour meant
+    nothing but "a different provider" (UX1). An unpriced model keeps "No price · add one" leading to #pricing."""
+    routes = [r for r in _SMOKE_USAGE if r[0] != "**/api/usage/summary"] + [("**/api/usage/summary", _answer({
+        **USAGE_STUB, "by_model": USAGE_STUB["by_model"] + [
+            {"model": "smoke-unpriced", "provider": "openai_compatible", "requests": 1, "input_tokens": 1,
+             "output_tokens": 1, "total_tokens": 2, "estimated_cost": 0, "priced": False}]}))]
+    ctx, page = await _usage_page(browser, routes)
+    try:
+        rows = page.locator("ul[aria-label='Cost by model'] [data-bar-row]")
+        if await rows.count() != 3:
+            raise AssertionError(f"{await rows.count()} bars for 3 models")
+        fills = await page.evaluate("""() => {
+            const m = getComputedStyle(document.documentElement).getPropertyValue('--machine').trim();
+            const probe = document.createElement('i'); probe.style.color = m; document.body.append(probe);
+            const want = getComputedStyle(probe).color; probe.remove();
+            return [...document.querySelectorAll("ul[aria-label='Cost by model'] [data-bar-row] > span[aria-hidden] > span")]
+                .map(e => getComputedStyle(e).backgroundColor === want);
+        }""")
+        if not fills or not all(fills):
+            raise AssertionError(f"a bar is not the machine colour: {fills}")
+        said = " ".join((await rows.nth(0).inner_text()).split())
+        if "$0.003829" not in said:
+            raise AssertionError(f"the first bar says {said!r}")
+        link = rows.nth(2).get_by_role("link", name="add one")
+        if await link.get_attribute("href") != "#pricing":
+            raise AssertionError("the unpriced model's 'add one' does not lead to #pricing")
+    finally:
+        await ctx.close()
+    return "three bars on --machine, each with its figure; the unpriced one links #pricing"
+
+
+@check
+async def check_usage_sessions(browser) -> str:
+    """Sessions are the runs list's rows (M2g): a row opens in place to its per-turn table, and Load more shows the
+    next 15."""
+    routes = [r for r in _SMOKE_USAGE if r[0] != "**/api/usage/summary"] + [
+        ("**/api/usage/summary", _answer({**USAGE_STUB, "by_session": _usage_sessions(20)})),
+        ("**/api/usage/logs*", _answer({"logs": []}))]
+    ctx, page = await _usage_page(browser, routes)
+    try:
+        rows = page.locator("[data-usage-session]")
+        if await rows.count() != 15:
+            raise AssertionError(f"{await rows.count()} rows before Load more, not 15")
+        row = page.get_by_role("button", name="sess_smoke_00")
+        await row.click()
+        if await row.get_attribute("aria-expanded") != "true":
+            raise AssertionError("the row did not open")
+        await page.get_by_text("Per-turn breakdown").wait_for(timeout=5_000)
+        await page.get_by_role("button", name="Load more (5 remaining)").click()
+        await page.wait_for_function("() => document.querySelectorAll('[data-usage-session]').length === 20",
+                                     timeout=5_000)
+    finally:
+        await ctx.close()
+    return "15 rows, a row opens to its turns, Load more shows the other 5"
+
+
+#: Every Settings tab M2g redesigned, and Usage.
+_M2G_PAGES = ("/usage", "/settings/general", "/settings/models", "/settings/personal_details", "/settings/variables",
+              "/settings/memory", "/settings/workspace", "/settings/repos", "/settings/db_configs",
+              "/settings/api_keys", "/settings/import_export", "/settings/scale", "/settings/support",
+              "/settings/datalab")
+
+
+@check
+async def check_settings_plain(browser) -> str:
+    """Usage and every Settings tab are on tokens and plain sections (M2g): no raw palette utility in the page, and a
+    tab's groups are headed sections on the page, not boxes."""
+    raw: list[str] = []
+    boxed: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        for path in _M2G_PAGES:
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await page.locator("main h1").first.wait_for(timeout=30_000)
+            await page.wait_for_timeout(SETTLE * 1000)
+            classes = await page.evaluate(
+                "() => [...document.querySelectorAll('main *')].map(e => e.getAttribute('class') || '')")
+            hits = sorted({m.group(0) for c in classes for m in [_RAW_COLOUR.search(c)] if m})
+            if hits:
+                raw.append(f"{path}: {hits[:6]}")
+            heads = await page.locator("main section > header h2").count()
+            if path != "/settings/import_export" and heads == 0:
+                boxed.append(path)
+    finally:
+        await ctx.close()
+    problems = []
+    if raw:
+        problems.append("raw colour — " + " | ".join(raw))
+    if boxed:
+        problems.append(f"no plain section heads on {boxed}")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return f"{len(_M2G_PAGES)} pages on tokens with plain section heads"
+
+
+@check
+async def check_general_switches(browser) -> str:
+    """General's settings that are on or off are the kit's switch, each named as before (M2g), and a switch moves
+    when pressed; Settings' collapse button sits on its first group's line (Naveen at review)."""
+    names = ("Knowledge", "Large response handling", "Auto context compaction", "Database write access",
+             "Code repository indexing", "Run Transform steps on the host", "Require login")
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/settings/general", wait_until="domcontentloaded")
+        for name in names:
+            await page.get_by_role("switch", name=name, exact=True).wait_for(timeout=30_000)
+        sw = page.get_by_role("switch", name="Database write access", exact=True)
+        was = await sw.get_attribute("aria-checked")
+        await sw.click()
+        if await sw.get_attribute("aria-checked") == was:
+            raise AssertionError("Database write access did not move")
+        nav = page.locator('nav[aria-label="Settings"]')
+        btn = nav.get_by_role("button", name="Collapse settings menu")
+        head = nav.get_by_text("Workspace", exact=True)
+        b, h = await btn.bounding_box(), await head.bounding_box()
+        if abs((b["y"] + b["height"] / 2) - (h["y"] + h["height"] / 2)) > 6:
+            raise AssertionError(f"the collapse button is not on Workspace's line ({b['y']:.0f} vs {h['y']:.0f})")
+    finally:
+        await ctx.close()
+    return f"{len(names)} switches by name, one moves; the collapse button on Workspace's line"
+
+
+@check
+async def check_rerankers(browser) -> str:
+    """With Knowledge on, Models lists the rerankers as provider cards (Naveen, M2g, as cloud): Cohere, Voyage AI,
+    Jina AI and a rerank server, each opening to its key field."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/settings", lambda route: route.continue_() if route.request.method != "GET" else
+                    _patch_json(route, {"knowledge_enabled": True}))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
+        for name in ("Cohere", "Voyage AI", "Jina AI", "Rerank server (TEI or Infinity)"):
+            await page.locator(f'[data-provider-card="{name}"]').wait_for(timeout=30_000)
+        await page.locator('[data-provider-card="Cohere"] button').first.click()
+        await page.get_by_label("Cohere API key").wait_for(timeout=5_000)
+        await page.locator('[data-provider-card="Rerank server (TEI or Infinity)"] button').first.click()
+        await page.get_by_label("Rerank server address").wait_for(timeout=5_000)
+    finally:
+        await ctx.close()
+    return "four reranker cards; Cohere opens to its key, the server to its address"
+
+
+async def _patch_json(route, extra: dict):
+    """Answer with the real response, `extra` merged in."""
+    res = await route.fetch()
+    body = await res.json()
+    await route.fulfill(response=res, json={**body, **extra})
+
 _SMOKE_BUNDLE = {
     "synapse_export": True, "version": "1.0", "exported_at": _NOW, "has_python_tools": False,
     "orchestrations": [{"id": "orch_smoke_imp", "name": "Smoke import flow", "description": "d",
@@ -7581,7 +7791,7 @@ LIGHT_STATES = (
      _vault_error, "ERROR"),
     ("settings saved toast", "/settings/personal_details", [],
      [("**/api/personal-details", _answer({}, methods=("POST",)))],
-     lambda p: p.get_by_role("button", name=re.compile("Save Changes")).first.click(), "Personal details saved"),
+     lambda p: p.get_by_role("button", name=re.compile("Save changes")).first.click(), "Personal details saved"),
 )
 
 
