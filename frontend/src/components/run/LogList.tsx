@@ -19,6 +19,7 @@ import { type ReactNode, useMemo } from 'react';
 import { cn } from '@/lib/cn';
 
 import { money, type Clock, type RunBucket } from './model';
+import { ROW_CURRENT } from './DetailHead';
 import { RUN_DOT } from './RunList';
 import { Took, useClock, When } from './When';
 import { groupLogs, logBucket, logSize, type LogListRow } from './logList';
@@ -149,7 +150,7 @@ function Row({
             data-log-row={row.id}
             className={cn(
                 'group relative grid grid-cols-[10px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 border-b border-border px-2.5 py-2.5 transition-colors',
-                current ? 'bg-surface-2 shadow-[inset_2px_0_0_var(--color-text)]' : 'hover:bg-row-hover',
+                current ? ROW_CURRENT : 'hover:bg-row-hover',
                 row.nested && 'pl-6',
                 'has-[[data-row-open]:focus-visible]:outline has-[[data-row-open]:focus-visible]:outline-2',
                 'has-[[data-row-open]:focus-visible]:-outline-offset-2 has-[[data-row-open]:focus-visible]:outline-accent',

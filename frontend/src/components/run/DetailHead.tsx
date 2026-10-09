@@ -11,6 +11,12 @@ import type { ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 
 /**
+ * The open row of a list (M2h-2, Naveen): the accent's pale ground and its edge. `bg-surface-2` on white was too
+ * faint to tell which row was open in the light theme.
+ */
+export const ROW_CURRENT = 'bg-accent-subtle text-text shadow-[inset_2px_0_0_var(--color-accent)]';
+
+/**
  * A row of the list: the name, a quiet line under it, and one figure on the
  * right. `leading` is a small icon before the name; `actions` sit over the
  * figure on hover and focus (always shown on the open row and on a phone).
@@ -36,7 +42,7 @@ export function ListRow({
                 aria-current={current ? 'true' : undefined}
                 className={cn(
                     'grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 border-b border-border px-2.5 py-2.5 text-left transition-colors',
-                    current ? 'bg-surface-2 shadow-[inset_2px_0_0_var(--color-text)]' : 'hover:bg-row-hover',
+                    current ? ROW_CURRENT : 'hover:bg-row-hover',
                 )}
             >
                 <span className={cn('truncate text-sm font-medium text-text', leading && 'flex min-w-0 items-center gap-2', titleClassName)}>
