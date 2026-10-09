@@ -175,3 +175,45 @@ class TestTheCooperativeCheck:
             agent_override=agent, tools_override=[], max_turns=2,
         )]
         assert events[-1]["type"] == "final"
+
+
+class TestTheStepACancelCutsIsRecorded:
+    """F391: the cancel wrote the run `cancelled` and nothing for the step it
+    stopped, so a host pricing the run by its history (cloud's finalize) charged
+    neither the step's price nor its time. The cut step now has its entry, as a
+    run stopped at its length gets one: `cut`, timed from its start."""
+
+    async def test_the_step_in_progress_gets_its_entry_with_its_time(self, fake_redis, blocking_agent):
+        from core.orchestration.state import SharedState
+        from core.scale.pubsub import publish_cancellation
+        started, _ = blocking_agent
+        adapter = await _adapter(fake_redis)
+
+        job = asyncio.create_task(adapter.run(initial_input="go"))
+        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.sleep(0.3)
+        await publish_cancellation(fake_redis, RUN)
+        assert await asyncio.wait_for(job, 3) == "cancelled"
+
+        run = (await SharedState.restore(RUN)).run
+        [entry] = [e for e in run.step_history if e.get("step_id") == "s1"]
+        assert entry["status"] == "cancelled" and entry["cut"] is True
+        assert entry["step_type"] == "agent" and entry["step_name"] == "Long step"
+        assert entry["duration_seconds"] >= 0.3
+        assert run.current_step_id == "s1", "still resumable from the step it stopped in"
+
+    async def test_a_cancel_between_steps_records_nothing(self, fake_redis):
+        """The run already on its next step, not yet started: no step was cut."""
+        from core.orchestration.state import SharedState
+
+        await S.seed_orchestrations([_agent_orch()])
+        adapter = await _adapter(fake_redis, run_id="run_between")
+        await adapter._relay({"type": "step_start", "orch_step_id": "s1"})
+        await adapter._relay({"type": "step_complete", "orch_step_id": "s1"})
+        from core.models_orchestration import OrchestrationRun
+        run = OrchestrationRun(run_id="run_between", orchestration_id="orch_cancel", current_step_id="s2",
+                               shared_state={}, step_history=[{"step_id": "s1", "status": "completed"}])
+        await SharedState(run).checkpoint()
+
+        await adapter._end_cut_step()
+        assert [e["step_id"] for e in (await SharedState.restore("run_between")).run.step_history] == ["s1"]

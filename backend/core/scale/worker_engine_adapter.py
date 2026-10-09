@@ -26,6 +26,7 @@ from core.scale.pubsub import RunEventPublisher, is_cancelled, clear_cancellatio
 import asyncio as _asyncio
 import contextlib as _contextlib
 import functools as _functools
+import time as _time
 
 from core.log import get_logger
 
@@ -93,6 +94,23 @@ class WorkerEngineAdapter:
         self._redis = redis_client
         self._worker_id = worker_id
         self._job_id = job_id
+        # When each step this job ran started and ended, from the events it
+        # relays — what a person's cancel needs to price the step it cut (F391).
+        # The adapter is built per job, so this is when the job began.
+        self._began = _time.time()
+        self._step_started: dict[str, float] = {}
+        self._step_ended: dict[str, float] = {}
+
+    async def _relay(self, event: dict) -> None:
+        """Publish an engine event, noting the steps it starts and ends."""
+        await self._publisher.publish(event)
+        step_id = event.get("orch_step_id")
+        if step_id:
+            kind = event.get("type")
+            if kind == "step_start":
+                self._step_started[step_id] = _time.time()
+            elif kind in ("step_complete", "step_error"):
+                self._step_ended[step_id] = _time.time()
 
     @_cancel_guarded
     async def run(
@@ -134,7 +152,7 @@ class WorkerEngineAdapter:
             session_id=session_id,
             initial_state=initial_state,
         ):
-            await self._publisher.publish(event)
+            await self._relay(event)
 
             # Capture the real final status from the engine event
             if event.get("type") == "orchestration_complete":
@@ -193,7 +211,7 @@ class WorkerEngineAdapter:
         final_status = "completed"
         async for event in engine.resume_paused(run, human_response):
             _log.debug(f"[adapter.resume] 📨 type={event.get('type', '?')} step={event.get('orch_step_id', '')} status={event.get('status', '')}")
-            await self._publisher.publish(event)
+            await self._relay(event)
 
             if event.get("type") == "orchestration_complete":
                 final_status = event.get("status", "completed")
@@ -228,7 +246,7 @@ class WorkerEngineAdapter:
             interrupted=interrupted,
             images=images,
         ):
-            await self._publisher.publish(event)
+            await self._relay(event)
 
             if event.get("type") == "orchestration_complete":
                 final_status = event.get("status", "completed")
@@ -287,6 +305,7 @@ class WorkerEngineAdapter:
             await self._publisher.publish({"type": "orchestration_error", "error": "Cancelled"})
         except Exception:  # noqa: BLE001
             pass
+        await self._end_cut_step()
         # keep_position: a cancelled run resumes from the step it was in,
         # and its mid-step progress is already in its column.
         await self._sync_final_state("cancelled", keep_position=True)
@@ -301,6 +320,73 @@ class WorkerEngineAdapter:
         except Exception:  # noqa: BLE001
             pass
         return "cancelled"
+
+    async def _end_cut_step(self) -> None:
+        """The entry for the step a person's cancel cut (F391).
+
+        The step was stopped mid-way, so the engine wrote nothing for it, and a
+        host that prices a run by its history (cloud) charged neither its price
+        nor its time — a cancel cost less than letting the step finish. Written
+        as a run stopped at its length writes one (cloud's `_end_cut_step`):
+        through `end_step`, so a step an approval's resume reopened is closed
+        rather than entered twice; `cut`, so a container's time counts.
+
+        Only for a step this job saw start and not end: a cancel that lands
+        between steps — the run already on the next one, not yet started —
+        writes nothing. A step re-entered by a resume (no start of its own in
+        this job) is timed from the job's start.
+        """
+        from datetime import datetime, timezone
+
+        from sqlalchemy import select, update
+
+        from core.orchestration.pauses import end_step
+        from core.scale.models_db import OrchestrationRunDB
+
+        try:
+            async with self._session_factory() as session:
+                row = (await session.execute(
+                    select(OrchestrationRunDB).where(OrchestrationRunDB.run_id == self._run_id)
+                )).scalar_one_or_none()
+                step_id = row.current_step_id if row is not None else None
+                if not step_id:
+                    return
+                history = list(row.step_history or [])
+                started = self._step_started.get(step_id)
+                if started is None:
+                    reopened = any(isinstance(e, dict) and e.get("step_id") == step_id
+                                   and e.get("status") == "running" for e in history)
+                    if not reopened:
+                        return
+                    started = self._began
+                ended = self._step_ended.get(step_id)
+                if ended is not None and ended >= started:
+                    return
+                step = next((s for s in self._orch.steps if s.id == step_id), None)
+                now = _time.time()
+
+                def stamp(t: float) -> str:
+                    return datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                end_step(history, {
+                    "step_id": step_id,
+                    "step_name": step.name if step else step_id,
+                    "step_type": step.type.value if step else "",
+                    "status": "cancelled",
+                    "error": "Cancelled",
+                    "cut": True,
+                    "started_at": stamp(started),
+                    "ended_at": stamp(now),
+                    "duration_seconds": round(max(0.0, now - started), 2),
+                })
+                await session.execute(
+                    update(OrchestrationRunDB)
+                    .where(OrchestrationRunDB.run_id == self._run_id)
+                    .values(step_history=history)
+                )
+                await session.commit()
+        except Exception as e:  # noqa: BLE001 — the cancel stands whatever this does
+            _log.warning(f"[worker_engine_adapter] run {self._run_id}: the cut step's entry was not written: {e}")
 
     def _build_engine(self) -> OrchestrationEngine:
         redis = self._redis
