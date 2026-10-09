@@ -5,6 +5,7 @@ import { Bell, CheckCircle2, AlertCircle, PauseCircle, ShieldAlert } from 'lucid
 import { useNotifications, type RunNotification } from './NotificationProvider';
 import { answerToolApproval } from './ToolApproval';
 import { plainText } from '@/lib/plainText';
+import { Button, Checkbox } from '@/components/ui';
 
 /** How a resolved item ended, as its row says it. */
 const RESOLVED_AS: Record<string, string> = {
@@ -37,39 +38,25 @@ function ApprovalItem({ n }: { n: RunNotification }) {
     };
 
     return (
-        <div className="px-3 py-2 border-b border-zinc-800/50">
+        <div className="border-b border-border px-3 py-2.5">
             <div className="flex items-start gap-2">
-                <ShieldAlert size={14} className="text-amber-400 shrink-0 mt-0.5" aria-hidden />
-                <span className="flex-1 min-w-0">
-                    <span className="block text-xs text-zinc-200">{n.title}</span>
-                    {n.body && <span className="block text-[11px] text-text-faint">{plainText(n.body)}</span>}
+                <ShieldAlert size={14} className="mt-0.5 shrink-0 text-person-ink" aria-hidden />
+                <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] text-text">{n.title}</span>
+                    {n.body && <span className="block text-xs text-text-muted">{plainText(n.body)}</span>}
                     {argText && (
-                        <code className="mt-1 block truncate font-code text-[11px] text-zinc-300" title={argText}>{argText}</code>
+                        <code className="mt-1 block truncate font-code text-xs text-text-muted" title={argText}>{argText}</code>
                     )}
                 </span>
             </div>
             <div className="mt-2 flex items-center gap-2 pl-6">
-                <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => answer(true)}
-                    className="px-2.5 py-1 bg-accent text-accent-fg text-[11px] font-semibold rounded-md hover:bg-accent-hover disabled:opacity-50"
-                >
-                    Approve
-                </button>
-                <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => answer(false)}
-                    className="px-2.5 py-1 border border-zinc-700 text-zinc-300 text-[11px] font-semibold rounded-md hover:bg-zinc-800 disabled:opacity-50"
-                >
-                    Refuse
-                </button>
-                <span className="text-[10px] text-text-faint">
+                <Button size="sm" disabled={busy} onClick={() => answer(true)}>Approve</Button>
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => answer(false)}>Refuse</Button>
+                <span className="text-xs text-text-faint">
                     {new Date(n.ts * 1000).toLocaleTimeString()}
                 </span>
             </div>
-            {error && <p role="alert" className="mt-1 pl-6 text-[11px] text-red-400">{error}</p>}
+            {error && <p role="alert" className="m-0 mt-1 pl-6 text-xs text-danger">{error}</p>}
         </div>
     );
 }
@@ -110,11 +97,12 @@ export function NotificationBell({
                 // badge alone used to be the whole name ("6").
                 aria-label={unseenCount > 0 ? `Notifications, ${unseenCount} unread` : 'Notifications'}
                 title="Notifications"
-                className="relative p-2 hover:bg-zinc-900 rounded-md text-zinc-400 hover:text-white transition-colors data-[state=open]:bg-zinc-900 data-[state=open]:text-white"
+                className="relative rounded-md p-2 text-text-muted transition-colors hover:bg-row-hover hover:text-text data-[state=open]:bg-surface-2 data-[state=open]:text-text"
             >
                 <Bell className="h-4 w-4" aria-hidden />
                 {unseenCount > 0 && (
-                    <span aria-hidden className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] font-semibold flex items-center justify-center">
+                    // The accent, not red: red is for a failure only (UX1), and this counts everything new.
+                    <span aria-hidden className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold text-accent-fg">
                         {unseenCount > 9 ? '9+' : unseenCount}
                     </span>
                 )}
@@ -127,14 +115,14 @@ export function NotificationBell({
                     sideOffset={4}
                     collisionPadding={8}
                     aria-label="Notifications"
-                    className="z-50 w-80 max-w-[calc(100vw-16px)] rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl overflow-hidden"
+                    className="z-50 w-80 max-w-[calc(100vw-16px)] overflow-hidden rounded-lg border border-border-strong bg-surface shadow-elevated"
                 >
-                    <div className="px-3 py-2 border-b border-zinc-800 text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+                    <div className="border-b border-border px-3 py-2.5 text-[13px] font-semibold text-text">
                         Notifications
                     </div>
                     <div className="max-h-80 overflow-y-auto">
                         {recent.length === 0 ? (
-                            <div className="px-3 py-6 text-xs text-text-faint text-center italic">
+                            <div className="px-3 py-6 text-center text-[13px] text-text-faint">
                                 No notifications yet.
                             </div>
                         ) : recent.map(n => {
@@ -144,16 +132,17 @@ export function NotificationBell({
                             <button
                                 key={n.id}
                                 onClick={() => { setOpen(false); openItem(n); }}
-                                className={`w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-zinc-800/70 transition-colors border-b border-zinc-800/50 ${answered ? 'opacity-50' : ''}`}
+                                className={`flex w-full items-start gap-2 border-b border-border px-3 py-2.5 text-left transition-colors hover:bg-row-hover ${answered ? 'opacity-60' : ''}`}
                             >
-                                {answered ? <CheckCircle2 size={14} className="text-text-faint shrink-0 mt-0.5" /> :
-                                 n.kind === 'human_input' ? <PauseCircle size={14} className="text-amber-400 shrink-0 mt-0.5" /> :
-                                 n.kind === 'run_failed' ? <AlertCircle size={14} className="text-red-400 shrink-0 mt-0.5" /> :
-                                 <CheckCircle2 size={14} className="text-green-400 shrink-0 mt-0.5" />}
-                                <span className="flex-1 min-w-0">
-                                    <span className="block text-xs text-zinc-200 truncate">{n.title}</span>
-                                    {n.body && <span className="block text-[11px] text-text-faint truncate">{plainText(n.body)}</span>}
-                                    <span className="block text-[10px] text-text-faint mt-0.5">
+                                {/* Quiet success; red only for a failure; a person's wait is the warm ink (UX1). */}
+                                {answered ? <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-text-faint" aria-hidden /> :
+                                 n.kind === 'human_input' ? <PauseCircle size={14} className="mt-0.5 shrink-0 text-person-ink" aria-hidden /> :
+                                 n.kind === 'run_failed' ? <AlertCircle size={14} className="mt-0.5 shrink-0 text-danger" aria-hidden /> :
+                                 <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-text-faint" aria-hidden />}
+                                <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-[13px] text-text">{n.title}</span>
+                                    {n.body && <span className="block truncate text-xs text-text-muted">{plainText(n.body)}</span>}
+                                    <span className="mt-0.5 block text-xs text-text-faint">
                                         {new Date(n.ts * 1000).toLocaleTimeString()}
                                         {answered ? ` · ${RESOLVED_AS[n.resolved_as ?? 'answered'] ?? n.resolved_as}` : ''}
                                     </span>
@@ -162,17 +151,17 @@ export function NotificationBell({
                             );
                         })}
                     </div>
-                    <label className="flex items-center gap-2 px-3 py-2.5 border-t border-zinc-800 cursor-pointer hover:bg-zinc-800/50">
-                        <input
-                            type="checkbox"
+                    <div className="flex items-center gap-2 border-t border-border px-3 py-2.5">
+                        <Checkbox
+                            id="bell-browser-notifications"
+                            label="Browser notifications when tab is in background"
                             checked={browserNotificationsEnabled}
-                            onChange={e => setBrowserNotificationsEnabled(e.target.checked)}
-                            className="accent-blue-500"
+                            onChange={setBrowserNotificationsEnabled}
                         />
-                        <span className="text-[11px] text-zinc-400">
+                        <label htmlFor="bell-browser-notifications" className="cursor-pointer text-xs text-text-muted">
                             Browser notifications when tab is in background
-                        </span>
-                    </label>
+                        </label>
+                    </div>
                 </RPopover.Content>
             </RPopover.Portal>
         </RPopover.Root>

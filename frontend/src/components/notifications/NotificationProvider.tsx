@@ -2,10 +2,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { CheckCircle2, AlertCircle, LogIn, PauseCircle, X } from 'lucide-react';
+import { LogIn, PauseCircle, X } from 'lucide-react';
 import { readWithStallTimeout } from '@/lib/sse';
 import { plainText } from '@/lib/plainText';
-import { useIsCanvasMode } from '@/components/ui';
+import { toastLook, useIsCanvasMode } from '@/components/ui';
 
 export type RunNotification = {
     id: number;
@@ -22,7 +22,7 @@ export type RunNotification = {
     resolved_as?: 'answered' | 'cancelled' | 'allowed' | 'refused' | 'expired';
 };
 
-type Toast = { key: number; message: string; type: 'success' | 'warning' | 'error' };
+type Toast = { key: number; message: string; type: 'success' | 'warning' | 'error' | 'person' };
 
 type NotificationContextValue = {
     notifications: RunNotification[];
@@ -100,8 +100,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         });
         if (!live || item.resolved) return;  // history/updates: no toast/browser popup
         window.dispatchEvent(new CustomEvent(NOTIFICATION_EVENT, { detail: item }));
+        // A run that needs someone is the one warm toast (UX1: amber is a person, M2h-2).
         toast(item.title, item.kind === 'run_failed' ? 'error'
-            : item.kind === 'human_input' || item.kind === 'tool_approval' ? 'warning' : 'success');
+            : item.kind === 'human_input' || item.kind === 'tool_approval' ? 'person' : 'success');
         if (browserEnabledRef.current && document.hidden
             && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
             try {
@@ -239,7 +240,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                 {signedOut && (
                     <div
                         role="status"
-                        className="pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-xl text-sm max-w-sm bg-amber-950/95 border-amber-800 text-amber-200"
+                        className={`pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-elevated text-sm max-w-sm ${toastLook('warning').chip}`}
                     >
                         <LogIn size={15} className="shrink-0" aria-hidden />
                         <span className="flex-1 min-w-0">You&apos;re signed out.</span>
@@ -254,18 +255,17 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                         </button>
                     </div>
                 )}
-                {toasts.map(t => (
+                {toasts.map(t => {
+                    // The kit Toast's tones (components/ui/toast.tsx), on a host of
+                    // its own because this one stacks and can be dismissed.
+                    const look = toastLook(t.type === 'error' ? 'danger' : t.type);
+                    const Icon = t.type === 'person' ? PauseCircle : look.icon;
+                    return (
                     <div
                         key={t.key}
-                        className={`pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-xl text-sm max-w-sm animate-in ${
-                            t.type === 'error' ? 'bg-red-950/95 border-red-800 text-red-200' :
-                            t.type === 'warning' ? 'bg-amber-950/95 border-amber-800 text-amber-200' :
-                            'bg-zinc-900/95 border-zinc-700 text-zinc-200'
-                        }`}
+                        className={`pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-elevated text-sm max-w-sm animate-in ${look.chip}`}
                     >
-                        {t.type === 'error' ? <AlertCircle size={15} className="shrink-0" /> :
-                         t.type === 'warning' ? <PauseCircle size={15} className="shrink-0" /> :
-                         <CheckCircle2 size={15} className="shrink-0 text-green-400" />}
+                        <Icon size={15} className={`shrink-0 ${look.mark}`} aria-hidden />
                         <span className="flex-1 min-w-0 truncate">{t.message}</span>
                         <button
                             onClick={() => setToasts(prev => prev.filter(x => x.key !== t.key))}
@@ -275,7 +275,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                             <X size={13} />
                         </button>
                     </div>
-                ))}
+                    );
+                })}
             </div>
         </NotificationContext.Provider>
     );
