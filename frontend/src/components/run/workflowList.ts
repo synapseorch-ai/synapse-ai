@@ -30,10 +30,31 @@ function ordinalDay(n: number): string {
     return `${n}${s}`;
 }
 
+const SHORT_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
+    'November', 'December'];
+
+/** A day-of-week field that is a list or a range of days ("1,3,5", "2-4"), as short names; null otherwise. */
+function dayList(dow: string): string | null {
+    const day = (s: string) => (/^\d+$/.test(s) && Number(s) <= 7 ? SHORT_DAYS[Number(s) % 7] : null);
+    if (/^\d+-\d+$/.test(dow)) {
+        const [a, b] = dow.split('-').map(day);
+        return a && b ? `${a}–${b}` : null;
+    }
+    if (/^\d+(,\d+)+$/.test(dow)) {
+        const names = dow.split(',').map(day);
+        return names.every(Boolean) ? names.join(', ') : null;
+    }
+    return null;
+}
+
 /**
  * A cron expression in a few words: "Mondays 07:00 UTC", "Weekdays 09:00 UTC",
- * "Daily 06:30 UTC", "Hourly at :15", "Monthly, 1st 08:00 UTC". Anything else
- * comes back as the expression itself.
+ * "Daily 06:30 UTC", "Hourly at :15", "Monthly, 1st 08:00 UTC", "Every 15
+ * minutes", "Every 2 hours", "Mon, Wed, Fri 07:00 UTC", "Hourly 09:00–17:00
+ * UTC", "January, daily 07:00 UTC" (M2h widened it for the Schedules page; the
+ * words it gave before are unchanged). Anything else comes back as the
+ * expression itself.
  */
 export function cronWords(expr: string | null | undefined): string {
     const raw = (expr ?? '').trim();
@@ -41,18 +62,43 @@ export function cronWords(expr: string | null | undefined): string {
     if (parts.length !== 5) return raw;
     const [min, hour, dom, mon, dow] = parts;
     const isNum = (s: string) => /^\d+$/.test(s);
-    if (mon !== '*') return raw;
-    if (isNum(min) && hour === '*' && dom === '*' && dow === '*') {
-        return `Hourly at :${min.padStart(2, '0')}`;
+    const two = (s: string | number) => String(s).padStart(2, '0');
+    // One month: the same words for that month ("January, daily 07:00 UTC").
+    if (mon !== '*') {
+        if (!isNum(mon) || Number(mon) < 1 || Number(mon) > 12 || dom !== '*' || dow !== '*') return raw;
+        const inner = cronWords(`${min} ${hour} * * *`);
+        return inner.startsWith('Daily ') ? `${MONTHS[Number(mon) - 1]}, daily ${inner.slice(6)}` : raw;
+    }
+    const everyDay = dom === '*' && dow === '*';
+    if (min === '*' && hour === '*' && everyDay) return 'Every minute';
+    const minuteStep = /^\*\/(\d+)$/.exec(min);
+    if (minuteStep && hour === '*' && everyDay) {
+        const n = Number(minuteStep[1]);
+        return n === 1 ? 'Every minute' : `Every ${n} minutes`;
+    }
+    if (isNum(min) && hour === '*' && everyDay) {
+        return `Hourly at :${two(min)}`;
+    }
+    const hourStep = /^\*\/(\d+)$/.exec(hour);
+    if (isNum(min) && hourStep && everyDay) {
+        const n = Number(hourStep[1]);
+        const at = Number(min) === 0 ? '' : ` at :${two(min)}`;
+        return `${n === 1 ? 'Every hour' : `Every ${n} hours`}${at}`;
+    }
+    const hourRange = /^(\d+)-(\d+)$/.exec(hour);
+    if (isNum(min) && hourRange && dom === '*' && (dow === '*' || dow === '1-5')) {
+        const span = `${two(hourRange[1])}:${two(min)}–${two(hourRange[2])}:${two(min)} UTC`;
+        return dow === '1-5' ? `Weekdays, hourly ${span}` : `Hourly ${span}`;
     }
     if (!isNum(min) || !isNum(hour)) return raw;
-    const time = `${hour.padStart(2, '0')}:${min.padStart(2, '0')} UTC`;
-    if (dom === '*' && dow === '*') return `Daily ${time}`;
+    const time = `${two(hour)}:${two(min)} UTC`;
+    if (everyDay) return `Daily ${time}`;
     if (dom === '*') {
         if (dow === '1-5') return `Weekdays ${time}`;
         if (dow === '0,6' || dow === '6,0' || dow === '6-7') return `Weekends ${time}`;
         if (isNum(dow) && Number(dow) <= 7) return `${DAYS[Number(dow) % 7]} ${time}`;
-        return raw;
+        const days = dayList(dow);
+        return days ? `${days} ${time}` : raw;
     }
     if (dow === '*' && isNum(dom)) return `Monthly, ${ordinalDay(Number(dom))} ${time}`;
     return raw;

@@ -53,3 +53,5 @@ export {
     average, byCriterion, flagWords, latest, passRate, RUNS_SHOWN, scoreText, weakestStep,
     type EvalCriterion, type EvalScore, type EvalTrendData,
 } from './evalStats';
+export { ScheduleList } from './ScheduleList';
+export { lastRunBucket, lastScheduledRun, matchSchedule, scheduleRow, type ScheduleListRow } from './scheduleList';
