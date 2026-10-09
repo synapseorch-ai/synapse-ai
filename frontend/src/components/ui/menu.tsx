@@ -242,7 +242,9 @@ export function MenuSegment<T extends string>({
       <div
         role="radiogroup"
         aria-label={label}
-        className="flex items-center gap-0.5 rounded-md border border-border bg-bg p-0.5"
+        // The kit Segmented's look (M2h-2): a quiet track and the chosen one raised on it. `bg-surface-2` on
+        // white was 1.1:1 — in the light theme you could not tell which was chosen (Naveen).
+        className="flex items-center gap-0.5 rounded-md border border-border bg-surface-2 p-0.5 [:root[data-theme=dark]_&]:bg-bg"
       >
         {options.map((o) => {
           const Icon = o.icon;
@@ -258,7 +260,9 @@ export function MenuSegment<T extends string>({
               onClick={() => onChange(o.value)}
               className={cn(
                 "flex size-6 items-center justify-center rounded-[calc(var(--ui-radius)-2px)] transition-colors",
-                on ? "bg-surface-2 text-text" : "text-text-faint hover:text-text",
+                on
+                  ? "bg-bg text-text shadow-[0_1px_2px_rgb(16_24_40/0.12)] ring-1 ring-border-strong [:root[data-theme=dark]_&]:bg-surface-2"
+                  : "text-text-faint hover:text-text",
               )}
             >
               <Icon className="size-3.5" aria-hidden />
