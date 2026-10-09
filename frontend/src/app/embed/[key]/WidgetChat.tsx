@@ -77,6 +77,7 @@ export default function WidgetChat({
   const token = useRef(initialToken);
   const abort = useRef<AbortController | null>(null);
   const log = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
   const lastSent = useRef('');
   /**
    * The cursor of the last event this frame handled. A turn runs on whether or
@@ -563,6 +564,22 @@ export default function WidgetChat({
     void send(lastSent.current);
   };
 
+  // The field grows with what is typed, up to the cap in the stylesheet, and
+  // shrinks back once the message is sent. Measured again when the frame
+  // resizes: the loader keeps the frame hidden until the launcher is clicked,
+  // and a field measured while hidden comes out several lines tall.
+  const fit = useCallback(() => {
+    const field = input.current;
+    if (!field) return;
+    field.style.height = 'auto';
+    field.style.height = `${Math.min(field.scrollHeight, 120)}px`;
+  }, []);
+  useEffect(fit, [draft, fit]);
+  useEffect(() => {
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, [fit]);
+
   const failed = messages.length > 0 && messages[messages.length - 1].failed;
 
   return (
@@ -629,24 +646,55 @@ export default function WidgetChat({
           void send(draft);
         }}
       >
-        <input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="Type a message…"
-          className={styles.input}
-          aria-label="Message"
-          disabled={busy}
-          autoComplete="off"
-        />
-        {busy ? (
-          <button type="button" onClick={stop} className={styles.stop} aria-label="Stop">
-            Stop
-          </button>
-        ) : (
-          <button type="submit" className={styles.send} disabled={!draft.trim()}>
-            Send
-          </button>
-        )}
+        <div className={styles.field}>
+          <textarea
+            ref={input}
+            rows={1}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              // Enter sends and Shift+Enter starts a new line, as in the
+              // product's own composer. Never while an IME is composing: that
+              // Enter picks a candidate, it is not the end of the message.
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                void send(draft);
+              }
+            }}
+            placeholder="Type a message…"
+            className={styles.input}
+            aria-label="Message"
+            disabled={busy}
+            autoComplete="off"
+          />
+          {busy ? (
+            <button type="button" onClick={stop} className={styles.stop} aria-label="Stop" title="Stop">
+              <svg viewBox="0 0 12 12" aria-hidden="true">
+                <rect x="1" y="1" width="10" height="10" rx="2" fill="currentColor" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className={styles.send}
+              disabled={!draft.trim()}
+              aria-label="Send"
+              title="Send"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.25"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 19V5M5 12l7-7 7 7" />
+              </svg>
+            </button>
+          )}
+        </div>
       </form>
     </div>
   );
